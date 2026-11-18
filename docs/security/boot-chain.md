@@ -62,8 +62,9 @@ certificate in the firmware with Secure Boot on
 checks that the server boots enforcing, through systemd-stub, with its
 generation on the measured command line and PCR 11 extended; that a UKI whose
 command line was edited, and the same UKI unsigned, are both refused by the
-firmware; and that an update, sealed and signed the same way, stages and rolls
-back when it breaks the server.
+firmware; that an update, sealed and signed the same way, stages and rolls
+back when it breaks the server; and that an update from a registry is verified
+and staged while an unsigned one is refused.
 
 | What a server needs | Where it stands |
 |---|---|
@@ -72,7 +73,7 @@ back when it breaks the server.
 | The composefs root verified, its digest bound into the signed image | **Done.** `seal-host` closes the digest before anything signs the UKI; `test-image-host` checks the sealed command line names one. |
 | Measured boot: the disk key sealed to PCR 7 and a signed PCR 11 policy | **Partly.** systemd-stub measures the UKI into PCR 11, the generation is on the measured command line, and each release carries the signed PCR 11 prediction of its generation under `/boot`, which `tilo-disk-encrypt enrol --tpm-automatic` seals a PIN-less keyslot to. The VM check installs a plain root, because its VM has no device-mapper, so no keyslot is enrolled or opened there yet. |
 | Rollback protection: no older signed image boots below the floor | **Partly.** Every server image carries a generation of the server's own dense series, which `os/dev/next-generation.sh` reads from the signed `gen<N>` tags and their provenance. `tilo-rollback-confirm` judges a server by its own probe, the unit `tilo-boot-health` is configured with, rather than by greetd, which a server never starts. The floor itself lives in the TPM beside the keyslots, so it moves only on an encrypted install, which the VM check does not do yet; the floor approvals the owner's devices sign (`crates/server/tilo-server/src/servers/floor.rs`) are what move it. |
-| Update images verified before staging | **Partly.** Updates go through `tilo-verified-update`, and the container policy requires a Rekor-logged release signature for `registry.tilo.so/tilo/tilo-host`, as for the desktop's repositories; its releases carry certified signatures once the release root exists, and provenance with the generation. The VM check still stages its update from local media, which the policy admits unsigned (that takes root), not from a registry. |
+| Update images verified before staging | **Done.** Updates go through `tilo-verified-update`, and the container policy requires a Rekor-logged release signature for `registry.tilo.so/tilo/tilo-host`, as for the desktop's repositories; its releases carry certified signatures once the release root exists, and provenance with the generation. The VM check serves an update from a registry the server takes for a mirror of that repository, signed with a key that stands in for the release key in the same policy scope, and proves the server's update step verifies and stages it and refuses an image of the repository nobody signed (`os/tests/registry_update_check.sh`). An update from local media is still admitted unsigned, which takes root. |
 | No SSH | **Done.** `openssh`, `openssh-server` and `openssh-clients` are removed at build and the build fails if any returns. |
 | No interactive local login | **Done.** Every account, root's included, carries a locked password, so the gettys on the local and serial consoles and the emergency shell open for nobody; the build fails on an unlocked account. The consoles show the enrollment code. The command line is inside the signed UKI, and the boot menu's editor is off as well: the boot-entry pass writes `editor no` into `loader/loader.conf` on every machine. |
 | Kernel lockdown | **Done.** `lockdown=integrity` and the desktop's other hardening arguments (`01-hardening.toml`) are on the sealed command line. |
