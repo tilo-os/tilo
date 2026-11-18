@@ -771,6 +771,31 @@ impl Server {
             // no Servers workspace yet asks a server it manages to take it in,
             // and starts applying the document once it does.
             if crate::servers::holds_admin(governed).await {
+                // A machine whose plan this is finishes installing it here,
+                // whether it came up holding the workspace already or was just
+                // handed it: the entry says what still has to happen.
+                if let Some(nonce) = crate::servers::first_install::recorded_nonce(&cfg.state_root)
+                {
+                    let workspaces = governed.clone();
+                    let cert = identity.device_cert.clone();
+                    push_background_task(
+                        &background_tasks,
+                        tokio::spawn(async move {
+                            let requests = crate::servers::applied::Requests::default();
+                            if let Err(error) = crate::servers::first_install::install(
+                                &workspaces,
+                                &cert,
+                                &nonce,
+                                &crate::servers::first_install::real_drives(),
+                                &requests,
+                            )
+                            .await
+                            {
+                                tracing::warn!(%error, "this machine did not install from its plan");
+                            }
+                        }),
+                    );
+                }
                 push_background_task(
                     &background_tasks,
                     crate::servers::applied::follow(
