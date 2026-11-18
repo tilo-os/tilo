@@ -385,7 +385,9 @@ Chat's messages as they arrive, sends through Chat's own send, and shows a docum
 window that is never put on a screen, with real key presses. A store it keeps holds a device
 key that only the very program that made it reads again. `AssistantMac --drive` is Tilo
 Assistant with no window (`Drive.swift`): the same source and the same model its window's
-views read and call, driven the same way. Both end when whoever drives them is gone.
+views read and call, driven the same way. Of each reply that grew it says when it drew the
+first change of its words, when the last and how many (`grew`): with no window, it counts
+what a person would have seen. Both end when whoever drives them is gone.
 
 ## Tilo Assistant
 

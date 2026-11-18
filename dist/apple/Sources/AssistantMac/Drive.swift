@@ -43,6 +43,9 @@ import WebKit
 ///   {"do": "saw", "item": "…"}                        as opening a piece from its notification does
 ///   {"do": "press", "item": "…", "offer": "…"}        as a press on a button under a piece's notice
 ///   {"do": "models"}   {"do": "state"}   {"do": "quit"}
+/// Of each reply that grew it says, once its writing has ended, when it drew the first change
+/// of its words and when the last, in milliseconds, and how many it drew ("grew"): what a
+/// person at the window would have seen, counted where no window is.
 /// It prints no link, no code and no secret, and ends when its standard input ends. With
 /// --forget it removes the store, and with it the device's key, and what it kept beside it.
 @MainActor
@@ -55,6 +58,9 @@ final class AssistantDrive {
     private let began = Date()
     private var said: [String: String] = [:]
     private var pieces: [Item.ID: String] = [:]
+    /// What was drawn of each reply while it grew, and when the person last sent.
+    private var growth = ReplyGrowth()
+    private var sent: Date?
 
     private init(source: TiloSource, codeFile: String?) {
         self.source = source
@@ -217,6 +223,26 @@ final class AssistantDrive {
             pieces[item.id] = line.text
             AssistantDrive.say([known ? "changed" : "piece": line, "ms": .number((Date().timeIntervalSince1970 * 1000).rounded())])
         }
+        // What was drawn of each reply while it grew, counted each time the model holds something
+        // new, as the window's views are drawn again then. Said once the answer's writing has
+        // ended, and again where a reply changed after that.
+        growth.drew(conversation, at: Date())
+        if !conversation.isAnswering {
+            for (id, seen) in growth.seen.sorted(by: { $0.value.first < $1.value.first }) {
+                var line: [String: JSON] = ["id": .string(id.value), "drew": .number(Double(seen.drew)),
+                                            "letters": .number(Double(seen.letters)),
+                                            "firstMs": .number((seen.first.timeIntervalSince1970 * 1000).rounded()),
+                                            "lastMs": .number((seen.last.timeIntervalSince1970 * 1000).rounded())]
+                if let sent, sent <= seen.first {
+                    line["firstAfterSendMs"] = .number((seen.first.timeIntervalSince(sent) * 1000).rounded())
+                    line["lastAfterSendMs"] = .number((seen.last.timeIntervalSince(sent) * 1000).rounded())
+                }
+                let text = JSON.object(line).text
+                guard said["grew-\(id.value)"] != text else { continue }
+                said["grew-\(id.value)"] = text
+                AssistantDrive.say(["grew": .object(line)])
+            }
+        }
         if let problem = model.problem { once("problem", .string(problem)) } else { said["problem"] = nil }
         once("beside", ["subAgents": .number(Double(model.subAgents.count)), "tasks": .number(Double(model.tasks.count)),
                         "automations": .number(Double(model.automations.count)), "models": .number(Double(model.models.count)),
@@ -339,6 +365,7 @@ final class AssistantDrive {
             // under it, and Send takes them.
             let files = (step["files"]?.array ?? []).compactMap(\.string).map { Draft.File(url: URL(fileURLWithPath: $0)) }
             model.drafts[.main] = Draft(text: typed, files: files)
+            sent = Date()
             model.send(in: .main)
             AssistantDrive.say(["asked": "send", "ms": .number((Date().timeIntervalSince1970 * 1000).rounded())])
         case "open":
