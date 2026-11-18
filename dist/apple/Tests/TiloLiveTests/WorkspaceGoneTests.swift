@@ -197,6 +197,81 @@ final class WorkspaceGoneTests: XCTestCase {
         XCTAssertEqual(defaults.string(forKey: "TiloLiveRoute"), "/w/ws-1")
     }
 
+    /// The site is set up again while the app is open, and for a while no server answers at
+    /// all: nothing turns the open page's session away. The page only says on its root that it
+    /// lost its server, and goes on showing what it showed. The app asks for its page again, as
+    /// for a page that stopped, and what the page that comes says is where the device stands.
+    func testAnOpenPageThatLostItsServerIsAskedForAgainAndTheWorkspaceItThenFindsGonePutsTheAppAtItsWayIn() async throws {
+        mainChat = .agent(id: "assistant", name: "Assistant")
+        try await startAgain()
+        try await inPage("window.byKind = true; direct({id: 'm1', author: {person: ADA}, text: 'Good morning'}); \(Self.enter)")
+        try await until("the device is in") { if case .open = self.engine.state { true } else { false } }
+        try await until("the conversation is held") { self.conversation.items.count == 1 }
+        let asked = loaded.count
+        try await inPage("document.documentElement.dataset.connection = 'offline'")
+        try await until("the page to be asked for again") { self.loaded.count > asked }
+        XCTAssertEqual(loaded.last?.absoluteString, "\(Self.site)/app/#/w/ws-1/so.tilo.chat")
+        XCTAssertTrue(isSignedIn, "a device whose server is away for a while is still its person's")
+        // Another server answers at the site now: the page that is loaded again finds the workspace gone.
+        try await inPage(Self.gone)
+        try await until("the app to stand at its way in") { !self.isSignedIn }
+        try await until("nothing of the old conversation to be shown") { self.conversation.items.isEmpty }
+        XCTAssertNil(defaults.string(forKey: "TiloLiveRoute"))
+        XCTAssertEqual(engine.state, .away)
+        XCTAssertEqual(sessions.last, .reset)
+    }
+
+    /// A server that was only away for a while: the page that is asked for again gets in, the
+    /// device stays its person's, and nothing is asked for once more.
+    func testAnOpenPageThatLostItsServerAndGetsInAgainStaysItsPersons() async throws {
+        try await startAgain()
+        try await inPage(Self.enter)
+        try await until("the device is in") { if case .open = self.engine.state { true } else { false } }
+        let asked = loaded.count
+        try await inPage("document.documentElement.dataset.connection = 'offline'")
+        try await until("the page to be asked for again") { self.loaded.count > asked }
+        // The page that comes is a new document, which says nothing of a connection that was cut.
+        try await inPage("delete document.documentElement.dataset.connection; document.documentElement.dataset.arrival = 'done again'")
+        try await until("the device to be in again") { if case .open = self.engine.state { true } else { false } }
+        let then = loaded.count
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(loaded.count, then, "a page that is in again was asked for once more")
+        XCTAssertTrue(isSignedIn)
+        XCTAssertEqual(defaults.string(forKey: "TiloLiveRoute"), "/w/ws-1")
+    }
+
+    /// A connection that is back before the page is asked for again: the page found its server
+    /// by itself, and is left as it is.
+    func testAPageWhoseConnectionIsBackBeforeItIsAskedForAgainIsLeftAsItIs() async throws {
+        try await startAgain()
+        engine.stopPause = .milliseconds(700)
+        try await inPage(Self.enter)
+        try await until("the device is in") { if case .open = self.engine.state { true } else { false } }
+        let asked = loaded.count
+        try await inPage("document.documentElement.dataset.connection = 'offline'")
+        try await until("the engine to hold that its page is not in") { if case .arriving = self.engine.state { true } else { false } }
+        try await inPage("document.documentElement.dataset.connection = 'online'")
+        try await until("the device to be in again") { if case .open = self.engine.state { true } else { false } }
+        try await Task.sleep(for: .milliseconds(1000))
+        XCTAssertEqual(loaded.count, asked, "a page that found its server again by itself was asked for anew")
+        XCTAssertTrue(isSignedIn)
+    }
+
+    /// What a page says of its store, its files or its drawing says nothing of its server:
+    /// nothing is asked for again.
+    func testWhatAPageSaysOfItsStoreOrItsDrawingAsksForNothingAgain() async throws {
+        try await startAgain()
+        try await inPage(Self.enter)
+        try await until("the device is in") { if case .open = self.engine.state { true } else { false } }
+        let asked = loaded.count
+        for word in ["connecting", "online", "saving", "files", "renderer"] {
+            try await inPage("document.documentElement.dataset.connection = '\(word)'")
+            try await Task.sleep(for: .milliseconds(300))
+            XCTAssertEqual(loaded.count, asked, "the page was asked for again at \(word)")
+            XCTAssertTrue({ if case .open = engine.state { true } else { false } }(), "the device is no longer in at \(word)")
+        }
+    }
+
     /// What the app showed of the workspace that is gone is not shown as if it were live.
     func testWhatTheAppHeldOfAWorkspaceThatIsGoneIsPutAway() async throws {
         mainChat = .agent(id: "assistant", name: "Assistant")
@@ -333,6 +408,11 @@ final class WorkspaceGoneTests: XCTestCase {
         // An open page its server turned away names the refusal on its root, whatever the refusal is.
         let entry = try String(contentsOf: web.appendingPathComponent("entry-page.mjs"), encoding: .utf8)
         XCTAssertTrue(entry.contains("document.documentElement.dataset.refusal = code;"), "an open page no longer names its server's refusal on its root")
+        // An open page says how its connection to its server stands on its root, and calls one that is cut by this name.
+        XCTAssertTrue(entry.contains("document.documentElement.dataset.connection = reading.state;"),
+                      "an open page no longer says on its root how its connection stands")
+        let connection = try String(contentsOf: web.appendingPathComponent("connection-status.mjs"), encoding: .utf8)
+        XCTAssertTrue(connection.contains("kind: '\(TiloEngine.cut)',"), "web/connection-status.mjs calls a connection that is cut by another name")
         // What says nothing of a workspace that is gone.
         for name in ["", "refused", "removed", "no-access", "invitation-only", "unreachable", "stopped"] {
             XCTAssertFalse(TiloEngine.gone(failure: name, status: "Couldn’t open Lounge. The workspace did not let you in."), name)

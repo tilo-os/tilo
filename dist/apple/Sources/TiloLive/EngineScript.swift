@@ -126,6 +126,10 @@ public enum EngineScript {
           // (`data-failure`, web/failure-screen.mjs), and that its server turned its open
           // session away (`data-refusal`, web/session-refusal.mjs). Names of cases, never words.
           failure: (data.failure ?? '').slice(0, 64), refusal: (data.refusal ?? '').slice(0, 64),
+          // How the page's connection to its server stands, as the page itself names it
+          // (`data-connection`, web/connection-status.mjs): `offline` once it is cut. A name
+          // of a case, never words.
+          connection: (data.connection ?? '').slice(0, 64),
           // A page that cannot draw empties its status line and says why in a card.
           status: ((document.getElementById('status')?.textContent ?? '')
             || (data.entry === 'unsupported' ? document.querySelector('.tilo-entry-card[data-card="renderer"] p')?.textContent ?? '' : '')).slice(0, 400),
@@ -137,7 +141,8 @@ public enum EngineScript {
         post(now);
       };
       new MutationObserver(state).observe(root,
-        {attributes: true, attributeFilter: ['data-entry', 'data-arrival', 'data-pairing-code', 'data-failure', 'data-refusal']});
+        {attributes: true, attributeFilter: ['data-entry', 'data-arrival', 'data-pairing-code', 'data-failure', 'data-refusal',
+          'data-connection']});
       const ready = () => {
         const status = document.getElementById('status');
         if (status) new MutationObserver(state).observe(status, {childList: true, characterData: true, subtree: true});
