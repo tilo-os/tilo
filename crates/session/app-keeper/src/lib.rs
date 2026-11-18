@@ -74,6 +74,7 @@ mod upstream;
 mod viewporter;
 pub mod wire;
 mod x11;
+mod x11_windows;
 mod xdnd;
 
 use std::collections::HashMap;

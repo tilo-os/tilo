@@ -11,8 +11,8 @@ use x11rb::connection::Connection as _;
 use x11rb::errors::ConnectError;
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{
-    AtomEnum, ConnectionExt as _, CreateWindowAux, EventMask, PropMode, SELECTION_NOTIFY_EVENT,
-    SelectionNotifyEvent, SelectionRequestEvent, Window, WindowClass,
+    AtomEnum, ClientMessageEvent, ConnectionExt as _, CreateWindowAux, EventMask, PropMode,
+    SELECTION_NOTIFY_EVENT, SelectionNotifyEvent, SelectionRequestEvent, Window, WindowClass,
 };
 use x11rb::rust_connection::{DefaultStream, RustConnection};
 use x11rb::wrapper::ConnectionExt as _;
@@ -43,6 +43,10 @@ pub struct X {
     clipboard: Option<Vec<u8>>,
     /// Whether it names its text only `UTF8_STRING`, as old toolkits do.
     old_names: bool,
+    /// Whether it answers `_NET_WM_PING` when it reads one.
+    pub answers_pings: bool,
+    /// The pings it read.
+    pub pings: Vec<ClientMessageEvent>,
 }
 
 /// Connect to the keeper's display as its app would, with the cookie its keeper wrote, or with
@@ -99,6 +103,8 @@ impl X {
             root,
             clipboard: None,
             old_names: false,
+            answers_pings: true,
+            pings: Vec::new(),
         }
     }
 
@@ -164,6 +170,21 @@ impl X {
         window
     }
 
+    /// Answer the last ping read, as a program does: the message goes back to the root.
+    pub fn pong(&self) {
+        let mut message = *self.pings.last().expect("a ping was read");
+        message.window = self.root;
+        self.x11
+            .send_event(
+                false,
+                self.root,
+                EventMask::SUBSTRUCTURE_NOTIFY | EventMask::SUBSTRUCTURE_REDIRECT,
+                message,
+            )
+            .expect("pong");
+        self.x11.flush().expect("flush");
+    }
+
     /// Where `window` is in the X server's root.
     fn root_position(&self, window: Window) -> (i32, i32) {
         let at = self
@@ -182,8 +203,17 @@ impl X {
             self.x11.flush().expect("flush");
             self.rig.settle(&mut []);
             while let Some(event) = self.x11.poll_for_event().expect("event") {
-                if let Event::SelectionRequest(request) = &event {
-                    self.answer(request);
+                match &event {
+                    Event::SelectionRequest(request) => self.answer(request),
+                    Event::ClientMessage(message)
+                        if message.data.as_data32()[0] == self.atom("_NET_WM_PING") =>
+                    {
+                        self.pings.push(*message);
+                        if self.answers_pings {
+                            self.pong();
+                        }
+                    }
+                    _ => {}
                 }
             }
             if done(self) {
@@ -332,6 +362,79 @@ tilo_test_env::scenario! {
         let (_, _, w, _) = x.shown("Kept-X11");
         assert_eq!(w, 200, "and shows again on the next desktop");
         x.x11.get_input_focus().expect("ask").reply().expect("on the same connection");
+    }
+
+    phase its_icon_reaches_the_desktop_follows_changes_and_survives_a_restart;
+    {
+        use tilo_compositor::IconArtwork;
+
+        tilo_test_env::require_capability!(XServer, servers(), "the keeper's X server");
+        let mut x = X::start();
+        let set_icon = |x: &X, window: Window, argb: u32| {
+            // A 16×8 image, which the desktop gets centred on a 16×16 square.
+            let mut words = vec![16, 8];
+            words.extend(std::iter::repeat_n(argb, 16 * 8));
+            x.x11
+                .change_property32(PropMode::REPLACE, window, x.atom("_NET_WM_ICON"), AtomEnum::CARDINAL, &words)
+                .expect("icon");
+            x.x11.flush().expect("flush");
+        };
+        let first = x.window(Some("Iconic"), (0, 0), (200, 150), BLUE);
+        set_icon(&x, first, 0xffff_0000);
+        x.shown("Iconic");
+        let pixel_at = |x: &mut X, title: &str, row: usize| {
+            x.rig.desktop().windows().into_iter().find(|(info, _)| info.title.as_deref() == Some(title)).and_then(|(info, _)| {
+                let IconArtwork::Pixels(images) = info.icon?.artwork().clone() else {
+                    return None;
+                };
+                let image = images.first()?;
+                assert_eq!((image.width, image.height), (16, 16), "a square icon");
+                image.pixels.get(row * 16 * 4 + 32..row * 16 * 4 + 36).map(<[u8]>::to_vec)
+            })
+        };
+        x.pump(|x| pixel_at(x, "An X11 window", 4) == Some(vec![255, 0, 0, 255]));
+        assert_eq!(pixel_at(&mut x, "An X11 window", 0), Some(vec![0, 0, 0, 0]), "the square's top is transparent");
+
+        set_icon(&x, first, 0xff00_00ff);
+        x.pump(|x| pixel_at(x, "An X11 window", 4) == Some(vec![0, 0, 255, 255]));
+
+        x.rig.drop_desktop();
+        x.rig.settle(&mut []);
+        x.rig.attach_new(640, 480);
+        x.pump(|x| pixel_at(x, "An X11 window", 4) == Some(vec![0, 0, 255, 255]));
+        assert_eq!(x.rig.keeper.describe().fault, None);
+    }
+
+    phase a_hung_x11_program_looks_hung_until_it_answers;
+    {
+        use tilo_compositor::app_liveness::UNANSWERED;
+        use tilo_compositor::InputEvent;
+
+        tilo_test_env::require_capability!(XServer, servers(), "the keeper's X server");
+        let mut x = X::start();
+        let window = x.window(Some("Pinged"), (0, 0), (200, 150), BLUE);
+        let protocols = x.atom("WM_PROTOCOLS");
+        let ping = x.atom("_NET_WM_PING");
+        x.x11
+            .change_property32(PropMode::REPLACE, window, protocols, AtomEnum::ATOM, &[ping])
+            .expect("protocols");
+        x.shown("Pinged");
+        let id = x.rig.desktop().windows()[0].0.id;
+
+        // The program stops reading its events.
+        x.answers_pings = false;
+        x.rig.desktop().input(InputEvent::Key { keycode: 30, pressed: true }).expect("key");
+        x.pump(|x| !x.pings.is_empty());
+        x.rig.settle(&mut []);
+        let later = Instant::now() + UNANSWERED + Duration::from_millis(10);
+        x.rig.desktop().advance_app_liveness_at(later);
+        assert_eq!(x.rig.desktop().not_responding_windows(), [id], "the X11 program's silence reached the desktop");
+
+        x.pong();
+        x.pump(|x| {
+            x.rig.desktop().advance_app_liveness_at(Instant::now());
+            x.rig.desktop().not_responding_windows().is_empty()
+        });
     }
 
     phase a_menu_opens_where_the_program_put_it;

@@ -39,6 +39,31 @@ use x11rb::wrapper::ConnectionExt as _;
 use crate::MAX_SELECTION_BYTES;
 use crate::xdnd::{self, Action, Message, XdndAtoms};
 
+/// Connect to the X11 display `:display`: with the display's `cookie` (`MIT-MAGIC-COOKIE-1`)
+/// when given, otherwise as `XAUTHORITY` says. Gives the connection and its screen.
+pub(crate) fn connect(
+    display: u32,
+    cookie: Option<&[u8]>,
+) -> Result<(RustConnection, usize), String> {
+    match cookie {
+        None => x11rb::connect(Some(&format!(":{display}"))).map_err(|error| error.to_string()),
+        Some(cookie) => {
+            let socket = format!("/tmp/.X11-unix/X{display}");
+            let (stream, _) = std::os::unix::net::UnixStream::connect(socket)
+                .and_then(DefaultStream::from_unix_stream)
+                .map_err(|error| ConnectError::from(error).to_string())?;
+            let conn = RustConnection::connect_to_stream_with_auth_info(
+                stream,
+                0,
+                b"MIT-MAGIC-COOKIE-1".to_vec(),
+                cookie.to_vec(),
+            )
+            .map_err(|error| error.to_string())?;
+            Ok((conn, 0))
+        }
+    }
+}
+
 x11rb::atom_manager! {
     /// The atoms the bridge uses, interned once.
     Atoms: AtomsCookie {
@@ -159,25 +184,7 @@ impl XdndBridge {
     ///
     /// The display refused or failed the connection, or the windows could not be made.
     pub fn connect(display: u32, cookie: Option<&[u8]>) -> Result<Self, String> {
-        let (conn, screen) = match cookie {
-            None => {
-                x11rb::connect(Some(&format!(":{display}"))).map_err(|error| error.to_string())?
-            }
-            Some(cookie) => {
-                let socket = format!("/tmp/.X11-unix/X{display}");
-                let (stream, _) = std::os::unix::net::UnixStream::connect(socket)
-                    .and_then(DefaultStream::from_unix_stream)
-                    .map_err(|error| ConnectError::from(error).to_string())?;
-                let conn = RustConnection::connect_to_stream_with_auth_info(
-                    stream,
-                    0,
-                    b"MIT-MAGIC-COOKIE-1".to_vec(),
-                    cookie.to_vec(),
-                )
-                .map_err(|error| error.to_string())?;
-                (conn, 0)
-            }
-        };
+        let (conn, screen) = connect(display, cookie)?;
         Self::new(conn, screen).map_err(|error| error.to_string())
     }
 

@@ -631,7 +631,7 @@ impl State {
 impl Dispatch<cx::xdg_wm_base::XdgWmBase, ()> for State {
     fn event(
         state: &mut Self,
-        wm_base: &cx::xdg_wm_base::XdgWmBase,
+        _: &cx::xdg_wm_base::XdgWmBase,
         event: cx::xdg_wm_base::Event,
         (): &(),
         _: &Connection,
@@ -639,7 +639,7 @@ impl Dispatch<cx::xdg_wm_base::XdgWmBase, ()> for State {
     ) {
         // Answered for the app, never by the keeper alone: an app that hangs must look hung.
         if let cx::xdg_wm_base::Event::Ping { serial } = event {
-            state.desktop_ping(wm_base, serial);
+            state.desktop_ping(serial);
         }
     }
 }

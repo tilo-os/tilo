@@ -23,6 +23,9 @@
 //!   offer's, its requests for data are read from the desktop offer.
 //!
 //! A desktop that goes away cancels both.
+//!
+//! The same thread follows the X11 server's windows on a second connection
+//! ([`tilo_x11_transfer::windows`]): their icons and pings, see [`crate::x11_windows`].
 
 use std::io::Read as _;
 use std::os::fd::{AsFd as _, OwnedFd};
@@ -34,6 +37,7 @@ use smithay::reexports::wayland_server::Resource as _;
 use smithay::reexports::wayland_server::backend::{ClientId, ObjectId};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use tilo_x11_transfer::bridge::{BridgeEvent, Request, XdndBridge};
+use tilo_x11_transfer::windows::{WindowEvent, WindowWatch};
 use tilo_x11_transfer::xdnd::{self, Action};
 use tilo_x11_transfer::{MAX_SELECTION_BYTES, pick_format};
 use wayland_client::protocol as c;
@@ -62,6 +66,8 @@ pub(crate) enum Command {
         request: Request,
         data: Option<Vec<u8>>,
     },
+    /// Ask the X11 programs whether they are alive.
+    Ping(u32),
 }
 
 /// What the bridge tells the keeper.
@@ -73,6 +79,8 @@ pub(crate) enum Heard {
     DropRefused,
     /// The bridge's connection ended.
     Gone,
+    /// What the X11 server's windows did.
+    Window(WindowEvent),
 }
 
 /// The keeper's end of the bridge's thread.
@@ -102,7 +110,7 @@ pub(crate) fn start(
     )?;
     let (commands, received) = mpsc::channel();
     std::thread::Builder::new()
-        .name("x11-drag-and-drop".to_owned())
+        .name("x11-windows".to_owned())
         .spawn(move || serve(display, &cookie, &received, &wake_read, &heard))?;
     Ok(Bridge {
         commands,
@@ -130,12 +138,16 @@ fn serve(
         let _ = heard.send(Heard::Gone);
         return;
     };
+    let mut windows = WindowWatch::connect(display, Some(cookie))
+        .inspect_err(|error| tracing::warn!(%error, "no icons or pings for the X11 programs"))
+        .ok();
+    let windows_connection = windows.as_ref().and_then(|windows| windows.fd().ok());
     let mut dragging = false;
     loop {
         loop {
             match commands.try_recv() {
                 Ok(command) => {
-                    if let Some(answer) = carry(&mut bridge, command) {
+                    if let Some(answer) = carry(&mut bridge, windows.as_mut(), command) {
                         let _ = heard.send(answer);
                     }
                 }
@@ -143,9 +155,14 @@ fn serve(
                 Err(mpsc::TryRecvError::Disconnected) => return,
             }
         }
-        // Waiting for replies may have queued events the descriptor no longer shows.
-        for event in bridge.events() {
-            if heard.send(Heard::Bridge(event)).is_err() {
+        // Waiting for replies may have queued events the descriptors no longer show.
+        let events = bridge.events().into_iter().map(Heard::Bridge);
+        let window_events = windows
+            .as_mut()
+            .map(WindowWatch::events)
+            .unwrap_or_default();
+        for event in events.chain(window_events.into_iter().map(Heard::Window)) {
+            if heard.send(event).is_err() {
                 return;
             }
         }
@@ -153,27 +170,49 @@ fn serve(
             dragging = bridge.x11_may_drag();
             let _ = heard.send(Heard::Dragging(dragging));
         }
-        let mut fds = [
+        let mut fds = vec![
             rustix::event::PollFd::new(&connection, rustix::event::PollFlags::IN),
             rustix::event::PollFd::new(wake, rustix::event::PollFlags::IN),
         ];
+        if let Some(windows_connection) = windows_connection.as_ref().filter(|_| windows.is_some())
+        {
+            fds.push(rustix::event::PollFd::new(
+                windows_connection,
+                rustix::event::PollFlags::IN,
+            ));
+        }
         if rustix::event::poll(&mut fds, None).is_err() {
             continue;
         }
-        let ended = fds[0]
-            .revents()
-            .intersects(rustix::event::PollFlags::HUP | rustix::event::PollFlags::ERR);
-        if ended {
+        let ended = |fd: &rustix::event::PollFd<'_>| {
+            fd.revents()
+                .intersects(rustix::event::PollFlags::HUP | rustix::event::PollFlags::ERR)
+        };
+        if fds.first().is_some_and(ended) {
             let _ = heard.send(Heard::Gone);
             return;
+        }
+        if fds.get(2).is_some_and(ended) {
+            windows = None;
+            let _ = heard.send(Heard::Window(WindowEvent::Answered { stamp: 0 }));
         }
         let mut drained = [0_u8; 64];
         while matches!(rustix::io::read(wake, &mut drained), Ok(1..)) {}
     }
 }
 
-fn carry(bridge: &mut XdndBridge, command: Command) -> Option<Heard> {
+fn carry(
+    bridge: &mut XdndBridge,
+    windows: Option<&mut WindowWatch>,
+    command: Command,
+) -> Option<Heard> {
     match command {
+        Command::Ping(stamp) => {
+            // Nobody to ask is an answer at once.
+            if !windows.is_some_and(|windows| windows.ping(stamp)) {
+                return Some(Heard::Window(WindowEvent::Answered { stamp }));
+            }
+        }
         Command::ShowProxy(shown) => bridge.show_proxy(shown),
         Command::Status { accept, action } => bridge.status(accept, action),
         Command::Finish { success, action } => bridge.finish(success, action),
@@ -284,6 +323,20 @@ impl Xdnd {
         }
     }
 
+    /// Ask the X11 programs whether they are alive; `true` while their answer is awaited.
+    pub(crate) fn ping_x11(&self, stamp: u32) -> bool {
+        if self.bridge.is_none() {
+            return false;
+        }
+        self.send(Command::Ping(stamp));
+        true
+    }
+
+    /// The X11 server's connection to the keeper.
+    pub(crate) const fn server(&self) -> Option<&ClientId> {
+        self.server.as_ref()
+    }
+
     pub(crate) fn is_server(&self, surface: &WlSurface) -> bool {
         self.server.is_some() && surface.client().map(|client| client.id()) == self.server
     }
@@ -377,6 +430,7 @@ impl State {
                 self.x11_drag_reaches_out();
             }
             Heard::Gone => {
+                self.x11_windows_gone();
                 self.end_out(false);
                 self.end_in();
                 self.xdnd.bridge = None;
@@ -385,6 +439,7 @@ impl State {
             }
             Heard::DropRefused => self.end_in(),
             Heard::Bridge(event) => self.bridge_event(event),
+            Heard::Window(event) => self.x11_window_event(event),
         }
     }
 

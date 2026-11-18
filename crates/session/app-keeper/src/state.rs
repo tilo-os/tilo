@@ -109,6 +109,8 @@ pub struct State {
     pub(crate) seat: SeatMirror,
     pub(crate) data_device: DataDevice,
     pub(crate) xdnd: crate::xdnd::Xdnd,
+    /// The X11 server's windows, and which of its toplevels shows each.
+    pub(crate) x11_windows: Vec<crate::x11_windows::X11Window>,
     pub(crate) primary: PrimarySelection,
     pub(crate) text_input: TextInput,
     pub(crate) pointer_constraints: PointerConstraints,
@@ -178,6 +180,7 @@ impl State {
             seat,
             data_device: DataDevice::new(dh),
             xdnd: crate::xdnd::Xdnd::default(),
+            x11_windows: Vec::new(),
             primary: PrimarySelection::new(dh),
             text_input: TextInput::new(dh),
             pointer_constraints: PointerConstraints::new(dh),

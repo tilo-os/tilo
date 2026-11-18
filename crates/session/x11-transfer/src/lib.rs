@@ -12,6 +12,7 @@
 //! speaks it for whoever carries a drag between an X11 display and Wayland.
 
 pub mod bridge;
+pub mod windows;
 pub mod xdnd;
 
 /// Cap on the bytes one transfer carries.

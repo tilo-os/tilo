@@ -73,6 +73,8 @@ pub(crate) struct Kept {
     pub modal: bool,
     /// The icon the app set on this toplevel, as its last commit left it.
     pub icon: Option<std::sync::Arc<smithay::wayland::xdg_toplevel_icon::ToplevelIconData>>,
+    /// The icon of the X11 window this toplevel of the X11 server shows.
+    pub x11_icon: Option<std::sync::Arc<Vec<tilo_x11_transfer::windows::IconImage>>>,
     pub role: Role,
     pub up: Option<UpSurface>,
 }
@@ -99,6 +101,7 @@ impl Kept {
             shortcuts_inhibitor: None,
             modal: false,
             icon: None,
+            x11_icon: None,
             role: Role::None,
             up: None,
         }
@@ -945,6 +948,11 @@ impl State {
         }
         // A window's own requests (title, parent, size limits) go before its commit.
         self.push_toplevel_meta(id);
+        if self.surfaces.get(id).is_some_and(|kept| {
+            matches!(kept.role, Role::Toplevel(_)) && self.xdnd.is_server(&kept.surface)
+        }) {
+            self.match_x11_windows(false);
+        }
         self.push_icon(id);
         self.push_attributes(id);
         self.push_content(id);
