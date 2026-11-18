@@ -297,6 +297,9 @@ public struct PhoneRoot: View {
             SelectTextSheet(words: $0).presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
         }
         .environment(\.coversSecrets, !inFront)
+        // An iPhone's Settings show the version alone, so the app says its build itself: at
+        // its way in and in its list, in the words of the Mac's About window.
+        .environment(\.buildSaid, AssistantBuild.said(info: Bundle.main.infoDictionary))
         // Every word the system has for leaving the front covers, whichever comes first; only being
         // in front again uncovers.
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in inFront = false }

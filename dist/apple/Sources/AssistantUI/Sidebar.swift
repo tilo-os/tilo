@@ -135,6 +135,8 @@ public struct Sidebar: View {
                 .accessibilityLabel("\(person.name), \(person.workspace)")
                 .padding(EdgeInsets(top: 10, leading: 8, bottom: 4, trailing: 8))
                 .overlay(alignment: .top) { Rectangle().fill(Token.line).frame(height: 1) }
+                // On a phone the app says which build it is, under its person: its Settings show the version alone.
+                BuildLine(inList: true)
             }
         }
         .padding(10)

@@ -83,6 +83,8 @@ public struct WayIn: View {
                 Text(help.said).font(.small125).foregroundStyle(Token.ink3)
                     .multilineTextAlignment(.center).frame(maxWidth: 420)
             }
+            // On a phone the app says which build it is: its Settings show the version alone.
+            BuildLine()
             }
             .padding(32)
             .frame(maxWidth: .infinity, minHeight: space.size.height)

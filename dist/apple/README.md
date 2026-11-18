@@ -748,9 +748,12 @@ is the number of commits the commit that is built stands on, so every later head
 reads a higher one: the Mac's About window shows the two as `Version 0.1.13 (49852)`. The
 commit's own name is in every bundle's `Info.plist` as `TiloCommit`, with `+changes` behind it
 when the tree that was built differs from that commit, and Tilo Assistant's `--check` says all
-three in its first line. An iPhone's Settings show the version alone. A tree that is no git
-checkout, or one that holds only part of its history, builds nothing and says why: it could
-not say which build it is.
+three in its first line. An iPhone's Settings show the version alone, so on a phone the app
+says the line of the Mac's About window itself, from the same two entries of its bundle
+(`AssistantBuild.said`): at the foot of its way in and under its person at the foot of its
+list, wherever its root hands the line down (`BuildLine`, `BuildLineTests`). A Mac's window is
+handed none. A tree that is no git checkout, or one that holds only part of its history,
+builds nothing and says why: it could not say which build it is.
 
 Each app has one drawing for its icon, so the two are told apart at a glance: Tilo Shell's is
 `Bundle/AppIcon.svg`, Tilo's mark on its light ground; Tilo Assistant's is

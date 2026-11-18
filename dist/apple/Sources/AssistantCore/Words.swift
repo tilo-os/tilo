@@ -107,6 +107,8 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     // What a push says in the open while the app is closed. The person's Tilo names it by this
     // key, and the system reads it from the bundle, so it takes no value.
     case toldWaits = "TOLD_WAITS"
+    // Which build the app is, where the app says so itself.
+    case versionAndBuild = "version-and-build", versionAlone = "version-alone"
 
     public var english: String {
         switch self {
@@ -378,6 +380,8 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .allow: "Allow"
         case .deny: "Deny"
         case .toldWaits: "Something from your assistant waits for you"
+        case .versionAndBuild: "Version {version} ({build})"
+        case .versionAlone: "Version {version}"
         case .sinceLeft: "Since you left"
         case .sinceWaits: "Waits for you"
         case .sinceDidAlone: "Done without asking"

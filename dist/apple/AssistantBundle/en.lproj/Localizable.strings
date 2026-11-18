@@ -274,3 +274,5 @@
 "since-came-in" = "Came in";
 "since-more" = "{count} more";
 "TOLD_WAITS" = "Something from your assistant waits for you";
+"version-and-build" = "Version {version} ({build})";
+"version-alone" = "Version {version}";
