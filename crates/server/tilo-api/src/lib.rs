@@ -246,6 +246,14 @@ impl Server {
         Self::serving(&config, Store::in_memory(), Some(here))
     }
 
+    /// Have the receiver at `at` on this machine stand in for one on the public internet
+    /// where this server posts a webhook ([`v1::webhooks::Posting::stand_in`]): for a test,
+    /// which starts its receiver itself.
+    #[cfg(feature = "test-support")]
+    pub fn webhooks_stand_in(&self, at: std::net::SocketAddr) {
+        self.posting.stand_in(at);
+    }
+
     fn serving(
         config: &Config,
         store: Store,

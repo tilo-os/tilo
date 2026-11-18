@@ -138,6 +138,9 @@ pub struct Posting {
     public: tilo_net::Client,
     /// Inside a desktop: plain `http` to that computer's own loopback.
     here: Option<tilo_net::Client>,
+    /// The receivers on this machine a test has stand in for the public internet.
+    #[cfg(feature = "test-support")]
+    stand_ins: Arc<Mutex<Vec<std::net::SocketAddr>>>,
 }
 
 impl Posting {
@@ -162,6 +165,8 @@ impl Posting {
             here: desktop
                 .then(|| client().lookup(this_computer()).build())
                 .transpose()?,
+            #[cfg(feature = "test-support")]
+            stand_ins: Arc::default(),
         })
     }
 
@@ -169,6 +174,10 @@ impl Posting {
     /// ([`refusal`]).
     #[must_use]
     pub fn refusal(&self, url: &str) -> Option<&'static str> {
+        #[cfg(feature = "test-support")]
+        if self.stands_in(url) {
+            return None;
+        }
         refusal(url, self.here.is_some())
     }
 
@@ -182,6 +191,29 @@ impl Posting {
             Some(here) if plain => here,
             _ => &self.public,
         })
+    }
+}
+
+#[cfg(feature = "test-support")]
+impl Posting {
+    /// Have the receiver at `at` on this machine stand in for one on the public internet: a
+    /// webhook to exactly that address and port, over plain `http`, is kept and posted. Every
+    /// other URL is judged as on a real API, and no redirect is followed from a stand-in
+    /// either. For a test, which starts its receiver itself.
+    pub fn stand_in(&self, at: std::net::SocketAddr) {
+        crate::lock(&self.stand_ins).push(at);
+    }
+
+    /// Whether `url` names a receiver a test has stand in: that receiver's own address with
+    /// its port, as written.
+    fn stands_in(&self, url: &str) -> bool {
+        let Ok(url) = url::Url::parse(url) else {
+            return false;
+        };
+        let origin = url.origin().ascii_serialization();
+        crate::lock(&self.stand_ins)
+            .iter()
+            .any(|stand_in| origin == format!("http://{stand_in}"))
     }
 }
 

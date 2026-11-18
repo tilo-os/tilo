@@ -59,6 +59,200 @@ impl V1<'_> {
     }
 }
 
+/// A webhook's receiver: a server on this machine that takes every delivery, and what it
+/// was posted.
+struct HookReceiver {
+    served: test_http::Responder,
+    posted: Arc<(
+        std::sync::Mutex<Vec<test_http::Request>>,
+        tokio::sync::Notify,
+    )>,
+}
+
+impl HookReceiver {
+    fn start() -> Self {
+        let posted = Arc::new((
+            std::sync::Mutex::new(Vec::new()),
+            tokio::sync::Notify::new(),
+        ));
+        let took = Arc::clone(&posted);
+        let served = test_http::Responder::handle(move |request| {
+            took.0.lock().unwrap().push(request.clone());
+            took.1.notify_one();
+            Some(test_http::Reply::status(200))
+        });
+        Self { served, posted }
+    }
+
+    /// Where it listens on this machine.
+    fn at(&self) -> std::net::SocketAddr {
+        std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, self.served.port()))
+    }
+
+    /// The URL a webhook to it names.
+    fn url(&self) -> String {
+        format!("{}/hook", self.served.url())
+    }
+
+    /// The next delivery posted to it.
+    async fn next(&self) -> test_http::Request {
+        let next = async {
+            loop {
+                let first = {
+                    let mut posted = self.posted.0.lock().unwrap();
+                    (!posted.is_empty()).then(|| posted.remove(0))
+                };
+                if let Some(first) = first {
+                    return first;
+                }
+                self.posted.1.notified().await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(30), next)
+            .await
+            .expect("the webhook's receiver is posted an event within 30 s")
+    }
+}
+
+/// `posted` is one delivery of the webhook `hook`, as its maker was answered it: a POST that
+/// names the webhook and its delivery, signed with the webhook's secret, whose body is the
+/// event of an invocation.
+fn is_a_signed_delivery_of(posted: &test_http::Request, hook: &Value) {
+    assert_eq!(
+        (posted.method.as_str(), posted.target.as_str()),
+        ("POST", "/hook")
+    );
+    assert_eq!(posted.header("tilo-webhook-id"), hook["id"].as_str());
+    assert!(
+        posted
+            .header("tilo-delivery")
+            .is_some_and(|delivery| !delivery.is_empty()),
+        "a delivery is named"
+    );
+    let said = posted
+        .header("tilo-signature")
+        .expect("a delivery is signed");
+    let time: u64 = said
+        .strip_prefix("t=")
+        .and_then(|rest| rest.split(',').next())
+        .and_then(|time| time.parse().ok())
+        .expect("a signature says its time");
+    let secret = hook["secret"]
+        .as_str()
+        .expect("a webhook says its secret when it is made");
+    assert!(
+        said == tilo_api::v1::webhooks::signature(secret, time, &posted.body),
+        "a delivery is signed with its webhook's secret"
+    );
+    let event: Value =
+        serde_json::from_slice(&posted.body).expect("a delivery's body is its event");
+    assert_eq!(event["type"], json!("invocation"), "{event}");
+}
+
+/// A hosted API posts a workspace's event to a webhook, signed. The receiver is a server this
+/// test starts on this machine and hands the API to stand in for the public internet, which a
+/// test build alone can do. The one beside it was handed to nobody: it is refused as every
+/// address of the API's own machine is, and nothing connects to it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hosted_apis_webhook_reaches_its_receiver_signed() {
+    // A story of its own, on the heap as the long one's is: the long one's frame takes no
+    // more.
+    Box::pin(a_webhook_of_a_hosted_api_is_delivered()).await;
+}
+
+async fn a_webhook_of_a_hosted_api_is_delivered() {
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    let backend = V1 {
+        api: &api,
+        token: approved_key(&on_server, &ada, &page, "Visa backend").await,
+    };
+    let (status, made) = backend
+        .post(
+            "/v1/workspaces",
+            &json!({"name": "Applicant: Jane Doe"}),
+            &[],
+        )
+        .await;
+    assert_eq!(status, 201, "{made}");
+    let base = format!("/v1/workspaces/{}", made["id"].as_str().unwrap());
+
+    let receiver = HookReceiver::start();
+    let beside = test_http::Responder::silent();
+    api.webhooks_stand_in(receiver.at());
+    let (status, refused) = backend
+        .post(
+            &format!("{base}/webhooks"),
+            &json!({"url": format!("{}/hook", beside.url()), "events": ["invocation"]}),
+            &[],
+        )
+        .await;
+    assert_eq!(
+        (status, &refused["error"]["code"]),
+        (400, &json!("invalid_arguments")),
+        "a hosted API kept a webhook to a receiver nobody handed it: {refused}"
+    );
+    let (status, hook) = backend
+        .post(
+            &format!("{base}/webhooks"),
+            &json!({"url": receiver.url(), "events": ["invocation"]}),
+            &[],
+        )
+        .await;
+    assert_eq!(status, 201, "the webhook to the receiver is kept");
+
+    // An app is opened and takes a file, as the long story begins.
+    let named = [
+        ("tilo-invocation", "fill-jane"),
+        ("tilo-invocation-title", "Fill Jane's application"),
+    ];
+    let (status, opened) = backend
+        .post(
+            &format!("{base}/resources/pdf-viewer/actions/open"),
+            &json!({}),
+            &named,
+        )
+        .await;
+    assert_eq!(status, 200, "{opened}");
+    let uploaded = backend
+        .send(
+            hyper::Method::POST,
+            &format!("{base}/uploads"),
+            &application_pdf(),
+            &[("content-type", "application/pdf")],
+        )
+        .await;
+    let (status, put) = json_of(uploaded).await;
+    assert_eq!(status, 201, "{put}");
+    let (status, imported) = backend
+        .post(
+            &format!("{base}/resources/pdf-viewer/actions/import-pdf-content"),
+            &json!({"content": put["content"], "name": "application.pdf"}),
+            &named,
+        )
+        .await;
+    assert_eq!(
+        (status, &imported["status"]),
+        (200, &json!("ok")),
+        "{imported}"
+    );
+
+    // An event of it reached the webhook: posted to the receiver, naming its webhook and its
+    // delivery, signed with the secret its maker was answered once. The receiver beside it
+    // was sent nothing, and the webhook is listed as one that is delivered.
+    let posted = receiver.next().await;
+    is_a_signed_delivery_of(&posted, &hook);
+    beside.assert_untouched();
+    let (status, kept) = backend.get(&format!("{base}/webhooks")).await;
+    assert_eq!(status, 200, "{kept}");
+    let rows = kept["webhooks"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{kept}");
+    assert_eq!(rows[0]["url"], json!(receiver.url()), "{kept}");
+    assert!(rows[0].get("undelivered").is_none(), "{kept}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_key_works_through_the_api_on_a_server_host() {
     // The story builds a server, its API and a workspace's sessions; its future goes on the
