@@ -369,13 +369,13 @@ RUN --network=host --mount=type=bind,from=external-assets,source=/,target=/tilo-
 # ---- xwayland-satellite -----------------------------------------------------
 # The X11 bridge, built from pinned upstream source with the patch in
 # os/external-assets/xwayland-satellite/ that keeps a paste in flight while the
-# clipboard manager takes over an X11 selection. Fedora's 0.8.2 package drops
-# it. CI builders install the same build through the same script. Built in the
+# clipboard manager takes over an X11 selection, at an upstream commit that no
+# release reaches yet: Fedora's 0.8.2 package lacks both. CI builders install the same build through the same script. Built in the
 # pinned builder image like bootc, from that image's own Fedora repositories for
 # the build headers; only the binary ships, and the rootfs checks it resolves
-# against the base's libraries. Once a satellite
-# release contains https://github.com/Supreeeme/xwayland-satellite/pull/527,
-# install the snapshot's package instead.
+# against the base's libraries. Once a satellite release contains that commit
+# and https://github.com/Supreeeme/xwayland-satellite/pull/527, install the
+# snapshot's package instead.
 FROM ${BOOTC_BUILD_IMAGE} AS xwayland-satellite-builder
 ARG XWAYLAND_SATELLITE_BUILD_PACKAGES="xcb-util-cursor-devel"
 COPY os/external-assets/xwayland-satellite/0001-drain-pending-conversions-before-takeover.patch /patches/
