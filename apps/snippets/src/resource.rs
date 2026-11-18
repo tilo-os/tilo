@@ -278,7 +278,7 @@ impl ResourceApp for SnippetsShell {
 #[cfg(test)]
 mod tests;
 
-ui::reach_tests!(SnippetsShell);
+ui::reach_tests!(SnippetsShell, shares: [share_0, share_1]);
 
 #[cfg(test)]
 mod agent_disclosure_tests {

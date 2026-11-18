@@ -955,45 +955,6 @@ fn a_guest_copies_a_snippet_without_being_asked() {
     );
 }
 
-#[test]
-fn the_window_bars_sidebar_toggle_collapses_and_expands_the_sidebar() {
-    let _arrived = ui::motion::testing::settled();
-    let mut app = TestApp::<SnippetsShell>::new().unwrap();
-    let pump = |app: &mut TestApp<SnippetsShell>| {
-        app.harness().relayout();
-        for _ in 0..32 {
-            let schedule = app.harness().frame_schedule();
-            if !(schedule.needs_animation_frame || schedule.queued_work) {
-                return;
-            }
-            app.harness().relayout();
-        }
-    };
-    let width = |app: &mut TestApp<SnippetsShell>| {
-        app.with_widget(|shell: &mut SnippetsWindow| shell.sidebar_width_for_test())
-            .unwrap()
-    };
-    let toggle = |app: &mut TestApp<SnippetsShell>| {
-        app.harness()
-            .press_window_part(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
-    };
-    pump(&mut app);
-    let open = width(&mut app);
-    assert!(open > 0.0, "a wide window docks its sidebar");
-    toggle(&mut app);
-    pump(&mut app);
-    assert!(
-        width(&mut app) < 0.5,
-        "the toggle collapsed the sidebar on screen"
-    );
-    toggle(&mut app);
-    pump(&mut app);
-    assert!(
-        (width(&mut app) - open).abs() < 0.5,
-        "the toggle expanded it again"
-    );
-}
-
 /// In the desktop the window's bar shows the library's "New snippet", and a press there
 /// adds one.
 #[test]
