@@ -157,6 +157,15 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if !picks {
             return Ok(());
         }
+        // A secret is taken by the address of an item of its person's vault
+        // (`vault.item:<id>`). No listing shows that item and no path of the workspace
+        // leads to it, so there is nothing to look it up in: it passes as written, and the
+        // action that takes it holds it to its person and to the place the item belongs to.
+        // The action's own declaration of the parameter decides that, never what a caller
+        // wrote there.
+        if tilo_actions::remote::person_vault::takes_item(param) {
+            return Ok(());
+        }
         let value = match arguments.get(param.name.as_ref()) {
             Some(value) if !value.is_null() => value.clone(),
             _ => return Ok(()),
