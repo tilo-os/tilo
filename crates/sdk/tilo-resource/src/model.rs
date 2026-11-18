@@ -1948,6 +1948,7 @@ macro_rules! json_scalar {
         impl Settable for $ty {}
         impl Model for $ty {
             const SCALAR: bool = true;
+            crate::__own_table!($ty);
             fn value_schema() -> serde_json::Value {
                 serde_json::json!({})
             }
@@ -2006,6 +2007,7 @@ json_scalar!(tilo_action_policy::Grantee, Text);
 impl Settable for tilo_app_id::AppId {}
 impl Model for tilo_app_id::AppId {
     const SCALAR: bool = true;
+    crate::__own_table!(tilo_app_id::AppId);
     fn value_schema() -> serde_json::Value {
         serde_json::json!({"type": "string"})
     }

@@ -246,6 +246,7 @@ impl Operations for RichText {
 
 impl Model for RichText {
     tilo_resource::leaf_paths!();
+    tilo_resource::__own_table!(RichText);
     tilo_resource::operations_model!();
 
     fn field_type(_: &mut tilo_resource::TypeSet) -> tilo_resource::FieldType {

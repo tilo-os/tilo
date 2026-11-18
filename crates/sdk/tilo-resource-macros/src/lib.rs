@@ -616,6 +616,25 @@ fn container_options(attrs: &[Attribute]) -> syn::Result<ContainerOptions> {
     Ok(options)
 }
 
+/// `const TABLE` of a model type: for a type without generic parameters, a
+/// `static` in the crate defining it, so that a crate using the type links
+/// that one table and the functions it names rather than building its own.
+fn table_const(input: &DeriveInput, table: &Tokens, value: impl Fn(Tokens) -> Tokens) -> Tokens {
+    if input.generics.params.is_empty() {
+        let name = &input.ident;
+        let value = value(quote!(#name));
+        quote! {
+            const TABLE: &'static #table::ModelTable = {
+                static TABLE: #table::ModelTable = #value;
+                &TABLE
+            };
+        }
+    } else {
+        let value = value(quote!(Self));
+        quote!(const TABLE: &'static #table::ModelTable = &#value;)
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one expansion per data shape, each read top to bottom"
@@ -633,6 +652,9 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                     .first()
                     .map(|field| &field.ty)
                     .ok_or_else(|| syn::Error::new(fields.span(), "expected one field"))?;
+                let table = quote!(#krate::table);
+                let newtype_table =
+                    table_const(input, &table, |ty| quote!(#table::TableOf::<#ty>::TABLE));
                 Ok(quote! {
                     impl #impl_generics #krate::Model for #name #type_generics #where_clause {
                         const SHAPE: #krate::Shape = <#ty as #krate::Model>::SHAPE;
@@ -640,6 +662,7 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                         const SCALAR: bool = <#ty as #krate::Model>::SCALAR;
                         const NULLABLE: bool = <#ty as #krate::Model>::NULLABLE;
                         const OPS: bool = <#ty as #krate::Model>::OPS;
+                        #newtype_table
                         type Paths<__R> = #krate::Path<__R, Self>;
 
                         fn paths_at<__R>(path: #krate::Path<__R, Self>) -> #krate::Path<__R, Self> {
@@ -769,6 +792,11 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                     quote!(::core::option::Option::Some(#position))
                 },
             );
+            let unit_table = table_const(
+                input,
+                &table,
+                |ty| quote!(#table::ModelTable::of_unit(&#ty::__UNIT)),
+            );
             Ok(quote! {
                 impl #impl_generics #name #type_generics #where_clause {
                     /// The enum as data: its variants' stored names, and the
@@ -815,7 +843,7 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 impl #impl_generics #krate::Settable for #name #type_generics #where_clause {}
 
                 impl #impl_generics #krate::Model for #name #type_generics #where_clause {
-                    const TABLE: &'static #table::ModelTable = &#table::ModelTable::of_unit(&Self::__UNIT);
+                    #unit_table
                     type Paths<__R> = #krate::Path<__R, Self>;
 
                     fn paths_at<__R>(path: #krate::Path<__R, Self>) -> #krate::Path<__R, Self> {
@@ -1341,6 +1369,11 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
     };
     let paths_doc = format!("The typed paths into a [`{name}`], one per field.");
     let paths_fn_doc = format!("The typed paths into a [`{name}`], rooted at it.");
+    let fields_table = table_const(
+        input,
+        &table,
+        |ty| quote!(#table::ModelTable::of_resource(&#ty::__RECORD)),
+    );
     Ok(quote! {
         impl #impl_generics #name #type_generics #where_clause {
             /// The record as data: its fields' table and how to reach them.
@@ -1427,7 +1460,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             const SHAPE: #krate::Shape = #krate::Shape::Record(&[#(#shapes),*]);
             const CHECKS: bool = #(#checks_const)||*;
             const OPS: bool = #(#ops_const)||*;
-            const TABLE: &'static #table::ModelTable = &#table::ModelTable::of_resource(&Self::__RECORD);
+            #fields_table
             type Paths<__R> = #paths_name<__R, #(#generic_args),*>;
 
             fn paths_at<__R>(path: #krate::Path<__R, Self>) -> Self::Paths<__R> {

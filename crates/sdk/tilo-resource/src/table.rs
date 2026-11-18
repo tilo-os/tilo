@@ -380,7 +380,8 @@ pub fn unwrap_of<T: 'static>(filled: &dyn Any) -> Option<&dyn Any> {
     }
 }
 
-/// Move the `T` out of `filled`, an `Option` of it, over `target`.
+/// Swap the `T` in `filled`, an `Option` of it, with `target`: `filled`
+/// then holds what `target` held, dropped with it.
 ///
 /// # Errors
 /// When either is of another type, or `filled` is empty.
@@ -388,12 +389,16 @@ pub fn replace_of<T: 'static>(
     target: &mut dyn Any,
     filled: &mut dyn Any,
 ) -> Result<(), ModelError> {
-    let value = filled
-        .downcast_mut::<Option<T>>()
-        .and_then(Option::take)
-        .ok_or_else(mismatch)?;
-    *target.downcast_mut::<T>().ok_or_else(mismatch)? = value;
-    Ok(())
+    match (
+        target.downcast_mut::<T>(),
+        filled.downcast_mut::<Option<T>>(),
+    ) {
+        (Some(target), Some(Some(value))) => {
+            std::mem::swap(target, value);
+            Ok(())
+        }
+        _ => Err(mismatch()),
+    }
 }
 
 /// A value handed to a table of another type: a bug in the caller.

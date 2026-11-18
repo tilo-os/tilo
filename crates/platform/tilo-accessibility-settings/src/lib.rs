@@ -123,6 +123,7 @@ impl tilo_resource::Settable for CursorTheme {}
 #[cfg(feature = "model")]
 impl tilo_resource::Model for CursorTheme {
     tilo_resource::leaf_paths!();
+    tilo_resource::__own_table!(CursorTheme);
 
     fn value_schema() -> ::serde_json::Value {
         ::serde_json::json!({"type": "string"})

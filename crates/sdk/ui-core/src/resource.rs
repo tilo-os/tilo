@@ -2662,6 +2662,24 @@ impl ResourceStore {
         id: &DocumentId,
         read: impl FnOnce(&AutoCommit) -> R,
     ) -> Result<R, ResourceOpenError> {
+        let mut read = Some(read);
+        let mut out = None;
+        self.read_checked_with(id, &mut |document| {
+            if let Some(read) = read.take() {
+                out = Some(read(document));
+            }
+        })?;
+        out.ok_or(ResourceOpenError::MissingResource)
+    }
+
+    /// [`Self::read_checked`] with the reading erased: one body for every
+    /// reader.
+    #[inline(never)]
+    fn read_checked_with(
+        &self,
+        id: &DocumentId,
+        read: &mut dyn FnMut(&AutoCommit),
+    ) -> Result<(), ResourceOpenError> {
         let set = self.0.try_borrow().map_err(|_| ResourceOpenError::Busy)?;
         set.not_lent(id)?;
         let document = set
@@ -2671,7 +2689,8 @@ impl ResourceStore {
             .ok_or(ResourceOpenError::MissingResource)?;
         // A component's pass that reads it reads it again once it moved.
         crate::component_inputs::read_resource(self, id, document);
-        Ok(read(document))
+        read(document);
+        Ok(())
     }
 
     /// What tells this store from another holding the same records.

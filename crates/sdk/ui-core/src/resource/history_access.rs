@@ -41,6 +41,24 @@ impl ResourceStore {
         id: &DocumentId,
         f: impl FnOnce(&mut AutoCommit, &mut crate::state::UndoLog) -> R,
     ) -> Result<R, HistoryUnavailable> {
+        let mut f = Some(f);
+        let mut out = None;
+        self.with_history_or_why_with(id, &mut |doc, history| {
+            if let Some(f) = f.take() {
+                out = Some(f(doc, history));
+            }
+        })?;
+        out.ok_or(HistoryUnavailable::NotOpen)
+    }
+
+    /// [`Self::with_history_or_why`] with the change erased: one body for
+    /// every change.
+    #[inline(never)]
+    fn with_history_or_why_with(
+        &self,
+        id: &DocumentId,
+        f: &mut dyn FnMut(&mut AutoCommit, &mut crate::state::UndoLog),
+    ) -> Result<(), HistoryUnavailable> {
         let mut set = self
             .try_set_mut()
             .map_err(|_| HistoryUnavailable::StoreInUse)?;
@@ -53,6 +71,7 @@ impl ResourceStore {
         let (doc, history) = set
             .document_and_history_mut(id)
             .ok_or(HistoryUnavailable::NotOpen)?;
-        Ok(f(doc, history))
+        f(doc, history);
+        Ok(())
     }
 }
