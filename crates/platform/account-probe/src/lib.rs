@@ -134,8 +134,10 @@ impl LiveAccountTester {
             .enable_all()
             .build()
             .map_err(|_| "could not start the IMAP probe".to_string())?;
+        let reach = imap::Reach::any();
         runtime.block_on(async {
             let client = imap::open(
+                &reach,
                 host,
                 port,
                 security,
@@ -159,6 +161,7 @@ impl LiveAccountTester {
             // An account that reads mail and cannot send any is found out
             // here, not at its person's first message.
             smtp::sign_in(
+                &reach,
                 smtp_host,
                 smtp_port,
                 user,

@@ -528,20 +528,29 @@ impl<'a> Live<'a> {
             .enable_all()
             .build()
             .ok()?;
+        let reach = crate::imap::Reach::any();
         asking.block_on(async {
             let looks: Vec<_> = candidates
                 .iter()
                 .cloned()
                 .map(|server| {
                     let tls = Arc::clone(&tls);
+                    let reach = reach.clone();
                     tokio::spawn(async move {
                         let greeted = if reading {
                             let security = Security::of_imap(true, server.port);
-                            crate::imap::open(&server.name, server.port, security, tls, STEP)
-                                .await
-                                .map(drop)
+                            crate::imap::open(
+                                &reach,
+                                &server.name,
+                                server.port,
+                                security,
+                                tls,
+                                STEP,
+                            )
+                            .await
+                            .map(drop)
                         } else {
-                            crate::smtp::greets(&server.name, server.port, tls, STEP).await
+                            crate::smtp::greets(&reach, &server.name, server.port, tls, STEP).await
                         };
                         greeted.is_ok().then_some(server)
                     })

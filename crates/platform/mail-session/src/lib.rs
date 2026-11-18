@@ -520,8 +520,8 @@ async fn sign_in(
     account: &accounts::Account,
     secret: &accounts::Secret,
 ) -> Result<ImapSession, String> {
-    let host = field(account, "imap_host")
-        .filter(|host| !host.trim().is_empty())
+    let named = field(account, "imap_host")
+        .filter(|named| !named.trim().is_empty())
         .ok_or_else(|| "account has no IMAP server".to_string())?;
     let port = port_of(account, "imap_port", 993);
     let user = field(account, "username")
@@ -543,8 +543,10 @@ async fn sign_in(
     // account was added: TLS from the first byte, or upgraded with
     // STARTTLS before the sign-in is sent.
     let security = accounts::email::imap_security_of(&account.config);
+    let reach = tilo_account_probe::imap::Reach::any();
     let client =
-        tilo_account_probe::imap::open(&host, port, security, config, NETWORK_TIMEOUT).await?;
+        tilo_account_probe::imap::open(&reach, &named, port, security, config, NETWORK_TIMEOUT)
+            .await?;
     timeout(NETWORK_TIMEOUT, client.login(user, password))
         .await
         .map_err(|_| "IMAP server did not answer before the timeout".to_string())?
