@@ -29,6 +29,35 @@ things that matter:
 Why composefs rather than ostree at all is recorded in
 [composefs-decision.md](composefs-decision.md).
 
+Everything below describes the desktop and board images. The server image
+is built differently, and the next section says where it stands.
+
+## Tilo Server
+
+The server image is the Fedora bootc base with the server's programs laid on it.
+It does not take the desktop image's kernel, its sealing stages or its hardening
+layers; it shares the early-boot unlock chain (`91tilo-rollback`,
+`92tilo-sibling-unlock`), the update path (`tilo-verified-update`) and the
+container signature policy. A server must boot unattended, so every item below
+is judged for a machine nobody sits at.
+
+| What a server needs | Where it stands |
+|---|---|
+| Firmware verifies the boot loader and the kernel image under Secure Boot | **Missing.** The ESP holds the unsigned `systemd-boot-unsigned` loader and bootc's split kernel/initramfs entries. Nothing on it is signed with the release EFI certificate or an owner key, and `tilo-secureboot` is not in the image. With Secure Boot enforcing, the server does not boot; with it off, nothing is verified. |
+| A signed UKI with the command line inside the signature | **Missing.** The command line is a Boot Loader Specification entry, an editable text file on the ESP, and the initramfs is a plain file beside the kernel. Anyone who can write the ESP chooses the server's kernel arguments and the code that executes before its root opens. |
+| The composefs root verified, its digest bound into the signed image | **Partly.** The root is composefs (systemd-boot forces bootc's composefs backend), but the `composefs=` digest is in that same editable entry, so it binds nothing. |
+| Measured boot: the disk key sealed to PCR 7 and a signed PCR 11 policy | **Missing.** No systemd-stub is involved, so PCR 11 carries nothing, and the command line has no `tilo.generation=`. No TPM keyslot is enrolled: the disk opens with the recovery key typed at the console or with the half another of the owner's devices releases. |
+| Rollback protection: no older signed image boots below the floor | **Missing.** `tilo-rollback-confirm` and `tilo-rollback-harden` are enabled but find no generation and no TPM keyslot, so they do nothing, and the floor approvals the owner's devices sign (`crates/server/tilo-server/src/servers/floor.rs`) have no counter to move. The health test they would apply also requires `greetd`, which a server never starts. |
+| Update images verified before staging | **Partly.** Updates go through `tilo-verified-update`, and the container policy requires a Rekor-logged release signature for `code.tilo.so/tilo/tilo` and `registry.tilo.so/tilo/tilo`, and for the workspace VM guest. The server image itself is not published, and its own repository is in no signed scope, so the default `reject` refuses every registry update for it; an update reaches a server only from local media, which the policy admits unsigned (that takes root). |
+| No SSH | **Done.** `openssh`, `openssh-server` and `openssh-clients` are removed at build and the build fails if any returns. |
+| No interactive local login | **Missing.** Gettys listen on the local and serial consoles, and nothing in the image proves that every account, `root` included, is locked. |
+| Kernel lockdown | **Missing.** The image ships no `/usr/lib/bootc/kargs.d`, so its command line carries no `lockdown=integrity` and none of the desktop's other hardening arguments, and without Secure Boot the kernel does not lock itself down. |
+| No credentials imported from firmware or the boot loader | **Missing.** The command line lacks `systemd.import_credentials=no`, so SMBIOS OEM strings or a credential file on the ESP can add units that execute as root. |
+| No system or configuration extensions merged at boot | **Missing.** `systemd-sysext` and `systemd-confext` are not masked; a directory written under `/var/lib/extensions` overlays `/usr` on the next boot. |
+| Few listening ports | **Partly.** The firewall's `FedoraServer` zone drops inbound traffic but still admits `ssh` and `cockpit`. `systemd-resolved` from the base listens for LLMNR on every interface. |
+| Few setuid programs | **Missing.** The base's setuid and setgid programs are all present, and `tilo-hosted.service` has no `NoNewPrivileges=`. |
+| The kernel | The base's Fedora kernel, not the desktop's own build, so its module-signature, `/dev/mem` and kexec settings are Fedora's. |
+
 ## The chain has no vendor signature, and cannot get one
 
 A stock Fedora bootc image inherits a chain that verifies out of the box on a

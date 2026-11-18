@@ -23,9 +23,8 @@
 # (verified against bootc 1.15.2's config schema — `systemd-boot` is rejected).
 # The `systemd-boot-unsigned` RPM must be installed in the image (see
 # os/Containerfile) — that's the package bootupd hands to bootc when it plants
-# the loader on the ESP. `shim-x64` isn't required for the systemd path (there
-# is no third-party Secure Boot chain today for systemd-boot on Fedora); a
-# Secure Boot story that binds the systemd-boot EFI binary itself is a
-# follow-up.
+# the loader on the ESP. `shim-x64` isn't required for the systemd path: the
+# firmware verifies the loader and the UKI directly against `db`
+# (docs/security/boot-chain.md says what each image signs).
 [install]
 bootloader = "systemd"
