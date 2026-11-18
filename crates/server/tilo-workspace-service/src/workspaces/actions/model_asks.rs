@@ -35,6 +35,20 @@ pub(super) fn is_model_ask(request: &InvokeRequest) -> bool {
     request.target == person_models::target(person_models::ASK)
 }
 
+impl super::InWorkspace {
+    /// [`Actions::ask_model`] for this workspace and caller's certificate.
+    pub(super) fn ask_model(
+        &self,
+        workspaces: &Workspaces,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<InvocationReceipt, ActionCallError> {
+        let certificate = self.certificate.as_ref();
+        self.server
+            .ask_model(workspaces, caller, certificate, self.workspace_id, request)
+    }
+}
+
 impl Actions {
     /// Admit `request`, an ask of `caller`'s own model, and answer it: the
     /// receipt says it is accepted, its items carry the answer so far, and its output
