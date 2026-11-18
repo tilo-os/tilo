@@ -1739,22 +1739,28 @@ impl Engine {
             .ok()
     }
 
-    /// Where the hosts of the workspaces this device holds are reached, by workspace id, postcard
-    /// encoded: what the person's other devices need to enter a workspace listed here at the device
-    /// that hosts it.
+    /// Where the holders of the workspaces this device holds are reached, one entry per holder, by
+    /// workspace id, postcard encoded: what the person's other devices need to enter a workspace
+    /// listed here at any of the devices that keep it.
     pub fn host_hints(&self) -> Vec<(String, Vec<u8>)> {
         self.owner
             .workspaces()
             .into_iter()
-            .filter_map(|workspace| {
+            .flat_map(|workspace| {
                 // The hint itself, as the device that reads it decodes it: not the answer
                 // whether this device has one, whose tag would lead the bytes.
-                let hint = self
+                let hints = self
                     .owner
-                    .with_current(workspace, |view| view.transport_hint().cloned())
-                    .ok()?;
-                let bytes = postcard::to_stdvec(&hint).ok()?;
-                Some((workspace.to_string(), bytes))
+                    .with_current(workspace, |view| Ok(view.keeping_devices()))
+                    .unwrap_or_default();
+                let named = workspace.to_string();
+                hints
+                    .into_iter()
+                    .filter_map(move |hint| {
+                        let bytes = postcard::to_stdvec(&hint).ok()?;
+                        Some((named.clone(), bytes))
+                    })
+                    .collect::<Vec<_>>()
             })
             .collect()
     }
