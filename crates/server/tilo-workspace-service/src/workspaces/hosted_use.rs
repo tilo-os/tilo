@@ -355,7 +355,7 @@ impl Default for Uses {
         Self {
             calls: web_call::AllowedOnce::default(),
             prover: std::sync::RwLock::new(std::sync::Arc::new(
-                tilo_account_probe::LiveAccountTester,
+                tilo_account_probe::FindingAccountTester,
             )),
             asks: Mutex::default(),
             once: Mutex::default(),

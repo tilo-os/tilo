@@ -224,14 +224,6 @@ impl LiveAccountTester {
 }
 
 impl AccountTester for LiveAccountTester {
-    fn find_mail_servers(
-        &self,
-        address: &str,
-        allowed: &dyn Fn(&str) -> bool,
-    ) -> Result<mail_servers::MailServers, String> {
-        mail_servers::find(address, &mail_servers::Live::new(allowed))
-    }
-
     fn discover_calendars(
         &self,
         account: &accounts::Account,
@@ -293,6 +285,38 @@ impl AccountTester for LiveAccountTester {
             "webdav" | "nextcloud" => Self::dav(account, secret),
             _ => Err("unsupported account type".into()),
         }
+    }
+}
+
+/// [`LiveAccountTester`] that also works out an address's mail servers over the network
+/// ([`mail_servers::find`]). Only a person's server asks that, so an app that proves sign-ins
+/// takes [`LiveAccountTester`] and carries no DNS resolver.
+#[derive(Default)]
+pub struct FindingAccountTester;
+
+impl AccountTester for FindingAccountTester {
+    fn discover_calendars(
+        &self,
+        account: &accounts::Account,
+        secret: &accounts::Secret,
+    ) -> Result<Vec<tilo_dav::discovery::CalendarCollection>, String> {
+        LiveAccountTester.discover_calendars(account, secret)
+    }
+
+    fn find_mail_servers(
+        &self,
+        address: &str,
+        allowed: &dyn Fn(&str) -> bool,
+    ) -> Result<mail_servers::MailServers, String> {
+        mail_servers::find(address, &mail_servers::Live::new(allowed))
+    }
+
+    fn test(
+        &self,
+        account: &accounts::Account,
+        secret: &accounts::Secret,
+    ) -> Result<String, String> {
+        LiveAccountTester.test(account, secret)
     }
 }
 
