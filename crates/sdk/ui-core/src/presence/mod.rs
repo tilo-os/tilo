@@ -1290,6 +1290,24 @@ impl PresenceCtx {
     /// carry their number ("Ada (2)", [`MemberLabels`]); software acting for a person is named
     /// with that person ("Claude for Ada"), else with its kind.
     pub fn display_name(&self, user: &MemberId) -> String {
+        let name = self.name_beside_face(user);
+        self.kind_label(user, &name)
+    }
+
+    /// The name `user` goes by in a chip, beside their face: theirs, numbered among the people
+    /// who share it, and never joined with what they are. A face says a person, an agent's own
+    /// mark says an agent, and a bot's tile says a bot, so a chip reads "Ada" and "Quill", never
+    /// "Quill · Agent". A line of text with no face beside it says [`Self::display_name`].
+    pub fn chip_name(&self, user: &MemberId) -> String {
+        let name = self.name_beside_face(user);
+        match user {
+            MemberId::Person(person) => self.labels.label(person.as_str(), &name),
+            MemberId::Agent(_) | MemberId::Bot(_) => name,
+        }
+    }
+
+    /// The name the roster holds for `user`, before what they are is said.
+    fn name_beside_face(&self, user: &MemberId) -> String {
         let name = self
             .names
             .get(user)
@@ -1302,11 +1320,10 @@ impl PresenceCtx {
             })
             .map(str::to_owned);
         // A person nobody named yet is a guest, never their key.
-        let name = name.unwrap_or_else(|| match user {
+        name.unwrap_or_else(|| match user {
             MemberId::Person(_) => guest_label(),
             MemberId::Agent(id) | MemberId::Bot(id) => id.clone(),
-        });
-        self.kind_label(user, &name)
+        })
     }
 
     fn kind_label(&self, user: &MemberId, name: &str) -> String {

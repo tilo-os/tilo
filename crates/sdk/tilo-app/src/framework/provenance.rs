@@ -9,7 +9,7 @@ use ui_core::peniko::Color;
 use tilo_resource::{MemberId, Origin};
 use ui_core::i18n::ArgValue;
 use ui_core::tokens::{PresenceHue, Rhythm, TextRole};
-use ui_core::widget::{Chip, ChipLead, Container, Element, Link, Row, Text};
+use ui_core::widget::{Chip, Container, Element, Link, Row, Text};
 
 use super::people::{Actor, People};
 
@@ -120,7 +120,13 @@ impl Provenance {
     /// different things.
     #[must_use]
     pub fn spoken(&self) -> String {
-        let name: ArgValue = self.name.clone().into();
+        // A reader hears what the chip's mark says to the eye: that an agent wrote it.
+        let name: ArgValue = match &self.actor {
+            Some(actor) if actor.agent() => {
+                ui_core::history_source::agent_display_label(&self.name).into()
+            }
+            _ => self.name.clone().into(),
+        };
         let date: ArgValue = self.date().into();
         let Some(source) = &self.source else {
             return crate::copy_catalogue::t_args(
@@ -153,11 +159,11 @@ impl Provenance {
     pub fn row(&self, id: &str) -> Element {
         let (red, green, blue) = ui_core::presence::identity_rgb(self.hue);
         let colour = Color::from_rgb8(red, green, blue);
-        let mut chip = Chip::new(self.name.clone()).with_id(format!("{id}-author"));
-        chip = match &self.actor {
-            Some(actor) if actor.agent() => chip.with_lead(ChipLead::Agent(colour)),
-            _ => chip.with_face(self.name.clone(), colour),
-        };
+        let chip = match &self.actor {
+            Some(actor) => actor.chip(),
+            None => Chip::new(self.name.clone()).with_face(self.name.clone(), colour),
+        }
+        .with_id(format!("{id}-author"));
         let mut row = Row::new()
             .no_wrap()
             .with_rhythm(Rhythm::Related)
