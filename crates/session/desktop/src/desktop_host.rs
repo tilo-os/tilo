@@ -274,13 +274,16 @@ impl BackgroundLayer {
         std::mem::take(&mut *self.asks.borrow_mut())
     }
 
-    /// Take the pictures the shell shows, looked up by the workspace in front.
+    /// Take the pictures the shell shows, looked up by the workspace in front, published into
+    /// `source` — the shell's one wallpaper, which every host that draws the ground reads.
     #[must_use]
     pub fn with_wallpaper(
         mut self,
+        source: ui::backdrop::wallpaper::Source,
         provider: impl Fn(&str) -> Option<ui::peniko::ImageData> + 'static,
     ) -> Self {
         self.backdrop.set_wallpaper_provider(provider);
+        self.backdrop = self.backdrop.with_wallpaper_source(source);
         self
     }
 }

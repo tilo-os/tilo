@@ -20,9 +20,11 @@ use vello::peniko::{BlendMode, Color, Fill};
 use crate::i18n::t;
 use crate::window_switcher::SwitcherWindow;
 
-/// A window is pictured at most at this share of its size on the display: a workspace of one window
-/// still reads as a picture, not as the window.
-pub const MAX_SCALE: f64 = 0.5;
+/// The largest share of its size on the display a window is pictured at, as the search for the
+/// scale that fills the picture's area stops there: the cards take the room they are given, so a
+/// workspace of one window on a wide display is drawn as large as that room allows rather than as a
+/// thumbnail in the middle of an empty screen.
+pub const PICTURE_SCALE_LIMIT: f64 = 1.5;
 
 /// Most faces drawn on one window before the picture says nothing more.
 const TILE_FACES_MAX: usize = 3;
@@ -269,12 +271,10 @@ fn place_strips(
         picture_height(&placed, m) <= area.height()
             && picture_width(strips, &placed, m) <= area.width()
     };
-    if fits(MAX_SCALE) {
-        return at(MAX_SCALE);
-    }
-    // More scale only ever adds lines, height and width, so the largest that fits is found by
-    // halving.
-    let (mut lo, mut hi) = (0.0, MAX_SCALE);
+    // The picture takes the room it is given: the largest scale at which it fits, up to the limit,
+    // so the cards fill the area rather than standing as thumbnails in empty space. More scale only
+    // ever adds lines, height and width, so it is found by halving.
+    let (mut lo, mut hi) = (0.0, PICTURE_SCALE_LIMIT);
     for _ in 0..32 {
         let mid = f64::midpoint(lo, hi);
         if fits(mid) {
@@ -558,8 +558,8 @@ mod tests {
                 assert!(b.x0 >= area.x0 && b.x1 <= area.x1 + 1e-6, "{b:?}");
                 assert!(b.y0 >= area.y0 && b.y1 <= area.y1 + 1e-6, "{b:?}");
             }
-            // Never larger than half the window it pictures.
-            assert!(places[2].wells[0].height() <= 900.0 * MAX_SCALE + 1e-6);
+            // Never larger than the limit beyond the window it pictures.
+            assert!(places[2].wells[0].height() <= 900.0 * PICTURE_SCALE_LIMIT + 1e-6);
         }
 
         phase the_tabs_of_one_window_sit_together_and_windows_apart;

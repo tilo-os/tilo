@@ -21,15 +21,26 @@ pub fn modal(scene: &mut Scene, transform: Affine, rect: Rect, openness: f32, th
 }
 
 /// The ground of a whole-view surface that pictures the windows it covers (the workspace overview): the
-/// shell, blurred and tinted as the floating material is, then the modal dim. Unlike [`modal`] it
-/// hides what it covers, because the surface shows those windows itself and they must not be seen
-/// twice; it fades in as a whole ([`crate::lift`]).
-pub fn whole_view(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
-    crate::backdrop::wallpaper::fill(
+/// shell's wallpaper, blurred as the floating material blurs it, then the modal dim: the shell behind
+/// it, softened, as a modal shows it. Unlike
+/// [`modal`] it hides what it covers, because the surface shows those windows itself and they must
+/// not be seen twice; it fades in as a whole ([`crate::lift`]).
+///
+/// The wallpaper is `wallpaper`, the one source the session holds and gives every host that draws
+/// the ground: the overview is drawn by a host of its own, so it reads the same picture the backdrop
+/// under it shows rather than a copy of its own.
+pub fn whole_view(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    wallpaper: &crate::backdrop::wallpaper::Source,
+    theme: &Theme,
+) {
+    crate::backdrop::wallpaper::shell(
         scene,
-        (transform, Affine::IDENTITY),
+        wallpaper,
+        transform,
         &rect,
-        crate::floating_surface::Material::Floating,
         theme,
         theme.tokens.colors.surfaces.base,
     );

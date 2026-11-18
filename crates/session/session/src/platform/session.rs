@@ -312,12 +312,16 @@ impl Session {
         // The shell a login shows is built before its first frame: this pair
         // is the phase between the compositor coming up and the frame that
         // draws it (tools/perf/startup_marks.py).
+        // The shell's wallpaper: one source, which the shell's backdrop publishes and the chrome's
+        // overview draws over — the two hosts draw one ground, never a copy each.
+        let wallpaper = ui::backdrop::wallpaper::Source::new();
         tilo_startup_metrics::mark("shell-build-start");
         let (desktop, strips, asks) = crate::background::background(
             &options,
             &activity,
             notices.clone(),
             std::sync::Arc::clone(&wallpapers),
+            wallpaper.clone(),
             crate::background::Background {
                 widgets: widget_prefs,
                 fold: fold.clone(),
@@ -896,6 +900,7 @@ impl Session {
             &emoji.link(),
             &overlays,
             &switcher,
+            &wallpaper,
         )));
         compositor.add_surface(crate::shell::under(options.shell, Rc::clone(&chrome)));
         // Search's code is asked for as the session starts, so it is in by the

@@ -779,6 +779,7 @@ pub(crate) fn host(
     emoji: &tilo_desktop::emoji::EmojiLink,
     overlays: &Overlays,
     switcher: &tilo_desktop::window_switcher::Switcher,
+    wallpaper: &ui::backdrop::wallpaper::Source,
 ) -> WidgetSurface {
     let ChromeWiring {
         intents,
@@ -814,6 +815,7 @@ pub(crate) fn host(
         AboutSheet::new(AboutVariant::Native, &AboutLinks::default()),
         false,
     );
+    chrome.set_wallpaper(wallpaper.clone());
     chrome.set_intents(intents);
     chrome.set_asks(asks);
     // Where a shell covers the shell, the shell's view is the overview and the chrome's stays shut.

@@ -11,83 +11,150 @@
 )]
 
 use std::cell::RefCell;
+use std::rc::Rc;
 
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, Shape};
-use vello::peniko::{BlendMode, Brush, Color, Extend, Fill, ImageBrush, ImageData, ImageFormat};
+use vello::kurbo::{Affine, Point, Rect, Shape};
+use vello::peniko::{
+    BlendMode, Brush, Color, Extend, Fill, Gradient, ImageBrush, ImageData, ImageFormat,
+};
 
 use crate::floating_surface::Material;
 use crate::theme::Theme;
-
-/// One display's shell, blurred: `brush` placed by `brush_transform` over `rect`, all in the
-/// coordinates `transform` maps into the shell's.
-#[derive(Clone, Debug)]
-pub struct WallpaperPiece {
-    pub transform: Affine,
-    pub rect: Rect,
-    pub brush: Brush,
-    pub brush_transform: Affine,
-}
 
 const MAX_EDGE: u32 = 512;
 
 const REACH: f64 = 3.0;
 
-type CoverKey = (u64, u64, u64, u32);
+/// What a blurred cover is made for: the picture, the rectangle it covers and the blur.
+type CoverKey = (u64, [u64; 4], u32);
+
+fn cover_key(picture: &ImageData, rect: Rect, blur_px: f32) -> CoverKey {
+    let sides = [
+        rect.x0.to_bits(),
+        rect.y0.to_bits(),
+        rect.width().to_bits(),
+        rect.height().to_bits(),
+    ];
+    (picture.data.id(), sides, blur_px.to_bits())
+}
 
 thread_local! {
-    static PIECES: RefCell<Vec<WallpaperPiece>> = const { RefCell::new(Vec::new()) };
     static COVERS: RefCell<Vec<(CoverKey, ImageData)>> = const { RefCell::new(Vec::new()) };
 }
 
-/// The shell a frame draws, blurred, in the coordinates of the scene the shell is drawn into.
-pub fn publish(pieces: Vec<WallpaperPiece>) {
-    PIECES.with(|slot| *slot.borrow_mut() = pieces);
+/// The shell's wallpaper: one source, the picture the session decoded once for all its hosts.
+/// The backdrop that shows it draws this picture; every surface that stands on the shell frosts
+/// the same picture, so a host of its own — the chrome drawing the overview — draws over exactly
+/// what the backdrop under it shows, never a copy of its own.
+///
+/// The session holds one and hands it to both hosts; the picture, and the blur of it, are kept here
+/// alone, so what one host draws and what the other draws over it never differ.
+#[derive(Clone, Debug, Default)]
+pub struct Source {
+    state: Rc<RefCell<State>>,
 }
 
-/// Whether a shell is published on this thread.
-#[must_use]
-pub fn published() -> bool {
-    PIECES.with(|slot| !slot.borrow().is_empty())
+#[derive(Debug, Default)]
+struct State {
+    picture: Option<ImageData>,
+    /// The shell's gradient, from its first stop to its last, where it shows no picture.
+    gradient: Option<(Color, Color)>,
 }
 
-/// Fill `shape` with `material` over the published shell: the blurred shell behind it, under the
-/// material's tint of `ground`.
+impl Source {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Take `picture` as the shell's wallpaper, or none for a shell without one.
+    pub fn set(&self, picture: Option<ImageData>) {
+        let mut state = self.state.borrow_mut();
+        state.gradient = None;
+        let known = state.picture.as_ref().map(|known| known.data.id());
+        if known == picture.as_ref().map(|image| image.data.id()) {
+            return;
+        }
+        state.picture = picture;
+    }
+
+    /// Take the shell's gradient, drawn corner to corner from `stops.0` to `stops.1`, as what it
+    /// shows where it has no picture.
+    pub fn set_gradient(&self, stops: (Color, Color)) {
+        let mut state = self.state.borrow_mut();
+        state.picture = None;
+        state.gradient = Some(stops);
+    }
+
+    /// The picture the shell shows now, as the session holds it.
+    #[must_use]
+    pub fn picture(&self) -> Option<ImageData> {
+        self.state.borrow().picture.clone()
+    }
+
+    /// The picture covering `rect`, blurred by `blur_px` logical pixels: what a surface standing on
+    /// the shell shows of it, made once per picture, rectangle and blur ([`blurred_cover`] keeps
+    /// it).
+    #[must_use]
+    pub fn cover(&self, rect: Rect, blur_px: f32) -> Option<(ImageData, Affine)> {
+        let picture = self.state.borrow().picture.clone()?;
+        blurred_cover(&picture, rect, blur_px)
+    }
+}
+
+/// What the shell shows under `shape`, blurred: its picture covering the shape, its gradient
+/// (already as smooth as its blur) across it, or `ground` where it shows neither or `blur` is off.
+fn paint_shell(
+    scene: &mut Scene,
+    source: &Source,
+    transform: Affine,
+    shape: &impl Shape,
+    blur: Option<f32>,
+    ground: Color,
+) -> bool {
+    let Some(blur_px) = blur else {
+        scene.fill(Fill::NonZero, transform, ground, None, shape);
+        return false;
+    };
+    let gradient = source.state.borrow().gradient;
+    let (brush, brush_transform) =
+        if let Some((image, placed)) = source.cover(shape.bounding_box(), blur_px) {
+            let brush = Brush::Image(ImageBrush::new(image).with_extend(Extend::Pad));
+            (brush, Some(transform.inverse() * placed))
+        } else if let Some((from, to)) = gradient {
+            let bounds = shape.bounding_box();
+            let gradient = Gradient::new_linear(bounds.origin(), Point::new(bounds.x1, bounds.y1))
+                .with_extend(Extend::Pad)
+                .with_stops([from, to].as_slice());
+            (Brush::Gradient(gradient), None)
+        } else {
+            scene.fill(Fill::NonZero, transform, ground, None, shape);
+            return false;
+        };
+    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, shape);
+    scene.fill(Fill::NonZero, transform, &brush, brush_transform, shape);
+    scene.pop_layer();
+    true
+}
+
+/// Fill `shape` with `material` over `source`: the shell's wallpaper, blurred and fitted to the
+/// shape, behind it under the material's tint of `ground`; where the shell shows its gradient, that
+/// gradient across the shape; `ground` alone for an opaque material or a shell that shows neither.
 pub(crate) fn fill(
     scene: &mut Scene,
-    (transform, wallpaper_to_scene): (Affine, Affine),
+    source: &Source,
+    transform: Affine,
     shape: &impl Shape,
     material: Material,
     theme: &Theme,
     ground: Color,
 ) {
-    let pieces = PIECES.with(|slot| slot.borrow().clone());
-    if !super::blurs(material, theme) || pieces.is_empty() {
-        scene.fill(Fill::NonZero, transform, ground, None, shape);
+    let blur =
+        super::blurs(material, theme).then_some(theme.tokens.colors.surfaces.material_blur_px);
+    if !paint_shell(scene, source, transform, shape, blur, ground) {
         return;
     }
-    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, shape);
-    for (index, piece) in pieces.iter().enumerate() {
-        let to_scene = wallpaper_to_scene * piece.transform;
-        if index == 0 {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                &piece.brush,
-                Some(transform.inverse() * to_scene * piece.brush_transform),
-                shape,
-            );
-        } else {
-            scene.fill(
-                Fill::NonZero,
-                to_scene,
-                &piece.brush,
-                Some(piece.brush_transform),
-                &piece.rect,
-            );
-        }
-    }
-    scene.pop_layer();
     super::settle(scene, transform, shape, theme, ground);
     scene.fill(
         Fill::NonZero,
@@ -96,6 +163,22 @@ pub(crate) fn fill(
         None,
         shape,
     );
+}
+
+/// Fill `shape` with the shell itself, blurred as a floating surface blurs it but under no tint: a
+/// ground that stands for the shell rather than a surface over it. `ground` where the theme draws
+/// floating surfaces opaque.
+pub(crate) fn shell(
+    scene: &mut Scene,
+    source: &Source,
+    transform: Affine,
+    shape: &impl Shape,
+    theme: &Theme,
+    ground: Color,
+) {
+    let blur = super::blurs(Material::Floating, theme)
+        .then_some(theme.tokens.colors.surfaces.material_blur_px);
+    paint_shell(scene, source, transform, shape, blur, ground);
 }
 
 /// `image` covering `rect` as a shell paints a wallpaper (scaled to cover it, centred), blurred by
@@ -111,12 +194,7 @@ pub fn blurred_cover(image: &ImageData, rect: Rect, blur_px: f32) -> Option<(Ima
         .max(1.0);
     let width = (rect.width() / texel).ceil().max(1.0) as u32;
     let height = (rect.height() / texel).ceil().max(1.0) as u32;
-    let key = (
-        image.data.id(),
-        rect.width().to_bits(),
-        rect.height().to_bits(),
-        blur_px.to_bits(),
-    );
+    let key = cover_key(image, rect, blur_px);
     let placed = Affine::translate((rect.x0, rect.y0)).pre_scale_non_uniform(
         rect.width() / f64::from(width),
         rect.height() / f64::from(height),
@@ -146,33 +224,6 @@ pub fn blurred_cover(image: &ImageData, rect: Rect, blur_px: f32) -> Option<(Ima
         covers.push((key, blurred.clone()));
     });
     Some((blurred, placed))
-}
-
-/// The shell's pieces with no wallpaper: `brush` (a gradient, already as smooth as its blur) over
-/// `rect`.
-#[must_use]
-pub fn smooth_piece(transform: Affine, rect: Rect, brush: Brush) -> WallpaperPiece {
-    WallpaperPiece {
-        transform,
-        rect,
-        brush,
-        brush_transform: Affine::IDENTITY,
-    }
-}
-
-/// A blurred wallpaper's piece, from [`blurred_cover`].
-#[must_use]
-pub fn image_piece(
-    transform: Affine,
-    rect: Rect,
-    (image, placed): (ImageData, Affine),
-) -> WallpaperPiece {
-    WallpaperPiece {
-        transform,
-        rect,
-        brush: Brush::Image(ImageBrush::new(image).with_extend(Extend::Pad)),
-        brush_transform: placed,
-    }
 }
 
 fn cover_sample(

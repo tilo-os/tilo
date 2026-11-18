@@ -1356,13 +1356,7 @@ impl TabBar {
                     &r.inflate(2.0, 2.0),
                 );
             }
-            crate::chrome::paint_selector(
-                scene,
-                pill_transform,
-                &shape,
-                crate::chrome::SelectorRole::Item(&look),
-                theme,
-            );
+            crate::chrome::paint_selector(scene, pill_transform, &shape, &look, theme);
             if faded {
                 scene.pop_layer();
             }
@@ -2023,7 +2017,7 @@ impl TabBar {
             scene,
             transform,
             &RoundedRect::from_rect(r, radius),
-            crate::chrome::SelectorRole::Item(&pill_appearance(theme, ground, false, true, false)),
+            &pill_appearance(theme, ground, false, true, false),
             theme,
         );
         let text_style = tab_title_style(theme);
