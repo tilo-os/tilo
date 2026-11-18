@@ -176,13 +176,11 @@ async fn write_note(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "an agent's grant for its assigned issue is being fixed"]
 async fn an_agent_on_the_server_works_on_an_issue_filed_through_its_actions() {
     Box::pin(works_on_its_issue(false, false)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "an agent's grant for its assigned issue is being fixed"]
 async fn an_agent_on_the_server_works_on_an_issue_filed_in_a_page() {
     Box::pin(works_on_its_issue(true, false)).await;
 }
@@ -190,7 +188,7 @@ async fn an_agent_on_the_server_works_on_an_issue_filed_in_a_page() {
 /// A public workspace sends a device its documents only once it opens them: the server's own
 /// member of it holds none of the tracker or its issues until its agent's tools ask for them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "an agent's grant for its assigned issue is being fixed"]
+#[ignore = "an issue filed in a page of a public workspace is not in the server's listing"]
 async fn an_agent_on_the_server_works_on_an_issue_filed_in_a_public_workspace() {
     Box::pin(works_on_its_issue(true, true)).await;
 }
