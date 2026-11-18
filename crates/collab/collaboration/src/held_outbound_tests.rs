@@ -1,52 +1,3 @@
-/// An identity service answering with `access`: no keys while the route
-/// waits, and `keys` once it is ready.
-#[cfg(unix)]
-struct AccessThenKeysIdentity {
-    ready: std::sync::atomic::AtomicBool,
-    keys: Vec<u8>,
-}
-
-#[cfg(unix)]
-impl SdkCertifiedIdentity for AccessThenKeysIdentity {
-    fn group_keys(
-        &self,
-        _: &str,
-        _: &str,
-        _: &str,
-        generation: u64,
-    ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable> {
-        use runtime_identity::wire::KeyAccess;
-        let ready = self.ready.load(std::sync::atomic::Ordering::Acquire);
-        Ok(runtime_identity::wire::ChannelKeysReply {
-            access: if ready {
-                KeyAccess::Ready
-            } else {
-                KeyAccess::Waiting
-            },
-            generation,
-            keys: ready.then(|| self.keys.clone()),
-        })
-    }
-    fn device_certificate(&self) -> Option<&[u8]> {
-        Some(b"fixture")
-    }
-    fn signing_public_key(&self) -> [u8; 32] {
-        [5; 32]
-    }
-    fn sign_collaboration_join(&self, _: &str) -> Result<[u8; 64], runtime_portal::NotAvailable> {
-        Ok([7; 64])
-    }
-    fn sign_collaboration_op(
-        &self,
-        _: &str,
-        _: &str,
-        _: &str,
-        _: &[u8],
-    ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
-        Ok([9; 64])
-    }
-}
-
 /// An edit made while the route waits for its channel keys is held, and
 /// sent once they arrive: a held frame counts as sent to the app, and is
 /// re-offered under the keys the endpoint then holds.
@@ -68,29 +19,23 @@ fn an_edit_held_for_channel_keys_goes_out_when_the_keys_arrive() {
         ..FakeBroker::default()
     };
     let (fd, captures, thread) = stand_up_fake_broker(broker);
-    let identity = Arc::new(AccessThenKeysIdentity {
-        ready: std::sync::atomic::AtomicBool::new(false),
-        keys: group.content_keys().unwrap().to_bytes().unwrap().to_vec(),
+    // The identity service has no keys while the route waits, and the keys once they are ready.
+    let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let keys = group.content_keys().unwrap().to_bytes().unwrap().to_vec();
+    let answered = Arc::clone(&ready);
+    let identity = FixtureIdentity::answering(move |_, generation| {
+        let ready = answered.load(std::sync::atomic::Ordering::Acquire);
+        Ok(runtime_identity::wire::ChannelKeysReply {
+            access: if ready {
+                runtime_identity::wire::KeyAccess::Ready
+            } else {
+                runtime_identity::wire::KeyAccess::Waiting
+            },
+            generation,
+            keys: ready.then(|| keys.clone()),
+        })
     });
-    let sdk = CollaborationManager::spawn_sdk(
-        SdkConnectSource::Fd(fd),
-        Some(SdkJoinIdentity {
-            presentation: Vec::new(),
-            member_kind: "person",
-            signer: SdkDocumentSigner::Certified(Arc::clone(&identity) as _),
-        }),
-    )
-    .unwrap();
-    let mut manager = CollaborationManager::disabled();
-    manager.backend = Backend::Transport(Box::new(sdk));
-    assert!(manager.send(CollabRequest::Hello {
-        app_id: app_id.into(),
-        cluster_id: cluster,
-        record: None,
-        resource_type: None,
-        handle: None,
-    }));
-    manager.await_primary_route().unwrap();
+    let mut manager = certified_manager(fd, identity, Vec::new(), (app_id, cluster));
 
     // The edit is made while the service says the endpoint waits: the
     // frame is held, and the app is not told the commit failed.
@@ -109,9 +54,7 @@ fn an_edit_held_for_channel_keys_goes_out_when_the_keys_arrive() {
 
     // The keys arrive: the push tells the endpoint, which re-seals the
     // held edit under them and sends it.
-    identity
-        .ready
-        .store(true, std::sync::atomic::Ordering::Release);
+    ready.store(true, std::sync::atomic::Ordering::Release);
     changes.send_replace(1);
     tilo_test_env::wait_until("the held edit to go out once its keys arrived", || {
         captures.lock().unwrap().signed_ops.len() == 1

@@ -257,7 +257,9 @@ impl AgentSessions {
             origin: None,
             environment: None,
         });
-        admitted.chain(answering).collect()
+        let here = admitted.chain(answering).collect();
+        drop(inner);
+        here
     }
 
     /// The session that `speaker` (this device) speaks for on the presence board as `member`, by
