@@ -2988,6 +2988,7 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 name = "contacts"
 version = "0.1.0"
 dependencies = [
+ "contacts-model",
  "image",
  "pim-lines",
  "runtime-dylib",
@@ -3006,6 +3007,19 @@ dependencies = [
  "tilo-vello",
  "tilo-winit",
  "tracing",
+ "unicode-normalization",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "contacts-model"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "serde",
+ "serde_json",
+ "tilo-resource",
  "unicode-normalization",
  "uuid",
  "workspace-hack",

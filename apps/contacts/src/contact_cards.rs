@@ -134,7 +134,7 @@ impl Book {
         let mut out: Vec<&Contact> = self
             .contacts
             .iter()
-            .filter(|candidate| candidate.matches(&q))
+            .filter(|candidate| crate::model::matches(candidate, &q))
             .filter(|candidate| match group {
                 None => true,
                 Some(group) => candidate
@@ -328,7 +328,7 @@ pub fn searchable_text(contact: &Contact) -> String {
         contact.notes.clone(),
     ];
     if let Some(birthday) = contact.birthday {
-        fields.extend([birthday.iso(), birthday.pretty()]);
+        fields.extend([birthday.iso(), crate::model::pretty(&birthday)]);
     }
     for row in contact.phones.iter().chain(&contact.emails) {
         fields.extend([row.label.clone(), row.value.clone()]);
@@ -399,14 +399,6 @@ pub fn prepare(
         }
     }
     Ok(())
-}
-
-/// A card `add-contacts` takes makes a new contact: it names none kept
-/// already (its id is checked against the book where it is invoked).
-impl tilo_resource::NamesItem for Contact {
-    fn named_item(&self) -> Option<Id> {
-        None
-    }
 }
 
 fn no_contact() -> String {

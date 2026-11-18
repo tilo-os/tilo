@@ -33,6 +33,8 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-contact-directory-engine = { path = "../../crates/runtime/engines/contact-directory", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+# The resource the app draws: its types, verbs and typed action arguments.
+contacts-model = { path = "../contacts-model" }
 automerge.workspace = true
 tilo-automerge.workspace = true
 serde.workspace = true
