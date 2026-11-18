@@ -218,7 +218,7 @@ mod tests {
     fn applied(base: &[u8], writes: &[crate::namespace::ResourceWrite], author: &str) -> Namespace {
         let mut namespace = Namespace::from_bytes(author, base).unwrap();
         namespace
-            .take_records(
+            .take_documents(
                 writes
                     .iter()
                     .map(|write| (write.chunk, write.changes.clone()))

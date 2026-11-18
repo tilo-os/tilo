@@ -650,7 +650,7 @@ impl TreePublisher {
             };
             let mut namespace = namespace.lock_recover();
             let resolutions = namespace
-                .take_records_and_resolve(vec![(chunk, bytes)])
+                .take_documents_and_resolve(vec![(chunk, bytes)])
                 .with_context(|| {
                     if whole {
                         "a published record becomes this device's"

@@ -227,6 +227,7 @@ impl Worker {
         };
         self.commit_tree_writes(workspace_id, named, held.as_ref(), writes)
             .map_err(|reason| commit_failed(reason, true))?;
+        self.keep_tree(workspace_id, named, tree);
         Ok((
             ActionOutput {
                 value: Some(value),

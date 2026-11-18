@@ -54,6 +54,22 @@ type HeldTree = (Vec<(TreeChunk, Vec<u8>)>, HeldChunks);
 /// The chunks of a workspace's tree the host holds, each with the heads it stands at.
 pub(super) type HeldChunks = BTreeMap<TreeChunk, Vec<[u8; 32]>>;
 
+/// A workspace's tree as a request read it, kept for the next: the heads of
+/// each of its documents it took in, and the tree itself once the request that read it
+/// handed it back ([`Worker::keep_tree`]). A request holds the tree while it
+/// is served, so one that fails leaves none, and the next reads it whole.
+pub(super) struct KeptTree {
+    tree: Option<Namespace>,
+    heads: HeldChunks,
+}
+
+impl KeptTree {
+    /// A tree just read at `heads`, held by the request that read it.
+    fn read(heads: HeldChunks) -> Self {
+        Self { tree: None, heads }
+    }
+}
+
 /// What a `files` open names of the file it puts into the workspace.
 pub(super) struct Putting {
     /// Its `tilo.content:<hash>` reference.
@@ -322,6 +338,11 @@ impl Worker {
     }
 
     /// [`Self::tree_in_workspace`], with the heads each held record stands at.
+    ///
+    /// The tree a request on this workspace kept ([`Self::keep_tree`]) takes
+    /// in only what changed of each of its documents since it was read, so a request
+    /// costs what changed, not the whole tree; a tree nobody kept is read
+    /// whole.
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
@@ -331,15 +352,116 @@ impl Worker {
         workspace_id: WorkspaceId,
         workspace: &str,
     ) -> Result<(Namespace, Option<HeldChunks>), Outcome> {
+        let key = (workspace_id, workspace.to_owned());
+        if let Some(kept) = self.trees.get_mut(&key)
+            && let Some(tree) = kept.tree.take()
+        {
+            let heads = kept.heads.clone();
+            if let Some((tree, held)) = self.caught_up(workspace_id, workspace, tree, heads)? {
+                if let Some(kept) = self.trees.get_mut(&key) {
+                    kept.heads.clone_from(&held);
+                }
+                return Ok((tree, Some(held)));
+            }
+        }
         let author = hex::encode(self.host_device.key.verifying_key().to_bytes());
         let Some((records, held)) = self.tree_records(workspace_id, workspace)? else {
             let tree = Namespace::new(&author)
                 .map_err(|error| refused(format!("a tree could not be founded: {error}")))?;
+            self.trees.insert(key, KeptTree::read(BTreeMap::new()));
             return Ok((tree, None));
         };
         let tree = Namespace::from_records(&author, records)
             .map_err(|error| refused(format!("the workspace's tree does not read: {error}")))?;
+        self.trees.insert(key, KeptTree::read(held.clone()));
         Ok((tree, Some(held)))
+    }
+
+    /// Keep `tree`, which a request read with [`Self::tree_with_heads`] and
+    /// whose writes the workspace took, for the next request on it. A request
+    /// whose writes failed keeps nothing: the next reads the tree whole.
+    pub(super) fn keep_tree(
+        &mut self,
+        workspace_id: WorkspaceId,
+        workspace: &str,
+        tree: Namespace,
+    ) {
+        if let Some(kept) = self.trees.get_mut(&(workspace_id, workspace.to_owned())) {
+            kept.tree = Some(tree);
+        }
+    }
+
+    /// `tree`, read when its documents were at `heads`, with what changed of
+    /// them since taken in, and the heads they are at now; `None` when the
+    /// workspace holds none of the tree's own document, which a whole read
+    /// settles.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome is what the request is answered with"
+    )]
+    fn caught_up(
+        &mut self,
+        workspace_id: WorkspaceId,
+        workspace: &str,
+        mut tree: Namespace,
+        mut heads: HeldChunks,
+    ) -> Result<Option<(Namespace, HeldChunks)>, Outcome> {
+        let unreadable = |error: automerge::AutomergeError| {
+            refused(format!("the workspace's tree does not read: {error}"))
+        };
+        let index = Self::tree_route(workspace);
+        let Some(changed) = self.changed_here(workspace_id, &index, true, heads.get(&0))? else {
+            return Ok(None);
+        };
+        if let Some((bytes, at)) = changed {
+            tree.take_documents(vec![(0, bytes)]).map_err(unreadable)?;
+            heads.insert(0, at);
+        }
+        let mut changes = Vec::new();
+        for chunk in tree.listed_chunks() {
+            let route = Self::tree_chunk_route(workspace, chunk);
+            if let Some(Some((bytes, at))) =
+                self.changed_here(workspace_id, &route, false, heads.get(&chunk))?
+            {
+                changes.push((chunk, bytes));
+                heads.insert(chunk, at);
+            }
+        }
+        if !changes.is_empty() {
+            tree.take_documents(changes).map_err(unreadable)?;
+        }
+        Ok(Some((tree, heads)))
+    }
+
+    /// What changed of the document at `route` since `since`: `None` when
+    /// the workspace holds no such document, `Some(None)` when it is still
+    /// there, and otherwise the changes after it (the document whole where
+    /// `since` is none) with the heads it is at.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome is what the request is answered with"
+    )]
+    fn changed_here(
+        &mut self,
+        workspace_id: WorkspaceId,
+        route: &DocumentRoute,
+        act: bool,
+        since: Option<&Vec<[u8; 32]>>,
+    ) -> Result<Option<Option<(Vec<u8>, Vec<[u8; 32]>)>>, Outcome> {
+        let held = self.refreshed_for(workspace_id, route, act)?;
+        match held.update(route, since.map(Vec::as_slice)) {
+            Ok(Some((
+                DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes),
+                at,
+            ))) => Ok(Some(Some((bytes, at)))),
+            // Unchanged since it was read.
+            Ok(None) if since.is_some() => Ok(Some(None)),
+            Ok(None) | Err(_) if !self.held_or_owed(workspace_id, route)? => Ok(None),
+            Ok(None) => Ok(Some(None)),
+            Err(why) => Err(Outcome::Rejected(ActionCallError::Unavailable {
+                reason: why,
+            })),
+        }
     }
 
     /// The records of `workspace`'s tree that this host holds, the tree's own
@@ -511,6 +633,7 @@ impl Worker {
         };
         self.commit_tree_writes(workspace_id, named, held.as_ref(), writes)
             .map_err(|reason| commit_failed(reason, true))?;
+        self.keep_tree(workspace_id, named, tree);
         // A folder's answer names how many files it put, not each: the caller
         // sent the list and knows where each file is, and the answer to a
         // folder of twenty thousand stays one bounded message.

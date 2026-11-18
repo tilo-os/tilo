@@ -1341,6 +1341,10 @@ struct Worker {
     /// Whether documents search keeps no entries for wait for the next pass that reads them:
     /// what the thread builds while no request waits on it ([`Worker::warm_entries`]).
     warming: bool,
+    /// Each workspace's tree as the last request served on it left it, by
+    /// workspace and tree name ([`tree_put::KeptTree`]): the next takes in
+    /// only what changed since.
+    trees: HashMap<(WorkspaceId, String), tree_put::KeptTree>,
 }
 
 /// The API's answer for an action it has nothing by that address.
@@ -1490,6 +1494,7 @@ impl Worker {
             canonical: canonical::CanonicalReads::default(),
             notes_failures: HashMap::new(),
             notes_followed: HashMap::new(),
+            trees: HashMap::new(),
             named: HashMap::new(),
             unmounted: HashMap::new(),
             save_grace: publish::SAVE_GRACE,
@@ -1950,7 +1955,7 @@ impl Worker {
 
     /// Let go of everything held of `workspace_id`, deleted: its
     /// membership, the records mounted and the replicas callers acted
-    /// through there, and its content store. Requests still waiting for it
+    /// through there, its file tree, and its content store. Requests still waiting for it
     /// run, and are told it is not there.
     fn forget(&mut self, workspace_id: WorkspaceId) {
         let of =
@@ -1963,6 +1968,7 @@ impl Worker {
         self.parked.retain(|(route, _, _)| !of(route));
         self.beside.retain(|route, held| !of(route) && !of(held));
         self.channels_opened.retain(|route| !of(route));
+        self.trees.retain(|(held, _), _| *held != workspace_id);
         self.canonical.forget(of);
         for Waiting { queued, job, .. } in self.joining.remove(&workspace_id).unwrap_or_default() {
             self.timed(queued, job);

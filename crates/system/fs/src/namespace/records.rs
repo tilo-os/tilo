@@ -183,7 +183,7 @@ impl Namespace {
     }
 
     /// Take in the tree's records as [`Self::save`] keeps them, as a mount joins the tree its
-    /// workspace keeps ([`Self::take_records`]), and return what resolving them changed.
+    /// workspace keeps ([`Self::take_documents`]), and return what resolving them changed.
     pub fn adopt_or_merge_remote_and_resolve(
         &mut self,
         data: &[u8],
@@ -192,7 +192,7 @@ impl Namespace {
         for (_, doc) in self.doc.each_mut() {
             let _ = doc.save_incremental();
         }
-        self.take_records(records)?;
+        self.take_documents(records)?;
         Ok(self.save_incremental())
     }
 
@@ -207,20 +207,20 @@ impl Namespace {
     ///
     /// # Errors
     /// A record does not load; what loaded before it is kept.
-    pub fn take_records(
+    pub fn take_documents(
         &mut self,
         records: Vec<(TreeChunk, Vec<u8>)>,
     ) -> Result<(), automerge::AutomergeError> {
-        self.take_records_touching(records).map(drop)
+        self.take_documents_touching(records).map(drop)
     }
 
-    /// [`Self::take_records`], answering the nodes the records touched: what a follower of the
+    /// [`Self::take_documents`], answering the nodes the records touched: what a follower of the
     /// tree reads again, rather than every node. A namespace that adopted the tree's own record
     /// answers every node.
     ///
     /// # Errors
     /// A record does not load; what loaded before it is kept.
-    pub fn take_records_touching(
+    pub fn take_documents_touching(
         &mut self,
         records: Vec<(TreeChunk, Vec<u8>)>,
     ) -> Result<HashSet<String>, automerge::AutomergeError> {
@@ -279,7 +279,7 @@ impl Namespace {
             .is_some_and(|doc| doc.has_change(hash))
     }
 
-    /// Take in the records `records` ([`Self::take_records`]) and answer what settling them wrote,
+    /// Take in the records `records` ([`Self::take_documents`]) and answer what settling them wrote,
     /// one write per record: this device's own changes repairing a conflict the records brought,
     /// which go out on their own so every holder of the tree settles it alike. Empty when nothing
     /// needed settling.
@@ -289,12 +289,12 @@ impl Namespace {
     ///
     /// # Errors
     /// A record does not load; what loaded before it is kept.
-    pub fn take_records_and_resolve(
+    pub fn take_documents_and_resolve(
         &mut self,
         records: Vec<(TreeChunk, Vec<u8>)>,
     ) -> Result<Vec<ResourceWrite>, automerge::AutomergeError> {
         let before = self.record_heads();
-        self.take_records(records)?;
+        self.take_documents(records)?;
         let actor = self.doc.index().get_actor().clone();
         let mut writes = Vec::new();
         for (chunk, doc) in self.doc.each_mut() {

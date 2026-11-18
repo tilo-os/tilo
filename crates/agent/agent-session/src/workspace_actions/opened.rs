@@ -365,16 +365,7 @@ impl Worker {
         route: &DocumentRoute,
         act: bool,
     ) -> Result<Option<super::Saved>, Outcome> {
-        let app_id = route.app_id.as_str();
-        let record = route.document.as_str();
-        let needs = if act {
-            Needs::Act { app_id, record }
-        } else {
-            Needs::Read { app_id, record }
-        };
-        let held = self
-            .refresh(workspace_id, needs)
-            .map_err(Outcome::Rejected)?;
+        let held = self.refreshed_for(workspace_id, route, act)?;
         match held.document(route) {
             Ok(saved) => Ok(Some(saved)),
             Err(_) if !self.held_or_owed(workspace_id, route)? => Ok(None),
@@ -382,6 +373,28 @@ impl Worker {
                 reason: why,
             })),
         }
+    }
+
+    /// The workspace as this member holds it, with what the document at
+    /// `route` needs to be read (or, with `act`, changed) held first.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome is what the request is answered with"
+    )]
+    pub(super) fn refreshed_for(
+        &mut self,
+        workspace_id: WorkspaceId,
+        route: &DocumentRoute,
+        act: bool,
+    ) -> Result<super::WorkspaceState, Outcome> {
+        let app_id = route.app_id.as_str();
+        let record = route.document.as_str();
+        let needs = if act {
+            Needs::Act { app_id, record }
+        } else {
+            Needs::Read { app_id, record }
+        };
+        self.refresh(workspace_id, needs).map_err(Outcome::Rejected)
     }
 }
 

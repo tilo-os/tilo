@@ -785,7 +785,7 @@ impl Worker {
         }
         let mut touched = followed
             .tree
-            .take_records_touching(std::mem::take(&mut records))
+            .take_documents_touching(std::mem::take(&mut records))
             .map_err(|error| error.to_string())?;
         for chunk in followed.tree.listed_chunks() {
             let route = Self::tree_chunk_route(&workspace, chunk);
@@ -810,7 +810,7 @@ impl Worker {
         touched.extend(
             followed
                 .tree
-                .take_records_touching(records)
+                .take_documents_touching(records)
                 .map_err(|error| error.to_string())?,
         );
         for node in touched {

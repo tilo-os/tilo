@@ -234,6 +234,7 @@ impl Worker {
             self.text_at(workspace_id, &mut tree, &arguments)
         }
         .map_err(refused)?;
+        self.keep_tree(workspace_id, named, tree);
         Ok((
             ActionOutput {
                 value: Some(value),

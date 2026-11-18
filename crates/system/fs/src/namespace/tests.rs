@@ -1258,7 +1258,7 @@ fn trees_founded_apart_merge_with_every_file_of_each() {
     )
     .unwrap();
     let _ = record.commit();
-    laptop.take_records(vec![(1, record.save())]).unwrap();
+    laptop.take_documents(vec![(1, record.save())]).unwrap();
     assert_eq!(
         names(&mut laptop),
         ["contract.txt", "handbook.md", "notice.pdf"]
@@ -1316,7 +1316,7 @@ fn a_write_is_one_change_of_the_chunk_that_holds_the_file() {
     assert_eq!(writes.len(), 4, "the tree's own record and each chunk");
     let mut desktop = Namespace::new("desktop").unwrap();
     desktop
-        .take_records(writes.into_iter().map(|w| (w.chunk, w.changes)).collect())
+        .take_documents(writes.into_iter().map(|w| (w.chunk, w.changes)).collect())
         .unwrap();
     assert!(
         desktop
@@ -1349,7 +1349,7 @@ fn a_write_is_one_change_of_the_chunk_that_holds_the_file() {
         writes[0].changes.len()
     );
     desktop
-        .take_records(vec![(chunk, writes[0].changes.clone())])
+        .take_documents(vec![(chunk, writes[0].changes.clone())])
         .unwrap();
     assert!(desktop.lookup(ROOT_INO, "renamed.txt").is_some());
     assert!(desktop.lookup(ROOT_INO, "f0.txt").is_none());
