@@ -1076,6 +1076,16 @@ impl Spawner {
     fn report_gone(&mut self, dir: &Path, end: Option<End>) {
         let launch = crate::kept::written_launch(dir);
         let end = end.or_else(|| crate::kept::recorded_end(dir));
+        // What it wrote while no desktop read it is in its keeper's files, which go with the
+        // directory: its end carries their tail, as one this desktop saw would.
+        let said = launch
+            .as_ref()
+            .map_or_else(crate::output::OutputTail::default, |launch| {
+                let output = Arc::new(AppOutput::new(launch.app.clone(), None));
+                output.follow(dir);
+                output.finish();
+                output.tail()
+            });
         if let Err(error) = std::fs::remove_dir_all(dir) {
             tracing::warn!(dir = %dir.display(), %error, "a kept app's directory stays");
         }
@@ -1092,7 +1102,7 @@ impl Spawner {
             app: launch.app,
             title: launch.title,
             end,
-            said: crate::output::OutputTail::default(),
+            said,
         });
     }
 

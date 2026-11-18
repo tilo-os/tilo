@@ -465,6 +465,7 @@ impl WindowsApp {
             success,
             exit_code,
             error: error.map(str::to_owned),
+            said: None,
         };
         if let Some(text) = crate::provider::ended_notice(&end) {
             self.notice = Some(Notice::error(text));

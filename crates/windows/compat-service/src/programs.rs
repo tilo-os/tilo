@@ -86,6 +86,7 @@ impl Programs {
                 success: outcome.success,
                 exit_code: outcome.exit_code,
                 error: None,
+                said: outcome.said,
             },
             Err(error) => ProgramEnd {
                 entry_id: running.entry_id,
@@ -93,6 +94,7 @@ impl Programs {
                 success: false,
                 exit_code: None,
                 error: Some(error),
+                said: None,
             },
         };
         let sequence = inner.next_end;
@@ -206,6 +208,7 @@ mod tests {
             Ok(ExecutionOutcome {
                 success: false,
                 exit_code: Some(3),
+                said: None,
             }),
         );
         programs.ended(other, "Probe", Err("no display".to_owned()));

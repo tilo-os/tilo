@@ -21,6 +21,56 @@ pub(crate) const PASSWORD_CHILD_FD: i32 = 38;
 pub struct ExecutionOutcome {
     pub success: bool,
     pub exit_code: Option<i32>,
+    /// The last of what a program that failed wrote on its error stream, when it wrote anything:
+    /// what the person is told beside its status ([`last_words`]).
+    pub said: Option<String>,
+}
+
+impl ExecutionOutcome {
+    /// A program that ended with `exit_code`, of which the service read nothing it said: a
+    /// success only with status 0.
+    #[must_use]
+    pub const fn exited(exit_code: Option<i32>) -> Self {
+        Self {
+            success: matches!(exit_code, Some(0)),
+            exit_code,
+            said: None,
+        }
+    }
+}
+
+/// How many of a failed program's last lines its end carries.
+const SAID_LINES: usize = 2;
+/// How long what a failed program's end carries may be, in characters: a sentence a person
+/// reads, never a dump of its log.
+const SAID_CHARS: usize = 200;
+
+/// The last lines of `lines` that say anything, joined and bounded for a sentence a person reads;
+/// none when nothing was said. What was cut is the oldest part, since a program says why it
+/// stopped last.
+#[must_use]
+pub fn last_words(lines: &[String]) -> Option<String> {
+    let said: Vec<&str> = lines
+        .iter()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .collect();
+    let said = said
+        .get(said.len().saturating_sub(SAID_LINES)..)
+        .unwrap_or_default()
+        .join(" ");
+    let length = said.chars().count();
+    if length == 0 {
+        return None;
+    }
+    if length <= SAID_CHARS {
+        return Some(said);
+    }
+    let kept: String = said
+        .chars()
+        .skip(length.saturating_sub(SAID_CHARS.saturating_sub(1)))
+        .collect();
+    Some(format!("…{}", kept.trim_start()))
 }
 
 /// A program an executor started, which goes on after its launch request is answered: its end
@@ -197,6 +247,7 @@ impl StartedProgram for ChildProgram {
         Ok(ExecutionOutcome {
             success: status.success(),
             exit_code: status.code(),
+            said: None,
         })
     }
 

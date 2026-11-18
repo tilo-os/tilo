@@ -442,7 +442,7 @@ impl Presenter {
             }
         };
         if !ended.success {
-            return Err(failed(ended.exit_code, String::new()));
+            return Err(failed(ended.exit_code, ended.said.unwrap_or_default()));
         }
         Ok(windows_vm::RemoteAppProcess {
             exit_code: ended.exit_code,
@@ -1576,6 +1576,7 @@ mod presentation_tests {
             Ok(crate::ExecutionOutcome {
                 success: true,
                 exit_code: Some(0),
+                said: None,
             })
         }
 

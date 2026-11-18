@@ -8,7 +8,7 @@ use crate::{
 
 // Version 8 answers a launch once the program started and reports its end
 // apart (`ProgramEnd` in a list, `running` on an application), and adds `Stop`.
-pub const PROTOCOL_VERSION: u16 = 8;
+pub const PROTOCOL_VERSION: u16 = 9;
 
 /// The inherited session service accepts only opaque server-owned entry IDs
 /// for launch. A query is preview-only and cannot select a launch plan.
@@ -145,6 +145,9 @@ pub struct ProgramEnd {
     pub exit_code: Option<i32>,
     /// Why it never ran, when it did not.
     pub error: Option<String>,
+    /// The last of what it wrote on its error stream, when it stopped in failure and wrote
+    /// anything: a line or two, bounded.
+    pub said: Option<String>,
 }
 
 #[cfg(test)]
@@ -161,7 +164,7 @@ mod tests {
         assert!(!encoded.contains("writable"));
         assert!(
             serde_json::from_str::<ProtocolRequest>(
-                r#"{"method":"launch_vm_with_portal_file","version":8,"entry_id":"windows-entry","writable":true}"#,
+                r#"{"method":"launch_vm_with_portal_file","version":9,"entry_id":"windows-entry","writable":true}"#,
             )
             .is_err()
         );

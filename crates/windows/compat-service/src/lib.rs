@@ -38,7 +38,7 @@ pub use catalogue::{
 };
 pub use execute::{
     BwrapExecutor, ChildProgram, ExecutionError, ExecutionOutcome, SECCOMP_CHILD_FD,
-    SandboxCommand, SandboxExecutor, StartedProgram,
+    SandboxCommand, SandboxExecutor, StartedProgram, last_words,
 };
 pub use installer::{
     InstallerError, InstallerInspection, MAX_INSTALLER_BYTES, PeMachine, inspect_installer,

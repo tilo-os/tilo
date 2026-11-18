@@ -365,7 +365,8 @@ fn audio_daemon() {
 
 /// Not a test: a Windows program, as the stand-in for Bubblewrap starts it. It writes what it
 /// finds at the descriptor Bubblewrap reads its filter from to `handed`, its pid to `started`, and
-/// shows a window until a code appears in `exit`, then exits with it.
+/// shows a window until a code appears in `exit`, then says what `say` holds on its error stream
+/// and exits with it.
 #[test]
 #[expect(
     clippy::exit,
@@ -406,6 +407,9 @@ fn probe_program() {
         window.exchange();
         if let Ok(code) = fs::read_to_string(dir.join("exit")) {
             let _ = fs::remove_file(dir.join("exit"));
+            if let Ok(said) = fs::read_to_string(dir.join("say")) {
+                eprint!("{said}");
+            }
             std::process::exit(code.trim().parse().expect("an exit code"));
         }
         std::thread::sleep(Duration::from_millis(5));
@@ -1137,6 +1141,12 @@ impl KeptRig {
     fn exit(&self, code: i32) {
         fs::write(self.probe.join("exit"), code.to_string()).unwrap();
     }
+
+    /// End the program with `code`, saying `said` on its error stream first.
+    fn exit_saying(&self, code: i32, said: &str) {
+        fs::write(self.probe.join("say"), said).unwrap();
+        self.exit(code);
+    }
 }
 
 /// What the real launcher would do with `handed`, the command line the session started a launch
@@ -1248,7 +1258,7 @@ fn a_windows_program_stays_open_through_an_in_place_restart() {
     second.shown();
     let tab = saved_window_tab(&rig, &mut second);
     second.end(tilo_app_launch::Teardown::InPlaceRestart);
-    rig.exit(5);
+    rig.exit_saying(5, "err:module:import_dll Library MSVCP140.dll not found\n");
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     let ended = || {
         fs::read_dir(&rig.root)
@@ -1276,6 +1286,10 @@ fn a_windows_program_stays_open_through_an_in_place_restart() {
     let answers = third.manage(&rig, "fourth", &["ended"]);
     assert_eq!(answers[0]["ended"][0]["entry_id"], rig.entry, "{answers:?}");
     assert_eq!(answers[0]["ended"][0]["exit_code"], 5, "{answers:?}");
+    assert_eq!(
+        answers[0]["ended"][0]["said"], "err:module:import_dll Library MSVCP140.dll not found",
+        "what it said while no desktop was there comes with its end: {answers:?}"
+    );
     closed_and_not_started(&rig, &mut third, tab, 2);
 
     // A logout ends a program and its keeper.
@@ -1296,6 +1310,60 @@ fn a_windows_program_stays_open_through_an_in_place_restart() {
         tilo_app_launch::kept::testing::described(&rig.root).is_empty(),
         "no keeper is left"
     );
+}
+
+/// A Windows program that fails says why: the last of what it wrote, which went to its keeper's
+/// log rather than the service, comes with its end, bounded to what a sentence holds. One that
+/// says nothing ends with its status alone.
+#[test]
+fn a_failed_windows_program_says_why_with_its_end() {
+    let rig = KeptRig::new();
+    let mut desktop = rig.start(false);
+    let answers = desktop.manage(&rig, "first", &["launch"]);
+    assert_eq!(answers[0]["result"], "launched", "{answers:?}");
+    desktop.shown();
+    let long = "x".repeat(4096);
+    rig.exit_saying(
+        3,
+        &format!("fixme:heap:stub\n{long}\n\nwine: could not load ntdll.so\n"),
+    );
+    let answers = desktop.manage(&rig, "second", &["ended"]);
+    let end = &answers[0]["ended"][0];
+    assert_eq!(end["exit_code"], 3, "{answers:?}");
+    let said = end["said"].as_str().expect("what it said");
+    assert!(
+        said.ends_with("x wine: could not load ntdll.so"),
+        "its last lines: {said}"
+    );
+    assert!(
+        said.starts_with('…') && said.chars().count() <= 200,
+        "{said}"
+    );
+
+    fs::remove_file(rig.probe.join("say")).unwrap();
+    let answers = desktop.manage(&rig, "third", &["launch"]);
+    assert_eq!(answers[0]["result"], "launched", "{answers:?}");
+    desktop.shown();
+    rig.exit(4);
+    // A manager opened later hears every end kept: this one is the last, once it came.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let end = loop {
+        let answers = desktop.manage(&rig, "fourth", &["ended"]);
+        let last = answers[0]["ended"]
+            .as_array()
+            .and_then(|ended| ended.last())
+            .cloned()
+            .unwrap_or_default();
+        if last["exit_code"] == 4 {
+            break last;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the second end did not come: {answers:?}"
+        );
+    };
+    assert_eq!(end["said"], Value::Null, "{end:?}");
+    desktop.end(tilo_app_launch::Teardown::Logout);
 }
 
 /// The parent of process `pid`.

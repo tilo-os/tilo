@@ -146,10 +146,10 @@ impl Apps {
     /// while no desktop was there is handed back to it with its end.
     pub(super) fn windows_program_ended(&self, event: &tilo_app_launch::Event) {
         let display = self.windows_display();
-        display.ended(event.id, &event.end);
+        display.ended(event);
         let away = self.state.borrow_mut().spawner.ended_away(event.id);
         if let Some(launch) = away {
-            display.take_back(event.id, &launch, Some(&event.end));
+            display.take_back(event.id, &launch, Some(event));
         }
     }
 
