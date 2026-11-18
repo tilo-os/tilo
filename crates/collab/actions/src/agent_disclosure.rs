@@ -76,6 +76,7 @@ fn hide(
 ) {
     for action in resource.actions.iter().filter(|action| match action.kind {
         // Only the person at the screen invokes these: no agent is shown them.
+        _ if crate::kind_is_a_drawn_control(&resource.kind) => false,
         OperationKind::View => false,
         OperationKind::Effect => !action.contract.only_shows() && action.contract.reaches_agents(),
         OperationKind::Document => action.contract.reaches_agents(),

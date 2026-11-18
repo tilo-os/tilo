@@ -1,7 +1,8 @@
 //! A control's own verb: what pressing the control itself reports — the text a field's person typed,
 //! the choice a picker's person made. Published as control `tilo.control:<id>`'s view action and
-//! answered by the control's own handler, so a person's press here, a screen reader, a script and an
-//! agent reach the same handler through the same action.
+//! answered by the control's own handler, so a person's press here, a screen reader and a script
+//! reach the same handler through the same action. It stands in for that person's input: no agent
+//! invokes it (`tilo_actions::kind_is_a_drawn_control`).
 
 use super::{ActionEmitter, ControlBindingMetadata};
 use crate::tilo_actions::{

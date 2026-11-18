@@ -51,8 +51,9 @@ pub fn check_scenarios_reach_every_action<A: ResourceApp>(
         };
         if !unreachable.is_empty() {
             failures.push(format!(
-                "{scenario}: published actions a drive cannot invoke, or whose call by an \
-                 agent opens a dialog on the person's screen: {unreachable:#?}"
+                "{scenario}: published actions a drive cannot invoke, whose call by an \
+                 agent opens a dialog on the person's screen, or that an agent could press: \
+                 {unreachable:#?}"
             ));
         }
     }
@@ -69,8 +70,9 @@ pub fn check_scenarios_reach_every_action<A: ResourceApp>(
 /// `sample_arguments` and confirmed: an app's own action first as an agent,
 /// then, when the agent was refused, as the person at the screen. Answers the ones the API
 /// could not address, as `resource action: why`: published yet reachable
-/// only by clicking; and the ones whose call by the agent opened a dialog or
-/// sheet over the person's window, which an agent never does. An action an earlier one withdrew (its row was removed) is not
+/// only by clicking; the ones whose call by the agent opened a dialog or
+/// sheet over the person's window, which an agent never does; and the drawn
+/// controls an agent could press, which only the person at the screen does. An action an earlier one withdrew (its row was removed) is not
 /// asked; one that is unavailable now, refuses the sample as arguments (a
 /// payload only another answer can build, such as a review to restore), or
 /// ran and failed at its job, was reached.
@@ -127,30 +129,50 @@ pub fn unreachable_actions_in_share<A: ResourceApp>(
             continue;
         };
         let phrase = confirmation_phrase(spec, &arguments);
-        // The app's own actions; a press of one of its drawn controls is
-        // the person's button, whose destructive press asks them first.
-        let own = !tilo_actions::kind_mirrors_a_control(&descriptor.resource_kind);
-        let before = if own {
-            *shown.get_or_insert_with(|| dialogs(app))
-        } else {
-            0
-        };
-        if own
-            && app
-                .harness()
-                .invoke_action_as(&agent, &address, &arguments, true, phrase.as_deref())
-                .is_ok()
-        {
-            ran = true;
-            let after = dialogs(app);
-            shown = Some(after);
-            if after > before {
+        // A control the window draws is the person's pointer and keyboard:
+        // an agent pressing it is refused, and the person's press is asked
+        // below. The platform's own operations are asked of the person
+        // alone.
+        if tilo_actions::kind_is_a_drawn_control(&descriptor.resource_kind) {
+            let pressed = app.harness().invoke_action_as(
+                &agent,
+                &address,
+                &arguments,
+                true,
+                phrase.as_deref(),
+            );
+            // Refused as the person's own; or withdrawn by what ran before it.
+            let refused = match &pressed {
+                Err(tilo_actions::ApiError::Unavailable { code, .. }) => {
+                    code == tilo_actions::Availability::PRIVATE_VIEW
+                }
+                Err(error) => error.code() == "unknown_action",
+                Ok(_) => false,
+            };
+            if !refused {
                 unreachable.push(format!(
-                    "{} {}: an agent's call opened a dialog on the person's screen",
+                    "{} {}: an agent pressed a control the person's window draws: {pressed:?}",
                     address.resource, address.action
                 ));
             }
-            continue;
+        } else if !tilo_actions::kind_mirrors_a_control(&descriptor.resource_kind) {
+            let before = *shown.get_or_insert_with(|| dialogs(app));
+            if app
+                .harness()
+                .invoke_action_as(&agent, &address, &arguments, true, phrase.as_deref())
+                .is_ok()
+            {
+                ran = true;
+                let after = dialogs(app);
+                shown = Some(after);
+                if after > before {
+                    unreachable.push(format!(
+                        "{} {}: an agent's call opened a dialog on the person's screen",
+                        address.resource, address.action
+                    ));
+                }
+                continue;
+            }
         }
         let mut answer = app
             .harness()

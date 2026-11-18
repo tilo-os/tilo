@@ -1654,6 +1654,7 @@ impl App {
         crate::invocation_scope::check_shown_here(
             actor,
             &self.collaboration.local_author,
+            resource,
             resolved,
         )?;
         // Every locally initiated external effect or asynchronous document job

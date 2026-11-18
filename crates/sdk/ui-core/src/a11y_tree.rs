@@ -1034,9 +1034,10 @@ impl SemanticTree {
                     } else {
                         spec
                     };
-                    // A control verbs (focus it, press it, set it) are
-                    // how agents and scripts drive what a person presses
-                    // directly: never a row of their own in people's lists,
+                    // A control's verbs (focus it, press it, set it) are
+                    // how scripts and assistive tools drive what the person
+                    // presses directly, never an agent's: never a row of
+                    // their own in people's lists,
                     // where they would repeat the app's actions as
                     // "New folder — Focus".
                     resource

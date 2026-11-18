@@ -45,14 +45,21 @@ pub(crate) fn said(error: BridgeError) -> String {
     }
 }
 
-/// `action`, unless the caller's permissions deny it: the catalogue lists such an action to an
-/// agent as not allowed ([`tilo_actions::Availability::not_allowed`]), and a call of it is
-/// refused as such, with where that is changed, before the workspace is asked anything.
+/// `action`, unless the catalogue lists it to the agent as refused: its permissions deny it
+/// ([`tilo_actions::Availability::not_allowed`]), said with where that is changed, or it only
+/// changes what the person at the publishing device sees
+/// ([`tilo_actions::Availability::shown_here`]), said naming it. Either is refused before the
+/// workspace is asked anything.
 pub(crate) fn not_allowed(
     action: tilo_actions::ActionDescriptor,
 ) -> Result<tilo_actions::ActionDescriptor, String> {
     match action.contract.availability.refusal() {
-        Some(refused) => Err(format!("not_permitted: {refused}")),
+        Some((tilo_actions::Availability::PRIVATE_VIEW, refused)) => Err(format!(
+            "{}: #{} {refused}; do what it leads to with the app's own actions",
+            tilo_actions::Availability::PRIVATE_VIEW,
+            action.address.action
+        )),
+        Some((_, refused)) => Err(format!("not_permitted: {refused}")),
         None => Ok(action),
     }
 }
