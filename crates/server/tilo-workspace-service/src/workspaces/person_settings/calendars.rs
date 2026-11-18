@@ -68,6 +68,9 @@ use crate::workspaces::Workspaces;
 #[cfg(test)]
 pub(crate) mod fake_caldav;
 
+/// What a turn this server carries out reads of them.
+pub(in crate::workspaces) mod turn;
+
 /// The resource of [`tilo_actions::remote::person_accounts::PROVIDER`] a
 /// person's calendars are asked under.
 pub const RESOURCE: &str = "calendars";

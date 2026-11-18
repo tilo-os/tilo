@@ -45,6 +45,10 @@ use crate::workspaces::person_settings::calendars::{self as held, fake_caldav};
 use crate::workspaces::tests::{governor, test_host as test_holder};
 use crate::workspaces::{AsksPeople, PersonAnswer, Workspaces};
 
+/// A turn this server carries out reads her calendars and changes nothing.
+#[path = "calendar_turn_tests.rs"]
+mod turn;
+
 /// The sign-in no answer, file or request may show.
 const PASSWORD: &str = "marker-7f3a-calendar-password";
 

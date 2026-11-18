@@ -173,3 +173,16 @@ fn categories_params() -> Vec<ActionParam> {
         ),
     ]
 }
+
+impl super::super::Workspaces {
+    /// The rows a turn this holder carries out is offered of its person's
+    /// calendars: the reads, since such a turn has no device behind it for
+    /// the catalogue to offer them by, and it writes nothing.
+    pub(in crate::workspaces) fn calendar_read_rows() -> Vec<CatalogueRow> {
+        VERBS
+            .iter()
+            .filter(|verb| held::turn::READS.contains(&verb.id))
+            .map(|verb| verb.row(CALENDARS, held::RESOURCE, "Calendars"))
+            .collect()
+    }
+}
