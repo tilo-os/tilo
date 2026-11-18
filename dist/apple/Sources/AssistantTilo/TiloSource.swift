@@ -892,6 +892,8 @@ public final class TiloSource: AssistantSource {
         for listener in feed.listeners.values { listener.yield(.answering(on)) }
         // An answer that ended may have made a task or moved one on: the list is read again.
         if !on { Task { [weak self] in await self?.readTasks() } }
+        // An answer that ended may have set an event up, changed one or removed one.
+        if !on, chat == .main { Task { await self.readEvents() } }
     }
 
     private func held(_ id: String) -> (Chat, Item)? {
@@ -903,6 +905,8 @@ public final class TiloSource: AssistantSource {
 
     private func say(_ now: [Item], in chat: Chat, doubting: Bool = true) {
         guard var feed = feeds[chat] else { return }
+        // An event of the person's stands as its card under the answer it was set up in.
+        let now = chat == .main ? cards.carded(now) : now
         // One read with nothing in it does not empty a conversation that holds pieces: a page
         // that just got in reads so before it has published Chat's messages. It is read again,
         // and believed where it still says so after a while. What the app empties itself, at a
@@ -1287,6 +1291,7 @@ public final class TiloSource: AssistantSource {
 
     private func piece(of message: ChatMessage, in chat: Chat, isFirst: Bool) -> Item {
         let id = Item.ID(message.id)
+        cards.see(message, as: id)
         let fields = message.fields
         if let question = fields["question"], !question.isNull {
             let answered = TiloSource.variant(question["answered"]?["answer"])
@@ -1624,6 +1629,37 @@ public final class TiloSource: AssistantSource {
 
     public nonisolated func automations() -> AsyncStream<[Automation]> { automationList.stream() }
 
+    /// The person's events as their server last listed them, and where each stands as a card.
+    private var cards = EventCards()
+
+    /// Take the person's events as their server listed them: the Tasks panel's list, and the
+    /// cards of the main chat.
+    private func take(events listed: [JSON]) {
+        cards.take(listed)
+        automationList.set(cards.automations)
+        sayCards()
+    }
+
+    /// Ask the person's server for their events alone: when an answer in the main chat ended,
+    /// which may have set one up, changed one or removed one. Never on a clock.
+    private func readEvents() async {
+        guard case .open = engine.state,
+              let listed = try? await engine.ask(.events, "list", of: "events")["events"]?.array
+        else { return }
+        take(events: listed)
+    }
+
+    /// Say the main chat again where its cards are different now: whole, so that a card
+    /// stands under its answer and not at the foot.
+    private func sayCards() {
+        guard var feed = feeds[.main], feed.told else { return }
+        let now = cards.carded(feed.held)
+        guard now != feed.held else { return }
+        feed.held = now
+        feeds[.main] = feed
+        for listener in feed.listeners.values { listener.yield(.all(now)) }
+    }
+
     /// Set up something that comes at a time or when something else happens, as the person:
     /// what it is called, what starts it and what their assistant is told to do then. The
     /// assistant sets these up in its answers; this is the same ask, for the app's own code.
@@ -1895,18 +1931,7 @@ public final class TiloSource: AssistantSource {
         }
         // What comes at a time and what happens when something else does.
         if let events = await answered(&unanswered, { try await self.engine.ask(.events, "list", of: "events") })?["events"]?.array {
-            automationList.set(events.compactMap { event -> Automation? in
-                guard let id = event["id"]?.string else { return nil }
-                let scheduled = TiloSource.variant(event["sort"]) != "event"
-                let when = event["when"]?.string ?? ""
-                return Automation(
-                    id: .init(id), sort: scheduled ? .scheduled : .event, title: event["name"]?.string ?? id,
-                    summary: scheduled ? when : event["instruction"]?.string ?? when,
-                    next: event["nextAtMs"]?.number.map { Date(timeIntervalSince1970: $0 / 1000) },
-                    once: when.lowercased().hasPrefix("once"), filter: event["onlyIf"]?.string,
-                    threshold: event["every"]?.number.map { Int($0) }, note: nil,
-                    actsAlone: !(event["permits"]?.array ?? []).isEmpty, isOn: event["on"]?.bool ?? true)
-            })
+            take(events: events)
         }
         // The services they connected by their address: the assistant view's line of each, and
         // how each one's card in a conversation stands (Connections.swift).

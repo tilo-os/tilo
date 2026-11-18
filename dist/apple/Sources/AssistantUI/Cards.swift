@@ -351,7 +351,8 @@ struct EventCardView: View {
     @Environment(\.wording) private var wording
 
     var body: some View {
-        Bubble { MarkdownText(text: card.text) }
+        // A card that stands under the assistant's own answer says nothing above its box.
+        if !card.text.isEmpty { Bubble { MarkdownText(text: card.text) } }
         CardBox(name: card.automation.title, note: wording.state(card.automation)) {
             let tags = wording.cardTags(card.automation)
             if !tags.isEmpty {
@@ -361,7 +362,7 @@ struct EventCardView: View {
             }
             if let chosen = card.answer, let choice = card.choices.first(where: { $0.id == chosen }) {
                 Fine(words: AssistantWords.youChose.said(["answer": choice.title]))
-            } else {
+            } else if !card.choices.isEmpty {
                 Flow(spacing: 8, lineSpacing: 8) {
                     ForEach(card.choices) { choice in
                         Button(choice.title) { model.answer(card.question, with: choice.id) }
