@@ -27,7 +27,7 @@ pub enum BackupsEffect {
         #[param("Id of the stored snapshot")]
         snapshot_id: String,
     },
-    #[effect(attended, job)]
+    #[effect(attended, job, returns)]
     RestoreSnapshot {
         #[param("Id of the stored snapshot")]
         snapshot_id: String,

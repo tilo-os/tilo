@@ -1184,6 +1184,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-history",
  "tilo-paths",
+ "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
  "walkdir",

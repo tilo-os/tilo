@@ -264,3 +264,68 @@ fn a_backup_is_a_job_in_the_registry_with_its_outcome() {
     );
     assert!(job.end_line().contains("Backed up"), "{}", job.end_line());
 }
+
+/// A snapshot is restored where the person picks: the chooser asks once for a folder, the
+/// files land there, and the job says how it ended.
+#[test]
+fn a_snapshot_is_restored_into_the_folder_the_person_picks() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("documents");
+    let destination = temp.path().join("drive");
+    let chosen = temp.path().join("restored");
+    for dir in [&source, &destination, &chosen] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::write(source.join("letter.txt"), b"dear backup").unwrap();
+
+    // The chooser is asked from the job's own thread, which reaches the process-wide
+    // services rather than a scope of this test's thread.
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    ui::process::install_default(services);
+
+    let mut app = TestApp::<BackupsShell>::new().unwrap();
+    app.settings::<BackupLocation>()
+        .set(&BackupLocation {
+            source: Some(source),
+            destination: Some(destination),
+        })
+        .unwrap();
+    app.settle();
+    let snapshot = app
+        .effect(&BackupsEffect::BackupNow)
+        .unwrap()
+        .value
+        .unwrap();
+    let id = snapshot["snapshot"].as_str().unwrap().to_owned();
+    app.settle();
+
+    recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(chosen.clone()));
+    app.effect(&BackupsEffect::RestoreSnapshot { snapshot_id: id })
+        .unwrap();
+    let landed = chosen.join("letter.txt");
+    tilo_test_env::wait_until("the restored file", || {
+        app.settle();
+        landed.is_file()
+    });
+    assert_eq!(std::fs::read(&landed).unwrap(), b"dear backup");
+
+    let asked = recorder.pick_requests();
+    let [request] = asked.as_slice() else {
+        panic!("one restore asks the chooser once: {asked:?}");
+    };
+    assert!(
+        request.is_directory(),
+        "the restore asks for a folder: {request:?}"
+    );
+
+    let job = ui::jobs::rows()
+        .into_iter()
+        .find(|job| job.title() == "Restoring")
+        .expect("the restore is a job in the registry");
+    assert!(
+        matches!(job.outcome(), Some(ui::jobs::Outcome::Done(_))),
+        "{:?}",
+        job.outcome()
+    );
+    assert!(job.end_line().contains("Restored"), "{}", job.end_line());
+}
