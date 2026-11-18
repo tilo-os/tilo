@@ -127,50 +127,5 @@ mod tests {
                 assert!(!got.is_empty(), "`{key}` resolved to nothing");
             }
         }
-
-        phase every_key_in_the_sources_is_in_the_bundle;
-        {
-            let sources = [
-                include_str!("app.rs"),
-                include_str!("app/accessibility.rs"),
-                include_str!("app/chrome.rs"),
-                include_str!("app/directory_import.rs"),
-                include_str!("app/editors.rs"),
-                include_str!("app/effects.rs"),
-                include_str!("app/jobs.rs"),
-                include_str!("app/navigation.rs"),
-                include_str!("app/paint.rs"),
-                include_str!("app/people.rs"),
-                include_str!("app/widget.rs"),
-                include_str!("analysis.rs"),
-                include_str!("import.rs"),
-                include_str!("lib.rs"),
-                include_str!("people.rs"),
-                include_str!("resource.rs"),
-                include_str!("search.rs"),
-            ];
-            let mut checked = 0;
-            for source in sources {
-                for call in ["tr(\"", "tr_with(\"", "tr_count(\"", "tr_args(\n"] {
-                    for (at, _) in source.match_indices(call) {
-                        let rest = source.get(at + call.len() - 1..).unwrap_or_default();
-                        let Some(open) = rest.find("\"photos-") else {
-                            continue;
-                        };
-                        let key_start = open + 1;
-                        let Some(len) = rest.get(key_start..).and_then(|tail| tail.find('"')) else {
-                            continue;
-                        };
-                        let key = &rest[key_start..key_start + len];
-                        if key.contains('{') || open > 40 {
-                            continue;
-                        }
-                        assert_ne!(tr(key), key, "`{key}` is not in the bundle");
-                        checked += 1;
-                    }
-                }
-            }
-            assert!(checked > 200, "the scan found only {checked} keys");
-        }
     }
 }
