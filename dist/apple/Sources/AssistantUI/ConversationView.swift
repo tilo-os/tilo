@@ -86,19 +86,35 @@ public struct ConversationView: View {
                 // cut flat there, its round corners made square.
                 .overlay(alignment: .top) { EdgeFade(edge: .top) }
                 .overlay(alignment: .bottom) { EdgeFade(edge: .bottom) }
-                // The end is in sight while what shows reaches to within two lines of it.
-                .onScrollGeometryChange(for: Bool.self) { place in
-                    place.contentSize.height - place.visibleRect.maxY <= 40
-                } action: { _, inSight in
-                    atEnd = inSight
-                    if inSight { moreBelow = false }
+                // Where the conversation rests is held by hand: when the conversation, or what
+                // shows of it, changes its height while the person is at the end, the end is brought
+                // back at once, whatever the reading says of where the view rests; and only a
+                // scroll takes a person away from the end, or back to it.
+                // A scroll view whose place is read all the time does not keep its end by itself on
+                // an iPhone: it opened at its oldest piece and lost its newest to the keyboard.
+                .onScrollGeometryChange(for: Resting.self) { place in
+                    Resting(tall: place.contentSize.height, shown: place.containerSize.height,
+                            below: place.contentSize.height - place.visibleRect.maxY)
+                } action: { was, now in
+                    if was.tall != now.tall || was.shown != now.shown {
+                        if atEnd {
+                            reader.scrollTo("end", anchor: .bottom)
+                        }
+                    } else {
+                        // The end is in sight while what shows reaches to within two lines of it.
+                        let inSight = now.below <= 40
+                        if atEnd != inSight { atEnd = inSight }
+                        if inSight, moreBelow { moreBelow = false }
+                    }
                 }
+                .onAppear { reader.scrollTo("end", anchor: .bottom) }
                 // Scrolled up, the view stays where the person put it, and a quiet mark says that
                 // more came below. A press on it brings the end back.
                 .overlay(alignment: .bottom) {
                     if moreBelow {
                         Button {
                             moreBelow = false
+                            atEnd = true
                             reader.scrollTo("end", anchor: .bottom)
                         } label: {
                             Tag(words: AssistantWords.moreBelow.said)
@@ -116,12 +132,17 @@ public struct ConversationView: View {
                 .onChange(of: chat) {
                     keepsFoot = false
                     moreBelow = false
+                    // Another conversation opens on its newest piece, wherever the last one was left.
+                    atEnd = true
+                    reader.scrollTo("end", anchor: .bottom)
                 }
                 .onChange(of: rows.last?.id) {
                     keepsFoot = false
-                    // A new piece brings the end into view for a person who stands at it, or who sent it.
+                    // A new piece brings the end into view for a person who stands at it, or who sent
+                    // it. At once: an eased scroll to the end begins at the conversation's top.
                     guard atEnd || newestIsOwn(conversation) else { return }
-                    withAnimation(.easeOut(duration: 0.2)) { reader.scrollTo("end", anchor: .bottom) }
+                    atEnd = true
+                    reader.scrollTo("end", anchor: .bottom)
                 }
                 .onChange(of: model.shownItem) {
                     guard let item = model.shownItem else { return }
@@ -161,6 +182,14 @@ public struct ConversationView: View {
         .frame(maxWidth: .infinity)
         .padding(.bottom, 40)
     }
+}
+
+/// What of a conversation's scroll view says where it rests: how tall the conversation is, how
+/// tall what shows of it is, and how much of it lies under what shows.
+private struct Resting: Equatable {
+    var tall: CGFloat
+    var shown: CGFloat
+    var below: CGFloat
 }
 
 /// One thing the conversation draws under another.
