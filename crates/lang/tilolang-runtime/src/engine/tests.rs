@@ -338,3 +338,82 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+/// A device whose one import of its own ABI answers the byte at an offset of the caller's
+/// memory, as the model ABI's imports read and write it.
+struct Peek;
+
+const PEEK_ABI: &[super::Imports] = &[("probe", "peek", "i", "i")];
+
+impl Host for Peek {
+    fn import(&self, _: usize, _: &[u8], _: &[Wasm]) -> Result<Option<Wasm>, HostFail> {
+        Err(HostFail::Trap("only probe::peek is answered".into()))
+    }
+
+    fn guest_abi(&self) -> &'static [super::Imports] {
+        PEEK_ABI
+    }
+
+    fn guest_import(
+        &self,
+        _: &str,
+        _: &str,
+        memory: &[u8],
+        args: &[Wasm],
+    ) -> Result<super::GuestAnswer, HostFail> {
+        let [Wasm::I32(at)] = args else {
+            return Err(HostFail::Trap("peek takes an offset".into()));
+        };
+        let byte = memory
+            .get(usize::try_from(*at).unwrap())
+            .ok_or_else(|| HostFail::Trap("no memory to peek at".into()))?;
+        Ok(super::GuestAnswer::Value(Wasm::I32(i32::from(*byte))))
+    }
+}
+
+tilo_test_env::scenario! {
+    fn an_import_a_later_module_calls_answers_in_the_first_ones_memory;
+
+    phase on_both_tiers;
+    {
+        let runtime = wat::parse_str(
+            r#"
+(module
+  (type $entry (func (result i32)))
+  (import "probe" "peek" (func $peek (param i32) (result i32)))
+  (memory (export "memory") 1)
+  (table (export "__indirect_function_table") 1 1 funcref)
+  (export "peek" (func $peek))
+  (func (export "apply") (result i32)
+    (call_indirect (type $entry) (i32.const 0)))
+)
+"#,
+        )
+        .unwrap();
+        let app = wat::parse_str(
+            r#"
+(module
+  (import "__wasm_split" "memory" (memory 1))
+  (import "__wasm_split" "__indirect_function_table" (table 1 1 funcref))
+  (import "__wasm_split" "peek" (func $peek (param i32) (result i32)))
+  (data (i32.const 200) "\4d")
+  (func $entry (result i32) (call $peek (i32.const 200)))
+  (elem (i32.const 0) $entry)
+)
+"#,
+        )
+        .unwrap();
+        let process = Process::new(None);
+        process.top().pause(true);
+        let engine = process.engine();
+        engine.link(PEEK_ABI).unwrap();
+        let set = engine.compile_linked(&[&runtime, &app]).unwrap();
+        let peek = || engine.call(&set, "apply", &[], Rc::new(Peek));
+        assert_eq!(engine.tier(&set), Some(EngineKind::Wasmi));
+        assert_eq!(peek().unwrap(), Some(Wasm::I32(0x4d)));
+        process.top().pause(false);
+        engine.settle_compile(&set);
+        assert_eq!(peek().unwrap(), Some(Wasm::I32(0x4d)));
+        assert_eq!(engine.tier(&set), Some(EngineKind::Cranelift));
+    }
+}
