@@ -13,6 +13,13 @@ public struct ConversationView: View {
     private let head: String?
     @Environment(AssistantModel.self) private var model
     @Environment(\.wording) private var wording
+    /// Whether the conversation's end is in sight: the person has not scrolled away from it.
+    @State private var atEnd = true
+    /// Whether something came or grew under what the person scrolled up to.
+    @State private var moreBelow = false
+    /// Whether the height of the line that said an answer was being written is kept after
+    /// the answer ended, so that nothing above it moves. The next piece takes its place.
+    @State private var keepsFoot = false
 
     public init(chat: Chat, picturedSecret: String = "", head: String? = nil) {
         self.chat = chat
@@ -57,8 +64,10 @@ public struct ConversationView: View {
                         }
                         // What stands between the person and a first answer is said where that answer would stand.
                         if chat == .main { SetupStep() }
-                        if conversation.isAnswering {
+                        if conversation.isAnswering || keepsFoot {
                             Fine(words: "\(AssistantWords.answering.said)…").padding(.leading, 14)
+                                .opacity(conversation.isAnswering ? 1 : 0)
+                                .accessibilityHidden(!conversation.isAnswering)
                         }
                         if ready > 0 { ReviewLine(ready: ready) }
                         if let problem = model.problem {
@@ -77,7 +86,41 @@ public struct ConversationView: View {
                 // cut flat there, its round corners made square.
                 .overlay(alignment: .top) { EdgeFade(edge: .top) }
                 .overlay(alignment: .bottom) { EdgeFade(edge: .bottom) }
+                // The end is in sight while what shows reaches to within two lines of it.
+                .onScrollGeometryChange(for: Bool.self) { place in
+                    place.contentSize.height - place.visibleRect.maxY <= 40
+                } action: { _, inSight in
+                    atEnd = inSight
+                    if inSight { moreBelow = false }
+                }
+                // Scrolled up, the view stays where the person put it, and a quiet mark says that
+                // more came below. A press on it brings the end back.
+                .overlay(alignment: .bottom) {
+                    if moreBelow {
+                        Button {
+                            moreBelow = false
+                            reader.scrollTo("end", anchor: .bottom)
+                        } label: {
+                            Tag(words: AssistantWords.moreBelow.said)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.bottom, 8)
+                    }
+                }
+                .onChange(of: conversation.items.last) {
+                    if !atEnd, !newestIsOwn(conversation) { moreBelow = true }
+                }
+                .onChange(of: conversation.isAnswering) { was, now in
+                    keepsFoot = was && !now
+                }
+                .onChange(of: chat) {
+                    keepsFoot = false
+                    moreBelow = false
+                }
                 .onChange(of: rows.last?.id) {
+                    keepsFoot = false
+                    // A new piece brings the end into view for a person who stands at it, or who sent it.
+                    guard atEnd || newestIsOwn(conversation) else { return }
                     withAnimation(.easeOut(duration: 0.2)) { reader.scrollTo("end", anchor: .bottom) }
                 }
                 .onChange(of: model.shownItem) {
@@ -88,6 +131,11 @@ public struct ConversationView: View {
             }
         }
         .environment(\.writtenPiece, written)
+    }
+
+    /// Whether the newest piece is what the person wrote themselves.
+    private func newestIsOwn(_ conversation: Conversation) -> Bool {
+        if case .message(let message)? = conversation.items.last?.content { message.author == .person } else { false }
     }
 
     private var liveAgent: SubAgent? {
