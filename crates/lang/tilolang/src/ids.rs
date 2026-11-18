@@ -51,10 +51,23 @@ impl Entropy for OsEntropy {
                 return u64::from_le_bytes(buf);
             }
             let nanos = tilo_clock::unix_now_ns();
-            self.fallback = Some(SeededEntropy(nanos ^ u64::from(std::process::id())));
+            self.fallback = Some(SeededEntropy(nanos ^ this_process()));
         }
         self.fallback.as_mut().map_or(0, Entropy::next_u64)
     }
+}
+
+/// What tells this process's draws from another's at the same moment. A page is one process,
+/// with no id of its own: std has none to give there, and asking it for one stops the page.
+#[cfg(target_arch = "wasm32")]
+const fn this_process() -> u64 {
+    0
+}
+
+/// What tells this process's draws from another's at the same moment: its id.
+#[cfg(not(target_arch = "wasm32"))]
+fn this_process() -> u64 {
+    u64::from(std::process::id())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
