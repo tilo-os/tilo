@@ -39,7 +39,7 @@ class ThinAppSelectionTests(unittest.TestCase):
             self.write(name, (ROOT / name).read_text())
         self.write("Cargo.toml", """[workspace]
 members = ["apps/calculator", "apps/other", "apps/extra", "runtime", "shared", "app_sdk",
-           "crates/runtime/engines/fixture"]
+           "crates/runtime/engines/fixture", "crates/runtime/engine-parts/fixture-deep"]
 resolver = "2"
 [profile.thin-app]
 inherits = "dev"
@@ -100,6 +100,24 @@ shared = { path = "../shared" }
         self.write("runtime/src/lib.rs", """pub use shared;
 pub fn value() -> usize { shared::value() }
 """)
+        # A second engine the fixture engine chains on, outside the engines
+        # directory: no package here builds or names it, so only the library
+        # the engine links tells that the bundle carries it.
+        self.write("crates/runtime/engine-parts/fixture-deep/Cargo.toml", """[package]
+name = "tilo-fixture-deep-engine"
+version = "0.1.0"
+edition = "2024"
+[lib]
+name = "tilo_fixture_deep_engine"
+crate-type = ["dylib"]
+[features]
+thin = ["dep:runtime-dylib"]
+[dependencies]
+runtime-dylib = { path = "../../../../runtime", optional = true }
+""")
+        self.write("crates/runtime/engine-parts/fixture-deep/src/lib.rs", """#[cfg(feature = "thin")]
+pub fn deep_value() -> usize { runtime_dylib::value() + 2 }
+""")
         # A runtime engine: a dylib chained on the runtime, built
         # with it whichever apps are selected, and linked only by `other`.
         self.write("crates/runtime/engines/fixture/Cargo.toml", """[package]
@@ -120,12 +138,13 @@ name = "tilo-runtime-account-capability"
 path = "src/probe.rs"
 required-features = ["thin"]
 [features]
-thin = ["dep:runtime-dylib"]
+thin = ["dep:runtime-dylib", "dep:tilo-fixture-deep-engine", "tilo-fixture-deep-engine/thin"]
 [dependencies]
 runtime-dylib = { path = "../../../../runtime", optional = true }
+tilo-fixture-deep-engine = { path = "../../engine-parts/fixture-deep", optional = true }
 """)
         self.write("crates/runtime/engines/fixture/src/lib.rs", """#[cfg(feature = "thin")]
-pub fn engine_value() -> usize { runtime_dylib::value() + 40 }
+pub fn engine_value() -> usize { runtime_dylib::value() + tilo_fixture_deep_engine::deep_value() + 40 }
 """)
         self.write("crates/runtime/engines/fixture/src/probe.rs",
                    'fn main() { println!("{}", tilo_fixture_engine::engine_value()); }\n')
@@ -267,11 +286,15 @@ app-sdk = { path = "../../app_sdk" }
             before = hashlib.sha256(runtime.read_bytes()).hexdigest()
             # The engine is built and checked although no app that uses it
             # was selected: the runtime bundle cannot depend on the selection.
+            # The engine it chains on ships with it, though no package here
+            # names that one.
             engine = target / "libtilo_fixture_engine.so"
-            self.assertEqual((target / "runtime-engines").read_text(), "libtilo_fixture_engine.so\n")
+            self.assertEqual((target / "runtime-engines").read_text(),
+                             "libtilo_fixture_deep_engine.so\nlibtilo_fixture_engine.so\n")
             self.assertIn("engine-runs-against-runtime", selected.stdout)
             needed = subprocess.check_output(["readelf", "-dW", str(engine)], text=True)
             self.assertIn("[libruntime_dylib.so]", needed)
+            self.assertIn("[libtilo_fixture_deep_engine.so]", needed)
             self.assertNotIn("libtilo_fixture_engine.so",
                              subprocess.check_output(["readelf", "-dW", str(target / "calculator")], text=True))
             engine_before = hashlib.sha256(engine.read_bytes()).hexdigest()
@@ -289,10 +312,17 @@ app-sdk = { path = "../../app_sdk" }
             self.assertEqual(other.returncode, 0, other.stderr)
             self.assertIn("unified-runtime-ok", other.stdout)
             self.assertNotIn("Compiling runtime-dylib", complete.stderr)
-            rustlib = self.run_command("rustc", "--print", "target-libdir").stdout.strip()
             started = self.run_command(str(target / "calculator"), LD_LIBRARY_PATH=f"{target}:{rustlib}")
             self.assertEqual(started.returncode, 0, started.stderr)
             self.assertIn("unified-runtime-ok", started.stdout)
+            # The engine a library chains on is named when the build no longer
+            # holds it, rather than left to the bundle's signature check.
+            (target / "libtilo_fixture_deep_engine.so").unlink()
+            absent = self.run_command("bash", "os/scripts/build-thin-apps.sh", BUILD_RUNTIME_ONLY="1",
+                                      BUILD_PHASE="verify", APP_FEATURES="other/runtime-engine")
+            self.assertNotEqual(absent.returncode, 0, absent.stdout + absent.stderr)
+            self.assertIn("runtime engine libtilo_fixture_engine.so needs libtilo_fixture_deep_engine.so",
+                          absent.stderr)
         restart_fixture(self)
         with self.subTest(phase="a_development_build_compiles_its_apps_for_speed"):
             # thin-dev, a developer session's build: the app crates keep the
@@ -383,16 +413,19 @@ app-sdk = { path = "../../app_sdk" }
                                   APP_FEATURES="other/runtime-engine")
         self.assertEqual(shared.returncode, 0, shared.stdout + shared.stderr)
         self.assertIn("built 0 thin tapp apps", shared.stdout)
-        self.assertEqual((profile / "runtime-engines").read_text(), "libtilo_fixture_engine.so\n")
+        self.assertEqual((profile / "runtime-engines").read_text(),
+                         "libtilo_fixture_deep_engine.so\nlibtilo_fixture_engine.so\n")
         kept = self.run_command(*units, "keep", str(profile), "--list", str(listing),
                                 *(f"--top={name}" for name in (
                                     "libruntime_dylib.so", "libruntime_dylib.d", "runtime-engines",
                                     "libtilo_fixture_engine.so", "libtilo_fixture_engine.d",
+                                    "libtilo_fixture_deep_engine.so", "libtilo_fixture_deep_engine.d",
                                     "tilo-fixture-engine-check", "tilo-fixture-engine-check.d")))
         self.assertEqual(kept.returncode, 0, kept.stdout + kept.stderr)
         listed = listing.read_text().splitlines()
         self.assertIn("thin-app/libruntime_dylib.so", listed)
         self.assertIn("thin-app/libtilo_fixture_engine.so", listed)
+        self.assertIn("thin-app/libtilo_fixture_deep_engine.so", listed)
         self.assertFalse((profile / "calculator").exists(), "the app an earlier build left is not handed on")
         self.assertFalse(any("calculator" in path for path in listed), listed)
         self.assertFalse(list((profile / ".fingerprint").glob("calculator-*")))

@@ -112,8 +112,9 @@ relies on:
   (workspace checks and tests, `tilo-app dev`) see an empty library;
 - a `[[bin]] tilo-<name>-engine-check` with `required-features = ["thin"]`:
   `os/scripts/build-thin-apps.sh` builds and runs it in every runtime build,
-  whichever apps are selected, and writes the libraries it built to
-  `target/thin-app/runtime-engines`, which packaging signs into the bundle;
+  whichever apps are selected, and writes the libraries it built, and the
+  engine libraries those chain on, to `target/thin-app/runtime-engines`, which
+  packaging signs into the bundle;
 - `tools/ci/rustc-thin-app-wrapper.sh` gives `tilo_*_engine` crates the
   runtime's link flags (`-C prefer-dynamic` is what lets one Rust dylib link
   another) and its linker, `tools/ci/runtime-dylib-lazy-link.py`, which drops

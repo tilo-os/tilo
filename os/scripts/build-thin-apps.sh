@@ -370,18 +370,42 @@ for index in "${!binaries[@]}"; do
     rm -f "$TARGET_DIR/$PROFILE/.${crate}.loader-check.err"
 done
 
-# Each engine must link this runtime through the wrapper and run against it.
 # The list written last is what packaging folds into the runtime bundle
 # (dist/apps/package-apps.sh, os/Containerfile, os/dev/assemble-app-runtime.py):
-# one library file name a line, beside libruntime_dylib.so.
+# one library file name a line, beside libruntime_dylib.so. An engine library
+# chains on another engine library (Typst's highlight and wasm engines, Music's
+# accounts and YouTube ones), and the bundle carries what the built libraries
+# name: the list is their DT_NEEDED closure, so an engine that only another
+# engine loads ships with it.
 engine_list="$TARGET_DIR/$PROFILE/runtime-engines"
 rm -f "$engine_list"
-: > "$engine_list.partial"
-engine_count=0
+listed=()
 for engine in ${engines[@]+"${engines[@]}"}; do
     library="lib${engine//-/_}.so"
     [ -f "$TARGET_DIR/$PROFILE/$library" ] \
         || { echo "runtime engine $engine did not produce $library" >&2; exit 1; }
+    listed+=("$library")
+done
+index=0
+while (( index < ${#listed[@]} )); do
+    library=${listed[index]}
+    index=$((index + 1))
+    while IFS= read -r needed; do
+        case $needed in libtilo_*_engine.so) ;; *) continue ;; esac
+        case " ${listed[*]} " in *" $needed "*) continue ;; esac
+        [ -f "$TARGET_DIR/$PROFILE/$needed" ] || {
+            echo "runtime engine $library needs $needed, which this build did not produce" >&2
+            exit 1
+        }
+        listed+=("$needed")
+    done < <(dynamic_section "$TARGET_DIR/$PROFILE/$library" \
+        | sed -n 's/.*(NEEDED).*\[\([^]]*\)\].*/\1/p')
+done
+# Each engine must link this runtime through the wrapper and run against it.
+for library in "${listed[@]}"; do
+    engine=${library#lib}
+    engine=${engine%.so}
+    engine=${engine//_/-}
     library_dynamic=$(dynamic_section "$TARGET_DIR/$PROFILE/$library")
     grep -Fq '[libruntime_dylib.so]' <<<"$library_dynamic" || {
         echo "runtime engine $library does not link libruntime_dylib.so; it would carry its own copy of the shared crates" >&2
@@ -392,14 +416,19 @@ for engine in ${engines[@]+"${engines[@]}"}; do
         exit 1
     }
     no_copy_relocations "$TARGET_DIR/$PROFILE/$library"
-    LD_LIBRARY_PATH="$TARGET_DIR/$PROFILE:$rust_target_libdir" "$TARGET_DIR/$PROFILE/$engine-check" || {
+    check="$TARGET_DIR/$PROFILE/$engine-check"
+    [ ! -x "$check" ] \
+        || LD_LIBRARY_PATH="$TARGET_DIR/$PROFILE:$rust_target_libdir" "$check" || {
         echo "runtime engine $library does not run against this runtime ($engine-check failed)" >&2
         exit 1
     }
-    printf '%s\n' "$library" >> "$engine_list.partial"
-    engine_count=$((engine_count + 1))
 done
-mv "$engine_list.partial" "$engine_list"
+if ((${#listed[@]})); then
+    printf '%s\n' "${listed[@]}" | LC_ALL=C sort > "$engine_list"
+else
+    : > "$engine_list"
+fi
+engine_count=${#listed[@]}
 
 printf 'built %s thin tapp apps with %s and %s runtime engines\n' \
     "${#binaries[@]}" "$TARGET_DIR/$PROFILE/libruntime_dylib.so" "$engine_count"

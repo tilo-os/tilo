@@ -33,6 +33,9 @@ class RuntimeDependencies(unittest.TestCase):
             'lazy': 'extern int deep(void); int lazy(void) { return deep(); }',
             'app': '#include <stdio.h>\nextern int bridge(void); '
                    'int main(void) { printf("%d", bridge()); return 0; }',
+            # An engine library naming another engine it chains on.
+            'engine': 'extern int leaf(void); int engine(void) { return leaf(); }',
+            'engine_user': 'extern int engine(void); int uses_engine(void) { return engine(); }',
         }
         for name, contents in sources.items():
             (self.directory / (name + '.c')).write_text(contents + '\n')
@@ -43,6 +46,10 @@ class RuntimeDependencies(unittest.TestCase):
             ['cc', '-shared', '-fPIC', 'deep.c', '-Wl,-soname,libdeep.so', '-o', 'libdeep.so'],
             ['cc', '-shared', '-fPIC', 'lazy.c', '-L.', '-ldeep',
              '-Wl,-soname,liblazy.so', '-o', 'liblazy.so'],
+            ['cc', '-shared', '-fPIC', 'engine.c', '-L.', '-lleaf',
+             '-Wl,-soname,libtilo_fixture_engine.so', '-o', 'libtilo_fixture_engine.so'],
+            ['cc', '-shared', '-fPIC', 'engine_user.c', '-L.', '-ltilo_fixture_engine',
+             '-Wl,-rpath-link,.', '-Wl,-soname,libengine_user.so', '-o', 'libengine_user.so'],
             ['cc', '-shared', '-fPIC', 'runtime.c', '-L.', '-lbridge',
              '-Wl,-rpath-link,.', '-o', 'libruntime_dylib.so'],
             ['cc', 'app.c', '-L.', '-lbridge', '-Wl,-rpath-link,.', '-o', 'app'],
@@ -75,6 +82,12 @@ class RuntimeDependencies(unittest.TestCase):
         (self.directory / 'liblazy.so').unlink()
         with self.assertRaisesRegex(ValueError, 'loaded on first use is unresolved: liblazy.so'):
             COLLECTOR.collect([self.directory / 'libruntime_dylib.so'], [self.directory])
+
+    def test_an_engine_a_library_chains_on_is_named_when_absent(self):
+        (self.directory / 'libtilo_fixture_engine.so').unlink()
+        with self.assertRaisesRegex(ValueError, 'runtime engine libtilo_fixture_engine.so '
+                                                 'is missing from the set being signed'):
+            COLLECTOR.collect([self.directory / 'libengine_user.so'], [self.directory])
 
     def test_unresolved_and_absent_inputs_fail(self):
         (self.directory / 'libleaf.so').unlink()
