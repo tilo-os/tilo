@@ -399,6 +399,23 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         count == 1 ? one.said : many.said(["count": String(count)])
     }
 
+    /// The language these sentences are said in, as what a time or a number that stands among
+    /// them is written by: an English line says "2.0s" on a device set to a German region too.
+    public static var language: Locale {
+        language(spoken: spoken, on: .current)
+    }
+
+    /// The same for sentences held in the language `spoken`, on a device set to `device`. Where
+    /// the device speaks that language itself, its region's ways stay; where it does not, the
+    /// language's own.
+    public static func language(spoken: String?, on device: Locale) -> Locale {
+        let said = Locale(identifier: Locale.canonicalLanguageIdentifier(from: spoken ?? "en"))
+        return said.language.languageCode == device.language.languageCode ? device : said
+    }
+
+    /// The language the bundle holds its sentences in for this person. It changes only with a new start.
+    private static let spoken = Bundle.main.preferredLocalizations.first
+
     /// The app's name, as its bundle gives it.
     public static var appName: String {
         let info = Bundle.main.infoDictionary ?? [:]

@@ -69,10 +69,11 @@ struct TurnLine: View {
         .accessibilityHidden(givesWay)
     }
 
-    /// How long a turn has gone on, as a clock says it: minutes and seconds, and hours once there are any.
-    static func said(_ gone: TimeInterval) -> String {
+    /// How long a turn has gone on, as a clock says it: minutes and seconds, and hours once there
+    /// are any, in the language the line's own words are in.
+    static func said(_ gone: TimeInterval, in language: Locale = AssistantWords.language) -> String {
         let seconds = Duration.seconds(Int(max(0, gone)))
-        return seconds.formatted(.time(pattern: gone < 3600 ? .minuteSecond : .hourMinuteSecond))
+        return seconds.formatted(.time(pattern: gone < 3600 ? .minuteSecond : .hourMinuteSecond).locale(language))
     }
 
     /// Whether the line shows what a model thinks: then the end of it is what shows.
@@ -131,9 +132,9 @@ struct TurnStepList: View {
         }
     }
 
-    /// How long a step took, as the person's own language says a short time.
-    static func said(_ took: TimeInterval) -> String {
+    /// How long a step took, as the language the step's own words are in says a short time.
+    static func said(_ took: TimeInterval, in language: Locale = AssistantWords.language) -> String {
         Duration.seconds(max(0, took)).formatted(.units(allowed: [.minutes, .seconds], width: .narrow,
-                                                         fractionalPart: took < 10 ? .show(length: 1) : .hide))
+                                                         fractionalPart: took < 10 ? .show(length: 1) : .hide).locale(language))
     }
 }
