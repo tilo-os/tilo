@@ -1487,7 +1487,7 @@ impl Chained for ChatPart {
 impl ChatPart {
     /// The message `reply` answers, when `reply` is what an agent writes in answer on the
     /// attempt that goes now ([`reply_id_at`]): the message its turn's stop stands on.
-    fn answered_by(&self, reply: &Id) -> Option<Id> {
+    pub(crate) fn answered_by(&self, reply: &Id) -> Option<Id> {
         let row = self.messages.get(reply)?;
         row.work.as_ref()?;
         let thread = row.parent.as_ref()?;

@@ -2412,6 +2412,7 @@ fn floating_pins_leave_the_composer_whole() {
     );
 }
 
+mod agent_stop;
 mod agent_work;
 mod calls_and_peers;
 mod menus;

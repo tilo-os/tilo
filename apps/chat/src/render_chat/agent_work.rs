@@ -33,7 +33,18 @@ impl AgentWorkPresentation {
     /// `words` says whether the reply itself carries text. A refused run puts
     /// its failure into that text, so the card does not say the same failure
     /// again: the reply has one failure surface, not two.
-    pub(super) fn of(work: &AgentWork, open: bool, words: bool) -> Option<Self> {
+    ///
+    /// `stopped` says who stopped the reply's turn, when its person did. The
+    /// conversation holds their stop from the moment they pressed it, so the
+    /// reply says so at once, before whoever works the agent has ended its
+    /// work. A reply that ended by itself keeps saying how it ended.
+    pub(super) fn of_turn(
+        work: &AgentWork,
+        open: bool,
+        words: bool,
+        stopped: Option<&str>,
+    ) -> Option<Self> {
+        use crate::agent_stream::AgentFinish;
         use crate::i18n::{t, t_args};
         let state = work
             .stream
@@ -43,6 +54,14 @@ impl AgentWorkPresentation {
                 || work.state.clone(),
                 |outcome| AgentWorkState::ProviderFinished { outcome },
             );
+        // Its person's stop ends the work for every reader, whatever its agent wrote last.
+        let state = if stopped.is_some() && !state.finished() {
+            AgentWorkState::ProviderFinished {
+                outcome: AgentFinish::Cancelled,
+            }
+        } else {
+            state
+        };
         let summary = match &state {
             AgentWorkState::Taken | AgentWorkState::Doing { .. } => Some(t("chat-agent-working")),
             AgentWorkState::Waiting { app } => {
@@ -50,16 +69,15 @@ impl AgentWorkPresentation {
             }
             AgentWorkState::Done { .. } => None,
             AgentWorkState::Refused => (!words).then(|| t("chat-agent-work-refused")),
-            AgentWorkState::ProviderFinished { outcome } => {
-                use crate::agent_stream::AgentFinish;
-                match outcome {
-                    AgentFinish::Complete => None,
-                    AgentFinish::Truncated => Some(t("chat-agent-truncated")),
-                    AgentFinish::Refused => Some(t("chat-agent-refused")),
-                    AgentFinish::Cancelled => Some(t("chat-agent-cancelled")),
-                    AgentFinish::Failed => Some(t("chat-agent-failed")),
+            AgentWorkState::ProviderFinished { outcome } => match outcome {
+                AgentFinish::Complete => None,
+                AgentFinish::Truncated => Some(t("chat-agent-truncated")),
+                AgentFinish::Refused => Some(t("chat-agent-refused")),
+                AgentFinish::Cancelled => {
+                    Some(stopped.map_or_else(|| t("chat-agent-cancelled"), str::to_owned))
                 }
-            }
+                AgentFinish::Failed => Some(t("chat-agent-failed")),
+            },
         };
         let finished = state.finished();
         let did = (finished && !work.trace.is_empty())
@@ -74,6 +92,12 @@ impl AgentWorkPresentation {
             did,
             steps,
         })
+    }
+
+    /// [`Self::of_turn`] of a reply nobody stopped.
+    #[cfg(test)]
+    pub(super) fn of(work: &AgentWork, open: bool, words: bool) -> Option<Self> {
+        Self::of_turn(work, open, words, None)
     }
 
     /// Whether it is drawn as a card: the work is still under way.
@@ -131,9 +155,14 @@ fn line_style(line: Line, theme: &Theme) -> (ui::TextStyle, vello::peniko::Color
 }
 
 /// Everything the work says, read aloud with the reply: the folded list too.
-/// `words` says whether the reply itself carries text, as it does when drawn.
-pub(crate) fn agent_work_accessible_description(work: &AgentWork, words: bool) -> String {
-    AgentWorkPresentation::of(work, true, words)
+/// `words` says whether the reply itself carries text, as it does when drawn,
+/// and `stopped` who stopped its turn, when its person did.
+pub(crate) fn agent_work_accessible_description(
+    work: &AgentWork,
+    words: bool,
+    stopped: Option<&str>,
+) -> String {
+    AgentWorkPresentation::of_turn(work, true, words, stopped)
         .map(|shown| {
             shown
                 .lines()
@@ -162,8 +191,9 @@ pub(super) fn measure_agent_work(
     open: bool,
     width: f32,
     words: bool,
+    stopped: Option<&str>,
 ) -> f64 {
-    let Some(shown) = AgentWorkPresentation::of(work, open, words) else {
+    let Some(shown) = AgentWorkPresentation::of_turn(work, open, words, stopped) else {
         return 0.0;
     };
     let inset = inset(&shown, theme);
@@ -188,8 +218,9 @@ pub(super) fn draw_agent_work(
     open: bool,
     area: Rect,
     words: bool,
+    stopped: Option<&str>,
 ) -> bool {
-    let Some(shown) = AgentWorkPresentation::of(work, open, words) else {
+    let Some(shown) = AgentWorkPresentation::of_turn(work, open, words, stopped) else {
         return false;
     };
     let theme = paint.theme;

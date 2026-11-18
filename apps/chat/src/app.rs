@@ -177,6 +177,15 @@ pub struct ChatApp {
     /// Why the last message was not sent, while its text waits in the
     /// composer to be sent again.
     pub(crate) not_sent: Option<String>,
+    /// Why Chat refused the last stop of an agent's work, said under the box
+    /// it was pressed at.
+    pub(crate) not_stopped: Option<String>,
+    /// Which replies agents are at work on, for whom, and which their person
+    /// stopped, as the parts held say it: read again at every reload, never
+    /// kept beside them.
+    pub(crate) answering: Vec<crate::summons::Answering>,
+    /// A box's send giving way to its stop and back.
+    pub(crate) stop_swap: stop::StopSwap,
     /// A message of the person's own they just deleted, while their Undo
     /// can take it back: the part of the chat it was in, and the channel
     /// it was deleted from.
@@ -671,6 +680,9 @@ impl ChatApp {
             draft_thread: String::new(),
             composer_main: crate::composer::DraftComposer::shared(),
             not_sent: None,
+            not_stopped: None,
+            answering: Vec::new(),
+            stop_swap: stop::StopSwap::default(),
             deleted: std::cell::RefCell::default(),
             asked_delete: None,
             hovered_message: None,
@@ -1794,6 +1806,7 @@ impl Widget for ChatApp {
         self.settle_attachment_picker();
         self.settle_device_files();
         self.settle_refused_post();
+        self.settle_refused_stop();
         self.settle_attachment_import();
         {
             use automerge::transaction::Transactable as _;
@@ -2514,6 +2527,7 @@ impl Widget for ChatApp {
             || self.flap_animating
             || self.call_chrome_motion.animating
             || self.message_bar.animating
+            || self.stop_swap.moving()
             || self.speaking.animating
             || self.call.placement.is_dragging()
             || self.call.placement.is_handoff_animating()
@@ -2883,6 +2897,7 @@ mod people;
 mod question;
 #[cfg(feature = "samples")]
 mod scenarios;
+pub(crate) mod stop;
 mod submission;
 mod window;
 mod workspace;

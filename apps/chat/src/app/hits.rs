@@ -74,6 +74,14 @@ pub(crate) enum Hit {
     /// Send what the thread's box holds: the thread has its own button, so a
     /// send from the conversation's box is found at that box and nowhere else.
     ThreadSend,
+    /// Stop the work an agent does for this window's person: Chat's
+    /// `stop-agent` on the reply that shows the work. It stands where its box
+    /// sends, while nothing is typed there.
+    StopWork {
+        reply: Id,
+        /// Whether it stands in the thread's box.
+        thread: bool,
+    },
     /// Bring back the message of your own you just deleted.
     UndoDelete,
     /// Return a scrolled conversation to its newest message without changing
@@ -210,6 +218,8 @@ impl Hit {
             Self::Send => "chat.send".into(),
             Self::RetrySend => "chat.retry-send".into(),
             Self::ThreadSend => "chat.thread-send".into(),
+            Self::StopWork { thread: false, .. } => "chat.stop".into(),
+            Self::StopWork { thread: true, .. } => "chat.thread-stop".into(),
             Self::UndoDelete => "chat.undo-delete".into(),
             Self::JumpToLatest => "chat.jump-to-latest".into(),
             Self::ThreadScroll(end) => format!("chat.thread-scroll-{end}"),
@@ -427,6 +437,7 @@ impl ChatApp {
                         (copy(&format!("chat-model-{command}")), Role::Button, false)
                     }
                     Hit::Send | Hit::ThreadSend => (copy("chat-send-message"), Role::Button, false),
+                    Hit::StopWork { .. } => (copy("chat-agent-stop"), Role::Button, false),
                     Hit::RetrySend => (copy("chat-retry"), Role::Button, false),
                     Hit::UndoDelete => (copy("chat-undo"), Role::Button, false),
                     Hit::JumpToLatest => (copy("chat-jump-latest-message"), Role::Button, false),
@@ -822,6 +833,7 @@ impl ChatApp {
                         | Hit::Send
                         | Hit::RetrySend
                         | Hit::ThreadSend
+                        | Hit::StopWork { .. }
                         | Hit::AddReaction { .. }
                         | Hit::MessageBar { .. }
                         | Hit::MessageMore { .. }

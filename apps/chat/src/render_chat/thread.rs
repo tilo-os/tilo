@@ -59,10 +59,16 @@ impl ChatApp {
             && self.editing.is_none();
         let draft = self.composer_thread.value();
         let send_enabled = !draft.trim().is_empty();
+        let stop = if send_enabled {
+            None
+        } else {
+            self.stop_offered(true)
+        };
+        let swap = self.stop_swap.follow(true, stop.is_some(), theme);
         let inner = self.draw_input_box(
             PaintCtx::new(scene, tf, tr, theme),
             comp,
-            &draft,
+            crate::app::stop::SendPlace { stop, swap },
             (send_enabled, false, true),
             Hit::FocusThread,
             hits,
@@ -75,7 +81,9 @@ impl ChatApp {
         self.composer_thread.layout(inner, theme, tr);
         self.composer_thread.set_focus(focused);
         self.composer_thread.draw(scene, tf, tr, theme, presence);
-        if let Some(key) = self.composing_key(crate::app::Focus::Thread) {
+        if let Some(reason) = &self.not_stopped {
+            Self::draw_not_stopped(PaintCtx::new(scene, tf, tr, theme), comp, reason);
+        } else if let Some(key) = self.composing_key(crate::app::Focus::Thread) {
             Self::draw_draft_presence(&self.composer_thread, &key, scene, tf, tr, theme, presence);
         }
     }
@@ -377,7 +385,16 @@ impl ChatApp {
         }
         if let Some(work) = &message.work {
             let open = self.expanded_agent.contains(&message.id);
-            height += measure_agent_work(tr, theme, work, open, width, !message.text.is_empty());
+            let stopped = self.stopped_words(&message.id);
+            height += measure_agent_work(
+                tr,
+                theme,
+                work,
+                open,
+                width,
+                !message.text.is_empty(),
+                stopped.as_deref(),
+            );
         }
         for file in message.files() {
             height += self.attachment_flow_height(file, f64::from(width), tr, theme);
@@ -462,7 +479,16 @@ impl ChatApp {
         }
         if let Some(work) = &m.work {
             let open = self.expanded_agent.contains(&m.id);
-            let height = measure_agent_work(tr, theme, work, open, tw, !m.text.is_empty());
+            let stopped = self.stopped_words(&m.id);
+            let height = measure_agent_work(
+                tr,
+                theme,
+                work,
+                open,
+                tw,
+                !m.text.is_empty(),
+                stopped.as_deref(),
+            );
             let area = Rect::new(tx, yy, tx + f64::from(tw), yy + height);
             if draw_agent_work(
                 &mut PaintCtx::new(scene, tf, tr, theme),
@@ -470,6 +496,7 @@ impl ChatApp {
                 open,
                 area,
                 !m.text.is_empty(),
+                stopped.as_deref(),
             ) {
                 Self::push_hit(hits, area, Hit::AgentWork(m.id.clone()));
             }

@@ -36,6 +36,13 @@ impl ChatApp {
                     .with_bounds(rect)
                     .with_key(index as u64)
                     .with_action_target(hit.semantic_id());
+                // A stop Chat refused says so on the control it was pressed at.
+                if let (Hit::StopWork { .. }, Some(reason)) = (&hit, &self.not_stopped) {
+                    node = node.with_description(crate::i18n::t_args(
+                        "chat-agent-not-stopped",
+                        &[("reason", reason.clone().into())],
+                    ));
+                }
                 if let Some((_, value, (anchor, focus))) = input {
                     node = node.with_value(&value).with_text_selection(anchor, focus);
                 } else if let Hit::Reaction { msg, emoji } = &hit
@@ -85,6 +92,7 @@ impl ChatApp {
                     node.with_description(crate::render_chat::agent_work_accessible_description(
                         work,
                         !message.text.is_empty(),
+                        self.stopped_words(&message.id).as_deref(),
                     ))
                 } else {
                     node

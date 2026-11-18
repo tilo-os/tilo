@@ -149,6 +149,7 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "agent-long-thread",
     "long-thread",
     "agent-work",
+    "agent-stopped",
     "bridged",
     "narrow",
     "history",
@@ -448,10 +449,20 @@ pub(crate) fn part_scenario(
                 .into_iter()
                 .map(|invoke| (ui::tilo_resource::MemberId::person(me), invoke)),
         ),
-        Some("agent-work") => {
+        Some(scenario @ ("agent-work" | "agent-stopped")) => {
             let (id, message) = agent_summons();
             start.messages.push(id, message);
             steps.extend(agent_work_part_steps());
+            if scenario == "agent-stopped" {
+                // Its person stops the work, and nothing has ended it yet: the
+                // reply says who stopped it all the same.
+                steps.push((
+                    ui::tilo_resource::MemberId::person(me),
+                    ChatPart::STOP_AGENT.with(chat_part::StopAgent {
+                        message: Id::from_raw(DEMO_SUMMONS),
+                    }),
+                ));
+            }
         }
         _ => {}
     }
