@@ -73,6 +73,113 @@ fn titled() -> Vec<ActionParam> {
     ]
 }
 
+/// What a question's kind keeps with it: an argument whose shape another
+/// argument's value decides, as its declaration says. A secret keeps what is
+/// asked for and the places it belongs to; a kind the declaration names no
+/// shape for keeps any object.
+fn kept() -> ActionParam {
+    ActionParam::optional("detail", ParamType::Object, "What the kind keeps").with_schema(json!({
+        "type": ["object", "null"],
+        "shaped_by": {
+            "argument": "kind",
+            "shapes": {
+                "secret": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["kind", "belongsTo"],
+                    "properties": {
+                        "belongsTo": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {"type": "string", "format": "uri"},
+                        },
+                        "kind": {"enum": ["login", "key"]},
+                        "username": {"type": "string"},
+                    },
+                },
+            },
+        },
+    }))
+}
+
+/// A question's kind, and what the kind keeps.
+fn kept_by_kind() -> Vec<ActionParam> {
+    vec![
+        ActionParam::optional("kind", ParamType::Text, "The kind of question"),
+        kept(),
+    ]
+}
+
+/// The refusals of an argument whose shape another argument's value decides.
+fn shaped_by_another_argument() -> Vec<Refused> {
+    vec![
+        Refused {
+            about: "a list in the shape its kind names, given as text",
+            params: kept_by_kind(),
+            arguments: json!({
+                "kind": "secret",
+                "detail": {"kind": "login", "belongsTo": GIVEN, "username": GIVEN},
+            }),
+            told: "argument `detail` property `belongsTo` was given text and must be a list: \
+                   [\"<address such as https://example.com>\"]",
+        },
+        Refused {
+            about: "the shape its kind names, written with fields of the caller's own",
+            params: kept_by_kind(),
+            arguments: json!({"kind": "secret", "detail": {"what": GIVEN, "where": GIVEN}}),
+            told: "argument `detail` must contain property `kind`: \"login\" | \"key\"",
+        },
+        Refused {
+            about: "the shape its kind names, put under a key of the caller's own",
+            params: kept_by_kind(),
+            arguments: json!({
+                "kind": "secret",
+                "detail": {"secret": {"kind": "login", "belongsTo": [GIVEN]}},
+            }),
+            told: "argument `detail` must contain property `kind`: \"login\" | \"key\"",
+        },
+        Refused {
+            about: "an address in the shape its kind names, given as words",
+            params: kept_by_kind(),
+            arguments: json!({
+                "kind": "secret",
+                "detail": {"kind": "login", "belongsTo": [GIVEN]},
+            }),
+            told: "argument `detail` property `belongsTo` item 0 must match format `uri`: \
+                   \"<address such as https://example.com>\"",
+        },
+        Refused {
+            about: "the argument left out where the shape its kind names requires it",
+            params: kept_by_kind(),
+            arguments: json!({"kind": "secret"}),
+            told: "required argument `detail` was not supplied: it must be an object: \
+                   {\"kind\": \"login\" | \"key\", \
+                   \"belongsTo\": [\"<address such as https://example.com>\"], \
+                   \"username\"?: \"<text>\"}",
+        },
+        Refused {
+            about: "text where the argument another one shapes takes an object",
+            params: kept_by_kind(),
+            arguments: json!({"kind": "secret", "detail": GIVEN}),
+            told: "argument `detail` was given text and must be an object: \
+                   {<key>: <any value>} (when \"kind\" is \"secret\": \
+                   {\"kind\": \"login\" | \"key\", \
+                   \"belongsTo\": [\"<address such as https://example.com>\"], \
+                   \"username\"?: \"<text>\"})",
+        },
+        Refused {
+            about: "an argument the action does not take, beside one another argument shapes",
+            params: kept_by_kind(),
+            arguments: json!({"kind": "secret", "details": {"kind": "login"}}),
+            told: "`details` is not a parameter of this action; its arguments are \
+                   {\"kind\"?: \"<text>\", \"detail\"?: {<key>: <any value>} \
+                   (when \"kind\" is \"secret\": {\"kind\": \"login\" | \"key\", \
+                   \"belongsTo\": [\"<address such as https://example.com>\"], \
+                   \"username\"?: \"<text>\"})}",
+        },
+    ]
+}
+
 /// The refusals a structured argument's own schema makes, inside it.
 fn inside_an_argument() -> Vec<Refused> {
     vec![
@@ -189,6 +296,7 @@ fn of_an_argument() -> Vec<Refused> {
 fn refused() -> Vec<Refused> {
     let mut all = inside_an_argument();
     all.extend(of_an_argument());
+    all.extend(shaped_by_another_argument());
     all
 }
 
@@ -222,5 +330,84 @@ fn no_refusal_repeats_what_the_call_gave() {
     assert!(
         repeated.is_empty(),
         "a refusal holds the value it was given: {repeated:?}"
+    );
+}
+
+/// An argument another one shapes is held to the shape that argument's value
+/// names, and to nothing more where it names none.
+#[test]
+fn an_argument_another_one_shapes_is_held_only_to_the_shape_that_value_names() {
+    let taken = [
+        (
+            "the shape its kind names",
+            json!({
+                "kind": "secret",
+                "detail": {
+                    "kind": "key", "belongsTo": ["https://example.com"], "username": "ada",
+                },
+            }),
+        ),
+        (
+            "a kind that names no shape, with an object of its own",
+            json!({"kind": "action", "detail": {"draft": {"anything": 1}}}),
+        ),
+        (
+            "no kind, with an object of its own",
+            json!({"detail": {"anything": 1}}),
+        ),
+        (
+            "a kind that names no shape, and nothing kept",
+            json!({"kind": "choice"}),
+        ),
+        ("neither argument", json!({})),
+    ];
+    let refused: Vec<String> = taken
+        .iter()
+        .filter_map(|(about, arguments)| {
+            let told = told(&kept_by_kind(), arguments);
+            (told != "(the arguments were taken)").then(|| format!("{about}: {told}"))
+        })
+        .collect();
+    assert!(
+        refused.is_empty(),
+        "calls that give what the declaration takes were refused:\n{}",
+        refused.join("\n")
+    );
+}
+
+/// What a listing shows before a call says the shape another argument decides.
+#[test]
+fn a_listing_writes_out_the_shape_another_argument_decides() {
+    assert_eq!(
+        kept().declared_shape().as_deref(),
+        Some(
+            "{<key>: <any value>} (when \"kind\" is \"secret\": {\"kind\": \"login\" | \"key\", \
+             \"belongsTo\": [\"<address such as https://example.com>\"], \
+             \"username\"?: \"<text>\"})"
+        )
+    );
+}
+
+/// Such a declaration is checked where it is published: it names the argument
+/// that decides, and every shape it names is a schema that can be held.
+#[test]
+fn a_shape_another_argument_decides_is_checked_where_it_is_declared() {
+    assert_eq!(kept().validate_declaration(), Vec::<String>::new());
+    let declared = |schema: Value| {
+        ActionParam::optional("detail", ParamType::Object, "What the kind keeps")
+            .with_schema(schema)
+            .validate_declaration()
+    };
+    assert_eq!(
+        declared(json!({"shaped_by": {"shapes": {}}})),
+        [
+            "invalid schema: schema `shaped_by` must name an `argument` and the `shapes` its values decide"
+        ]
+    );
+    assert_eq!(
+        declared(json!({
+            "shaped_by": {"argument": "kind", "shapes": {"secret": {"type": "nonsense"}}},
+        })),
+        ["invalid schema: `shaped_by` shape `secret` schema has an unsupported `type`"]
     );
 }

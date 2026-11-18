@@ -241,8 +241,8 @@ pub use outcome::{
 pub use params::{
     ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ArgError, ArgValue, ArgViolation,
     CHOICE_LABELS_ANNOTATION, CONTENT_ANNOTATION, PEOPLE_ANNOTATION, PICK_ANNOTATION,
-    PLACE_ANNOTATION, ParamType, Pick, picked_resource_schema, place_schema,
-    resource_reference_schema, validate_json_schema,
+    PLACE_ANNOTATION, ParamType, Pick, SHAPED_BY_ANNOTATION, picked_resource_schema, place_schema,
+    resource_reference_schema, shaped_by_schema, validate_json_schema,
 };
 pub use protocol::{ContractViolation, validate_surface, validate_surface_contracts};
 pub use registry::{ActionRegistry, DecodePayload, decode_json, decode_payload};
