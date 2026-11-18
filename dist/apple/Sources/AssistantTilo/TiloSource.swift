@@ -1462,9 +1462,13 @@ public final class TiloSource: AssistantSource {
             let withdrawn = !(question["withdrawn"]?.isNull ?? true)
             if TiloSource.variant(question["kind"]) == "secret" {
                 let detail = TiloSource.detail(of: question)
-                let state: SecretRequest.State = answered == "filled" ? .kept : answered == "declined" || withdrawn ? .declined : .waiting
+                // What they typed may be kept and still not be taken where it belongs: their server
+                // says so on the question, and the card says it after it.
+                let refused = TiloSource.variant(question["outcome"]?["outcome"]) == "failed"
+                let state: SecretRequest.State = refused ? .refused(question["outcome"]?["detail"]?.string ?? "")
+                    : answered == "filled" ? .kept : answered == "declined" || withdrawn ? .declined : .waiting
                 return Item(id: id, at: message.at, .secret(SecretRequest(
-                    id: .init(message.id), text: message.text, name: TiloSource.placeName(detail?["belongsTo"]?[0]?.string ?? ""),
+                    id: .init(message.id), text: message.text, name: TiloSource.placeNames(detail?["belongsTo"]),
                     state: state)))
             }
             // A service their assistant proposes to connect is its card (Connections.swift).
@@ -1585,6 +1589,18 @@ public final class TiloSource: AssistantSource {
     /// A place as a person reads it: the site's or the server's name, without scheme or port.
     private static func placeName(_ place: String) -> String {
         URLComponents(string: place)?.host ?? place
+    }
+
+    /// Every place a secret belongs to, by its name, each once and in the order given: a mail
+    /// account's password belongs to the server its mail is read from and to the one it is sent
+    /// through, and a person reads both before they type it.
+    private static func placeNames(_ places: JSON?) -> String {
+        var names: [String] = []
+        for place in (places?.array ?? []).compactMap(\.string) {
+            let name = placeName(place)
+            if !names.contains(name) { names.append(name) }
+        }
+        return names.joined(separator: ", ")
     }
 
     public func send(_ draft: Draft, to chat: Chat) async throws {

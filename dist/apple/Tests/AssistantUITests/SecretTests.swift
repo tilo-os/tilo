@@ -214,6 +214,33 @@ final class SecretTests: XCTestCase {
         for call in run.source.calls { XCTAssertFalse(call.contains(marker)) }
     }
 
+    // MARK: A password its server did not take
+
+    /// The card of a password that was typed, kept and then refused where it belongs says what
+    /// the server said of it, and does not say beside its name that the vault keeps it.
+    func testACardWhosePasswordWasRefusedDoesNotSayTheVaultKeepsIt() async throws {
+        let said = "That password was not accepted by imap.provider.example. Nothing of it is kept."
+        var content = Drawing.content()
+        content.main = [Item(id: "mail", at: Drawing.now, .secret(SecretRequest(
+            id: "mail", text: "Type the password of your mail account below.",
+            name: "imap.provider.example, smtp.provider.example", state: .refused(said))))]
+        content.tasks = []
+        let model = AssistantModel(source: MemorySource(content, now: { Drawing.now }))
+        await model.prime()
+        let view = AssistantRoot(model: model) {
+            ConversationView(chat: .main).background(Token.content)
+        }
+        let window = HeldWindow.make(NSRect(x: 0, y: 0, width: 430, height: 330), [.borderless])
+        window.contentView = NSHostingView(rootView: view)
+        let drive = Drive(window)
+        await drive.settle(500)
+        XCTAssertTrue(drive.shows(said), drive.said())
+        XCTAssertTrue(drive.shows("imap.provider.example, smtp.provider.example"), drive.said())
+        XCTAssertFalse(drive.said().contains(AssistantWords.keptInVault.said),
+                       "a refused password is not kept, and its card does not say so: \(drive.said())")
+        XCTAssertEqual(Drive.onScreen(), [])
+    }
+
     // MARK: Out of sight while the app is not in front
 
     /// The secret's card alone, with something in its field, as a window draws it.

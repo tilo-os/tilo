@@ -608,6 +608,27 @@ final class TiloSourceTests: XCTestCase {
         supervision.cancel()
     }
 
+    /// A mail account's password as its person's server asks for it: the question above, for two
+    /// servers, typed and kept, and told by the server that one of them did not take it.
+    private static let refusedPassword = secretQuestion
+        .replacingOccurrences(of: "['https://api.example:8443']",
+                              with: "['imap://imap.provider.example:993', 'smtp://smtp.provider.example:465']")
+        .replacingOccurrences(of: "answered: null, outcome: null", with: """
+            answered: {answer: 'filled', device: '', at: 1794900100, detail: JSON.stringify({reference: 'vault.item:0a'})}, \
+            outcome: {outcome: 'failed', detail: 'That password was not accepted by imap.provider.example.'}
+            """)
+
+    func testAPasswordItsServerDidNotTakeSaysSoAndItsCardNamesBothServers() async throws {
+        try await start()
+        try await enter(device: true, Self.refusedPassword)
+        guard case .secret(let request) = held[0].content else { return XCTFail("the request for a secret is none") }
+        // Both servers the password belongs to, not the first alone.
+        XCTAssertEqual(request.name, "imap.provider.example, smtp.provider.example")
+        // Typed and kept is not signed in: the card says what the server said, not that the vault has it.
+        XCTAssertNotEqual(request.state, .kept)
+        XCTAssertEqual(request.state, .refused("That password was not accepted by imap.provider.example."))
+    }
+
     func testNothingTypedIsKeptNowhereAndAPageWithNoWayToTheVaultLeavesTheQuestionWaiting() async throws {
         try await start()
         // Tilo's page as it was before it knew of a native host: no way to the person's vault.

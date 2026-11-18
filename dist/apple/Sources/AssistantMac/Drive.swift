@@ -345,6 +345,7 @@ final class AssistantDrive {
             case .waiting: "waiting"
             case .kept: "kept"
             case .declined: "declined"
+            case .refused: "refused"
             }
         case .report(let words):
             line["kind"] = "report"
