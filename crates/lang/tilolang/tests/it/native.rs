@@ -43,7 +43,13 @@ root Notebook
 
 default view notebook for Notebook
 
+default view note for Note
+
 row view note_row for Note
+
+view note(n: Note) {
+    text(n.title)
+}
 
 /// Start a new note in the notebook.
 primary action new_note(nb: Notebook) -> Note (icon: .plus) {
@@ -413,6 +419,12 @@ type Notebook {
     notes: Collection<Note>
 }
 
+default view note for Note
+
+view note(n: Note) {
+    text(n.title)
+}
+
 default view note_cards for Notebook
 
 view note_cards(nb: Notebook) {
@@ -451,6 +463,12 @@ type Notebook {
     notes: Collection<Note>
 }
 
+default view note for Note
+
+view note(n: Note) {
+    text(n.title)
+}
+
 default view note_cards for Notebook
 
 view note_cards(nb: Notebook) {
@@ -485,6 +503,8 @@ type Notebook {
 
 default view note_cards for Notebook
 
+default view note_page for Note
+
 view note_cards(nb: Notebook) {
     std.list(nb.notes) { (n, at) ->
         ui.ListItem(item: n, presence: at)
@@ -514,6 +534,12 @@ type Notebook {
 
 default view note_cards for Notebook
 
+default view note for Note
+
+view note(n: Note) {
+    text(n.title)
+}
+
 view note_cards(nb: Notebook) {
     std.list(nb.notes) { (n, at) ->
         ui.ListItem(item: n, presence: at)
@@ -539,6 +565,12 @@ type Notebook {
 }
 
 default view note_cards for Notebook
+
+default view note for Note
+
+view note(n: Note) {
+    text(n.title)
+}
 
 view note_cards(nb: Notebook) {
     std.list(nb.notes) { (n, at) ->
@@ -1172,6 +1204,10 @@ type Threads {{
 }}
 root threads: Threads
 default view thread_list for Threads
+default view thread for Thread
+view thread(t: Thread) {{
+    text("A thread")
+}}
 row view thread_row for Thread
 view thread_row(t: Thread) {{
     row(t.subject)
@@ -1205,6 +1241,12 @@ type Notebook {
 }
 
 default view notebook for Notebook
+
+default view note for Note
+
+view note(n: Note) {
+    text(n.title)
+}
 
 place view all_notes for Notebook
 
