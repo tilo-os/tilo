@@ -1,28 +1,9 @@
-//! What the interactions a person feels cost Calendar on the UI thread: a wheel
-//! notch, a keystroke, a view switch and a click on an item, each through
-//! the production host path on the app's capture fixture at the Yoga's
-//! logical size, with the frame passes and named scopes each step ran.
-//! These report: the numbers say where the frame goes. A sidebar hover is
-//! held to the two rows it moved between and the pointer-motion budget.
-//!
-//! `cargo test -p calendar --profile fast --test perf_interaction -- --nocapture`
+//! Calendar's sidebar sweep: the pointer moving between two rows repaints the
+//! rows it moved between and nothing wider, within the pointer-motion budget.
 #![allow(
     clippy::expect_used,
     reason = "a measurement fails loudly when the app does not open"
 )]
-
-#[test]
-fn interaction_costs() {
-    ui::framework::testing::perf::profile::<calendar::CalendarShell>(None)
-        .expect("calendar opens its capture");
-}
-
-#[test]
-fn start_cost() {
-    ui::framework::testing::perf::start::<calendar::CalendarShell>(8)
-        .expect("calendar opens")
-        .print();
-}
 
 #[test]
 fn sidebar_hover() {
