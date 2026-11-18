@@ -25,6 +25,27 @@ public enum EngineScript {
             || String(routes).includes(`${app}/${opened === '@tilo:package-primary' ? '' : opened}:`)
     """#
 
+    /// What a program built for a simulator, and no other, adds to the script. A simulator of a
+    /// phone offers WebKit no graphics adapter, and Tilo's page, which draws with one, stops
+    /// there before it mounts anything. So such a program says that it has none to offer
+    /// (`html: true` on what it hands the page before the page starts), and the page shows its
+    /// one app as HTML; a thing mounted beside the page is asked for as HTML too (`dom: true`). The
+    /// app's way in, a pairing and a conversation can then be driven in a simulator. What
+    /// stands there is HTML: how a phone draws, and its keyboard over what it draws, is seen on
+    /// a phone alone.
+    ///
+    /// The compiler's own condition decides, and nothing a program is told as it starts or
+    /// while it lives. In a program for a phone or a Mac both are empty: neither word is in
+    /// it, and its script reads as it does without them. Each says in the script why it is
+    /// there, which also makes it long enough to stand in a program as text: whoever looks
+    /// through a built program for these sentences finds them in a simulator's alone.
+    #if targetEnvironment(simulator)
+    static let simulator = (says: " html: true, /* a simulator offers the page no graphics adapter */",
+                            mounts: "dom: true, /* shown as HTML in a simulator */ ")
+    #else
+    static let simulator = (says: "", mounts: "")
+    #endif
+
     /// - Parameters:
     ///   - origin: the one site whose page may speak to the engine.
     ///   - unseen: the page is shown to nobody as it starts. A web view that is in no window
@@ -48,6 +69,8 @@ public enum EngineScript {
             .replacingOccurrences(of: "%UNSEEN%", with: unseen ? "true" : "false")
             .replacingOccurrences(of: "%PASS%", with: literal(pass))
             .replacingOccurrences(of: "%PROVIDERS%", with: listed)
+            .replacingOccurrences(of: "%SIMULATOR_SAYS%", with: simulator.says)
+            .replacingOccurrences(of: "%SIMULATOR_MOUNTS%", with: simulator.mounts)
             // Last, so that nothing a name holds is read as one of the places above.
             .replacingOccurrences(of: "%DEVICE%", with: literal(String(device.prefix(64))))
     }
@@ -247,7 +270,7 @@ public enum EngineScript {
         // The page's peer is the first its runtime started, unless it started another first.
         for (const runtimeId of [1, 2, 3]) {
           try {
-            const made = await host.mountDesktop(element, {...what, profile, device, workspace: scope.workspace,
+            const made = await host.mountDesktop(element, {...what, %SIMULATOR_MOUNTS%profile, device, workspace: scope.workspace,
               peer: {runtimeId, origin: scope.host, workspace: scope.workspace}});
             const record = made.state()?.record;
             const routes = globalThis.tiloChannels?.() ?? '';
@@ -300,7 +323,7 @@ public enum EngineScript {
       let device;
       Object.defineProperty(globalThis, 'tiloNativeHost', {value: Object.freeze({
         // What this device is called where its person lets it in: the app's name for it.
-        name: %DEVICE%,
+        name: %DEVICE%,%SIMULATOR_SAYS%
         device(entry) { if (!device && entry && typeof entry.invoke === 'function') device = entry; },
       })});
       // The pass is this engine's own: the engine made it and hands it in with every ask of
