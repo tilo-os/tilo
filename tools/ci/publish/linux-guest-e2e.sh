@@ -62,7 +62,7 @@ with tarfile.open(archive) as oci:
             sys.exit(f"{archive}: no disk.qcow2 in its layer")
 EOF
 test -s "$work/e2e/disk/disk.qcow2"
-cp "$binaries"/{tilo-session,tilo-linux-vm} "$work/e2e/bin/"
+cp "$binaries"/{tilo-session,tilo-linux-vm,tilo-app-keeper} "$work/e2e/bin/"
 cp -a "$repo_root/." "$work/src"
 mv "$work/e2e" "$work/src/e2e"
 chmod -R a+rwX "$work/src/e2e"
