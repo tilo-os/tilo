@@ -164,5 +164,44 @@ final class TurnWatchTests: XCTestCase {
         XCTAssertEqual(TurnWatch.newest(of: "One line.\n\n"), "One line.")
         XCTAssertEqual(TurnWatch.newest(of: ""), "")
     }
+
+    /// A turn that goes on under a newer message of its person writes into a new reply, and Chat hands that
+    /// reply the rows of the steps the turn took so far. The steps a device shows count on from them: the
+    /// count does not begin again at each message, and a step keeps the time Chat keeps with its row.
+    func testATurnThatGoesOnUnderANewerMessageCountsItsStepsOnInItsNewReply() throws {
+        var watch = TurnWatch()
+        let listed = row("s1", 1, "List", about: "word-processor", applied, tookMs: 400)
+        // Under the first message: one step taken, a second going.
+        let under = try reply(state: doing("tilo_do"), trace: "[\(listed),\(row("s2", 2, "Open", about: "word-processor", asked))]")
+        let first = try XCTUnwrap(watch.read(work: under.work, words: "", of: "m1", began: began, going: true,
+                                             now: began.addingTimeInterval(1)))
+        XCTAssertEqual(first.steps.map(\.outcome), [.done, .going])
+
+        // Its person writes again. The turn leaves the reply under the first message, whose work ends there ...
+        let opened = row("s2", 2, "Open", about: "word-processor", applied, tookMs: 700)
+        let left = try reply(trace: "[\(listed),\(opened)]", going: false)
+        XCTAssertNil(watch.read(work: left.work, words: "", of: "m1", began: began, going: false, now: began.addingTimeInterval(2)),
+                     "a reply its turn left still says a turn works on it")
+
+        // ... and goes on in a new reply under the newer message, with the rows so far and a third step going.
+        let later = began.addingTimeInterval(3)
+        let third = row("s3", 3, "Append paragraph", about: "word-processor", asked)
+        let on = try reply(state: doing("tilo_do"), since: 1_794_900_003, trace: "[\(listed),\(opened),\(third)]")
+        let second = try XCTUnwrap(watch.read(work: on.work, words: "", of: "m2", began: later, going: true, now: later))
+        XCTAssertEqual(second.steps.map(\.words),
+                       ["List: word-processor", "Open: word-processor", "Append paragraph: word-processor"],
+                       "the steps of a turn that went on began again under the newer message")
+        XCTAssertEqual(second.steps.map(\.outcome), [.done, .done, .going])
+        XCTAssertEqual(second.steps.map(\.took), [0.4, 0.7, nil], "a step that went along lost the time Chat keeps with its row")
+
+        // The third step ends and a fourth begins: four, each once.
+        let appended = row("s3", 3, "Append paragraph", about: "word-processor", applied, tookMs: 900)
+        let more = try reply(state: doing("tilo_do"), since: 1_794_900_005,
+                             trace: "[\(listed),\(opened),\(appended),\(row("s4", 4, "List", about: "tasks", asked))]")
+        let last = try XCTUnwrap(watch.read(work: more.work, words: "", of: "m2", began: later, going: true,
+                                            now: later.addingTimeInterval(2)))
+        XCTAssertEqual(last.steps.map(\.id), ["s1", "s2", "s3", "s4"])
+        XCTAssertEqual(last.steps.map(\.took), [0.4, 0.7, 0.9, nil])
+    }
 }
 #endif
