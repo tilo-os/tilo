@@ -198,8 +198,35 @@ mkdir -p "$work/mnt"
 mount -o loop "$work/update.raw" "$work/mnt"
 cp "$work/update-signed/image.oci.tar" "$work/mnt/update.oci.tar"
 cp "$work"/unsigned/*.efi "$work/mnt/unsigned.efi"
+
+# The same update served by a registry on this machine, which the guest reaches
+# as 10.0.2.2 and is told is a mirror of registry.tilo.so/tilo/tilo-host: under
+# the tag the server was installed to follow, signed with a key made here for
+# the repository's name, and beside it an image of the repository nobody signed
+# (os/tests/registry_update_check.sh says what the guest does with them).
+podman run -d --name host-assurance-registry -p 127.0.0.1:5000:5000 docker.io/library/registry:2 >/dev/null \
+  || die 'cannot start the update registry'
+for _ in $(seq 30); do curl -fs http://127.0.0.1:5000/v2/ >/dev/null && break; sleep 1; done
+printf 'host-assurance\n' > "$work/sigstore.pass"
+skopeo generate-sigstore-key --output-prefix "$work/sigstore" --passphrase-file "$work/sigstore.pass" >/dev/null \
+  || die 'cannot make the signing key the registry update is signed with'
+follows="main-${target:0:7}-ci"
+skopeo copy -q --dest-tls-verify=false \
+  --sign-by-sigstore-private-key "$work/sigstore.private" --sign-passphrase-file "$work/sigstore.pass" \
+  --sign-identity "registry.tilo.so/tilo/tilo-host:$follows" \
+  "oci-archive:$work/update-signed/image.oci.tar" "docker://127.0.0.1:5000/tilo/tilo-host:$follows" \
+  || die 'cannot publish the signed update to the registry'
+staged_digest=$(cat "$work/update-signed/digest")
+mkdir -p "$work/unsigned-image"
+printf 'an image nobody signed\n' > "$work/unsigned-image/note"
+printf 'FROM scratch\nCOPY note /note\n' > "$work/unsigned-image/Containerfile"
+podman build -q -t localhost/host-assurance-unsigned -f "$work/unsigned-image/Containerfile" "$work/unsigned-image" >/dev/null
+skopeo copy -q --dest-tls-verify=false containers-storage:localhost/host-assurance-unsigned \
+  docker://127.0.0.1:5000/tilo/tilo-host:unsigned || die 'cannot publish the unsigned image to the registry'
+cp "$work/sigstore.pub" "$work/mnt/registry-update.pub"
+cp os/tests/registry_update_check.sh "$work/mnt/registry_update_check.sh"
 umount "$work/mnt"
-rm -rf "$work/update-signed" "$work/unsigned"
+rm -rf "$work/update-signed" "$work/unsigned" "$work/unsigned-image"
 qemu-img convert -f raw -O qcow2 "$work/update.raw" "$work/update.qcow2"
 rm -f "$work/update.raw"
 podman rmi -f "$update_ref" localhost/tilo-host:sealed localhost/tilo-host:ci localhost/tilo-host:seal >/dev/null 2>&1 || true
@@ -221,6 +248,7 @@ finish() {
   report_exit
   ./os/dev/vm.sh serial > "$out/serial.log" 2>&1 || true
   ./os/dev/vm.sh stop >/dev/null 2>&1 || true
+  podman rm -f host-assurance-registry >/dev/null 2>&1 || true
 }
 trap finish EXIT
 console() { ./os/tests/serial_runner.sh "$1"; }
@@ -456,4 +484,12 @@ fi
 say 'the machine serves again, on the deployment that came back'
 refuse 'multi-user.target is active' 'systemctl is-active --quiet multi-user.target'
 refuse 'the server probe still judges it good' 'systemctl start tilo-server-health.service'
-printf '\nPASS: the server image boots serving, and an update that breaks it rolled back by itself (evidence in %s)\n' "$out"
+
+say 'a registry update is verified and staged'
+refuse 'a registry update is verified and staged, and an unsigned image refused' "
+set -eu
+mkdir -p /mnt/update
+mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
+bash /mnt/update/registry_update_check.sh 10.0.2.2:5000/tilo/tilo-host /mnt/update/registry-update.pub unsigned '$staged_digest'
+"
+printf '\nPASS: the server image boots its signed UKI under Secure Boot and refuses an edited or unsigned one, serves, rolls back an update that breaks it, and verifies and stages a registry update (evidence in %s)\n' "$out"

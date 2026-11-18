@@ -708,13 +708,14 @@ paths = [
     "tools/ci/publish/host-seal.sh",
     "tools/ci/publish/lib.sh",
     "docs/security/boot-chain.md",
+    "os/tests/registry_update_check.sh",
     "tools/signing/release_trust.py",
 ]
 
 [[allow]]
-reason = "The VM harness's run directory (TILO_RUN, boot-run) and `podman run`: names those tools give them, not Tilo concepts."
+reason = "The VM harness's run directory (TILO_RUN, boot-run), `podman run` and the system's /run: names those tools give them, not Tilo concepts."
 words = ["run"]
-paths = ["tools/ci/publish/host-seal.sh", "tools/ci/publish/lib.sh"]
+paths = ["tools/ci/publish/host-seal.sh", "tools/ci/publish/lib.sh", "os/tests/registry_update_check.sh"]
 
 [[allow]]
 reason = "The wasm engine's names for what answers a module's imports (`Host`) and what one of them answers (`HostFail`): an ABI the engine crate fixes, not Tilo's concept."
