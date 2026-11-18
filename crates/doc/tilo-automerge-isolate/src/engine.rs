@@ -74,7 +74,18 @@ pub(crate) fn verified_hashes(bytes: &[u8]) -> Result<Vec<ChangeHash>, Rejected>
 /// a document, a bundle, or a tail no chunk frames — so the caller cannot say
 /// which changes are its own.
 pub(crate) fn change_hashes(incoming: &[u8]) -> Option<Vec<ChangeHash>> {
-    let mut hashes = Vec::new();
+    Some(
+        changes(incoming)?
+            .iter()
+            .map(automerge::Change::hash)
+            .collect(),
+    )
+}
+
+/// The changes `incoming` carries, in the order it carries them, when it is
+/// exactly a sequence of change chunks; see [`change_hashes`].
+pub(crate) fn changes(incoming: &[u8]) -> Option<Vec<automerge::Change>> {
+    let mut changes = Vec::new();
     let mut framed = 0usize;
     for chunk in crate::precheck::chunks(incoming) {
         if !matches!(
@@ -84,9 +95,9 @@ pub(crate) fn change_hashes(incoming: &[u8]) -> Option<Vec<ChangeHash>> {
             return None;
         }
         framed = framed.checked_add(chunk.bytes.len())?;
-        hashes.push(automerge::Change::try_from(chunk.bytes).ok()?.hash());
+        changes.push(automerge::Change::try_from(chunk.bytes).ok()?);
     }
-    (framed == incoming.len() && !hashes.is_empty()).then_some(hashes)
+    (framed == incoming.len() && !changes.is_empty()).then_some(changes)
 }
 
 /// The hash of every change of `doc`, which [`load`] built from `bytes`, in

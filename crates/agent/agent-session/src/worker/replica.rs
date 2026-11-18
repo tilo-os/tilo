@@ -563,10 +563,15 @@ impl ConfinedReplica {
             inner.beside.get_mut(record)?
         };
         let changes: Vec<automerge::Change> = match mutation {
-            DocumentMutation::Incremental(bytes) => tilo_automerge_isolate::change_hashes(bytes)?
-                .iter()
-                .map(|hash| doc.get_change_by_hash(hash))
-                .collect::<Option<_>>()?,
+            // The changes as they came, each one the document holds.
+            DocumentMutation::Incremental(bytes) => {
+                let changes = tilo_automerge_isolate::changes(bytes)?;
+                let held = doc.committed_document();
+                changes
+                    .iter()
+                    .all(|change| held.get_change_meta_by_hash(&change.hash()).is_some())
+                    .then_some(changes)?
+            }
             // A record it started whole is every change it holds.
             DocumentMutation::Snapshot(_) => doc.get_changes(&[]),
         };

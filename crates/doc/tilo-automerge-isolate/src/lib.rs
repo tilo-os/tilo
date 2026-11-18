@@ -203,6 +203,14 @@ pub fn change_hashes(incoming: &[u8]) -> Option<Vec<automerge::ChangeHash>> {
     engine::change_hashes(incoming)
 }
 
+/// The changes [`change_hashes`] names, as they are carried: what a caller
+/// reading what they write takes instead of building each again from a
+/// document that holds them.
+#[must_use]
+pub fn changes(incoming: &[u8]) -> Option<Vec<automerge::Change>> {
+    engine::changes(incoming)
+}
+
 /// Outside Linux there are no worker processes, so none of their bounds
 /// apply: input that passes [`precheck`] is decoded in this process with no
 /// heap ceiling, deadline or sandbox, and a decoder panic or hang is the

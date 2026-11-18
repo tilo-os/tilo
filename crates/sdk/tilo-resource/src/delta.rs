@@ -181,13 +181,6 @@ pub type ObjPath = Vec<(ObjId, Prop)>;
 const MAX_CHANGES: usize = 4_096;
 const MAX_OPS: u64 = 200_000;
 
-fn exid(doc: &Doc, obj: &automerge::legacy::ObjectId) -> Option<ObjId> {
-    match obj {
-        automerge::legacy::ObjectId::Root => Some(automerge::ROOT),
-        automerge::legacy::ObjectId::Id(id) => doc.import(&id.to_string()).ok().map(|(id, _)| id),
-    }
-}
-
 /// A delta read: the version of the document it was read in, the changes it
 /// was read from, sorted, and what they touched.
 type Read = (Vec<ChangeHash>, Vec<ChangeHash>, Delta);
@@ -227,52 +220,39 @@ impl Delta {
         delta
     }
 
-    /// [`Self::from_changes`], read from the operations.
+    /// [`Self::from_changes`], read from where the changes' operations write
+    /// ([`automerge::Automerge::change_touches`]): no value is decoded.
     fn read_from(
         doc: &Doc,
         changes: &[automerge::Change],
         locate: &dyn Fn(&ObjId) -> Option<ObjPath>,
     ) -> Self {
+        let committed = doc.committed_document();
         let mut index: HashMap<ObjId, Touched> = HashMap::new();
         let mut created: HashMap<ObjId, (ObjId, Option<String>)> = HashMap::new();
         let mut located: std::collections::HashSet<ObjId> = std::collections::HashSet::new();
         let mut touched = Vec::new();
-        // Each object once: a text's characters are an operation each, on
-        // the one object.
-        let mut found: HashMap<automerge::legacy::ObjectId, Option<ObjId>> = HashMap::new();
         for change in changes {
-            let actor = change.actor_id().to_hex_string();
-            let start = change.start_op().get();
-            for (offset, op) in change.decode().operations.iter().enumerate() {
-                let obj = if let Some(obj) = found.get(&op.obj) {
-                    obj.clone()
-                } else {
-                    let obj = exid(doc, &op.obj);
-                    if let Some(obj) = &obj {
-                        touched.push(obj.clone());
+            // A change naming an actor this document does not know is not one it holds.
+            let Some(writes) = committed.change_touches(change) else {
+                return Self::everything();
+            };
+            for (made, obj, key) in writes.made {
+                created.insert(made, (obj, key));
+            }
+            for (obj, key) in writes.writes {
+                let entry = match index.entry(obj) {
+                    std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        touched.push(entry.key().clone());
+                        entry.insert(Touched::default())
                     }
-                    found.insert(op.obj.clone(), obj.clone());
-                    obj
                 };
-                let Some(obj) = obj else {
-                    continue;
-                };
-                let key = match &op.key {
-                    automerge::legacy::Key::Map(key) => Some(key.to_string()),
-                    automerge::legacy::Key::Seq(_) => None,
-                };
-                let entry = index.entry(obj.clone()).or_default();
-                match &key {
+                match key {
                     Some(key) => {
-                        entry.written.insert(key.clone());
+                        entry.written.insert(key);
                     }
                     None => entry.all = true,
-                }
-                if matches!(op.action, automerge::legacy::OpType::Make(_)) {
-                    let counter = start.saturating_add(u64::try_from(offset).unwrap_or(u64::MAX));
-                    if let Ok((made, _)) = doc.import(&format!("{counter}@{actor}")) {
-                        created.insert(made, (obj, key));
-                    }
                 }
             }
         }
@@ -407,18 +387,28 @@ impl Tracker {
         doc: &Doc,
         locate: &dyn Fn(&ObjId) -> Option<ObjPath>,
     ) -> Delta {
+        self.committed_delta_read(doc, locate).0
+    }
+
+    /// [`Self::committed_delta_located`], with the changes it was read from:
+    /// none when it was not read from changes.
+    pub(crate) fn committed_delta_read<'d>(
+        &mut self,
+        doc: &'d Doc,
+        locate: &dyn Fn(&ObjId) -> Option<ObjPath>,
+    ) -> (Delta, Vec<automerge::ChangeMetadata<'d>>) {
         let heads = doc.committed_heads();
         let committed = doc.committed_document();
         // A version this document does not have: it was replaced wholesale.
         let moved_on = self.leads_to(doc);
         let Some(previous) = self.heads.replace(heads.clone()) else {
-            return Delta::everything();
+            return (Delta::everything(), Vec::new());
         };
         if previous == heads {
-            return Delta::nothing();
+            return (Delta::nothing(), Vec::new());
         }
         if !moved_on {
-            return Delta::everything();
+            return (Delta::everything(), Vec::new());
         }
         let metas = committed.get_changes_meta(&previous);
         let ops: u64 = metas
@@ -426,17 +416,16 @@ impl Tracker {
             .map(|meta| meta.max_op.saturating_add(1).saturating_sub(meta.start_op))
             .sum();
         if metas.len() > MAX_CHANGES || ops > MAX_OPS {
-            return Delta::everything();
+            return (Delta::everything(), Vec::new());
         }
-        let hashes: Vec<ChangeHash> = metas.iter().map(|meta| meta.hash).collect();
-        let mut changes = Vec::with_capacity(hashes.len());
-        for hash in &hashes {
-            match committed.get_change_by_hash(hash) {
+        let mut changes = Vec::with_capacity(metas.len());
+        for meta in &metas {
+            match committed.get_change_by_hash(&meta.hash) {
                 Some(change) => changes.push(change),
-                None => return Delta::everything(),
+                None => return (Delta::everything(), Vec::new()),
             }
         }
-        Delta::from_changes(doc, &changes, locate)
+        (Delta::from_changes(doc, &changes, locate), metas)
     }
 }
 
