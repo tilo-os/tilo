@@ -12,6 +12,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// an agent's session on the person's own device is. Its own fresh execution, retired when the
     /// turn's server drops.
     ///
+    /// A turn's call waits for its tool until the tool has ended: nobody asked for a slow one to
+    /// be answered `pending`, which costs the turn's model a second call for what one should
+    /// have answered. A call that names `wait_ms` asked for it and is answered so.
+    ///
     /// # Errors
     /// `caller` is not an agent acting for a person in a workspace.
     pub fn for_turn(host: H, caller: Caller) -> std::io::Result<Self> {
@@ -26,11 +30,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .workspace()
             .ok_or_else(|| std::io::Error::other("a turn names its workspace"))?
             .to_owned();
-        Ok(Self::from_caller(
-            host,
-            workspace,
-            person,
-            caller.in_new_execution(),
-        ))
+        let mut server = Self::from_caller(host, workspace, person, caller.in_new_execution());
+        server.until_ended = true;
+        Ok(server)
     }
 }

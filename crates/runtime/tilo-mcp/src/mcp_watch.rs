@@ -504,7 +504,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             arguments,
             tilo_actions::InvocationId::new(),
             None,
-            std::time::Duration::from_millis(5_000),
+            crate::Hold::For(std::time::Duration::from_millis(5_000)),
             &mut None,
         ))
         .await?;

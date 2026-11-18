@@ -106,6 +106,9 @@ pub(super) struct Notes {
     /// The action the agent's permissions deny it, listed to it as not allowed, as the
     /// workspace lists one its person's settings for it deny.
     refuses: Arc<Mutex<Option<&'static str>>>,
+    /// An action still under way, by its name, and when it ends: until then the app says
+    /// only that it accepted it.
+    late: Arc<Mutex<Option<(&'static str, tokio::time::Instant)>>>,
 }
 
 /// What a workspace answers about its installed apps.
@@ -169,6 +172,7 @@ impl Notes {
             level_page: Arc::default(),
             placed: Arc::default(),
             refuses: Arc::default(),
+            late: Arc::default(),
         }
     }
 
@@ -1098,7 +1102,11 @@ impl ActionProvider for Notes {
             },
         };
         let long = *self.long.lock().unwrap();
+        let late = self.late.lock().unwrap().is_some_and(|(late, ends)| {
+            late == action.as_str() && tokio::time::Instant::now() < ends
+        });
         let update = match action.as_str() {
+            _ if late => InvocationUpdate::Accepted { invocation: *id },
             "slow" => InvocationUpdate::Accepted { invocation: *id },
             // The workspace's start of Notes names the instance it started.
             "start" => succeeded(Some(json!({"peer_id": 1}))),
@@ -2898,6 +2906,8 @@ use typed_calls::typed;
 
 #[path = "mcp_agent_flux_tests.rs"]
 mod flux;
+#[path = "mcp_agent_held_tests.rs"]
+mod held;
 #[path = "mcp_agent_level_tests.rs"]
 mod levels;
 #[path = "mcp_agent_listed_tests.rs"]
