@@ -480,7 +480,7 @@ mod tests {
     use ui::Widget;
     use ui::tilo_actions::Actor;
     use ui::tilo_resource::{Acting, Id, MemberId, NonBlank};
-    use ui::widget::Text;
+    use ui::widget::{DrawChild as _, Text};
     use ui::written_view::{
         MakeWrittenView, Shown, Suggestion, ViewState, WRITTEN_VIEWS, WrittenView,
     };
@@ -713,5 +713,57 @@ mod tests {
         Widget::update(&mut app, &workspace.chat, &ROOT);
         assert!(placed().is_empty(), "nothing was placed");
         assert!(app.alone_size().is_none());
+    }
+
+    /// Every name the widgets from `widget` down say for assistive use, as a walk of a window's
+    /// widgets finds them.
+    fn said(widget: &dyn Widget, out: &mut Vec<String>) {
+        if let Some(name) = widget.accessibility().and_then(|node| node.name) {
+            out.push(name);
+        }
+        widget.for_each_child(&mut |child| said(child, out));
+    }
+
+    /// A page asks the window it mounts, not the chat inside it: how tall what it shows asks to
+    /// be, and what it says for assistive use. The window answers both from the view it shows
+    /// alone.
+    #[test]
+    fn the_window_says_the_height_and_the_words_of_the_view_it_shows_alone() {
+        views_are_shown();
+        let mut workspace = crate::testing::demo_doc();
+        let message = posted(&mut workspace);
+        let mut app = window(&workspace, aria());
+        app.answer_effect(ChatEffect::ShowView { message })
+            .expect("the view is shown alone");
+        Widget::update(&mut app, &workspace.chat, &ROOT);
+        app.rect = vello::kurbo::Rect::new(0.0, 0.0, 620.0, 400.0);
+        let mut window = crate::ChatWindow::new(Rc::new(RefCell::new(app)));
+        let theme = ui::theme::Theme::dark();
+        let mut text = ui::text_render::TextRenderer::new();
+        let mut scene = vello::Scene::new();
+        window.draw_child(
+            &mut scene,
+            vello::kurbo::Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &ui::presence::PresenceCtx::empty(),
+        );
+
+        let (width, height) = ui::widget::preferred_window_size(&window)
+            .expect("the window says the size of the view it shows alone");
+        assert!(
+            (width - 620.0).abs() < 1.0,
+            "the window's own width: {width}"
+        );
+        assert!(
+            height > 0.0 && height < 400.0,
+            "the view's own height, not the window's: {height}"
+        );
+        let mut names = Vec::new();
+        said(&window, &mut names);
+        assert!(
+            names.iter().any(|name| name == "shown"),
+            "what the view draws is said through the window: {names:?}"
+        );
     }
 }
