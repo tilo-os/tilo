@@ -237,12 +237,19 @@ await_input() {
 
 if [ "$plain" = yes ]; then
   while :; do
-    if systemctl is-active --quiet "$UNIT"; then
-      log "$UNIT is active — this boot is good"
-      report_failed_units
-      exit 0
-    fi
-    systemctl is-failed --quiet "$UNIT" && judge_failed
+    # A settled state, not "is-active": a unit that is still starting (a
+    # oneshot running its own checks) answers is-active too, and a probe that
+    # has not finished can still fail. Only "active" is the unit having said
+    # yes; "failed" is it having said no; everything else is still to come.
+    state="$(systemctl show -p ActiveState --value "$UNIT" 2>/dev/null)"
+    case "$state" in
+      active)
+        log "$UNIT is active — this boot is good"
+        report_failed_units
+        exit 0 ;;
+      failed)
+        judge_failed ;;
+    esac
     [ "$(date +%s)" -ge "$end" ] && break
     sleep "$POLL"
   done
