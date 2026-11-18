@@ -68,6 +68,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     // The way in.
     case wayInTitle = "way-in-title", wayInLead = "way-in-lead", scanCode = "scan-code", pasteLink = "paste-link"
     case wayInHelp = "way-in-help", wayInHelpOne = "way-in-help-one", pairing, noLink = "no-link", codeNoLink = "code-no-link"
+    case codeFromElsewhere = "code-from-elsewhere", pairsNothing = "pairs-nothing"
     case compareCode = "compare-code"
     case unreachable, cameraNotAllowed = "camera-not-allowed", tryAgain = "try-again", notReachable = "not-reachable"
     // The menu bar and the menus.
@@ -261,6 +262,8 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .compareCode: "A device where you are signed in shows a code and asks about it. Approve there only if it shows this one."
         case .noLink: "The clipboard holds no link."
         case .codeNoLink: "This code holds no link."
+        case .codeFromElsewhere: "This code is from another Tilo site, {from}. This app is set up for {site}. Open “Pair a new device” there."
+        case .pairsNothing: "This link pairs no device. This app is set up for {site}. Open “Pair a new device” there."
         case .unreachable: "Tilo cannot be reached. Check the connection, then try again."
         case .cameraNotAllowed: "Allow the camera for {app} in the system's settings to scan a code."
         case .tryAgain: "Try again"
