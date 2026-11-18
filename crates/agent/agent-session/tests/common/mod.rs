@@ -8,6 +8,7 @@
     reason = "each test binary uses part of this; a fixture failure is the assertion"
 )]
 
+use chat::projection::ChatProjection as _;
 use serde_json::json;
 use tilo_actions::api::{ActionDescriptor, InputSpec};
 use tilo_actions::{Availability, ConfirmationPolicy, OperationKind, PROMPTED_PARAM, ParamType};

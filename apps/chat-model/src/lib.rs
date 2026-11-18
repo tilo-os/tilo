@@ -28,22 +28,3 @@ pub use effects::ChatEffect;
 pub use feedback::{Report, TriageEntry, TriageUpdate};
 pub use model::ChannelKind;
 pub use parts::ReadMark;
-
-/// The app that keeps these resources.
-pub use tilo_app_id::apps::CHAT as APP_ID;
-
-/// The kind of the workspace's chat resource.
-pub const KIND: &str = "chat.workspace";
-
-/// The kind of the resource each part of the chat's messages is.
-pub const MESSAGES_KIND: &str = "chat.messages";
-
-/// The kind of a person's own resource of what they are writing.
-pub const DRAFTS_KIND: &str = "chat.drafts";
-
-/// The resource address of conversation `id` in the chat resource: what a search
-/// hit, an agent's `open` and the palette name it by.
-#[must_use]
-pub fn conversation_resource(id: &tilo_resource::Id) -> String {
-    tilo_resource::items::item_resource_id_in(KIND, "channels", id)
-}

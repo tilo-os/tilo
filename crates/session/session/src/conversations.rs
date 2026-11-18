@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use chat::projection::ChatProjection as _;
 use chat::summons::unanswered;
 use tilo_action_policy::WorkspacePolicy;
 use tilo_action_policy::turn::Turn;

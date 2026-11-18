@@ -10,6 +10,7 @@
 //! types in adds a message the page draws. A person's session, and every production
 //! image, carries none of it.
 
+use chat::projection::ChatProjection as _;
 use serde_json::Value as Json;
 use tilo_actions::{ApiError, ResourceSpec};
 use tilo_resource::Effect as _;

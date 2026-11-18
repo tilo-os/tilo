@@ -22,6 +22,7 @@
               driven on the test's own thread (the agent's apps are not Send)"
 )]
 
+use chat::projection::ChatProjection as _;
 use std::sync::Mutex;
 use tilo_session_client::Event;
 

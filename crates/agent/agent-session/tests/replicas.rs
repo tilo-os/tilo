@@ -9,6 +9,7 @@
 )]
 
 use crate::common::catalogue;
+use chat::projection::ChatProjection as _;
 use collab_types::DocumentMutation;
 use tilo_actions::MemberId;
 use tilo_agent_session::{Replica, ReplicaActor, Seed};

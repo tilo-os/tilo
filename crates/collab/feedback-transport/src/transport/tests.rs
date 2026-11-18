@@ -1,4 +1,5 @@
 use super::*;
+use chat::projection::ChatProjection as _;
 use ed25519_dalek::{Signer, SigningKey};
 use std::{cell::RefCell, path::Path, process::Command};
 use tilo_feedback::{Composer, Consent, DeliveryState, MemoryStore, Outbox};

@@ -4,6 +4,7 @@
 //! agent reads it, lists it or finds it, whatever role its person has in the workspace. Every
 //! call goes through the service and the tools a turn has, on a turn and outside one.
 use super::*;
+use chat::projection::ChatProjection as _;
 use tilo_peer_state::join::Role;
 
 /// The agent Bo and Cy each keep elsewhere. This workspace's list never holds it.

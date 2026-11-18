@@ -2179,7 +2179,6 @@ dependencies = [
  "fnv",
  "image",
  "jiff",
- "moderation-model",
  "neighbour-wire",
  "runtime-dylib",
  "serde",
@@ -2219,7 +2218,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-actions",
- "tilo-app-id",
  "tilo-document",
  "tilo-feedback",
  "tilo-reference",
@@ -10142,7 +10140,10 @@ name = "moderation-model"
 version = "0.1.0"
 dependencies = [
  "serde",
- "tilo-app",
+ "serde_json",
+ "tilo-actions",
+ "tilo-automerge-fork",
+ "tilo-resource",
  "workspace-hack",
 ]
 

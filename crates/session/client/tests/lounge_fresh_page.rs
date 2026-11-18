@@ -35,6 +35,7 @@
     reason = "a rehearsal fixture: a failed step is the answer, and it says which check failed"
 )]
 
+use chat::projection::ChatProjection as _;
 use std::io::{BufRead, BufReader, Write as _};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Arc;

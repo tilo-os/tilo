@@ -4,6 +4,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use chat::projection::ChatProjection as _;
 use std::sync::Mutex;
 
 use automerge::AutoCommit;
