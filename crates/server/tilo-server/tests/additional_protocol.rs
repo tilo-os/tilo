@@ -2,7 +2,6 @@
     clippy::significant_drop_tightening,
     reason = "relays, fixtures and guards deliberately stay alive until each test ends"
 )]
-use iroh::endpoint::presets;
 use iroh::protocol::{AcceptError, DynProtocolHandler, ProtocolHandler};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -42,11 +41,11 @@ async fn extra_protocol_and_server_share_one_endpoint() {
     let state = tempfile::tempdir().unwrap();
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_two = Arc::new(AtomicBool::new(false));
-    let endpoint = iroh::Endpoint::builder(presets::Minimal)
-        .relay_mode(iroh::RelayMode::Disabled)
-        .bind()
-        .await
-        .unwrap();
+    // On the endpoint the tests here dial through, which names this machine's
+    // loopback address and never asks the internet: a server handed an endpoint
+    // waits for it to name one, so an endpoint that never does holds its start
+    // back for the whole wait.
+    let endpoint = test_server::endpoint(iroh::SecretKey::generate()).await;
     let endpoint_addr = endpoint.addr();
     let server = Server::start_on_endpoint_with_protocols(
         ServerConfig {
