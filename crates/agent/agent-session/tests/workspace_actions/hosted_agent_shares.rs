@@ -434,6 +434,10 @@ async fn an_agent_on_a_server_answers_with_the_document_it_wrote_shown_live() {
     page.peer.close();
 }
 
+/// A poem written, shown live a message later, changed, and its share ended.
+#[path = "hosted_poem.rs"]
+mod poem;
+
 /// Through its other tools the conversation of a share is an argument the model gives. A turn's
 /// call of Chat's own sharing verbs for any conversation but the one it answers in is refused
 /// in words and shares nothing: not where everyone reads, and not in its person's
