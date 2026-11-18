@@ -1208,6 +1208,8 @@ public final class TiloSource: AssistantSource {
     /// A message that a cause wrote is no piece of its own: an event of the person's that
     /// came, a moment they asked to be told at. It is what their server told the assistant
     /// then, and what the assistant answered to it stands under a line with the cause's name.
+    /// What their server tells the assistant once they answered a question is such a message too,
+    /// and names no task: what the assistant says then stands under the question, with no line.
     /// What the server told the person of that answer says what it is: a reminder, a brief, or
     /// news, each with the mark the person's own rule gave it. Nothing here decides that.
     private func pieces(of read: [ChatMessage], in chat: Chat) -> [Item] {
@@ -1215,7 +1217,10 @@ public final class TiloSource: AssistantSource {
         var lastAnswer: [String: String] = [:]
         for message in read {
             if message.author.id != me, let cause = message.fields["cause"], !cause.isNull {
-                causes[message.name] = cause["label"]?.string ?? ""
+                // What wakes the assistant on the person's answer to a question names no task: its label
+                // is only that question's sentence, and what follows the answer stands under the question.
+                let followsAnAnswer = cause["key"]?.string?.hasPrefix("question:") ?? false
+                causes[message.name] = followsAnAnswer ? "" : cause["label"]?.string ?? ""
             } else if let parent = message.fields["parent"]?.string {
                 lastAnswer[parent] = message.name
             }
