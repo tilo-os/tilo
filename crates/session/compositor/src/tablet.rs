@@ -115,7 +115,7 @@ impl State {
         }
         let under = if self.locked() {
             self.lock_surface_under(at)
-        } else if self.surface_under(at).is_some() {
+        } else if self.shell_surface_under(at).is_some() {
             None
         } else {
             self.surface_under(at)
