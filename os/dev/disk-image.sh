@@ -724,14 +724,17 @@ encrypted_layout() {
   LOOP_NODE_HOLDER_PID=$!
   LOOP_NODE_HOLDER_IN=${LOOP_NODE_HOLDER[1]}
   LOOP_NODE_HOLDER_OUT=${LOOP_NODE_HOLDER[0]}
-  IFS= read -r loop_nodes_ready <&"$LOOP_NODE_HOLDER_OUT" || die "loop partition node holder failed"
-  [ "$loop_nodes_ready" = READY ] || die "loop partition node holder did not become ready"
 
-  local prep
+  # The helper writes the partitions; the holder materializes their nodes as
+  # they appear. So the helper starts first and READY is read after it returns:
+  # waiting for READY before it would wait for partitions nobody made.
+  local prep prep_status=0
   prep="$(sudo -n env TILO_ESP_SIZE="$ESP_SIZE" TILO_BOOT_SIZE="$ENC_BOOT_SIZE" \
     TILO_STORE_VOLUME="$ENC_STORE_VOLUME" \
-    "$ENC_DISK_ENCRYPT" prepare "$LOOP" --filesystem "$ROOTFS" --mnt "$MNT")" \
-    || die "tilo-disk-encrypt prepare failed"
+    "$ENC_DISK_ENCRYPT" prepare "$LOOP" --filesystem "$ROOTFS" --mnt "$MNT")" || prep_status=$?
+  IFS= read -r loop_nodes_ready <&"$LOOP_NODE_HOLDER_OUT" || true
+  [ "$prep_status" -eq 0 ] || die "tilo-disk-encrypt prepare failed"
+  [ "${loop_nodes_ready:-}" = READY ] || die "loop partition node holder did not become ready"
   field_of() { printf '%s\n' "$prep" | sed -n "s/^$1=//p"; }
   local mapper
   MNT="$(field_of MNT)"
