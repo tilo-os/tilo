@@ -78,6 +78,7 @@ mod calendar_connect;
 mod calendars;
 mod carried;
 mod coding;
+mod first_try;
 mod going;
 mod issue_work;
 mod learned;
@@ -1993,7 +1994,7 @@ impl Reply {
         let mut arguments = Map::new();
         arguments.insert("message".into(), json!(message));
         arguments.insert("source".into(), source.clone());
-        arguments.insert("reads".into(), reads.clone());
+        arguments.insert("reads".into(), first_try::reads_as_written(source, reads));
         let resource = format!("{}/messages/{message}", chat::parts::ChatPart::KIND);
         match invoke_named(
             &self.provider,
@@ -2011,7 +2012,7 @@ impl Reply {
                     .to_owned(),
                 false,
             ),
-            Err(why) => (format!("The view was not posted: {why}"), true),
+            Err(why) => (first_try::not_posted(&why, source), true),
         }
     }
 
@@ -2331,6 +2332,7 @@ async fn work(
         Message::text(Role::System, instructions(turn, &scope.workspace)),
         Message::text(Role::User, turn.request.clone()),
     ];
+    first_try::tell(&mut messages, &server).await;
     let mut cost = 0u64;
     let key = format!("{}:{}", turn.agent.id.0, turn.cause);
     let mut asked_for_words = false;

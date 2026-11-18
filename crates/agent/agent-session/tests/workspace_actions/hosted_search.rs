@@ -1528,3 +1528,7 @@ async fn a_find_asks_what_its_caller_may_read_only_for_the_answers_it_returns() 
     );
     page.peer.close();
 }
+
+/// How often a turn asks its model before the work is done.
+#[path = "hosted_first_try.rs"]
+mod first_try;

@@ -2932,6 +2932,8 @@ mod opening;
 mod outside;
 #[path = "mcp_runs_tests.rs"]
 mod runs;
+#[path = "mcp_agent_start_tests.rs"]
+mod starting;
 #[path = "mcp_status_tests.rs"]
 mod status;
 #[path = "mcp_agent_typed_calls_tests.rs"]
