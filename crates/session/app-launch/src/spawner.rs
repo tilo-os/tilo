@@ -142,6 +142,9 @@ pub struct Event {
     /// The name the app was shown by.
     pub title: String,
     pub end: End,
+    /// Its keeper was killed while no desktop was there, taking the app with it: the app's saved
+    /// tab says it stopped working rather than a notice opening here.
+    pub killed: bool,
     /// The last of what the app wrote, when this session read its streams.
     /// Empty for an ending reported by someone who started nothing.
     pub said: crate::output::OutputTail,
@@ -192,6 +195,11 @@ pub struct Spawner {
     /// reported under, until [`Self::ended_away`] takes it.
     #[cfg(target_os = "linux")]
     away: BTreeMap<u64, tilo_app_keeper::registry::KeptLaunch>,
+    /// The launch each kept app whose keeper was killed outright while no desktop was there was:
+    /// the app never ended, so its saved tab stays to say it stopped working
+    /// ([`Self::stopped_away`]).
+    #[cfg(target_os = "linux")]
+    stopped: BTreeMap<u64, tilo_app_keeper::registry::KeptLaunch>,
 }
 
 #[cfg(target_os = "linux")]
@@ -328,6 +336,8 @@ impl Spawner {
             reserved: Reserved::default(),
             #[cfg(target_os = "linux")]
             away: BTreeMap::new(),
+            #[cfg(target_os = "linux")]
+            stopped: BTreeMap::new(),
         }
     }
 
@@ -583,6 +593,7 @@ impl Spawner {
                     app,
                     title,
                     end,
+                    killed: false,
                     said,
                 });
                 if let Some(wake) = wake {
@@ -776,10 +787,10 @@ impl Spawner {
         }
     }
 
-    /// The launch a kept app that ended while no desktop was there was, by the id its end is
-    /// reported under: taken once.
+    /// The launch of the kept app `id`, which ended while no desktop was there: one that ended by
+    /// itself or one whose keeper was killed outright. Taken once.
     pub fn ended_away(&mut self, id: u64) -> Option<tilo_app_keeper::registry::KeptLaunch> {
-        self.away.remove(&id)
+        self.away.remove(&id).or_else(|| self.stopped.remove(&id))
     }
 
     /// The launches of the kept apps that ended while no desktop was there and whose ends are
@@ -787,6 +798,14 @@ impl Spawner {
     #[must_use]
     pub fn away(&self) -> Vec<tilo_app_keeper::registry::KeptLaunch> {
         self.away.values().cloned().collect()
+    }
+
+    /// The launches of the kept apps whose keeper was killed outright while no desktop was
+    /// there, and whose tabs are not put to saying so yet: they lost what they held without
+    /// ending, so their tab says they stopped working and offers to reopen them.
+    #[must_use]
+    pub fn stopped_away(&self) -> Vec<tilo_app_keeper::registry::KeptLaunch> {
+        self.stopped.values().cloned().collect()
     }
 
     /// The app `pid` runs, behind `kept` when it is kept: shown on the desktop once its keeper
@@ -977,6 +996,7 @@ impl Spawner {
                     app,
                     title,
                     end,
+                    killed: false,
                     said,
                 });
                 if let Some(wake) = wake {
@@ -1052,6 +1072,7 @@ impl Spawner {
                     app: name,
                     title,
                     end,
+                    killed: false,
                     said: crate::output::OutputTail::default(),
                 });
                 if let Some(wake) = wake {
@@ -1088,10 +1109,13 @@ impl Spawner {
     }
 
     /// Report the kept app in `dir`, which ended while no desktop was there, and remove its
-    /// directory.
+    /// directory. A keeper that left no word of how its app ended was killed outright and took
+    /// its app with it: the app never ended, so its tab stays and says it stopped working.
     fn report_gone(&mut self, dir: &Path, end: Option<End>) {
         let launch = crate::kept::written_launch(dir);
-        let end = end.or_else(|| crate::kept::recorded_end(dir));
+        let heard = end.or_else(|| crate::kept::recorded_end(dir));
+        let killed = heard.is_none();
+        let end = heard.unwrap_or(End::KeeperStopped);
         // What it wrote while no desktop read it is in its keeper's files, which go with the
         // directory: its end carries their tail, as one this desktop saw would.
         let said = launch
@@ -1105,19 +1129,25 @@ impl Spawner {
         if let Err(error) = crate::kept::remove_dir(dir) {
             tracing::warn!(dir = %dir.display(), %error, "a kept app's directory stays");
         }
-        let (Some(launch), Some(end)) = (launch, end) else {
+        let Some(launch) = launch else {
             tracing::info!(target: tilo_startup_metrics::KEPT_APPS_TARGET, dir = %dir.display(), "not adopted: its keeper is gone");
             return;
         };
-        tracing::info!(target: tilo_startup_metrics::KEPT_APPS_TARGET, app = %launch.app, %end, "not adopted: it ended while the desktop was away");
         let id = self.next;
         self.next = self.next.wrapping_add(1);
-        self.away.insert(id, launch.clone());
+        if killed {
+            tracing::warn!(target: tilo_startup_metrics::KEPT_APPS_TARGET, app = %launch.app, "not adopted: its keeper was killed while the desktop was away");
+            self.stopped.insert(id, launch.clone());
+        } else {
+            tracing::info!(target: tilo_startup_metrics::KEPT_APPS_TARGET, app = %launch.app, %end, "not adopted: it ended while the desktop was away");
+            self.away.insert(id, launch.clone());
+        }
         let _ = self.events.0.send(Event {
             id,
             app: launch.app,
             title: launch.title,
             end,
+            killed,
             said,
         });
     }

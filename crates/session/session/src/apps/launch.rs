@@ -1,7 +1,7 @@
 //! What becomes of a launch this session started: the windows the desktop gives a place, the
 //! launches those windows belong to, and how a launch that ended is read.
 
-use tilo_app_launch::{HeldLink, Planned};
+use tilo_app_launch::{Event, HeldLink, Planned};
 
 use super::{
     ApiError, Apps, Cause, Closed, Got, LaunchState, Launching, WidgetSurface, not_opened,
@@ -165,6 +165,12 @@ impl Apps {
             // process again, and its record keeps how far it got, for whoever reads it later.
             self.state.borrow_mut().held.remove(&event.id);
             let launch = self.state.borrow().launched.get(&event.id).cloned();
+            // A keeper killed while no desktop was there took its app with it: this session never
+            // started the app, and the tab it stood in says it stopped working once the saved
+            // layout is laid out, which the restore does.
+            if event.killed {
+                continue;
+            }
             let lived = launch.as_ref().map(|launch| launch.started.elapsed());
             // A launch that ended before any window of its own appeared never opened, however
             // long it ran and however it ended: the person asked for something that did not come,
@@ -174,13 +180,7 @@ impl Apps {
                 .is_some_and(|launch| launch.got == Got::Arriving);
             // The reason is the app's own last word when it said one: "it closed before its
             // window came" names no cause the person or an agent can act on.
-            let why = event
-                .said
-                .stderr
-                .last()
-                .filter(|_| could_not_open)
-                .cloned()
-                .unwrap_or_else(|| tilo_desktop_surface::i18n::t("answer-why-not-opened"));
+            let why = why_not_opened(&event, could_not_open);
             self.end_launch(
                 event.id,
                 if could_not_open {
@@ -349,4 +349,16 @@ impl Apps {
             Got::CouldNotOpen { why } => LaunchState::CouldNotOpen { why: why.clone() },
         })
     }
+}
+
+/// The reason the app whose launch `event` ended gives the person: its own last word when it said
+/// one and never opened, else the shell's account that its window did not come.
+fn why_not_opened(event: &Event, could_not_open: bool) -> String {
+    event
+        .said
+        .stderr
+        .last()
+        .filter(|_| could_not_open)
+        .cloned()
+        .unwrap_or_else(|| tilo_desktop_surface::i18n::t("answer-why-not-opened"))
 }

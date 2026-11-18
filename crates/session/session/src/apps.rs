@@ -176,12 +176,26 @@ struct State {
     /// closes their saved tabs ([`Apps::take_kept`]).
     #[cfg(target_os = "linux")]
     ended_away: Vec<tilo_app_launch::kept::KeptLaunch>,
+    /// The launches of the kept apps whose keeper was killed outright while no desktop was
+    /// there, until the restore puts their saved tabs to saying they stopped working
+    /// ([`Apps::take_kept`]).
+    #[cfg(target_os = "linux")]
+    stopped_away: Vec<tilo_app_launch::kept::KeptLaunch>,
     /// The apps from before an update that this desktop cannot show, by launch id.
     #[cfg(target_os = "linux")]
     outdated: BTreeMap<u64, outdated::FromBefore>,
     /// The saved tabs whose Windows programs the service was asked for since the last pass, and
     /// has not answered yet.
     windows_waits: Vec<windows::Waiting>,
+}
+
+/// What a start takes from the keepers' registry, once: the launches it took back, the ones that
+/// ended while no desktop was there, and the ones whose keeper was killed outright then.
+#[cfg(target_os = "linux")]
+pub(crate) struct TakenBack {
+    pub(crate) kept: Vec<tilo_app_launch::Adopted>,
+    pub(crate) ended: Vec<tilo_app_launch::kept::KeptLaunch>,
+    pub(crate) killed: Vec<tilo_app_launch::kept::KeptLaunch>,
 }
 
 /// A window whose tab the session asked the shell for: the launch that starts it once the shell asks
@@ -327,6 +341,8 @@ impl Apps {
                 kept: Vec::new(),
                 #[cfg(target_os = "linux")]
                 ended_away: Vec::new(),
+                #[cfg(target_os = "linux")]
+                stopped_away: Vec::new(),
                 #[cfg(target_os = "linux")]
                 outdated: BTreeMap::new(),
                 windows_waits: Vec::new(),
@@ -778,6 +794,7 @@ impl Apps {
         {
             let mut state = self.state.borrow_mut();
             state.ended_away = state.spawner.away();
+            state.stopped_away = state.spawner.stopped_away();
         }
         self.took_up(adopted, true);
     }
@@ -830,19 +847,16 @@ impl Apps {
     /// The kept apps this run took back: each of their windows claims the saved tab its keeper
     /// was last told it stood in, which waits for that window rather than starting the app again.
     /// Beside them, the launches of the kept apps that ended while no desktop was there: their
-    /// saved tabs close, as any the app closed meanwhile. Taken once.
+    /// saved tabs close, as any the app closed meanwhile, and those of the apps whose keeper was
+    /// killed outright: their tabs stay to say they stopped working. Taken once.
     #[cfg(target_os = "linux")]
-    pub(crate) fn take_kept(
-        &self,
-    ) -> (
-        Vec<tilo_app_launch::Adopted>,
-        Vec<tilo_app_launch::kept::KeptLaunch>,
-    ) {
+    pub(crate) fn take_kept(&self) -> TakenBack {
         let mut state = self.state.borrow_mut();
-        (
-            std::mem::take(&mut state.kept),
-            std::mem::take(&mut state.ended_away),
-        )
+        TakenBack {
+            kept: std::mem::take(&mut state.kept),
+            ended: std::mem::take(&mut state.ended_away),
+            killed: std::mem::take(&mut state.stopped_away),
+        }
     }
 
     /// Tell each kept window's keeper the tab it stands in now (`placements`), where that changed:
@@ -2656,6 +2670,7 @@ mod tests {
                 app: "so.tilo.agent".to_owned(),
                 title: "Agent".to_owned(),
                 end: End::exited(1),
+                killed: false,
                 said: OutputTail::default(),
             });
             apps.follow();
@@ -2736,6 +2751,7 @@ mod tests {
             app: "example.Canvas".to_owned(),
             title: "Canvas".to_owned(),
             end,
+            killed: false,
             said: OutputTail::default(),
         });
         apps.follow();
@@ -2784,6 +2800,7 @@ mod tests {
             app: "example.Canvas".to_owned(),
             title: "Canvas".to_owned(),
             end: End::exited(0),
+            killed: false,
             said: OutputTail::default(),
         });
         apps.follow_ended();
@@ -2829,6 +2846,7 @@ mod tests {
             app: "example.Canvas".to_owned(),
             title: "Canvas".to_owned(),
             end,
+            killed: false,
             said: OutputTail {
                 stderr: vec![said.to_owned()],
                 dropped: 0,
@@ -2915,6 +2933,7 @@ mod tests {
             app: "example.Canvas".to_owned(),
             title: "Canvas".to_owned(),
             end: End::exited(0),
+            killed: false,
             said: OutputTail::default(),
         });
         apps.follow_ended();
