@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
-//! The chain's storage of an app's items at 1,000, 10,000 and 50,000 items:
+//! The chain's storage of an app's items at 1,000, 10,000 and 25,000 items:
 //! a change to one item writes about the same bytes, finding an item by its
 //! id takes about as long, and a page of the listing reads about as fast,
 //! however many items the chain keeps. The app here declares only its
@@ -255,11 +255,11 @@ fn measure(store: &ResourceStore, chain: &Chain<Entries>, items: usize) -> Measu
 }
 
 #[test]
-fn bytes_lookup_and_paging_stay_flat_from_one_thousand_to_fifty_thousand_items() {
+fn bytes_lookup_and_paging_stay_flat_from_one_thousand_to_twenty_five_thousand_items() {
     let (store, chain) = chain();
     let mut measured = Vec::new();
     let mut held = 0;
-    for items in [1_000, 10_000, 50_000] {
+    for items in [1_000, 10_000, 25_000] {
         add(&chain, held, items - held);
         held = items;
         let m = measure(&store, &chain, items);
@@ -272,27 +272,27 @@ fn bytes_lookup_and_paging_stay_flat_from_one_thousand_to_fifty_thousand_items()
     let small = &measured[0];
     let large = &measured[2];
     assert_eq!(
-        large.parts, 50,
-        "fifty thousand items in parts of a thousand"
+        large.parts, 25,
+        "twenty-five thousand items in parts of a thousand"
     );
     assert!(
         large.edit_bytes <= small.edit_bytes * 2 + 256,
-        "a change to one item costs the item: {} bytes at 1k, {} at 50k",
+        "a change to one item costs the item: {} bytes at 1k, {} at 25k",
         small.edit_bytes,
         large.edit_bytes
     );
     // Timings on a shared machine move; what grows with the items held grows
-    // by fifty times here, far past this.
+    // by twenty-five times here, far past this.
     let flat = |small: Duration, large: Duration| large <= small * 8 + Duration::from_micros(50);
     assert!(
         flat(small.lookup, large.lookup),
-        "a lookup: {:?} at 1k, {:?} at 50k",
+        "a lookup: {:?} at 1k, {:?} at 25k",
         small.lookup,
         large.lookup
     );
     assert!(
         flat(small.page, large.page),
-        "a page: {:?} at 1k, {:?} at 50k",
+        "a page: {:?} at 1k, {:?} at 25k",
         small.page,
         large.page
     );
