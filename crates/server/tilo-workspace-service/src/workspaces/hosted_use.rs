@@ -102,6 +102,17 @@ pub use super::person_settings::calendars::CONNECT as CALENDAR_CONNECT;
 #[cfg(feature = "agents")]
 pub use super::person_settings::calendars::connect::{ConnectAsk, Connected, TurnConnect};
 
+/// A person's mail account as such a turn signs it in from its address alone
+/// ([`Workspaces::connect_mail_for_turn`]): the action, what is kept while its person is
+/// asked for the password, what comes of their answer, and where an address's mail lives
+/// as whatever works that out answers it.
+#[cfg(feature = "agents")]
+pub use super::person_settings::mail_connect::{
+    CONNECT as MAIL_CONNECT, MailAsk, MailCarried, MailSignedIn, TurnMailConnect,
+};
+#[cfg(feature = "agents")]
+pub use tilo_account_probe::mail_servers::{Found as MailFound, MailServers, Server as MailServer};
+
 /// Where a person's asks are kept, under their own root.
 const ASKS_DIR: &str = "vault-asks";
 /// The most asks that wait for one person at a time: an agent that goes on
@@ -247,6 +258,10 @@ pub(super) struct Uses {
     /// password, read from the server's disk once.
     #[cfg(feature = "agents")]
     pub(super) connects: Mutex<Option<Vec<ConnectAsk>>>,
+    /// The mail accounts turns asked to sign in that wait for their person's
+    /// password, read from the server's disk once.
+    #[cfg(feature = "agents")]
+    pub(super) mail_connects: Mutex<Option<Vec<MailAsk>>>,
 }
 
 /// A person's "allow" for one fill: `agent` may fill what `item` keeps into
@@ -345,6 +360,8 @@ impl Default for Uses {
             once: Mutex::default(),
             #[cfg(feature = "agents")]
             connects: Mutex::default(),
+            #[cfg(feature = "agents")]
+            mail_connects: Mutex::default(),
         }
     }
 }
