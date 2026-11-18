@@ -2596,7 +2596,7 @@ mod tests {
             assert!(matches!(
                 moved.cmd,
                 Cmd::Workspace {
-                    cmd: desktop::WorkspaceCmd::Servers {
+                    cmd: hosted::WorkspaceCmd::Servers {
                         cmd: hosted::ServersCmd::Move { ref from, ref to }
                     }
                 } if from == "https://old.test" && to == "https://tilo.sh"
