@@ -1337,7 +1337,11 @@ impl Page<'_> {
         })
     }
 
-    fn vpn_switch_control(&self, vpn: &VpnInfo, live: &ui::tilo_actions::ResourceSpec) -> Toggle {
+    fn vpn_switch_control(
+        &self,
+        vpn: &VpnInfo,
+        live: &(impl ui::tilo_actions::Exports + ?Sized),
+    ) -> Toggle {
         let connection = vpn.uuid.clone();
         let toggle = Toggle::from_state(&LocalState::new(self.set_to_connect(vpn)))
             .with_id(&format!("settings.network.vpn.switch.{}", vpn.uuid))
@@ -1400,7 +1404,7 @@ impl Page<'_> {
             .vpns
             .iter()
             .map(|vpn| {
-                let resource = self.vpn_live(vpn).into_resource();
+                let resource = self.vpn_live(vpn);
                 let line = ListRow::new(
                     format!("settings.network.vpn.{}", vpn.uuid),
                     vpn.name.clone(),
@@ -1622,7 +1626,7 @@ impl Page<'_> {
         let Some(vpn) = self.vpns.iter().find(|vpn| vpn.uuid == uuid) else {
             return vec![card(&t("net-vpn"), rows(vec![note(&t("net-vpn-gone"))]))];
         };
-        let live = self.vpn_live(vpn).into_resource();
+        let live = self.vpn_live(vpn);
         let mut status = Vec::new();
         if let Some(notice) = &self.notice {
             status.push(note(notice));
@@ -1695,7 +1699,7 @@ impl Page<'_> {
     }
 
     fn vpn_settings_rows(&self, vpn: &VpnInfo, settings: &VpnProfileSettings) -> Vec<Item> {
-        let live = self.vpn_live(vpn).into_resource();
+        let live = self.vpn_live(vpn);
         let uuid = vpn.uuid.clone();
         let text = |id: &str, value: String, placeholder: String| {
             TextInput::from_state(&LocalState::new(value))
@@ -1763,7 +1767,7 @@ impl Page<'_> {
     }
 
     fn mtu_rows(&self, vpn: &VpnInfo, settings: &VpnProfileSettings) -> Vec<Item> {
-        let live = self.vpn_live(vpn).into_resource();
+        let live = self.vpn_live(vpn);
         let uuid = vpn.uuid.clone();
         let label = t("net-vpn-mtu-size");
         let choices = [t("net-vpn-mtu-automatic"), t("net-vpn-mtu-custom")];
@@ -1815,7 +1819,7 @@ impl Page<'_> {
     }
 
     fn dns_rows(&self, vpn: &VpnInfo, settings: &VpnProfileSettings) -> Vec<Item> {
-        let live = self.vpn_live(vpn).into_resource();
+        let live = self.vpn_live(vpn);
         let uuid = vpn.uuid.as_str();
         let mut out: Vec<Item> = settings
             .dns
@@ -1861,7 +1865,7 @@ impl Page<'_> {
     }
 
     fn routed_rows(&self, vpn: &VpnInfo, settings: &VpnProfileSettings) -> Vec<Item> {
-        let live = self.vpn_live(vpn).into_resource();
+        let live = self.vpn_live(vpn);
         let uuid = vpn.uuid.as_str();
         let mut out: Vec<Item> = settings
             .allowed_ips
@@ -1907,7 +1911,7 @@ impl Page<'_> {
     }
 
     fn wireguard_settings_rows(&self, vpn: &VpnInfo, settings: &VpnProfileSettings) -> Vec<Item> {
-        let live = self.vpn_live(vpn).into_resource();
+        let live = self.vpn_live(vpn);
         let uuid = vpn.uuid.as_str();
         let text = |id: &str, value: String, placeholder: String| {
             TextInput::from_state(&LocalState::new(value))

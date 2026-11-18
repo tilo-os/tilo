@@ -197,7 +197,7 @@ impl Page<'_> {
             .rows()
             .iter()
             .map(|row| {
-                let row_live = NetworkModel::through_live(row).into_resource();
+                let row_live = NetworkModel::through_live(row);
                 let name = through_name(&row.label);
                 let device = row.device.clone();
                 let toggle = self.bind_on_row(
@@ -253,7 +253,7 @@ impl Page<'_> {
                 .exit_users
                 .iter()
                 .map(|user| {
-                    let user_row = NetworkModel::exit_user_live(user).into_resource();
+                    let user_row = NetworkModel::exit_user_live(user);
                     let stop = self.bind_row(
                         Button::new(
                             &format!("settings.network.vpn.exit-user.stop.{}", user.device),
