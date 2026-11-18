@@ -89,6 +89,19 @@ public enum Measure {
     public static let windowRadius: CGFloat = 12
 }
 
+/// How things move, in Tilo's own measures: `fast` for what answers a press or changes in
+/// place, `base` for a part that opens or closes. Nothing bounces. Where the system asks for
+/// reduced motion nothing moves and nothing eases: there is no animation then.
+public enum Motion {
+    /// 130 ms: a press, a change in place.
+    public static let fast: TimeInterval = 0.13
+    /// 210 ms: a part that opens or closes, a place brought into view.
+    public static let base: TimeInterval = 0.21
+    /// 1.2 s: one wave of a sign that says something is being written. It moves only while
+    /// that is so, and never where the system asks for reduced motion.
+    public static let wave: TimeInterval = 1.2
+}
+
 /// The drawing's type: its face, its sizes and its weights.
 ///
 /// The face is Tilo Sans, Tilo's own, which is the drawing's Instrument Sans with more letters.

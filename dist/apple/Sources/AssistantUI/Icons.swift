@@ -4,6 +4,8 @@ import SwiftUI
 /// thick with round ends. Each is the drawing's path, read as written.
 public enum Sign: String, CaseIterable, Sendable {
     case side, search, panel, new, plus, x, mic, ret, check, ask, eye, clock, bolt, lock, into, run, stop, back
+    /// The main chat's own sign: a speech bubble. Its three dots are drawn over it (`ChatSign`).
+    case chat
 
     enum Part {
         case path(String)
@@ -33,6 +35,8 @@ public enum Sign: String, CaseIterable, Sendable {
         // Two the drawing has no use for and an app does, drawn in its hand.
         case .stop: [.rect(CGRect(x: 4.5, y: 4.5, width: 7, height: 7), 1.5)]
         case .back: [.path("M9.5 3.5L5 8l4.5 4.5")]
+        // The main chat's, in the same hand: a bubble with its tail at the lower left.
+        case .chat: [.path("M4.5 2.75h7a2 2 0 0 1 2 2v4.5a2 2 0 0 1-2 2H7.4l-2.9 2.3v-2.3a2 2 0 0 1-2-2v-4.5a2 2 0 0 1 2-2z")]
         }
     }
 
@@ -95,6 +99,84 @@ public struct Mark: View {
                 .applying(scale).fill(Token.asstQuiet)
             Path(roundedRect: CGRect(x: 29, y: 16, width: 42, height: 68), cornerRadius: 6)
                 .applying(scale).fill(Token.asst)
+        }
+        .frame(width: side, height: side)
+        .accessibilityHidden(true)
+    }
+}
+
+/// How the three dots of a sign that says "writing" move: one after the other rises and falls,
+/// then all three are at rest, and after `Motion.wave` it begins again.
+public enum Wave {
+    /// How long after the dot before it a dot begins to rise, as a share of the wave.
+    static let step = 0.16
+    /// How long one dot takes to rise and fall, as a share of the wave.
+    static let rise = 0.44
+
+    /// How high each of the three dots is at a moment: 0 on its line, 1 at its highest.
+    public static func lifts(at moment: TimeInterval) -> [Double] {
+        let turn = moment / Motion.wave
+        let part = turn - turn.rounded(.down)
+        return (0..<3).map { dot in
+            let begun = part - Double(dot) * step
+            guard begun > 0, begun < rise else { return 0 }
+            return sin(.pi * begun / rise)
+        }
+    }
+}
+
+/// Three dots in a line. While someone `writes` they are in the assistant's colour and rise and
+/// fall one after the other; where the system asks for reduced motion they are in that colour
+/// and do not move. Otherwise they are at rest, in the colour of the words around them.
+struct WritingDots: View {
+    let writes: Bool
+    /// A dot's width, how far apart the middles of two dots are, and how high a dot rises.
+    let dot: CGFloat
+    let pitch: CGFloat
+    let lift: CGFloat
+    @Environment(\.accessibilityReduceMotion) private var reduced
+
+    var body: some View {
+        if writes, !reduced {
+            TimelineView(.animation) { moment in
+                dots(Wave.lifts(at: moment.date.timeIntervalSinceReferenceDate)).foregroundStyle(Token.asst)
+            }
+        } else if writes {
+            dots([0, 0, 0]).foregroundStyle(Token.asst)
+        } else {
+            dots([0, 0, 0])
+        }
+    }
+
+    private func dots(_ lifts: [Double]) -> some View {
+        HStack(spacing: pitch - dot) {
+            ForEach(0..<3, id: \.self) { index in
+                Circle().frame(width: dot, height: dot).offset(y: -lift * lifts[index])
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+/// The main chat's sign: a speech bubble with three dots, in the colour of the words around
+/// it. While the assistant `writes` there, its dots say so (`WritingDots`).
+public struct ChatSign: View {
+    private let writes: Bool
+    private let side: CGFloat
+
+    public init(writes: Bool = false, side: CGFloat = 18) {
+        self.writes = writes
+        self.side = side
+    }
+
+    public var body: some View {
+        let scale = side / 16
+        ZStack {
+            Sign.chat.path(side: side)
+                .stroke(style: StrokeStyle(lineWidth: 1.5 * scale, lineCap: .round, lineJoin: .round))
+            // The dots' line is the middle of the bubble, one unit above the sign's own middle.
+            WritingDots(writes: writes, dot: 1.6 * scale, pitch: 2.6 * scale, lift: 1.5 * scale)
+                .offset(y: -scale)
         }
         .frame(width: side, height: side)
         .accessibilityHidden(true)
