@@ -423,6 +423,23 @@ type = "gui"
         (dir, packed)
     }
 
+    /// `bytes` with its header naming `format`: the number the archive writes after
+    /// `format = `.
+    fn header_names(bytes: &mut Vec<u8>, format: u32) {
+        let marker = b"format = ";
+        let at = bytes
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .expect("the archive's header names its format");
+        let value = at + marker.len();
+        let end = value
+            + bytes[value..]
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .expect("the header's line ends");
+        bytes.splice(value..end, format.to_string().into_bytes());
+    }
+
     tilo_test_env::scenario! {
         /// An archive is read at the format it names, when that is one a device
         /// reads, and otherwise refused saying what to do.
@@ -435,15 +452,14 @@ type = "gui"
         phase a_newer_format_fails_closed_and_says_to_update;
         {
             let (_dir, packed) = packed();
+            let newer = crate::TAPP_FORMAT_VERSION + 1;
             let mut bytes = to_bytes(&packed.meta, None).unwrap();
-            let marker = b"format = 2\n";
-            let at = bytes
-                .windows(marker.len())
-                .position(|window| window == marker)
-                .unwrap();
-            bytes[at + marker.len() - 2] = b'3';
+            header_names(&mut bytes, newer);
             let error = read(bytes.as_slice(), &mut DiscardBlobs).unwrap_err();
-            assert!(matches!(error, TappError::UnsupportedFormat(3)), "{error}");
+            assert!(
+                matches!(error, TappError::UnsupportedFormat(format) if format == newer),
+                "{error}"
+            );
             assert!(error.to_string().contains("update Tilo"), "{error}");
         }
 
@@ -453,25 +469,22 @@ type = "gui"
         {
             let (_dir, packed) = packed();
             let mut bytes = to_bytes(&packed.meta, Some(&packed)).unwrap();
-            let marker = b"format = 2\n";
-            let at = bytes
-                .windows(marker.len())
-                .position(|window| window == marker)
-                .unwrap();
-            bytes[at + marker.len() - 2] = b'1';
+            header_names(&mut bytes, 1);
             let error = read(bytes.as_slice(), &mut DiscardBlobs).unwrap_err();
             assert!(
                 matches!(
                     error,
-                    TappError::HeaderFormatMismatch { header: 1, root: 2 }
+                    TappError::HeaderFormatMismatch { header: 1, root }
+                        if root == crate::TAPP_FORMAT_VERSION
                 ),
                 "{error}"
             );
         }
 
         phase an_app_at_an_earlier_format_is_read;
-        // The store published every app at format 1; format 2 changed only
-        // the catalogue, so such an app verifies and installs as it is.
+        // The store published every app at format 1; later formats changed only
+        // the catalogue and the manifest, so such an app verifies and installs as
+        // it is.
         {
             let (_dir, packed) = packed();
             let (identity, meta) = at_format(&packed, 1);
