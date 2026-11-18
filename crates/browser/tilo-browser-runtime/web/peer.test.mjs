@@ -1471,3 +1471,69 @@ test('a device shows the name the host gave it, not the one it asked for', async
   assert.equal(peer.member.label, 'Browser on Cloud 2');
   await peer.dispose();
 });
+
+test('the feed of changes leaves the page\'s ask as names with nothing a change says, and the wait for a write ends by itself', async () => {
+  const runtime = certifiedBySite(fakeRuntime());
+  runtime.hostInfo = async () => siteNamed();
+  const peer = await connect(options(runtime, memoryStore(), {voice: false, live: false}));
+  const sent = [];
+  const answers = [];
+  runtime.peer.actionMessage = async (workspace, person, message) => {
+    sent.push({workspace, person, asked: JSON.parse(message)});
+    return JSON.stringify(answers.shift());
+  };
+  // With no cursor nothing that happened yet is news: the answer is where to read on from.
+  answers.push({ChangesResponse: {correlation: 1, result: {Ok: {changes: [], cursor: 'c-1'}}}});
+  assert.deepEqual(await peer.actions.changes(), {changed: [], cursor: 'c-1'});
+  assert.equal(sent[0].workspace, WORKSPACE);
+  assert.equal(sent[0].person, 'bb'.repeat(32));
+  assert.deepEqual(Object.keys(sent[0].asked), ['ChangesRequest']);
+  assert.equal('after' in sent[0].asked.ChangesRequest, false);
+  // The server tells this person each change with what it says. Only the names go on, a document once.
+  const change = (app, of, sentence) => ({app, record: of,
+    entry: {change: 'ab12', sentence, time_ms: 1, actor: 'person', by: 'Ada', title: 'The quiet plan', invocation: 'inv-9'}});
+  answers.push({ChangesResponse: {correlation: 2, result: {Ok: {cursor: 'c-2', changes: [
+    change('so.tilo.tasks', 'part-1', 'Ada renamed the task to "Buy the company"'),
+    change('so.tilo.tasks', 'part-1', 'Ada closed the task'),
+    change('so.tilo.notes', '', 'Bo wrote a paragraph'),
+  ]}}}});
+  const told = await peer.actions.changes('c-1');
+  assert.deepEqual(told, {changed: [{app: 'so.tilo.tasks', document: 'part-1'}, {app: 'so.tilo.notes', document: ''}], cursor: 'c-2'});
+  assert.equal(sent[1].asked.ChangesRequest.after, 'c-1');
+  for (const kept of ['Buy the company', 'closed', 'paragraph', 'Ada', 'quiet', 'inv-9', 'ab12']) {
+    assert.equal(JSON.stringify(told).includes(kept), false, `nothing of ${kept}`);
+  }
+  // A server that says nothing is said so.
+  answers.push({});
+  await assert.rejects(peer.actions.changes('c-2'), {code: 'unavailable'});
+
+  // The wait for the server's word of a write ends by itself, never sooner, and is let go of when released.
+  const asked = [];
+  // A server that never answers: the wait ends at its own time.
+  runtime.peer.writeLanded = workspace => { asked.push(workspace); return new Promise(() => {}); };
+  let began = Date.now();
+  assert.equal(await peer.actions.landed(60).woke, false);
+  assert.ok(Date.now() - began >= 50, `held ${Date.now() - began} ms`);
+  assert.deepEqual(asked, [WORKSPACE]);
+  // A server that cannot tell, and a session that says early that nothing landed: the wait costs
+  // its whole time all the same, so nobody asks in a circle.
+  for (const answer of [async () => { throw new Error('this provider cannot tell'); }, async () => false]) {
+    runtime.peer.writeLanded = answer;
+    began = Date.now();
+    assert.equal(await peer.actions.landed(60).woke, false);
+    assert.ok(Date.now() - began >= 50, `held ${Date.now() - began} ms`);
+  }
+  // A write landed: said at once.
+  runtime.peer.writeLanded = async () => true;
+  const heard = peer.actions.landed(60_000);
+  assert.equal(await heard.woke, true);
+  heard.release();
+  // Released: the wait is over now, and the session is told so, which lets go of its own.
+  let over = false;
+  runtime.peer.writeLanded = (workspace, until) => until.then(() => { over = true; return false; });
+  const held = peer.actions.landed(60_000);
+  await Promise.resolve();
+  held.release();
+  assert.equal(await held.woke, false);
+  assert.equal(over, true);
+});
