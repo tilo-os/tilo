@@ -60,7 +60,7 @@ fn answer(content: Vec<Content>, stop_reason: StopReason, cost_micros: u64) -> M
 }
 
 /// Look at the workspace once, then say what it did; each answer costing `cost`.
-fn looks_then_answers(cost: u64, asked: Arc<Mutex<Vec<ModelRequest>>>) -> Model {
+pub(super) fn looks_then_answers(cost: u64, asked: Arc<Mutex<Vec<ModelRequest>>>) -> Model {
     Arc::new(move || {
         Some(Box::new(Scripted {
             answers: vec![

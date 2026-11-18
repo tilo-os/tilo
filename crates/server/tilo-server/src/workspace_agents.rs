@@ -141,6 +141,9 @@ pub struct WorkspaceActionProvider {
     kept_to: Option<sub_agents::Own>,
     /// What its own services answered, for a caller that follows an invocation.
     answered: OwnAnswers,
+    /// What the person asked of the turn this serves, in their words: the purpose History
+    /// keeps with each change the turn makes, so its agent session reads as what it was asked.
+    purpose: Option<String>,
 }
 
 /// What the services answered here have said, kept for whoever follows the invocation. They
@@ -204,7 +207,17 @@ impl WorkspaceActionProvider {
             kept_to: None,
             initiative: None,
             answered: OwnAnswers::default(),
+            purpose: None,
         }
+    }
+
+    /// This service, for a turn its person asked `asked` of: every invocation it carries out
+    /// that says no purpose of its own has that one ([`tilo_actions::ActionContext::purpose`]).
+    #[must_use]
+    fn serving_ask(mut self, asked: &str) -> Self {
+        let asked = asked.trim();
+        self.purpose = (!asked.is_empty()).then(|| asked.to_owned());
+        self
     }
 
     /// This service, answering also for `initiative`: the server's own actions on what a
@@ -215,7 +228,7 @@ impl WorkspaceActionProvider {
         self
     }
 
-    /// This host, answering also for `events`: the host's own actions on a person's scheduled
+    /// This service, answering also for `events`: this server's own actions on a person's scheduled
     /// work and events, listed and taken beside the workspace's resources.
     #[must_use]
     pub fn offering(mut self, events: Option<PersonEvents>) -> Self {
@@ -330,8 +343,14 @@ impl ActionProvider for WorkspaceActionProvider {
     fn invoke(
         &self,
         caller: &Caller,
-        request: InvokeRequest,
+        mut request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        if let Some(purpose) = &self.purpose {
+            let context = request.context.get_or_insert_with(Default::default);
+            if context.purpose.is_none() {
+                context.purpose = Some(purpose.clone());
+            }
+        }
         if let Some(own) = &self.kept_to
             && !sub_agents::admits(own, caller, &request)
         {
@@ -527,7 +546,7 @@ pub enum Ask {
     },
 }
 
-/// One turn the host owes an agent: who asks what, of whom.
+/// One turn the server owes an agent: who asks what, of whom.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Turn {
     pub agent: Agent,
@@ -1073,7 +1092,8 @@ impl HostAgents {
             provider: WorkspaceActionProvider::new(self.actions.clone(), workspace_id)
                 .offering(self.events.clone())
                 .offering_initiative(self.initiative.clone())
-                .keeping_to(self.own_of(workspace, turn).await),
+                .keeping_to(self.own_of(workspace, turn).await)
+                .serving_ask(&turn.request),
             person: Caller::authenticated(person, device).in_workspace(workspace),
             workspace: workspace.to_owned(),
             workspace_id,
@@ -1523,13 +1543,15 @@ struct TurnScope {
 
 impl TurnScope {
     /// Where `turn`'s answer is written, as its agent acting for the person inside that turn.
+    /// The turn is one agent session of its agent's, as a connected agent's work is: each ask
+    /// its own, which History groups its changes under and Console lists as one.
     fn reply(&self, turn: &Turn) -> Reply {
         let session = format!(
             "agent-session:host-{}",
             blake3::hash(
                 format!(
-                    "{}\0{}\0{}",
-                    self.workspace, turn.conversation, turn.agent.id.0
+                    "{}\0{}\0{}\0{}",
+                    self.workspace, turn.conversation, turn.agent.id.0, turn.cause
                 )
                 .as_bytes()
             )
