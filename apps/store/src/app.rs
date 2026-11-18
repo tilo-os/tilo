@@ -2810,9 +2810,9 @@ mod tests {
             unsupported.versions.clear();
             let id = unsupported.id.clone();
             app.set_items(vec![unsupported]);
-            let row = app.live_row(&format!("app:{id}")).unwrap().into_resource();
+            let row = app.live_row(&format!("app:{id}")).unwrap();
             let open = row
-                .actions
+                .operations()
                 .iter()
                 .find(|action| action.id == "open-app")
                 .unwrap();
@@ -2908,12 +2908,9 @@ mod tests {
                     user_managed: true,
                 };
                 app.set_flatpak_available(false);
-                let chess = app
-                    .live_row("app:id.chess")
-                    .expect("an app row resolves")
-                    .into_resource();
+                let chess = app.live_row("app:id.chess").expect("an app row resolves");
                 let setup = chess
-                    .actions
+                    .operations()
                     .iter()
                     .find(|action| action.id == "flatpak-setup")
                     .unwrap();
@@ -2959,10 +2956,10 @@ mod tests {
                 ("app:id.chess", ActionKind::FlatpakRemove),
                 ("app:id.notes", ActionKind::Remove),
             ] {
-                let resource = app.live_row(row).unwrap().into_resource();
+                let resource = app.live_row(row).unwrap();
                 assert!(
                     resource
-                        .actions
+                        .operations()
                         .iter()
                         .all(|action| action.id != "remove" && action.id != "flatpak-remove")
                 );
@@ -4311,9 +4308,9 @@ mod tests {
                 app.package_label(ActionKind::NeedsFlatpakHost),
                 CATALOG.t("store-flatpak-unavailable")
             );
-            let row = app.live_row("app:id.chess").unwrap().into_resource();
+            let row = app.live_row("app:id.chess").unwrap();
             let action = row
-                .actions
+                .operations()
                 .iter()
                 .find(|action| action.id == "flatpak-setup")
                 .unwrap();
@@ -4363,9 +4360,9 @@ mod tests {
                     ..user.clone()
                 };
                 app.set_remotes(vec![remote.clone(), system.clone()]);
-                let row = app.live_row(&remote.resource_id()).unwrap().into_resource();
+                let row = app.live_row(&remote.resource_id()).unwrap();
                 let action = row
-                    .actions
+                    .operations()
                     .iter()
                     .find(|action| action.id == expected)
                     .unwrap();
@@ -4374,10 +4371,10 @@ mod tests {
                 assert!(
                     matches!(job.request, Request::RemoteSetEnabled { ref name, enabled: value } if name == "custom-tools" && value == enabled)
                 );
-                let system_row = app.live_row(&system.resource_id()).unwrap().into_resource();
+                let system_row = app.live_row(&system.resource_id()).unwrap();
                 assert!(
                     !system_row
-                        .actions
+                        .operations()
                         .iter()
                         .any(|action| matches!(action.id.as_str(), "enable-remote" | "disable-remote"))
                 );
@@ -4408,13 +4405,13 @@ mod tests {
                 catalogue_error: None,
             };
             app.set_remotes(vec![source.clone()]);
-            let row = app.live_row(&source.resource_id()).unwrap().into_resource();
+            let row = app.live_row(&source.resource_id()).unwrap();
             assert!(
-                row.actions
+                row.operations()
                     .iter()
                     .any(|action| action.id == "browse-remote")
             );
-            assert!(!row.actions.iter().any(|action| matches!(
+            assert!(!row.operations().iter().any(|action| matches!(
                 action.id.as_str(),
                 "remove-remote" | "enable-remote" | "disable-remote" | "use-flathub-for-account"
             )));
@@ -4442,8 +4439,7 @@ mod tests {
             assert!(
                 !app.live_row(&disabled.resource_id())
                     .unwrap()
-                    .into_resource()
-                    .actions
+                    .operations()
                     .iter()
                     .any(|action| action.id == "browse-remote")
             );
@@ -4458,12 +4454,9 @@ mod tests {
                 ..disabled
             };
             app.set_remotes(vec![account.clone()]);
-            let row = app
-                .live_row(&account.resource_id())
-                .unwrap()
-                .into_resource();
+            let row = app.live_row(&account.resource_id()).unwrap();
             let enable = row
-                .actions
+                .operations()
                 .iter()
                 .find(|action| action.id == "enable-remote")
                 .unwrap();
@@ -4486,13 +4479,10 @@ mod tests {
                 catalogue_error: None,
             };
             app.set_remotes(vec![system.clone()]);
-            let resource = app
-                .live_row("remote:system:flathub")
-                .unwrap()
-                .into_resource();
+            let resource = app.live_row("remote:system:flathub").unwrap();
             assert!(
                 !resource
-                    .actions
+                    .operations()
                     .iter()
                     .any(|action| action.id == "remove-remote")
             );
@@ -4514,8 +4504,7 @@ mod tests {
             assert!(
                 app.live_row("remote:flathub")
                     .unwrap()
-                    .into_resource()
-                    .actions
+                    .operations()
                     .iter()
                     .any(|action| action.id == "remove-remote")
             );
@@ -4535,14 +4524,14 @@ mod tests {
                 catalogue_error: None,
             };
             app.set_remotes(vec![remote.clone()]);
-            let row = app.live_row("remote:system:tools").unwrap().into_resource();
+            let row = app.live_row("remote:system:tools").unwrap();
             assert!(
-                row.actions
+                row.operations()
                     .iter()
                     .any(|action| action.id == "browse-remote")
             );
             assert!(
-                !row.actions
+                !row.operations()
                     .iter()
                     .any(|action| action.id == "remove-remote")
             );
@@ -4577,12 +4566,9 @@ mod tests {
             )
             .remove(0);
             app.set_items(vec![remote_item]);
-            let row = app
-                .live_row("app:org.example.Editor")
-                .unwrap()
-                .into_resource();
+            let row = app.live_row("app:org.example.Editor").unwrap();
             let install = row
-                .actions
+                .operations()
                 .iter()
                 .find(|action| action.id == "flatpak-install")
                 .unwrap();
@@ -4601,8 +4587,7 @@ mod tests {
             assert!(
                 !app.live_row("remote:system:tools")
                     .unwrap()
-                    .into_resource()
-                    .actions
+                    .operations()
                     .iter()
                     .any(|action| action.id == "browse-remote")
             );
@@ -4907,9 +4892,12 @@ mod tests {
             assert_eq!(titles, ["Indexed catalogue row"]);
             let row = app
                 .live_row(&format!("app:{}", indexed.id))
-                .expect("a directory app resolves")
-                .into_resource();
-            assert!(row.actions.iter().any(|action| action.id == "show-details"));
+                .expect("a directory app resolves");
+            assert!(
+                row.operations()
+                    .iter()
+                    .any(|action| action.id == "show-details")
+            );
         }
 
         {
@@ -4984,10 +4972,10 @@ mod tests {
             for id in [REMOTES_ID, "remote:flathub", crate::resource::MODERATION_ID] {
                 assert!(app.live_row(id).is_some(), "{id} resolves");
             }
-            let remote = app.live_row("remote:flathub").unwrap().into_resource();
+            let remote = app.live_row("remote:flathub").unwrap();
             assert!(
                 remote
-                    .actions
+                    .operations()
                     .iter()
                     .any(|action| action.id == "remove-remote")
             );
@@ -5879,9 +5867,9 @@ mod tests {
                 actual.mutation,
                 ui::registry::ModerationMutation::PublisherAppeal { ref reason, .. } if reason.contains("network dependency")
             ));
-            let row = app.live_row("case-authoritative").unwrap().into_resource();
+            let row = app.live_row("case-authoritative").unwrap();
             let offered: Vec<&str> = row
-                .actions
+                .operations()
                 .iter()
                 .map(|action| action.id.as_str())
                 .collect();
