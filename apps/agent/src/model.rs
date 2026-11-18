@@ -98,8 +98,8 @@ pub fn context_chars(selection: &ProviderSelection) -> usize {
         .and_then(|limits| limits.runtime_context_tokens)
         .or(model.context_window)
         .unwrap_or(128_000);
-    let room = tokens.saturating_sub(model.max_output_tokens.unwrap_or(8_192));
-    usize::try_from(room)
+    let headroom = tokens.saturating_sub(model.max_output_tokens.unwrap_or(8_192));
+    usize::try_from(headroom)
         .unwrap_or(usize::MAX)
         .saturating_mul(3)
 }

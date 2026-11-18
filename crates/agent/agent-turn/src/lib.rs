@@ -602,8 +602,8 @@ async fn call_each<T: Tools>(
         doing.called(&call, step, &answer);
         logged(&call, &answer);
         if asked.sees {
-            let room = MOST_PICTURES.saturating_sub(shown.len());
-            shown.extend(answer.pictures.iter().take(room).cloned());
+            let headroom = MOST_PICTURES.saturating_sub(shown.len());
+            shown.extend(answer.pictures.iter().take(headroom).cloned());
         }
         let mut content = answer.text.clone();
         if !answer.pictures.is_empty() && !asked.sees {

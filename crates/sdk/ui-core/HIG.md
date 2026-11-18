@@ -1158,7 +1158,7 @@ tab: the floating material (blur and 72 % panel-ground tint, as menus and
 the palette) over the shell behind it. Windows never overlap, so that is
 all that is behind a strip: the session holds one wallpaper source
 (`ui::backdrop::wallpaper::Source`), which the backdrop drawing the shell
-fills and every surface standing on the shell reads, and the strip is an
+fills and every surface resting on the shell reads, and the strip is an
 ordinary image fill of the blurred picture, so it costs no blur pass per
 frame, a tab's hover damages only the tab, and a strip panned as a retained
 layer carries its frosting along until it rests. On a light palette the active tab rises

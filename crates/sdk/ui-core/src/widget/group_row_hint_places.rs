@@ -360,7 +360,7 @@ mod tests {
         phase the_bar_room_a_hint_stands_in_covers_none_of_the_windows_controls;
         // The move hint's card stands in the bar's free ground, between the title and the buttons: the
         // room it is given is whole, on the window's own bar, and clear of every control there (the
-        // window's expand and close chips, its toolbar and its search), so a pill standing in it can
+        // window's expand and close chips, its toolbar and its search), so a pill resting in it can
         // never cover one.
         {
             let action = |id: &str| ToolbarAction {

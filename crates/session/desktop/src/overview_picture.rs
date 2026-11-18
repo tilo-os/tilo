@@ -272,7 +272,7 @@ fn place_strips(
             && picture_width(strips, &placed, m) <= area.width()
     };
     // The picture takes the room it is given: the largest scale at which it fits, up to the limit,
-    // so the cards fill the area rather than standing as thumbnails in empty space. More scale only
+    // so the cards fill the area rather than sitting as thumbnails in empty space. More scale only
     // ever adds lines, height and width, so it is found by halving.
     let (mut lo, mut hi) = (0.0, PICTURE_SCALE_LIMIT);
     for _ in 0..32 {
