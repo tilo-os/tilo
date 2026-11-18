@@ -62,7 +62,7 @@ x86_64 = 1048576
 aarch64 = 1048576
 
 [apps."so.tilo.agent"]
-x86_64 = 1376256
+x86_64 = 1114112
 aarch64 = 1048576
 
 [apps."so.tilo.api-tester"]
