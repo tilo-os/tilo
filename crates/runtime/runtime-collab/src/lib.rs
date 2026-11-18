@@ -941,9 +941,7 @@ impl std::fmt::Debug for PublishedInvocationResult {
 #[serde(deny_unknown_fields)]
 pub struct LocalDocumentActionReport {
     /// Original authenticated channel provenance, compared with live ownership at admission.
-    /// Written under the name a report has always given it, which is not the code's: a
-    /// report that names it as the code does reads too, because builds wrote that for a while.
-    #[serde(default, rename = "custody", alias = "ownership")]
+    #[serde(default)]
     pub ownership: Option<committed_document::ConnectionSnapshot>,
     pub version: u8,
     pub invocation: uuid::Uuid,

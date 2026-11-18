@@ -119,22 +119,6 @@ fn private_checkpoints_follow_the_executed_child_owner_not_the_primary_document(
         .unwrap()
         .remove(0)
         .0;
-    // A checkpoint is kept under the name it always gave its provenance, in itself and in
-    // its report. One a build kept under the code's name reads with the same provenance.
-    let kept = serde_json::to_value(&checkpoint).unwrap();
-    assert!(kept.get("ownership").is_none() && kept["report"].get("ownership").is_none());
-    let mut between = kept.clone();
-    let outer = between.as_object_mut().unwrap();
-    let held = outer.remove("custody").unwrap();
-    outer.insert("ownership".into(), held);
-    let inner = between["report"].as_object_mut().unwrap();
-    let held = inner.remove("custody").unwrap();
-    inner.insert("ownership".into(), held);
-    let read: crate::app::local_action_persistence::LocalActionCheckpoint =
-        serde_json::from_value(between).unwrap();
-    assert_eq!(read.ownership, checkpoint.ownership);
-    assert_eq!(read.report.ownership, checkpoint.report.ownership);
-    assert!(read.ownership.is_some());
     let original_ownership = checkpoint
         .ownership
         .expect("authenticated ownership must survive restart");
