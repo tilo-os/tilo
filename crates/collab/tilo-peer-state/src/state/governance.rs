@@ -11,7 +11,61 @@ use crate::join::WorkspaceId;
 use collab_types::signer::DeviceSigner;
 use tilo_action_policy::Change;
 
+/// A state of a workspace's governance, kept to ask which heads it holds
+/// ([`PeerGovernance::held_heads`]). Cheap to keep: it shares the state.
+#[derive(Clone, Default)]
+pub struct GovernanceHeads(Option<crate::cached_document::CachedDocument>);
+
+impl GovernanceHeads {
+    /// Whether this state holds every head of `heads`: a hash lookup each.
+    #[must_use]
+    pub fn holds(&self, heads: &[[u8; 32]]) -> bool {
+        heads.iter().all(|head| {
+            self.0.as_ref().is_some_and(|doc| {
+                doc.get_change_by_hash(&automerge::ChangeHash(*head))
+                    .is_some()
+            })
+        })
+    }
+}
+
 impl PeerGovernance<'_> {
+    /// The governance as it stands now, to ask which heads it holds: what a
+    /// server that decides changes against an access read from this state
+    /// keeps beside it, so a change refused while the governance is past it
+    /// waits for the next.
+    #[must_use]
+    pub fn held_heads(self) -> GovernanceHeads {
+        GovernanceHeads(self.peer.core.workspace_doc.clone())
+    }
+    /// [`Self::access_of`] `devices` at `now`, with the governance it was read
+    /// from ([`Self::held_heads`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::access_of`].
+    #[allow(
+        clippy::type_complexity,
+        reason = "the access and the governance state it was read from, as one projection"
+    )]
+    pub fn projection(
+        self,
+        devices: &[[u8; 32]],
+        now: SystemTime,
+    ) -> Result<
+        (
+            std::collections::BTreeMap<[u8; 32], tilo_action_policy::MemberAccess>,
+            GovernanceHeads,
+        ),
+        String,
+    > {
+        Ok((self.access_of(devices, now)?, self.held_heads()))
+    }
+    /// The governance's heads now.
+    #[must_use]
+    pub fn heads(self) -> Vec<[u8; 32]> {
+        self.peer.governance_heads()
+    }
     /// Whether the governance carries a device's removal without its cut
     /// ([`crate::removals`]): one recorded before cuts were kept. Until the
     /// device that governs the workspace completes it

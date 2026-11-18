@@ -838,7 +838,10 @@ impl GovernedAccessWriter {
         &self,
         workspace_id: WorkspaceId,
         pinned: bool,
-        device_access: crate::workspace::DeviceAccess,
+        (device_access, heads): (
+            crate::workspace::DeviceAccess,
+            tilo_peer_state::GovernanceHeads,
+        ),
     ) -> Result<(), HostError> {
         let workspace = crate::workspace_io::get_or_initialize(
             &self.workspaces,
@@ -850,7 +853,7 @@ impl GovernedAccessWriter {
             crate::peer::MAX_AUTOBOUND_WORKSPACES,
         )
         .await?;
-        workspace.lock().await.project_access(device_access);
+        workspace.lock().await.project_access(device_access, heads);
         Ok(())
     }
 

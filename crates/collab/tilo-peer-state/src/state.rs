@@ -36,6 +36,7 @@ mod member_documents;
 use member_documents::{empty_genesis, empty_genesis_op};
 mod facades;
 mod governance;
+pub use governance::GovernanceHeads;
 mod governance_writes;
 pub use facades::{
     PeerGovernance, PeerGovernanceMut, PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox,

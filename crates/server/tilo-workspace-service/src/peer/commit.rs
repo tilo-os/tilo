@@ -316,12 +316,20 @@ async fn commit_refusal(
     let Envelope::Delta { delta: bytes, .. } = delta else {
         return None;
     };
-    let (device_access, payloads) =
-        crate::workspace::access_deciding(ws, author, |device_access, payloads| {
+    let decision = Box::pin(crate::workspace::access_deciding(
+        ws,
+        author,
+        |device_access, payloads| {
             crate::surfaces::refusal(payloads, bytes, device_access).is_some()
-        })
-        .await;
-    if let Some(refusal) = crate::surfaces::refusal(&*payloads, bytes, device_access.as_deref()) {
+                || crate::surfaces::role_refusal(bytes, device_access, author).is_some()
+        },
+    ))
+    .await;
+    let device_access = decision.device_access;
+    if let Some(refusal) =
+        crate::surfaces::refusal(&*decision.payloads, bytes, device_access.as_deref())
+    {
+        let refusal = super::state::behind_governance(decision.governance_behind, refusal);
         tracing::warn!(%refusal, device = %hex::encode(author), "refused a document change");
         file_refusal_of(ws, delta, &refusal.to_string()).await;
         return Some(refusal);
@@ -330,6 +338,7 @@ async fn commit_refusal(
         return Some(refusal);
     }
     if let Some(refusal) = crate::surfaces::role_refusal(bytes, device_access.as_deref(), author) {
+        let refusal = super::state::behind_governance(decision.governance_behind, refusal);
         tracing::warn!(%refusal, device = %hex::encode(author), "refused a change a viewer's role writes nothing of");
         file_refusal_of(ws, delta, &refusal.to_string()).await;
         return Some(refusal);

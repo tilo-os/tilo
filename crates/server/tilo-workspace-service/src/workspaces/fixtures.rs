@@ -492,20 +492,21 @@ pub async fn project_access(workspaces: &Workspaces, workspace: &str) {
         .workspace(workspace)
         .await
         .expect("a governed workspace");
-    let (device_access, workspace_id) = {
+    let (device_access, heads, workspace_id) = {
         let governed = state.lock().await;
         let device_access = governed
             .peer()
             .governance()
             .governed_device_access(tilo_clock::wall())
             .expect("the workspace's device_access");
-        (device_access, governed.workspace_id())
+        let heads = governed.peer().governance().held_heads();
+        (device_access, heads, governed.workspace_id())
     };
     workspaces
         .inner
         .host
         .access
-        .replace_access(workspace_id, true, device_access)
+        .replace_access(workspace_id, true, (device_access, heads))
         .await
         .expect("the server projects the workspace's device_access");
 }

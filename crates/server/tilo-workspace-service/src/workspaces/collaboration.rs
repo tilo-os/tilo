@@ -167,6 +167,15 @@ fn random<const N: usize>() -> Result<[u8; N], CollaborationError> {
 }
 
 impl Workspaces {
+    /// The heads of `workspace`'s governance as this server holds it now: what
+    /// a change refused against an access read from an earlier state waits
+    /// for ([`crate::workspace::access_deciding`]).
+    pub(crate) async fn governance_heads(&self, workspace: &str) -> Option<Vec<[u8; 32]>> {
+        let governed = self.workspace(workspace).await.ok()?;
+        let heads = governed.lock().await.peer().governance().heads();
+        Some(heads)
+    }
+
     /// Issue an invitation to `workspace` for `administrator`: a device of this
     /// server's own user, or of a member the workspace lets invite with the
     /// invitation's role.

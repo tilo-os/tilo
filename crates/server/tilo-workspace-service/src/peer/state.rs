@@ -532,15 +532,20 @@ async fn change_refusal(
     };
     // The change itself must say what it does and stay inside what its app
     // publishes, before the server keeps or forwards it.
-    let (device_access, payloads) =
-        crate::workspace::access_deciding(ws, claimed, |device_access, payloads| {
+    let decision = Box::pin(crate::workspace::access_deciding(
+        ws,
+        claimed,
+        |device_access, payloads| {
             crate::surfaces::refusal(payloads, delta, device_access).is_some()
                 || crate::surfaces::role_refusal(delta, device_access, claimed).is_some()
-        })
-        .await;
+        },
+    ))
+    .await;
+    let device_access = decision.device_access.as_deref();
     let store = ws.lock().await.store.clone();
-    let refused = crate::surfaces::refusal(&*payloads, delta, device_access.as_deref())
-        .or_else(|| crate::surfaces::role_refusal(delta, device_access.as_deref(), claimed))
+    let refused = crate::surfaces::refusal(&*decision.payloads, delta, device_access)
+        .or_else(|| crate::surfaces::role_refusal(delta, device_access, claimed))
+        .map(|refusal| behind_governance(decision.governance_behind, refusal))
         .or_else(|| {
             (!attached)
                 .then(|| crate::surfaces::own_refusal(&store, &peer.user_public_key, delta))
@@ -964,6 +969,23 @@ pub(super) fn refused_reason(
 fn trace_all(envelopes: &[Envelope], step: &str) {
     for envelope in envelopes {
         trace_native_publication(step, envelope, None);
+    }
+}
+
+/// `refusal` of a change, or, for a change that waited in vain for the
+/// workspace's access to be read from its newer governance, that it waited
+/// for that: what its writer is told rather than a grant it was given
+/// meanwhile.
+pub(super) fn behind_governance(
+    behind: bool,
+    refusal: tilo_server_protocol::refusal::Refusal,
+) -> tilo_server_protocol::refusal::Refusal {
+    if behind {
+        tilo_server_protocol::refusal::Refusal::NotGranted(
+            collab_types::GOVERNANCE_NEVER_ARRIVED.into(),
+        )
+    } else {
+        refusal
     }
 }
 

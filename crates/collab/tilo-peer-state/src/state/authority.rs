@@ -864,6 +864,20 @@ impl StatePeer {
             .collect()
     }
 
+    /// The heads of the workspace's governance as this peer holds it.
+    pub(super) fn governance_heads(&self) -> Vec<[u8; 32]> {
+        self.core
+            .workspace_doc
+            .as_ref()
+            .map(|doc| {
+                automerge::transaction::Transactable::base_heads(&**doc)
+                    .into_iter()
+                    .map(|head| head.0)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// The authority of `source` for the change `envelope` makes on `record`
     /// of `app_id`, refused when the change is not granted; held while what
     /// it is decided against is not here: its app surface, or the cut of its

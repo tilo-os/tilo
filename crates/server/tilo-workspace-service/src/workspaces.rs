@@ -2863,7 +2863,7 @@ impl Workspaces {
             }
         }
         let settling = crate::timing::start();
-        let device_access = workspace.peer().governance().access_of(&members, now)?;
+        let device_access = workspace.peer().governance().projection(&members, now)?;
         host.access
             .replace_access(workspace.workspace_id(), true, device_access)
             .await

@@ -143,6 +143,16 @@ pub struct WorkspaceRuntime {
     /// `None` until a governor projects one; the server then decides changes
     /// against their app surface alone.
     pub(crate) device_access: Option<Arc<DeviceAccess>>,
+    /// The governance [`Self::device_access`] was read from, to ask whether
+    /// the workspace's governance is past it.
+    pub(crate) governance_heads: tilo_peer_state::GovernanceHeads,
+    /// How many changes of each writer wait now for governance past
+    /// [`Self::governance_heads`] ([`access_deciding`]).
+    governance_waits: Arc<std::sync::Mutex<HashMap<[u8; 32], usize>>>,
+    /// The heads a test holds the workspace's governance at, in place of a
+    /// governing server's.
+    #[cfg(test)]
+    pub(crate) test_governance: Option<Vec<[u8; 32]>>,
     /// Woken each time [`Self::device_access`] is replaced, for a change held
     /// until its author's access is projected ([`access_deciding`]).
     pub(crate) access_changed: Arc<tokio::sync::Notify>,
@@ -433,6 +443,10 @@ impl WorkspaceRuntime {
             governor_tap: None,
             workspace_authority: None,
             device_access: None,
+            governance_heads: tilo_peer_state::GovernanceHeads::default(),
+            governance_waits: Arc::default(),
+            #[cfg(test)]
+            test_governance: None,
             access_changed: Arc::default(),
             last_seq: 0,
             commits,
@@ -681,8 +695,13 @@ impl WorkspaceRuntime {
     /// sessions use the serialized async admission in `workspace_io`.
     /// Decide this workspace's changes against `device_access` from now on, and
     /// wake each change held until its author's access was projected.
-    pub(crate) fn project_access(&mut self, device_access: DeviceAccess) {
+    pub(crate) fn project_access(
+        &mut self,
+        device_access: DeviceAccess,
+        heads: tilo_peer_state::GovernanceHeads,
+    ) {
         self.device_access = Some(Arc::new(device_access));
+        self.governance_heads = heads;
         self.access_changed.notify_waiters();
     }
 
@@ -980,32 +999,125 @@ pub type SharedWorkspace = Arc<AsyncMutex<WorkspaceRuntime>>;
 /// when the workspace is busy, not the time any check may take.
 pub(crate) const ACCESS_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// What the workspace's devices may do, to decide `author`'s change in `ws` against, and the
-/// workspace's payload adapter.
+/// Most changes of one writer that wait at once for governance past what
+/// the workspace's access was read from: a writer whose changes the access
+/// refuses holds no more of the server than this while it waits.
+pub(crate) const GOVERNANCE_WAITS_PER_WRITER: usize = 16;
+
+/// What [`access_deciding`] decides a change against.
+pub(crate) struct AccessDecision {
+    pub(crate) device_access: Option<Arc<DeviceAccess>>,
+    pub(crate) payloads: Arc<dyn crate::payloads::ShellPayloads>,
+    /// The change would be refused, and the access was still read from
+    /// governance behind the workspace's when the wait ended: refused for that
+    /// ([`collab_types::GOVERNANCE_NEVER_ARRIVED`]), not for the access it was
+    /// decided against.
+    pub(crate) governance_behind: bool,
+}
+
+/// One of a writer's changes waiting for governance, counted while it waits.
+struct GovernanceWait {
+    waits: Arc<std::sync::Mutex<HashMap<[u8; 32], usize>>>,
+    author: [u8; 32],
+}
+
+impl GovernanceWait {
+    /// Count a wait of `author`'s, unless as many wait already as one
+    /// writer may have.
+    fn begin(
+        waits: &Arc<std::sync::Mutex<HashMap<[u8; 32], usize>>>,
+        author: [u8; 32],
+    ) -> Option<Self> {
+        let mut counts = waits.lock_recover();
+        let count = counts.entry(author).or_default();
+        if *count >= GOVERNANCE_WAITS_PER_WRITER {
+            return None;
+        }
+        *count = count.saturating_add(1);
+        drop(counts);
+        Some(Self {
+            waits: Arc::clone(waits),
+            author,
+        })
+    }
+}
+
+impl Drop for GovernanceWait {
+    fn drop(&mut self) {
+        let mut counts = self.waits.lock_recover();
+        if let Some(count) = counts.get_mut(&self.author) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                counts.remove(&self.author);
+            }
+        }
+    }
+}
+
+/// Where the workspace's governance as this server holds it now is read.
+struct Governing {
+    authority: Option<crate::workspaces::WorkspaceAuthority>,
+    #[cfg(test)]
+    pinned: Option<Vec<[u8; 32]>>,
+}
+
+impl Governing {
+    fn of(runtime: &WorkspaceRuntime) -> Self {
+        Self {
+            authority: runtime.workspace_authority.clone(),
+            #[cfg(test)]
+            pinned: runtime.test_governance.clone(),
+        }
+    }
+
+    /// The heads of the governance this server holds for the workspace, now;
+    /// none for a workspace it does not govern.
+    async fn heads(&self) -> Vec<[u8; 32]> {
+        #[cfg(test)]
+        if let Some(pinned) = &self.pinned {
+            return pinned.clone();
+        }
+        let Some(authority) = &self.authority else {
+            return Vec::new();
+        };
+        let Some(workspaces) = authority.workspaces() else {
+            return Vec::new();
+        };
+        workspaces
+            .governance_heads(authority.workspace())
+            .await
+            .unwrap_or_default()
+    }
+}
+
+/// What the workspace's devices may do, to decide `author`'s change in `ws`
+/// against, and the workspace's payload adapter.
 ///
 /// A device can hold a record's keys, and write, before the host has settled
 /// its own admission of that device: the keys come from another key holder,
 /// and a page counts itself in once its person is a member, while its device's
-/// row is still on its way into the workspace's governance. Decided against
+/// row is still on its way into the workspace's governance. A device can also
+/// write under a role given to it a moment ago, which the server has written
+/// into its governance but not yet read its access from. Decided against
 /// the projection of that moment, such a change would be refused for a grant
 /// the host is about to record. So a change the projection of the moment
-/// `refuses`, while the workspace projects what its devices may do and nothing for `author`'s,
-/// waits for the next projection, up to [`ACCESS_WAIT`], and is decided
-/// against that one. Every other change, the author's presence and
-/// governance among them, is decided at once. Nothing is decided without
-/// access: an author that has none when the wait ends is decided against
-/// the projection as it is, and refused as before.
+/// `refuses` waits for the next projection, up to [`ACCESS_WAIT`], while the
+/// workspace projects nothing for `author`'s device, or while this server's
+/// own governance is past the state the projection was read from; then it is
+/// decided against the projection as it is then, with every revocation in it.
+/// The governance says when to decide, never what against. Every other
+/// change is decided at once.
+/// Nothing is decided without access: an author that has none when the wait
+/// ends is decided against the projection as it is, and refused as before.
 pub(crate) async fn access_deciding(
     ws: &SharedWorkspace,
     author: [u8; 32],
     refuses: impl Fn(Option<&DeviceAccess>, &dyn crate::payloads::ShellPayloads) -> bool,
-) -> (
-    Option<Arc<DeviceAccess>>,
-    Arc<dyn crate::payloads::ShellPayloads>,
-) {
+) -> AccessDecision {
     let deadline = tokio::time::Instant::now()
         .checked_add(ACCESS_WAIT)
         .unwrap_or_else(tokio::time::Instant::now);
+    let mut counted: Option<Option<GovernanceWait>> = None;
     loop {
         let changed = Arc::clone(&ws.lock().await.access_changed);
         let next = changed.notified();
@@ -1013,19 +1125,35 @@ pub(crate) async fn access_deciding(
         // Registered before the device_access are read, so a projection that
         // lands between the read and the wait still wakes it.
         next.as_mut().enable();
-        let (device_access, payloads) = {
+        let (device_access, payloads, heads, waits, authority) = {
             let runtime = ws.lock().await;
             (
                 runtime.device_access.clone(),
                 runtime.store.payloads().clone(),
+                runtime.governance_heads.clone(),
+                Arc::clone(&runtime.governance_waits),
+                Governing::of(&runtime),
             )
         };
-        let waiting = device_access
+        let refusing = refuses(device_access.as_deref(), &*payloads);
+        let unprojected = device_access
             .as_ref()
-            .is_some_and(|device_access| !device_access.contains_key(&author))
-            && refuses(device_access.as_deref(), &*payloads);
+            .is_some_and(|device_access| !device_access.contains_key(&author));
+        let behind =
+            refusing && device_access.is_some() && !heads.holds(&Box::pin(authority.heads()).await);
+        // A writer with as many changes waiting for governance as it may
+        // have is not waited for again.
+        let may_wait_behind = behind
+            && counted
+                .get_or_insert_with(|| GovernanceWait::begin(&waits, author))
+                .is_some();
+        let waiting = refusing && (unprojected || (behind && may_wait_behind));
         if !waiting || tokio::time::timeout_at(deadline, next).await.is_err() {
-            return (device_access, payloads);
+            return AccessDecision {
+                device_access,
+                payloads,
+                governance_behind: behind,
+            };
         }
     }
 }
@@ -1466,9 +1594,10 @@ mod access_wait_tests {
     async fn a_change_before_its_authors_access_waits_and_is_decided_against_it() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = shared(&tmp);
-        ws.lock()
-            .await
-            .project_access(DeviceAccess::from([(LAPTOP, access())]));
+        ws.lock().await.project_access(
+            DeviceAccess::from([(LAPTOP, access())]),
+            tilo_peer_state::GovernanceHeads::default(),
+        );
 
         let deciding = access_deciding(&ws, PAGE, |_, _| true);
         tokio::pin!(deciding);
@@ -1480,19 +1609,21 @@ mod access_wait_tests {
             "a change whose author has no access yet is not decided"
         );
         // A projection that still leaves the page out keeps it waiting.
-        ws.lock()
-            .await
-            .project_access(DeviceAccess::from([(LAPTOP, access())]));
+        ws.lock().await.project_access(
+            DeviceAccess::from([(LAPTOP, access())]),
+            tilo_peer_state::GovernanceHeads::default(),
+        );
         assert!(
             tokio::time::timeout(std::time::Duration::ZERO, &mut deciding)
                 .await
                 .is_err()
         );
         // The page's admission settles.
-        ws.lock()
-            .await
-            .project_access(DeviceAccess::from([(LAPTOP, access()), (PAGE, access())]));
-        let (device_access, _) = deciding.await;
+        ws.lock().await.project_access(
+            DeviceAccess::from([(LAPTOP, access()), (PAGE, access())]),
+            tilo_peer_state::GovernanceHeads::default(),
+        );
+        let device_access = deciding.await.device_access;
         assert!(device_access.unwrap().contains_key(&PAGE));
     }
 
@@ -1504,19 +1635,22 @@ mod access_wait_tests {
         let ws = shared(&tmp);
         let unprojected = access_deciding(&ws, PAGE, |_, _| true);
         tokio::pin!(unprojected);
-        let (device_access, _) = tokio::time::timeout(std::time::Duration::ZERO, &mut unprojected)
+        let device_access = tokio::time::timeout(std::time::Duration::ZERO, &mut unprojected)
             .await
-            .expect("no projection: decided at once");
+            .expect("no projection: decided at once")
+            .device_access;
         assert!(device_access.is_none());
 
-        ws.lock()
-            .await
-            .project_access(DeviceAccess::from([(PAGE, access())]));
+        ws.lock().await.project_access(
+            DeviceAccess::from([(PAGE, access())]),
+            tilo_peer_state::GovernanceHeads::default(),
+        );
         let projected = access_deciding(&ws, PAGE, |_, _| true);
         tokio::pin!(projected);
-        let (device_access, _) = tokio::time::timeout(std::time::Duration::ZERO, &mut projected)
+        let device_access = tokio::time::timeout(std::time::Duration::ZERO, &mut projected)
             .await
-            .expect("an access already projected: decided at once");
+            .expect("an access already projected: decided at once")
+            .device_access;
         assert!(device_access.unwrap().contains_key(&PAGE));
         // A change the projection does not refuse, the author's presence or
         // governance among them, is decided at once, whether the author has member access or not.
@@ -1534,15 +1668,115 @@ mod access_wait_tests {
     async fn an_author_never_granted_is_decided_without_access_after_the_wait() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = shared(&tmp);
-        ws.lock()
-            .await
-            .project_access(DeviceAccess::from([(LAPTOP, access())]));
+        ws.lock().await.project_access(
+            DeviceAccess::from([(LAPTOP, access())]),
+            tilo_peer_state::GovernanceHeads::default(),
+        );
         let started = tokio::time::Instant::now();
-        let (device_access, _) = access_deciding(&ws, PAGE, |_, _| true).await;
+        let decision = access_deciding(&ws, PAGE, |_, _| true).await;
         assert!(started.elapsed() >= ACCESS_WAIT);
-        let device_access = device_access.unwrap();
+        assert!(!decision.governance_behind);
+        let device_access = decision.device_access.unwrap();
         assert!(device_access.contains_key(&LAPTOP));
         assert!(!device_access.contains_key(&PAGE));
+    }
+
+    /// A change its author's access refuses while this server's governance is
+    /// past what the access was read from (a role given a moment ago) waits
+    /// for the access to be read again; when it never is, it is refused for
+    /// that after the wait, never let through.
+    #[tokio::test(start_paused = true)]
+    async fn a_change_refused_while_governance_is_ahead_waits_then_is_refused_for_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = shared(&tmp);
+        {
+            let mut runtime = ws.lock().await;
+            runtime.project_access(
+                DeviceAccess::from([(PAGE, access())]),
+                tilo_peer_state::GovernanceHeads::default(),
+            );
+            runtime.test_governance = Some(vec![[9; 32]]);
+        }
+        let deciding = access_deciding(&ws, PAGE, |_, _| true);
+        tokio::pin!(deciding);
+        assert!(
+            tokio::time::timeout(std::time::Duration::ZERO, &mut deciding)
+                .await
+                .is_err(),
+            "a change refused while the access is behind is not decided yet"
+        );
+        let started = tokio::time::Instant::now();
+        let decision = deciding.await;
+        assert!(
+            started.elapsed() >= ACCESS_WAIT.saturating_sub(std::time::Duration::from_millis(1))
+        );
+        assert!(
+            decision.governance_behind,
+            "refused for the governance it waited for"
+        );
+        // One the access lets through is decided at once.
+        let allowed = access_deciding(&ws, PAGE, |_, _| false);
+        tokio::pin!(allowed);
+        let decision = tokio::time::timeout(std::time::Duration::ZERO, &mut allowed)
+            .await
+            .expect("a change nothing refuses: decided at once");
+        assert!(!decision.governance_behind);
+    }
+
+    /// One writer has at most [`GOVERNANCE_WAITS_PER_WRITER`] changes waiting
+    /// for governance at once: past that, a change is refused at once.
+    #[tokio::test(start_paused = true)]
+    async fn a_writer_waits_for_governance_with_a_bounded_number_of_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = shared(&tmp);
+        {
+            let mut runtime = ws.lock().await;
+            runtime.project_access(
+                DeviceAccess::from([(PAGE, access())]),
+                tilo_peer_state::GovernanceHeads::default(),
+            );
+            runtime.test_governance = Some(vec![[9; 32]]);
+        }
+        let waiting: Vec<_> = (0..GOVERNANCE_WAITS_PER_WRITER)
+            .map(|_| {
+                let ws = Arc::clone(&ws);
+                tokio::spawn(async move { access_deciding(&ws, PAGE, |_, _| true).await })
+            })
+            .collect();
+        tokio::task::yield_now().await;
+        while ws
+            .lock()
+            .await
+            .governance_waits
+            .lock_recover()
+            .get(&PAGE)
+            .copied()
+            != Some(GOVERNANCE_WAITS_PER_WRITER)
+        {
+            tokio::task::yield_now().await;
+        }
+        let over = access_deciding(&ws, PAGE, |_, _| true);
+        tokio::pin!(over);
+        let decision = tokio::time::timeout(std::time::Duration::ZERO, &mut over)
+            .await
+            .expect("a change past the writer's bound is decided at once");
+        assert!(decision.governance_behind);
+        // Another writer still waits.
+        let mut other = Box::pin(access_deciding(&ws, LAPTOP, |_, _| true));
+        ws.lock().await.project_access(
+            DeviceAccess::from([(PAGE, access()), (LAPTOP, access())]),
+            tilo_peer_state::GovernanceHeads::default(),
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::ZERO, &mut other)
+                .await
+                .is_err()
+        );
+        for wait in waiting {
+            assert!(wait.await.unwrap().governance_behind);
+        }
+        drop(other);
+        assert!(ws.lock().await.governance_waits.lock_recover().is_empty());
     }
 
     /// A burst from one sender is carried whole, and another sender's piece
