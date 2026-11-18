@@ -10,7 +10,6 @@
 //! This module is a child of `service` so both entry points share its private
 //! transport policy. Only this deliberately host-only facade is re-exported.
 use super::*;
-use crate::SERVICE_NAME;
 use crate::openai::{self, Target};
 pub use agent_provider_config::protocol;
 /// The wire and output-limit field a trusted host's endpoint takes.
