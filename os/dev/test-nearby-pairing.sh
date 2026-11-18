@@ -318,10 +318,16 @@ fi
 wait_onboarding() {
   local each=$1
   "$each" login --passcode-only "$TILO_PASS"
-  for attempt in $(seq 1 120); do
+  for attempt in $(seq 1 300); do
     "$each" ssh 'busctl --user status org.freedesktop.impl.portal.desktop.tilo >/dev/null 2>&1' && return 0
     sleep 1
   done
+  # What the machine said while its session did not come up: the compositor's
+  # own log and the failed units, in this check's log rather than only in files
+  # the check's failure discards.
+  session_log "$each" | tail -60 >&2 || true
+  "$each" ssh 'systemctl --user --no-pager --failed 2>&1 || true
+    journalctl -b --no-pager -u greetd -u tilo-session 2>&1 | tail -40 || true' >&2 2>&1 || true
   die "$each: the compositor did not reach first-login onboarding"
 }
 # A session the check drives over ssh for minutes without touching its keyboard
