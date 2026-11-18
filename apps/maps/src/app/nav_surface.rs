@@ -52,7 +52,9 @@ impl MapsApp {
         let mut ctx = PaintCtx::new(scene, visual, tr, &ink);
         ui::surface::floating_drag_grip(ctx.scene, visual, rect, ink.text_tertiary);
         let instruction = route.steps.first();
-        let icon = instruction.map_or(Icon::ArrowUp, |step| step.maneuver.icon());
+        let icon = instruction.map_or(Icon::ArrowUp, |step| {
+            crate::presentation::maneuver_icon(step.maneuver)
+        });
         let default_instruction = failure::t("maps-continue-on-route");
         let text = instruction.map_or(default_instruction.as_str(), |step| {
             step.instruction.as_str()

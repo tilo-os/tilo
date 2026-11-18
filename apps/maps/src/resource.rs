@@ -293,7 +293,7 @@ mod tests {
         let area = crate::sample::regions().remove(0);
         app.person::<OfflineAreas>()
             .unwrap()
-            .invoke(&OfflineAreas::RECORD.with(("test-device".to_owned(), area.clone())))
+            .invoke(&OfflineAreas::REMEMBER.with(("test-device".to_owned(), area.clone())))
             .unwrap();
         app.harness().relayout();
         let row = format!("maps.region:{}", area.id);

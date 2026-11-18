@@ -51,7 +51,10 @@ impl MapsApp {
             tiles,
         };
         let areas = crate::offline_areas::recorded(&self.model.regions, region.clone());
-        self.edit_offline_areas(|device| OfflineAreas::RECORD.with((device, region)), areas);
+        self.edit_offline_areas(
+            |device| OfflineAreas::REMEMBER.with((device, region)),
+            areas,
+        );
     }
 
     pub(super) fn delete_region(&mut self, id: &str) -> Result<(), String> {

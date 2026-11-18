@@ -966,7 +966,7 @@ pub fn draw_category_icon(
 ) {
     let side = r * 1.25;
     let stroke = (r * 0.16).max(1.4);
-    cat.icon().draw_with_stroke(
+    crate::presentation::category_icon(cat).draw_with_stroke(
         scene,
         t,
         Rect::from_center_size(c, (side, side)),

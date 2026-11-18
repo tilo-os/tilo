@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use ui::prelude::{Model, resource, tilo_resource};
+use tilo_resource::{self, Model, resource};
 
 use crate::model::DownloadedRegion;
 
@@ -40,7 +40,7 @@ impl OfflineAreas {
     /// `region` was downloaded on `device`: a download of the same footprint
     /// refreshes that area instead of listing it twice.
     #[action(housekeeping)]
-    pub fn record(&mut self, device: String, region: DownloadedRegion) {
+    pub fn remember(&mut self, device: String, region: DownloadedRegion) {
         let kept = self.devices.entry(device).or_default();
         kept.areas = recorded(&kept.areas, region);
     }
@@ -71,10 +71,7 @@ impl OfflineAreas {
     }
 }
 
-pub(crate) fn recorded(
-    areas: &[DownloadedRegion],
-    region: DownloadedRegion,
-) -> Vec<DownloadedRegion> {
+pub fn recorded(areas: &[DownloadedRegion], region: DownloadedRegion) -> Vec<DownloadedRegion> {
     let mut areas: Vec<_> = areas
         .iter()
         .filter(|area| !same_footprint(area, &region))
