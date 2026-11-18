@@ -12,9 +12,20 @@ shown and the actions it was granted.
 
 | Part | What it is | Runs where |
 |---|---|---|
-| **Model and verbs** | `#[derive(Model)]` types and their `#[resource]` verbs: deterministic changes to the app's own documents | in the system's document host, as a WebAssembly module with no imports beyond the host's |
+| **Model and verbs** | `#[derive(Model)]` types and their `#[resource]` verbs: deterministic changes to the app's own documents | in the system's document host, as a WebAssembly module with no imports beyond the host's, on every device that holds the workspace's keys |
 | **Views** | what draws the app's resources: a tilolang package, or a native surface | the tilolang process, or a sandboxed surface process |
 | **Outbox handlers** | what an `Outbox<T>` entry does outside (send a mail, sync a calendar) | a sandboxed worker that runs only while there are entries to drain |
+
+The model is one WebAssembly module per app version, the same bytes on a
+laptop, a phone, the page and a server, on x86 and ARM. Every key holder
+replays the other devices' changes with it ([resources.md](resources.md) §5),
+which only holds if they all apply the same deterministic code; a native build
+of the model on one device and another build elsewhere could disagree about
+what is valid. A package (`.tapp`) therefore carries the model as WebAssembly,
+and its views and outbox workers as tilolang, WebAssembly, or native code
+built per architecture. A device that holds the keys of a workspace applies
+any installed app's actions from that package, so a server takes an app's work
+the moment the app is installed, with no build of its own.
 
 An app written against the framework writes none of the following: storage, sync, merge,
 undo, history, presence, identity, signing, encryption, key handling, transport,
@@ -177,6 +188,47 @@ All of that moves to the document host:
 5. Permission checks leave the SDK and the apps: a view sees what it is offered
    and nothing else, and Chat's own `ChatPermissions` goes.
 6. The outbox drain is decided per entry by the session's policy, like an action.
+7. A server applies the actions of any installed app from its package. Today
+   `tilo-workspace-service` knows only the app models compiled into it (Chat
+   and Calendar, behind its `agents` feature), and `tilo-agent-session` links
+   the models of most apps natively; both go once packages carry the model as
+   WebAssembly. Most apps' models already build for WebAssembly, for the page.
+8. A member delegates work to a server: a signed delegation naming the member,
+   the server, the workspace, which work and until when, revocable, and shown
+   to every member beside who holds the workspace. Until it exists, a server
+   does work as itself.
+9. A member lets a server use one secret, and a consent sheet raised on a
+   server reaches that member's devices.
 
 Each step keeps apps working while it lands, and each ends by deleting the app-side
 code it replaced.
+
+## 9. Which device does what
+
+Because an app holds nothing, letting an app's parts work on a device widens
+that device's power, not the app's: what matters is what the device may
+already read, and whose authority it holds ([workspace.md](workspace.md),
+roles and work). Per part:
+
+| Part | A member's own device | A server that holds the keys | A store |
+|---|---|---|---|
+| **Model and verbs** | yes | yes: applies actions placed on it and replays everyone's changes | no |
+| **Views** | yes | only in thin mode, for a slow device, in a sandbox per workspace | no |
+| **Outbox workers** | yes | only for a member who delegated that work and whose secret the server was allowed to use; otherwise the entry waits for one of that member's devices | no |
+| **Agents** | yes | as workspace work, or for a member under their delegation, signed as that member's agent on that server | no |
+| **Browser** | yes | for a member under their delegation; the server then holds that member's web sessions | no |
+| **Linux apps and machines** | yes | in a machine per workspace; whatever is handed to the machine is what the server can see | no |
+
+- **Consent travels to the person.** On a server nobody makes a gesture, so
+  everything there acts as the app or as a member's delegated work. An action
+  that needs consent sends its sheet to one of that member's devices, or uses
+  a grant they gave in advance; it never waits unseen on the server.
+- **Secrets stay on a member's own devices** unless that member lets a server
+  use one particular secret. Holding a workspace's keys reveals its documents;
+  holding a secret lets a server act as the person elsewhere, so each is a
+  separate choice.
+- **A server holding several people's workspaces keeps each one apart:** its
+  documents, views, workers, agents and machines in that workspace's sandbox,
+  with that workspace's network grants and limits.
+- **Linux apps and machines are outside this model.** Tilo cannot see what
+  they do with what they were given; it decides only what goes in.
