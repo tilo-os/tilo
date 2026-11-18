@@ -1983,6 +1983,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "calendar-model-wasm"
+version = "0.1.0"
+dependencies = [
+ "calendar-model",
+ "tilo-model-guest",
+]
+
+[[package]]
 name = "calloop"
 version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

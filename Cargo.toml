@@ -123,6 +123,7 @@ members = [
     "apps/calculator-model-wasm",
     "apps/calendar",
     "apps/calendar-model",
+    "apps/calendar-model-wasm",
     "apps/camera",
     "apps/camera-model",
     "apps/camera-model-wasm",
