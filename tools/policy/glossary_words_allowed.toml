@@ -938,3 +938,12 @@ reason = "A call's failure names the host's own error beside its text (`Failure:
 words = ["host"]
 identifiers = ["host"]
 paths = ["crates/runtime/tilo-mcp/src/mcp_agent.rs"]
+
+[[allow]]
+reason = "The search registry's own two questions — whether an app opens on a desktop's platforms, and what a window says where it does not — whose names the tests that check them say."
+words = ["run"]
+identifiers = ["runs_on", "runs_elsewhere"]
+paths = [
+    "crates/session/desktop-search/src/availability.rs",
+    "crates/session/desktop-search/src/providers.rs",
+]
