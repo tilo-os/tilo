@@ -258,6 +258,8 @@ mod keys;
     )
 )]
 mod landing;
+// The machines a person planned to install, whose plans are entries in their Servers workspace:
+// the same steps the command and the installer's window name, answered from this session.
 #[cfg(target_os = "linux")]
 mod launches;
 mod layout;
@@ -271,6 +273,7 @@ mod lock_screen;
 mod lock_service;
 #[cfg(target_os = "linux")]
 mod look;
+mod machine_steps;
 #[cfg(target_os = "linux")]
 pub mod mcp_server;
 pub mod mentions;

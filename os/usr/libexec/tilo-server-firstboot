@@ -6,6 +6,9 @@ set -euo pipefail
 token=/etc/tilo/enrollment-token.txt
 cert=/var/lib/tilo/device/cert.bin
 home_peer=/etc/tilo/home-peer.toml
+# The plan this machine installs from is named by the token's nonce: the
+# server reads it after enrolling and finishes installing what it describes.
+install_plan=/var/lib/tilo-server/install-plan.nonce
 
 handoff_home_peer() {
     local metadata owner
@@ -75,10 +78,17 @@ if [[ -r /etc/tilo/server.toml ]]; then
         /etc/tilo/server.toml | head -n 1)"
 fi
 enroll_args=(--identity-root /var/lib/tilo
-    --home-peer-output /etc/tilo/home-peer.toml --label "$label" --timeout 270)
+    --home-peer-output /etc/tilo/home-peer.toml --label "$label" --timeout 270
+    --nonce-output "$install_plan")
 [[ -n "$relay" ]] && enroll_args+=(--relay "$relay")
 /usr/libexec/tilo/tilo-enroll enroll "${enroll_args[@]}"
 valid_device_certificate \
     || { echo "tilo-server-firstboot: enrollment produced an unsafe device certificate" >&2; exit 1; }
 handoff_home_peer
+# The server reads the plan it must finish installing from this file: it is
+# the server account's to read, and nobody else's.
+if [[ -e "$install_plan" || -L "$install_plan" ]]; then
+    chown --no-dereference tilo-server:tilo-server "$install_plan"
+    chmod 0600 "$install_plan"
+fi
 echo "tilo-server-firstboot: enrollment and full-sync setup complete"

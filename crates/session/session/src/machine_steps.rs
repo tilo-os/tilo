@@ -1,0 +1,167 @@
+//! The machines a person planned to install, as this session keeps their
+//! Servers workspace: the same steps the command types and the installer's
+//! window presses, answered here.
+//!
+//! Nothing about a machine is kept by this session itself. The plan is its
+//! entry in the person's Servers workspace ([`tilo_workspace_service::workspaces::servers`]),
+//! which this device holds through its own workspace service: each step is
+//! asked of that service ([`Engine::ask_own_service`]), which makes the
+//! workspace when the first machine is planned and every device of the person
+//! reads the one document from then on.
+//!
+//! The window's controls reach these steps as the app, and the command as the
+//! person at this device: both are the same address
+//! ([`tilo_actions::remote::machines`]).
+
+use std::sync::Arc;
+
+use serde_json::{Map, Value};
+use tilo_actions::remote::{InvokeArgument, Pending, machines};
+use tilo_actions::{
+    ActionAddress, ActionContract, ActionDescriptor, ActionFailure, ActionOutput, ActionState,
+    ExecutionLocus, InputSpec, OperationKind,
+};
+use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices};
+
+use crate::engine::Engine;
+
+/// The app whose controls reach these steps: the installer's window.
+const APP_ID: &str = "so.tilo.imager";
+
+/// The machines of this session's person, answered from this device's own
+/// workspace service.
+pub(crate) struct MachineSteps {
+    engine: Option<Arc<Engine>>,
+}
+
+impl MachineSteps {
+    /// The steps of a session holding `engine`, or of one that keeps no
+    /// workspace service and so answers no plan.
+    pub(crate) fn session(engine: Option<Arc<Engine>>) -> Arc<Self> {
+        Arc::new(Self { engine })
+    }
+
+    /// The arguments the step carries, as its descriptor's parameters take
+    /// them.
+    fn arguments(request: &HostStepRequest<'_>) -> Result<Map<String, Value>, String> {
+        match InvokeArgument::from_slot(request.argument) {
+            InvokeArgument::None => Ok(Map::new()),
+            InvokeArgument::Json(object) => Ok(object),
+            InvokeArgument::Text(_) => Err("a machine step takes typed arguments".to_owned()),
+        }
+    }
+
+    /// Ask this device's own workspace service the host step `action` with
+    /// `arguments`: the service answers every step from the Servers workspace
+    /// it holds. Planning the first machine makes that workspace, in the
+    /// person's name, and this device holds it as it holds any of theirs.
+    fn ask(
+        &self,
+        action: &str,
+        arguments: Map<String, Value>,
+    ) -> Result<Pending<Result<Value, String>>, String> {
+        let engine = self
+            .engine
+            .as_ref()
+            .ok_or("this session keeps no state, so it holds no Servers workspace")?
+            .clone();
+        ActionAddress::checked(machines::RESOURCE, action)
+            .ok_or("a machine step names its own address")?;
+        let planning = action == machines::PLAN;
+        let action = action.to_owned();
+        Ok(crate::landing::off_loop(async move {
+            let admin = tilo_server_protocol::servers::admin_workspace_id(
+                &engine.identity().device_cert.user_public_key,
+            );
+            // A machine is planned before there is a workspace to plan it
+            // into, and only a device that holds the workspace writes it: the
+            // first plan makes it here. Every other step reads what this
+            // device holds, and holds none when it made none.
+            if planning && !engine.hosts_itself(&admin) {
+                #[cfg(target_os = "linux")]
+                if let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&admin) {
+                    engine.found(workspace, "Servers").await;
+                }
+            }
+            let asked = engine
+                .ask_own_host(&action, arguments)
+                .ok_or("this session's own workspace service is not open")?;
+            asked.await
+        }))
+    }
+}
+
+/// The step `request` names, described for the broker's catalogue.
+fn descriptor(step: &str) -> ActionDescriptor {
+    let (label, kind) = match step {
+        machines::PLAN => ("Plan a machine", OperationKind::Effect),
+        machines::LIST => ("List the machines you planned", OperationKind::View),
+        machines::SHOW => ("Show a machine you planned", OperationKind::View),
+        _ => ("Take a planned machine in", OperationKind::Effect),
+    };
+    let contract = if kind == OperationKind::View {
+        ActionContract::view()
+    } else {
+        ActionContract::default()
+    };
+    ActionDescriptor {
+        did: None,
+        state: ActionState::default(),
+        semantic_identity: None,
+        address: ActionAddress::new(machines::RESOURCE, step),
+        resource_kind: machines::RESOURCE.into(),
+        resource_label: "Machines".into(),
+        action_label: label.into(),
+        keywords: Vec::new(),
+        icon: None,
+        description: None,
+        locus: ExecutionLocus::default(),
+        kind,
+        contract,
+        input: InputSpec::None,
+        params: machines::params(step),
+        view: None,
+    }
+}
+
+/// What asking the service answered, as the step's outcome.
+fn outcome(asked: Result<Value, String>) -> HostStepOutcome {
+    asked
+        .map(|value| ActionOutput {
+            value: Some(value),
+            resources: Vec::new(),
+        })
+        .map_err(|message| {
+            Box::new(ActionFailure {
+                code: "machine_refused".into(),
+                message,
+                details: None,
+                retryable: false,
+            })
+        })
+}
+
+impl HostStepServices for MachineSteps {
+    fn provider(&self) -> &'static str {
+        machines::PROVIDER
+    }
+
+    fn app_id(&self) -> &str {
+        APP_ID
+    }
+
+    fn descriptors(&self) -> Vec<ActionDescriptor> {
+        machines::STEPS.into_iter().map(descriptor).collect()
+    }
+
+    fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
+        let step = machines::STEPS
+            .into_iter()
+            .find(|step| {
+                request.address.resource == machines::RESOURCE && request.address.action == *step
+            })
+            .ok_or("unknown machine step")?;
+        let arguments = Self::arguments(request)?;
+        Ok(self.ask(step, arguments)?.map(outcome))
+    }
+}

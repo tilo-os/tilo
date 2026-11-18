@@ -150,6 +150,10 @@ enum Command {
         timeout: u64,
         #[arg(long, default_value = "/etc/tilo/home-peer.toml")]
         home_peer_output: PathBuf,
+        /// Where the token's nonce is written, when this machine enrolled with
+        /// one: the plan it was handed is named by it.
+        #[arg(long)]
+        nonce_output: Option<PathBuf>,
         /// token or code; by default a token when this machine was handed one,
         /// and a code otherwise.
         #[arg(long, value_parser = parse_method)]
@@ -953,6 +957,7 @@ fn enroll(
     label: &str,
     timeout: u64,
     home_peer_output: &std::path::Path,
+    nonce_output: Option<&std::path::Path>,
     method: Option<tilo_identity::enrollment::Method>,
     relay: Option<&str>,
 ) -> anyhow::Result<()> {
@@ -976,12 +981,19 @@ fn enroll(
             let token = token
                 .as_deref()
                 .context("this machine was handed no enrollment token")?;
+            let nonce = decode_enrollment_token(token)?.nonce;
             // A token that names where the person's devices are is dialed; one
             // that names none is presented on this network.
             if decode_enrollment_token(token)?.dial.is_empty() {
                 join_with_token(token, options)?;
             } else {
                 join_transport::join(token, options)?;
+            }
+            // What this machine is to install from is known by the token's
+            // nonce: it is kept before the token is spent, so the server can
+            // find the plan it was handed.
+            if let Some(path) = nonce_output {
+                write_nonce(path, &nonce)?;
             }
             // The token is spent by the certificate it bought.
             tilo_identity::enrollment::spend_token(token_file)
@@ -995,6 +1007,26 @@ fn enroll(
              one of the person's devices"
         ),
     }
+}
+
+/// Write the token's `nonce` to `path`, readable by the server account only:
+/// the plan this machine installs from is named by it.
+fn write_nonce(path: &std::path::Path, nonce: &[u8; 16]) -> anyhow::Result<()> {
+    use std::io::Write as _;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+        .with_context(|| format!("write {}", path.display()))?;
+    file.write_all(hex::encode(nonce).as_bytes())?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o600))
+        .with_context(|| format!("restrict {}", path.display()))
 }
 
 /// What an enrollment request is made of, before any transport carries it:
@@ -1909,6 +1941,7 @@ fn run() -> anyhow::Result<()> {
             label,
             timeout,
             home_peer_output,
+            nonce_output,
             method,
             relay,
         } => enroll(
@@ -1917,6 +1950,7 @@ fn run() -> anyhow::Result<()> {
             &label,
             timeout,
             &home_peer_output,
+            nonce_output.as_deref(),
             method,
             relay.as_deref(),
         ),

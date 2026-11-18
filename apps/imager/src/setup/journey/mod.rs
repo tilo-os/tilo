@@ -676,6 +676,13 @@ struct OriginalAvatar(Option<String>);
 #[derive(Default)]
 struct Machine {
     created: Option<machine::Created>,
+    /// A plan made here and not yet written into the person's Servers
+    /// workspace: the request that writes it, followed until it answers.
+    making: Option<(machine::Created, ui::InvocationCall)>,
+    /// Whether the review was waiting for the plan before it could continue.
+    plan_continue: bool,
+    /// The waiting computers, as the session answered the list.
+    listing: Option<ui::InvocationCall>,
     waiting: Vec<machine::Waiting>,
     error: Option<&'static str>,
 }
@@ -2604,7 +2611,9 @@ impl InstallerPreview {
                 if self.journey.destination == Some(Destination::Another)
                     && self.journey.plan.delivery != machine::Delivery::Usb
                 {
-                    self.make_plan()?;
+                    if !self.make_plan()? {
+                        return Ok(());
+                    }
                     self.journey.next()?;
                     self.error = None;
                     self.dirty = true;
@@ -2619,7 +2628,9 @@ impl InstallerPreview {
                         return Err("installer-preview-storage-unavailable");
                     }
                     if self.journey.destination == Some(Destination::Another) {
-                        self.make_plan()?;
+                        if !self.make_plan()? {
+                            return Ok(());
+                        }
                     }
                     if self.sensitive_handoff_deferred()
                         && self.journey.destination != Some(Destination::Another)
@@ -4186,6 +4197,8 @@ impl InstallerPreview {
             let changed = self.poll_windows();
             self.dirty |= changed;
         }
+        let plan_changed = if self.live { self.poll_plan() } else { false };
+        self.dirty |= plan_changed;
         let navigation_changed = if let Some(returning) = &self.media_return
             && let Some(reason) = returning.get()
         {
@@ -4849,26 +4862,6 @@ impl InstallerPreview {
         rows
     }
 
-    fn make_plan(&mut self) -> Result<(), &'static str> {
-        if self.machine.created.is_some() {
-            return Ok(());
-        }
-        #[cfg(target_os = "linux")]
-        {
-            if let Ok(created) = machine::create(
-                &self.journey.plan,
-                &self.journey.device_name,
-                install_plan::INSTALLER_URL,
-            ) {
-                self.machine.created = Some(created);
-                self.machine.error = None;
-                return Ok(());
-            }
-        }
-        self.machine.error = Some("installer-plan-unavailable");
-        Err("installer-plan-unavailable")
-    }
-
     fn machine_status(&self) -> serde_json::Value {
         let created = self.machine.created.as_ref().map(|created| {
             serde_json::json!({
@@ -5434,10 +5427,7 @@ impl InstallerPreview {
             return;
         }
         self.live = true;
-        #[cfg(target_os = "linux")]
-        {
-            self.machine.waiting = machine::waiting(install_plan::INSTALLER_URL);
-        }
+        self.machine.listing = Some(machine::waiting());
         if imager_backend::prepared_identity::require_supported().is_ok() {
             let _ = self.restart.inspect();
         }
@@ -5457,6 +5447,8 @@ impl InstallerPreview {
         self.linux = true;
         self.capture = true;
         self.live = false;
+        self.machine.making = None;
+        self.machine.listing = None;
         self.storage.stage();
         self.journey = Journey::new("Ada Lovelace".into());
         self.journey.device_name = t("installer-preview-device-default");

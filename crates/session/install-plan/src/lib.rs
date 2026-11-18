@@ -25,8 +25,6 @@ use tilo_user_identity::{
     mint_enrollment_token,
 };
 
-pub mod host;
-
 pub use install_profile_model::plan::{Commands, commands, installer_image};
 
 /// How long a machine's token stays valid: a medium may sit on a shelf a day.

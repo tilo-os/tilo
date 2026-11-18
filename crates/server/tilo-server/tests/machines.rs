@@ -345,6 +345,202 @@ async fn a_person_with_no_server_plans_a_machine_and_walks_it_through_its_instal
     assert_eq!(admin, admin_workspace_id(&alice.user_pk));
 }
 
+/// A person's own device approves a machine that enrolled with a plan's token,
+/// and the machine finishes installing from the plan on its first start: it
+/// reports the drives it really has, waits at its entry while the person
+/// answers its disk, applies the configuration its entry asks, and says it
+/// finished.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one test walks a machine's first start from the approval to the entry saying it installed"
+)]
+async fn a_machine_that_enrolled_with_a_plan_installs_from_it_on_its_first_start() {
+    let alice = TestUser::fresh("Alice");
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let cupboard = alice.enrol("cupboard", DeviceCapabilities::member());
+    let laptop_host = own_host(&alice, &laptop).await;
+    let machine_host = crate::common::serve_on(
+        &alice,
+        &cupboard,
+        tilo_server_protocol::WorkSetting::own_person(),
+    )
+    .await;
+    let machine_key = hex::encode(cupboard.device_pubkey());
+    let nonce = hex::encode([0x5a_u8; 16]);
+
+    // The person plans the machine: its entry names the token's nonce.
+    servers::founded(laptop_host.host.workspaces())
+        .await
+        .unwrap();
+    let plan = install_plan::Choices {
+        destination: "tilo-server".to_owned(),
+        name: Some("cupboard".to_owned()),
+        network: Some(install_profile_model::plan::Network {
+            addressing: "dhcp".to_owned(),
+            ..install_profile_model::plan::Network::default()
+        }),
+        disk: Some(install_profile_model::plan::DiskRule {
+            kind: "empty".to_owned(),
+            identity: String::new(),
+        }),
+        unlock: Some("tpm".to_owned()),
+        updates: Some("stable".to_owned()),
+        hosting: Some(Vec::new()),
+    }
+    .plan(
+        "0123456789abcdef0123456789abcdef",
+        install_profile_model::plan::Token {
+            nonce: nonce.clone(),
+            expires_at_ns: u64::MAX / 2,
+        },
+    )
+    .unwrap();
+    servers::apply(
+        laptop_host.host.workspaces(),
+        Servers::PLAN_MACHINE.with((serde_json::to_string(&plan).unwrap(), "cupboard".into())),
+    )
+    .await
+    .unwrap();
+
+    // The machine enrolled with the token and the person approved it: its
+    // entry is named by its own device key, and the workspace's holders hand
+    // it the workspace to install from.
+    servers::apply(
+        laptop_host.host.workspaces(),
+        Servers::BEGIN_INSTALL.with((
+            machine_key.clone(),
+            nonce.clone(),
+            "[]".into(),
+            String::new(),
+        )),
+    )
+    .await
+    .unwrap();
+    servers::take_in(
+        laptop_host.host.workspaces(),
+        &cupboard.cert,
+        &machine_host.host.node_addr(),
+    )
+    .await
+    .unwrap();
+    tilo_test_env::within("the machine to hold the Servers workspace", async {
+        while !servers::holds_admin(machine_host.host.workspaces()).await {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+
+    // What the enumeration wrote: the plan it must finish installing.
+    let state = tempfile::tempdir().unwrap();
+    std::fs::write(
+        state.path().join("install-plan.nonce"),
+        format!("{nonce}\n"),
+    )
+    .unwrap();
+    assert_eq!(
+        tilo_server::servers::first_install::recorded_nonce(state.path()).as_deref(),
+        Some(nonce.as_str())
+    );
+
+    // The machine's first start: it reports the two drives it has and asks
+    // which to install on, since the plan's rule names no drive.
+    let requests = tilo_server::servers::applied::Requests::at(state.path().join("policy.toml"));
+    let drives = vec![
+        install_profile_model::plan::Drive {
+            model: "QEMU HARDDISK".into(),
+            identity: "serial-a".into(),
+            bytes: 40_000_000_000,
+            holds_data: false,
+            boots: false,
+        },
+        install_profile_model::plan::Drive {
+            model: "QEMU HARDDISK".into(),
+            identity: "serial-b".into(),
+            bytes: 40_000_000_000,
+            holds_data: false,
+            boots: false,
+        },
+    ];
+    let installing = {
+        let workspaces = machine_host.host.workspaces().clone();
+        let cert = cupboard.cert.clone();
+        let nonce = nonce.clone();
+        let requests = requests.clone();
+        let drives = drives.clone();
+        tokio::spawn(async move {
+            tilo_server::servers::first_install::install(
+                &workspaces,
+                &cert,
+                &nonce,
+                &drives,
+                &requests,
+            )
+            .await
+        })
+    };
+    let entry = entry_where(&laptop_host, &machine_key, |entry| {
+        entry.plan.question("disk").is_some()
+    })
+    .await;
+    assert_eq!(
+        tilo_workspace_service::workspaces::servers::machine::step(&entry, &drives).unwrap(),
+        tilo_workspace_service::workspaces::servers::machine::Step::Wait(vec!["disk".to_owned()]),
+        "the machine waits while its disk is open"
+    );
+
+    // The person answers the machine's disk, on their own device.
+    servers::apply(
+        laptop_host.host.workspaces(),
+        Servers::ANSWER_MACHINE_CHOICE.with((
+            tilo_resource::Id::from_raw(machine_key.clone()),
+            "disk".into(),
+            "serial:serial-a".into(),
+        )),
+    )
+    .await
+    .unwrap();
+
+    // The machine applies the configuration its entry asks of it, through the
+    // root helper, and says it finished once the helper applied it.
+    let request = tilo_test_env::within("the machine to apply its configuration", async {
+        loop {
+            if let Ok(request) = std::fs::read_to_string(&requests.device.request) {
+                return request;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    let revision = request
+        .lines()
+        .find_map(|line| line.strip_prefix("revision|"))
+        .expect("the request names its revision")
+        .to_owned();
+    std::fs::write(
+        requests.device.report.clone(),
+        format!("revision\t{revision}\nstate\tapplied\ndetail\tnothing to change\n"),
+    )
+    .unwrap();
+    tilo_test_env::within("the machine to finish installing", installing)
+        .await
+        .expect("the install task ends")
+        .expect("the machine installed from its plan");
+
+    let entry = entry_where(&laptop_host, &machine_key, |entry| {
+        entry.plan.status == tilo_workspace_service::workspaces::servers::plan::INSTALLED
+    })
+    .await;
+    assert_eq!(
+        tilo_workspace_service::workspaces::servers::machine::step(&entry, &drives).unwrap(),
+        tilo_workspace_service::workspaces::servers::machine::Step::Finished
+    );
+    assert_eq!(
+        entry.plan.disk, "serial:serial-a",
+        "the entry keeps the drive the person answered"
+    );
+}
+
 /// A person whose only device is a desktop approves their first server: the
 /// desktop holds their Servers workspace, and it hands that workspace to the
 /// server it names there. Every holder of the workspace attaches the servers

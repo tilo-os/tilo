@@ -22,6 +22,8 @@ use std::path::PathBuf;
 use anyhow::{Result, bail};
 use clap::Subcommand;
 use install_profile_model::plan::{self, DiskRule, Holding, Network, Plan};
+use tilo_actions::ActionAddress;
+use tilo_actions::remote::machines;
 use tilo_control::front::{self, Spelling};
 use tilo_user_identity::IdentityPaths;
 
@@ -30,13 +32,6 @@ use crate::identity;
 /// Where the person's devices serve the installer, unless `--installer-url`
 /// names another site.
 const INSTALLER_URL: &str = install_plan::INSTALLER_URL;
-
-/// The session's action that writes a plan.
-const PLAN_MACHINE: &str = "machine.plan";
-/// The session's action listing the machines the person planned.
-const LIST_MACHINES: &str = "machine.list";
-/// The session's action showing one of them.
-const SHOW_MACHINE: &str = "machine.show";
 
 #[derive(Subcommand)]
 pub enum MachineCmd {
@@ -51,9 +46,6 @@ pub enum MachineCmd {
     Show {
         /// The plan's id, as `tilo machine list` prints it.
         plan: String,
-        /// Where the installer is served, for the rescue-system command.
-        #[arg(long, default_value = INSTALLER_URL)]
-        installer_url: String,
     },
 }
 
@@ -114,22 +106,22 @@ pub struct AddArgs {
 pub fn serve(cmd: MachineCmd) -> Result<std::process::ExitCode> {
     match cmd {
         MachineCmd::Add(add) => plan_and_mint(&add),
-        MachineCmd::List => ask(LIST_MACHINES, &[]),
-        MachineCmd::Show {
-            plan,
-            installer_url,
-        } => ask(
-            SHOW_MACHINE,
-            &[
-                format!("plan={}", plan.trim()),
-                format!("installer_url={installer_url}"),
-            ],
+        MachineCmd::List => ask(
+            machines::LIST,
+            "List the machines you planned",
+            &serde_json::json!({}),
+        ),
+        MachineCmd::Show { plan } => ask(
+            machines::SHOW,
+            "Show a machine you planned",
+            &serde_json::json!({ "plan": plan.trim() }),
         ),
     }
 }
 
-/// Ask the local session to do `action`, printing what it answers.
-fn ask(action: &str, words: &[String]) -> Result<std::process::ExitCode> {
+/// Ask the local session the machine step `step` with `args`, printing what
+/// it answers: the same action the installer's window presses.
+fn ask(step: &str, title: &str, args: &serde_json::Value) -> Result<std::process::ExitCode> {
     let sockets = crate::desktop::sockets();
     let mut stdout = std::io::stdout();
     let mut stderr = std::io::stderr();
@@ -137,7 +129,14 @@ fn ask(action: &str, words: &[String]) -> Result<std::process::ExitCode> {
         out: &mut stdout,
         err: &mut stderr,
     };
-    let code = front::run(&sockets, action, words, &Spelling::tilo(), &mut io);
+    let address = ActionAddress::new(machines::RESOURCE, step).encode();
+    let code = front::run_address(
+        &sockets,
+        (machines::PROVIDER, &address, title),
+        args,
+        &Spelling::tilo(),
+        &mut io,
+    );
     std::io::Write::flush(&mut stdout)?;
     Ok(std::process::ExitCode::from(code))
 }
@@ -215,16 +214,13 @@ fn plan_and_mint(add: &AddArgs) -> Result<std::process::ExitCode> {
         .token_file
         .clone()
         .unwrap_or_else(|| install_plan::plans_dir(&dir).join(format!("{id}.token")));
-    let words = vec![
-        format!(
-            "plan={}",
-            serde_json::to_string(&plan).map_err(|error| anyhow::anyhow!(error.to_string()))?
-        ),
-        format!("label={}", display_name(&plan)),
-        format!("token_file={}", token_file.display()),
-        format!("installer_url={}", add.installer_url),
-    ];
-    let code = ask(PLAN_MACHINE, &words)?;
+    let args = serde_json::json!({
+        "plan": serde_json::to_string(&plan).map_err(|error| anyhow::anyhow!(error.to_string()))?,
+        "label": display_name(&plan),
+        "token_file": token_file.display().to_string(),
+        "installer_url": add.installer_url,
+    });
+    let code = ask(machines::PLAN, "Plan a machine", &args)?;
     if code != std::process::ExitCode::SUCCESS {
         return Ok(code);
     }
