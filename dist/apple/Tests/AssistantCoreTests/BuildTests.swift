@@ -206,6 +206,27 @@ final class BuildTests: XCTestCase {
         XCTAssertFalse(mac.said.contains { $0.contains("push") }, "\(mac.said)")
     }
 
+    // MARK: What the phone's bundle says of what it asks its person for
+
+    /// An iPhone asks its person before an app may reach anything on their own network, and
+    /// shows them the bundle's sentence for it. Tilo Assistant reaches its person's Tilo there
+    /// when that is where it is, so its bundle says so, beside what it says of the camera, the
+    /// microphone and dictation: each in the app's own name, as build.sh writes it.
+    func testThePhoneBundleSaysWhyItReachesItsPersonsOwnNetwork() throws {
+        let phone = try build("iphone", ["TILO_APPLE_PROFILE": profileForAny()])
+        let info = try phone.info()
+        XCTAssertEqual(info["NSLocalNetworkUsageDescription"] as? String,
+                       "Tilo Assistant reaches your Tilo when it is on your own network.")
+        let asked = (info.allKeys as? [String] ?? []).filter { $0.hasSuffix("UsageDescription") }.sorted()
+        XCTAssertEqual(asked, ["NSCameraUsageDescription", "NSLocalNetworkUsageDescription", "NSMicrophoneUsageDescription",
+                               "NSSpeechRecognitionUsageDescription"])
+        for key in asked {
+            let sentence = try XCTUnwrap(info[key] as? String, key)
+            XCTAssertTrue(sentence.hasPrefix("Tilo Assistant "), "\(key): \(sentence)")
+            XCTAssertFalse(sentence.contains("__"), "\(key): \(sentence)")
+        }
+    }
+
     // MARK: Told, and the profile grants it
 
     func testAPhoneBuildToldToWhoseProfileGrantsPushClaimsItAndCarriesTheNoticeExtension() throws {
