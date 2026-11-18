@@ -216,7 +216,7 @@ tilo_test_env::scenario! {
                 DocumentId::parse("uuid:00000000-0000-0000-0000-000000000002").unwrap(),
             ),
         ] {
-            let mut other = HistoryController::new(mismatched, &doc).unwrap();
+            let mut other = HistoryController::new(mismatched, doc.clone().get_heads());
             other.select(&doc, &[one]).unwrap();
             assert_eq!(
                 other.validate_restore(&review, &doc),

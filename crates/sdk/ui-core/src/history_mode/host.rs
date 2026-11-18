@@ -154,6 +154,9 @@ pub struct HistoryHost {
     /// How many of the newest changes History lists, and whether older ones exist.
     feed_limit: usize,
     has_earlier: bool,
+    /// The platform's menus list the recent changes History lists, so History follows them closed
+    /// too.
+    lists_recent: bool,
     before: PreviewCanvas,
     after: PreviewCanvas,
     side: PreviewSide,
@@ -277,6 +280,11 @@ impl HistoryHost {
     pub(crate) fn remove_fallback_bar(&mut self) {
         self.fallback_bar = false;
         self.rebuild_toolbar();
+    }
+
+    /// The host's own menus list History's recent changes ([`Self::lists_recent`]).
+    pub(crate) fn list_recent(&mut self) {
+        self.lists_recent = true;
     }
 
     pub(crate) fn remove_open_button(&mut self) {
@@ -404,6 +412,7 @@ impl HistoryHost {
             feed: None,
             feed_limit: crate::tilo_actions::remote::workspace_activity::FEED_PAGE,
             has_earlier: false,
+            lists_recent: false,
             before: PreviewCanvas::new(),
             after: PreviewCanvas::new(),
             side: PreviewSide::After,
@@ -1262,7 +1271,7 @@ impl HistoryHost {
             || self
                 .feed
                 .as_ref()
-                .is_some_and(super::feed::WindowFeed::has_news)
+                .map_or(self.wants_feed(), super::feed::WindowFeed::has_news)
         {
             return Some(true);
         }
@@ -1337,6 +1346,16 @@ impl HistoryHost {
         }
     }
 
+    /// Whether History follows what it lists now: while it is open, or while the host's menus list it.
+    fn wants_feed(&self) -> bool {
+        (self.open || self.lists_recent)
+            && matches!(
+                self.source(),
+                HistorySourceRegistration::HostDocument { .. }
+                    | HistorySourceRegistration::OwnedDocument { .. }
+            )
+    }
+
     /// Follow what History lists while it is open: the workspace's history of the resources the
     /// window keeps, its own resource and the chains of parts it holds. Closed, it follows nothing.
     fn follow_feed(&mut self) {
@@ -1356,7 +1375,7 @@ impl HistoryHost {
             HistorySourceRegistration::Unversioned { .. }
             | HistorySourceRegistration::FolderFiles { .. } => None,
         };
-        let Some((app, kept)) = window.filter(|_| self.open) else {
+        let Some((app, kept)) = window.filter(|_| self.wants_feed()) else {
             self.feed = None;
             return;
         };
@@ -2258,6 +2277,7 @@ pub(crate) trait HistoryChromeApi: Widget {
     fn current_entries(&self) -> Vec<crate::widget::HistoryEntry>;
     fn remove_fallback_bar(&mut self);
     fn remove_open_button(&mut self);
+    fn list_recent(&mut self);
     fn set_open_button(&mut self, shown: bool);
     fn set_window_presents(&mut self, presents: bool);
     fn offers_control(&self) -> bool;
@@ -2455,6 +2475,9 @@ impl HistoryChromeApi for HistoryHost {
     }
     fn remove_fallback_bar(&mut self) {
         HistoryHost::remove_fallback_bar(self)
+    }
+    fn list_recent(&mut self) {
+        HistoryHost::list_recent(self);
     }
     fn remove_open_button(&mut self) {
         HistoryHost::remove_open_button(self)

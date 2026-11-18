@@ -21,7 +21,7 @@ pub(crate) fn note_news() {
 pub(crate) mod api;
 pub mod capability;
 pub mod coverage;
-mod feed;
+pub(crate) mod feed;
 pub mod folder;
 pub mod preview;
 pub mod restore;

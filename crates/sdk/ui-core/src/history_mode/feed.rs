@@ -71,8 +71,10 @@ impl WindowFeed {
             return None;
         }
         self.taken = Some(revision);
+        // Each new reading is an item; a provider that answers once completes with it.
         let value = self.followed.call().with(|arrival| match arrival.ready() {
             Some(InvocationUpdate::Item { value, .. }) => Some(value.clone()),
+            Some(InvocationUpdate::Succeeded { output, .. }) => output.value.clone(),
             _ => None,
         })?;
         let feed: wire::Feed = serde_json::from_value(value).ok()?;
@@ -172,4 +174,4 @@ fn row(entry: &wire::Entry, id: HistoryEntryId) -> HistoryEntry {
 
 #[cfg(test)]
 #[path = "feed_tests.rs"]
-mod tests;
+pub(crate) mod tests;

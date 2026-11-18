@@ -61,6 +61,7 @@ tilo_test_env::scenario! {
         let mut state = State::new();
         state.doc.put(ROOT, "body", "unrelated outer").unwrap();
         state.commit_action(None, None);
+        crate::history_mode::feed::tests::serve(&state.doc);
         let mut driver = FrameHarness::from_managed_root(
             state,
             ManagedRoot::new(root, registration),
@@ -152,6 +153,7 @@ tilo_test_env::scenario! {
             ),
         };
         let registration = HistoryRegistration::new(&RESTORABLE, vec![source]).unwrap();
+        crate::history_mode::feed::tests::serve(&state.doc);
         let mut driver = FrameHarness::from_managed_root(
             state,
             ManagedRoot::new(Box::new(crate::widget::Column::new()), registration),
@@ -298,6 +300,7 @@ fn review_driver() -> FrameHarness {
         ),
     };
     let registration = HistoryRegistration::new(&RESTORABLE, vec![source]).unwrap();
+    crate::history_mode::feed::tests::serve(&state.doc);
     let mut driver = FrameHarness::from_managed_root(
         state,
         ManagedRoot::new(Box::new(crate::widget::Column::new()), registration),

@@ -905,6 +905,9 @@ impl App {
     /// the window's palette.
     #[cfg(any(feature = "native", test))]
     pub(super) fn prepare_native_presentation(&mut self, chrome: crate::host_chrome::HostChrome) {
+        if let Some(history) = &mut self.history {
+            history.list_recent();
+        }
         if chrome.draws_in_window() {
             // Native apps use their integrated header or the platform action
             // API.

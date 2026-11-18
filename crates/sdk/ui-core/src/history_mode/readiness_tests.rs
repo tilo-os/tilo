@@ -65,6 +65,7 @@ fn global_driver(pending: Rc<Cell<bool>>, calls: Rc<Cell<usize>>) -> FrameHarnes
         }],
     )
     .unwrap();
+    crate::history_mode::feed::tests::serve(&state.doc);
     let mut driver = FrameHarness::from_managed_root(
         state,
         ManagedRoot::new(Box::new(DraftRoot::new(pending, calls)), registration),
