@@ -299,6 +299,26 @@ root-run helper to apply. A retired server lets go of everything it holds and ta
 work. Holding a workspace as an encrypted store, rather than as a key holder,
 is not applied yet.
 
+The same entry names the machine itself: its hostname, which drives it uses for
+what — the system disk, the data pool, a mirror — by serial or WWN rather than
+by kernel name, and how each network interface is set up (DHCP or static
+addresses, gateway, DNS, a VLAN tag, membership in a bond). These are typed
+actions on the document like any other, so they carry history and an author,
+and they refuse what a machine cannot be: a static interface with no address, a
+second system disk, the disk the system runs from repurposed, a drive holding
+data used without the person naming its serial to confirm erasing it. The
+device writes the whole desired configuration as a request for a root-run
+helper, which applies the hostname and the network as NetworkManager keyfiles
+and checks each drive's identity before anything is written; it reports what it
+applied or why not, and the entry's status carries that report back to the
+person. A network change keeps the keyfiles it replaced until the device is
+reached through a relay again, and puts them back with the reason when it is
+not, so a wrong address does not lock the person out of their server. Disk
+encryption, partitioning and the data pool's mount are the server image's own
+boot chain, which this configuration names and verifies but does not replace.
+The configuration is a device's, not a server's, so a desktop's entry carries the same
+configuration.
+
 ## Transport
 
 Devices talk over iroh, and nothing else. A device reaches the other devices

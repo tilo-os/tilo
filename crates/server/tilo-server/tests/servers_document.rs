@@ -146,7 +146,7 @@ async fn a_server_offers_what_its_entry_says() {
     .await
     .unwrap();
     // A freshly enrolled server offers nothing until its entry says so.
-    applied::reconcile_into(workspaces, &policy_request)
+    applied::reconcile_into(workspaces, &applied::Requests::at(&policy_request))
         .await
         .unwrap();
     assert!(!workspaces.offer().compute, "it runs no work yet");
@@ -157,7 +157,7 @@ async fn a_server_offers_what_its_entry_says() {
     )
     .await
     .unwrap();
-    let applied = applied::reconcile_into(workspaces, &policy_request)
+    let applied = applied::reconcile_into(workspaces, &applied::Requests::at(&policy_request))
         .await
         .unwrap();
     assert!(applied.offered);
@@ -196,7 +196,7 @@ async fn a_retired_server_lets_go_of_everything() {
     )
     .await
     .unwrap();
-    applied::reconcile_into(workspaces, &policy_request)
+    applied::reconcile_into(workspaces, &applied::Requests::at(&policy_request))
         .await
         .unwrap();
     assert!(workspaces.offer().compute);
@@ -204,7 +204,7 @@ async fn a_retired_server_lets_go_of_everything() {
     servers::apply(workspaces, Servers::RETIRE_SERVER.with(entry(&nas)))
         .await
         .unwrap();
-    let applied = applied::reconcile_into(workspaces, &policy_request)
+    let applied = applied::reconcile_into(workspaces, &applied::Requests::at(&policy_request))
         .await
         .unwrap();
     assert!(applied.retired, "its own entry says it was retired");
@@ -223,6 +223,115 @@ async fn a_retired_server_lets_go_of_everything() {
             .any(|summary| summary.workspace == workspace.workspace),
         "it holds nothing: {still_there:?}"
     );
+}
+
+/// A server writes the machine configuration its entry names where the root-run
+/// helper reads it, and what that helper reports becomes the entry's own
+/// status, so the person reads what it applied or why not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_servers_machine_configuration_is_written_and_its_report_read() {
+    let alice = TestUser::fresh("Alice");
+    let nas = alice.enrol("nas", DeviceCapabilities::member());
+    let server = serve_on(&alice, &nas, WorkSetting::own_person()).await;
+    let requests = tempfile::tempdir().unwrap();
+    let requests_at = || applied::Requests::at(requests.path().join("update-policy.request"));
+    let workspaces = server.host.workspaces();
+    let admin = admin_workspace_id(&alice.user_pk);
+    workspaces
+        .create_workspace("Servers", Some(&admin))
+        .await
+        .unwrap();
+    servers::apply(
+        workspaces,
+        Servers::ENROLL_SERVER.with((
+            hex::encode(nas.device_pubkey()),
+            "nas".into(),
+            serde_json::to_string(&server.host.node_addr()).unwrap(),
+        )),
+    )
+    .await
+    .unwrap();
+
+    servers::apply(
+        workspaces,
+        Servers::SET_HOSTNAME.with((entry(&nas), "nas".into())),
+    )
+    .await
+    .unwrap();
+    servers::apply(
+        workspaces,
+        Servers::USE_DISK.with((
+            entry(&nas),
+            "ROOT1".into(),
+            servers::device::SYSTEM.into(),
+            String::new(),
+        )),
+    )
+    .await
+    .unwrap();
+    servers::apply(
+        workspaces,
+        Servers::SET_INTERFACE.with((
+            entry(&nas),
+            "eno1".into(),
+            servers::device::DHCP.into(),
+            String::new(),
+            String::new(),
+            "1.1.1.1".into(),
+            String::new(),
+        )),
+    )
+    .await
+    .unwrap();
+    let applied = applied::reconcile_into(workspaces, &requests_at())
+        .await
+        .unwrap();
+    let revision = applied
+        .device_config
+        .expect("the machine configuration was written");
+    assert!(!applied.device_status, "nothing was reported yet");
+    let request = std::fs::read_to_string(requests.path().join("device-config.request")).unwrap();
+    assert!(
+        request.starts_with(&format!("revision|{revision}\n")),
+        "{request}"
+    );
+    assert!(request.contains("hostname|nas\n"), "{request}");
+    assert!(request.contains("disk|system|ROOT1|0\n"), "{request}");
+    assert!(
+        request.contains("interface|eno1|dhcp|||1.1.1.1||0\n"),
+        "{request}"
+    );
+
+    // Writing the same request again changes nothing.
+    let applied = applied::reconcile_into(workspaces, &requests_at())
+        .await
+        .unwrap();
+    assert_eq!(applied.device_config, None);
+
+    // What the helper reported is the entry's status, once.
+    std::fs::write(
+        requests.path().join("device-config.report"),
+        format!("revision\t{revision}\nstate\treverted\ndetail\tno device reached this machine\n"),
+    )
+    .unwrap();
+    let applied = applied::reconcile_into(workspaces, &requests_at())
+        .await
+        .unwrap();
+    assert!(applied.device_status);
+    let entry = servers::read(workspaces)
+        .await
+        .unwrap()
+        .servers
+        .get(&entry(&nas))
+        .cloned()
+        .unwrap();
+    assert_eq!(entry.device.status.revision, revision);
+    assert_eq!(entry.device.status.state, "reverted");
+    assert_eq!(entry.device.status.detail, "no device reached this machine");
+    let applied = applied::reconcile_into(workspaces, &requests_at())
+        .await
+        .unwrap();
+    assert!(!applied.device_status, "the same report is recorded once");
 }
 
 /// A person with no desktop enrols three servers one after another: the first
@@ -245,7 +354,8 @@ async fn servers_enrolled_one_after_another_share_one_admin_workspace() {
         .map(|(at, hosted)| {
             applied::follow(
                 hosted.host.workspaces(),
-                policy.path().join(format!("{at}.request")),
+                applied::Requests::at(policy.path().join(format!("{at}.request"))),
+                None,
             )
         })
         .collect::<Vec<_>>();

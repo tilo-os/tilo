@@ -110,7 +110,7 @@ COPY os/usr/libexec/tilo-hosted-prepare os/usr/libexec/tilo-hosted-serve \
      os/usr/libexec/tilo-image-trust-staged os/usr/libexec/tilo-esp-mount \
      os/usr/libexec/tilo-server-firstboot os/usr/libexec/tilo-server-state-migrate \
      os/usr/libexec/tilo-server-update-policy \
-     os/usr/libexec/tilo-server-control \
+     os/usr/libexec/tilo-server-control os/usr/libexec/tilo-server-device-config \
      os/usr/libexec/tilo-disk-encrypt os/usr/libexec/tilo-store-volume \
      os/usr/libexec/tilo-rollback-common os/usr/libexec/tilo-rollback-confirm \
      os/usr/libexec/tilo-rollback-harden os/usr/libexec/tilo-rollback-initrd-unlock \
@@ -153,6 +153,7 @@ RUN chmod 0755 /usr/libexec/tilo-hosted-prepare /usr/libexec/tilo-hosted-serve \
         /usr/libexec/tilo-image-trust-staged \
         /usr/libexec/tilo-esp-mount /usr/libexec/tilo-server-firstboot \
         /usr/libexec/tilo-server-state-migrate /usr/libexec/tilo-server-update-policy \
+        /usr/libexec/tilo-server-device-config \
         /usr/libexec/tilo-disk-encrypt /usr/libexec/tilo-store-volume \
         /usr/libexec/tilo-rollback-common /usr/libexec/tilo-rollback-confirm \
         /usr/libexec/tilo-rollback-harden /usr/libexec/tilo-rollback-initrd-unlock \
@@ -181,6 +182,8 @@ COPY os/usr/lib/systemd/system/tilo-server.service \
     os/usr/lib/systemd/system/tilo-server-update-policy.path \
     os/usr/lib/systemd/system/tilo-server-control.service \
     os/usr/lib/systemd/system/tilo-server-control.path \
+    os/usr/lib/systemd/system/tilo-server-device-config.service \
+    os/usr/lib/systemd/system/tilo-server-device-config.path \
     os/usr/lib/systemd/system/tilo-rollback-confirm.service \
     os/usr/lib/systemd/system/tilo-rollback-confirm.timer \
     os/usr/lib/systemd/system/tilo-rollback-harden.service \
@@ -273,6 +276,7 @@ RUN systemctl enable tilo-server-firstboot.service \
     && systemctl enable tilo-server-update-apply.timer \
     && systemctl enable tilo-server-update-policy.path \
     && systemctl enable tilo-server-control.path \
+    && systemctl enable tilo-server-device-config.path \
     && systemctl enable bootc-fetch-apply-updates.timer \
     && systemctl enable tilo-rollback-harden.timer \
     && systemctl enable tilo-rollback-confirm.timer \

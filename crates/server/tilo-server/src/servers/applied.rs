@@ -12,7 +12,9 @@
 //!   it in the workspace, and a server never has to be told anything by hand.
 //! - Each server sets what it answers devices offering it work from its own
 //!   entry ([`Workspaces::set_offer`]), writes the update policy it follows
-//!   ([`super::policy`]), and, once retired, lets go of every workspace it
+//!   ([`super::policy`]) and the device configuration it applies
+//!   ([`super::device`]), reports what the root helper said it applied in
+//!   the entry's own status, and, once retired, lets go of every workspace it
 //!   holds.
 //!
 //! [`follow`] applies the document as it stands, and again after each change to
@@ -26,10 +28,46 @@ use iroh_base::EndpointAddr;
 use tilo_peer_state::CopyRole;
 use tilo_workspace_service::workspaces::{Offer, ResourceWrite, Workspaces};
 
-use super::{SERVERS, admin_workspace_id, device_id, policy, read};
+use super::{SERVERS, admin_workspace_id, device, device_id, policy, read};
+
+/// Where a server writes what its entry asks of the machine, for the root
+/// helpers to apply.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Requests {
+    /// The update policy it follows.
+    pub policy: PathBuf,
+    /// The configuration of the machine itself.
+    pub device: device::Paths,
+}
+
+impl Requests {
+    /// The requests beside the update policy at `policy`, so a test or an
+    /// embedder keeps them all in one directory.
+    #[must_use]
+    pub fn at(policy: impl Into<PathBuf>) -> Self {
+        let policy = policy.into();
+        let dir = policy
+            .parent()
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+        Self {
+            policy,
+            device: device::Paths::under(&dir),
+        }
+    }
+}
+
+impl Default for Requests {
+    fn default() -> Self {
+        Self::at(policy::POLICY_REQUEST)
+    }
+}
 
 /// What applying the servers' document did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each says whether one part of the document applied; they are read one at a time"
+)]
 pub struct Applied {
     /// The workspaces this device attached a server to.
     pub held: Vec<String>,
@@ -40,6 +78,10 @@ pub struct Applied {
     pub offered: bool,
     /// Whether the update policy a server follows was written.
     pub policy: bool,
+    /// The revision of the device configuration written, when it changed.
+    pub device_config: Option<String>,
+    /// Whether the machine's last report became the entry's status.
+    pub device_status: bool,
     /// Whether this device's own entry says it was retired.
     pub retired: bool,
 }
@@ -51,18 +93,17 @@ pub struct Applied {
 /// # Errors
 /// The document could not be read, or a workspace's hosts could not be changed.
 pub async fn reconcile(workspaces: &Workspaces) -> Result<Applied, String> {
-    reconcile_into(workspaces, Path::new(policy::POLICY_REQUEST)).await
+    reconcile_into(workspaces, &Requests::default()).await
 }
 
-/// [`reconcile`] with the update policy written to `policy_request`, where
-/// the root-run helper reads it
-/// ([`policy::POLICY_REQUEST`](super::policy::POLICY_REQUEST)).
+/// [`reconcile`] with the requests written where the root helpers read
+/// them ([`Requests`]).
 ///
 /// # Errors
 /// As [`reconcile`].
 pub async fn reconcile_into(
     workspaces: &Workspaces,
-    policy_request: &Path,
+    requests: &Requests,
 ) -> Result<Applied, String> {
     let admin = admin_workspace_id(&workspaces.serving_certificate().user_public_key);
     let servers = read(workspaces).await?;
@@ -91,7 +132,10 @@ pub async fn reconcile_into(
                 applied.released.push(summary.workspace);
             }
         } else {
-            applied.policy = policy::write(entry, policy_request)?;
+            let settings = apply_settings(workspaces, &cert, entry, requests).await?;
+            applied.policy = settings.policy;
+            applied.device_config = settings.device_config;
+            applied.device_status = settings.device_status;
         }
     }
     // Each workspace this device governs, which is where a holder it names is
@@ -167,6 +211,39 @@ pub async fn reconcile_into(
     Ok(applied)
 }
 
+/// Apply this device's own entry to itself: the update policy it follows, the
+/// configuration of its machine, and the report the machine's root helper
+/// left, which becomes the entry's status so the person reads what it applied
+/// or why not.
+async fn apply_settings(
+    workspaces: &Workspaces,
+    cert: &tilo_user_identity::DeviceCert,
+    entry: &super::Server,
+    requests: &Requests,
+) -> Result<Applied, String> {
+    let mut applied = Applied {
+        policy: policy::write(entry, &requests.policy)?,
+        device_config: device::write(entry, &requests.device)?,
+        ..Applied::default()
+    };
+    if let Some(status) = device::report(&requests.device)
+        && entry.device.status != status
+    {
+        super::apply(
+            workspaces,
+            super::Servers::REPORT_DEVICE_CONFIG.with((
+                device_id(&cert.device_public_key),
+                status.revision,
+                status.state,
+                status.detail,
+            )),
+        )
+        .await?;
+        applied.device_status = true;
+    }
+    Ok(applied)
+}
+
 /// The address `server` enrolled, as it is dialled: none when it enrolled
 /// none.
 fn endpoint(server: &super::Server) -> Option<EndpointAddr> {
@@ -175,17 +252,26 @@ fn endpoint(server: &super::Server) -> Option<EndpointAddr> {
 
 /// Apply the document now, and again after each change to it and to the
 /// admin workspace's holders, for as long as `workspaces` lives, writing the
-/// update policy to `policy_request`. A change another holder wrote reaches
+/// requests to what `requests` names. A change another holder wrote reaches
 /// this one as its copy takes it in; one this device wrote, as it is
 /// committed. A server handed the workspace after it started applies it as
 /// the hand-over lands.
-pub fn follow(workspaces: &Workspaces, policy_request: PathBuf) -> tokio::task::JoinHandle<()> {
+///
+/// When the configuration of the machine itself changed and `endpoint` is the
+/// one this device is reached at, the network change is confirmed once this
+/// device is reached again ([`device::confirm`]); without a
+/// confirmation the root helper puts the previous network back.
+pub fn follow(
+    workspaces: &Workspaces,
+    requests: Requests,
+    endpoint: Option<iroh::Endpoint>,
+) -> tokio::task::JoinHandle<()> {
     let workspaces = workspaces.clone();
     let admin = admin_workspace_id(&workspaces.serving_certificate().user_public_key);
     let mut writes = workspaces.document_writes();
     let mut governance = workspaces.governance_changes();
     tokio::spawn(async move {
-        apply_now(&workspaces, &policy_request).await;
+        apply_now(&workspaces, &requests, endpoint.as_ref()).await;
         loop {
             let ours = tokio::select! {
                 write = writes.recv() => match write {
@@ -198,12 +284,12 @@ pub fn follow(workspaces: &Workspaces, policy_request: PathBuf) -> tokio::task::
                 change = governance.recv() => change.map(|workspace| workspace == admin),
             };
             match ours {
-                Ok(true) => apply_now(&workspaces, &policy_request).await,
+                Ok(true) => apply_now(&workspaces, &requests, endpoint.as_ref()).await,
                 Ok(false) => {}
                 // A device that fell behind applies the document as it
                 // stands, which is what every change asked for anyway.
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    apply_now(&workspaces, &policy_request).await;
+                    apply_now(&workspaces, &requests, endpoint.as_ref()).await;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
@@ -211,11 +297,26 @@ pub fn follow(workspaces: &Workspaces, policy_request: PathBuf) -> tokio::task::
     })
 }
 
-/// [`reconcile_into`], with what it did in the log rather than in an answer.
-async fn apply_now(workspaces: &Workspaces, policy_request: &Path) {
-    match reconcile_into(workspaces, policy_request).await {
+/// [`reconcile_into`], with what it did in the log rather than in an answer,
+/// and a changed machine configuration confirmed once the device is reached
+/// again.
+async fn apply_now(
+    workspaces: &Workspaces,
+    requests: &Requests,
+    endpoint: Option<&iroh::Endpoint>,
+) {
+    match reconcile_into(workspaces, requests).await {
         Ok(applied) if applied != Applied::default() => {
             tracing::info!(?applied, "the servers' document applied");
+            if let (Some(revision), Some(endpoint)) = (applied.device_config, endpoint)
+                && device::awaits_confirmation(&requests.device)
+            {
+                tokio::spawn(device::confirm(
+                    requests.device.clone(),
+                    endpoint.clone(),
+                    revision,
+                ));
+            }
         }
         Ok(_) => {}
         Err(error) => {

@@ -45,6 +45,7 @@ for bin in usr/libexec/tilo/tilo-server usr/libexec/tilo/tilo-server-admin \
   usr/libexec/tilo-hosted-prepare usr/libexec/tilo-hosted-serve \
   usr/libexec/tilo-update-channel usr/libexec/tilo-update-policy-set \
   usr/libexec/tilo-server-update-policy usr/libexec/tilo-server-control \
+  usr/libexec/tilo-server-device-config \
   usr/libexec/tilo-image-trust-staged \
   usr/libexec/tilo-esp-mount; do
   [[ -x $root/$bin ]] || die "no executable /$bin"
@@ -152,7 +153,7 @@ grep -q '^ConditionPathExists=/etc/tilo/api.env' \
   "$root/usr/lib/systemd/system/tilo-api.service" \
   || die 'the API server does not wait for its configuration'
 [[ ! -e $root/etc/tilo/api.env ]] || die 'the image carries an API configuration; the deployment owns it'
-# A server's updates and window are its document's, applied by a root-run
+# A server's updates and window are its document's, applied by a root
 # helper that only the request file starts.
 [[ -L $wants/multi-user.target.wants/tilo-server-update-policy.path ]] \
   || die "nothing applies the update settings a server's document asks for"
@@ -171,6 +172,16 @@ grep -q '^ExecStart=/usr/libexec/tilo-server-control$' \
   || die 'the control service runs something else'
 [[ $(stat -c '%u' "$root/usr/libexec/tilo-server-control") == 0 ]] \
   || die 'the control helper is not root-owned'
+# The machine's own configuration — hostname, drives, network — is its
+# document's too, applied by a root helper only the request starts.
+[[ -L $wants/multi-user.target.wants/tilo-server-device-config.path ]] \
+  || die "nothing applies the machine configuration a server's document asks for"
+grep -q '^ExecStart=/usr/libexec/tilo-server-device-config$' \
+  "$root/usr/lib/systemd/system/tilo-server-device-config.service" \
+  || die 'the device-config service runs something else'
+[[ $(stat -c '%u' "$root/usr/libexec/tilo-server-device-config") == 0 ]] \
+  || die 'the device-config helper is not root-owned'
+[[ -x $root/usr/libexec/tilo-server-device-config ]] || die 'the device-config helper is not executable'
 
 # An update stages (verified, counted) and is never applied blindly: the boot
 # into it is this image's own step, inside the operator's window.

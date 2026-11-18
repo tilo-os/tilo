@@ -116,6 +116,7 @@ suites = [
   "os/kernel/tests/test-signing-identity.py",
   "os/tests/composefs_digest_parse.sh",
   "os/tests/server_update_policy_test.sh",
+  "os/tests/server_device_config_test.sh",
   "os/tests/containerfile_copy_invariants.sh",
   "os/tests/interactive_priority.sh",
   "os/tests/board_session.sh",

@@ -767,7 +767,8 @@ impl Server {
                     &background_tasks,
                     crate::servers::applied::follow(
                         governed,
-                        PathBuf::from(crate::servers::policy::POLICY_REQUEST),
+                        crate::servers::applied::Requests::default(),
+                        Some(endpoint.clone()),
                     ),
                 );
             }
