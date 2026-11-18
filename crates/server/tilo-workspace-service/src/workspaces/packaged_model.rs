@@ -207,6 +207,7 @@ impl Workspaces {
                     action: "",
                     arguments: serde_json::Map::new(),
                     now: i64::try_from(now / 1_000_000).unwrap_or(i64::MAX),
+                    envelope: None,
                 })
                 .map_err(|error| CollaborationError::new(error.to_string()))?
                 .document
@@ -325,6 +326,7 @@ impl Workspaces {
                     action,
                     arguments,
                     now: now_ms,
+                    envelope: None,
                 })
                 .map_err(|error| CollaborationError::new(error.to_string()))?
         };

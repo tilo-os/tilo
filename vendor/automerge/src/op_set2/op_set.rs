@@ -96,6 +96,12 @@ impl OpSet {
         self.cols.dump();
     }
 
+    #[cfg(tilo_model_guest)]
+    pub(crate) fn parents(&self, _: ObjId, _: Option<Clock>) -> Parents<'_> {
+        crate::model_device::outside_device("an op set")
+    }
+
+    #[cfg(not(tilo_model_guest))]
     pub(crate) fn parents(&self, obj: ObjId, clock: Option<Clock>) -> Parents<'_> {
         Parents {
             obj,

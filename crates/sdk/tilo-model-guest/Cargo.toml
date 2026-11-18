@@ -14,11 +14,10 @@ path = "src/lib.rs"
 # (`apps/*-model-wasm`), sharing the workspace's lock and target directory so
 # its dependencies compile once across apps. Its dependencies name the same
 # automerge fork the resource layer does, so the two are one crate in the
-# module.
+# module, built with `--cfg tilo_model_guest`: its documents are the host's.
 
 [dependencies]
 automerge = { package = "tilo-automerge-fork", version = "0.12.0", path = "../../../vendor/automerge" }
-base64 = "0.22.1"
 blake3 = "1.8.5"
 getrandom = { version = "0.4", features = ["sys_rng"] }
 serde = { version = "1.0.228", features = ["derive"] }

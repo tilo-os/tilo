@@ -27,6 +27,18 @@ built per architecture. A device that holds the keys of a workspace applies
 any installed app's actions from that package, so a server takes an app's work
 the moment the app is installed, with no build of its own.
 
+The module carries the app's model logic and nothing of a document's
+storage: the device holds the document. Built with `--cfg tilo_model_guest`,
+the module's `Doc` (Automerge's `AutoCommit`) is a handle on the device's
+document, and every read and write a verb makes (a field's value, a
+collection's entries, a put, an insert, a delete) is one call to the device,
+answered from the device's own Automerge at the resource's current heads
+(`vendor/automerge/src/model_device`). So the change a verb makes is made by the
+device's Automerge, which signs it and keeps its history, and the module is
+the size of the app's own code rather than one copy of Automerge per app.
+`#[derive(Model)]` and `#[resource]` generate the same code for both builds;
+only what `Doc` is differs.
+
 An app's model is one crate, `apps/<app>-model`, and the module is one guest
 crate beside it, `apps/<app>-model-wasm`, whose whole content is the app's
 resources, `tilo_model_guest::model!("<app>", <resource>, ...)`, served
@@ -89,12 +101,17 @@ signs, stores and syncs an app's documents:
   actor ([§4](#4-who-did-it)). The host checks the grant
   ([security architecture](../security/architecture.md) §6), runs the verb from
   the app's module against the document, runs the model's `check`, records the
-  change with its history entry, and signs it as the actor. A verb has no clock,
-  randomness, file, network or process access because its module has no such
-  imports; that's enforced by what the module can link, not by a lint.
+  change with its history entry, and signs it as the actor. The verb reads and
+  writes the document through the device's document calls, so what it writes
+  lands in the device's Automerge. A verb has no clock, randomness, file, network
+  or process access because its module has no such imports (only its request,
+  its answer and the document calls); that's enforced by what the module can
+  link, not by a lint.
 - **Replay.** The same module replays a verb received from another device to
-  verify it ([resources.md](resources.md) §5). The app's process is never
-  involved.
+  verify it ([resources.md](resources.md) §5): the device gives it the document
+  at the change's parent heads, the verb goes through the same document calls,
+  and the device compares the change it makes with the one received. The app's
+  process is never involved.
 - **Readings.** A view receives readings: the decrypted, typed state of the
   resources it shows and was granted, delivered per changed path. A collection
   arrives as its item ids, and each item as its own reading when a view reads

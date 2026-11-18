@@ -4,26 +4,46 @@ use crate::op_set2::{OpSet, TopOps};
 
 use std::fmt::Debug;
 
+#[cfg(not(tilo_model_guest))]
 #[derive(Clone, Debug, Default)]
 pub struct Keys<'a> {
     pub(crate) iter: Option<(&'a OpSet, TopOps<'a>)>,
 }
 
+/// TILO(model-device): the keys the host of a model module's document read.
+#[cfg(tilo_model_guest)]
+#[derive(Clone, Debug, Default)]
+pub struct Keys<'a> {
+    pub(crate) hosted: crate::model_device::Hosted<'a, String>,
+}
+
 impl Iterator for Keys<'_> {
     type Item = String;
 
+    #[cfg(not(tilo_model_guest))]
     fn next(&mut self) -> Option<Self::Item> {
         let (op_set, iter) = self.iter.as_mut()?;
         let op = iter.next()?;
         Some(op_set.to_string(op.elemid_or_key()))
     }
+
+    #[cfg(tilo_model_guest)]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.hosted.next()
+    }
 }
 
 impl<'a> Keys<'a> {
+    #[cfg(not(tilo_model_guest))]
     pub(crate) fn new(op_set: &'a OpSet, iter: TopOps<'a>) -> Self {
         Self {
             iter: Some((op_set, iter)),
         }
+    }
+
+    #[cfg(tilo_model_guest)]
+    pub(crate) fn new(_: &'a OpSet, _: TopOps<'a>) -> Self {
+        crate::model_device::outside_device("an op set")
     }
 }
 

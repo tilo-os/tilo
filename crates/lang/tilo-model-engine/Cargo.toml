@@ -11,8 +11,9 @@ name = "tilo_model_engine"
 path = "src/lib.rs"
 
 [dependencies]
-base64.workspace = true
 blake3.workspace = true
+# The documents a model module reads and writes are this side's.
+automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

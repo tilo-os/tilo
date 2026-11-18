@@ -20,6 +20,24 @@ pub struct MapRangeItem<'a> {
 }
 
 impl MapRangeItem<'_> {
+    /// TILO(model-device): an entry as the host of a model module's document
+    /// read it.
+    #[cfg(tilo_model_guest)]
+    pub(crate) fn hosted(
+        key: String,
+        value: crate::Value<'static>,
+        conflict: bool,
+        id: ExId,
+    ) -> MapRangeItem<'static> {
+        MapRangeItem {
+            key: Cow::Owned(key),
+            value: ValueRef::hosted(value),
+            conflict,
+            pos: 0,
+            maybe_exid: ExIdPromise::resolved(id),
+        }
+    }
+
     pub(crate) fn op_id(&self) -> OpId {
         self.maybe_exid.id
     }
@@ -91,16 +109,30 @@ impl<'a> MapDiffItem<'a> {
     }
 }
 
+#[cfg(not(tilo_model_guest))]
 #[derive(Debug, Clone, Default)]
 pub struct MapRange<'a> {
     iter: MapDiff<'a>,
 }
 
+/// TILO(model-device): the entries the host of a model module's document read.
+#[cfg(tilo_model_guest)]
+#[derive(Debug, Clone, Default)]
+pub struct MapRange<'a> {
+    pub(crate) hosted: crate::model_device::Hosted<'a, MapRangeItem<'static>>,
+}
+
 impl<'a> Iterator for MapRange<'a> {
     type Item = MapRangeItem<'a>;
 
+    #[cfg(not(tilo_model_guest))]
     fn next(&mut self) -> Option<Self::Item> {
         Some(self.iter.next()?.export(self.iter.op_set?))
+    }
+
+    #[cfg(tilo_model_guest)]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.hosted.next()
     }
 }
 
@@ -200,6 +232,18 @@ impl<'a> Iterator for MapIter<'a> {
     }
 }
 
+#[cfg(tilo_model_guest)]
+impl<'a> MapRange<'a> {
+    pub(crate) fn new(_: &'a OpSet, _: Range<usize>, _: Option<Clock>) -> Self {
+        crate::model_device::outside_device("an op set")
+    }
+
+    pub(crate) fn shift_next(&mut self, _: Range<usize>) -> Option<<Self as Iterator>::Item> {
+        crate::model_device::outside_device("an op set")
+    }
+}
+
+#[cfg(not(tilo_model_guest))]
 impl<'a> MapRange<'a> {
     pub(crate) fn new(op_set: &'a OpSet, range: Range<usize>, clock: Option<Clock>) -> Self {
         let iter = MapDiff::new(op_set, range, ClockRange::current(clock));

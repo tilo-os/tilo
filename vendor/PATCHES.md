@@ -652,6 +652,14 @@ incremental save without applying them to a document, so a receiver reads
 each change's hash, message and dependencies (the signed claim of what each
 change is) before it decides to merge them.
 
+## `vendor/automerge`: a model module's documents are its host's
+
+Built with `--cfg tilo_model_guest`, `AutoCommit` is a handle on a document
+the host keeps: every read and write of an app's verb is one call to the host
+(`src/model_device`), which applies it to its own document. So an app's model
+module carries none of Automerge's storage, and the change is the host's
+Automerge's. See `vendor/automerge/TILO-PATCH.md`.
+
 ## `vendor/vello/src/image_source.rs` (new), `lib.rs`, `wgpu_engine.rs`: images drawn from a texture
 
 `Renderer::draw_image_from(image, Some(ImageSource { texture, origin,

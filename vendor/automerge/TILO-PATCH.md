@@ -611,3 +611,23 @@ where it makes it, as ids of this document. The marked spots are
 `transaction/inner.rs`, `change.rs`, `storage/change.rs` and
 `storage/change/change_op_columns.rs`. Pinned by
 `crates/doc/tilo-automerge/tests/change_touches.rs`.
+
+# Tilo patch: a model module's documents are its host's
+
+An app's model runs as a WebAssembly module on every device holding the
+workspace's keys, and every app carried its own copy of this crate's storage
+(the op set, its columns, the codecs): most of a module's two megabytes.
+Built with `--cfg tilo_model_guest`, `AutoCommit` is `autocommit_hosted.rs`:
+a handle on a document the host keeps, with the native API, whose every read
+and write is one call to the host in the form `model_device/wire.rs` writes.
+`model_device::Documents` is the device's side: it holds the module's documents (the
+request's own as handle 0) and answers each call from its real `AutoCommit`,
+so the change a verb makes is the host's Automerge's. In a module the read
+iterators (`Keys`, `Values`, `MapRange`, `ListRange`, `Spans`, `Parents`)
+are the host's answers, read once; what only a device does with a document
+(sync, diffs, taking changes apart) traps there. `AutoCommit` also reads its
+committed changes' metadata (`committed_change_meta`,
+`committed_hash_of_actor_seq`, `committed_applied_seq`) without lending out
+the committed `Automerge`, which a module has none of. `AutomergeError::Device`
+carries the host's refusals. The marked spots are `TILO(model-device)`. Pinned
+by `crates/server/tilo-workspace-service/src/workspaces/packaged_model_tests.rs`.

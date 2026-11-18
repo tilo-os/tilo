@@ -17,6 +17,11 @@ pub struct MapValue {
 }
 
 impl Map {
+    /// A map of these entries, as a model module's host receives it.
+    pub(crate) fn from_entries(entries: HashMap<String, MapValue>) -> Self {
+        Self(entries)
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (&String, &MapValue)> {
         self.0.iter()
     }
