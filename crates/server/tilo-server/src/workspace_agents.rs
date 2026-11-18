@@ -1216,6 +1216,20 @@ impl HostAgents {
             Some((task, before)) => task.ended_as(outcome, cost, clock.elapsed(), before).await,
             None => outcome,
         };
+        // An answer is logged where the model gives it; a turn that ends any other way says
+        // so here, or the log reads as if it were still going.
+        match &outcome {
+            Outcome::Answered(_) => {}
+            Outcome::Stopped(why) => {
+                tracing::info!(agent = %turn.agent.id.0, cost, %why, "an agent on the workspace's server stopped");
+            }
+            Outcome::Failed(why) => {
+                tracing::warn!(agent = %turn.agent.id.0, cost, %why, "an agent on the workspace's server could not go on");
+            }
+            Outcome::Cancelled => {
+                tracing::info!(agent = %turn.agent.id.0, cost, "an agent on the workspace's server was stopped by its person");
+            }
+        }
         if cost > 0 {
             self.charge(workspace, sub_agents::payer(&turn), &day, cost)
                 .await;
