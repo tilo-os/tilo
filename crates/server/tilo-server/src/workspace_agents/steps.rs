@@ -1,7 +1,7 @@
 //! What one tool step of a turn cost, said in the server's log.
 //!
 //! A turn's model asks for tools, and each call of one is a step: the note of it on the reply
-//! (`Reply::doing`), then the tool. A tool asks the workspace's action service for what it
+//! (`Reply::notes`), which holds no tool back, and the tool. A tool asks the workspace's action service for what it
 //! needs: listings, the admission of an action and how that action ended, a search. Each of
 //! those is counted and timed where the service is asked ([`asking`], [`looked`]), for the call
 //! it is asked within ([`Step::carried_out`]), and when the step ends one line says all of it
@@ -12,13 +12,16 @@
 //! have, or `other`; nothing a tool was called with, nothing it answered and no word of a
 //! person's is in it.
 
+use std::collections::HashSet;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use serde_json::{Value, json};
 use tilo_actions::remote::{InvocationState, Pending, ReceiptStatus, RemoteActionMessage};
 use tilo_actions::{ActionFailure, InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
+use tilo_mcp::McpServer;
 use tokio::task::futures::TaskLocalFuture;
 
 tokio::task_local! {
@@ -171,33 +174,90 @@ fn millis(time: Duration) -> u64 {
     u64::try_from(time.as_millis()).unwrap_or(u64::MAX)
 }
 
+/// When the note of a step goes to the reply: what the reply says the turn is doing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Note {
+    /// Before its tool begins: the tool may change something, so its person reads what is
+    /// being done while it is done, and whoever finds the turn unfinished reads that it may
+    /// have changed something.
+    Before,
+    /// When the calls of its answer are done, and only if no later call's note took its
+    /// place: the tool only reads, and the service takes every tool's requests before a
+    /// note's write.
+    After,
+    /// Not again: the call before it in the same answer was of the same tool.
+    Same,
+    /// Nowhere: the turn's answer is no reply that takes notes.
+    Nowhere,
+}
+
+impl Note {
+    const fn named(self) -> &'static str {
+        match self {
+            Self::Before => "before",
+            Self::After => "after",
+            Self::Same => "same",
+            Self::Nowhere => "none",
+        }
+    }
+}
+
+/// The tools of the turn's `server` that only read, by the server's own word of each: what it
+/// lists them with.
+pub(super) async fn reads(server: &McpServer<super::WorkspaceActionProvider>) -> HashSet<String> {
+    let listed = server
+        .handle(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list"}))
+        .await;
+    listed
+        .as_ref()
+        .and_then(|listed| listed.pointer("/result/tools"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|tool| {
+            tool.pointer("/annotations/readOnlyHint")
+                .and_then(Value::as_bool)
+                == Some(true)
+        })
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_owned))
+        .collect()
+}
+
 /// One tool step of a turn, timed from before its note.
 pub(super) struct Step {
     tool: String,
     /// Which call of its answer it is, counted from one, and how many that answer holds.
     place: (usize, usize),
     began: Instant,
-    /// How long the note of the step took.
+    /// How long handing its note over took.
     note: Duration,
+    /// When its note goes to the reply.
+    noting: Note,
     asked: Arc<Mutex<Asked>>,
 }
 
 impl Step {
     /// The step that calls `tool`, the call at `nth` of the `of` its answer holds, beginning
     /// now.
-    pub(super) fn begin(tool: &str, (nth, of): (usize, usize)) -> Self {
+    pub(super) fn begin(tool: &str, (nth, of): (usize, usize), noting: Note) -> Self {
         Self {
             tool: offered_name(tool).to_owned(),
             place: (nth.saturating_add(1), of),
             began: Instant::now(),
             note: Duration::ZERO,
+            noting,
             asked: Arc::default(),
         }
     }
 
-    /// The note of the step is written.
-    pub(super) fn noted(&mut self) {
-        self.note = self.began.elapsed();
+    /// Hand the step's note over with `hand`, which says whether the turn has a reply that
+    /// takes notes.
+    pub(super) fn notes(&mut self, hand: impl FnOnce() -> bool) {
+        let began = Instant::now();
+        if !hand() {
+            self.noting = Note::Nowhere;
+        }
+        self.note = self.note.saturating_add(began.elapsed());
     }
 
     /// `call`, the tool itself: what it asks of the workspace's action service is counted for
@@ -229,6 +289,7 @@ impl Step {
             call = self.place.0,
             calls = self.place.1,
             %outcome,
+            note = %self.noting.named(),
             whole_ms = millis(whole),
             note_ms = millis(self.note),
             tool_ms = millis(tool),
