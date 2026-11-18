@@ -442,9 +442,11 @@ installer-preview-target-busy = Wähle zuerst einen Bericht fertig aus, bevor du
 installer-preview-target-incomplete = Benenne ein bestimmtes Modell oder importiere einen Bericht vom anderen Computer.
 installer-preview-target-incomplete-detail = Nötig sind ein Hersteller und ein Modell sowie eine Variante, Platine oder SKU, oder ein Bericht vom anderen Computer.
 installer-preview-target-blocking = Eine für den Desktop nötige Komponente wird auf diesem Computer nicht unterstützt. Behebe das dort, importiere einen neuen Bericht oder benenne das Modell und fahre ohne geprüfte Hardware fort.
-installer-preview-target-unidentified = Anderer Computer nicht bestimmt
-installer-preview-target-review-declared = Modell benannt; seine Hardware wurde nicht geprüft.
-installer-preview-target-review-imported = Hardwarebericht von diesem Computer: { $supported } unterstützt, { $limited } eingeschränkt, { $unsupported } nicht unterstützt, { $unverified } nicht überprüft.
+installer-preview-target-review-named = { $model }. Seine Laufwerke, sein Start und sein Schutz werden bei der Installation geprüft, bevor sich etwas ändert.
+installer-preview-target-review-nameless = Nicht benannt. Seine Laufwerke, sein Start und sein Schutz werden bei der Installation geprüft, bevor sich etwas ändert.
+installer-preview-target-review-imported = { $model }: { $supported } unterstützt, { $limited } eingeschränkt, { $unsupported } nicht unterstützt, { $unverified } nicht überprüft.
+
+installer-preview-target-review-imported-unnamed = Hardwarebericht von diesem Computer: { $supported } unterstützt, { $limited } eingeschränkt, { $unsupported } nicht unterstützt, { $unverified } nicht überprüft.
 installer-preview-target-review-blocking = Eine für den Desktop nötige Komponente wird auf diesem Computer nicht unterstützt.
 installer-preview-target-check-heading = Auf dem anderen Computer geprüft
 installer-preview-target-check-boot = Start und Bootvorgang
@@ -559,6 +561,14 @@ installer-preview-desktop-body = Verwende den Tilo-Desktop mit deinem vorhandene
 installer-preview-migration-heading = Deine Sachen mitnehmen oder neu beginnen?
 installer-preview-migration-intro = Zuerst richten wir deinen Namen und deine Identität ein. Danach wählst du, was du mitnimmst, und erlaubst den Zugriff. In diesem Schritt wird nichts installiert.
 installer-preview-migrate-portable-body = Nimm ausgewählte Dateien, unterstützte Apps und Konten auf den anderen Computer mit. Deine Originale bleiben hier. Für große Dateien musst du diesen Computer vielleicht vom USB-Laufwerk neu starten, um sie zu kopieren, bevor du es mitnimmst.
+
+installer-preview-migration-server-intro = Der Server wird so oder so eines deiner Geräte. In diesem Schritt wird nichts installiert.
+
+installer-preview-migrate-server-title = Dateien von diesem Computer kopieren
+
+installer-preview-migrate-server-body = Wähle Ordner zum Kopieren, etwa eine Fotosammlung. Deine Originale bleiben hier.
+
+installer-preview-fresh-server-body = Beginne, ohne etwas zu kopieren. Du kannst später von jedem deiner Geräte Dateien senden.
 installer-preview-migrate-title = Von diesem Computer übernehmen
 installer-preview-migrate-body = Mach deine Dokumente, unterstützten Apps und Konten in Tilo zugänglich. Deine Originale bleiben unverändert.
 installer-preview-fresh-title = Neu beginnen
@@ -591,6 +601,10 @@ installer-preview-devices-heading = Diesen Computer benennen
 installer-preview-devices-intro = Unter diesem Namen erkennen deine anderen Tilo-Geräte diesen Computer.
 installer-preview-device-name-label = Computername
 installer-preview-device-default = Mein Computer
+
+installer-preview-devices-another-heading = Jenen Computer benennen
+
+installer-preview-devices-another-intro = Unter diesem Namen erkennen deine Tilo-Geräte jenen Computer.
 installer-preview-existing-avatar = Deine vorhandene Tilo-Identität
 installer-preview-belongings-heading = Deine Daten
 installer-preview-belongings-intro = Wähle, was mitkommt. Deine Originale bleiben unverändert.
@@ -692,6 +706,10 @@ installer-your-data-mail-reconnect = Melde dich in Thunderbird erneut an, um die
 installer-your-data-mail-needs-account = Wähle ein E-Mail-Konto, um dies mitzunehmen.
 installer-preview-files-title = Dateien und Einstellungen
 installer-preview-files-body = Dein ganzer persönlicher Ordner, einschließlich versteckter Dateien, Browserprofile, gespeicherter Zugangsdaten, Flatpak-Apps und Einstellungen.
+
+installer-preview-files-server-title = Dateien und Ordner
+
+installer-preview-files-server-body = Dein persönlicher Ordner: Dokumente, Fotos und andere Dateien. Apps und Einstellungen bleiben auf diesem Computer.
 installer-preview-accounts-title = Dienste in Tilo verbinden
 installer-preview-accounts-body = Wähle gespeicherte Verbindungen oder melde dich im nächsten Schritt an.
 installer-preview-choose-belongings = Wählen, was mitkommt
@@ -739,6 +757,10 @@ installer-preview-method-heading = Wie erreicht der Plan den Computer?
 
 installer-preview-method-intro = Das Medium und die Befehle tragen den Plan und einen einmalig gültigen Code. Der Code läuft nach 24 Stunden ab; der Plan kann sich danach noch ändern.
 
+installer-preview-machine-heading = Name und Einstellungen
+
+installer-preview-machine-intro = Lass eine Wahl offen und beantworte sie auf jenem Computer oder auf deinen Geräten.
+
 installer-preview-delivery-heading = Wohin er geht
 
 installer-preview-usb-title = Ein USB-Laufwerk
@@ -752,10 +774,6 @@ installer-preview-netboot-body = Gib ihm einen Befehl, sobald es läuft; es inst
 installer-preview-alongside-title = Neben seinem Linux
 
 installer-preview-alongside-body = Führe einen Befehl in dem Linux aus, das schon darauf läuft. Dieses System bleibt erhalten und startet zuerst.
-
-installer-preview-name-heading = Sein Name
-
-installer-preview-name-use-body = Der Name, den du auf den Einrichtungsseiten eingegeben hast.
 
 installer-preview-name-open-title = Bei der Installation fragen
 
@@ -882,6 +900,8 @@ installer-preview-password-repetitive = Vermeide wiederholte Zeichen oder Muster
 installer-preview-password-invalid = Wähle ein anderes Passwort.
 installer-preview-password-mismatch = Die Passwörter stimmen nicht überein.
 installer-preview-deferred-handoff = Deine Identität, Anmeldungen und Dateien werden auf dem Zielcomputer abgeschlossen, nachdem dort beim ersten Start das Anmeldepasswort festgelegt wurde.
+
+installer-preview-deferred-handoff-server = Deine Identität und Anmeldungen werden auf dem Server abgeschlossen, nachdem er installiert ist. Ein Server hat kein Anmeldepasswort.
 installer-source-handoff-waiting = Lass diesen Computer eingeschaltet. Er sendet deine Daten an den anderen Computer, nachdem du jenen Computer hier zugelassen hast.
 installer-source-handoff-requested = { $name } fragt nach deinen Daten. Vergleiche den Code { $code }, der auf jenem Computer angezeigt wird, und lass ihn dann zu.
 installer-source-handoff-join-requested = { $name } ist neu und möchte deiner Identität beitreten, bevor er deine Daten erhält. Vergleiche den Code { $code }, der auf jenem Computer angezeigt wird, und lass ihn dann zu.

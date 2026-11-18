@@ -29,6 +29,42 @@ const FIELD_IDS: [(&str, &str); 5] = [
     ("sku", "installer.target.sku"),
 ];
 
+/// The manufacturer and model a report names, when it names both.
+fn model_label(report: &SupportReport) -> Option<String> {
+    let manufacturer = report
+        .identity
+        .manufacturer
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let model = report
+        .identity
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match (manufacturer, model) {
+        (Some(manufacturer), Some(model)) => {
+            let label = format!("{manufacturer} {model}");
+            match report
+                .identity
+                .variant
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                Some(variant) => Some(t_args(
+                    "installer-hardware-model-with-variant",
+                    &[("model", label.into()), ("variant", variant.into())],
+                )),
+                None => Some(label),
+            }
+        }
+        (Some(value), None) | (None, Some(value)) => Some(value.to_string()),
+        (None, None) => None,
+    }
+}
+
 pub(super) struct Target {
     manufacturer: ui::LocalState<String>,
     model: ui::LocalState<String>,
@@ -326,62 +362,47 @@ impl Target {
             .map(|(_, id)| (*id).to_string())
     }
 
-    pub(super) fn review_title(&self) -> String {
-        let Some(report) = self.effective_report() else {
-            return t("installer-preview-target-unidentified");
-        };
-        let manufacturer = report
-            .identity
-            .manufacturer
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let model = report
-            .identity
-            .model
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        match (manufacturer, model) {
-            (Some(manufacturer), Some(model)) => {
-                let label = format!("{manufacturer} {model}");
-                match report
-                    .identity
-                    .variant
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                {
-                    Some(variant) => t_args(
-                        "installer-hardware-model-with-variant",
-                        &[("model", label.into()), ("variant", variant.into())],
-                    ),
-                    None => label,
-                }
-            }
-            (Some(value), None) | (None, Some(value)) => value.to_string(),
-            (None, None) => t("installer-preview-target-unidentified"),
-        }
+    /// The name a plan suggests for that computer: the model the person named,
+    /// or nothing when they named none, so the plan leaves the name to the
+    /// computer.
+    pub(super) fn suggested_name(&self) -> String {
+        let report = self.effective_report();
+        let label = report.as_ref().and_then(model_label);
+        label.map_or_else(String::new, |label| {
+            label.chars().take(64).collect::<String>().trim().to_owned()
+        })
     }
 
-    pub(super) fn review_summary(&self) -> String {
+    /// What the plan says about that computer's hardware: what the person
+    /// named or reported, and that the computer checks it when it installs.
+    pub(super) fn review_plan_summary(&self) -> String {
         if let Some(report) = &self.report {
-            return if report.blocks_install() {
-                t("installer-preview-target-review-blocking")
-            } else {
-                let summary = report.summary();
-                t_args(
-                    "installer-preview-target-review-imported",
-                    &[
-                        ("supported", summary.supported.into()),
-                        ("limited", summary.limited.into()),
-                        ("unsupported", summary.unsupported.into()),
-                        ("unverified", summary.unverified.into()),
-                    ],
-                )
+            if report.blocks_install() {
+                return t("installer-preview-target-review-blocking");
+            }
+            let summary = report.summary();
+            let counts = [
+                ("supported", summary.supported.into()),
+                ("limited", summary.limited.into()),
+                ("unsupported", summary.unsupported.into()),
+                ("unverified", summary.unverified.into()),
+            ];
+            return match model_label(report) {
+                Some(model) => {
+                    let mut arguments = vec![("model", model.into())];
+                    arguments.extend(counts);
+                    t_args("installer-preview-target-review-imported", &arguments)
+                }
+                None => t_args("installer-preview-target-review-imported-unnamed", &counts),
             };
         }
-        t("installer-preview-target-review-declared")
+        match self.declared().as_ref().and_then(model_label) {
+            Some(model) => t_args(
+                "installer-preview-target-review-named",
+                &[("model", model.into())],
+            ),
+            None => t("installer-preview-target-review-nameless"),
+        }
     }
 
     pub(super) fn projection(&self) -> serde_json::Value {

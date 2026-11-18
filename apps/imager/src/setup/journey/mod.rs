@@ -39,6 +39,7 @@ mod pairing;
 #[cfg(test)]
 mod password_validation_tests;
 pub(in crate::setup) mod personal;
+mod plan_view;
 #[path = "portable_source/presentation.rs"]
 pub(crate) mod portable_source;
 #[cfg(target_os = "linux")]
@@ -1171,6 +1172,7 @@ impl InstallerPreview {
             }
             "set-preview-device-name" => {
                 page == Page::Devices
+                    || page == Page::Machine
                     || (page == Page::Connect && self.journey.transfer.as_deref() == Some("device"))
             }
             "set-target-identity-field"
@@ -2024,9 +2026,19 @@ impl InstallerPreview {
                 self.journey.choose(&choice, self.linux)?;
                 if page == Page::Destination
                     && self.journey.destination != Some(Destination::Desktop)
+                    && self.journey.destination != Some(Destination::Another)
                     && self.journey.device_name.is_empty()
                 {
                     self.journey.device_name = t("installer-preview-device-default");
+                }
+                if page == Page::Destination
+                    && choice == "another"
+                    && self.journey.destination == Some(Destination::Another)
+                {
+                    // The name entered so far belongs to this computer; the
+                    // other computer gets a name of its own.
+                    self.journey.device_name.clear();
+                    self.field_values[1].set(String::new());
                 }
                 if choice == "fresh" && !choices_edit {
                     self.belongings.sessions.clear();
@@ -2923,6 +2935,7 @@ impl InstallerPreview {
             }
             InstallerPreviewEffect::SetPreviewDeviceName { value }
                 if page == Page::Devices
+                    || page == Page::Machine
                     || (page == Page::Connect
                         && self.journey.transfer.as_deref() == Some("device")) =>
             {
@@ -2934,6 +2947,7 @@ impl InstallerPreview {
                 }
                 self.field_values[1].set(value.clone());
                 self.journey.device_name = value;
+                self.plan_names_the_computer();
                 if self.live
                     && !choices_edit
                     && let Some(prepared) = self.personal.prepared_handle()
@@ -3319,6 +3333,10 @@ impl InstallerPreview {
     fn your_data(&self) -> your_data::Inventory {
         let mut sources = Vec::new();
         let desktop = self.journey.destination == Some(Destination::Desktop);
+        // A server takes files and folders from this desktop; desktop apps,
+        // browser profiles and sign-ins stay here.
+        let server = self.journey.destination == Some(Destination::Another)
+            && self.journey.plan.os() == machine::Os::TiloServer;
         let checking = self.belongings_worker.is_some();
         if !desktop {
             let windows = self.belongings.windows.is_some();
@@ -3348,9 +3366,13 @@ impl InstallerPreview {
                     note: files_note,
                 },
             ));
-            let apps = self.flatpak_apps();
+            let apps = if server {
+                Vec::new()
+            } else {
+                self.flatpak_apps()
+            };
             let apps_available = !apps.is_empty();
-            if apps_available || self.belongings.flatpak_unavailable {
+            if apps_available || (self.belongings.flatpak_unavailable && !server) {
                 let items = apps
                     .iter()
                     .enumerate()
@@ -3389,16 +3411,26 @@ impl InstallerPreview {
                     included: apps_available && self.journey.categories[1],
                 });
             }
-            sources.extend(your_data::browser_sources(&self.belongings));
+            if !server {
+                sources.extend(your_data::browser_sources(&self.belongings));
+            }
         }
-        let accounts_included = self.journey.migrate == Some(true) && self.journey.categories[2];
-        sources.extend(your_data::account_sources(
-            &self.belongings.accounts,
-            self.accounts.source_account_selection(),
-            accounts_included,
-        ));
-        let mail = your_data::mail_sources(&self.belongings);
-        let has_mail = !mail.is_empty();
+        if !server {
+            let accounts_included =
+                self.journey.migrate == Some(true) && self.journey.categories[2];
+            sources.extend(your_data::account_sources(
+                &self.belongings.accounts,
+                self.accounts.source_account_selection(),
+                accounts_included,
+            ));
+        }
+        let (has_mail, mail) = if server {
+            (true, Vec::new())
+        } else {
+            let mail = your_data::mail_sources(&self.belongings);
+            let has_mail = !mail.is_empty();
+            (has_mail, mail)
+        };
         sources.extend(mail);
         let installed = |id: &str| {
             self.belongings.flatpak.as_ref().is_some_and(|inventory| {
@@ -3430,7 +3462,7 @@ impl InstallerPreview {
                 )
             })
         });
-        if !tree_has_steam && installed("com.valvesoftware.Steam") {
+        if !server && !tree_has_steam && installed("com.valvesoftware.Steam") {
             sources.push(your_data::Source {
                 id: "steam".into(),
                 test_id: "installer.your-data.steam".into(),
@@ -3930,8 +3962,24 @@ impl InstallerPreview {
         Ok(())
     }
 
+    /// The plan carries the computer's name only when one is named: an empty
+    /// name leaves it for the computer to answer when it installs.
+    fn plan_names_the_computer(&mut self) {
+        if self.journey.destination == Some(Destination::Another) {
+            self.journey.plan.name_open = self.journey.device_name.trim().is_empty();
+        }
+    }
+
     fn category_available(&self, index: usize) -> bool {
         if index < 2 && self.journey.destination == Some(Destination::Desktop) {
+            return false;
+        }
+        if index > 0
+            && self.journey.destination == Some(Destination::Another)
+            && self.journey.plan.os() == machine::Os::TiloServer
+        {
+            // A server takes files from this computer, never its desktop apps
+            // or its sign-ins.
             return false;
         }
         if !self.live || self.belongings_worker.is_some() {
@@ -3945,7 +3993,7 @@ impl InstallerPreview {
     }
 
     fn reconcile_categories(&mut self) {
-        for index in 0..2 {
+        for index in 0..3 {
             if !self.category_available(index) {
                 self.journey.categories[index] = false;
             }
@@ -4676,16 +4724,6 @@ impl InstallerPreview {
     }
 
     fn review_device_row(&self) -> ListRow {
-        if self.journey.destination == Some(Destination::Another) && self.journey.plan.name_open {
-            return self
-                .review_selection_row(
-                    "devices",
-                    "machine",
-                    t("installer-preview-name-open-title"),
-                    t("installer-preview-name-open-body"),
-                )
-                .icon(Icon::Monitor);
-        }
         if self.device_label_locked() {
             ListRow::new("installer.review.devices", self.journey.device_name.clone())
                 .secondary(t(
@@ -4740,113 +4778,6 @@ impl InstallerPreview {
         {
             false
         }
-    }
-
-    /// One of the plan's choices as the review shows it: what the row is
-    /// about, and the value it takes, or that the computer answers it when it
-    /// installs.
-    fn plan_review_row(
-        &self,
-        id: &str,
-        section: &str,
-        label: &str,
-        chosen: Option<&str>,
-        open: &str,
-    ) -> ListRow {
-        let value = chosen.unwrap_or(open);
-        self.review_selection_row(
-            id,
-            section,
-            t(&format!("installer-preview-{label}-heading")),
-            t(&format!("installer-preview-{value}-title")),
-        )
-    }
-
-    /// What the plan decides for the other computer, in the values it takes.
-    fn plan_review_rows(&self) -> ui::widget::Column {
-        use machine::{Disks, Hosting, Unlock, Updates};
-        let plan = &self.journey.plan;
-        let mut rows = page::related();
-        let os = plan.os();
-        rows = rows.push(Box::new(
-            self.plan_review_row(
-                "plan-os",
-                "destination",
-                "plan-os",
-                Some(os.key()),
-                os.key(),
-            )
-            .icon(Icon::Monitor),
-        ));
-        let disk = plan.disk.map(|disk| match disk {
-            Disks::Largest => "disk-largest",
-            Disks::Empty => "disk-empty",
-            Disks::Only => "disk-only",
-        });
-        rows = rows.push(Box::new(
-            self.plan_review_row("plan-disk", "storage", "disk", disk, "disk-open")
-                .icon(Icon::HardDrive),
-        ));
-        let unlock = plan.unlock.map(|unlock| match unlock {
-            Unlock::Hardware => "unlock-tpm",
-            Unlock::OwnerDevice => "unlock-owner-device",
-            Unlock::Passphrase => "unlock-passphrase",
-        });
-        let updates = plan.updates.map(|updates| match updates {
-            Updates::Stable => "updates-stable",
-            Updates::Development => "updates-dev",
-        });
-        let hosting = (plan.hosting == Some(Hosting::HoldsNone)).then_some("hosting-none");
-        for (id, label, chosen, open, icon) in [
-            (
-                "plan-network",
-                "network",
-                plan.network.map(|_| "network-dhcp"),
-                "network-open",
-                Icon::EthernetPort,
-            ),
-            ("plan-unlock", "unlock", unlock, "unlock-open", Icon::Lock),
-            (
-                "plan-updates",
-                "updates",
-                updates,
-                "updates-open",
-                Icon::Refresh,
-            ),
-        ] {
-            rows = rows.push(Box::new(
-                self.plan_review_row(id, "machine", label, chosen, open)
-                    .icon(icon),
-            ));
-        }
-        if plan.os() == machine::Os::TiloServer {
-            rows = rows.push(Box::new(
-                self.plan_review_row(
-                    "plan-hosting",
-                    "machine",
-                    "hosting",
-                    hosting,
-                    "hosting-open",
-                )
-                .icon(Icon::Layers),
-            ));
-        }
-        let delivery = plan.delivery.key();
-        rows = rows.push(Box::new(
-            self.plan_review_row(
-                "plan-delivery",
-                "machine",
-                "delivery",
-                Some(delivery),
-                delivery,
-            )
-            .icon(match plan.delivery {
-                machine::Delivery::Usb => Icon::Usb,
-                machine::Delivery::Netboot => Icon::Terminal,
-                machine::Delivery::Alongside => Icon::Disc3,
-            }),
-        ));
-        rows
     }
 
     fn make_plan(&mut self) -> Result<(), &'static str> {
@@ -4932,6 +4863,14 @@ impl InstallerPreview {
                 self.journey.history.pop();
             }
         }
+        if self.journey.page == Page::Devices
+            && self.journey.destination == Some(Destination::Another)
+            && self.journey.device_name.trim().is_empty()
+        {
+            self.journey.device_name = self.target.suggested_name();
+            self.field_values[1].set(self.journey.device_name.clone());
+        }
+        self.plan_names_the_computer();
         if self.live
             && !self.sensitive_handoff_deferred()
             && self.journey.destination == Some(Destination::Computer)
@@ -4986,13 +4925,19 @@ impl InstallerPreview {
     }
 
     fn choice(&self, key: &str, selected: bool) -> Card {
-        self.option_card(key, selected, true)
+        self.option_card(key, selected)
     }
 
     /// `key` as a choice of this page that the person confirms and continues
-    /// from, or one this page takes now ([`Self::select`]).
-    fn option_card(&self, key: &str, selected: bool, continues: bool) -> Card {
-        let title = t(&format!("installer-preview-{key}-title"));
+    /// from.
+    fn option_card(&self, key: &str, selected: bool) -> Card {
+        let server = self.journey.destination == Some(Destination::Another)
+            && self.journey.plan.os() == machine::Os::TiloServer;
+        let title = if server && key == "migrate" {
+            t("installer-preview-migrate-server-title")
+        } else {
+            t(&format!("installer-preview-{key}-title"))
+        };
         let description = if key == "computer" && self.live && self.windows.enabled {
             t(if self.direct_route_enabled() {
                 "installer-native-full-os-body"
@@ -5003,14 +4948,24 @@ impl InstallerPreview {
             t("installer-preview-computer-usb-body")
         } else if key == "migrate" && self.journey.destination == Some(Destination::Computer) {
             t("installer-preview-migrate-shared-body")
+        } else if key == "migrate"
+            && self.journey.destination == Some(Destination::Another)
+            && self.journey.plan.os() == machine::Os::TiloServer
+        {
+            t("installer-preview-migrate-server-body")
         } else if key == "migrate" && self.journey.destination == Some(Destination::Another) {
             t("installer-preview-migrate-portable-body")
+        } else if key == "fresh"
+            && self.journey.destination == Some(Destination::Another)
+            && self.journey.plan.os() == machine::Os::TiloServer
+        {
+            t("installer-preview-fresh-server-body")
         } else if key == "device" && self.live && !cfg!(target_os = "linux") {
             t("installer-pairing-helper-unavailable")
         } else {
             t(&format!("installer-preview-{key}-body"))
         };
-        self.labelled_option(key, title, description, selected, continues)
+        self.labelled_option(key, title, description, selected)
     }
 
     /// One option with words of its own: a value the person typed, or a name
@@ -5021,7 +4976,6 @@ impl InstallerPreview {
         title: String,
         description: String,
         selected: bool,
-        continues: bool,
     ) -> Card {
         let choice = key.strip_prefix("purpose-").unwrap_or(key).to_string();
         let icon = match key {
@@ -5032,15 +4986,6 @@ impl InstallerPreview {
             "fresh" => Icon::Sparkles,
             "new" => Icon::User,
             "existing" => Icon::Users,
-            "disk-empty" | "disk-largest" | "disk-only" => Icon::HardDrive,
-            "disk-open" => Icon::ScanLine,
-            _ if key.starts_with("usb") => Icon::Usb,
-            _ if key.starts_with("netboot") => Icon::Terminal,
-            _ if key.starts_with("alongside") => Icon::Disc3,
-            _ if key.starts_with("unlock") => Icon::Lock,
-            _ if key.starts_with("updates") => Icon::Refresh,
-            _ if key.starts_with("network") => Icon::EthernetPort,
-            _ if key.starts_with("hosting") => Icon::Layers,
             _ => Icon::Shield,
         };
         let copy = page::related()
@@ -5063,11 +5008,7 @@ impl InstallerPreview {
         let card = Card::new(Box::new(contents))
             .with_accessible_name(format!("{title}. {description}"))
             .selected(selected);
-        let effect = if continues {
-            InstallerPreviewEffect::ChooseAndContinuePreview { choice }
-        } else {
-            InstallerPreviewEffect::ChoosePreview { choice }
-        };
+        let effect = InstallerPreviewEffect::ChooseAndContinuePreview { choice };
         match self
             .actions
             .as_ref()
@@ -5076,17 +5017,6 @@ impl InstallerPreview {
             Some(binding) => card.on_action(format!("installer.choice.{key}"), binding),
             None => card,
         }
-    }
-
-    /// `key` as one of this page's choices, taken now: this page keeps
-    /// showing while the person sets the rest.
-    fn select(&self, key: &str, selected: bool) -> Card {
-        self.option_card(key, selected, false)
-    }
-
-    /// `key` as one of this page's choices, taken now, with words of its own.
-    fn select_named(&self, key: &str, title: String, description: String, selected: bool) -> Card {
-        self.labelled_option(key, title, description, selected, false)
     }
 
     fn track_password_focus(&mut self) -> bool {
@@ -6240,7 +6170,10 @@ mod tests {
         }
         // The path to another computer chooses its drive and how the plan
         // reaches it before the review.
-        while matches!(status(app)["page"].as_str(), Some("storage" | "method")) {
+        while matches!(
+            status(app)["page"].as_str(),
+            Some("storage" | "method" | "machine")
+        ) {
             app.effect(&InstallerPreviewEffect::ContinuePreview)
                 .unwrap();
         }
@@ -6281,10 +6214,10 @@ mod tests {
     /// Continue through the pages an "on another computer" plan still has
     /// before the review.
     fn to_review(app: &mut TestApp<ImagerShell>) {
-        for _ in 0..3 {
+        for _ in 0..4 {
             match status(app)["page"].as_str() {
                 Some("review") => return,
-                Some("storage" | "method") => {
+                Some("storage" | "method" | "machine") => {
                     app.effect(&InstallerPreviewEffect::ContinuePreview)
                         .unwrap();
                 }
@@ -7176,7 +7109,10 @@ mod tests {
                 assert_eq!(snapshot["portable_preparation"]["prepared"], true);
                 break;
             }
-            if matches!(snapshot["page"].as_str(), Some("storage" | "method")) {
+            if matches!(
+                snapshot["page"].as_str(),
+                Some("storage" | "method" | "machine")
+            ) {
                 app.effect(&InstallerPreviewEffect::ContinuePreview)
                     .unwrap();
                 continue;
@@ -9592,7 +9528,10 @@ mod tests {
         loop {
             let snapshot = status(&mut app);
             if snapshot["portable_preparation"]["prepared"] == true {
-                if matches!(snapshot["page"].as_str(), Some("storage" | "method")) {
+                if matches!(
+                    snapshot["page"].as_str(),
+                    Some("storage" | "method" | "machine")
+                ) {
                     to_review(&mut app);
                 }
                 assert_eq!(status(&mut app)["page"], "review");
@@ -10686,7 +10625,7 @@ mod tests {
                 .unwrap();
             assert_eq!(status(&mut app)["page"], "purpose");
             choose(&mut app, "computer");
-            if matches!(status(&mut app)["page"].as_str(), Some("storage" | "method")) {
+            if matches!(status(&mut app)["page"].as_str(), Some("storage" | "method" | "machine")) {
                 to_review(&mut app);
             }
             let original = status(&mut app);
@@ -11336,7 +11275,7 @@ mod tests {
                 .unwrap();
             assert_eq!(status(&mut app)["page"], "purpose");
             choose(&mut app, "computer");
-            while matches!(status(&mut app)["page"].as_str(), Some("storage" | "method")) {
+            while matches!(status(&mut app)["page"].as_str(), Some("storage" | "method" | "machine")) {
                 if status(&mut app)["page"] == "storage" {
                     assert!(catalog_availability(&mut app, "set-storage-size").is_available());
                 }
@@ -11683,7 +11622,7 @@ mod tests {
         let before_review = if !retained {
             Page::Devices
         } else if plans_another {
-            Page::Method
+            Page::Machine
         } else {
             Page::Purpose
         };

@@ -104,6 +104,9 @@ fn the_delivery_choice_is_the_persons_and_does_not_continue() {
     journey.choose("netboot", true).unwrap();
     assert_eq!(journey.plan.delivery, machine::Delivery::Netboot);
     assert_eq!(journey.page, Page::Method, "a choice here does not advance");
+    journey.next().unwrap();
+    assert_eq!(journey.page, Page::Machine);
+    journey.page = Page::Machine;
     journey.choose("network-open", true).unwrap();
     assert!(journey.plan.network.is_none());
     journey.next().unwrap();
@@ -128,25 +131,17 @@ fn a_draft_keeps_what_the_plan_decides_and_what_it_asks() {
 #[test]
 fn the_plan_screens_paint_at_desktop_and_narrow_widths() {
     for (scenario, ids) in [
+        ("installer-plan-os", &["installer.plan.os"][..]),
+        ("installer-disk", &["installer.plan.disk"][..]),
+        ("installer-method", &["installer.plan.delivery"][..]),
         (
-            "installer-plan-os",
-            &["installer.choice.os", "installer.choice.server"][..],
-        ),
-        (
-            "installer-disk",
+            "installer-machine",
             &[
-                "installer.choice.disk-largest",
-                "installer.choice.disk-empty",
-                "installer.choice.disk-only",
-                "installer.choice.disk-open",
-            ][..],
-        ),
-        (
-            "installer-method",
-            &[
-                "installer.choice.netboot",
-                "installer.choice.unlock-tpm",
-                "installer.choice.hosting-none",
+                "installer.plan.network",
+                "installer.plan.unlock",
+                "installer.plan.updates",
+                "installer.plan.hosting",
+                "installer.device-name",
             ][..],
         ),
         (
@@ -196,6 +191,55 @@ tilo_test_env::scenario! {
             assert!(
                 visual_tests::control(preview, "installer.review.plan-hosting").is_some(),
                 "a server's review shows what it holds"
+            );
+            let name = visual_tests::control(preview, "installer.review.plan-name")
+                .expect("the review shows the computer's name row")
+                .accessibility()
+                .expect("the name row is readable");
+            assert_eq!(
+                name.name.as_deref(),
+                Some(t("installer-preview-device-name-label").as_str()),
+                "the name row says what it is"
+            );
+            assert!(
+                name.value
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains(&t("installer-preview-name-open-title")),
+                "the name row says the computer answers its name: {name:?}"
+            );
+            let model = visual_tests::control(preview, "installer.review.target")
+                .expect("the review shows the model row")
+                .accessibility()
+                .expect("the model row is readable");
+            assert_eq!(
+                model.name.as_deref(),
+                Some(t("installer-preview-target-model-label").as_str())
+            );
+            assert!(
+                model
+                    .value
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains(&t("installer-preview-target-review-nameless")),
+                "the model row says its hardware is checked when it installs: {model:?}"
+            );
+            assert_eq!(
+                preview.journey.categories,
+                [true, false, false],
+                "a server takes files, never this desktop's apps or sign-ins"
+            );
+            assert!(
+                visual_tests::control(preview, "installer.review.flatpak").is_none(),
+                "a server's review never offers this desktop's apps"
+            );
+            let migration = visual_tests::control(preview, "installer.review.migration")
+                .expect("the review shows the data choice")
+                .accessibility()
+                .expect("the data row is readable");
+            assert_eq!(
+                migration.name.as_deref(),
+                Some(t("installer-preview-migrate-server-title").as_str())
             );
         })
         .unwrap();
