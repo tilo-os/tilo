@@ -43,17 +43,22 @@ pub fn pinned_ref(snapshot: &str, arch: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
-/// The one repository the guest image is published to: its scope in `/etc/containers/policy.json`
-/// requires the release key's signature, so a sibling under the same namespace is not the guest.
-const GUEST_REPOSITORY: &str = "registry.tilo.so/tilo/linux-guest";
+/// The repositories the guest image is published to: each one's scope in
+/// `/etc/containers/policy.json` requires the release key's signature, so a sibling under the
+/// same namespace is not the guest. `legacy-guest` is the name the last published image went out
+/// under; the stable release that publishes under `linux-guest` drops it.
+const GUEST_REPOSITORIES: [&str; 2] = [
+    "registry.tilo.so/tilo/linux-guest",
+    "registry.tilo.so/tilo/legacy-guest",
+];
 
-/// `registry.tilo.so/tilo/linux-guest@sha256:<64 hex>` and nothing looser.
+/// `<one of the guest repositories>@sha256:<64 hex>` and nothing looser.
 #[must_use]
 pub fn valid_pinned_ref(reference: &str) -> bool {
     let Some((repository, digest)) = reference.split_once("@sha256:") else {
         return false;
     };
-    repository == GUEST_REPOSITORY
+    GUEST_REPOSITORIES.contains(&repository)
         && digest.len() == 64
         && digest
             .bytes()
@@ -205,7 +210,10 @@ mod tests {
                     "registry.tilo.so/tilo/{sibling}@sha256:{digest}"
                 )));
             }
-            assert!(current_ref().is_none_or(|reference| valid_pinned_ref(&reference)));
+            assert!(valid_pinned_ref(&format!(
+                "registry.tilo.so/tilo/legacy-guest@sha256:{digest}"
+            )));
+            assert!(current_ref().is_some_and(|reference| valid_pinned_ref(&reference)));
         }
         {
             let reference = format!("registry.tilo.so/tilo/linux-guest@sha256:{digest}");
