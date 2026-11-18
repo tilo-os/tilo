@@ -31,6 +31,22 @@ pub const ANNOTATION_KIND: &str = "Annotations";
 /// hit never guesses at a nearby reading location.
 pub const LOCATION_KIND: &str = "Passages";
 
+/// A passage a search found, as the type its row is an item of.
+struct Passage;
+
+impl ui::tilo_resource::words::RowType for Passage {
+    const KIND: &'static str = "ebook.location";
+    const LABEL: &'static str = "Passage";
+}
+
+/// A chapter a search found, as the type its row is an item of.
+struct Chapter;
+
+impl ui::tilo_resource::words::RowType for Chapter {
+    const KIND: &'static str = "ebook.chapter";
+    const LABEL: &'static str = "Chapter";
+}
+
 /// The filter naming the book a result is in.
 pub const BOOK_FACET: &str = "book";
 /// The filter naming who wrote it.
@@ -565,17 +581,13 @@ impl BookSearch {
         chapter_data.blocks.get(block)?;
         let chapter_title = chapter_label(chapter_data, chapter);
         Some(
-            LiveRow::new(
-                id,
-                "ebook.location",
-                format!("{chapter_title} in {}", Self::book_title(book)),
-            )
-            .operation(crate::actions::open_at(
-                &book.id,
-                chapter,
-                Some(block),
-                "Open match",
-            )),
+            LiveRow::typed::<Passage>(id, format!("{chapter_title} in {}", Self::book_title(book)))
+                .operation(crate::actions::open_at(
+                    &book.id,
+                    chapter,
+                    Some(block),
+                    "Open match",
+                )),
         )
     }
 
@@ -587,7 +599,7 @@ impl BookSearch {
                 let book = self.books.get(book)?;
                 book.chapters.get(chapter)?;
                 return Some(Found::Row(
-                    LiveRow::new(id, "ebook.chapter", &entry.result.title)
+                    LiveRow::typed::<Chapter>(id, &entry.result.title)
                         .operation(crate::actions::open_at(&book.id, chapter, None, "Open")),
                 ));
             }
@@ -769,12 +781,6 @@ impl BookSearchProvider {
 
     pub(crate) fn shares_prose_index_with(&self, other: &Self) -> bool {
         self.books.shares_prose_index_with(&other.books)
-    }
-
-    /// The exact resource the hit anchored at `id` resolves to, as the
-    /// palette resolves a hit's address.
-    pub(crate) fn resolve(&self, id: &str) -> Option<LiveRow> {
-        self.books.resolve(id)
     }
 
     /// [`BookSearch::resolve_published`] for the hit anchored at `id`.
