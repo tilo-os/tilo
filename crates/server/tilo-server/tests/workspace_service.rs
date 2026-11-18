@@ -21,9 +21,6 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 use crate::common::{Hosted, TestDevice, TestUser, device_endpoint, receives, serve_on};
 use tilo_server::WorkspaceId;
 
-/// A workspace the person's devices hold on the host before any other.
-const HOME: WorkspaceId = WorkspaceId::from_u128(0x686f_6d65);
-
 /// Subscribe `client` to `workspace_id` and wait until the host lets it in.
 async fn subscribe(client: &ServerClient, workspace_id: WorkspaceId) {
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
@@ -104,15 +101,27 @@ async fn own_device_enters(
     workspace: &WorkspaceSummary,
 ) -> ServerClient {
     let session = own_session(alice, phone, hosted).await;
+    enter_on(alice, phone, &session, workspace).await;
+    session
+}
+
+/// `phone`, a device of `alice`'s own, on its `session` to her server, lists
+/// the workspaces it holds and enters `workspace` through its join.
+async fn enter_on(
+    alice: &TestUser,
+    phone: &TestDevice,
+    session: &ServerClient,
+    workspace: &WorkspaceSummary,
+) {
     let listed: Vec<WorkspaceListing> =
-        host_action(&session, LIST_WORKSPACES, serde_json::json!({})).await;
+        host_action(session, LIST_WORKSPACES, serde_json::json!({})).await;
     assert!(
         listed
             .iter()
             .any(|listed| listed.workspace == workspace.workspace)
     );
     let entered: EnteredWorkspace = host_action(
-        &session,
+        session,
         ENTER_WORKSPACE,
         serde_json::json!({ "workspace": workspace.workspace }),
     )
@@ -135,8 +144,7 @@ async fn own_device_enters(
         )
         .await
         .unwrap();
-    subscribe(&session, workspace.workspace_id).await;
-    session
+    subscribe(session, workspace.workspace_id).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -255,6 +263,9 @@ async fn an_in_process_member_shares_deltas_with_a_remote_one() {
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
     let hosted = serve_on(&alice, &laptop, tilo_server_protocol::WorkSetting::none()).await;
+    // The laptop makes the workspace, so its server holds it and the laptop
+    // governs it; the phone enters it as any other device of hers does.
+    let home = hosted.host.workspaces().create("Home").await.unwrap();
     let local = hosted
         .host
         .connect_local(
@@ -268,12 +279,11 @@ async fn an_in_process_member_shares_deltas_with_a_remote_one() {
         local.server_peer.cert, laptop.cert,
         "the host is this device"
     );
-    subscribe(&local, HOME).await;
-    let remote = own_session(&alice, &phone, &hosted).await;
-    subscribe(&remote, HOME).await;
+    subscribe(&local, home.workspace_id).await;
+    let remote = own_device_enters(&alice, &phone, &hosted, &home).await;
 
     let delta = |from: &TestDevice, at: u64, body: &[u8]| Envelope::Delta {
-        workspace_id: HOME,
+        workspace_id: home.workspace_id,
         author_device_public_key: from.device_pubkey(),
         authored_at_ns: at,
         delta: body.to_vec(),
@@ -286,7 +296,7 @@ async fn an_in_process_member_shares_deltas_with_a_remote_one() {
     assert!(
         hosted
             .host
-            .is_subscribed(HOME, &laptop.device_pubkey())
+            .is_subscribed(home.workspace_id, &laptop.device_pubkey())
             .await
     );
     drop((local, remote));
@@ -320,7 +330,7 @@ async fn a_router_built_before_any_workspace_refuses_until_its_host_is_installed
     assert!(dial().await.is_err(), "no workspace is hosted here yet");
 
     let state = tempfile::tempdir().unwrap();
-    let host = WorkspaceService::open(
+    let service = WorkspaceService::open(
         ServiceConfig::new(
             state.path().to_path_buf(),
             tilo_server_protocol::WorkSetting::none(),
@@ -336,9 +346,11 @@ async fn a_router_built_before_any_workspace_refuses_until_its_host_is_installed
     )
     .await
     .unwrap();
-    slot.install(std::sync::Arc::new(host));
+    // A workspace the laptop made is held here before any device asks for it.
+    let home = service.workspaces().create("Home").await.unwrap();
+    slot.install(std::sync::Arc::new(service));
     let session = dial().await.unwrap();
-    subscribe(&session, HOME).await;
+    enter_on(&alice, &phone, &session, &home).await;
     drop(session);
     router.shutdown().await.unwrap();
 }
