@@ -29,6 +29,8 @@ pub(crate) type SharedChat = Rc<RefCell<ChatApp>>;
 /// The chat window: the [`ChatApp`] it shares with the view.
 pub struct ChatWindow {
     chat: SharedChat,
+    /// What the window shows, as its title names it: the thread, the call or the conversation.
+    title: String,
     /// A capture's scenario, staged on the next sync.
     #[cfg(feature = "samples")]
     staged: Rc<RefCell<Option<Staged>>>,
@@ -42,6 +44,7 @@ impl ChatWindow {
     pub(crate) fn new(chat: SharedChat) -> Self {
         Self {
             chat,
+            title: String::new(),
             #[cfg(feature = "samples")]
             staged: Rc::default(),
         }
@@ -58,6 +61,14 @@ impl ChatWindow {
         let staged = Rc::clone(&self.staged);
         move |scenario| *staged.borrow_mut() = Some(Staged(scenario.map(str::to_owned)))
     }
+
+    /// Take what the chat shows as the title this window is named by.
+    fn refresh_title(&mut self) {
+        let title = self.chat.borrow().location_name();
+        if title != self.title {
+            self.title = title;
+        }
+    }
 }
 
 impl Widget for ChatWindow {
@@ -73,7 +84,8 @@ impl Widget for ChatWindow {
         dyn ui::presence::capability::PublishesPresence,
         dyn ui::application_view::ApplicationViewState,
         dyn ui::view::capability::ViewState,
-        dyn ui::semantic_document_read::SemanticReaders
+        dyn ui::semantic_document_read::SemanticReaders,
+        dyn ui::component_lifecycle::WindowTitle
     );
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -86,6 +98,7 @@ impl Widget for ChatWindow {
 
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
         self.state().settle(edits, path);
+        self.refresh_title();
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -200,6 +213,7 @@ impl Widget for ChatWindow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.refresh_title();
         self.state().draw_child(scene, tf, tr, theme, presence);
     }
 
@@ -513,5 +527,14 @@ impl ui::widget::controls::ActionControls for ChatWindow {
         // controls assistive technology names route through their own keys.
         bindings.extend(ui::widget::semantic_action_bindings(chat.accessibility()));
         bindings
+    }
+}
+
+/// The window is named by the conversation it shows, as its bar names it: the shell's tab, the
+/// switcher and assistive technology say which conversation a window of Chat is.
+impl ui::component_lifecycle::WindowTitle for ChatWindow {
+    fn window_title(&self) -> Option<&str> {
+        let title = self.title.trim();
+        (!title.is_empty()).then_some(title)
     }
 }

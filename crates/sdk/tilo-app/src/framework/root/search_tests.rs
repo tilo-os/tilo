@@ -359,6 +359,15 @@ fn a_hit_opens_the_app_at_its_anchor_and_scopes_narrow_the_search() {
     OPENED.with_borrow(|opened| {
         assert_eq!(opened.last().map(String::as_str), Some("folder:sent/msg:2"));
     });
+    // The window shows the item and comes forward with it, so the person sees where an open took
+    // them whichever window of the app answered.
+    let asked = app
+        .harness()
+        .with_widget_mut(|root: &mut ResourceRoot| {
+            ui_core::component_lifecycle::WindowActivation::take_window_activation_intent(&*root)
+        })
+        .unwrap();
+    assert!(asked, "opening an item brings the window forward");
 }
 
 /// How many indexes of its entries `app`'s resource has started.
