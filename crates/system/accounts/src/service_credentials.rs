@@ -56,6 +56,31 @@ impl ServiceAuthorization {
     }
 }
 
+/// The service a model provider's API key is bound to: the model service
+/// that sends it, on a Tilo computer and on a server alike.
+pub const MODEL_SERVICE: &str = "model-gateway";
+
+/// What a model provider's API key is kept for.
+const PROVIDER_API_KEY: &str = "provider-api-key";
+
+/// Where a model provider's API key is kept: under the provider's id
+/// (`profile_id`), bound to the model service, to being that provider's key,
+/// and to the origin of its `endpoint`. A Tilo computer and a server keep a
+/// person's keys in this one way, and a key never follows an endpoint edited
+/// to point at another origin: it is not found there, and has to be entered
+/// again.
+///
+/// # Errors
+/// The endpoint names no origin, or the id is no provider id.
+pub fn provider_api_key(
+    profile_id: &str,
+    endpoint: &str,
+) -> Result<(CredentialRef, ServiceAuthorization), BrokerError> {
+    let authorization = ServiceAuthorization::new(MODEL_SERVICE, PROVIDER_API_KEY, endpoint)?;
+    let reference = authorization.credential_ref(profile_id)?;
+    Ok((reference, authorization))
+}
+
 #[derive(Serialize, Deserialize)]
 struct Entry {
     authorization: ServiceAuthorization,

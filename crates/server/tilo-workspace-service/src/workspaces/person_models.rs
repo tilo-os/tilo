@@ -39,8 +39,8 @@ use tilo_user_identity::DeviceCert;
 
 use super::Workspaces;
 use super::person_settings::{
-    add_provider, answer, argument, credentials, key_id, provider_argument, provider_config,
-    providers, remove_key, remove_provider, save_provider_config, set_assignment, set_key, view_of,
+    ProviderKeys, add_provider, answer, argument, provider_argument, provider_config, providers,
+    remove_key, remove_provider, save_provider_config, set_assignment, set_key, view_of,
 };
 
 /// The most of a provider's list of models read.
@@ -219,7 +219,7 @@ fn add_preset(root: &Path, adding: &AddPreset) -> Result<ProviderView, String> {
         .ok_or_else(|| "That provider is not one this host adds by name".to_owned())?;
     let profile = preset.profile();
     let mut config = provider_config(root);
-    let view = view_of(&profile, &credentials(root)?);
+    let view = view_of(&profile, &ProviderKeys::of(root));
     config.profiles.push(profile);
     save_provider_config(root, &config)?;
     Ok(view)
@@ -238,15 +238,12 @@ async fn refresh_models(
         .into_iter()
         .find(|profile| profile.id == provider)
         .ok_or_else(not_kept)?;
-    let key = credentials(root)?
-        .get(&key_id(provider))
-        .map(|secret| secret.password)
-        .filter(|key| !key.is_empty());
-    let listed = match listing(&profile, key.as_deref(), reach).await {
+    let key = ProviderKeys::of(root).get(&profile)?;
+    let listed = match listing(&profile, key.as_deref().map(String::as_str), reach).await {
         Ok(listed) => listed,
         Err(problem) => {
             return Ok(ListedModels {
-                provider: view_of(&profile, &credentials(root)?),
+                provider: view_of(&profile, &ProviderKeys::of(root)),
                 problem: Some(problem),
             });
         }
@@ -265,7 +262,7 @@ async fn refresh_models(
     let kept = kept.clone();
     save_provider_config(root, &config)?;
     Ok(ListedModels {
-        provider: view_of(&kept, &credentials(root)?),
+        provider: view_of(&kept, &ProviderKeys::of(root)),
         problem: None,
     })
 }
@@ -394,7 +391,7 @@ fn add_model(root: &Path, adding: &AddModel) -> Result<ProviderView, String> {
     }
     let profile = profile.clone();
     save_provider_config(root, &config)?;
-    Ok(view_of(&profile, &credentials(root)?))
+    Ok(view_of(&profile, &ProviderKeys::of(root)))
 }
 
 fn set_default(root: &Path, choosing: &SetDefault) -> Result<ModelProviders, String> {

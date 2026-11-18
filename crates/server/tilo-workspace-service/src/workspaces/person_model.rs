@@ -38,7 +38,7 @@ use tilo_lock::RwLockRecover as _;
 use tilo_server_protocol::WorkspaceId;
 
 use super::Workspaces;
-use super::person_settings::{credentials, key_id, provider_config};
+use super::person_settings::{ProviderKeys, provider_config};
 
 #[cfg(feature = "agents")]
 mod live;
@@ -606,7 +606,7 @@ impl PersonModel {
             request,
             deadline,
             private_addresses: self.models.private_addresses.load(Ordering::Acquire),
-            key: resolved.key.as_ref().map(|secret| secret.password.as_str()),
+            key: resolved.key.as_deref().map(String::as_str),
         };
         let response = tokio::time::timeout_at(
             tokio::time::Instant::from_std(deadline),
@@ -742,7 +742,7 @@ fn may_send(
 struct Resolved {
     profile: ProviderProfile,
     model: ModelDescriptor,
-    key: Option<accounts::Secret>,
+    key: Option<zeroize::Zeroizing<String>>,
 }
 
 impl Resolved {
@@ -842,13 +842,10 @@ fn resolve(
     if profile.sign_in.is_some() {
         return Err(ModelRefusal::NoKey { provider: named() });
     }
-    let vault = credentials(root).map_err(|error| {
-        tracing::warn!(%error, "a person's vault was not opened for their model");
+    let key = ProviderKeys::of(root).get(profile).map_err(|error| {
+        tracing::warn!(%error, "a person's vault was not read for their model");
         ModelRefusal::SettingsUnreadable
     })?;
-    let key = vault
-        .get(&key_id(&profile.id))
-        .filter(|secret| !secret.password.is_empty());
     // Only a server on the operator's own network may take no key.
     if key.is_none() && public {
         return Err(ModelRefusal::NoKey { provider: named() });

@@ -1257,16 +1257,16 @@ async fn no_other_administrator_reads_a_persons_secrets() {
         .unwrap();
     assert_eq!(hers["providers"][0]["configured"], json!(true), "{hers}");
 
-    let key_id = accounts::AccountId::from(format!("provider:{provider}"));
+    let (reference, authorization) =
+        accounts::provider_api_key(&provider, "https://models.example/v1").unwrap();
     for other in [&bo, &owner] {
         reaches_none_of_hers(&host, workspace_id, other, &provider).await;
         let theirs = workspaces.person_settings_root(&other.user_public_key);
         assert!(
             !accounts::vault_dir_in(&theirs).exists()
-                || accounts::AccountCredentials::open_in(&theirs)
-                    .unwrap()
-                    .get(&key_id)
-                    .is_none(),
+                || !accounts::ServiceCredentials::open_in(&theirs)
+                    .status(&reference, &authorization)
+                    .unwrap(),
             "another person's vault holds Ada's key"
         );
     }
@@ -1275,11 +1275,11 @@ async fn no_other_administrator_reads_a_persons_secrets() {
     // its key file, and is nowhere on the host's disk in the clear.
     let own = workspaces.person_settings_root(&ada.user_public_key);
     assert!(own.ends_with(hex::encode(ada.user_public_key)));
-    let sealed = accounts::AccountCredentials::open_in(&own)
+    let sealed = accounts::ServiceCredentials::open_in(&own)
+        .resolve(&reference, &authorization)
         .unwrap()
-        .get(&key_id)
         .expect("the key is in Ada's vault");
-    assert_eq!(sealed.password, SECRET);
+    assert_eq!(sealed.as_str(), SECRET);
     let (clear, vault_files) =
         files_holding(dir.path(), SECRET.as_bytes(), &accounts::vault_dir_in(&own));
     assert!(clear.is_empty(), "Ada's key in the clear: {clear:?}");

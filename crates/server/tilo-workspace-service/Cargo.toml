@@ -22,7 +22,7 @@ agents = ["web", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:collaboratio
 web = []
 
 # A device serves its apps: their wire, launch, actions, invocation journal and consent.
-apps = ["dep:app-cli", "dep:futures", "dep:launcher", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:runtime-collab", "dep:runtime-identity", "dep:runtime-portal", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "dep:tilo-broker-core", "dep:tilo-identity", "dep:tilo-paths", "dep:tilo-rt", "dep:tilo-workspace-keys", "dep:collaboration", "dep:wire-frame", "dep:zeroize", "postcard/alloc", "tilo-files/json"]
+apps = ["dep:app-cli", "dep:futures", "dep:launcher", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:runtime-collab", "dep:runtime-identity", "dep:runtime-portal", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "dep:tilo-broker-core", "dep:tilo-identity", "dep:tilo-paths", "dep:tilo-rt", "dep:tilo-workspace-keys", "dep:collaboration", "dep:wire-frame", "postcard/alloc", "tilo-files/json"]
 
 [dependencies]
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
@@ -84,7 +84,7 @@ collaboration = { version = "0.1.0", path = "../../collab/collaboration", option
 tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 
 # The apps a device serves ([features] apps).
-zeroize = { workspace = true, optional = true }
+zeroize.workspace = true
 runtime-portal = { path = "../../runtime/runtime-portal", optional = true }
 tilo-paths = { workspace = true, optional = true }
 tilo-advisory-lock = { path = "../../system/advisory-lock", optional = true }

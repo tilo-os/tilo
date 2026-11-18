@@ -28,8 +28,8 @@ use profile_cache::{PLAN_PROFILES, PROFILE_REUSE, ProfileSources};
 
 use crate::{
     EVENT_TOOL_CALL, EVENT_TOOL_CALL_DELTA, FRAMING, FaceImage, Frame, MAX_DELTA_EVENTS,
-    MAX_STREAM_EVENTS, PlanTrace, RPC_VERSION, Request, Response, SERVICE_NAME, TraceEvent,
-    VisionImage, is_pinned_revision, is_supervised_loopback,
+    MAX_STREAM_EVENTS, PlanTrace, RPC_VERSION, Request, Response, TraceEvent, VisionImage,
+    is_pinned_revision, is_supervised_loopback,
 };
 #[cfg(test)]
 use crate::{read_frame, write_frame};
@@ -955,13 +955,8 @@ fn rejected(error: &str) -> Response {
 fn credential_binding(
     profile: &ProviderProfile,
 ) -> Result<(CredentialRef, ServiceAuthorization), String> {
-    let authorization =
-        ServiceAuthorization::new(SERVICE_NAME, "provider-api-key", &profile.endpoint)
-            .map_err(|_| "invalid provider credential origin".to_string())?;
-    let reference = authorization
-        .credential_ref(&profile.id)
-        .map_err(|_| "invalid provider profile id".to_string())?;
-    Ok((reference, authorization))
+    accounts::provider_api_key(&profile.id, &profile.endpoint)
+        .map_err(|_| "invalid provider credential origin or profile id".to_string())
 }
 
 fn credential_error(error: &accounts::secrets::BrokerError) -> String {
@@ -982,18 +977,13 @@ fn resolve_key_in(
     store: &ServiceCredentials,
     profile: &ProviderProfile,
 ) -> Result<Zeroizing<String>, ModelError> {
-    let authorization =
-        ServiceAuthorization::new(SERVICE_NAME, "provider-api-key", &profile.endpoint).map_err(
-            |_| {
-                resolution_error(
-                    ErrorKind::InvalidRequest,
-                    "invalid provider credential origin",
-                )
-            },
-        )?;
-    let reference = authorization
-        .credential_ref(&profile.id)
-        .map_err(|_| resolution_error(ErrorKind::InvalidRequest, "invalid provider profile id"))?;
+    let (reference, authorization) = accounts::provider_api_key(&profile.id, &profile.endpoint)
+        .map_err(|_| {
+            resolution_error(
+                ErrorKind::InvalidRequest,
+                "invalid provider credential origin or profile id",
+            )
+        })?;
     if let Some(key) = store
         .resolve(&reference, &authorization)
         .map_err(|error| credential_model_error(&error))?
