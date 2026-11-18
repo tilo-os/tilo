@@ -77,6 +77,9 @@ public enum Measure {
     public static let columnGutter: CGFloat = 24
     /// What stays free under a conversation's last piece: `.col`'s `padding-bottom`.
     public static let columnFoot: CGFloat = 14
+    /// How much of what shows of a conversation the opened steps of its turn may take before they
+    /// scroll in a part of their own: what stood above the turn's line stays in sight.
+    public static let stepsShare: CGFloat = 1 / 3
     /// How deep a conversation's ends fade into the ground where pieces scroll out: as deep as
     /// what stays free under the last piece, so nothing that is at rest stands under a fade.
     public static let edgeFade: CGFloat = columnFoot
