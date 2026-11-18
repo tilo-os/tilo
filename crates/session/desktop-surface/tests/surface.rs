@@ -1175,8 +1175,22 @@ fn resting_on_the_window_bars_magnifier_shows_what_it_searches() {
 /// come and show the tooltip at rest. Past the dwell only the schedule's
 /// demand brings a frame, so no unrelated deadline (the bar's clock) can
 /// stand in for it.
+///
+/// The test steps the page's clock itself, so the frames come that far
+/// apart however fast the machine running it is.
 #[test]
 fn a_page_shows_the_tooltip_driving_frames_by_its_schedule() {
+    /// How far the clock moves between two frames of a slow machine.
+    const SLOW_FRAME: Duration = Duration::from_millis(600);
+    /// Enough frames for the dwell and the arrival, and a stop for one that
+    /// never shows.
+    const MAX_FRAMES: usize = 32;
+
+    /// The tooltip's words, when the page draws one.
+    fn shown(driver: &ui::headless::FrameHarness) -> Option<&str> {
+        driver.drawn_tooltip().map(|(text, _)| text)
+    }
+
     let (mut driver, _handle, _) = mount_apps(&["A"]);
     driver.set_platform_conventions(ui::platform::PlatformConventions::new(
         ui::platform::Platform::Linux,
@@ -1189,33 +1203,45 @@ fn a_page_shows_the_tooltip_driving_frames_by_its_schedule() {
         magnifier[0] + magnifier[2] / 2.0,
         magnifier[1] + magnifier[3] / 2.0,
     );
-    driver.send_host_event(&ui::synthetic_input::cursor_moved(x, y));
-    let _ = driver.poll_frame();
-    let revealed = ui::time::now() + ui::widget::tooltip::HOVER_DWELL;
-    let end = ui::time::now() + Duration::from_secs(5);
-    let mut frames = Vec::new();
-    while ui::time::now() < end && driver.drawn_tooltip().is_none() {
-        let schedule = driver.frame_schedule();
-        let now = ui::time::now();
-        let past_dwell = frames.iter().any(|&(at, _)| at >= revealed);
-        let due = !past_dwell && schedule.next_wake_deadline.is_some_and(|at| at <= now);
+    let mut at = ui::time::now();
+    ui::time::testing::with_monotonic_time(at, || {
+        driver.send_host_event(&ui::synthetic_input::cursor_moved(x, y));
+        let _ = driver.poll_frame();
+    });
+    let revealed = at + ui::widget::tooltip::HOVER_DWELL;
+    let mut frames = 0;
+    // Whether a frame has come at or past the dwell: from then on only the
+    // schedule's own demand brings one.
+    let mut drawn_after_dwell = false;
+    while ui::time::testing::with_monotonic_time(at, || shown(&driver)).is_none() {
+        assert!(
+            frames < MAX_FRAMES,
+            "nothing shows the tooltip in {MAX_FRAMES} frames"
+        );
+        let schedule = ui::time::testing::with_monotonic_time(at, || driver.frame_schedule());
+        let due = !drawn_after_dwell
+            && schedule
+                .next_wake_deadline
+                .is_some_and(|deadline| deadline <= at);
         if schedule.needs_animation_frame || schedule.queued_work || due {
-            frames.push((now, driver.poll_frame().expect("the frame lays out")));
-            std::thread::sleep(Duration::from_millis(600));
-        } else if let Some(at) = schedule.next_wake_deadline.filter(|_| !past_dwell) {
-            std::thread::sleep(at.saturating_duration_since(now));
+            ui::time::testing::with_monotonic_time(at, || {
+                let _ = driver.poll_frame().expect("the frame lays out");
+            });
+            frames += 1;
+            drawn_after_dwell = drawn_after_dwell || at >= revealed;
+            at = at.checked_add(SLOW_FRAME).expect("a page's clock");
+        } else if let Some(deadline) = schedule.next_wake_deadline.filter(|_| !drawn_after_dwell) {
+            at = deadline.max(at);
         } else {
-            panic!(
-                "nothing asks for a frame after {} frames: the tooltip stays unshown",
-                frames.len()
-            );
+            panic!("nothing asks for a frame after {frames} frames: the tooltip stays unshown");
         }
     }
+    let shown_at_rest =
+        ui::time::testing::with_monotonic_time(at, || shown(&driver).map(str::to_owned));
     assert_eq!(
-        driver.drawn_tooltip().map(|(text, _)| text),
+        shown_at_rest.as_deref(),
         Some("Search in this window (Ctrl+F)"),
-        "after {} frames",
-        frames.len()
+        "after {frames} frames"
     );
 }
 
