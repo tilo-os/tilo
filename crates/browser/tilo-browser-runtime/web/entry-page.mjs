@@ -840,7 +840,7 @@ export async function startEntryPage({mode}) {
     if (root.arrival === 'done' && step !== 'stopped') return;
     // A page that cannot go on has no workspace to set an agent up in: the
     // first screen says so rather than wait.
-    if (step === 'stopped') firstRun?.unavailable({code: 'refused'});
+    if (step === 'stopped') firstRun?.unavailable({code: 'stopped'});
     root.arrival = step;
     if (notes[step] && [loading, opening, drawing].includes(status.textContent)) status.textContent = notes[step];
   };
@@ -2248,7 +2248,7 @@ function offerFirstRun({page, identityActions, runtime}) {
   if (identityActions) firstRun.offerSignIn(() => identityActions.signIn());
   const identity = currentIdentity();
   if (!peer?.origin || !peer.workspace || !identity || peer.userPublicKey !== identity.userPublicKey) {
-    if (!firstRunCodesOffered) firstRun.unavailable({code: 'no-workspace'});
+    if (!firstRunCodesOffered) firstRun.unavailable({code: 'no-codes'});
     return;
   }
   offerFirstRunCodes({origin: peer.origin, identity, runtime, link: page.link});
@@ -2365,7 +2365,7 @@ function connectAnAgent({origin, identity, runtime, link, workspace = null}) {
   const run = openFirstRun(document);
   if (!run) return false;
   if (!origin || !runtime?.createLoginCode) {
-    run.unavailable({code: 'no-workspace'});
+    run.unavailable({code: 'no-codes'});
     return true;
   }
   const {make, resume} = agentSetupCodes({origin, identity, runtime, link, workspace});
