@@ -864,15 +864,24 @@ impl NavList {
     }
 
     #[must_use]
-    pub fn with_id(mut self, id: impl Into<String>) -> Self {
-        let id = id.into();
+    pub fn with_id(self, id: impl Into<String>) -> Self {
+        self.identified(id.into())
+    }
+
+    #[inline(never)]
+    fn identified(mut self, id: String) -> Self {
         self.list = Box::new(self.list.with_id(id.clone()));
         self.key = id;
         self
     }
 
     #[must_use]
-    pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
+    pub fn with_accessible_name(self, name: impl Into<String>) -> Self {
+        self.named(name.into())
+    }
+
+    #[inline(never)]
+    fn named(mut self, name: String) -> Self {
         self.list = Box::new(self.list.with_accessible_name(name));
         self
     }
@@ -880,8 +889,12 @@ impl NavList {
     /// The list's stable identity for assistive technology: its place in the
     /// window, on its own, for what it narrows rather than the app.
     #[must_use]
-    pub fn with_semantic_key(mut self, key: impl Into<String>) -> Self {
-        let key = key.into();
+    pub fn with_semantic_key(self, key: impl Into<String>) -> Self {
+        self.semantically_keyed(key.into())
+    }
+
+    #[inline(never)]
+    fn semantically_keyed(mut self, key: String) -> Self {
         self.list = Box::new(self.list.with_id(key.clone()));
         self.semantic_key = Some(key);
         self
