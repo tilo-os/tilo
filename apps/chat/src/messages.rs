@@ -1394,11 +1394,11 @@ impl Chained for ChatMessages {
                     let message = &mut post.message;
                     takes_posts(chat, &message.channel)?;
                     let body = message.body.clone().unwrap_or_default();
-                    message.mentions = Some(Chat::mentions(&message.text, &body));
+                    message.mentions = Some(crate::chat::mentions(&message.text, &body));
                 }
                 ChatMessagesAction::PostFile(post) => {
                     takes_posts(chat, &post.channel)?;
-                    post.mentions = Some(Chat::mentions(
+                    post.mentions = Some(crate::chat::mentions(
                         post.text.as_deref().unwrap_or_default(),
                         &[],
                     ));
@@ -1410,11 +1410,11 @@ impl Chained for ChatMessages {
                         .clone()
                         .filter(|text| !text.trim().is_empty())
                         .unwrap_or_else(|| share.attached.reference.label.clone());
-                    share.mentions = Some(Chat::mentions(&text, &[]));
+                    share.mentions = Some(crate::chat::mentions(&text, &[]));
                 }
                 ChatMessagesAction::ShareWindow(share) => {
                     takes_posts(chat, &share.channel)?;
-                    share.mentions = Some(Chat::mentions(
+                    share.mentions = Some(crate::chat::mentions(
                         share.text.as_deref().unwrap_or_default(),
                         &[],
                     ));
@@ -1437,7 +1437,7 @@ impl Chained for ChatMessages {
                 }
                 ChatMessagesAction::EditMessage(edit) => {
                     let body = edit.body.clone().unwrap_or_default();
-                    edit.mentions = Some(Chat::mentions(&edit.text, &body));
+                    edit.mentions = Some(crate::chat::mentions(&edit.text, &body));
                 }
                 ChatMessagesAction::StreamOutput(stream) => takes_posts(chat, &stream.channel)?,
                 ChatMessagesAction::DeliverMessage(delivery) => {

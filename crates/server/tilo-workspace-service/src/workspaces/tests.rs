@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::service::{ServiceConfig, ServiceIdentity, WorkspaceService};
+use chat::projection::ChatProjection as _;
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 

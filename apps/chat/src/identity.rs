@@ -47,9 +47,7 @@ impl LocalIdentity {
 }
 
 /// Distinguish unnamed members without exposing their complete routing id.
-pub(crate) fn unnamed_label(id: &MemberId) -> String {
-    crate::i18n::t_args("chat-person-unnamed", &[("tag", member_tag(id).into())])
-}
+pub(crate) use chat_model::chat::unnamed_label;
 
 /// Shared person rows cannot use the current-reader label without an identity tag.
 /// Preserve the saved name and id; only its presentation is disambiguated.
@@ -75,23 +73,7 @@ pub(crate) fn acted_for(acting: &ui::tilo_resource::Acting) -> Option<&MemberId>
         .filter(|member| member.is_person())
 }
 
-fn member_tag(member: &MemberId) -> String {
-    let id = member.id();
-    let body = id.rsplit(['@', ':']).next().unwrap_or(id);
-    let tail: String = body
-        .chars()
-        .rev()
-        .take(4)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    if tail.is_empty() {
-        id.to_string()
-    } else {
-        tail
-    }
-}
+pub(crate) use chat_model::chat::member_tag;
 
 /// Up-to-two-letter uppercase initials for an avatar monogram. Delegates the
 /// word-split to the shared toolkit helper (so every app derives a monogram

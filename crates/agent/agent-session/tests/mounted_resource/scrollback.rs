@@ -11,6 +11,7 @@
 
 use super::super::{Browser, CatalogueQuery, DeviceCapabilities, Duration, Path, Replica, Seed};
 use super::super::{enrol, record_provider, start_browser};
+use chat::projection::ChatProjection as _;
 use tilo_agent_session::ReplicaActor;
 use tilo_peer_state::join::Role;
 use tilo_session_client::Outbox;

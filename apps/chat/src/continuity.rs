@@ -2,6 +2,7 @@
 //! continuity. Capture handles, peer tickets, device ids, credentials, and
 //! voice membership never enter this projection.
 
+use crate::projection::ChatProjection as _;
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 

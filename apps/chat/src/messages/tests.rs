@@ -1,3 +1,4 @@
+use crate::projection::ChatProjection as _;
 use std::rc::Rc;
 use ui::tilo_resource::MemberId;
 

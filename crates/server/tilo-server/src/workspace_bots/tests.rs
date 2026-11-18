@@ -8,6 +8,7 @@
     reason = "every test here keeps its server and workspace alive to the end"
 )]
 
+use chat::projection::ChatProjection as _;
 use tilo_moderation::{Case, JudgeError, Outcome, Verdict};
 
 use super::*;
