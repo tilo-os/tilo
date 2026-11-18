@@ -531,7 +531,8 @@ tilo_test_env::scenario! {
     phase an_effect_lends_its_invoker_no_more_than_they_were_admitted_for;
     {
         let mut app = TestApp::<MailApp>::new().unwrap();
-        // A viewer may take a read effect, but not the edit it submits.
+        // A read effect that answers nothing can only move the screen it is
+        // invoked on, so an agent is refused it as the person's alone.
         let refused = app
             .effect_by(
                 &MemberId::agent("viewer"),
@@ -543,7 +544,7 @@ tilo_test_env::scenario! {
         assert!(
             matches!(
                 &refused,
-                tilo_actions::ApiError::Unavailable { code, .. } if code == "permission_denied"
+                tilo_actions::ApiError::Unavailable { code, .. } if code == "private_view"
             ),
             "{refused:?}"
         );
