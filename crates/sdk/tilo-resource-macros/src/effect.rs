@@ -475,9 +475,18 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             None if options.edit => quote!(Undoable),
             None if options.screen => quote!(Read),
             None if options.view => quote!(Read),
-            None | Some("outside") => quote!(Outside),
+            Some("outside") => quote!(Outside),
             Some("read") => quote!(Read),
             Some("undoable") => quote!(Undoable),
+            None => {
+                return Err(syn::Error::new(
+                    variant.span(),
+                    "an effect states what it is where it is declared: write `kind = \
+                     \"outside\"` for a change checked against the caller's grants, \
+                     `kind = \"read\"` for a read or `kind = \"undoable\"` for an undoable \
+                     change (`view` implies `read` and `edit` implies `undoable`)",
+                ));
+            }
             Some(other) => {
                 return Err(syn::Error::new(
                     variant.span(),
@@ -1020,5 +1029,56 @@ fn identity_field(ty: &syn::Type) -> Option<IdentityForm> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::derive;
+
+    /// The error an effect vocabulary written as `source` does not build with.
+    fn error(source: &str) -> String {
+        let input: syn::DeriveInput = syn::parse_str(source).expect("an effect vocabulary");
+        derive(&input)
+            .expect_err("the vocabulary is refused")
+            .to_string()
+    }
+
+    #[test]
+    fn an_effect_without_a_kind_is_told_what_to_write() {
+        let error = error(
+            r#"
+            #[effect(operation = "example.effects")]
+            enum ExampleEffect {
+                /// Keep the draft.
+                Save,
+            }
+            "#,
+        );
+        assert!(error.contains("`kind = \"outside\"`"), "{error}");
+        assert!(error.contains("`kind = \"read\"`"), "{error}");
+        assert!(error.contains("`kind = \"undoable\"`"), "{error}");
+    }
+
+    #[test]
+    fn a_view_effect_needs_no_kind_declaration() {
+        let input: syn::DeriveInput = syn::parse_str(
+            r#"
+            #[effect(operation = "example.effects")]
+            enum ExampleEffect {
+                /// Show the draft.
+                #[effect(view)]
+                Show { draft: String },
+            }
+            "#,
+        )
+        .expect("an effect vocabulary");
+        // The crate has no catalogue, so the label is what is missing: the
+        // derive got past the variant's kind.
+        let error = derive(&input)
+            .expect_err("the label is missing")
+            .to_string();
+        assert!(error.contains("en-US.ftl"), "{error}");
+        assert!(!error.contains("states what it is"), "{error}");
     }
 }

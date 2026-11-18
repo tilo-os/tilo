@@ -118,7 +118,9 @@
 //! admitted as what it does)
 //! and
 //! `kind = "read"` (an effect that only reads, which whoever may read may
-//! invoke; an effect reaches outside the record by default, a view reads),
+//! invoke), `kind = "undoable"` (an undoable change) or `kind = "outside"`
+//! (a change checked against the caller's grants: every effect states its
+//! kind, while a `view` reads and an `edit` is undoable),
 //! and `offload(app = "…", entrypoint = "…", cpu_ms = N, memory_mb = N,
 //! output_mb = N, gpu)` (a `content`, `kind = "read"` transform of content
 //! inputs whose outputs depend on the inputs alone: the system may run it on
@@ -1239,6 +1241,7 @@ mod tests {
     #[effect(operation = "test.effects", catalogue = "tests/locales")]
     enum Sample {
         /// Reload everything.
+        #[effect(kind = "outside")]
         Reload,
         /// Rename a thing.
         ///
@@ -1249,12 +1252,14 @@ mod tests {
             thing: String,
             label: Option<String>,
         },
+        #[effect(kind = "outside")]
         #[effect(job, cancellable, destructive)]
         Wipe { passes: u32 },
         /// Copy a thing's key.
         #[effect(privileged, kind = "read")]
         CopyKey { thing: String },
         /// Paint a thing.
+        #[effect(kind = "outside")]
         Paint {
             #[param("The colour", choices = ["red", "green"])]
             colour: String,
@@ -1263,6 +1268,7 @@ mod tests {
             shade: Option<String>,
         },
         /// Widen a column.
+        #[effect(kind = "outside")]
         Widen {
             #[param(decimal, "The column")]
             column: String,
@@ -1611,6 +1617,7 @@ mod tests {
         #[effect(view, row)]
         Open { item: String },
         /// Connect to an item.
+        #[effect(kind = "outside")]
         #[effect(row, job, idempotent)]
         Connect { item: String },
         /// Search.
@@ -1624,6 +1631,7 @@ mod tests {
     #[effect(operation = "test.exports", catalogue = "tests/locales")]
     enum Exports {
         /// Export the address book.
+        #[effect(kind = "outside")]
         #[effect(job, sensitive)]
         ExportBook,
     }
@@ -1633,6 +1641,7 @@ mod tests {
     #[effect(operation = "test.secrets", catalogue = "tests/locales")]
     enum Pairing {
         /// Pair a device.
+        #[effect(kind = "outside")]
         Pair {
             #[param(secret, "The invite the other device shows")]
             invite: String,
@@ -1645,6 +1654,7 @@ mod tests {
     #[effect(operation = "test.files", catalogue = "tests/locales")]
     enum Files {
         /// Save a copy.
+        #[effect(kind = "outside")]
         SaveCopy {
             #[param("Where to write it")]
             path: crate::AbsolutePath,

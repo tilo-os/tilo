@@ -195,11 +195,11 @@ mod schema;
 /// worker; `tag` (repeatable) adds a contract tag, a `&'static str` constant;
 /// `outside_with = "path"` makes a `kind = "read"` effect reach outside only
 /// when that parameter is given (an export writing the file it names).
-/// Who may run an effect is decided by what it declares, like any action:
-/// `kind = "read"`, `"undoable"` or `"outside"`, `screen`, `own_device` or
-/// `attended`. One that declares no kind is `outside`: a change checked
-/// against the caller's grants, the safe reading of an effect that says
-/// nothing, since no grant lets it run unasked where reading would. A `screen`
+/// Who may run an effect is decided by what it declares, like any action.
+/// Every effect states its kind: `kind = "read"`, `"undoable"` or `"outside"`
+/// (a change checked against the caller's grants). `view` implies `read`,
+/// `edit` implies `undoable`, and an effect that names none of them does not
+/// build. A `screen`
 /// effect only changes what is on the screen it is invoked on (a form, a
 /// panel, a place it shows): it reads, answers nothing, only the person at
 /// that screen invokes it and no agent is listed it. An

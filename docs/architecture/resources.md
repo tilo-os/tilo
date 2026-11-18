@@ -264,8 +264,9 @@ declaring it.
   parameters can only change the document: **Undoable**, decided when the
   macro expands.
 - A verb that takes `&mut Outbox<T>` records an outside consequence: **Outside**.
-- An effect (`#[derive(Effect)]`) is **Outside**, or **Read** when it is a view
-  effect (`#[effect(view)]`).
+- An effect (`#[derive(Effect)]`) states its kind: **Outside** with
+  `kind = "outside"`, **Read** with `kind = "read"` (a view reads) or
+  **Undoable** with `kind = "undoable"` (an edit is undoable).
 - The `read_content`, `facts` and view operations are **Read**.
 
 A lint covers what types cannot: no clock, randomness, file, network or process
