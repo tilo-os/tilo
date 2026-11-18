@@ -2633,16 +2633,11 @@ impl Mount {
             }
             return Ok(());
         }
-        // The GPU's own answer, bounded: a completion the browser never
-        // reports stops holding the page back after
-        // [`crate::frame_pacing::LOST_AFTER`]. A slow GPU is not a lost one:
-        // the device's own `lost` and errors say that, below.
-        if matches!(
-            pacing::check(&mut gpu.pacing, &mut self.held, &self.window),
-            pacing::FrameDecision::Hold
-        ) {
-            return Ok(());
-        }
+        // The GPU's own answer, asked and not waited for: stopping here is
+        // what keeps a completion from arriving (`crate::frame_pacing`). A
+        // slow GPU is not a lost one: the device's own `lost` and errors say
+        // that, below.
+        pacing::check(&mut gpu.pacing);
         let Ok(mut shared_guard) = gpu.shared.try_borrow_mut() else {
             // Another mount's GPU setup holds the shared device for a moment.
             self.held = "the shared device busy";
