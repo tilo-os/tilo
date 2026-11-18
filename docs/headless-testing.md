@@ -142,7 +142,18 @@ qc windows                                   # open windows: workspace/strip, gr
 qc state-dump --pretty                       # the live layout + chrome as JSON, without history
 qc state-dump --history                      # … with effect receipts and audit trails
 qc watch on                                  # stream frames, for a headless session drawing nothing
+qc questions                                 # the sheets waiting for the person, and the invoke that answers each
 qc raw '{"op":"list_targets"}'               # escape hatch for unwrapped commands
+```
+
+A sheet — another device asking to be unlocked at boot, an app asking for a
+file — is a question a service asks, not an action the catalogue lists. The
+development socket lists what waits and names the resource its answer and its
+decline are actions of, so a check answers one as the person would:
+
+```bash
+qc questions --json                          # [{handle, resource, kind, app, label, details}, …]
+qc actions invoke so.tilo.session "$(printf 'question:%s\037answer' "$handle")"
 ```
 
 Default socket: `$TILO_TEST_CONTROL`, else `$XDG_RUNTIME_DIR/tilo-session/test-control.sock` (an error, not a `/tmp` fallback, when `XDG_RUNTIME_DIR` is unset). Override with `--socket /path`. Errors surface as a non-zero exit and a structured `code: message` on stderr.
