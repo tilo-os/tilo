@@ -466,6 +466,18 @@ impl Link {
         }
     }
 
+    /// The subprotocol the link's WebTransport session negotiated: `None`
+    /// where the handshake negotiated none, and over iroh, whose ALPN says
+    /// what a connection speaks.
+    #[must_use]
+    pub fn protocol(&self) -> Option<&str> {
+        match &self.inner {
+            #[cfg(not(target_arch = "wasm32"))]
+            Inner::Iroh(_) => None,
+            Inner::Web(session) => session.protocol(),
+        }
+    }
+
     /// The WebTransport session under the link, when it is one: what the live
     /// live session runs `moq-lite` on.
     #[must_use]

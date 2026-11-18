@@ -11,6 +11,7 @@ use std::rc::Rc;
 use crate::app_names::claimant;
 
 use serde_json::Value;
+use tilo_action_policy::Lifetime;
 use tilo_actions::ResourceSpec;
 use tilo_bluetooth_agent::{Method as PairingMethod, PairingDetails};
 use tilo_network_secret_agent::questions::{
@@ -21,7 +22,7 @@ use tilo_polkit_agent::questions::{AuthenticateDetails, Notice};
 use tilo_portal::account::AccountQuestion;
 use tilo_portal::app_chooser::AppChooserQuestion;
 use tilo_portal::background::{ACTIVE, BACKGROUND, BackgroundQuestion, RUNNING};
-use tilo_portal::consent::{ALLOW_ALWAYS, ALLOW_ONCE, ALLOW_SESSION, AccessQuestion};
+use tilo_portal::consent::AccessQuestion;
 use tilo_portal::dynamic_launcher::LauncherQuestion;
 use tilo_portal::email::EmailQuestion;
 use tilo_portal::file_chooser::FileChooserQuestion;
@@ -789,7 +790,10 @@ fn keeps_answer(shown: &Shown, answer: &Answer) -> bool {
             || shown.remember
             || matches!(
                 &shown.plan,
-                Plan::Choose(choices) if choices.get(shown.dialog.selected) == Some(&ALLOW_ALWAYS)
+                Plan::Choose(choices) if choices.get(shown.dialog.selected).is_some_and(|choice| {
+                    Lifetime::chosen(*choice, tilo_clock::unix_now_ms())
+                        .is_some_and(Lifetime::is_durable)
+                })
             ))
 }
 
@@ -832,18 +836,28 @@ fn access(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
             detail,
         )
     };
-    let mut allowances = vec![ALLOW_ONCE, ALLOW_SESSION];
-    let mut labels = vec![word("portal-allow-once"), word("portal-allow-session")];
-    if asked.may_remember {
-        allowances.push(ALLOW_ALWAYS);
-        labels.push(word("portal-allow-always"));
-    }
+    let (labels, plan) = durations(asked.may_remember);
     let mut dialog = review(handle, title, detail);
     // An app that words a generic access question itself also gives its subtitle: the app's own
     // line, not the app named again under a title of ours.
     dialog.heading = asked.text.map(|text| text.subtitle).unwrap_or_default();
     dialog.body = Body::Choices(labels);
-    Some((dialog, Plan::Choose(allowances)))
+    Some((dialog, plan))
+}
+
+/// The durations a permission sheet offers, read from the one list every prompt offers
+/// ([`Lifetime::offered`]): their labels, and the choices they answer with. A sheet of buttons
+/// has no time to pick, so it leaves out the timed one; one that outlasts the session is offered
+/// only where the answer may be kept.
+fn durations(may_keep: bool) -> (Vec<String>, Plan) {
+    let (labels, choices) = Lifetime::offered(tilo_clock::unix_now_ms())
+        .into_iter()
+        .enumerate()
+        .filter(|(_, lifetime)| !matches!(lifetime, Lifetime::Until(_)))
+        .filter(|(_, lifetime)| may_keep || !lifetime.is_durable())
+        .map(|(choice, lifetime)| (word(&format!("portal-allow-{}", lifetime.key())), choice))
+        .unzip();
+    (labels, Plan::Choose(choices))
 }
 
 /// An app the person installed, before it first starts in a workspace: whether it may reach what
@@ -881,18 +895,12 @@ fn admitted(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
         &[("workspace", &asked.workspace), ("agent", &asked.agent)],
     );
     let detail = words("mcp-server-admission-detail", &[("agent", &asked.agent)]);
+    let (labels, plan) = durations(true);
     let mut dialog = review(handle, title, detail);
     // The program asking is nowhere in the title: it stands under it.
     who.clone_into(&mut dialog.heading);
-    dialog.body = Body::Choices(vec![
-        word("portal-allow-once"),
-        word("portal-allow-session"),
-        word("portal-allow-always"),
-    ]);
-    Some((
-        dialog,
-        Plan::Choose(vec![ALLOW_ONCE, ALLOW_SESSION, ALLOW_ALWAYS]),
-    ))
+    dialog.body = Body::Choices(labels);
+    Some((dialog, plan))
 }
 
 /// An agent's question on a workspace host, on the sheet a page shows it on too.
@@ -905,7 +913,7 @@ fn agent_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
 /// another app's action: the step, what it would do, and whether to allow it once, allow the agent
 /// or the app every such step, or deny it ([`crate::step_questions`]).
 fn step_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
-    use crate::step_questions::{ALLOW_AGENT, ALLOW_ONCE, StepQuestion};
+    use crate::step_questions::StepQuestion;
     let asked: StepQuestion = serde_json::from_value(details).ok()?;
     // An app asking to take another app's action is named as the person knows both apps; a
     // label that asks for more ("File a note…") is the step itself here, its arguments below it.
@@ -941,7 +949,8 @@ fn step_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
     // Three answers in one row: Deny (Escape too), the lasting grant, and once, the default.
     dialog.confirm_label = word("portal-allow-once");
     dialog.alternate_label = asked.may_allow_agent.then_some(always);
-    Some((dialog, Plan::Choose(vec![ALLOW_ONCE, ALLOW_AGENT])))
+    let offered = [Lifetime::Once, Lifetime::UntilRevoked].map(Lifetime::choice);
+    Some((dialog, Plan::Choose(offered.to_vec())))
 }
 
 /// Another of the person's devices asks for its disk-unlock half: the code on its boot screen is

@@ -6,7 +6,7 @@
 use ui::tokens::Rhythm;
 
 use crate::i18n::{t, t_args};
-use collab_types::caps::{Access, CapOverride, DeviceCap, Effect, Expiry, Scope};
+use collab_types::caps::{Access, CapOverride, DeviceCap, Effect, Scope};
 use provider_settings_ui::widgets::{
     El, Item, SettingsSection, StatusTone, block, error_row, note, page, row, rows, section,
     thing_row, untitled, value_row,
@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 use tilo_action_policy::Grantee;
+use tilo_action_policy::Lifetime;
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected, ViewCx};
 
@@ -719,7 +720,7 @@ impl Tint {
 struct CapView {
     kind: &'static str,
     detail: String,
-    expiry: &'static str,
+    lifetime: Lifetime,
     tint: Tint,
 }
 
@@ -735,22 +736,8 @@ struct WsGrants {
     apps: Vec<AppGrants>,
 }
 
-fn expiry_label(e: Expiry) -> &'static str {
-    match e {
-        Expiry::Never => "Always",
-        Expiry::AtUnix(_) => "Temporary",
-        Expiry::EndOfSession => "Until log out",
-        Expiry::AfterUse => "Once",
-    }
-}
-
-fn expiry_shown(english: &str) -> String {
-    t(match english {
-        "Temporary" => "perm-expiry-temp",
-        "Until log out" => "perm-expiry-logout",
-        "Once" => "perm-expiry-once",
-        _ => "perm-expiry-always",
-    })
+fn lifetime_shown(lifetime: Lifetime) -> String {
+    t(&format!("perm-expiry-{}", lifetime.key()))
 }
 
 fn kind_shown(english: &str) -> String {
@@ -773,7 +760,6 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
     if cap.effect != Effect::Grant {
         return None;
     }
-    let expiry = expiry_label(cap.expiry);
     let (kind, detail, tint) = match &cap.scope {
         Scope::FsPath(p) => {
             let verb = if cap.access == Access::Write {
@@ -807,7 +793,7 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
     Some(CapView {
         kind,
         detail,
-        expiry,
+        lifetime: cap.lifetime,
         tint,
     })
 }
@@ -831,7 +817,7 @@ fn consent_views(consents: &[settings_store::app_consent::Consent]) -> Vec<AppGr
                         ("app", consent.target_app.as_str().into()),
                     ],
                 ),
-                expiry: "Always",
+                lifetime: Lifetime::UntilRevoked,
                 tint: Tint::AppAction,
             });
     }
@@ -904,7 +890,7 @@ fn app_block(grants: &AppGrants) -> Vec<Item> {
                         kind.as_str(),
                         ui::widget::ChipStyle::Tinted(view.tint.tone()),
                     )])
-                    .value(expiry_shown(view.expiry)),
+                    .value(lifetime_shown(view.lifetime)),
             ) as El
         })
         .collect();

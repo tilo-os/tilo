@@ -124,6 +124,13 @@
 "tag-threshold" = "Threshold: {count}";
 "tag-note" = "Note: {note}";
 "tag-acts-alone" = "Acts alone";
+"note-style" = "your style";
+"note-style-from-one" = "your style, from 1 answer you accepted";
+"note-style-from-many" = "your style, from {count} answers you accepted";
+"note-accepted-one" = "1 answer you accepted";
+"note-accepted-many" = "{count} answers you accepted";
+"note-guidance" = "what you care about";
+"note-kept" = "what it saw last";
 "add-task" = "Add a task";
 "add-task-field" = "What should it do?";
 "add" = "Add";

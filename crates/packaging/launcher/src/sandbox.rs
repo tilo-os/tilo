@@ -2197,7 +2197,7 @@ mod tests {
     // Capability enforcement: assert on the production argv itself — a path missing from it is a path
     // the app cannot reach, whatever the UI says.
 
-    use collab_types::caps::{Access, CapOverride, Expiry, Scope};
+    use collab_types::caps::{Access, CapOverride, Scope};
     use tilo_action_policy::Grantee;
 
     /// Deterministic stand-in for the host's device nodes, so a camera assertion doesn't depend on the
@@ -2569,7 +2569,7 @@ mod tests {
                 let _env = tilo_test_env::lock();
                 let caps = vec![
                     fs_grant("so.tilo.books", "/var/workspace/books", Access::Write)
-                        .expiring(Expiry::AtUnix(500)),
+                        .lasting(tilo_action_policy::Lifetime::Until(500_000)),
                 ];
                 let expired = argv_with_caps("so.tilo.books", &caps, 1_000);
                 assert!(

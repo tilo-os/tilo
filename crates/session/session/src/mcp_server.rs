@@ -28,6 +28,7 @@ use service_steps::{arguments_of, change_through, with_turn_beside};
 pub(crate) use task_hosts::SessionCatalogue;
 
 use std::collections::HashMap;
+
 use std::ffi::OsString;
 use std::io;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -36,6 +37,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
+use tilo_action_policy::Lifetime;
 
 use serde::{Deserialize, Serialize};
 use tilo_action_broker::collab_app_broker::{AgentConnection, AppBrokerState};
@@ -783,11 +785,8 @@ impl Loop {
         let Some(choice) = answer.and_then(|answer| answer.choice) else {
             return Consent::Refuse(word("mcp-server-declined"));
         };
-        let remembered = match choice {
-            tilo_portal::consent::ALLOW_ONCE => Memory::Once,
-            tilo_portal::consent::ALLOW_SESSION => Memory::Session,
-            tilo_portal::consent::ALLOW_ALWAYS => Memory::Always,
-            _ => return Consent::Refuse(word("mcp-server-declined")),
+        let Some(remembered) = Lifetime::chosen(choice, tilo_clock::unix_now_ms()) else {
+            return Consent::Refuse(word("mcp-server-declined"));
         };
         let consent = as_member(members, &waiting.facts, (&waiting.workspace, person));
         self.sessions.admit(
@@ -803,11 +802,12 @@ impl Loop {
         // is an instance of its own.
         if let Some(key) = waiting.facts.key() {
             match remembered {
-                Memory::Once => {}
-                Memory::Session => {
+                // This sheet offers no time to keep the answer until: one admits this connection.
+                Lifetime::Once | Lifetime::Until(_) => {}
+                Lifetime::Session => {
                     self.session.insert(key, waiting.agent.clone());
                 }
-                Memory::Always => {
+                Lifetime::UntilRevoked => {
                     self.always.insert(key, waiting.agent.clone());
                     self.store_always();
                 }
@@ -933,13 +933,6 @@ fn workspace_for(handle: &DesktopHandle, asked: Option<&str>) -> Option<(String,
                 )
             })
     })
-}
-
-/// How long the person's answer is remembered.
-enum Memory {
-    Once,
-    Session,
-    Always,
 }
 
 /// Whether the agent `remembered` is the program the agent `connected` is an instance of. An answer

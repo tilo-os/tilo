@@ -73,6 +73,33 @@ tilo_test_env::scenario! {
         }
     }
 
+    phase a_provider_unavailable_for_now_did_not_take_the_request;
+    {
+        // HTTP's own status for a request not handled, with the wait it asks for.
+        let busy = failure::Failure::from_http(503, "", Some("2"));
+        assert_eq!(busy.model_error().kind, ErrorKind::Provider);
+        assert!(busy.retryable());
+        assert!(busy.refused_unprocessed(503));
+        assert_eq!(busy.retry_after, Some(std::time::Duration::from_secs(2)));
+        // A provider that says it is switched off is not asked again.
+        for code in ["service_disabled", "pricing_unavailable", "provider_unavailable"] {
+            let off = failure::Failure::from_http(
+                503,
+                &serde_json::json!({"error": {"code": code}}).to_string(),
+                None,
+            );
+            assert_eq!(off.model_error().kind, ErrorKind::Unavailable, "{code}");
+            assert!(!off.refused_unprocessed(503), "{code}");
+        }
+        // What a provider began and broke stays unknown.
+        for status in [500, 502, 504] {
+            assert!(
+                !failure::Failure::from_http(status, "", None).refused_unprocessed(status),
+                "HTTP {status}"
+            );
+        }
+    }
+
     phase billing_envelopes_never_admit_retries;
     {
         for code in [

@@ -60,6 +60,11 @@ pub(crate) fn identity(doc: &AutoCommit, layout: Layout) -> Option<Vec<u8>> {
 /// replaces that layout's complete route set with `next`, touching only
 /// routes whose bytes differ and deleting routes absent from `next`. Commits
 /// only when something changed; returns whether it did.
+///
+/// # Errors
+///
+/// The workspace was founded without the layout's map, or the document refuses
+/// the write.
 pub(crate) fn write_raw(
     doc: &mut AutoCommit,
     sets: &[(Layout, &BTreeMap<String, Vec<u8>>)],
@@ -70,12 +75,12 @@ pub(crate) fn write_raw(
         if current == **next && routes_object(doc, *layout)?.is_some() {
             continue;
         }
-        let object = match routes_object(doc, *layout)? {
-            Some(object) => object,
-            None => doc
-                .put_object(ROOT, layout.routes, ObjType::Map)
-                .map_err(|e| e.to_string())?,
-        };
+        let object = routes_object(doc, *layout)?.ok_or_else(|| {
+            format!(
+                "the workspace was founded without its `{}` routes",
+                layout.routes
+            )
+        })?;
         for (key, bytes) in *next {
             if current.get(key) != Some(bytes) {
                 doc.put(&object, key.as_str(), ScalarValue::Bytes(bytes.clone()))

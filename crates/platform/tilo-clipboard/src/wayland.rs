@@ -542,9 +542,7 @@ mod image_worker_impl {
             match mime {
                 "image/png" => self.image.clone(),
                 "text/html" | "text/html;charset=utf-8" => self.html.clone(),
-                "text/plain;charset=utf-8" | "text/plain" | "UTF8_STRING" | "STRING" | "TEXT" => {
-                    self.text.clone()
-                }
+                name if tilo_mime::is_text(name) => self.text.clone(),
                 crate::SECRET_MIME | crate::PASSWORD_MANAGER_HINT_MIME if self.secret => {
                     Some(Arc::from(crate::SECRET_MARKER))
                 }
@@ -868,13 +866,7 @@ mod image_worker_impl {
                 mime_types.extend(["text/html", "text/html;charset=utf-8"]);
             }
             if self.text_contents.is_some() {
-                mime_types.extend([
-                    "text/plain;charset=utf-8",
-                    "text/plain",
-                    "UTF8_STRING",
-                    "STRING",
-                    "TEXT",
-                ]);
+                mime_types.extend(tilo_mime::TEXT_MIMES);
                 if self.text_secret {
                     mime_types.extend([crate::SECRET_MIME, crate::PASSWORD_MANAGER_HINT_MIME]);
                 }
@@ -1164,15 +1156,9 @@ mod image_worker_impl {
                 let device = data.data_device.as_ref()?;
                 let offer = device.data().selection_offer()?;
                 let mime = offer.with_mime_types(|types| {
-                    [
-                        "text/plain;charset=utf-8",
-                        "text/plain",
-                        "UTF8_STRING",
-                        "STRING",
-                        "TEXT",
-                    ]
-                    .into_iter()
-                    .find(|mime| types.iter().any(|offered| offered == mime))
+                    tilo_mime::TEXT_PREFERENCE
+                        .into_iter()
+                        .find(|mime| types.iter().any(|offered| offered == mime))
                 })?;
                 Some((seat.clone(), offer.receive(mime.into()).ok()?))
             });
@@ -1449,7 +1435,7 @@ mod image_worker_impl {
             let (html, plain) = offer.with_mime_types(|types| {
                 (
                     types.iter().any(|mime| mime == "text/html"),
-                    ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING"]
+                    tilo_mime::TEXT_PREFERENCE
                         .into_iter()
                         .find(|mime| types.iter().any(|offered| offered == mime)),
                 )

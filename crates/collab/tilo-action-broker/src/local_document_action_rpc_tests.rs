@@ -22,7 +22,6 @@ impl crate::services::WorkspaceGrants for LocalReportGrants {
         &self,
         _request: &crate::app_actions::AppActionConsentRequest,
         _grant: tilo_action_policy::Grant,
-        _answer: crate::app_actions::AppActionConsent,
     ) -> crate::services::GrantRecording {
         Box::pin(std::future::ready(Err("nothing is granted here".into())))
     }

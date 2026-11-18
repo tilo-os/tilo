@@ -123,6 +123,15 @@ pub(crate) fn written_launch(dir: &Path) -> Option<KeptLaunch> {
     KeptLaunch::decode(&std::fs::read_to_string(dir.join("launch")).ok()?)
 }
 
+/// The X11 display a keeper in `dir` bound, and the cookie file beside it, once it wrote one.
+fn x11_of(dir: &Path) -> Option<(String, PathBuf)> {
+    let display = std::fs::read_to_string(dir.join("x11")).ok()?;
+    let display = display.trim();
+    display
+        .starts_with(':')
+        .then(|| (display.to_owned(), dir.join("Xauthority")))
+}
+
 /// A kept launch's keeper, as the spawner holds it.
 pub(crate) struct Kept {
     pub(crate) dir: PathBuf,
@@ -140,6 +149,9 @@ pub(crate) struct Kept {
     attached: AtomicBool,
     /// What the keeper was last told of where each window stands, by tag.
     placed: Mutex<std::collections::HashMap<String, String>>,
+    /// The X11 display this launch serves its programs, and the cookie file that admits a
+    /// client, once the keeper bound one.
+    x11: Mutex<Option<(String, PathBuf)>>,
     /// The keeper speaks another version ([`Outdated`]): this session shows nothing of it, and
     /// only ends it.
     outdated: bool,
@@ -159,6 +171,7 @@ impl Kept {
             released: AtomicBool::new(false),
             attached: AtomicBool::new(false),
             placed: Mutex::new(std::collections::HashMap::new()),
+            x11: Mutex::new(None),
             outdated: false,
             keeper_started: None,
         })
@@ -176,6 +189,7 @@ impl Kept {
             released: AtomicBool::new(false),
             attached: AtomicBool::new(true),
             placed: Mutex::new(std::collections::HashMap::new()),
+            x11: Mutex::new(None),
             outdated: true,
             keeper_started: outdated.keeper_started,
         })
@@ -258,6 +272,21 @@ impl Kept {
         if let Some(control) = control {
             let _ = control.shutdown(std::net::Shutdown::Both);
         }
+    }
+
+    /// The X11 display this launch serves its programs, and the cookie file that admits a
+    /// client: what a session asks its input method to serve as XIM. `None` for a launch the
+    /// keeper was not asked to serve X11 to, and while its server is not up: a client that
+    /// asked for the display would start a server the app never asked for.
+    pub(crate) fn x11(&self) -> Option<(String, PathBuf)> {
+        if !self.dir.join("x11-server").is_file() {
+            return None;
+        }
+        let mut x11 = self.x11.lock_recover();
+        if x11.is_none() {
+            *x11 = x11_of(&self.dir);
+        }
+        x11.clone()
     }
 
     /// The launch ends: its directory goes with it, unless a service's (the service reuses or

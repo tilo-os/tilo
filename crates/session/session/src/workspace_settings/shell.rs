@@ -7,7 +7,7 @@
 
 use std::cell::{Cell, RefCell};
 
-use collab_types::caps::{Effect, Expiry};
+use collab_types::caps::Effect;
 use tilo_action_policy::{Refusal, Role};
 use tilo_desktop::authority::WorkspaceAuthority as _;
 use tilo_desktop::chrome::ChromeIntent;
@@ -1047,14 +1047,14 @@ fn permissions(
                 })
                 .collect(),
             how_long: t("workspace-settings-expiry-caption"),
-            expiries: domain::expiry_choices()
+            expiries: domain::lifetime_choices(tilo_clock::unix_now_ms())
                 .into_iter()
                 .map(|(key, label)| sheet::Choice {
                     key: key.to_owned(),
                     label,
                 })
                 .collect(),
-            default_expiry: domain::expiry_key(Expiry::EndOfSession).to_owned(),
+            default_expiry: domain::DEFAULT_LIFETIME.to_owned(),
             grant: t("workspace-settings-grant"),
         },
         sections,

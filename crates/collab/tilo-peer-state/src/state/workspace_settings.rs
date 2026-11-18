@@ -124,7 +124,7 @@ fn grant_sandbox(
     capability: &collab_types::caps::CapOverride,
     by: tilo_action_policy::MemberId,
 ) -> Result<(), String> {
-    if !capability.persists_across_restart() {
+    if !capability.is_durable() {
         return Err(
             "a capability that ends with a session or a single use is never written into the workspace"
                 .into(),
@@ -179,7 +179,7 @@ impl PeerGovernanceMut<'_> {
         now: SystemTime,
     ) -> Result<bool, String> {
         self.author(key, now, |doc| {
-            projection::project_workspace_entry(doc, entry)
+            projection::project_workspace_entry(doc, entry).map_err(super::err)
         })
     }
 
@@ -224,7 +224,7 @@ impl PeerGovernanceMut<'_> {
         self,
         key: &dyn DeviceSigner,
         now: SystemTime,
-        edit: impl FnOnce(&mut automerge::AutoCommit) -> Result<(), automerge::AutomergeError>,
+        edit: impl FnOnce(&mut automerge::AutoCommit) -> Result<(), String>,
     ) -> Result<bool, String> {
         self.peer.require_member_writer(key, now)?;
         let mut doc = self

@@ -973,7 +973,6 @@ impl tilo_action_broker::services::WorkspaceGrants for SessionGrants {
         &self,
         request: &tilo_action_broker::app_actions::AppActionConsentRequest,
         grant: tilo_action_policy::Grant,
-        _answer: tilo_action_broker::app_actions::AppActionConsent,
     ) -> tilo_action_broker::services::GrantRecording {
         let workspace = request.workspace.clone();
         let id = grant.id.clone();

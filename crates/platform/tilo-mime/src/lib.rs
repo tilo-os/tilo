@@ -12,6 +12,37 @@ use std::path::Path;
 
 pub const OCTET_STREAM: &str = "application/octet-stream";
 
+/// UTF-8 text, the form every text offer is also given in.
+pub const TEXT_MIME: &str = "text/plain;charset=utf-8";
+
+/// The names text goes by, most specific first: X11 programs ask for the older ones, and a
+/// program offering text under any of them is offering the same bytes.
+pub const TEXT_MIMES: [&str; 6] = [
+    TEXT_MIME,
+    "text/plain",
+    "UTF8_STRING",
+    "STRING",
+    "TEXT",
+    "COMPOUND_TEXT",
+];
+
+/// Text's names, best first, when a request is served by another name: UTF-8 under either side's
+/// name, then the ambiguous ones.
+pub const TEXT_PREFERENCE: [&str; 6] = [
+    TEXT_MIME,
+    "UTF8_STRING",
+    "text/plain",
+    "STRING",
+    "TEXT",
+    "COMPOUND_TEXT",
+];
+
+/// Whether `name` is one of the names text goes by.
+#[must_use]
+pub fn is_text(name: &str) -> bool {
+    TEXT_MIMES.contains(&name)
+}
+
 /// The MIME type of files ending in `.extension` (without the dot, any case),
 /// or `None` for an extension with no known type.
 #[must_use]

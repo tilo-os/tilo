@@ -324,7 +324,7 @@ pub fn workspace_shares(
         );
     }
     for cap in &ws.sandbox {
-        if !cap.is_live_at(Some(now)) || cap.effect != Effect::Grant {
+        if !cap.is_live_at(Some(now.saturating_mul(1000))) || cap.effect != Effect::Grant {
             continue;
         }
         let Some(holder) = cap.grantee.person_id() else {
@@ -615,7 +615,7 @@ mod press_tests {
 #[cfg(test)]
 mod workspace_tests {
     use super::*;
-    use collab_types::caps::{CapOverride, Expiry};
+    use collab_types::caps::CapOverride;
     use std::sync::atomic::{AtomicU64, Ordering};
     use tilo_action_policy::Grantee;
     use tilo_desktop_model::{AppKind, Strip, Tab, TileContent, WindowGroup, WindowWidth};
@@ -772,7 +772,7 @@ mod workspace_tests {
                     Scope::FsPath("/var/workspace/brief".to_string()),
                     Access::Read,
                 )
-                .expiring(Expiry::AtUnix(1)),
+                .lasting(tilo_action_policy::Lifetime::Until(1_000)),
             );
             let tree = tree_with(vec![w]);
             let card = &workspace_cards(&tree)[0];

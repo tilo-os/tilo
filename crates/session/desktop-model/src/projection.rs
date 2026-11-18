@@ -32,15 +32,18 @@ pub const WORKSPACE_OWNER_KEY: &str = "owner";
 /// Key of the next id counter a durable topology owner mints from, so a
 /// restarted owner never reuses an id a closed tab once had.
 pub const WORKSPACE_DESKTOP_COUNTER_KEY: &str = "desktop_counter_v1";
-/// Key a workspace document stores its effect receipts under: one slice per
-/// member, `{person → {invocation → JSON receipt}}`, which only that
-/// member's devices write.
+/// Key a workspace document stores its effect receipts under, by the person
+/// who recorded one and the invocation: `{<person>/<invocation> → JSON
+/// receipt}`, each written by that person's devices. A workspace is founded
+/// with the map ([`founded_map`]), so a device's first receipt adds a key
+/// rather than making a map a merge would drop.
 pub const WORKSPACE_EFFECT_RECEIPTS_KEY: &str = "effect_receipts_v1";
 /// Key a workspace document anchors each member's archived effect receipts
-/// under: `{person → {device → history root}}`, each device's own.
+/// under, by person and device: `{<person>/<device> → history root}`, each
+/// device's own row.
 pub const WORKSPACE_EFFECT_HISTORY_KEY: &str = "effect_history_root_v1";
 /// Key a workspace document holds the writes a device refused under:
-/// `{person → {device → {route and author → postcard refusal}}}`, each
+/// `{<person>/<device> → {route and author → postcard refusal}}`, each
 /// device's own verdicts, kept until the write it refused lands.
 pub const WORKSPACE_WRITE_REFUSALS_KEY: &str = "write_refusals_v1";
 /// Key a workspace document stores its saved shortcuts under.
@@ -58,6 +61,19 @@ pub const WORKSPACE_SCHEDULE_CLAIMS_KEY: &str = "schedule_claims_v1";
 /// whom it admits (JSON bytes, [`tilo_action_policy::EntryPolicy`]).
 pub const WORKSPACE_ENTRY_KEY: &str = "entry_v1";
 
+/// The map a workspace is founded with at `key`, or why this document is not
+/// one: a map that devices write their own rows into exists once, from the
+/// founding, so no device's first row makes a map another device's would
+/// replace.
+fn founded_map(doc: &AutoCommit, key: &str) -> Result<automerge::ObjId, String> {
+    use automerge::{ObjType, ROOT, ReadDoc, Value};
+
+    match doc.get(&ROOT, key).ok().flatten() {
+        Some((Value::Object(ObjType::Map), id)) => Ok(id),
+        _ => Err(format!("the workspace was founded without its `{key}`")),
+    }
+}
+
 /// Project a workspace's shortcuts as one map value per shortcut id, so two
 /// members saving different shortcuts concurrently merge as two keys.
 /// A key this workspace no longer holds is deleted, which is how deleting a
@@ -66,24 +82,21 @@ pub const WORKSPACE_ENTRY_KEY: &str = "entry_v1";
 ///
 /// # Errors
 ///
-/// The document's error when the shortcuts map cannot be created.
+/// The document's error, or one whose workspace was founded without
+/// [`WORKSPACE_AUTOMATIONS_KEY`].
 pub fn project_workspace_shortcuts(
     doc: &mut AutoCommit,
     shortcuts: &[tilo_automation::SavedShortcut],
-) -> Result<(), automerge::AutomergeError> {
-    use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+) -> Result<(), String> {
+    use automerge::{ReadDoc, ScalarValue, Value, transaction::Transactable};
 
-    let map = match doc.get(&ROOT, WORKSPACE_AUTOMATIONS_KEY).ok().flatten() {
-        Some((_, id)) => id,
-        None if shortcuts.is_empty() => return Ok(()),
-        None => doc.put_object(&ROOT, WORKSPACE_AUTOMATIONS_KEY, ObjType::Map)?,
-    };
+    let map = founded_map(doc, WORKSPACE_AUTOMATIONS_KEY)?;
     let stale: Vec<String> = doc
         .keys(&map)
         .filter(|key| !shortcuts.iter().any(|shortcut| shortcut.id() == key))
         .collect();
     for key in stale {
-        doc.delete(&map, key.as_str())?;
+        doc.delete(&map, key.as_str()).map_err(message)?;
     }
     for shortcut in shortcuts {
         let blob = shortcut.json().as_bytes().to_vec();
@@ -93,7 +106,8 @@ pub fn project_workspace_shortcuts(
                 if matches!(value.as_ref(), ScalarValue::Bytes(current) if current == &blob)
         );
         if !unchanged {
-            doc.put(&map, shortcut.id(), ScalarValue::Bytes(blob))?;
+            doc.put(&map, shortcut.id(), ScalarValue::Bytes(blob))
+                .map_err(message)?;
         }
     }
     Ok(())
@@ -103,20 +117,16 @@ fn project_blob_map(
     doc: &mut AutoCommit,
     key: &str,
     entries: Vec<(String, Vec<u8>)>,
-) -> Result<(), automerge::AutomergeError> {
-    use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+) -> Result<(), String> {
+    use automerge::{ReadDoc, ScalarValue, Value, transaction::Transactable};
 
-    let map = match doc.get(&ROOT, key).ok().flatten() {
-        Some((_, id)) => id,
-        None if entries.is_empty() => return Ok(()),
-        None => doc.put_object(&ROOT, key, ObjType::Map)?,
-    };
+    let map = founded_map(doc, key)?;
     let stale: Vec<String> = doc
         .keys(&map)
         .filter(|held| !entries.iter().any(|(name, _)| name == held))
         .collect();
     for name in stale {
-        doc.delete(&map, name.as_str())?;
+        doc.delete(&map, name.as_str()).map_err(message)?;
     }
     for (name, blob) in entries {
         let unchanged = matches!(
@@ -125,10 +135,16 @@ fn project_blob_map(
                 if matches!(value.as_ref(), ScalarValue::Bytes(current) if current == &blob)
         );
         if !unchanged {
-            doc.put(&map, name.as_str(), ScalarValue::Bytes(blob))?;
+            doc.put(&map, name.as_str(), ScalarValue::Bytes(blob))
+                .map_err(message)?;
         }
     }
     Ok(())
+}
+
+/// A document error as text.
+fn message(error: impl std::fmt::Display) -> String {
+    error.to_string()
 }
 
 /// The values of the map at `key` that decode, with their keys.
@@ -158,11 +174,12 @@ fn blob_map_of<T: serde::de::DeserializeOwned>(doc: &AutoCommit, key: &str) -> V
 ///
 /// # Errors
 ///
-/// The document's error when the map cannot be written.
+/// The document's error, or one whose workspace was founded without
+/// [`WORKSPACE_PRESETS_KEY`].
 pub fn project_workspace_presets(
     doc: &mut AutoCommit,
     presets: &[tilo_action_policy::Preset],
-) -> Result<(), automerge::AutomergeError> {
+) -> Result<(), String> {
     let entries = presets
         .iter()
         .filter_map(|preset| {
@@ -230,11 +247,12 @@ pub fn workspace_entry_of(doc: &AutoCommit) -> tilo_action_policy::EntryPolicy {
 ///
 /// # Errors
 ///
-/// The document's error when the map cannot be written.
+/// The document's error, or one whose workspace was founded without
+/// [`WORKSPACE_SANDBOX_KEY`].
 pub fn project_workspace_sandbox(
     doc: &mut AutoCommit,
     sandbox: &[collab_types::caps::CapOverride],
-) -> Result<(), automerge::AutomergeError> {
+) -> Result<(), String> {
     let entries = sandbox
         .iter()
         .filter_map(|cap| Some((cap.id.clone(), serde_json::to_vec(cap).ok()?)))
@@ -300,49 +318,44 @@ pub fn schedule_claims_of(doc: &AutoCommit) -> Vec<tilo_automation::ScheduleClai
     claims
 }
 
-/// Project `receipts` into `person`'s slice of the workspace's effect receipts,
-/// keyed by invocation, so receipts from two devices merge as separate
-/// keys.
+/// Project `receipts` into `person`'s rows of the workspace's effect receipts,
+/// keyed by person and invocation, so receipts from two devices merge as
+/// separate keys.
 ///
 /// # Errors
 ///
-/// The document's error when a receipts map cannot be created.
+/// The document's error, or one whose workspace was founded without
+/// [`WORKSPACE_EFFECT_RECEIPTS_KEY`].
 pub fn project_effect_receipts(
     doc: &mut AutoCommit,
     person: &str,
     receipts: &[WorkspaceEffectReceipt],
-) -> Result<(), automerge::AutomergeError> {
-    use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+) -> Result<(), String> {
+    use automerge::{ReadDoc, ScalarValue, Value, transaction::Transactable};
 
     if receipts.is_empty() {
         return Ok(());
     }
-    let log = match doc.get(&ROOT, WORKSPACE_EFFECT_RECEIPTS_KEY)? {
-        Some((Value::Object(ObjType::Map), id)) => id,
-        _ => doc.put_object(&ROOT, WORKSPACE_EFFECT_RECEIPTS_KEY, ObjType::Map)?,
-    };
-    let slice = match doc.get(&log, person)? {
-        Some((Value::Object(ObjType::Map), id)) => id,
-        _ => doc.put_object(&log, person, ObjType::Map)?,
-    };
+    let log = founded_map(doc, WORKSPACE_EFFECT_RECEIPTS_KEY)?;
     for receipt in receipts {
-        let key = receipt.invocation.0.to_string();
+        let key = format!("{person}/{}", receipt.invocation.0);
         let Ok(blob) = serde_json::to_vec(receipt) else {
             continue;
         };
         let unchanged = matches!(
-            doc.get(&slice, key.as_str())?,
+            doc.get(&log, key.as_str()).ok().flatten(),
             Some((Value::Scalar(value), _))
                 if matches!(value.as_ref(), ScalarValue::Bytes(current) if current == &blob)
         );
         if !unchanged {
-            doc.put(&slice, key, ScalarValue::Bytes(blob))?;
+            doc.put(&log, key, ScalarValue::Bytes(blob))
+                .map_err(message)?;
         }
     }
     Ok(())
 }
 
-/// Every effect receipt the workspace holds, each member's slice together,
+/// Every effect receipt the workspace holds, each member's rows together,
 /// oldest first. Receipts that do not decode are skipped.
 pub fn workspace_effect_receipts_of(doc: &AutoCommit) -> Vec<WorkspaceEffectReceipt> {
     use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value};
@@ -351,22 +364,18 @@ pub fn workspace_effect_receipts_of(doc: &AutoCommit) -> Vec<WorkspaceEffectRece
     else {
         return Vec::new();
     };
-    let mut receipts = Vec::new();
-    for person in doc.keys(&log) {
-        let Some((Value::Object(ObjType::Map), slice)) = doc.get(&log, &person).ok().flatten()
-        else {
-            continue;
-        };
-        receipts.extend(doc.keys(&slice).filter_map(|key| {
-            let (Value::Scalar(value), _) = doc.get(&slice, key).ok().flatten()? else {
+    let mut receipts = doc
+        .keys(&log)
+        .filter_map(|key| {
+            let (Value::Scalar(value), _) = doc.get(&log, key).ok().flatten()? else {
                 return None;
             };
             let ScalarValue::Bytes(blob) = value.as_ref() else {
                 return None;
             };
             serde_json::from_slice::<WorkspaceEffectReceipt>(blob).ok()
-        }));
-    }
+        })
+        .collect::<Vec<_>>();
     receipts.compact_sort_by_key(|receipt: &WorkspaceEffectReceipt| receipt.completed_at);
     receipts
 }

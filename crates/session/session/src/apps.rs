@@ -739,6 +739,13 @@ impl Apps {
         self.keep_windows_programs();
     }
 
+    /// The X11 display and cookie file of every kept launch that serves one: what the session's
+    /// input method serves as XIM ([`tilo_app_launch::Spawner::kept_x11`]).
+    #[cfg(target_os = "linux")]
+    pub(crate) fn kept_x11(&self) -> Vec<(String, std::path::PathBuf)> {
+        self.state.borrow().spawner.kept_x11()
+    }
+
     /// Take up what the keepers' registry holds as this run starts: after an in-place restart the
     /// apps the run before left running are this session's launches again, as if it had started
     /// them; after any other start what is there is left over, and ends.

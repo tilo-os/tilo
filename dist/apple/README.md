@@ -410,7 +410,11 @@ shows nothing.
 typed, and every character stays: Markdown's own signs are out of sight, except in the words
 the person is writing in (`Markdown.marks`, `Markdown.hidden`, `FieldStyle`). Return sends and
 Shift Return makes a line; on an iPhone's glass keyboard Return makes a line and the arrow
-sends. Attachments and dictation stand under the field, and dictation is the shell's.
+sends. On the Mac, Up in an empty field brings back the last message the person sent in the
+conversation, Up again the one before and Down the next, until they type, move the caret or
+press Escape (`Stepping`): the messages are the conversation's own, and the app keeps no list
+of them. While an input method is putting a letter together the field takes no key for itself.
+Attachments and dictation stand under the field, and dictation is the shell's.
 
 **A file in a message** is shown with the name and the size Chat gives. In Tilo a file that a
 message carries is content its workspace keeps and the message names (Chat's `attachments`):

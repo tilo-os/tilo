@@ -61,7 +61,7 @@ impl Grants {
             capabilities: self
                 .capabilities
                 .iter()
-                .filter(|cap| cap.persists_across_restart())
+                .filter(|cap| cap.is_durable())
                 .cloned()
                 .collect(),
         };
@@ -118,6 +118,8 @@ impl Grants {
     /// Every directory the VM sees at `now`, writable ones before read-only.
     #[must_use]
     pub fn shares(&self, now: Option<u64>) -> Vec<HostShare> {
+        // `now` in seconds; a lifetime ends in milliseconds.
+        let now_ms = now.map(|now| now.saturating_mul(1000));
         let mut out: Vec<HostShare> = Vec::new();
         for cap in &self.capabilities {
             if cap.effect != Effect::Grant || !cap.names_app(LEGACY_APP_ID) {
@@ -132,7 +134,7 @@ impl Grants {
             }
             let resource = ResourceRef::FsPath(raw.clone());
             let allows = |verb| {
-                decide_app(LEGACY_APP_ID, &resource, verb, &self.capabilities, now)
+                decide_app(LEGACY_APP_ID, &resource, verb, &self.capabilities, now_ms)
                     == CapDecision::Allow
             };
             if allows(Access::Write) {

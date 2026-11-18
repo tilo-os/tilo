@@ -18488,6 +18488,7 @@ dependencies = [
  "smithay-client-toolkit",
  "smithay-clipboard",
  "tilo-clock",
+ "tilo-mime",
  "tilo-platform-caps",
  "tilo-rt",
  "tilo-test-env",
@@ -21001,7 +21002,9 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-accessibility-settings",
+ "tilo-action-policy",
  "tilo-actions",
+ "tilo-clock",
  "tilo-content-types",
  "tilo-desktop-entry",
  "tilo-dialogs",
@@ -23511,6 +23514,7 @@ dependencies = [
 name = "tilo-x11-transfer"
 version = "0.1.0"
 dependencies = [
+ "tilo-mime",
  "tilo-test-env",
  "tracing",
  "workspace-hack",

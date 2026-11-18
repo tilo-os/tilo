@@ -346,6 +346,24 @@ fn a_display_left_by_a_killed_launch_goes_to_one_of_those_taking_it_at_once() {
 tilo_test_env::scenario! {
     fn an_x11_program_of_a_kept_launch_lives_on_the_keepers_display;
 
+    phase the_keepers_directory_names_its_display_and_the_cookie_beside_it;
+    {
+        tilo_test_env::require_capability!(XServer, servers(), "the keeper's X server");
+        let x = X::start();
+        let display = x.rig.keeper.x11_display().expect("the keeper binds a display");
+        let dir = x.rig.dir.path().join("keeper");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("x11")).expect("the display's name"),
+            format!(":{display}"),
+            "a session serving the display reads its name here"
+        );
+        assert!(dir.join("Xauthority").is_file(), "and the cookie beside it");
+        assert!(
+            dir.join("x11-server").is_file(),
+            "a display whose server is up is named as one a session can serve"
+        );
+    }
+
     phase its_window_shows_with_its_class_and_survives_a_desktop_restart;
     {
         tilo_test_env::require_capability!(XServer, servers(), "the keeper's X server");

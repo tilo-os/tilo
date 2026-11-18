@@ -480,7 +480,7 @@ pub enum ServeRequest {
     /// permission prompt answers with this). Only a caller outside every app
     /// sandbox — the shell — may record it.
     AllowHost {
-        expiry: collab_types::caps::Expiry,
+        expiry: tilo_action_policy::Lifetime,
     },
     CreateEnvironment {
         name: String,
@@ -1132,7 +1132,7 @@ pub fn unbuildable(
 fn allow_host(
     caller: &crate::host::Caller,
     store: &Store,
-    expiry: collab_types::caps::Expiry,
+    expiry: tilo_action_policy::Lifetime,
 ) -> ServeResponse {
     if *caller != crate::host::Caller::Session {
         return ServeResponse::Denied {

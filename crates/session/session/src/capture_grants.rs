@@ -113,7 +113,7 @@ mod tests {
 
         phase an_expired_grant_stops_capturing_and_another_workspace_does_not_count;
         {
-            let tree = shell(camera("so.tilo.meet").expiring(collab_types::caps::Expiry::AtUnix(20)));
+            let tree = shell(camera("so.tilo.meet").lasting(tilo_action_policy::Lifetime::Until(20_000)));
             let workspace = tree.workspaces[0].id().to_string();
             assert!(still_allowed(
                 &tree,

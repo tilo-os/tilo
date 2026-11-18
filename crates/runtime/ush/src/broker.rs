@@ -733,7 +733,8 @@ impl BrokerState {
     }
 
     fn perm_entries(&self) -> Vec<PermEntry> {
-        use collab_types::caps::{Effect, Expiry, Scope};
+        use collab_types::caps::{Effect, Scope};
+        use tilo_action_policy::Lifetime;
         self.environment
             .current()
             .grants
@@ -753,11 +754,9 @@ impl BrokerState {
                     },
                     c.access
                 ),
-                expiry: match c.expiry {
-                    Expiry::Never => "never".into(),
-                    Expiry::AtUnix(t) => format!("at {t}"),
-                    Expiry::EndOfSession => "end of session".into(),
-                    Expiry::AfterUse => "after use".into(),
+                expiry: match c.lifetime {
+                    Lifetime::Until(at) => format!("until {at} ms"),
+                    lifetime => lifetime.key().into(),
                 },
             })
             .collect()

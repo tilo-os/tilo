@@ -74,6 +74,7 @@ mod across;
 mod answers;
 mod asks;
 mod calendars;
+mod carried;
 mod coding;
 mod going;
 mod issue_work;
@@ -856,17 +857,49 @@ impl HostAgents {
             self.workspaces.note_waiting(workspace, Vec::new());
             return Ok(Asks::default());
         }
-        let routes = self
+        let mut routes = self
             .workspaces
             .document_routes(workspace)
             .await
             .map_err(|error| error.to_string())?;
+        if !routes.iter().any(|(app, _)| app == TASKS) && self.found_tracker(workspace).await {
+            routes = self
+                .workspaces
+                .document_routes(workspace)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
         let mut asks = self.chat_asks(workspace, &agents, &routes).await?;
         asks.turns.extend(
             self.issue_turns(workspace, &agents, &routes, now_ms)
                 .await?,
         );
         Ok(asks)
+    }
+
+    /// Found the tracker of `workspace`, which keeps none: nobody opened Tasks in it yet. This
+    /// server keeps an agent at work there, and an agent is given work as an issue of the
+    /// workspace's tracker: without one its person can give it none from a device that shows no
+    /// Tasks. The server founds it as it founds any app's document a member's first window
+    /// opens: from the app's own factory in its trusted catalogue, as the workspace's governor.
+    /// Whether it stands now.
+    async fn found_tracker(&self, workspace: &str) -> bool {
+        let catalogue = tilo_agent_session::AppCatalogue::native();
+        let tracker = crate::workspace_bots::workspace_resource(&catalogue, TASKS);
+        let founded = self
+            .workspaces
+            .prepare_application(
+                workspace,
+                self.workspaces.governor(),
+                &catalogue,
+                TASKS,
+                &tracker,
+            )
+            .await;
+        if let Err(error) = &founded {
+            tracing::warn!(%workspace, %error, "the workspace's tracker could not be founded: its agents can be given no issue");
+        }
+        founded.is_ok()
     }
 
     /// What `workspace`'s conversations ask of `agents`: the turns they owe, and the turns a
@@ -912,7 +945,7 @@ impl HostAgents {
                 let Some(message) = part.messages.get(&summons.message) else {
                     continue;
                 };
-                let (request, _) = chat::summons::request(message);
+                let request = carried::request(message);
                 // What came before it in the conversation, as every turn is told it: the
                 // same on a host as on the device that would answer it.
                 // What was learned about the person on their devices is their own record,

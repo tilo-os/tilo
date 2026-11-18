@@ -21,13 +21,13 @@
 //!   nothing about that device's writes ([`Place::Unrecorded`]): it holds
 //!   them.
 //!
-//! The cuts are one map of the workspace document, [`FIELD_V1`]: a key that
-//! is a device (hex) says its removal's cut is written, and a key of a device
-//! and a route holds that route's number. Two devices writing the cut of the
-//! same removal each say what they had taken, and the larger number stands:
-//! a write either of them took before it knew of the removal is history. That
-//! holds when both made the map at once, too: every map the key holds is
-//! read. A cut is never lowered and never erased ([`monotonic`]).
+//! The cuts are one map of the workspace document, [`FIELD_V1`], which the
+//! workspace is founded with: a key that is a device (hex) says its removal's
+//! cut is written, and a key of a device and a route holds that route's
+//! number. Two devices writing the cut of the same removal each say what they
+//! had taken, and the larger number stands: a write either of them took
+//! before it knew of the removal is history. A cut is never lowered and never
+//! erased ([`monotonic`]).
 //!
 //! A compaction restates history under a number its author used before, so
 //! its number says nothing of when it was made. The cut therefore names each
@@ -90,17 +90,15 @@ fn compaction_key(device: &[u8; 32], id: &[u8; 32], route: &str) -> String {
 
 const NOT_A_MAP: &str = "the cuts of device removals are not a map";
 
-/// Every map the key holds: one, unless two devices made it at the same
-/// time, and then what either wrote counts.
+/// The map the workspace is founded with, which holds the cuts of its
+/// devices' removals: none until this build founds a workspace, and exactly
+/// one since.
 fn maps(doc: &AutoCommit) -> Result<Vec<ObjId>, String> {
-    doc.get_all(ROOT, FIELD_V1)
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .map(|(value, id)| match value {
-            Value::Object(ObjType::Map) => Ok(id),
-            _ => Err(NOT_A_MAP.to_owned()),
-        })
-        .collect()
+    match doc.get(ROOT, FIELD_V1).map_err(|error| error.to_string())? {
+        None => Ok(Vec::new()),
+        Some((Value::Object(ObjType::Map), id)) => Ok(vec![id]),
+        Some(_) => Err(NOT_A_MAP.to_owned()),
+    }
 }
 
 /// Every value `key` holds in `maps`, those of writers who wrote it at the
@@ -195,13 +193,7 @@ pub(crate) fn write(
     if stored(doc, &maps(doc)?, &device_key(device))?.contains(&Stored::Recorded) {
         return Ok(false);
     }
-    let map = match doc.get(ROOT, FIELD_V1).map_err(|error| error.to_string())? {
-        Some((Value::Object(ObjType::Map), id)) => id,
-        Some(_) => return Err(NOT_A_MAP.into()),
-        None => doc
-            .put_object(ROOT, FIELD_V1, ObjType::Map)
-            .map_err(|error| error.to_string())?,
-    };
+    let map = crate::state::governed_map(doc, FIELD_V1)?;
     let mut put = |key: String, value: Stored| -> Result<(), String> {
         let bytes = postcard::to_allocvec(&value).map_err(|error| error.to_string())?;
         doc.put(&map, key, ScalarValue::Bytes(bytes))
@@ -293,9 +285,17 @@ mod tests {
         maps.remove(0)
     }
 
+    /// A workspace document as its founding leaves it: the cuts' map exists
+    /// before any device writes its own.
+    fn founded() -> AutoCommit {
+        let mut doc = AutoCommit::new();
+        doc.put_object(ROOT, FIELD_V1, ObjType::Map).unwrap();
+        doc
+    }
+
     #[test]
     fn a_cut_places_a_removed_devices_writes_and_is_never_lowered_or_erased() {
-        let mut doc = AutoCommit::new();
+        let mut doc = founded();
         // No cut written: nothing is said of the device's writes.
         assert_eq!(placed(&doc, &DEVICE, "note", 1), Place::Unrecorded);
         assert!(
@@ -350,8 +350,9 @@ mod tests {
 
     #[test]
     fn two_writers_of_one_removals_cut_keep_what_either_had_taken() {
-        // Neither holds the map yet: each makes its own, at the same time.
-        let mut base = AutoCommit::new();
+        // One map, founded with the workspace: both write their own devices'
+        // cuts into it.
+        let mut base = founded();
         base.put(ROOT, "name", "Workspace").unwrap();
         base.commit();
         let mut first = base.fork();
@@ -390,7 +391,7 @@ mod tests {
     #[test]
     fn a_compaction_is_history_only_as_the_very_one_the_workspace_had_taken() {
         let (taken, other) = ([1; 32], [2; 32]);
-        let mut doc = AutoCommit::new();
+        let mut doc = founded();
         let held = BTreeMap::from([(
             crate::coverage::route_key("app", "note"),
             Held {

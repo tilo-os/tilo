@@ -73,10 +73,13 @@ impl Failure {
         )
     }
 
-    /// Whether HTTP refusal proves no inference was admitted. Billing failures
-    /// never authorize replay, regardless of their HTTP status.
+    /// Whether HTTP refusal proves no inference was admitted: the provider
+    /// was rate-limited (429), overloaded (529) or unavailable for now (503,
+    /// which HTTP defines as a request not handled and names `Retry-After`
+    /// for). Billing failures never authorize replay, regardless of their
+    /// HTTP status, and neither does a provider that says it is switched off.
     pub fn refused_unprocessed(&self, status: u16) -> bool {
-        matches!(status, 429 | 529) && matches!(self.kind, Kind::RateLimited | Kind::Busy)
+        matches!(status, 429 | 503 | 529) && matches!(self.kind, Kind::RateLimited | Kind::Busy)
     }
 
     /// A transport failure before any answer arrived.

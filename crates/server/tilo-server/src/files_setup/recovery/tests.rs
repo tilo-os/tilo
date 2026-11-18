@@ -1,6 +1,6 @@
 use super::*;
 use collab_types::WorkspaceId;
-use collab_types::{Access, CapOverride, Effect, Expiry, Scope};
+use collab_types::{Access, CapOverride, Effect, Scope};
 use std::sync::Mutex;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, persist, sign_device_cert};
 
@@ -12,7 +12,7 @@ fn files_grant(person: [u8; 32]) -> CapOverride {
         scope: Scope::FsPath("/".into()),
         access: Access::Write,
         effect: Effect::Grant,
-        expiry: Expiry::Never,
+        lifetime: tilo_action_policy::Lifetime::UntilRevoked,
         granted_by: None,
     }
 }

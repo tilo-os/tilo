@@ -10,7 +10,7 @@ use collab_types::caps::{
     Access, CapDecision, CapOverride, DeviceCap, Effect, ResourceRef, Scope, decide_app,
     decide_capability,
 };
-use tilo_action_policy::{Acting, Grantee, MemberId, Role};
+use tilo_action_policy::{Acting, Grantee, Lifetime, MemberId, Role};
 
 fn fs(path: &str) -> ResourceRef {
     ResourceRef::FsPath(path.into())
@@ -244,10 +244,10 @@ tilo_test_env::scenario! {
                 Scope::FsPath("/var/workspace/books".into()),
                 Access::Write,
             )
-            .with_expiry(1_000),
+            .lasting(Lifetime::Until(1_000)),
         ];
         for (now, want, why) in [
-            (999, CapDecision::Allow, "live one second before expiry"),
+            (999, CapDecision::Allow, "live one millisecond before expiry"),
             (
                 1_000,
                 CapDecision::NotGranted,
@@ -271,7 +271,7 @@ tilo_test_env::scenario! {
                 Access::Read,
             )
             .through(app)
-            .with_expiry(50),
+            .lasting(Lifetime::Until(50)),
         ];
         assert_eq!(
             decide_app(app, &path, Access::Write, &caps, Some(10)),
@@ -384,7 +384,7 @@ tilo_test_env::scenario! {
         )
         .through("so.tilo.notes")
         .with_id("cap-1")
-        .with_expiry(1_900_000_000)
+        .lasting(Lifetime::Until(1_900_000_000_000))
         .granted_by(MemberId::person("alice"));
         let json = serde_json::to_string(&cap).expect("serialise");
         let back: CapOverride = serde_json::from_str(&json).expect("deserialise");

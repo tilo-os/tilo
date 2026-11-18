@@ -201,7 +201,6 @@ impl crate::services::WorkspaceGrants for Native {
         &self,
         _request: &crate::app_actions::AppActionConsentRequest,
         grant: tilo_action_policy::Grant,
-        _answer: crate::app_actions::AppActionConsent,
     ) -> crate::services::GrantRecording {
         let id = grant.id.as_str().to_owned();
         let recorded = self

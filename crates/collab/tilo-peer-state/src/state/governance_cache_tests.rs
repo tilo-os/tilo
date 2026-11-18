@@ -1,6 +1,5 @@
 //! Governance is decoded once per workspace document state, not once per message.
 use super::*;
-use automerge::ObjType;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -109,22 +108,19 @@ fn authorize_document_decodes_capabilities_at_most_once_per_document_state() {
 /// does, and returns the workspace message that carries them.
 fn publish_receipts(governor: &mut StatePeer, receipts: &[(&str, &[u8])]) -> NeighbourMsg {
     let workspace = governor.core.workspace_doc.as_deref_mut().unwrap();
-    let log = match workspace.get(ROOT, "effect_receipts_v1").unwrap() {
-        Some((_, object)) => object,
-        None => workspace
-            .put_object(ROOT, "effect_receipts_v1", ObjType::Map)
-            .unwrap(),
-    };
-    // The governor's own slice: who recorded them is not what is measured.
-    let object = match workspace.get(&log, "governor").unwrap() {
-        Some((_, object)) => object,
-        None => workspace
-            .put_object(&log, "governor", ObjType::Map)
-            .unwrap(),
-    };
+    let log = workspace
+        .get(ROOT, "effect_receipts_v1")
+        .unwrap()
+        .unwrap()
+        .1;
+    // The governor's own rows: who recorded them is not what is measured.
     for (key, bytes) in receipts {
         workspace
-            .put(&object, *key, automerge::ScalarValue::Bytes(bytes.to_vec()))
+            .put(
+                &log,
+                format!("governor/{key}"),
+                automerge::ScalarValue::Bytes(bytes.to_vec()),
+            )
             .unwrap();
     }
     workspace.commit();

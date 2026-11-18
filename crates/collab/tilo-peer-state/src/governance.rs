@@ -140,19 +140,8 @@ pub(crate) fn admit_invited_member(
         .map_err(|error| error.to_string())?
         .ok_or("governed peers missing")?
         .1;
-    let log = match candidate
-        .get(ROOT, crate::state::invitation_receipts::RECEIPTS_KEY)
-        .map_err(|error| error.to_string())?
-    {
-        Some((_, object)) => object,
-        None => candidate
-            .put_object(
-                ROOT,
-                crate::state::invitation_receipts::RECEIPTS_KEY,
-                automerge::ObjType::Map,
-            )
-            .map_err(|error| error.to_string())?,
-    };
+    let log =
+        crate::state::governed_map(&candidate, crate::state::invitation_receipts::RECEIPTS_KEY)?;
     // The invitation goes into the log with its issuer's certificate and
     // transport details named by digest, kept once for every receipt of an
     // invitation they signed alike ([`crate::state::invitation_receipts`]).

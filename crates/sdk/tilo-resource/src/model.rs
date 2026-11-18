@@ -2001,6 +2001,7 @@ macro_rules! json_scalar {
 json_scalar!(tilo_action_policy::MemberId, Actor);
 json_scalar!(tilo_action_policy::Actor, Actor);
 json_scalar!(tilo_action_policy::Grantee, Text);
+json_scalar!(tilo_action_policy::Lifetime, Text);
 
 /// An app's id is the string it is: written as one, read as one.
 impl Settable for tilo_app_id::AppId {}

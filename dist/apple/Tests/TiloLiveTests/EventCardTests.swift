@@ -272,6 +272,36 @@ final class EventCardTests: XCTestCase {
         XCTAssertEqual(last, called)
     }
 
+    func testAnEventsTagSaysWhatItsNoteKeepsAndNeverANumberItsServerDoesNotKeep() async throws {
+        try await start()
+        try await enter("""
+            wrote('m1', 'Answer every supplier in my words', 1794900100);
+            answer('m2', 'Done. I keep how you write with it.', 1794900101, 1794900110);
+            const note = more => ({instruction: '', style: '', guidance: '', accepted: [], rejected: [], kept: null, ...more});
+            const event = (id, more) => ({id, name: id, sort: 'event', when: 'when something new is in "tilo.accounts.mail"',
+              instruction: 'Answer', on: true, permits: [], setUpAtMs: 1794800000000, ...more});
+            window.events = [
+              event('e-style', {setUpAtMs: 1794900105000, onlyIf: 'The sender is a supplier',
+                note: note({style: 'Short and warm', accepted: ['One.', 'Two.', 'Three.'], rejected: ['No.']})}),
+              event('e-style-alone', {note: note({style: 'Short and warm'})}),
+              event('e-one', {note: note({accepted: ['One.']})}),
+              event('e-cares', {note: note({guidance: 'Never promise a date'})}),
+              event('e-saw', {note: note({kept: {last: 'uid 41'}})}),
+              event('e-nothing', {note: note({})}),
+              event('e-no-note', {})]
+            """)
+        try await until("her events are listed") { self.listed.count == 7 }
+        XCTAssertEqual(listed.map(\.note), ["your style, from 3 answers you accepted", "your style", "1 answer you accepted",
+                                            "what you care about", "what it saw last", nil, nil])
+        // The tag in the Tasks panel and on the card, in the app's own words around the note's.
+        let wording = Wording()
+        XCTAssertEqual(wording.tags(listed[0]), ["The sender is a supplier", "Note: your style, from 3 answers you accepted"])
+        XCTAssertEqual(wording.tags(listed[5]), [])
+        try await until("the card stands under the answer") { self.names == ["m1", "m2", "m2#event:e-style"] }
+        guard case .event(let card) = held[2].content else { return XCTFail("no card") }
+        XCTAssertEqual(wording.cardTags(card.automation), ["The sender is a supplier", "Your style, from 3 answers you accepted"])
+    }
+
     func testAnAnswerLeftOpenEndsWhereTheNextBeganAndTwoEventsOfOneAnswerEachHaveTheirCard() throws {
         var cards = EventCards()
         func answer(_ name: String, from: Int, to: Int?) throws -> Item {

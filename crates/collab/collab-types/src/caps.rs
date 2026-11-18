@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 pub mod net;
 
 pub use net::{Allowed, EgressPolicy, HostPattern, NetHostError, NetHostPattern, host_covers};
-use tilo_action_policy::{Acting, Grantee, MemberId};
+use tilo_action_policy::{Acting, Grantee, Lifetime, MemberId};
 
 /// How far a sandbox capability reaches into its resource.
 #[derive(
@@ -294,80 +294,6 @@ pub enum ResourceRef {
     FsResource(String),
 }
 
-/// When a capability dies — the `expiry` of `(who, resource, access, expiry)`.
-///
-/// The whole lifetime vocabulary: the portal's "Just once" / "Until I log
-/// out" / "Always" map to [`Expiry::AfterUse`], `EndOfSession` and
-/// `Never` respectively, not a parallel enum.
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model,
-)]
-#[serde(deny_unknown_fields)]
-pub enum Expiry {
-    /// Lives until explicitly revoked, and survives a restart.
-    #[default]
-    Never,
-    /// Dies at this wall-clock instant (seconds since epoch); survives a
-    /// restart if not yet past.
-    AtUnix(u64),
-    /// Dies when the granting session ends. Never written to disk.
-    EndOfSession,
-    /// Dies as soon as the requesting prompt completes. Never written to disk.
-    AfterUse,
-}
-
-impl Expiry {
-    /// Is a capability with this expiry still live at `now`?
-    ///
-    /// `now: None` skips time evaluation — used by the wire validator, which
-    /// shares no clock with an op's author. `EndOfSession`/`AfterUse` are
-    /// live here; their deaths are events (not persisting, dropping after
-    /// use), not instants.
-    pub fn is_live_at(self, now: Option<u64>) -> bool {
-        match (self, now) {
-            (Expiry::AtUnix(deadline), Some(now)) => now < deadline,
-            _ => true,
-        }
-    }
-
-    /// Should a capability with this expiry be written to disk?
-    ///
-    /// The single answer to "does `Always` survive a restart?" — session- and
-    /// use-scoped capabilities are excluded so persisting them can't silently
-    /// turn a one-shot grant into a permanent one.
-    pub fn persists_across_restart(self) -> bool {
-        matches!(self, Expiry::Never | Expiry::AtUnix(_))
-    }
-
-    /// Does a capability with this expiry outlive one with `other`?
-    ///
-    /// Order: `Never` > `AtUnix(later)` > `AtUnix(earlier)` > `EndOfSession` >
-    /// `AfterUse`. An explicit deadline outranks the session because it
-    /// survives a restart.
-    pub fn outlives(self, other: Expiry) -> bool {
-        fn tier(e: Expiry) -> u8 {
-            match e {
-                Expiry::AfterUse => 0,
-                Expiry::EndOfSession => 1,
-                Expiry::AtUnix(_) => 2,
-                Expiry::Never => 3,
-            }
-        }
-        match (self, other) {
-            (Expiry::AtUnix(a), Expiry::AtUnix(b)) => a > b,
-            (a, b) => tier(a) > tier(b),
-        }
-    }
-
-    /// The longer-lived of two expiries — the single definition of "strongest
-    /// scope wins", used both merging a re-grant and reporting an existing
-    /// grant's strength. Two answers here would eventually disagree, reading
-    /// as a permanent grant silently becoming a session one.
-    pub fn longest(a: Expiry, b: Expiry) -> Expiry {
-        if a.outlives(b) { a } else { b }
-    }
-}
-
 /// Whether a capability grants or restricts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
 #[serde(deny_unknown_fields)]
@@ -393,7 +319,8 @@ pub struct CapOverride {
     pub access: Access,
     /// Stable id: revocation and the replicated map key on it.
     pub id: String,
-    pub expiry: Expiry,
+    /// How long it stands; only a durable one is written into a workspace.
+    pub lifetime: Lifetime,
     /// Who granted it, for audit and the share list.
     #[serde(default)]
     pub granted_by: Option<MemberId>,
@@ -408,7 +335,7 @@ impl CapOverride {
             effect,
             access,
             id: String::new(),
-            expiry: Expiry::Never,
+            lifetime: Lifetime::UntilRevoked,
             granted_by: None,
         }
     }
@@ -462,14 +389,8 @@ impl CapOverride {
     }
 
     #[must_use]
-    pub fn with_expiry(mut self, unix_seconds: u64) -> Self {
-        self.expiry = Expiry::AtUnix(unix_seconds);
-        self
-    }
-
-    #[must_use]
-    pub fn expiring(mut self, expiry: Expiry) -> Self {
-        self.expiry = expiry;
+    pub fn lasting(mut self, lifetime: Lifetime) -> Self {
+        self.lifetime = lifetime;
         self
     }
 
@@ -479,12 +400,14 @@ impl CapOverride {
         self
     }
 
-    pub fn is_live_at(&self, now: Option<u64>) -> bool {
-        self.expiry.is_live_at(now)
+    /// Whether it is live at `now_ms`, Unix milliseconds; see [`Lifetime::is_live_at`].
+    pub fn is_live_at(&self, now_ms: Option<u64>) -> bool {
+        self.lifetime.is_live_at(now_ms)
     }
 
-    pub fn persists_across_restart(&self) -> bool {
-        self.expiry.persists_across_restart()
+    /// Whether it may be written down; see [`Lifetime::is_durable`].
+    pub fn is_durable(&self) -> bool {
+        self.lifetime.is_durable()
     }
 }
 
@@ -501,7 +424,7 @@ pub enum CapDecision {
 /// May `acting` reach `resource` with `access`?
 ///
 /// A live matching grant whose access implies the request allows, unless a live
-/// matching restriction caps it below the request. `now` in Unix seconds; `None`
+/// matching restriction caps it below the request. `now` in Unix milliseconds; `None`
 /// skips expiry. Reading is refused only when no live grant covers the
 /// resource: every restriction's access implies `Read`, so none caps below it.
 pub fn decide_capability(

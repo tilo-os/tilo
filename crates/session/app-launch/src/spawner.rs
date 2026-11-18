@@ -304,6 +304,18 @@ impl Spawner {
         }
     }
 
+    /// The X11 display of each kept launch that serves one, with the cookie file that admits a
+    /// client, in display order: what the session's input method serves as XIM.
+    #[cfg(target_os = "linux")]
+    pub fn kept_x11(&self) -> Vec<(String, PathBuf)> {
+        let mut displays: Vec<(String, PathBuf)> = running(&self.running)
+            .values()
+            .filter_map(|app| app.kept.as_ref().and_then(|kept| kept.x11()))
+            .collect();
+        displays.sort();
+        displays
+    }
+
     /// Start the apps that are not Tilo's behind `keeping`'s keeper from now on, attached to its
     /// desktop ([`crate::kept`]).
     ///
