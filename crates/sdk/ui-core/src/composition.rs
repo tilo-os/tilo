@@ -1275,7 +1275,7 @@ mod tests {
             }
         ));
 
-        let radio = crate::widget::Checkbox::new("any", "path").radio();
+        let radio = crate::widget::Checkbox::bound("any", "path").radio();
         let composed = super::compose_alone(&radio, &crate::Theme::dark(), "radio");
         assert!(matches!(
             controls(&composed)[0],

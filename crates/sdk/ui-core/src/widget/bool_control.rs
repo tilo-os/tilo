@@ -116,7 +116,33 @@ struct ViewSet {
 }
 
 impl BoolControl {
-    pub fn new(on_toggle_path: &str, accessible_name: Option<String>) -> Self {
+    /// A control reading and writing the boolean under `document_key` in the app document.
+    ///
+    /// An empty key is a programming error, not a control with no value: a document key nobody
+    /// can name reads missing and shows every control as off, whatever it was given. A control
+    /// with a value of its own is built with [`Self::given`] or [`Self::local`].
+    #[track_caller]
+    pub fn document(document_key: &str, accessible_name: Option<String>) -> Self {
+        assert!(
+            !document_key.is_empty(),
+            "a bound control needs a document key; a value of its own is built with `given`"
+        );
+        Self {
+            binding: Some(crate::doc_source::bool_key(document_key)),
+            ..Self::bare(accessible_name)
+        }
+    }
+
+    /// A control showing `on`, with no document binding: its action, view or callback answers a
+    /// flip, and a sync leaves the value as given.
+    pub fn given(on: bool, accessible_name: Option<String>) -> Self {
+        Self {
+            is_checked: on,
+            ..Self::bare(accessible_name)
+        }
+    }
+
+    fn bare(accessible_name: Option<String>) -> Self {
         Self {
             rect: Rect::ZERO,
             is_hovered: false,
@@ -130,7 +156,7 @@ impl BoolControl {
             id_override: None,
             accessible_name,
             name_resolved: false,
-            binding: Some(crate::doc_source::bool_key(on_toggle_path)),
+            binding: None,
             on_change: None,
             action: None,
             view_resource: None,
@@ -215,7 +241,7 @@ impl BoolControl {
         Self {
             is_checked: checked,
             binding: Some(binding),
-            ..Self::new("", accessible_name)
+            ..Self::bare(accessible_name)
         }
     }
 

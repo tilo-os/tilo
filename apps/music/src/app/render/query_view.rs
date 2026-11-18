@@ -1069,7 +1069,7 @@ impl Music {
                     ControlKind::Switch { on } => {
                         // The switch runs the published action itself,
                         // whichever way it is flipped.
-                        let mut toggle = Toggle::new(&format!("music.control.{id}"), "")
+                        let mut toggle = Toggle::given(&format!("music.control.{id}"), on)
                             .with_accessible_name(&label);
                         if let Some(binding) = actions
                             .as_ref()
@@ -1077,7 +1077,6 @@ impl Music {
                         {
                             toggle = toggle.on_action(binding);
                         }
-                        toggle.set_checked(on);
                         Box::new(
                             Row::new()
                                 .with_gap(gap)

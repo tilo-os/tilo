@@ -191,8 +191,7 @@ pub fn action_control<R: Resource>(actions: &Actions<R>, hit: &ActionHit) -> Ele
             }
         }
         ControlKind::Switch { on } => {
-            let mut toggle = Toggle::new(&id, "").with_accessible_name(label);
-            toggle.set_checked(on);
+            let toggle = Toggle::given(&id, on).with_accessible_name(label);
             let control: Element = match actions.spec_switch_binding(&hit.spec) {
                 Some(binding) => Box::new(toggle.on_action(binding)),
                 None => Box::new(toggle.with_enabled(false)),

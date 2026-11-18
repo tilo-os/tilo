@@ -98,8 +98,8 @@ fn view_of() -> Box<dyn tilo_ui::widget::Widget> {
         Column::new()
             .with_gap(12.0)
             .push(Box::new(buttons))
-            .push(Box::new(Toggle::new("wifi", "")))
-            .push(Box::new(Toggle::new("bluetooth", ""))),
+            .push(Box::new(Toggle::given("wifi", false)))
+            .push(Box::new(Toggle::given("bluetooth", false))),
     )
 }
 

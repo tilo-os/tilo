@@ -47,7 +47,7 @@ fn account() -> Form {
                 ),
         )
         .section(FormSection::new("Preferences").content(Box::new(
-            Checkbox::new("updates", "updates").with_label(UPDATES),
+            Checkbox::bound("updates", "updates").with_label(UPDATES),
         )))
         .with_actions(actions())
 }
@@ -151,7 +151,7 @@ fn primitive(width: u32, scale: f32) -> Element {
                 .with_heading_level(2),
         ))
         .push(Box::new(
-            Checkbox::new("updates", "updates").with_label(UPDATES),
+            Checkbox::bound("updates", "updates").with_label(UPDATES),
         ));
     let sections = Column::new()
         .with_no_padding()
@@ -226,7 +226,7 @@ fn settings_form() -> Form {
             FormSection::new("Sync")
                 .grouped()
                 .field(
-                    Field::new("Sync over mobile data", Toggle::new("mobile", "mobile"))
+                    Field::new("Sync over mobile data", Toggle::bound("mobile", "mobile"))
                         .with_help("Large files wait for Wi-Fi."),
                 )
                 .field(Field::new(

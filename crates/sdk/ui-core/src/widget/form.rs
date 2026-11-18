@@ -130,7 +130,7 @@ where
 ///
 /// let remember = labeled_check(
 ///     "account-remember-label",
-///     Checkbox::new("remember", "remember-value"),
+///     Checkbox::bound("remember", "remember-value"),
 /// );
 /// ```
 pub fn labeled_check<C>(label: impl Into<String>, control: C) -> Row
@@ -196,9 +196,9 @@ mod tests {
         fn standard_boolean_and_range_controls_share_the_contract() {
             let checkbox = labeled_field(
                 "remember-label",
-                Checkbox::new("remember", "remember-value"),
+                Checkbox::bound("remember", "remember-value"),
             );
-            let toggle = labeled_field("sync-label", Toggle::new("sync", "sync-value"));
+            let toggle = labeled_field("sync-label", Toggle::bound("sync", "sync-value"));
             let slider = labeled_field("volume-label", Slider::new("volume", "volume-value"));
 
             for (field, expected) in [
@@ -282,7 +282,7 @@ mod tests {
         fn inline_check_uses_one_key_for_visible_and_spoken_labels() {
             let check = labeled_check(
                 "remember-label",
-                Checkbox::new("remember", "remember-value"),
+                Checkbox::bound("remember", "remember-value"),
             );
             let children = Widget::children(&check);
             let control = children[0].accessibility().expect("checkbox semantics");

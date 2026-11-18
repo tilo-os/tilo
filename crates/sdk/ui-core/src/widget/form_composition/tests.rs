@@ -241,7 +241,7 @@ fn long_form() -> Form {
             .field(Field::new("Email address for account recovery", TextInput::local().with_id("email"))
                 .with_help("We use this address to help you sign in and send important account notifications.")
                 .with_error("Enter a valid email address, including the domain after the at sign.")))
-            .section(FormSection::new("Preferences").content(Box::new(super::super::Checkbox::new("updates", "updates")
+            .section(FormSection::new("Preferences").content(Box::new(super::super::Checkbox::bound("updates", "updates")
                 .with_label("Send me occasional product updates and tips for working with my team."))))
             .with_actions(Actions::new(super::super::Button::new("save", "Save account changes").role(ButtonRole::Primary))
                 .secondary(super::super::Button::new("cancel", "Cancel")))
@@ -676,7 +676,7 @@ fn grouped_sections_are_settings_rows_with_separators() {
     let theme = Theme::dark();
     let section = FormSection::new("Camera")
         .grouped()
-        .field(Field::new("Grid lines", Toggle::new("grid", "grid")))
+        .field(Field::new("Grid lines", Toggle::bound("grid", "grid")))
         .field(Field::new(
             "Photo format",
             Dropdown::new(vec!["HEIF".into(), "JPEG".into()], "format"),
@@ -943,7 +943,7 @@ fn grouped_switches_end_on_the_trailing_edge_and_stack_full_width() {
             .grouped()
             .field(Field::new(
                 "Grid lines",
-                Toggle::new("grid", "grid").with_id("grid"),
+                Toggle::bound("grid", "grid").with_id("grid"),
             ))
             .field(Field::new(
                 "Photo format",
@@ -1101,7 +1101,7 @@ fn the_forms_of_a_pages_sections_share_one_label_column_and_name_their_controls(
                 Box::new(
                     Row::new()
                         .push(Box::new(Text::new("Background")))
-                        .push(Box::new(Toggle::new("background", "layers.background"))),
+                        .push(Box::new(Toggle::bound("background", "layers.background"))),
                 ),
                 Box::new(
                     ColorSwatchPicker::new([ColorSwatch::new(vello::peniko::Color::BLACK)], 1)
