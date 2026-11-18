@@ -1378,6 +1378,33 @@ impl<R> Edit<R> {
     }
 }
 
+/// What an edit that names no field of a resource is told: the fields an
+/// edit changes or, where it changes none, that the resource's actions do,
+/// with the fields they change. Never a list of nothing.
+pub(crate) fn no_such_field(key: &str, fields: &[crate::table::FieldDesc]) -> String {
+    let keys = |read_only: bool| -> Vec<&str> {
+        fields
+            .iter()
+            .filter(|field| field.readonly == read_only)
+            .map(|field| field.key)
+            .collect()
+    };
+    let (editable, read_only) = (keys(false), keys(true));
+    if !editable.is_empty() {
+        return format!(
+            "no field `{key}`; the fields here are {}",
+            editable.join(", ")
+        );
+    }
+    if read_only.is_empty() {
+        return format!("no field `{key}`; this resource keeps no field: its actions change it");
+    }
+    format!(
+        "no field `{key}`; no field here is changed by an edit: this resource's actions change {}",
+        read_only.join(", ")
+    )
+}
+
 /// [`Edit::coalesces`] of the edit `previous` (its path and operation) and
 /// `next`, an edit in a type's own vocabulary continuing as `rich` says:
 /// compiled once rather than for every record type.

@@ -1590,3 +1590,56 @@ impl Frame {
         self.title.clear();
     }
 }
+
+/// A resource that keeps no field: every change to it is one of its actions.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Bare {}
+
+#[resource(kind = "test.bare", catalogue = "tests/locales")]
+impl Bare {}
+
+/// A reading: both fields are changed only by the resource's actions.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Gauge {
+    #[model(readonly)]
+    pub level: u32,
+    #[model(readonly)]
+    pub unit: String,
+}
+
+#[resource(kind = "test.gauge", catalogue = "tests/locales")]
+impl Gauge {}
+
+tilo_test_env::scenario! {
+    fn a_field_edit_of_a_resource_no_edit_changes_says_what_does;
+
+    phase a_resource_without_a_field_says_that_its_actions_change_it;
+    // A caller that guesses a field of a resource with none is not told a
+    // list of nothing: it is told where the resource's changes are.
+    {
+        let mut bare = Replica::<Bare>::new();
+        let refused = format!(
+            "{:?}",
+            bare.apply(set_at(&["theme"], "dark")).unwrap_err()
+        );
+        assert!(
+            refused.contains("no field `theme`; this resource keeps no field: its actions change it"),
+            "{refused}"
+        );
+    }
+
+    phase a_resource_of_read_only_fields_names_them_and_says_what_changes_them;
+    {
+        let mut gauge = Replica::<Gauge>::new();
+        let refused = format!(
+            "{:?}",
+            gauge.apply(set_at(&["theme"], "dark")).unwrap_err()
+        );
+        assert!(
+            refused.contains(
+                "no field `theme`; no field here is changed by an edit: this resource's actions change level, unit"
+            ),
+            "{refused}"
+        );
+    }
+}
