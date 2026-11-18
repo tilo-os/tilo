@@ -1,6 +1,11 @@
 use account_credentials::{CredentialStore, OAuthIssuer, TokenSet, portable};
 use accounts::{Account, AccountId, AccountStore, SecretVault};
 
+/// The adopted event as its server answers a read of it.
+const ADOPTED_HELD: &str = "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nUID:remote-event\n\
+     DTSTART:20261010T090000Z\nDTEND:20261010T100000Z\nSUMMARY:Adopted event\nEND:VEVENT\n\
+     END:VCALENDAR\n";
+
 struct AdoptionFixture {
     destination: tempfile::TempDir,
     server: Responder,
@@ -24,7 +29,14 @@ SUMMARY:Adopted event
 END:VEVENT
 END:VCALENDAR
 </c:calendar-data></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#),
+        // What the server holds is read before each write over it.
+        Reply::status(200)
+            .header("ETag", "\"v1\"")
+            .body(ADOPTED_HELD),
         Reply::status(412),
+        Reply::status(200)
+            .header("ETag", "\"v1\"")
+            .body(ADOPTED_HELD),
         Reply::status(204).header("ETag", "\"v2\""),
         Reply::status(412),
         Reply::status(204),
@@ -192,12 +204,14 @@ fn portable_google_selection_uses_production_report_and_etag_guards() {
 fn assert_requests(server: &Responder, tokens: &Responder) {
     for (method, target, bearer, etag) in [
         ("REPORT", "/cal/work/", "Bearer first-access", None),
+        ("GET", "/cal/work/event.ics", "Bearer second-access", None),
         (
             "PUT",
             "/cal/work/event.ics",
             "Bearer second-access",
             Some("\"v1\""),
         ),
+        ("GET", "/cal/work/event.ics", "Bearer second-access", None),
         (
             "PUT",
             "/cal/work/event.ics",
