@@ -313,6 +313,7 @@ async fn lounge_with_chat() -> (Hosted, Device, String, tempfile::TempDir) {
         )
         .await
         .unwrap();
+    let governor = hex::encode(workspaces.serving_certificate().user_public_key);
     workspaces
         .author_application(
             &workspace,
@@ -321,11 +322,11 @@ async fn lounge_with_chat() -> (Hosted, Device, String, tempfile::TempDir) {
             CHAT,
             "",
             |doc| {
-                // The channel the operator sets up, under the id the workspace's
-                // own settle gives it (`c_` and its name).
+                // The channel the workspace's governor opens it with, under the
+                // id the workspace's own settle gives it (`c_` and its name).
                 chat::demo::apply_as(
                     doc,
-                    "operator",
+                    &governor,
                     chat::Chat::CREATE_CHANNEL_WITH_ID.with(
                         chat::chat::chat::CreateChannelWithId {
                             id: format!("c_{CHANNEL}"),

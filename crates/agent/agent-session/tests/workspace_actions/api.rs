@@ -953,7 +953,7 @@ async fn a_members_key_posts_a_long_history_into_the_lounges_chat() {
             |doc| {
                 chat::demo::apply_as(
                     doc,
-                    "operator",
+                    &hex::encode(serving.user_public_key),
                     chat::Chat::CREATE_CHANNEL_WITH_ID.with(
                         chat::chat::chat::CreateChannelWithId {
                             id: "c_general".into(),
@@ -1085,7 +1085,7 @@ async fn every_message_a_long_conversation_lists_is_read_at_its_path() {
             |doc| {
                 chat::demo::apply_as(
                     doc,
-                    "operator",
+                    &hex::encode(serving.user_public_key),
                     chat::Chat::CREATE_CHANNEL_WITH_ID.with(
                         chat::chat::chat::CreateChannelWithId {
                             id: "c_general".into(),
