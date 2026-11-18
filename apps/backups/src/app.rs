@@ -288,7 +288,8 @@ impl Store {
             if destination.is_dir() {
                 match crate::engine::list_snapshots(destination) {
                     Ok(manifests) => {
-                        self.catalog = Catalog::from_local(source, destination, &manifests);
+                        self.catalog =
+                            crate::engine::catalog_from_local(source, destination, &manifests);
                     }
                     Err(error) => {
                         self.repository_error =
@@ -313,7 +314,7 @@ impl Store {
             self.repository_error = Some(error.clone());
             error
         })?;
-        self.catalog = Catalog::from_local(source, destination, &manifests);
+        self.catalog = crate::engine::catalog_from_local(source, destination, &manifests);
 
         Ok(())
     }

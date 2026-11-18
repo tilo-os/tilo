@@ -12,7 +12,10 @@ use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use walkdir::WalkDir;
 
-use crate::model::RetentionPolicy;
+use crate::model::{
+    Catalog, DestKind, Destination, Health, Retention, RetentionPolicy, Schedule, SnapFile,
+    SnapStatus, SnapType, Snapshot, Source, SourceKind,
+};
 
 const REPOSITORY_DIR: &str = ".tilo-backups";
 const SNAPSHOTS_DIR: &str = "snapshots";
@@ -1343,5 +1346,83 @@ mod tests {
             retained(&manifests, &policy),
             BTreeSet::from(["newest".to_owned(), "yesterday".to_owned()])
         );
+    }
+}
+
+/// The local civil time `unix_seconds` names, when it is a representable instant.
+fn local_time(unix_seconds: u64) -> Option<jiff::civil::DateTime> {
+    let seconds = i64::try_from(unix_seconds).ok()?;
+    let utc = jiff::Timestamp::from_second(seconds).ok()?;
+    Some(utc.to_zoned(jiff::tz::TimeZone::system()).datetime())
+}
+/// Project a real local repository into the dashboard model.
+#[must_use]
+pub fn catalog_from_local(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+    manifests: &[BackupManifest],
+) -> Catalog {
+    let source_label = source.to_string_lossy().into_owned();
+    let source_name = source.file_name().map_or_else(
+        || source_label.clone(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let destination_label = destination.file_name().map_or_else(
+        || destination.to_string_lossy().into_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let now = ui::clock::local_now().datetime();
+    let snapshots = manifests
+        .iter()
+        .map(|manifest| Snapshot {
+            id: manifest.id.clone(),
+            source_id: "local-source".into(),
+            dest_id: "local-destination".into(),
+            taken: local_time(manifest.created_unix_seconds).unwrap_or(now),
+            label: None,
+            kind: SnapType::Unknown,
+            retention: Retention::Unknown,
+            size_bytes: manifest.bytes,
+            delta_bytes: manifest.bytes,
+            files_changed: manifest.files.min(u64::from(u32::MAX)) as u32,
+            status: SnapStatus::Complete,
+            failure: None,
+            files: manifest
+                .entries
+                .iter()
+                .map(|entry| SnapFile {
+                    depth: entry.path.components().count().saturating_sub(1),
+                    name: entry
+                        .path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    size: matches!(entry.kind, EntryKind::File).then_some(entry.size),
+                    is_dir: matches!(entry.kind, EntryKind::Directory),
+                })
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+    let used = manifests.iter().map(|manifest| manifest.bytes).sum::<u64>();
+    Catalog {
+        sources: vec![Source {
+            id: "local-source".into(),
+            name: source_name,
+            path: source_label,
+            kind: SourceKind::Custom,
+            schedule: Schedule::OnDemand,
+            enabled: true,
+            health: Health::Unknown,
+        }],
+        snapshots,
+        destinations: vec![Destination {
+            id: "local-destination".into(),
+            name: destination_label,
+            kind: DestKind::LocalFolder,
+            used_bytes: used,
+            total_bytes: None,
+            encrypted: false,
+            health: Health::Unknown,
+        }],
     }
 }

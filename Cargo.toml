@@ -107,6 +107,7 @@ members = [
     "apps/assistant",
     "apps/assistant-model",
     "apps/backups",
+    "apps/backups-model",
     "apps/browser",
     "apps/calculator",
     "apps/calendar",

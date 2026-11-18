@@ -13,9 +13,10 @@ pub mod actions;
 pub mod app;
 pub mod engine;
 mod i18n;
-pub mod model;
+pub use backups_model as model;
 pub mod resource;
 pub mod search;
 mod view;
 
-pub use resource::{BackupLocation, Backups, BackupsShell};
+pub use backups_model::Backups;
+pub use resource::{BackupLocation, BackupsShell};
