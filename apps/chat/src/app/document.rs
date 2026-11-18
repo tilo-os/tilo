@@ -109,6 +109,7 @@ impl ChatApp {
                 || chat.message_rows(&held, &self.active_channel),
                 |(_, messages)| messages.clone(),
             );
+        self.read_answering(&held);
         self.search_messages = per_channel
             .iter()
             .flat_map(|(_, messages)| messages.iter().cloned())

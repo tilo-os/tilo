@@ -117,7 +117,7 @@ impl ChatApp {
                 self.right_flap.snap(scenario == "agent-long-thread");
                 self.call = CallState::default();
             }
-            "agent-work" => {
+            "agent-work" | "agent-stopped" => {
                 self.thread_open = Some("m_agent_request".into());
                 self.right_flap.snap(true);
                 self.call = CallState::default();

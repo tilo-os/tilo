@@ -113,6 +113,11 @@ chat-agent-complete = Complete
 chat-agent-truncated = Answer interrupted
 chat-agent-refused = Request refused
 chat-agent-cancelled = Stopped
+chat-agent-stop = Stop the answer
+chat-agent-stopped-by-you = Stopped by you
+chat-agent-stopped-by = Stopped by { $person }
+# A stop of an agent's work that Chat did not take; $reason says why.
+chat-agent-not-stopped = Not stopped: { $reason }
 chat-agent-failed = Could not finish
 chat-model-ask = Ask assistant
 chat-model-stop = Stop

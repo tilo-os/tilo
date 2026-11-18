@@ -191,6 +191,10 @@ impl ChatApp {
             }
             items
         };
+        // An agent's reply stops its own work, for the person it works for and nobody else.
+        if self.stops(&msg) {
+            items.insert(0, MenuAction::StopWork);
+        }
         // The link of what the message's chip shows, as the chip's own menu offers it.
         if message
             .attachments
@@ -242,7 +246,7 @@ impl ChatApp {
     }
 
     /// Paint the bar over the message it shows for, at the top trailing
-    /// corner of its row, and record its buttons.
+    /// corner of its row, and keep where its buttons are.
     pub(crate) fn draw_message_bar(
         &mut self,
         paint: PaintCtx<'_>,

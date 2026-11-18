@@ -47,6 +47,7 @@ impl ContextMenu {
                 MenuAction::Delete | MenuAction::DeleteMessage => Icon::Trash,
                 MenuAction::BanAuthor => Icon::Ban,
                 MenuAction::StopSharing => Icon::EyeOff,
+                MenuAction::StopWork => Icon::Square,
                 MenuAction::MoveUp => Icon::ChevronUp,
                 MenuAction::MoveDown | MenuAction::ToggleCollapse => Icon::ChevronDown,
                 MenuAction::NewChannelHere
@@ -136,6 +137,8 @@ pub(crate) enum MenuAction {
     BanAuthor,
     /// Stop sharing the window a message of yours shares.
     StopSharing,
+    /// Stop the work an agent does on its reply, for the person it works for.
+    StopWork,
     /// Stop hearing someone in the call, on this device only, or hear them
     /// again.
     Silence,
@@ -168,6 +171,7 @@ impl MenuAction {
             MenuAction::ReportAuthor => "chat-menu-report-sender",
             MenuAction::BanAuthor => "chat-menu-ban",
             MenuAction::StopSharing => "chat-share-stop",
+            MenuAction::StopWork => "chat-agent-stop",
             MenuAction::Silence => "chat-call-silence",
             MenuAction::Volume(_) => "chat-menu-volume",
         })

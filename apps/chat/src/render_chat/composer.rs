@@ -8,6 +8,7 @@
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
+use vello::peniko::{BlendMode, Fill};
 
 use ui::Widget;
 use ui::icons::Icon;
@@ -56,10 +57,19 @@ impl ChatApp {
             && self.editing.is_none();
         let draft = self.composer_main.value();
         let send_enabled = interactive && !draft.trim().is_empty();
+        // While an agent is at work for this person and nothing is typed, the
+        // send's place stops that work: what they type instead is sent, and
+        // reaches the turn that is going.
+        let stop = if interactive && !send_enabled {
+            self.stop_offered(false)
+        } else {
+            None
+        };
+        let swap = self.stop_swap.follow(false, stop.is_some(), theme);
         let inner = self.draw_input_box(
             PaintCtx::new(scene, tf, tr, theme),
             rect,
-            &draft,
+            crate::app::stop::SendPlace { stop, swap },
             (send_enabled, self.direct_person().is_none(), interactive),
             Hit::FocusMain,
             hits,
@@ -82,6 +92,8 @@ impl ChatApp {
         });
         if let Some(reason) = &self.not_sent {
             Self::draw_not_sent(PaintCtx::new(scene, tf, tr, theme), rect, reason, hits);
+        } else if let Some(reason) = &self.not_stopped {
+            Self::draw_not_stopped(PaintCtx::new(scene, tf, tr, theme), rect, reason);
         } else if self.deleted_here() {
             Self::draw_deleted(PaintCtx::new(scene, tf, tr, theme), rect, hits);
         } else if let Some(status) = upload {
@@ -152,6 +164,38 @@ impl ChatApp {
             &strong,
         );
         ChatApp::push_hit(hits, Rect::new(x, y, x + retry_w, y + h), Hit::RetrySend);
+    }
+
+    /// Under a box, while Chat refused a stop of an agent's work: that the work
+    /// was not stopped, and why.
+    pub(super) fn draw_not_stopped(paint: PaintCtx<'_>, field: Rect, reason: &str) {
+        let PaintCtx {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let style = theme.text(TextRole::Caption);
+        let line = elide(
+            tr,
+            &crate::i18n::t_args(
+                "chat-agent-not-stopped",
+                &[("reason", reason.to_owned().into())],
+            ),
+            &style,
+            field.width(),
+        );
+        tr.draw_style(
+            scene,
+            &line,
+            theme.tokens.colors.semantic.danger,
+            tf.pre_translate(vello::kurbo::Vec2::new(
+                field.x0,
+                field.y1 + f64::from(theme.tokens.spacing.s1),
+            )),
+            None,
+            &style,
+        );
     }
 
     /// Whether the message the person just deleted was in the channel shown.
@@ -256,14 +300,14 @@ impl ChatApp {
     /// their hit regions. Returns the band the composer's editor is laid out
     /// into; the editor owns the text, caret, selection and placeholder.
     ///
-    /// The band is sized from the measured `draft` (one line when empty) and
-    /// centred on the field, so a short draft lines up with the buttons; a
-    /// long draft fills the field, which itself grows with the text.
+    /// `place` says what stands where the box sends: its send, or, while an
+    /// agent is at work for this person and nothing is typed, the stop of
+    /// that work.
     pub(crate) fn draw_input_box(
         &self,
         paint: PaintCtx<'_>,
         rect: Rect,
-        draft: &str,
+        place: crate::app::stop::SendPlace,
         (send_enabled, attach, interactive): (bool, bool, bool),
         focus_hit: Hit,
         hits: &mut Vec<(Rect, Hit)>,
@@ -277,11 +321,8 @@ impl ChatApp {
         let btn = ButtonFace::height(ControlSize::Regular, theme);
         // The thread has its own box and its own send button: a send from the
         // conversation's box is found at that box, and nowhere else.
-        let send_hit = if matches!(focus_hit, Hit::FocusThread) {
-            Hit::ThreadSend
-        } else {
-            Hit::Send
-        };
+        let thread = matches!(focus_hit, Hit::FocusThread);
+        let send_hit = if thread { Hit::ThreadSend } else { Hit::Send };
         paint_field(scene, tf, theme, rect);
         if interactive {
             ChatApp::push_hit(hits, rect, focus_hit);
@@ -311,25 +352,65 @@ impl ChatApp {
         }
 
         // Enter sends. The send icon is a quiet one in the corner, for a
-        // pointer or a touch, lit once there is something to send.
+        // pointer or a touch, lit once there is something to send. While an
+        // agent is at work for this person and nothing is typed, the stop of
+        // that work stands there instead: one takes the other's place by
+        // fading, and a press acts on the one shown.
         let send = composer_slot(&frame.trailing, 0);
-        let send_face = ButtonFace::icon_only(send, Icon::Send, &send_label)
-            .control_size(ControlSize::Regular)
-            .hovered(self.hovered(send));
-        Button::paint(
-            scene,
-            tf,
-            tr,
-            theme,
-            &if send_enabled {
-                send_face
+        let stop_label = crate::i18n::t("chat-agent-stop");
+        let hovered = self.hovered(send);
+        let face = |stops: bool| {
+            if stops {
+                ButtonFace::icon_only(send, Icon::Square, &stop_label)
+                    .control_size(ControlSize::Regular)
+                    .hovered(hovered)
             } else {
-                send_face.disabled(true)
-            },
+                ButtonFace::icon_only(send, Icon::Send, &send_label)
+                    .control_size(ControlSize::Regular)
+                    .hovered(hovered)
+                    .disabled(!send_enabled)
+            }
+        };
+        let stops = place.stop.is_some();
+        let around = send.inflate(btn, btn);
+        if let Some(opacity) = place.swap.leaving {
+            paint_fading(
+                PaintCtx::new(scene, tf, tr, theme),
+                &face(!stops),
+                around,
+                opacity,
+            );
+        }
+        paint_fading(
+            PaintCtx::new(scene, tf, tr, theme),
+            &face(stops),
+            around,
+            place.swap.shown,
         );
-        ChatApp::push_hit(hits, send, send_hit);
+        let hit = match place.stop {
+            Some(reply) => Hit::StopWork { reply, thread },
+            None => send_hit,
+        };
+        ChatApp::push_hit(hits, send, hit);
 
-        let _ = draft;
         frame.editor
+    }
+}
+
+/// Paint `face` at `opacity`: under a layer over `around` while it fades.
+fn paint_fading(paint: PaintCtx<'_>, face: &ButtonFace<'_>, around: Rect, opacity: f32) {
+    let PaintCtx {
+        scene,
+        transform: tf,
+        text: tr,
+        theme,
+    } = paint;
+    let fades = opacity < 1.0;
+    if fades {
+        scene.push_layer(Fill::NonZero, BlendMode::default(), opacity, tf, &around);
+    }
+    Button::paint(scene, tf, tr, theme, face);
+    if fades {
+        scene.pop_layer();
     }
 }

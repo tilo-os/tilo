@@ -886,6 +886,7 @@ impl ChatApp {
                 self.focus = Focus::Thread;
                 self.send_focused(doc);
             }
+            Hit::StopWork { reply, .. } => self.stop_work(doc, &reply),
             Hit::UndoDelete => self.undo_delete(),
             Hit::JumpToLatest => self.jump_to_latest(),
             Hit::ThreadScroll(end) => {
@@ -1038,6 +1039,7 @@ impl ChatApp {
 
     fn on_hit_channel(&mut self, id: Id, doc: &mut ui::widget::Edits<'_>) {
         self.not_sent = None;
+        self.not_stopped = None;
         let kind = self.channel(&id).map(|c| c.kind);
         if kind == Some(ChannelKind::Voice) {
             self.join_voice(&id, doc);
@@ -1395,6 +1397,7 @@ impl ChatApp {
                 }
                 MenuAction::BanAuthor => self.ban_author(&id),
                 MenuAction::StopSharing => self.stop_share(doc, &id),
+                MenuAction::StopWork => self.stop_work(doc, &id),
                 // Asked first, unless Shift is held: Undo takes either back.
                 MenuAction::DeleteMessage => {
                     let mine = self.message(&id).is_some_and(|m| self.is_me(&m.author));
@@ -1853,6 +1856,7 @@ impl ChatApp {
             return;
         }
         self.not_sent = None;
+        self.not_stopped = None;
         self.last_post = matches!(self.focus, Focus::Main)
             .then(|| (self.active_channel.clone(), self.focused_composer().value()));
         self.focused_composer_mut().clear(doc);

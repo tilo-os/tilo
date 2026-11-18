@@ -626,6 +626,7 @@ impl ChatApp {
                 self.expanded_agent.contains(&m.id),
                 text_w,
                 words,
+                self.stopped_words(&m.id).as_deref(),
             )
         })
     }
@@ -969,7 +970,16 @@ impl ChatApp {
         );
         *y += rm.work_h;
         let open = self.expanded_agent.contains(&m.id);
-        draw_agent_work(&mut paint, work, open, area, !m.text.is_empty()).then_some(area)
+        let stopped = self.stopped_words(&m.id);
+        draw_agent_work(
+            &mut paint,
+            work,
+            open,
+            area,
+            !m.text.is_empty(),
+            stopped.as_deref(),
+        )
+        .then_some(area)
     }
 
     /// Keep where a shown message drew its texts, cut to the timeline's
