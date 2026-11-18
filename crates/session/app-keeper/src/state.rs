@@ -64,8 +64,9 @@ pub struct State {
     xdg_shell: XdgShellState,
     _output_manager: OutputManagerState,
     smithay_seat: SeatState<Self>,
-    dmabuf: DmabufState,
-    pub(crate) dmabuf_global: Option<DmabufGlobal>,
+    pub(crate) dmabuf: DmabufState,
+    /// The dma-buf global the app is offered, once a desktop offered one.
+    pub(crate) dmabuf_offer: Option<crate::dmabuf::Offered>,
     /// The app-facing globals this keeper chose to offer, once a desktop offered them.
     pub(crate) viewporter: Option<smithay::wayland::viewporter::ViewporterState>,
     pub(crate) fractional_scale:
@@ -152,7 +153,7 @@ impl State {
             _output_manager: output_state,
             smithay_seat: SeatState::new(),
             dmabuf: DmabufState::new(),
-            dmabuf_global: None,
+            dmabuf_offer: None,
             viewporter: None,
             fractional_scale: None,
             content_type: None,
@@ -222,10 +223,6 @@ impl State {
 
     pub(crate) fn shm_state_mut(&mut self) -> &mut ShmState {
         &mut self.shm
-    }
-
-    pub(crate) fn dmabuf_state_mut(&mut self) -> &mut DmabufState {
-        &mut self.dmabuf
     }
 
     /// The app id the desktop is given for what the app set.

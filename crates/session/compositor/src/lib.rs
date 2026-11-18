@@ -482,16 +482,19 @@ impl Compositor {
     }
 
     /// A headless compositor that offers its clients linear dma-bufs of the DRM fourcc `codes`
-    /// with default feedback, as a desktop on a GPU does, where the machine has none: the buffers
-    /// a test hands over are read on the CPU ([`Compositor::window_dmabuf_pixels`]). Every other
-    /// headless compositor keeps the renderer's own offer.
+    /// where the machine has no GPU: with default feedback as a desktop on a GPU does when
+    /// `feedback`, otherwise as version 3 with only the formats, as a desktop with no GPU node
+    /// does. The buffers a test hands over are read on the CPU
+    /// ([`Compositor::window_dmabuf_pixels`]). Every other headless compositor keeps the
+    /// renderer's own offer.
     #[cfg(feature = "test-support")]
     pub fn headless_with_linear_dmabufs(
         policy: Box<dyn WindowPolicy>,
         codes: &[u32],
+        feedback: bool,
     ) -> Result<Self, Error> {
         Self::new(policy, |_, state| {
-            state.enable_linear_dmabuf_for_tests(codes);
+            state.enable_linear_dmabuf_for_tests(codes, feedback);
             Ok(Box::new(HeadlessBackend::new(state)?))
         })
     }

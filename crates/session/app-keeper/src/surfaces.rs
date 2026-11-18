@@ -911,7 +911,8 @@ impl State {
         let Some(up) = self.up.as_ref() else {
             return;
         };
-        let Some(dmabuf) = up.dmabuf.clone() else {
+        // A version-3 desktop has no feedback to ask for; the surface keeps what it was told.
+        let Some(dmabuf) = up.dmabuf.clone().filter(|dmabuf| dmabuf.version() >= 4) else {
             return;
         };
         let Some(surface) = self
