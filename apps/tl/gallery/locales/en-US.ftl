@@ -560,7 +560,7 @@ d-wjo4okew = Gallery
     .w-every-group-is-here-fill-them = Every group is here; fill them with the values an app gives its components.
 
 d-7chkyi44 = Basics
-    .w-text-buttons-chips-a-card-of = Text, buttons, chips, a card of facts, an empty state and a page of a stack.
+    .w-text-rich-text-and-a-quote = Text, rich text and a quote, buttons, chips, a card of facts and an empty state.
     .w-text = Text
     .w-the-type-scale-a-title-body = The type scale: a title, body text at the reading measure, a caption.
     .w-release-planning = Release planning

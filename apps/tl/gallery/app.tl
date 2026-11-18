@@ -257,7 +257,7 @@ template view part(name: Text, about: Text, content: View) {
 view basics(b: Basics) {
     state last: Text = ""
     ui.Text(
-        "Text, buttons, chips, a card of facts, an empty state and a page of a stack.",
+        "Text, rich text and a quote, buttons, chips, a card of facts and an empty state.",
         role: .caption,
         secondary: true,
     )

@@ -461,11 +461,11 @@ d-wjo4okew = Galerie
     .w-your-own = Eigene
 
 d-7chkyi44 = Grundlagen
+    .w-text-rich-text-and-a-quote = Text, formatierter Text und ein Zitat, Buttons, Chips, eine Karte mit Fakten und ein Leerzustand.
     .w-rich-text-and-a-quote = Formatierter Text und ein Zitat
     .w-a-message-s-own-text-and = Der eigene Text einer Nachricht, und darüber die Nachricht, auf die sie antwortet.
     .w-can-we-ship-the-screenshots-with = Können wir die Screenshots mit den Notizen ausliefern?
     .w-replying-to = Antwort auf
-    .w-text-buttons-chips-a-card-of = Text, Buttons, Chips, eine Karte mit Fakten, ein Leerzustand und eine Seite eines Stapels.
     .w-delete = Löschen
     .w-text = Text
     .w-the-type-scale-a-title-body = Die Schriftskala: ein Titel, Fließtext in Lesebreite, eine Bildunterschrift.
