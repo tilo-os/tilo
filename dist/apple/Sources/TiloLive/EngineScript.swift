@@ -13,6 +13,18 @@ public enum EngineScript {
     /// The name the page posts to: `webkit.messageHandlers.tiloLive`.
     public static let name = "tiloLive"
 
+    /// Whether what a mount beside the page says it opened is among the routes the page names,
+    /// one line `route APP/DOCUMENT: STATE;` each. It is text of the script: a function of the
+    /// app, what the mount opened and the page's lines. An app's own document of the workspace
+    /// is what a mount with no document named opens. Such a mount says its record is
+    /// `@tilo:package-primary`, a name that never travels: the page's line for it holds no
+    /// document at all (`route so.tilo.chat/: ready;`). A mount that names nothing it opened
+    /// has nothing to wait for.
+    static let joined = #"""
+    (app, opened, routes) => typeof opened !== 'string'
+            || String(routes).includes(`${app}/${opened === '@tilo:package-primary' ? '' : opened}:`)
+    """#
+
     /// - Parameters:
     ///   - origin: the one site whose page may speak to the engine.
     ///   - unseen: the page is shown to nobody as it starts. A web view that is in no window
@@ -30,6 +42,7 @@ public enum EngineScript {
                               device: String = "") -> String {
         let listed = (try? JSONSerialization.data(withJSONObject: providers)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
         return source
+            .replacingOccurrences(of: "%JOINED%", with: joined)
             .replacingOccurrences(of: "%ORIGIN%", with: literal(origin))
             .replacingOccurrences(of: "%NAME%", with: name)
             .replacingOccurrences(of: "%UNSEEN%", with: unseen ? "true" : "false")
@@ -209,6 +222,9 @@ public enum EngineScript {
         document.body.append(element);
         return element;
       };
+      // Whether what a mount beside the page opened is among what the page itself holds
+      // (`EngineScript.joined`).
+      const joined = %JOINED%;
       // A page that offers `tiloOpen(element, {app, record, newDocument, instance})` mounts
       // beside itself. One that does not yet is reached through its own modules: the mount
       // the page itself calls, told the page's own profile, device, workspace and peer.
@@ -231,7 +247,7 @@ public enum EngineScript {
               peer: {runtimeId, origin: scope.host, workspace: scope.workspace}});
             const record = made.state()?.record;
             const routes = globalThis.tiloChannels?.() ?? '';
-            if (made.state()?.phase !== 'failed' && (typeof record !== 'string' || routes.includes(`${what.app}/${record}:`))) return made;
+            if (made.state()?.phase !== 'failed' && joined(what.app, record, routes)) return made;
             last = new Error(`failed: ${made.state()?.error ?? 'The record did not join the workspace'}`);
             await made.cleanup().catch(() => {});
           } catch (error) { last = error; }

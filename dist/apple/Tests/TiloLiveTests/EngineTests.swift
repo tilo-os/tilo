@@ -353,6 +353,40 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(kept, "m7")
     }
 
+    /// A message's view is Chat mounted with no document named, and such a mount says it opened
+    /// `@tilo:package-primary`. The page spells an app's own document of the workspace with no
+    /// document at all: `route so.tilo.chat/: ready;`. Both texts stand here as the tour's page
+    /// on the build server said them. Compared as they stand they never matched, so every
+    /// mount for a message's view was put away again and none could be shown.
+    func testAnAppsOwnDocumentHasJoinedWhereThePageNamesItWithNoDocument() async throws {
+        let said = """
+            workspace 69c55f12-02b3-49f6-be5f-4b18425329ba: joined through 456635f7
+            workspace adf5993d-91ce-40c8-a2af-3cf3eddbd095: joined through 456635f7
+            route so.tilo.activity/: ready;
+            route so.tilo.browser-desktop/desktop: ready;
+            route so.tilo.calendar/: ready;
+            route so.tilo.canvas/derived:default@tab:0000000000000000: ready;
+            route so.tilo.chat/: ready;
+            """
+        func joined(_ app: String, _ opened: Any, _ routes: String) async throws -> Bool? {
+            try await engine.view.callAsyncJavaScript("return (\(EngineScript.joined))(app, opened, routes)",
+                arguments: ["app": app, "opened": opened, "routes": routes], in: nil, contentWorld: .page) as? Bool
+        }
+        let chat = try await joined("so.tilo.chat", "@tilo:package-primary", said)
+        XCTAssertEqual(chat, true, "Chat's own document of the workspace, as a mount with no document named says it")
+        // A document with a name of its own has joined under that name, and only under it.
+        let canvas = try await joined("so.tilo.canvas", "derived:default@tab:0000000000000000", said)
+        XCTAssertEqual(canvas, true)
+        let another = try await joined("so.tilo.canvas", "derived:default@tab:0000000000000001", said)
+        XCTAssertEqual(another, false)
+        // An app the page names nothing of has not joined, whatever its mount says.
+        let tasks = try await joined("so.tilo.tasks", "@tilo:package-primary", said)
+        XCTAssertEqual(tasks, false)
+        // A mount that names nothing it opened has nothing to wait for.
+        let nothing = try await joined("so.tilo.chat", NSNull(), said)
+        XCTAssertEqual(nothing, true)
+    }
+
     func testAPageThatSaysItsOwnChangesIsListenedTo() async throws {
         try await run("location.hash = '#/w/ws-1/so.tilo.chat'; offerChanges(); enter()")
         try await until("the engine is in") { if case .open = self.engine.state { true } else { false } }
