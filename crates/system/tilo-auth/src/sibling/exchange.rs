@@ -1,10 +1,10 @@
 //! The exchange with a sibling over the peer network
 //! ([`tilo_unlock_protocol`], ALPN [`UNLOCK_ALPN`]).
 
-use crate::material::Attestation;
-use crate::token::{Sibling, Token};
-use crate::tpm::{self, Tpm};
-use crate::unlock::{Refusal, Siblings};
+use super::material::Attestation;
+use super::token::{Sibling, Token};
+use crate::boot::sibling::{Refusal, Siblings};
+use crate::tpm;
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine as _;
 use ed25519_dalek::SigningKey;
@@ -13,6 +13,7 @@ use iroh_base::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::Duration;
+use tilo_rollback::exec::Real;
 use tilo_unlock_protocol::{
     BootId, BootKeyCert, Challenge, ClientFrame, Half, PROTOCOL_VERSION, SiblingFrame, UNLOCK_ALPN,
     UnlockHello, UnlockRequest, attest, decode_frame, encode_frame, frame_len, open_release,
@@ -39,10 +40,11 @@ pub struct Transcript {
     pub outcome: String,
 }
 
-/// The attestation key this machine quotes with, and the TPM holding it.
+/// The attestation key this machine quotes with, and the runner that
+/// reaches the TPM holding it.
 #[derive(Clone, Debug)]
 pub struct AttestationSource {
-    pub tpm: Tpm,
+    pub tpm: Real,
     pub key: Attestation,
 }
 

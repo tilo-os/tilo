@@ -1,18 +1,19 @@
 //! The network early boot needs to reach a sibling.
 
-use crate::exec;
-use crate::material;
-use anyhow::{Context, Result, bail};
+use super::material;
+use anyhow::{Context as _, Result, bail};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use tilo_rollback::argv;
+use tilo_rollback::exec::{Runner, require};
 
-pub const NETWORK_UNIT: &str = "tilo-sibling-unlock-network.service";
+pub const NETWORK_UNIT: &str = "tilo-unlock-network.service";
 
 pub const KEYFILE_DIR: &str = "/run/NetworkManager/system-connections";
 
-#[derive(Debug)]
-pub struct Network {
+pub struct Network<'a> {
+    runner: &'a (dyn Runner + Sync),
     keyfiles: Vec<PathBuf>,
     started: bool,
 }
@@ -51,31 +52,41 @@ pub fn remove_profiles(keyfiles: &[PathBuf]) {
     }
 }
 
-impl Network {
-    pub fn up(networks: &[material::Network]) -> Result<Self> {
+impl<'a> Network<'a> {
+    pub fn up(runner: &'a (dyn Runner + Sync), networks: &[material::Network]) -> Result<Self> {
         let keyfiles = write_profiles(Path::new(KEYFILE_DIR), networks)?;
         let mut network = Self {
+            runner,
             keyfiles,
             started: false,
         };
-        exec::check("systemctl", ["start", "--no-block", NETWORK_UNIT], None)
-            .context("could not start the unlock network")?;
+        require(
+            runner,
+            "systemctl",
+            &argv!["start", "--no-block", NETWORK_UNIT],
+            "starting the unlock network",
+        )?;
         network.started = true;
         Ok(network)
     }
 
     pub fn down(&mut self) {
         if self.started {
-            let _ = exec::check("systemctl", ["stop", NETWORK_UNIT], None);
+            let _ = require(
+                self.runner,
+                "systemctl",
+                &argv!["stop", NETWORK_UNIT],
+                "stopping the unlock network",
+            );
             self.started = false;
-            flush_links();
+            flush_links(self.runner);
         }
         remove_profiles(&self.keyfiles);
         self.keyfiles.clear();
     }
 }
 
-impl Drop for Network {
+impl Drop for Network<'_> {
     fn drop(&mut self) {
         self.down();
     }
@@ -83,7 +94,7 @@ impl Drop for Network {
 
 /// Removes the addresses `NetworkManager` configured and sets every link but
 /// loopback down.
-fn flush_links() {
+fn flush_links(runner: &dyn Runner) {
     let Ok(entries) = std::fs::read_dir("/sys/class/net") else {
         return;
     };
@@ -93,8 +104,18 @@ fn flush_links() {
         if name == "lo" {
             continue;
         }
-        let _ = exec::check("ip", ["address", "flush", "dev", name], None);
-        let _ = exec::check("ip", ["link", "set", "dev", name, "down"], None);
+        let _ = require(
+            runner,
+            "ip",
+            &argv!["address", "flush", "dev", name],
+            "flushing a link",
+        );
+        let _ = require(
+            runner,
+            "ip",
+            &argv!["link", "set", "dev", name, "down"],
+            "setting a link down",
+        );
     }
 }
 

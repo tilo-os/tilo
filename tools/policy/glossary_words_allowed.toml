@@ -76,7 +76,7 @@ paths = [
     "crates/session/session/src/sync/client/mod.rs",
     "crates/session/session/src/window_share.rs",
     "crates/system/fs/src/full_replica.rs",
-    "crates/system/tilo-sibling-unlock/Cargo.toml",
+    "crates/system/tilo-auth/Cargo.toml",
     "docs/architecture/web-page-actors.md",
     "docs/architecture/workspace.md",
     "docs/device-reach.md",

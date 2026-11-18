@@ -1,13 +1,23 @@
-//! One early-boot unlock attempt, from the token to the answered prompt.
+//! The sibling way: another of the owner's devices releases its half of the
+//! volume's sibling keyslot for this boot (docs/device-reach.md, "Unlocking
+//! it after a reboot"). One attempt goes from the token to the answered
+//! prompt, while the volume's other ways stay open.
 
-use crate::askpass;
-use crate::material::Material;
-use crate::token::Token;
+use crate::luks;
+use crate::sibling::exchange::{self, AttestationSource, Peers, Progress};
+use crate::sibling::material::Material;
+use crate::sibling::network;
+use crate::sibling::token::{Sibling, Token};
+use crate::tpm;
 use anyhow::{Context, Result, bail};
 use ed25519_dalek::SigningKey;
 use std::future::Future;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use tilo_ask_password as askpass;
+use tilo_rollback::exec::{Real, Runner};
+use tilo_rollback::policy::Workspace;
 use tilo_unlock_protocol::{BootId, BootKeyCert, Half, RefusalReason, derive_slot_key};
 
 /// Why no sibling released its half. Each is in the owner's history on the
@@ -115,10 +125,163 @@ pub fn ask_dir() -> PathBuf {
     PathBuf::from(askpass::ASK_DIR)
 }
 
+/// A line on the console (through the kernel log, which the initramfs
+/// forwards there) and in the journal, as `tilo-unlock`.
+pub fn say(message: &str) {
+    eprintln!("{message}");
+    if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
+        let _ = writeln!(kmsg, "<5>tilo-unlock: {message}");
+    }
+}
+
+struct BootScreen;
+
+/// Show `message` on the boot screen, where plymouth is up.
+fn screen(message: &str) {
+    let _ = std::process::Command::new("plymouth")
+        .args(["display-message", &format!("--text={message}")])
+        .status();
+}
+
+/// How the boot screen names the device that answered.
+fn device_name(sibling: &Sibling) -> &str {
+    if sibling.label.is_empty() {
+        "your other device"
+    } else {
+        &sibling.label
+    }
+}
+
+/// What the boot screen shows once the person's device answered: its answer,
+/// word for word, so a boot that hears it is not left thinking no device
+/// answered.
+fn decided_message(name: &str, allowed: bool) -> String {
+    if allowed {
+        format!("{name} released the key for this disk")
+    } else {
+        format!("{}; enter the passphrase to unlock", Refusal::Denied)
+    }
+}
+
+impl Progress for BootScreen {
+    fn pending(&self, sibling: &Sibling, approval_code: &str) {
+        let message = format!(
+            "Approve unlocking on {}: code {approval_code}",
+            device_name(sibling)
+        );
+        say(&message);
+        screen(&message);
+    }
+
+    fn decided(&self, sibling: &Sibling, allowed: bool) {
+        let message = decided_message(device_name(sibling), allowed);
+        say(&message);
+        screen(&message);
+    }
+}
+
+struct RealVolume<'a> {
+    runner: &'a Real,
+    ws: &'a Workspace,
+    device: &'a Path,
+}
+
+impl Volume for RealVolume<'_> {
+    fn opens(&self, keyslot: u32, passphrase: &str) -> bool {
+        luks::opens(
+            self.runner,
+            self.ws,
+            self.device,
+            passphrase.as_bytes(),
+            keyslot,
+        )
+        .unwrap_or(false)
+    }
+}
+
+/// Whether `device` carries a sibling-unlock token.
+pub fn enrolled(runner: &dyn Runner, device: &Path) -> bool {
+    matches!(luks::sibling(runner, device), Ok(Some(_)))
+}
+
+/// Ask the owner's other devices to unlock `device` for this boot, and
+/// answer its passphrase prompt with the result. A volume without the
+/// token has nothing to ask; a SIGTERM (the volume opened another way) ends
+/// the attempt, and everything it held is wiped on the way out.
+///
+/// # Errors
+///
+/// The token or material is malformed, or answering the prompt fails.
+pub async fn unlock(runner: &Real, device: &Path) -> Result<()> {
+    let Some(token) = luks::sibling(runner, device)? else {
+        return Ok(());
+    };
+    let cert = token.cert()?;
+    if luks::uuid(runner, device)? != cert.slot.volume_uuid {
+        bail!("the sibling-unlock token belongs to another volume");
+    }
+    let material = Material::from_json(&tpm::unseal_material(
+        runner,
+        token.sealing,
+        &token.material,
+    )?)?;
+    let boot_id = boot_id(Path::new("/proc/sys/kernel/random/boot_id"))?;
+    let _network = match network::Network::up(runner, &material.networks) {
+        Ok(network) => Some(network),
+        Err(error) => {
+            say(&format!("could not bring up the network: {error:#}"));
+            None
+        }
+    };
+    say("asking your other devices to unlock this disk");
+    let attestation = material.attestation.clone().map(|key| AttestationSource {
+        tpm: runner.clone(),
+        key,
+    });
+    let peers = Peers {
+        progress: &BootScreen,
+        transcript: Some(Path::new(exchange::TRANSCRIPT)),
+        attestation: attestation.as_ref(),
+    };
+    let ask_dir = ask_dir();
+    let dir = crate::scratch()?;
+    let ws = Workspace::new(dir.path());
+    let volume = RealVolume {
+        runner,
+        ws: &ws,
+        device,
+    };
+    let attempt = attempt(
+        device,
+        &token,
+        &material,
+        boot_id,
+        &peers,
+        &volume,
+        &ask_dir,
+        Duration::from_secs(600),
+    );
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .context("no SIGTERM handler")?;
+    let outcome = tokio::select! {
+        outcome = attempt => outcome?,
+        _ = terminate.recv() => {
+            say("the disk was opened another way");
+            return Ok(());
+        }
+    };
+    match outcome {
+        Outcome::Unlocked => say("unlocked with the consent of your other device"),
+        Outcome::Refused(refusal) => say(&format!("{refusal}; enter the passphrase to unlock")),
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::token::{Sealing, Sibling, TOKEN_TYPE, TOKEN_VERSION};
+    use crate::sibling::token::{TOKEN_TYPE, TOKEN_VERSION};
+    use crate::tpm::Sealing;
     use std::os::unix::net::UnixDatagram;
     use std::sync::Mutex;
     use tilo_unlock_protocol::{HALF_LEN, PROTOCOL_VERSION, SlotId};
@@ -206,6 +369,23 @@ mod tests {
         )
         .unwrap();
         (dir, ask_dir, receiver)
+    }
+
+    #[test]
+    fn a_denial_is_shown_as_the_person_denying_it() {
+        let denied = decided_message("The phone", false);
+        assert_eq!(
+            denied,
+            "the owner denied the unlock; enter the passphrase to unlock"
+        );
+        assert!(
+            !denied.contains("no device answered"),
+            "a boot that heard the answer is not left thinking nobody answered"
+        );
+        assert_eq!(
+            decided_message("The phone", true),
+            "The phone released the key for this disk"
+        );
     }
 
     #[test]

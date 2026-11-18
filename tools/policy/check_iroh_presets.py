@@ -54,7 +54,7 @@ EXEMPT = {
     "crates/dev/tilo-device-admin/src/net.rs": "device-admin client",
     # The initrd's sibling unlock: it asks the siblings named in a token that
     # a boot already holds, and the process ends with the unlock.
-    "crates/system/tilo-sibling-unlock/src/exchange.rs": "initrd unlock exchange",
+    "crates/system/tilo-auth/src/sibling/exchange.rs": "initrd unlock exchange",
     # A P2P node that dials the peers a caller names.
     "crates/platform/tilo-net-p2p/src/lib.rs": "net-p2p dialer",
     # The server daemon's own endpoint, which is what devices dial.

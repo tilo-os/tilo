@@ -27,7 +27,7 @@ if grep -Fq 'plymouth-plugin-label' "$containerfile" \
   printf 'the boot screen must not draw a sign-in of its own; the greeter is the sign-in screen\n' >&2
   exit 1
 fi
-if ! grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock tilo-greeter"' "$root/os/scripts/build-initramfs.sh" \
+if ! grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-greeter"' "$root/os/scripts/build-initramfs.sh" \
   || ! grep -Fq 'bash /run/tilo-build-initramfs.sh "$kver"' "$containerfile"; then
   printf 'initramfs must explicitly include crypt, TPM, Plymouth, Tilo rollback unlock and greeter modules\n' >&2
   exit 1

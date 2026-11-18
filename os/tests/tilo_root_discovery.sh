@@ -256,7 +256,7 @@ EOF
 # A root with a sibling-unlock token: the probe answers yes for exactly it.
 cat >"$work/bin/sibling" <<'EOF'
 #!/bin/bash
-[ "$1" = probe ] && [ "$2" = "$TILO_ROOT_DEVROOT/tilo-root" ]
+[ "$1" = sibling ] && [ "$2" = probe ] && [ "$3" = "$TILO_ROOT_DEVROOT/tilo-root" ]
 EOF
 chmod +x "$work/bin/encrypted" "$work/bin/attach" "$work/bin/plymouth" "$work/bin/systemctl" \
   "$work/bin/sibling"
@@ -270,7 +270,7 @@ TILO_ROOT_DEVROOT="$work/dev" TILO_ROOT_RUNTIME="$work/run" \
 TILO_ROOT_LSBLK="$work/bin/lsblk" TILO_ROOT_CRYPTSETUP_PROBE="$work/bin/encrypted" \
 TILO_ROOT_CRYPTSETUP="$work/bin/attach" TILO_ROOT_UNLOCK="${TILO_TEST_UNLOCK:-true}" \
 TILO_ROOT_SIGNIN="${TILO_TEST_SIGNIN:-$work/bin/absent}" \
-TILO_ROOT_SIBLING_UNLOCK="${TILO_TEST_SIBLING:-false}" TILO_ROOT_SYSTEMCTL="$work/bin/systemctl" \
+TILO_ROOT_AUTH="${TILO_TEST_SIBLING:-false}" TILO_ROOT_SYSTEMCTL="$work/bin/systemctl" \
 TILO_TEST_ORDER_LOG="$work/order" TILO_TEST_OPTIONS_LOG="$work/options" \
 TILO_ROOT_PLYMOUTH="$work/bin/plymouth" TILO_TEST_PLYMOUTH_LOG="$work/plymouth-events" \
 TILO_ROOT_ALLOW_NONBLOCK=1 "$repo/os/usr/libexec/tilo-root-discover"
@@ -296,7 +296,7 @@ echo 'ok: a root without a sibling factor starts no sibling unlock'
 
 # With one, the attempt starts before the prompt and is stopped (and wiped)
 # once the volume is open, or when opening it failed.
-sibling_unit="tilo-sibling-unlock@$(systemd-escape --path "$work/dev/tilo-root").service"
+sibling_unit="tilo-unlock-sibling@$(systemd-escape --path "$work/dev/tilo-root").service"
 rm -rf "$work/run/tilo-root" "$work/order" "$work/plymouth-events"
 TILO_TEST_SIBLING="$work/bin/sibling" encrypted_discover
 printf '%s\n' "start --no-block $sibling_unit" attach "stop $sibling_unit" >"$work/expected-order"

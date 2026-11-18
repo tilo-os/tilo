@@ -260,6 +260,28 @@ file, and the run fails if the prompt is silent. A virtio multitouch device ente
 through the on-screen keyboard, with no keyboard attached. Screenshots of the boot screen
 and of the greeter after switch-root must show the same card.
 
+### 3.5 One program opens the volume
+
+`tilo-auth` is the one program that opens the system volume in early boot, and
+`tilo_auth::boot` the one place that knows the ways it opens. `tilo-root-discover`
+offers them in this order while the volume's own prompt stays up:
+
+1. the person's secret at the boot sign-in screen (§3.2), through their
+   `tilo-signin` token: the TPM-throttled or passphrase wrapper, or the recovery
+   key through the recovery wrapper (§4.5);
+2. the TPM alone for a signed boot chain where the volume is enrolled for it
+   (§3.1, tilo-rollback's token and systemd-cryptsetup's own);
+3. another of the owner's devices releasing its half of the sibling keyslot
+   (`tilo-auth sibling unlock`, [device-reach.md](../device-reach.md)), with no
+   prompt only for a server whose TPM quotes the boot chain the owner's root
+   accepted, and otherwise once the owner approves `device.unlock`;
+4. the passphrase or recovery key typed at the volume's prompt.
+
+The last two are offered together, and whichever answers first opens the volume.
+Every way reads the LUKS2 header through one module (`tilo_auth::luks`) and the
+TPM through one (`tilo_auth::tpm`): the sign-in wrapper's sealed user key, the
+sibling unlock's attestation key and quotes, and its material sealed to PCR 7.
+
 ## 4. The user key and its wrappers
 
 Each person has a random 256-bit **user key**, created with their account. It is

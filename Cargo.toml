@@ -551,7 +551,6 @@ members = [
     "crates/system/tilo-auth",
     "crates/system/tilo-rollback",
     "crates/system/tilo-seal",
-    "crates/system/tilo-sibling-unlock",
     "crates/system/tilo-startup-metrics",
     "crates/system/tinker",
     "crates/system/tts",
@@ -1367,7 +1366,7 @@ incremental = false
 # log reads them there.
 [profile.release.package.tilo-rollback]
 strip = "symbols"
-[profile.release.package.tilo-sibling-unlock]
+[profile.release.package.tilo-auth]
 strip = "symbols"
 [profile.release.package.tilo-boot-signin]
 strip = "symbols"

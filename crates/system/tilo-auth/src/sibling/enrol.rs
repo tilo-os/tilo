@@ -24,16 +24,18 @@
 //! What is enrolled is described for Settings under [`STATE_DIR`], without
 //! secrets but readable only by root: it names the networks the owner trusts
 //! to unlock this machine. Settings reads it through polkit
-//! (`tilo-sibling-unlock volumes`).
+//! (`tilo-auth sibling volumes`).
 
-use crate::luks;
-use crate::material::{self, Material};
-use crate::seal;
-use crate::token::{Sealing, Sibling, TOKEN_TYPE, TOKEN_VERSION, Token};
+use super::material::{self, Material};
+use super::token::{Sibling, TOKEN_TYPE, TOKEN_VERSION, Token};
+use crate::luks::{self, Authority};
+use crate::tpm::{self, Sealing};
 use anyhow::{Context, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use tilo_rollback::exec::Runner;
+use tilo_rollback::policy::Workspace;
 use tilo_unlock_protocol::{
     ENROL_SOCKET, EnrolReply, EnrolRequest, EnrolResponse, Half, SlotId, decode_frame,
     derive_slot_key, encode_frame, frame_len,
@@ -42,13 +44,13 @@ use tilo_unlock_protocol::{
 /// Where the enrolment is described for Settings, without secrets.
 pub const STATE_DIR: &str = "/var/lib/tilo/sibling-unlock";
 
-/// `tilo-sibling-unlock enrol`.
+/// `tilo-auth sibling enrol`.
 #[derive(Debug, clap::Args)]
 pub struct Args {
     /// The LUKS2 partition.
     pub device: PathBuf,
     /// A key file holding an existing passphrase of the volume; without one
-    /// cryptsetup asks for it (the recovery key will do).
+    /// it is asked for on the terminal (the recovery key will do).
     #[arg(long)]
     pub key_file: Option<PathBuf>,
     /// A `NetworkManager` connection early boot may join to reach your other
@@ -243,15 +245,70 @@ fn for_early_boot(keyfile: &str, mac_of: impl Fn(&str) -> Option<String>) -> Str
     })
 }
 
+/// This machine as an enrolment uses it: the runner that reaches its
+/// cryptsetup and TPM, and whether it has a TPM at all.
+#[derive(Clone, Copy)]
+pub struct Machine<'a> {
+    pub runner: &'a dyn Runner,
+    pub has_tpm: bool,
+}
+
+impl Machine<'_> {
+    /// Enrolment needs the device to be able to attest, so a request for
+    /// unattended unlock on a machine with no TPM fails instead of silently
+    /// asking the owner for every boot.
+    fn require(&self, unattended: bool) -> Result<()> {
+        if unattended && !self.has_tpm {
+            bail!("unattended unlock needs a TPM to attest this machine's boot chain");
+        }
+        Ok(())
+    }
+
+    fn sealing(&self) -> Sealing {
+        if self.has_tpm {
+            Sealing::Tpm2
+        } else {
+            Sealing::Cleartext
+        }
+    }
+}
+
+/// An existing passphrase of the volume: the key file's, or one asked for on
+/// the terminal.
+pub fn existing_passphrase(
+    device: &Path,
+    key_file: Option<&Path>,
+) -> Result<zeroize::Zeroizing<Vec<u8>>> {
+    if let Some(file) = key_file {
+        return std::fs::read(file)
+            .map(zeroize::Zeroizing::new)
+            .with_context(|| format!("could not read {}", file.display()));
+    }
+    let output = std::process::Command::new("systemd-ask-password")
+        .arg("--timeout=0")
+        .arg(format!("An existing passphrase of {}:", device.display()))
+        .stdin(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .context("could not ask for an existing passphrase")?;
+    let mut answer = zeroize::Zeroizing::new(output.stdout);
+    if !output.status.success() {
+        bail!("no passphrase was given");
+    }
+    if answer.last() == Some(&b'\n') {
+        answer.pop();
+    }
+    Ok(answer)
+}
+
 /// Enrols the sibling factor.
 ///
 /// # Errors
 /// When any step fails; the slot is removed again.
-pub fn run(args: &Args) -> Result<()> {
-    let sealing = enrollment_sealing(seal::available(), args.require_tpm)?;
-    let tpm = crate::tpm::Tpm::system();
-    crate::tpm::require(&tpm, args.unattended)?;
-    let enrolled = luks::token(&args.device)?.is_some();
+pub fn run(args: &Args, machine: Machine<'_>) -> Result<()> {
+    let sealing = enrollment_sealing(machine.sealing(), args.require_tpm)?;
+    machine.require(args.unattended)?;
+    let enrolled = luks::sibling(machine.runner, &args.device)?.is_some();
     match (enrolled, args.replace_networks) {
         (true, false) => bail!(
             "{} already has a sibling unlock; pass --replace-networks to choose its networks again, or remove it first",
@@ -269,16 +326,17 @@ pub fn run(args: &Args) -> Result<()> {
         .map(|name| network(name))
         .collect::<Result<Vec<_>>>()?;
     if args.replace_networks {
-        return replace_networks(&args.device, networks);
+        return replace_networks(machine.runner, &args.device, networks);
     }
     let registrar = SessionRegistrar::find(args.session_uid)?;
-    enrol_with_sealing(
+    let existing = existing_passphrase(&args.device, args.key_file.as_deref())?;
+    enrol(
+        machine,
         &args.device,
-        args.key_file.as_deref(),
+        &existing,
         networks,
         &registrar,
         sealing,
-        &tpm,
         args.unattended,
     )
 }
@@ -290,38 +348,25 @@ fn enrollment_sealing(available: Sealing, require_tpm: bool) -> Result<Sealing> 
     Ok(available)
 }
 
-/// The enrolment itself, with the registrar as a boundary.
+/// The enrolment itself, with the registrar as a boundary. `existing` is a
+/// passphrase the volume opens with, which authorises the new slot.
 ///
 /// # Errors
 /// As [`run`].
 pub fn enrol(
+    machine: Machine<'_>,
     device: &Path,
-    key_file: Option<&Path>,
-    networks: Vec<material::Network>,
-    registrar: &impl Registrar,
-) -> Result<()> {
-    enrol_with_sealing(
-        device,
-        key_file,
-        networks,
-        registrar,
-        seal::available(),
-        &crate::tpm::Tpm::system(),
-        false,
-    )
-}
-
-fn enrol_with_sealing(
-    device: &Path,
-    key_file: Option<&Path>,
+    existing: &[u8],
     networks: Vec<material::Network>,
     registrar: &impl Registrar,
     sealing: Sealing,
-    tpm: &crate::tpm::Tpm,
     unattended: bool,
 ) -> Result<()> {
-    crate::tpm::require(tpm, unattended)?;
-    let volume_uuid = luks::uuid_bytes(device)?;
+    machine.require(unattended)?;
+    let runner = machine.runner;
+    let dir = crate::scratch()?;
+    let ws = Workspace::new(dir.path());
+    let volume_uuid = luks::uuid(runner, device)?;
     let device_half = Half::generate().map_err(|error| anyhow!("{error}"))?;
     let sibling_half = Half::generate().map_err(|error| anyhow!("{error}"))?;
     let boot_key = SigningKey::from_bytes(
@@ -330,17 +375,23 @@ fn enrol_with_sealing(
             .expose(),
     );
     let passphrase = derive_slot_key(&device_half, &sibling_half, &volume_uuid);
-    let keyslot = luks::add_slot(device, key_file, &passphrase)?;
+    let keyslot = luks::add_slot(
+        runner,
+        &ws,
+        device,
+        &Authority::Passphrase(existing),
+        passphrase.as_bytes(),
+    )?;
     drop(passphrase);
     // Everything after the slot exists can still fail, and the slot is
     // removed again when it does. That includes the TPM: an unattended
     // enrolment whose attestation key cannot be made fails rather than
     // leaving a machine that silently falls back to a prompt.
     let finish = || -> Result<Token> {
-        let (attestation, attestation_key, unattended_chain) = if tpm.available() {
-            let (attestation, point) = crate::tpm::create_attestation_key(tpm)?;
+        let (attestation, attestation_key, unattended_chain) = if machine.has_tpm {
+            let (attestation, point) = tpm::create_attestation_key(runner)?;
             let chain = if unattended {
-                Some(crate::tpm::current_chain(tpm)?)
+                Some(tpm::current_chain(runner)?)
             } else {
                 None
             };
@@ -382,19 +433,19 @@ fn enrol_with_sealing(
             cert: Token::encode_cert(cert)?,
             siblings: response.siblings.iter().map(Sibling::from).collect(),
             sealing,
-            material: seal::seal(sealing, &material.to_json()?)?,
+            material: tpm::seal_material(runner, sealing, &material.to_json()?)?,
         };
         token.validate()?;
-        luks::import_token(device, &token)?;
+        luks::write_sibling(runner, &ws, device, &token)?;
         Ok(token)
     };
     match finish() {
         Ok(token) => {
-            write_status(&status_of(&token)?, &volume_uuid);
+            write_status(&status_of(runner, &token)?, &volume_uuid);
             Ok(())
         }
         Err(error) => {
-            let _ = luks::kill_slot(device, keyslot, key_file);
+            let _ = luks::kill_slot(runner, &ws, device, keyslot, Some(existing));
             Err(error)
         }
     }
@@ -403,20 +454,33 @@ fn enrol_with_sealing(
 /// Chooses the unlock networks of an enrolled volume again, leaving its slot,
 /// certificate and siblings as they are. The material is sealed the way it
 /// was: a volume enrolled in the clear stays in the clear.
-pub fn replace_networks(device: &Path, networks: Vec<material::Network>) -> Result<()> {
-    let mut token = luks::token(device)?
+pub fn replace_networks(
+    runner: &dyn Runner,
+    device: &Path,
+    networks: Vec<material::Network>,
+) -> Result<()> {
+    let mut token = luks::sibling(runner, device)?
         .ok_or_else(|| anyhow!("{} has no sibling unlock", device.display()))?;
-    let mut material = Material::from_json(&seal::unseal(token.sealing, &token.material)?)?;
+    let mut material = Material::from_json(&tpm::unseal_material(
+        runner,
+        token.sealing,
+        &token.material,
+    )?)?;
     material.networks = networks;
-    token.material = seal::seal(token.sealing, &material.to_json()?)?;
+    token.material = tpm::seal_material(runner, token.sealing, &material.to_json()?)?;
     token.validate()?;
-    luks::import_token(device, &token)?;
-    write_status(&status_of(&token)?, &luks::uuid_bytes(device)?);
+    let dir = crate::scratch()?;
+    luks::write_sibling(runner, &Workspace::new(dir.path()), device, &token)?;
+    write_status(&status_of(runner, &token)?, &luks::uuid(runner, device)?);
     Ok(())
 }
 
-fn status_of(token: &Token) -> Result<Status> {
-    let material = Material::from_json(&seal::unseal(token.sealing, &token.material)?)?;
+fn status_of(runner: &dyn Runner, token: &Token) -> Result<Status> {
+    let material = Material::from_json(&tpm::unseal_material(
+        runner,
+        token.sealing,
+        &token.material,
+    )?)?;
     Ok(Status {
         keyslot: token.keyslot()?,
         sealing: token.sealing,
@@ -450,7 +514,7 @@ fn write_status_in(dir: &Path, status: &Status, volume_uuid: &[u8; 16]) -> Resul
     Ok(())
 }
 
-/// One volume enrolled on this machine, as `tilo-sibling-unlock volumes`
+/// One volume enrolled on this machine, as `tilo-auth sibling volumes`
 /// prints it for Settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Enrolled {
@@ -517,20 +581,28 @@ fn dashed_uuid(hex_uuid: &str) -> Option<String> {
 }
 
 /// What is enrolled on `device`.
-pub fn status(device: &Path) -> Result<Status> {
-    let token = luks::token(device)?
+pub fn status(runner: &dyn Runner, device: &Path) -> Result<Status> {
+    let token = luks::sibling(runner, device)?
         .ok_or_else(|| anyhow!("{} has no sibling unlock", device.display()))?;
-    status_of(&token)
+    status_of(runner, &token)
 }
 
-/// Removes the sibling slot and its token.
-pub fn remove(device: &Path, key_file: Option<&Path>) -> Result<()> {
-    let token = luks::token(device)?
+/// Removes the sibling slot and its token, with a passphrase of the volume
+/// where the caller has one.
+pub fn remove(runner: &dyn Runner, device: &Path, existing: Option<&[u8]>) -> Result<()> {
+    let token = luks::sibling(runner, device)?
         .ok_or_else(|| anyhow!("{} has no sibling unlock", device.display()))?;
-    luks::remove_token(device)?;
-    luks::kill_slot(device, token.keyslot()?, key_file)?;
+    luks::remove_sibling(runner, device)?;
+    let dir = crate::scratch()?;
+    luks::kill_slot(
+        runner,
+        &Workspace::new(dir.path()),
+        device,
+        token.keyslot()?,
+        existing,
+    )?;
     let _ = std::fs::remove_file(
-        Path::new(STATE_DIR).join(format!("{}.json", hex::encode(luks::uuid_bytes(device)?))),
+        Path::new(STATE_DIR).join(format!("{}.json", hex::encode(luks::uuid(runner, device)?))),
     );
     Ok(())
 }

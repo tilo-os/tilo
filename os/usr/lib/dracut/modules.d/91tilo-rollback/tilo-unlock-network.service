@@ -8,4 +8,4 @@ Before=shutdown.target initrd-switch-root.target
 
 [Service]
 Type=simple
-ExecStart=/usr/sbin/NetworkManager --no-daemon --config=/etc/NetworkManager/tilo-sibling-unlock.conf
+ExecStart=/usr/sbin/NetworkManager --no-daemon --config=/etc/NetworkManager/tilo-unlock-network.conf

@@ -38,6 +38,8 @@ pub mod rollback_set;
 #[cfg(feature = "service")]
 pub mod secret;
 #[cfg(feature = "service")]
+pub mod sibling;
+#[cfg(feature = "service")]
 pub mod strength;
 #[cfg(feature = "service")]
 pub mod tpm;
@@ -47,3 +49,20 @@ pub mod userkey;
 pub mod wrapper;
 
 pub const SOCKET: &str = "/run/tilo-auth/socket";
+
+/// A private scratch directory for the files cryptsetup and tpm2-tools read
+/// secrets from, on the runtime filesystem early boot has before the real
+/// root is mounted.
+///
+/// # Errors
+///
+/// Neither it nor the temporary directory takes one.
+#[cfg(feature = "service")]
+pub fn scratch() -> anyhow::Result<tempfile::TempDir> {
+    use anyhow::Context as _;
+    tempfile::Builder::new()
+        .prefix("tilo-auth.")
+        .tempdir_in("/run")
+        .or_else(|_| tempfile::Builder::new().prefix("tilo-auth.").tempdir())
+        .context("no private scratch directory")
+}

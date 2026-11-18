@@ -192,7 +192,7 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&DiskUnlockArea> {
     app.areas().find()
 }
 
-pub const HELPER: &str = "/usr/libexec/tilo/tilo-sibling-unlock";
+pub const HELPER: &str = "/usr/libexec/tilo/tilo-auth";
 const PKEXEC: &str = "pkexec";
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 const CHANGE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -376,7 +376,7 @@ impl UnlockAuthority for PolkitAuthority {
     fn volumes(&self) -> Result<Vec<UnlockVolume>, String> {
         let output = bounded_command::run(
             PKEXEC,
-            &[HELPER, "volumes"],
+            &[HELPER, "sibling", "volumes"],
             None,
             OUTPUT_LIMIT,
             READ_TIMEOUT,
@@ -397,7 +397,13 @@ impl UnlockAuthority for PolkitAuthority {
     }
 
     fn set_networks(&self, volume: &UnlockVolume, networks: &[String]) -> Result<(), String> {
-        let mut args: Vec<&str> = vec![HELPER, "enrol", &volume.device, "--replace-networks"];
+        let mut args: Vec<&str> = vec![
+            HELPER,
+            "sibling",
+            "enrol",
+            &volume.device,
+            "--replace-networks",
+        ];
         for network in networks {
             args.extend(["--network", network.as_str()]);
         }

@@ -456,7 +456,7 @@ longer required: the short-PIN TPM2 policy is used only when a TPM is present an
 `tilo-verified-boot-install-preflight` passes, and otherwise the same input is enrolled as an
 ordinary strong passphrase, checked by `tilo-startup-secret-policy`. `os/etc/kernel/install.conf`
 no longer exists; the image builds its initramfs with an explicit dracut call in
-`os/Containerfile`, carrying the `91tilo-rollback` and `92tilo-sibling-unlock` modules. The
+`os/Containerfile`, carrying the `91tilo-rollback` module. The
 enrolment itself is held by `os/tests/luks_enrolment.sh`, which runs during the image build and
 asserts that each factor opens the volume. A boot of the current image to an opened root on real
 hardware is not recorded here.

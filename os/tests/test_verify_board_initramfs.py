@@ -129,7 +129,7 @@ class VerifyBoardInitramfsTest(unittest.TestCase):
                 [problem] = self.problems()
                 self.assertIn("sibling unlock is in the initramfs but", problem)
                 self.paths.add(path)
-        # Without the sibling-unlock unit there is nothing to bring Wi-Fi up for.
+        # Without the sibling unlock's network there is nothing to bring Wi-Fi up for.
         self.paths -= {verify.SIBLING_UNLOCK_UNIT, *WIFI_UNLOCK}
         self.assertEqual(self.problems(), [])
 
@@ -139,7 +139,7 @@ class VerifyBoardInitramfsTest(unittest.TestCase):
             "========================================================================",
             "Version: dracut-108-8.fc44",
             "dracut modules:",
-            "tilo-sibling-unlock",
+            "tilo-rollback",
             ls_line(".", "d"),
             ls_line("usr/lib/firmware/regulatory.db"),
             "lrwxrwxrwx   1 root     root            7 Jan  1  1970 bin -> usr/bin",

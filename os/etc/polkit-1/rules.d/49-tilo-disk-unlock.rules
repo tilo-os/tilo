@@ -3,14 +3,14 @@
 // lives under /var/lib/tilo/sibling-unlock, readable by root alone, because
 // it names the networks the owner trusts to unlock this machine.
 //
-// Reading it (`tilo-sibling-unlock volumes`, which takes no argument and
+// Reading it (`tilo-auth sibling volumes`, which takes no argument and
 // prints no secret) is granted without a prompt to an administrator at this
 // machine's active seat. Anything else the program does through pkexec, such
-// as choosing the unlock networks again (`enrol --replace-networks`), falls
+// as choosing the unlock networks again (`sibling enrol --replace-networks`), falls
 // through to the action's default: administrator authentication.
 polkit.addRule(function (action, subject) {
     if (action.id == "org.tilo.disk-unlock.manage" &&
-        action.lookup("command_line") == "/usr/libexec/tilo/tilo-sibling-unlock volumes" &&
+        action.lookup("command_line") == "/usr/libexec/tilo/tilo-auth sibling volumes" &&
         subject.local && subject.active && subject.isInGroup("wheel")) {
         return polkit.Result.YES;
     }

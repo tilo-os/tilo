@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "One secret per person: user keys and their TPM, passphrase and recovery wrappers, the sign-in daemon and the boot sign-in tool"
+description = "One secret per person and one early-boot unlock: user keys and their TPM, passphrase and recovery wrappers, the sibling unlock, the sign-in daemon and the boot tool"
 
 [lib]
 name = "tilo_auth"
@@ -30,6 +30,11 @@ name = "daemon"
 path = "tests/daemon.rs"
 required-features = ["service"]
 
+[[test]]
+name = "attestation"
+path = "tests/attestation.rs"
+required-features = ["service"]
+
 [features]
 default = ["service"]
 # Everything but the wire protocol and its client. The PAM module, which is
@@ -38,18 +43,26 @@ service = [
     "dep:anyhow",
     "dep:base64",
     "dep:clap",
+    "dep:ed25519-dalek",
+    "dep:futures",
     "dep:getrandom",
     "dep:hex",
     "dep:hmac",
+    "dep:iroh",
+    "dep:iroh-base",
     "dep:libc",
+    "dep:postcard",
     "dep:rustix",
     "dep:settings-store",
     "dep:sha2",
     "dep:tempfile",
+    "dep:tilo-ask-password",
     "dep:tilo-files",
+    "dep:tilo-nm",
     "dep:tilo-rollback",
     "dep:tilo-seal",
     "dep:tilo-unlock-protocol",
+    "dep:tokio",
     "dep:unicode-normalization",
 ]
 
@@ -61,25 +74,36 @@ zeroize = { workspace = true, features = ["serde"] }
 anyhow = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
+ed25519-dalek = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
 hmac = { workspace = true, optional = true }
+# The peer network the sibling unlock reaches the owner's devices over,
+# directly or through a relay.
+iroh = { workspace = true, optional = true }
+iroh-base = { workspace = true, optional = true }
 # The kernel keyring calls of the boot handoff, which no safe wrapper covers.
 libc = { workspace = true, optional = true }
 # The socket peer's credentials, which decide what it may ask.
 rustix = { workspace = true, optional = true, features = ["net", "process"] }
+postcard = { workspace = true, optional = true, features = ["alloc"] }
 # The sign-in comforts and their clamping, defined beside the settings they
 # carry to the login screens.
 settings-store = { path = "../settings-store", optional = true }
 sha2 = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
+tilo-ask-password = { path = "../ask-password", optional = true }
 tilo-files = { path = "../../platform/tilo-files", optional = true }
+# Where NetworkManager keeps an unlock network's saved connection.
+tilo-nm = { path = "../tilo-nm", optional = true }
 # The TPM and cryptsetup are driven through tilo-rollback's runner, sealing
 # parent and keyslot helpers, so there is one way this OS talks to them.
 tilo-rollback = { path = "../tilo-rollback", optional = true }
 tilo-seal = { path = "../tilo-seal", optional = true }
 # The strength rule for a secret no TPM throttles, shared with the installer.
 tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol", optional = true }
+tokio = { workspace = true, optional = true, features = ["macros", "rt", "signal", "time"] }
 unicode-normalization = { version = "0.1.25", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -88,6 +112,7 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
 tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
