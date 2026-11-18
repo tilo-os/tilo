@@ -2187,8 +2187,11 @@ fn keystroke(sized: &Sized<'_>, workspace: &mut Workspace) -> Result<Option<Reco
 
 /// Pressing the main window's first button, one press a frame.
 fn press(sized: &Sized<'_>, workspace: &mut Workspace) -> Result<Record, String> {
-    let button =
-        first_of(workspace.list.tree(), "ui.Button").ok_or("the main window has no button")?;
+    let tree = workspace.list.tree();
+    let button = tree
+        .first_of_kind("ui.Button")
+        .ok_or("the main window has no button")?;
+    let button = button.key.clone();
     let mut changes = Changes::default();
     for _ in 0..sized.config.samples {
         let before = Work::of(workspace, &[]);
@@ -2206,14 +2209,6 @@ fn press(sized: &Sized<'_>, workspace: &mut Workspace) -> Result<Record, String>
     }
     let (samples, extra) = changes.into_record(workspace.phases.take());
     Ok(sized.record("press", "ms", samples, extra))
-}
-
-/// The key of the first node of `kind` in `node`.
-fn first_of(node: &UiNode, kind: &str) -> Option<String> {
-    if node.kind == kind {
-        return Some(node.key.clone());
-    }
-    node.children.iter().find_map(|c| first_of(c, kind))
 }
 
 /// What a peer changes: the title of the item the edits go to, or else the root's counter; and

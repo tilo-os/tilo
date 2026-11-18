@@ -1244,6 +1244,33 @@ impl Runtime {
         self.core.mark_seen(person, at)
     }
 
+    /// `person` watched a change of `at` by `by` land, its live mark on screen: what they have
+    /// not seen of it is seen when all of it is `by`'s. A change of someone else's made while
+    /// they were not looking keeps its marks. Whether the mark moved.
+    ///
+    /// # Errors
+    ///
+    /// The store could not read the versions of `at`.
+    pub fn seen_live(
+        &self,
+        person: &Actor,
+        at: &ResourceRef,
+        by: &Actor,
+    ) -> Result<bool, StoreError> {
+        let unseen = self.core.unseen_of(person, at)?;
+        if unseen.is_empty() || unseen.iter().any(|v| v.who.as_ref() != Some(by)) {
+            return Ok(false);
+        }
+        self.core.mark_seen(person, at)
+    }
+
+    /// What a write of `field` of a resource of the type `ty` reads with when it renames the
+    /// resource ([`crate::did::renamed`]).
+    #[must_use]
+    pub fn renamed(&self, ty: &str, field: &str) -> Option<crate::did::Said> {
+        crate::did::renamed(&self.core.registry.borrow().type_info(ty)?.1, field)
+    }
+
     /// The runs `person` reviewed, as their own record keeps them: every version of one is
     /// seen. A view that read what is unseen runs again when they move.
     pub fn set_seen_runs(&self, person: &Actor, runs: &[String]) {

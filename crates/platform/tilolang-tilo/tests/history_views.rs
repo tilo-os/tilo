@@ -10,7 +10,9 @@ use tilolang_runtime::{ResourceRef, Store, UiNode, UndoAsk, Value, ViewEvent, Vi
 use tilolang_tilo::instance::HistoryAsk;
 
 use crate::fixtures::{Replica, target};
-use crate::legibility::{AGENT, NOTES_APP, RUN, Tidied, a_run_in_notes_and_tasks, call, helper};
+use crate::legibility::{
+    AGENT, NOTES_APP, RUN, Tidied, an_agent_tidies_notes_and_tasks, call, helper,
+};
 
 const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
@@ -226,7 +228,7 @@ fn a_change_shows_what_the_title_and_the_due_day_held_before_and_after() {
     assert_eq!(text(after), Some("Shopping"));
     // What it did, in the words of the field it wrote: it renamed the note.
     assert!(
-        reads_as(&section).contains("bo changed title"),
+        reads_as(&section).contains("bo renamed"),
         "the entry says what was done: {section:#?}"
     );
 
@@ -288,7 +290,7 @@ fn undo_on_an_older_step_takes_back_that_step_alone() {
             .filter(|n| n.kind == "row")
             .filter(|row| {
                 let held = nodes(row);
-                held.iter().any(|t| text(t) == Some("changed title"))
+                held.iter().any(|t| text(t) == Some("renamed"))
                     && held
                         .iter()
                         .any(|t| t.kind == "ui.Button" && text(t) == Some("tilolang-undo"))
@@ -374,7 +376,7 @@ fn a_history_entry_never_takes_back_the_making_and_keeps_older_changes_in_its_me
         !takes_back(&making),
         "the making offers nothing to take back: {making:#?}"
     );
-    let theirs = entry_row(&section, "changed title");
+    let theirs = entry_row(&section, "renamed");
     assert!(
         !takes_back(&theirs),
         "a change of someone else's is not taken back from here: {theirs:#?}"
@@ -491,7 +493,7 @@ tilo_test_env::scenario! {
         let section = history(&mut page);
         let said = says(&section);
         assert!(
-            said.join(" ").contains("You changed title"),
+            said.join(" ").contains("You renamed"),
             "the entry says what was done: {said:?}"
         );
         page.press(&button(&section, "tilolang-history-show"))
@@ -581,7 +583,7 @@ fn undo_run_from_the_history_takes_back_every_step_of_the_run() {
         groceries,
         landlord,
         ..
-    } = a_run_in_notes_and_tasks();
+    } = an_agent_tidies_notes_and_tasks();
     let mut editor = ada.host.open_resource(&groceries, None).unwrap();
     let section = history(&mut editor);
     // The run's rename, then Ada's own making and naming of the note, each one entry.
@@ -981,7 +983,7 @@ fn a_change_that_wrote_two_fields_reads_as_one_sentence() {
     ada.commit();
     let said = says(&history_of(&ada, &at));
     assert!(
-        said.join(" ").contains("bo changed title"),
+        said.join(" ").contains("bo renamed"),
         "the first field the change wrote: {said:?}"
     );
     assert!(
@@ -1593,7 +1595,7 @@ fn a_history_row_names_the_person_as_the_avatar_does_and_an_agent_as_its_name() 
     // looking as the platform's word for them, each over what it did.
     assert_eq!(
         labels(&section),
-        ["Helper", "You", "changed title"],
+        ["Helper", "You", "renamed"],
         "the rows name people as the avatars do, never their ids"
     );
     assert!(

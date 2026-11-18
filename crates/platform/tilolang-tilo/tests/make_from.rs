@@ -47,26 +47,9 @@ fn call(r: &Replica, app: &str, action: &str, args: Vec<Value>) -> Value {
     }
 }
 
-fn find<'a>(node: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
-    if node.kind == kind {
-        return Some(node);
-    }
-    node.children.iter().find_map(|child| find(child, kind))
-}
-
-fn find_all<'a>(node: &'a UiNode, kind: &str, out: &mut Vec<&'a UiNode>) {
-    if node.kind == kind {
-        out.push(node);
-    }
-    for child in &node.children {
-        find_all(child, kind, out);
-    }
-}
-
 /// Every node of `kind`, anywhere in the view.
 fn all(view: &ViewInstance, kind: &str) -> Vec<UiNode> {
-    let mut found = Vec::new();
-    find_all(view.tree(), kind, &mut found);
+    let found = view.tree().of_kind(kind);
     found.into_iter().cloned().collect()
 }
 
@@ -81,7 +64,9 @@ fn ref_of(node: &UiNode, prop: &str) -> Option<ResourceRef> {
 /// The transcript's rows as the list builds them: each row's node.
 fn rows(view: &mut ViewInstance) -> Vec<UiNode> {
     view.poll_patches().unwrap();
-    let list = find(view.tree(), "ui.VirtualList")
+    let list = view
+        .tree()
+        .first_of_kind("ui.VirtualList")
         .expect("a transcript")
         .key
         .clone();
@@ -96,7 +81,9 @@ fn messages(view: &mut ViewInstance) -> Vec<ResourceRef> {
     rows(view)
         .iter()
         .map(|row| {
-            let item = find(row, "ui.ListItem").expect("a row of a message");
+            let item = row
+                .first_of_kind("ui.ListItem")
+                .expect("a row of a message");
             ref_of(item, "item").expect("a row of a message")
         })
         .collect()
@@ -108,8 +95,7 @@ fn messages(view: &mut ViewInstance) -> Vec<ResourceRef> {
 fn task_row(view: &mut ViewInstance, task: &ResourceRef) -> UiNode {
     let rows = rows(view);
     for row in &rows {
-        let mut drawn = Vec::new();
-        find_all(row, "ui.ListRow", &mut drawn);
+        let drawn = row.of_kind("ui.ListRow");
         if let Some(drawn) = drawn.into_iter().find(|list_row| {
             list_row.props.get("title") == Some(&Value::text(SAID))
                 && list_row.props.get("bind") == Some(&Value::text("checkbox"))
@@ -133,8 +119,7 @@ fn task_row(view: &mut ViewInstance, task: &ResourceRef) -> UiNode {
 
 /// The menu item of `row` in the group `group` labelled `label`.
 fn menu(row: &UiNode, group: &str, label: &str) -> String {
-    let mut found = Vec::new();
-    find_all(row, "ui.MenuItem", &mut found);
+    let found = row.of_kind("ui.MenuItem");
     found
         .iter()
         .find(|item| {

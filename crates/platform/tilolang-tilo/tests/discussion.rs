@@ -76,24 +76,10 @@ fn comment(
     ))
 }
 
-/// Every node of the tree, in the order it stands.
-fn nodes<'a>(node: &'a UiNode, out: &mut Vec<&'a UiNode>) {
-    out.push(node);
-    for child in &node.children {
-        nodes(child, out);
-    }
-}
-
-fn of_kind<'a>(node: &'a UiNode, kind: &str) -> Vec<&'a UiNode> {
-    let mut out = Vec::new();
-    nodes(node, &mut out);
-    out.into_iter().filter(|node| node.kind == kind).collect()
-}
-
 /// The dividers saying where the thread's unread comments start: the conversation's one divider
 /// in the accent, told apart from a day's by the tone it is drawn in.
 fn unread_dividers(tree: &UiNode) -> Vec<&UiNode> {
-    of_kind(tree, "ui.SectionDivider")
+    tree.of_kind("ui.SectionDivider")
         .into_iter()
         .filter(|node| match node.props.get("tone") {
             Some(Value::Enum(found)) => found.variant == "accent",
@@ -114,7 +100,7 @@ fn ref_of(node: &UiNode, prop: &str) -> Option<ResourceRef> {
 /// The rich text the comments of `tree` draw, in the order the thread reads them: a comment is
 /// shown as the value it holds, not bound to a field like the page's own body.
 fn comments_drawn(tree: &UiNode) -> Vec<RichValue> {
-    of_kind(tree, "ui.BlockEditor")
+    tree.of_kind("ui.BlockEditor")
         .into_iter()
         .filter_map(|editor| match editor.props.get("value") {
             Some(Value::Rich(rich)) => Some(rich.clone()),
@@ -127,7 +113,8 @@ fn comments_drawn(tree: &UiNode) -> Vec<RichValue> {
 /// person has not seen, and who made the newest.
 fn window_mark(view: &mut ViewInstance) -> Option<UiNode> {
     view.poll_patches().unwrap();
-    of_kind(view.tree(), "ui.ChangeMark")
+    view.tree()
+        .of_kind("ui.ChangeMark")
         .into_iter()
         .find(|mark| mark.props.get("window") == Some(&Value::Bool(true)))
         .map(|mark| (*mark).clone())
@@ -137,7 +124,7 @@ fn window_mark(view: &mut ViewInstance) -> Option<UiNode> {
 /// host placed on it when it carries one.
 fn rows(view: &mut ViewInstance) -> Vec<(String, Option<UiNode>)> {
     view.poll_patches().unwrap();
-    let found = of_kind(view.tree(), "ui.VirtualList");
+    let found = view.tree().of_kind("ui.VirtualList");
     let Some(list) = found.first() else {
         return Vec::new();
     };
@@ -148,11 +135,12 @@ fn rows(view: &mut ViewInstance) -> Vec<(String, Option<UiNode>)> {
         let Ok(Some(row)) = view.row(&list, i) else {
             continue;
         };
-        for item in of_kind(row, "ui.ListItem") {
+        for item in row.of_kind("ui.ListItem") {
             let Some(Value::Ref(r)) = item.props.get("item") else {
                 continue;
             };
-            let mark = of_kind(item, "ui.ChangeMark")
+            let mark = item
+                .of_kind("ui.ChangeMark")
                 .first()
                 .map(|mark| (*mark).clone());
             out.push((r.target.id_string(), mark));
@@ -418,7 +406,8 @@ fn an_agent_comments_through_the_same_action() {
     assert!(mark_of(&mut view, &task.id_string()).is_some());
     let page = ada.host.open_resource(&task, None).unwrap();
     assert!(
-        of_kind(page.tree(), "ui.Avatar")
+        page.tree()
+            .of_kind("ui.Avatar")
             .iter()
             .any(|avatar| avatar.props.get("who")
                 == Some(&Value::Actor(Actor::from(
@@ -506,7 +495,7 @@ tilo_test_env::scenario! {
             ],
             "the task's thread draws them oldest first"
         );
-        let who: Vec<String> = of_kind(page.tree(), "ui.Avatar")
+        let who: Vec<String> = page.tree().of_kind("ui.Avatar")
             .into_iter()
             .filter_map(|node| match node.props.get("who") {
                 Some(Value::Actor(who)) => Some(who.id().to_owned()),
@@ -518,7 +507,7 @@ tilo_test_env::scenario! {
             ["Ada", "Bo", "Ada"],
             "the thread names who said each thing"
         );
-        let when: Vec<String> = of_kind(page.tree(), "ui.Time")
+        let when: Vec<String> = page.tree().of_kind("ui.Time")
             .into_iter()
             .filter_map(|node| match node.props.get("at") {
                 Some(Value::Text(at)) => Some(at.clone()),
@@ -617,7 +606,9 @@ fn a_comment_is_about_its_task_so_the_page_does_not_list_it_as_made_from_it() {
         [said.id_string()]
     );
     let page = ada.host.open_resource(&task, None).unwrap();
-    let listed: Vec<String> = of_kind(page.tree(), "ui.ListRow")
+    let listed: Vec<String> = page
+        .tree()
+        .of_kind("ui.ListRow")
         .into_iter()
         .filter_map(|row| ref_of(row, "item"))
         .map(|at| at.id_string())
@@ -641,12 +632,15 @@ fn a_comment_is_about_its_task_so_the_page_does_not_list_it_as_made_from_it() {
 fn a_history_entry_says_what_was_done_in_the_apps_words_not_in_its_declaration() {
     let (ada, _bo, task, _said, _asked) = ada_and_bo_after_a_comment();
     let page = ada.host.open_resource(&task, None).unwrap();
-    let section = of_kind(page.tree(), "ui.Section")
+    let section = page
+        .tree()
+        .of_kind("ui.Section")
         .into_iter()
         .find(|node| node.props.get("title") == Some(&Value::text("tilolang-history")))
         .cloned()
         .expect("the task's page shows its history");
-    let words: Vec<String> = of_kind(&section, "ui.Text")
+    let words: Vec<String> = section
+        .of_kind("ui.Text")
         .into_iter()
         .filter_map(|node| match node.props.get("value") {
             Some(Value::Text(text)) => Some(text.clone()),
@@ -818,9 +812,9 @@ fn bound_key(node: &UiNode, field: &str) -> Option<String> {
 
 /// The people the window's `@` drawer offers first, as the view gave them.
 fn drawer(view: &ViewInstance, prop: &str) -> Vec<String> {
-    let input = of_kind(view.tree(), "ui.RichInput")
-        .into_iter()
-        .next()
+    let input = view
+        .tree()
+        .first_of_kind("ui.RichInput")
         .expect("the thread has its composer");
     match input.props.get(prop) {
         Some(Value::List(items)) => items

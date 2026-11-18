@@ -13,7 +13,7 @@ use tilo_render_protocol::patch::Level;
 
 use super::{Instance, Shown};
 use crate::publish::resource_id;
-use crate::runtime::{UiNode, Value};
+use crate::runtime::{ResourceRef, UiNode, Value};
 
 impl Instance {
     /// The root view and, when a row went somewhere, the detail view.
@@ -44,6 +44,48 @@ impl Instance {
             out.insert(resource_id(&self.app, &facts.target.id_string()));
         }
         out
+    }
+}
+
+impl Instance {
+    /// Take a step of someone's action on a resource of the app before the window shows it. A
+    /// write of text names its field by the id its type declares, and says it renamed the resource
+    /// where history does ([`crate::runtime::did::renamed`]). A change that landed where the
+    /// window shows its resource was seen landing ([`crate::runtime::Runtime::seen_live`]).
+    pub fn heard(&self, interaction: &mut tilo_actions::SemanticInteraction) {
+        let Some(app) = self.host() else {
+            return;
+        };
+        let Some(package) = app.package(&self.app) else {
+            return;
+        };
+        let kind = interaction.resource.kind.rsplit_once('.');
+        let declared = kind.and_then(|(_, name)| package.meta.type_named(name));
+        if let (Some(declared), tilo_actions::InteractionAnchor::Text { region, .. }) =
+            (declared, &mut interaction.anchor)
+            && let Some(field) = declared.fields.iter().find(|field| field.name == *region)
+        {
+            region.clone_from(&field.id);
+            if let Some(said) = app.runtime().renamed(&declared.id, &field.id) {
+                interaction.action.did = Some(self.platform.phrase(said.key, &[]));
+            }
+        }
+        let published = tilo_actions::logical_resource_id(&interaction.resource.id).into_owned();
+        let ty = declared.map_or_else(String::new, |declared| declared.id.clone());
+        let Some(target) = published
+            .strip_prefix(&format!("tl:{}:", self.app))
+            .and_then(|id| ResourceRef::parse_id(id, ty))
+        else {
+            return;
+        };
+        if matches!(interaction.phase, tilo_actions::InteractionPhase::Committed)
+            && self.shown_resources().contains(&published)
+            && let Err(error) =
+                app.runtime()
+                    .seen_live(app.viewer(), &target, &interaction.actor.by)
+        {
+            tracing::warn!(%error, "a change seen landing could not be marked seen");
+        }
     }
 }
 
