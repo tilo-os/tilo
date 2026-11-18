@@ -177,7 +177,7 @@
       },
       "input": {
         "Text": {
-          "prompt": "Shelf actions to apply in order as one step, each {\"action\": id, \"args\": {..}}",
+          "prompt": "Shelf actions to apply in order as one step, each {\"action\": id, \"args\": {..}}. A member names an item an earlier member of the same group makes by its place, {\"$made\": {\"member\": 0, \"item\": 0}}: the member counted from 0, then which of the ids it made, which the group fills in as it applies",
           "placeholder": "Invocations as JSON",
           "collects": "Words"
         }
@@ -187,7 +187,7 @@
           "name": "actions",
           "ty": "array",
           "required": true,
-          "description": "Shelf actions to apply in order as one step, each {\"action\": id, \"args\": {..}}",
+          "description": "Shelf actions to apply in order as one step, each {\"action\": id, \"args\": {..}}. A member names an item an earlier member of the same group makes by its place, {\"$made\": {\"member\": 0, \"item\": 0}}: the member counted from 0, then which of the ids it made, which the group fills in as it applies",
           "schema": {
             "type": "array",
             "items": {
@@ -561,7 +561,7 @@
         {
           "name": "step",
           "ty": "text",
-          "description": "A change id from history: undo only the step it is part of",
+          "description": "A change id from history: undo only the step it is part of, of your steps, or of those invocation or by names",
           "nullable": true
         }
       ]
