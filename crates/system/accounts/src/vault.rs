@@ -330,6 +330,11 @@ impl SecretVault {
 
     /// Store (or replace) `secret` for `id`. In-memory until [`Self::save`].
     pub fn put(&mut self, id: &AccountId, secret: &Secret) {
+        // A secret that changes with no word of where it was typed for is
+        // typed for no server yet ([`crate::typed_for`]).
+        if self.entries.get(id.as_str()) != Some(secret) {
+            self.typed_for_nowhere(id);
+        }
         let original = self.entries.insert(id.as_str().to_string(), secret.clone());
         let change = self
             .pending
@@ -360,6 +365,7 @@ impl SecretVault {
 
     /// Remove the secret for `id`, returning whether one existed. In-memory until [`Self::save`].
     pub fn remove(&mut self, id: &AccountId) -> bool {
+        self.typed_for_nowhere(id);
         let original = self.entries.remove(id.as_str());
         let existed = original.is_some();
         let change = self

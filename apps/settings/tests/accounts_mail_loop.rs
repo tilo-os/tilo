@@ -182,6 +182,20 @@ fn a_mail_account_keeps_the_servers_its_person_wrote() {
         )
     );
     pane.set_form_mail_servers_for_test("imap.example.org", "mail.example.org:587");
+    // It names another incoming server now. With no password entered for it
+    // the form asks for one, and nothing is checked against that server with
+    // the password kept for the first.
+    let checks = checked.0.lock().unwrap().len();
+    pane.submit_form_for_test();
+    assert!(!pane.finish_form_submission_for_test(tilo_test_env::hang_bound()));
+    assert!(
+        pane.form_error_for_test()
+            .is_some_and(|error| error.contains("another server")),
+        "{:?}",
+        pane.form_error_for_test()
+    );
+    assert_eq!(checked.0.lock().unwrap().len(), checks);
+    pane.set_form_password_for_test("s3cret-app-password");
     pane.submit_form_for_test();
     assert!(
         pane.finish_form_submission_for_test(tilo_test_env::hang_bound()),

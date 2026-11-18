@@ -27,10 +27,10 @@ impl AccountsPane {
         self.form_error = Some(t("accounts-checking"));
         self.form_saving = true;
         let round = self.form_round;
-        let id = account.id.clone();
+        let kept = account.clone();
         self.run_in_queue(move |_| {
             Step::vault(
-                move |vault| Self::prepare_secret(&vault.open(), &id, ""),
+                move |vault| Self::prepare_secret(&mut vault.open(), Some(&kept), &kept, ""),
                 move |pane, secret| {
                     if pane.form_round != round {
                         return Step::Done;
@@ -276,13 +276,14 @@ impl AccountsPane {
             .as_ref()
             .and_then(|(_, secret)| secret.clone());
         let id = account.id.clone();
+        let entered = account.clone();
         Step::vault(
             move |opener| {
                 let mut vault = opener.open();
                 if vault.recovery_error().is_some() || vault.get(&id) != expected {
                     return Err(t("accounts-calendar-details-changed"));
                 }
-                vault.put(&id, &secret);
+                vault.put_for(&entered, &secret);
                 vault
                     .try_save()
                     .map_err(|error| format!("could not save credential: {error}"))?;

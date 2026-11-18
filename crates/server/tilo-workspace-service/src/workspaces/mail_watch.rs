@@ -277,6 +277,13 @@ impl Workspaces {
     fn watch_inboxes_of(&self, person: &[u8; 32]) {
         let state = &self.inner.mail_watches.state;
         let root = self.person_settings_root(person);
+        // This server keeps the accounts it watches and asks for their
+        // sign-ins itself: one kept with no servers on it is bound to the
+        // servers its account names now.
+        if let Err(reason) = super::person_settings::bind_kept_first(&root) {
+            tracing::warn!(%reason, "mail: a person's sign-ins could not be bound to their servers, so their inboxes are not watched");
+            return;
+        }
         let store = accounts::AccountStore::load_in(&root);
         let vault = match accounts::AccountCredentials::open_in(&root) {
             Ok(vault) => vault,
@@ -297,7 +304,7 @@ impl Workspaces {
             // provider this host holds no grant for, has nothing to watch
             // with.
             let Some(secret) = vault
-                .get(&account.id)
+                .get_for(account)
                 .filter(|secret| !secret.password.is_empty() && !waits && !signs_in_elsewhere)
             else {
                 continue;
@@ -726,7 +733,7 @@ pub(crate) mod testing {
     /// as adding it from a window keeps one.
     pub(crate) fn keep(root: &std::path::Path, address: &str, password: &str) {
         let id = accounts::AccountId::from(address.to_owned());
-        let mut account = accounts::Account::new(id.clone(), accounts::email::TYPE_ID);
+        let mut account = accounts::Account::new(id, accounts::email::TYPE_ID);
         account.config = serde_json::json!({
             "email": address,
             "username": address,
@@ -736,10 +743,11 @@ pub(crate) mod testing {
             "smtp_port": 465,
         });
         let mut store = accounts::AccountStore::load_in(root);
-        store.upsert(account);
+        store.upsert(account.clone());
         store.save_in(root).unwrap();
+        // Added with its password: bound to the servers it names.
         let mut vault = accounts::AccountCredentials::open_in(root).unwrap();
-        vault.put(&id, &accounts::Secret::password(password));
+        vault.put_for(&account, &accounts::Secret::password(password));
         vault.try_save().unwrap();
     }
 

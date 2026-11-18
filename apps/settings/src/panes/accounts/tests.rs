@@ -143,7 +143,7 @@ tilo_test_env::scenario! {
                 "New label",
                 "new-user",
                 "",
-                "https://new.example/",
+                "https://old.example/",
                 "",
             )
             .expect("edit account");
@@ -156,7 +156,7 @@ tilo_test_env::scenario! {
             assert_eq!(saved.config["use_calendar"], true);
             assert_eq!(saved.config["use_mail"], false);
             assert_eq!(saved.config["future_provider_field"]["kept"], true);
-            assert_eq!(saved.config["server_url"], "https://new.example");
+            assert_eq!(saved.config["server_url"], "https://old.example");
             assert_eq!(saved.config["username"], "new-user");
             assert_eq!(
                 root.vault().get(&id),
@@ -247,6 +247,75 @@ tilo_test_env::scenario! {
 
 /// Drive the host's polling until the pending account probe reports,
 /// however long the probe thread takes to be scheduled.
+/// A credential is entered for the server its account names then. An edit
+/// that names another server and enters none is refused, in words that ask
+/// for the one of that server: the kept one is sent nowhere else.
+#[test]
+fn an_edit_that_names_another_server_needs_its_credential_entered() {
+    let (_scratch, root) = scratch_root();
+    let save = |existing: Option<&str>, name: &str, server: &str, password: &str| {
+        AccountsPane::save_account(
+            &root,
+            AccountKind::CalDav,
+            existing,
+            name,
+            "me@example.test",
+            "",
+            server,
+            password,
+        )
+    };
+    save(
+        None,
+        "Work",
+        "https://dav.example.test/dav/",
+        "entered-for-dav-example",
+    )
+    .expect("add account");
+    let id = root.store().all()[0].id.clone();
+    let named = |root: &AccountRoot| {
+        root.store().get(&id).expect("the account is kept").config["server_url"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let kept = named(&root);
+
+    save(
+        Some(id.as_str()),
+        "Work calendar",
+        "https://dav.example.test/dav/",
+        "",
+    )
+    .expect("an edit that keeps its server keeps its credential");
+    let refused = save(
+        Some(id.as_str()),
+        "Work calendar",
+        "https://dav.elsewhere.example/dav/",
+        "",
+    );
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|error| error.contains("another server")),
+        "an edit to another server took the credential entered for {kept} with it: {refused:?}"
+    );
+    assert_eq!(named(&root), kept, "a refused edit changes nothing");
+
+    save(
+        Some(id.as_str()),
+        "Work calendar",
+        "https://dav.elsewhere.example/dav/",
+        "entered-for-elsewhere",
+    )
+    .expect("with its own credential entered the other server is saved");
+    assert_ne!(named(&root), kept);
+    assert_eq!(
+        root.vault().get(&id).map(|secret| secret.password),
+        Some("entered-for-elsewhere".to_owned())
+    );
+}
+
 fn settle_probes(pane: &mut AccountsPane) {
     let deadline = ui::time::now() + ProbeJob::<String>::DEADLINE;
     loop {

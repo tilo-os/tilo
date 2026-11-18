@@ -738,7 +738,7 @@ fn layout_reflows_on_resize_instead_of_caching_first_frame_geometry() {
         );
         assert!(
             !app.take_structure_dirty(),
-            "the rebuild is asked for once, even before the host lays it out"
+            "the rebuild is asked for once, even before it is laid out"
         );
 
         let mut taffy2: TaffyTree<()> = TaffyTree::new();
@@ -1091,7 +1091,7 @@ tilo_test_env::scenario! {
         let today = jiff::Zoned::now().date();
         std::fs::write(&invite, crate::ics::sample_ics(today)).expect("write fixture");
         let (services, recorder) = ui::process::ProcessServices::recording();
-        let _host = ui::process::enter(&services);
+        let _process = ui::process::enter(&services);
 
         let mut app = ui::framework::testing::TestApp::<crate::resource::CalendarShell>::new().unwrap();
         let imported = |app: &ui::framework::testing::TestApp<crate::resource::CalendarShell>| {

@@ -12,7 +12,8 @@ pub const REFUSED: &str = "This account's secret is not available to this app";
 
 /// Seal `password` as account `account`'s secret, for `app`: only the
 /// accounts' keeper may. A password replaces the password; a sign-in's
-/// sealed grant stays.
+/// sealed grant stays. It is typed anew: bound to the servers its account
+/// names where it is first released ([`release_bound`]).
 pub fn seal(
     credentials: &mut AccountCredentials,
     app: &str,
@@ -24,7 +25,7 @@ pub fn seal(
     }
     let id = AccountId::from(account.to_owned());
     let token = credentials.get(&id).and_then(|secret| secret.token);
-    credentials.put(
+    credentials.put_anew(
         &id,
         &Secret {
             password: password.to_owned(),
@@ -35,7 +36,8 @@ pub fn seal(
 }
 
 /// Account `account`'s secret for `app`: only for an enabled account of the
-/// person's (`store`) whose type `app` keeps, with a secret sealed.
+/// person's (`store`) whose type `app` keeps, with a secret sealed that was
+/// typed for the servers the account names ([`crate::typed_for`]).
 pub fn release(
     store: &AccountStore,
     credentials: &AccountCredentials,
@@ -48,8 +50,26 @@ pub fn release(
         return Err(REFUSED.into());
     }
     credentials
-        .get(&id)
+        .get_for(kept)
         .map(|secret| Zeroizing::new(secret.password))
         .filter(|password| !password.is_empty())
         .ok_or_else(|| REFUSED.into())
+}
+
+/// Release as [`release`] does, and bind a secret that has no servers on it
+/// yet to the servers its account names now ([`crate::typed_for`]): from
+/// then on it is released for no account that names another.
+///
+/// # Errors
+/// As [`release`]; and where the vault could not keep what the secret is
+/// bound to, so that nothing is released unbound.
+pub fn release_bound(
+    store: &AccountStore,
+    credentials: &mut AccountCredentials,
+    app: &str,
+    account: &str,
+) -> Result<Zeroizing<String>, String> {
+    let password = release(store, credentials, app, account)?;
+    credentials.bind_first(store.get(&AccountId::from(account.to_owned())))?;
+    Ok(password)
 }
