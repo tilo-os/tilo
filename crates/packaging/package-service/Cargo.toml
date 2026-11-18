@@ -62,7 +62,7 @@ runtime-bundle = { path = "../runtime-bundle", optional = true }
 runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 
 # Async runtime + transport.
-tokio = { workspace = true, features = ["macros", "net", "io-util", "fs", "signal", "time", "sync", "process"] }
+tokio = { workspace = true, features = ["macros", "io-util", "time", "sync"] }
 wire-frame = { path = "../../system/wire-frame", features = ["tokio", "postcard"] }
 
 # Daemon plumbing.
@@ -84,6 +84,9 @@ sd-notify = { workspace = true, optional = true }
 tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Sockets, files, signals and child processes: tokio builds none of them for
+# wasm32, where the web desktop links the client's types with Settings.
+tokio = { workspace = true, features = ["net", "fs", "signal", "process"] }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
