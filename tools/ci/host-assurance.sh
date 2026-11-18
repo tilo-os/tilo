@@ -5,12 +5,19 @@
 # rolls itself back without anyone at the machine.
 #
 # The disk is the image the check image-host built, installed the way the
-# desktop's dev disk is (os/dev/build-image.sh, bootc install to-filesystem).
+# desktop's dev disk is (os/dev/build-image.sh, bootc install to-filesystem) and
+# onto a LUKS2 root with a LUKS2 store, the layout the installer makes
+# (TILO_ENCRYPT_INSTALL=1). That install opens the volume through device-mapper,
+# which this check's micro-VM has not, so it runs in a guest of its own, booted
+# by the same VM harness with a software TPM; the machine under test then boots
+# that disk with the same TPM, and the recovery key the install handed over is
+# what opens it until the image carries a signed boot chain for a TPM keyslot.
 # The update staged on it is the same image with one more layer, so bootc sees a
 # different deployment; os/tests/boot_assessment_rollback.sh then stages it,
 # breaks only it and reboots until the boot loader has spent its tries and gone
-# back. The server image runs no sshd, so every step is driven at the serial
-# console, which is also how a person reaches it (os/tests/serial_runner.sh).
+# back, answering each boot's unlock prompt. The server image runs no sshd, so
+# every step is driven at the serial console, which is also how a person reaches
+# it (os/tests/serial_runner.sh).
 #
 # The record of every boot lands in /target/host-assurance.
 set -euo pipefail
@@ -113,14 +120,118 @@ digest=$(loud skopeo inspect --format '{{.Digest}}' "oci:$layout${tag:+:$tag}") 
 image=$(loud podman pull -q "oci:$layout${tag:+:$tag}") \
   || die "podman could not load the image in $pub/image.oci.tar"
 loud podman tag "$image" localhost/tilo-host:ci || die "cannot name the loaded image"
-say 'install the image on a disk'
-TILO_IMAGE=localhost/tilo-host:ci TILO_SKIP_BUILD=1 TILO_DISTROBOX="" \
-  TILO_OUTPUT=$work/install TILO_RUN=$work/install-run TILO_DISK_SIZE=64G \
-  TILO_TARGET_IMGREF="registry.tilo.so/tilo/tilo-host:main-${target:0:7}-ci" \
-  ./os/dev/build-image.sh 2> >(tee /dev/console >&2) \
-  || die "the disk install failed"
+# The install runs in a guest of the check's own, booted by the same VM harness
+# the machine under test is: this check's micro-VM has no device-mapper (dm_mod
+# does not load in it), and the encrypted layout opens the volume through one.
+# The guest is this tree's dev disk — the machine the desktop's encrypted-install
+# check installs from — and the command inside it is the one the check ran on its
+# own disk before encryption: os/dev/build-image.sh with TILO_ENCRYPT_INSTALL=1,
+# unchanged, so what is proved here is the shipped path and not a second one.
+say 'install the image on an encrypted disk, in a guest that can open one'
+dev_disk=/target/publish/os-dev-disk/x86_64/disk/disk.qcow2
+[[ -s $dev_disk ]] || die "no dev disk in /target/publish/os-dev-disk: the check needs os-dev-disk-lean"
+# The dev disk is an output other checks read too: this guest writes to an
+# overlay of it, never to it.
+qemu-img create -q -f qcow2 -F qcow2 -b "$dev_disk" "$work/guest.qcow2"
+imgref="registry.tilo.so/tilo/tilo-host:main-${target:0:7}-ci"
+# The install's clock: the tree the guest installs from is sent without its Git,
+# and a zero clock is one DNF rejects every RPM header on.
+epoch=$(git log -1 --format=%ct)
+guest_work=/var/tmp/host-assurance-install
+# The install guest and the machine under test are two boots of one emulated
+# TPM, which is the device a keyslot is sealed to: the TPM state lives beside
+# both runs, and each boot has a run directory of its own so one machine's
+# console log is never read as the other's.
+export TILO_DISTROBOX="" TILO_ACCEL=kvm TILO_USER TILO_PASS
+export TILO_TPM_DIR=$work/tpm
+installer_run=$work/installer-run
+TILO_RUN=$installer_run ./os/dev/vm.sh boot --2d --tpm --disk "$work/guest.qcow2" \
+  || die 'the install guest did not boot'
+# The guest is driven over the SSH a dev disk gives the VM harness, as root
+# through sudo: the install runs with the privileges it would have had here.
+unset SSH_ASKPASS SSH_ASKPASS_REQUIRE
+ssh_guest() {
+  sshpass -p "$TILO_PASS" ssh -F /dev/null -p "${TILO_SSH_PORT:-2222}" \
+    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o ConnectTimeout=8 -o ServerAliveInterval=10 -o ServerAliveCountMax=600 \
+    -o LogLevel=ERROR -o NumberOfPasswordPrompts=1 \
+    -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+    -o KbdInteractiveAuthentication=no "$TILO_USER@127.0.0.1" "$@"
+}
+as_guest_root() {
+  ssh_guest "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bash -c $(printf '%q' "$1")"
+}
+stop_installer() {
+  TILO_RUN=$installer_run ./os/dev/vm.sh stop >/dev/null 2>&1 || true
+}
+trap 'stop_installer; report_exit' EXIT
+for _ in $(seq 1 90); do ssh_guest true >/dev/null 2>&1 && break; sleep 10; done
+ssh_guest true >/dev/null || { stop_installer; die 'the install guest never answered over ssh'; }
+# What the guest installs from, sent in: this checkout's install tools (os/) and
+# the image whose digest the check just proved, unpacked where the guest's own
+# root podman loads it.
+loud ssh_guest "install -d -m 0700 $guest_work/src $guest_work/image" \
+  || die "could not make the install guest's work directories"
+tar -C "$PWD" -cf - os | ssh_guest "tar -C $guest_work/src -xf -" \
+  || die 'could not send the install tools to the guest'
+tar -C "$layout" -cf - . | ssh_guest "tar -C $guest_work/image -xf -" \
+  || die 'could not send the image to the guest'
+cat > "$work/guest-install.sh" <<EOF
+set -euo pipefail
+# The container's own storage and scratch, made first: podman refuses a bind
+# mount whose source it did not make itself.
+install -d -m 0700 $guest_work/inner/containers $guest_work/inner/tmp
+# The disk step runs in a container on the guest, as the installer medium's
+# build does on its worker VM (tools/ci/medium-in-worker-vm.sh): the tools it
+# needs are installed there, and the guest's own root is an immutable image that
+# installs nothing. The container shares the guest's kernel, so the volume it
+# opens is the guest's device-mapper.
+podman run --rm --privileged --network host --security-opt label=disable \\
+  -v /dev:/dev -v $guest_work:/var/w \\
+  -v $guest_work/inner/containers:/var/lib/containers \\
+  -v $guest_work/inner/tmp:/tmp \\
+  -e HOME=/root -e TMPDIR=/tmp \\
+  --entrypoint bash registry.fedoraproject.org/fedora:44 -eo pipefail -c '
+set -euo pipefail
+dnf install -y --setopt=install_weak_deps=False podman skopeo fuse-overlayfs e2fsprogs \\
+  util-linux jq python3 dosfstools btrfs-progs systemd mtools qemu-img sudo curl tar gzip zstd \\
+  cryptsetup shadow-utils >/dev/null
+image=\$(podman pull -q oci:/var/w/image${tag:+:$tag})
+podman tag "\$image" localhost/tilo-host:ci
+cd /var/w/src
+TILO_IMAGE=localhost/tilo-host:ci TILO_SKIP_BUILD=1 TILO_DISTROBOX= \\
+TILO_ENCRYPT_INSTALL=1 TILO_DISK_SIZE=64G TILO_TARGET_IMGREF=$imgref \\
+TILO_OUTPUT=/var/w/install TILO_RUN=/var/w/install-run \\
+SOURCE_DATE_EPOCH=$epoch \\
+  ./os/dev/build-image.sh
+'
+EOF
+ssh_guest "cat > $guest_work/install.sh" < "$work/guest-install.sh" \
+  || die 'could not put the install script on the guest'
+installer_status=0
+as_guest_root "bash $guest_work/install.sh" 2> >(tee /dev/console >&2) || installer_status=$?
+if [[ $installer_status != 0 ]]; then
+  # A failed install keeps its own log in its own guest: bring the reason out
+  # while the guest is still up, then stop it.
+  as_guest_root "tail -n 200 $guest_work/install/qcow2/.install.log 2>/dev/null" >&2 || true
+fi
+stop_installer
+[[ $installer_status = 0 ]] || die "the disk install failed in its guest (exit $installer_status)"
+# The disk and the one recovery key the install made, out of the guest. The key
+# is this check's way into the machine at every boot until the image carries a
+# signed boot chain for a TPM keyslot, which this one does not yet.
+mkdir -p "$work/install"
+ssh_guest "tar -C $guest_work/install -cf - qcow2/disk.qcow2 qcow2/recovery-key.txt" > "$work/install.tar" \
+  || die 'could not take the installed disk out of the guest'
+tar -C "$work/install" -xf "$work/install.tar" || die 'the guest sent an unreadable archive'
+rm -f "$work/install.tar"
 disk=$work/disk.qcow2
 mv "$work/install/qcow2/disk.qcow2" "$disk"
+[[ -s $work/install/qcow2/recovery-key.txt ]] \
+  || die "the encrypted install left no recovery key; the disk would be unopenable"
+TILO_UNLOCK_SECRET=$(cat "$work/install/qcow2/recovery-key.txt")
+[[ -n $TILO_UNLOCK_SECRET ]] || die "the install's recovery key file is empty"
+export TILO_UNLOCK_SECRET
 
 # The update: the same image and one more layer, a different deployment, carried
 # to the guest on a small disk of its own (there is no sshd to copy it with).
@@ -157,7 +268,6 @@ qemu-img convert -f raw -O qcow2 "$work/update.raw" "$work/update.qcow2"
 rm -f "$work/update.raw"
 podman rmi -f "$update_ref" "$image" >/dev/null 2>&1 || true
 
-export TILO_DISTROBOX="" TILO_ACCEL=kvm TILO_USER TILO_PASS
 export TILO_RUN=$work/run TILO_DISK=$disk
 export TILO_SERIAL_SOCKET=$work/run/serial.sock
 export TILO_CONSOLE_LOG=$out/console.log TILO_CONSOLE_USER=$TILO_USER TILO_CONSOLE_PASS=$TILO_PASS
@@ -165,9 +275,14 @@ export TILO_CONSOLE_LOG=$out/console.log TILO_CONSOLE_USER=$TILO_USER TILO_CONSO
 # check on a service that is still fetching its guest; the script's own waits
 # are the bound on those, not the console runner's default for one command.
 export TILO_CONSOLE_DEADLINE=1800
+# A secret sent before the prompt draws stays in the line buffer until it reads
+# it, so the unlock is tried often rather than waited for.
+export TILO_UNLOCK_DELAY=5
 mkdir -p "$TILO_RUN"
+# The machine under test boots with the TPM the install guest had: a keyslot the
+# image carries a signed boot chain for is sealed to this one device.
 boot_vm() {
-  ./os/dev/vm.sh boot --2d --disk "$disk" --attach "$work/update.qcow2"
+  ./os/dev/vm.sh boot --2d --tpm --disk "$disk" --attach "$work/update.qcow2"
 }
 finish() {
   report_exit
@@ -185,8 +300,24 @@ refuse() {
   ok "$what"
 }
 
+# The prompt comes before any network, so the serial console is the only input,
+# and the console runner cannot be used to ask whether the guest is up: while
+# the volume is closed it waits out its own deadline. The log the unlock helper
+# keeps is the signal instead: a login prompt in it means the volume opened.
+unlock_until_console() {
+  local tries="${1:-120}"
+  for _ in $(seq 1 "$tries"); do
+    ./os/dev/unlock-prompt.sh "$TILO_UNLOCK_SECRET" >/dev/null 2>&1 || true
+    if tail -c 20000 "$TILO_CONSOLE_LOG" 2>/dev/null | grep -qi 'login:'; then
+      console 'true' >/dev/null 2>&1 && return 0
+    fi
+    sleep 3
+  done
+  return 1
+}
 boot_vm
-for _ in $(seq 1 60); do console 'true' >/dev/null 2>&1 && break; sleep 2; done
+unlock_until_console \
+  || die 'the installed disk never answered at its console: its encrypted root did not open'
 console 'true' >/dev/null || die 'the installed disk never answered at its console'
 # Keep the console to the runner: kernel messages — auditd's lines among them,
 # one per sudo call — interleave mid-line with the marker it reads, and a marker
@@ -207,6 +338,66 @@ for _ in $(seq 1 90); do
   sleep 5
 done
 refuse 'multi-user.target is active' 'systemctl is-active --quiet multi-user.target'
+say 'the installed machine keeps its root on an encrypted disk'
+refuse 'the root is a LUKS2 volume the initramfs opened' '
+set -eu
+src=$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
+case "$src" in
+  /dev/mapper/*) ;;
+  *) echo "root is $src, not a device-mapper volume"; exit 1 ;;
+esac
+name=${src#/dev/mapper/}
+# What the mapper is, from the kernel: a dm-crypt device carrying LUKS2 says
+# so in its uuid (CRYPT-LUKS2-<volume>-<name>; LUKS1 says CRYPT-LUKS1).
+uuid=""
+for dm in /sys/block/dm-*; do
+  [ "$(cat "$dm/dm/name" 2>/dev/null)" = "$name" ] && uuid=$(cat "$dm/dm/uuid" 2>/dev/null)
+done
+case "$uuid" in
+  CRYPT-LUKS2-*) ;;
+  *) echo "the mapping $name is not a LUKS2 crypt device (uuid: ${uuid:-none})"; exit 1 ;;
+esac
+backing=""
+while read -r n t; do
+  [ "$t" = part ] || continue
+  backing=$n
+  break
+done <<EOF
+$(lsblk -sno NAME,TYPE "$src")
+EOF
+[ -n "$backing" ] || { echo "no partition under $src"; lsblk -s "$src"; exit 1; }
+[ "$(blkid -p -o value -s TYPE "/dev/$backing")" = crypto_LUKS ] \
+  || { echo "/dev/$backing carries no LUKS header"; blkid "/dev/$backing"; exit 1; }
+echo "the root is $src: $uuid over /dev/$backing"
+'
+refuse 'the root has the recovery key and no throwaway install key' '
+set -eu
+src=$(findmnt -nro SOURCE /sysroot)
+name=${src#/dev/mapper/}
+command -v cryptsetup >/dev/null \
+  || { echo "the image carries no cryptsetup, so its own LUKS2 header cannot be read here"; exit 1; }
+dump=$(cryptsetup luksDump "$name")
+printf "%s\n" "$dump" | grep -q systemd-recovery \
+  || { echo "no systemd-recovery token in the header"; exit 1; }
+slots=$(printf "%s\n" "$dump" | sed -n "/^Keyslots:/,/^Tokens:/p" | grep -cE "^  [0-9]+:")
+[ "$slots" = 1 ] \
+  || { echo "$slots keyslots; the throwaway install key was not removed"; exit 1; }
+echo "one keyslot: the recovery key the install handed over"
+'
+refuse 'the store volume is LUKS2 and mounts' '
+set -eu
+uuid=""
+for dm in /sys/block/dm-*; do
+  [ "$(cat "$dm/dm/name" 2>/dev/null)" = tilo-store ] && uuid=$(cat "$dm/dm/uuid" 2>/dev/null)
+done
+case "$uuid" in
+  CRYPT-LUKS2-*) ;;
+  *) echo "tilo-store is not an open LUKS2 volume (uuid: ${uuid:-none})"; exit 1 ;;
+esac
+findmnt -nro FSTYPE /var/lib/tilo/store | grep -qx btrfs
+grep -q tilo-store /etc/crypttab
+echo "the store is a LUKS2 + btrfs volume ($uuid), unlocked from the root"
+'
 refuse 'the API server is enabled and inert without its configuration' \
   'systemctl is-enabled --quiet tilo-api.service && ! systemctl is-active --quiet tilo-api.service'
 refuse 'the update timers are enabled' \
@@ -325,7 +516,8 @@ ok 'the update image is on the machine'
 # and any ordering cycle the boot loader resolved against them.
 if ! RUNNER='./os/tests/serial_runner.sh' SUDO_PASS="$TILO_PASS" FAULT=server \
      SUBJECT_UNIT=tilo-server-health.service \
-     RESET="./os/dev/vm.sh stop; ./os/dev/vm.sh boot --2d --disk '$disk' --attach '$work/update.qcow2'" \
+     UNLOCK='./os/dev/unlock-prompt.sh' \
+     RESET="./os/dev/vm.sh stop; ./os/dev/vm.sh boot --2d --tpm --disk '$disk' --attach '$work/update.qcow2'; ./os/dev/unlock-prompt.sh || true" \
      SERIAL='./os/dev/vm.sh serial' \
      BOOT_TIMEOUT=900 HEALTH_TIMEOUT=900 SWITCH_TIMEOUT=1800 \
      ./os/tests/boot_assessment_rollback.sh oci:/mnt/update/image:tilo-host "$out/boot-assessment"; then
@@ -340,4 +532,4 @@ fi
 say 'the machine serves again, on the deployment that came back'
 refuse 'multi-user.target is active' 'systemctl is-active --quiet multi-user.target'
 refuse 'the server probe still judges it good' 'systemctl start tilo-server-health.service'
-printf '\nPASS: the server image boots serving, and an update that breaks it rolled back by itself (evidence in %s)\n' "$out"
+printf '\nPASS: the server image installs onto an encrypted disk, boots serving on it, and an update that breaks it rolled back by itself (evidence in %s)\n' "$out"

@@ -6511,17 +6511,18 @@ on = ["dispatch"]
 heavy = true
 
 
-# The server image proves itself by booting: the machine serves (the hosted-VM
-# service binds its socket, the boot judges itself by the server probe, updates
-# stage through the verified path), and an update that breaks the server spends
-# its tries and the boot loader goes back by itself. Driven at the serial console,
-# which is the only console the image has.
+# The server image proves itself by booting: it installs onto an encrypted disk
+# in a guest of its own (this check's micro-VM cannot open a volume), the machine
+# boots that disk serving (the hosted-VM service binds its socket, the boot judges
+# itself by the server probe, updates stage through the verified path), and an
+# update that breaks the server spends its tries and the boot loader goes back by
+# itself. Driven at the serial console, which is the only console the image has.
 [[check]]
 name = "host-assurance-x86_64"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/host-assurance.sh"
-needs = ["image-host", "tilo-vm-binary-x86_64"]
+needs = ["image-host", "os-dev-disk-lean-x86_64", "tilo-vm-binary-x86_64"]
 env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
