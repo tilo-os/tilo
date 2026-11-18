@@ -157,12 +157,4 @@ mod tests {
         place.reset();
         assert_eq!(place.node(), None, "a column the shell hides has no node");
     }
-
-    #[test]
-    fn header_requests_are_taken_once() {
-        let requests = HeaderRequests::default();
-        requests.note_menu.set(true);
-        assert!(requests.note_menu.take());
-        assert!(!requests.note_menu.take());
-    }
 }

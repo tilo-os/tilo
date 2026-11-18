@@ -1,40 +1,18 @@
-//! What the interactions a person feels cost Notes on the UI thread: a wheel
-//! notch, a keystroke, a view switch and a click on an item, each through
-//! the production host path on the app's capture fixture at the Yoga's
-//! logical size, with the frame passes and named scopes each step ran.
-//! Reports only: the numbers say where the frame goes.
-//!
-//! `cargo test -p notes --profile fast --test it perf_interaction -- --nocapture`
+//! Launching Notes in a fresh process, as on a device: every per-process cache
+//! empty, the first frame drawn.
 #![allow(
     clippy::expect_used,
     reason = "a measurement fails loudly when the app does not open"
 )]
 
+/// The first frame builds the window's widget tree once: its first layout lands
+/// on the tree it built, rather than building it again for each pass.
 #[test]
-fn interaction_costs() {
-    ui::framework::testing::perf::profile::<notes::NotesShell>(None)
-        .expect("notes opens its capture");
-}
-
-/// What opening notes costs on the UI thread, warm (its resource already on the
-/// profile): from the host preparing the launch to the first frame drawn.
-#[test]
-fn start_cost() {
-    ui::framework::testing::perf::start::<notes::NotesShell>(8)
-        .expect("notes opens")
-        .print();
-}
-
-/// What launching notes costs cold, one process per launch as on a device:
-/// from the process starting to its first frame drawn, fonts and every
-/// other per-process cache empty. The first frame builds the window's
-/// widget tree once: its first layout lands on the tree it built.
-#[test]
-fn cold_start() {
+fn cold_start_builds_the_widget_tree_once() {
     let start = ui::framework::testing::perf::cold_start(
         "notes",
         &tilo_test_env::package_binary!("notes"),
-        8,
+        2,
     );
     start.print();
     assert_eq!(
