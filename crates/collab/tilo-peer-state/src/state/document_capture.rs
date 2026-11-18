@@ -186,6 +186,18 @@ impl KeptDocument {
         self.0 = None;
     }
 
+    /// The bytes this holds: the history it opened (the covered snapshot and every write's
+    /// plaintext) and the last whole capture. What a holder of many of these measures the
+    /// memory they take by; the opened document itself takes a multiple of it.
+    #[must_use]
+    pub fn held_bytes(&self) -> usize {
+        self.0.as_ref().map_or(0, |opened| {
+            opened
+                .size
+                .saturating_add(opened.captured.as_ref().map_or(0, |(bytes, _)| bytes.len()))
+        })
+    }
+
     /// The kept record captured whole, at most `maximum` bytes: the bytes the last capture made
     /// (the document saved whole) with the changes since appended, rather than the document
     /// saved again. `None` when nothing is kept.

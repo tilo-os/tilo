@@ -299,9 +299,11 @@ pub trait Founder: Send + Sync {
     ) -> Option<ServiceAnswer>;
 }
 
+mod kept;
+
 /// The sealed records this device keeps opened, by workspace, app and record, with the keys that
 /// opened each.
-type KeptRecords = BTreeMap<(WorkspaceId, String, String), (KeysUsed, KeptDocument)>;
+type KeptRecords = kept::KeptOpened<(WorkspaceId, String, String), (KeysUsed, KeptDocument)>;
 
 /// The keys a sealed record was opened with: the channel and epoch of the record's own keys and of
 /// the channel's history keys. A rotation moves the epoch.
@@ -321,9 +323,6 @@ type RouteKeys = BTreeMap<WorkspaceId, key_group::ContentKeys>;
 
 /// Opens one sealed write of a record into its plaintext.
 type OpenSealed<'a> = &'a mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>;
-
-/// How many sealed records [`Engine::read_resource`] keeps opened between reads.
-const KEPT_RECORDS: usize = 64;
 
 /// A record's bytes, with the heads they were last saved at: what [`Engine::record_since`] answers
 /// when the record changed since the caller last read it.
@@ -866,11 +865,9 @@ impl Engine {
                 Some(KeyAccess::Waiting | KeyAccess::Removed) => {
                     // Nothing opened under keys this device no longer holds answers a read
                     // until the record's channel gives it keys again.
-                    self.kept.lock_recover().remove(&(
-                        workspace,
-                        app.to_owned(),
-                        record.to_owned(),
-                    ));
+                    self.kept
+                        .lock_recover()
+                        .take(&(workspace, app.to_owned(), record.to_owned()));
                     return Ok(None);
                 }
                 Some(KeyAccess::NoSecretStore) => {
@@ -913,7 +910,7 @@ impl Engine {
                 .and_then(|history| history.as_ref().ok())
                 .map(tilo_workspace_keys::HistoryKeys::generation),
         ];
-        let mut kept = kept_under(self.kept.lock_recover().remove(&key), &used);
+        let mut kept = kept_under(self.kept.lock_recover().take(&key), &used);
         let read = read(
             workspace,
             &mut |write| {
@@ -936,11 +933,18 @@ impl Engine {
             link.want_frames(workspace, history.generation().1);
         }
         if sealed && kept.is_open() {
-            let mut records = self.kept.lock_recover();
-            if records.len() >= KEPT_RECORDS {
-                records.pop_first();
+            let bytes = kept.held_bytes();
+            let holding = self.kept.lock_recover().keep(key, (used, kept), bytes);
+            // Numbers only: what a site's real measure of this is read from.
+            if let Some(holding) = holding {
+                tracing::info!(
+                    documents = holding.documents,
+                    bytes = holding.bytes,
+                    allowed = holding.allowed,
+                    let_go = holding.let_go,
+                    "sealed documents kept opened between reads"
+                );
             }
-            records.insert(key, (used, kept));
         }
         match read {
             Err(_) if unopened => Ok(None),
@@ -1510,7 +1514,7 @@ impl Engine {
     pub fn delete(&self, workspace: WorkspaceId) -> Result<bool, String> {
         self.kept
             .lock_recover()
-            .retain(|(held, _, _), _| *held != workspace);
+            .retain(|(held, _, _)| *held != workspace);
         self.owner.release_workspace(workspace)
     }
 
