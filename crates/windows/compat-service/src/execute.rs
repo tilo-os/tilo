@@ -14,6 +14,8 @@ pub(crate) const HOME_CHILD_FD: i32 = 34;
 pub(crate) const RUNTIME_LOCK_CHILD_FD: i32 = 35;
 pub(crate) const PASSWD_CHILD_FD: i32 = 36;
 pub(crate) const GROUP_CHILD_FD: i32 = 37;
+/// Where a Windows appliance presentation reads the RDP password from.
+pub(crate) const PASSWORD_CHILD_FD: i32 = 38;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutionOutcome {
@@ -121,25 +123,29 @@ impl SandboxExecutor for BwrapExecutor {
             // dup2 shares that offset, so an EOF position yields an empty BPF
             // program and PR_SET_SECCOMP fails with EINVAL.
             file.rewind()?;
-            inherited.push((duplicate_above_child_slots(file.as_fd())?, SECCOMP_CHILD_FD));
+            inherited.push((
+                duplicate_above_handed_numbers(file.as_fd())?,
+                SECCOMP_CHILD_FD,
+            ));
         }
         let [prefix, home] = plan.directory_fds();
-        inherited.push((duplicate_above_child_slots(prefix)?, PREFIX_CHILD_FD));
-        inherited.push((duplicate_above_child_slots(home)?, HOME_CHILD_FD));
+        inherited.push((duplicate_above_handed_numbers(prefix)?, PREFIX_CHILD_FD));
+        inherited.push((duplicate_above_handed_numbers(home)?, HOME_CHILD_FD));
         for (name, contents, target) in identity_files(uid, gid) {
             let mut file = create_memfd(name)?;
             file.write_all(contents.as_bytes())?;
             file.rewind()?;
-            inherited.push((duplicate_above_child_slots(file.as_fd())?, target));
+            inherited.push((duplicate_above_handed_numbers(file.as_fd())?, target));
         }
         if plan.runtime_lock_required {
             let lock = create_memfd("tilo-runtime-lock")?;
             inherited.push((
-                duplicate_above_child_slots(lock.as_fd())?,
+                duplicate_above_handed_numbers(lock.as_fd())?,
                 RUNTIME_LOCK_CHILD_FD,
             ));
         }
-        let (program, args) = sandbox_program(plan.audio_graph.as_deref(), &plan.bwrap_argv);
+        let (program, args) =
+            sandbox_program(plan.audio_graph.as_deref(), plan.x11, &plan.bwrap_argv);
         Ok(SandboxCommand {
             program,
             args,
@@ -196,36 +202,45 @@ impl StartedProgram for ChildProgram {
     }
 }
 
-fn duplicate_above_child_slots(fd: BorrowedFd<'_>) -> Result<std::os::fd::OwnedFd, std::io::Error> {
-    Ok(rustix::io::fcntl_dupfd_cloexec(fd, GROUP_CHILD_FD + 1)?)
+pub(crate) fn duplicate_above_handed_numbers(
+    fd: BorrowedFd<'_>,
+) -> Result<std::os::fd::OwnedFd, std::io::Error> {
+    Ok(rustix::io::fcntl_dupfd_cloexec(fd, PASSWORD_CHILD_FD + 1)?)
 }
 
 /// Bubblewrap with `bwrap_argv`, started by the launcher's `windows-audio` after the private
 /// audio graph prepared in `audio_graph` when there is one: the graph's daemons are children of
 /// the sandbox's own process then, so they end with the program whoever started it, and a program
-/// kept open while the desktop restarts keeps its sound.
+/// kept open while the desktop restarts keeps its sound. A sandbox for a program that shows
+/// through `x11` is given the X11 display its keeper serves first (`windows-x11-sandbox`), which
+/// the keeper picks only as it starts.
 fn sandbox_program(
     audio_graph: Option<&std::path::Path>,
+    x11: bool,
     bwrap_argv: &[String],
 ) -> (std::path::PathBuf, Vec<std::ffi::OsString>) {
     const BWRAP: &str = "/usr/bin/bwrap";
-    let bwrap = bwrap_argv.iter().map(Into::into);
-    match audio_graph {
-        None => (BWRAP.into(), bwrap.collect()),
-        Some(graph) => (
-            crate::plan::SHIM_HOST.into(),
-            [
-                "windows-audio".into(),
-                "--graph".into(),
-                graph.into(),
-                "--".into(),
-                BWRAP.into(),
-            ]
-            .into_iter()
-            .chain(bwrap)
-            .collect(),
-        ),
+    let mut args: Vec<std::ffi::OsString> = Vec::new();
+    if x11 {
+        args.extend(["windows-x11-sandbox".into(), "--".into()]);
+        if audio_graph.is_some() {
+            args.push(crate::plan::TILO_LAUNCHER.into());
+        }
     }
+    if let Some(graph) = audio_graph {
+        args.extend([
+            "windows-audio".into(),
+            "--graph".into(),
+            graph.into(),
+            "--".into(),
+        ]);
+    }
+    if args.is_empty() {
+        return (BWRAP.into(), bwrap_argv.iter().map(Into::into).collect());
+    }
+    args.push(BWRAP.into());
+    args.extend(bwrap_argv.iter().map(Into::into));
+    (crate::plan::TILO_LAUNCHER.into(), args)
 }
 
 fn validate_identity_uid(planned: u32, effective: u32) -> Result<(), ExecutionError> {
@@ -280,17 +295,45 @@ mod tests {
     #[test]
     fn a_sandbox_with_sound_starts_after_its_audio_graph() {
         let bwrap_argv = vec!["--die-with-parent".to_owned()];
-        let (program, args) = sandbox_program(None, &bwrap_argv);
+        let (program, args) = sandbox_program(None, false, &bwrap_argv);
         assert_eq!(program, std::path::Path::new("/usr/bin/bwrap"));
         assert_eq!(args, ["--die-with-parent"]);
-        let (program, args) = sandbox_program(Some(std::path::Path::new("/lease")), &bwrap_argv);
-        assert_eq!(program, std::path::Path::new(crate::plan::SHIM_HOST));
+        let lease = std::path::Path::new("/lease");
+        let (program, args) = sandbox_program(Some(lease), false, &bwrap_argv);
+        assert_eq!(program, std::path::Path::new(crate::plan::TILO_LAUNCHER));
         assert_eq!(
             args,
             [
                 "windows-audio",
                 "--graph",
                 "/lease",
+                "--",
+                "/usr/bin/bwrap",
+                "--die-with-parent"
+            ]
+        );
+        // The display is added to the sandbox's own arguments, past the audio graph's.
+        let (program, args) = sandbox_program(Some(lease), true, &bwrap_argv);
+        assert_eq!(program, std::path::Path::new(crate::plan::TILO_LAUNCHER));
+        assert_eq!(
+            args,
+            [
+                "windows-x11-sandbox",
+                "--",
+                crate::plan::TILO_LAUNCHER,
+                "windows-audio",
+                "--graph",
+                "/lease",
+                "--",
+                "/usr/bin/bwrap",
+                "--die-with-parent"
+            ]
+        );
+        let (_, args) = sandbox_program(None, true, &bwrap_argv);
+        assert_eq!(
+            args,
+            [
+                "windows-x11-sandbox",
                 "--",
                 "/usr/bin/bwrap",
                 "--die-with-parent"

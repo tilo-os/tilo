@@ -210,8 +210,8 @@ enum Cmd {
     WindowsProgram(WindowsProgramArgs),
     /// Start a Windows program's sandbox on the X11 display its keeper serves (`DISPLAY`,
     /// `XAUTHORITY`): the keeper picks the display only as it starts, after the sandbox was
-    /// planned, so `windows-program --x11` has the keeper start this, which adds the display to
-    /// the sandbox and becomes it.
+    /// planned, so the sandbox's command starts with this, which adds the display to the sandbox
+    /// and becomes it.
     #[command(name = "windows-x11-sandbox", hide = true)]
     WindowsX11Sandbox {
         /// The sandbox's command line.
@@ -383,29 +383,14 @@ fn windows_program(args: &WindowsProgramArgs) -> ExitCode {
         dir: args.keep_in.clone(),
         launch: args.keep_as.clone(),
     };
-    let mut command = args.command.clone();
-    if args.x11 {
-        let Ok(launcher) = std::env::current_exe() else {
-            eprintln!("tilo-launcher: this launcher's own program is not known");
-            return ExitCode::FAILURE;
-        };
-        command.splice(
-            0..0,
-            [
-                launcher.into_os_string(),
-                "windows-x11-sandbox".into(),
-                "--".into(),
-            ],
-        );
-    }
     if args.print_keeper {
         println!("keeper : {}", args.keeper.display());
-        for arg in launcher::host::keeper_args(&keep, args.x11, &command) {
+        for arg in launcher::host::keeper_args(&keep, args.x11, &args.command) {
             println!("\t{}", arg.to_string_lossy());
         }
         return ExitCode::SUCCESS;
     }
-    match launcher::host::start_kept(&args.app_id, &args.name, &command, args.x11, &keep) {
+    match launcher::host::start_kept(&args.app_id, &args.name, &args.command, args.x11, &keep) {
         Ok(status) => {
             if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(&status) {
                 launcher::host::end_by(signal);

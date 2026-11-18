@@ -16,7 +16,7 @@ use crate::{
 const LEASE_ROOT: &str = "/run/tilo/windows-compat/leases";
 const SANDBOX_PROXY: &str = "/run/tilo/network/proxy.sock";
 
-type PrepareAudioGraph = fn(PathBuf, u32, bool) -> Result<AudioGraph, AudioGraphError>;
+pub(crate) type PrepareAudioGraph = fn(PathBuf, u32, bool) -> Result<AudioGraph, AudioGraphError>;
 
 /// Concrete Tilo adapter for resources that already have a secure broker.
 /// Host-filtered networking reuses the launcher's net-proxy implementation.

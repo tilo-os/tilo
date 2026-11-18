@@ -11,12 +11,14 @@
 use launcher::capabilities::CapabilityPlan;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
 use std::fs::File;
-use std::path::{Path, PathBuf};
+use std::os::fd::{AsFd as _, OwnedFd};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use launcher::audio_graph::{AudioGraph, Daemons};
+use launcher::audio_graph::AudioGraph;
 
 use crate::{
     LaunchDisplay, LaunchDisplays, VmAvailability, VmDelegate, VmInstallCandidate, VmInstallation,
@@ -310,56 +312,89 @@ impl VmPortalAuthority for CanonicalRailPortalAuthority {
 /// graph. This live fallback exposes playback only; microphone capture,
 /// clipboard, file shares, and egress remain unavailable until a probed local
 /// RAIL surface can carry grants from a canonical Tilo broker.
-pub struct AudioIsolatedSpiceLauncher<R> {
-    presenter: Presenter<R>,
+pub struct AudioIsolatedSpiceLauncher {
+    presenter: Presenter,
 }
 
-/// Native RAIL presentation through Tilo's rootless Xwayland bridge and a
-/// private audio graph. Playback is always present; the proxy publishes a
+/// Native RAIL presentation on the X11 display the launch's keeper serves and
+/// a private audio graph. Playback is always present; the proxy publishes a
 /// source only when the brokered shared-session lease includes microphone.
-pub struct AudioIsolatedRailLauncher<R> {
-    presenter: Presenter<R>,
+pub struct AudioIsolatedRailLauncher {
+    presenter: Presenter,
     binary: PathBuf,
 }
 
 /// The wrapper that presents a guest application through `FreeRDP` RAIL.
 pub const RAIL_PRESENTER: &str = "/usr/libexec/tilo-windows-rail";
 
-/// What both presentations share: the command runner, the displays each
-/// launch is given, and the private audio graph each launch gets beside it.
-struct Presenter<R> {
-    runner: R,
+/// Where the presentation finds the RDP password: the descriptor its private
+/// `--tilo-password-fd` argument names, which becomes `FreeRDP`'s standard input.
+const PASSWORD_ARGUMENT: &str = "--tilo-password-fd";
+
+/// What both presentations share: the displays each launch is given, the
+/// launcher that starts each launch's private audio graph, and how the graphs
+/// are named apart.
+///
+/// A presentation starts as a Windows program does: as one of the session's
+/// own launches behind an app keeper where the session keeps them, so it stays
+/// open (and `FreeRDP` connected) while the desktop restarts in place. Its
+/// command is the launcher's `windows-audio`, which starts the graph as the
+/// presentation's own children, then the presentation itself.
+struct Presenter {
     displays: Arc<dyn LaunchDisplays>,
+    launcher: PathBuf,
+    prepare_audio_graph: crate::resources::PrepareAudioGraph,
     /// Names each launch's audio directory apart from the other presentation's.
     kind: &'static str,
     next: AtomicU64,
 }
 
-impl<R: windows_vm::CommandRunner> Presenter<R> {
-    fn new(runner: R, displays: Arc<dyn LaunchDisplays>, kind: &'static str) -> Self {
+impl Presenter {
+    fn new(displays: Arc<dyn LaunchDisplays>, kind: &'static str) -> Self {
         Self {
-            runner,
             displays,
+            launcher: PathBuf::from(crate::plan::TILO_LAUNCHER),
+            prepare_audio_graph: AudioGraph::prepare,
             kind,
             next: AtomicU64::new(0),
         }
     }
 
-    /// Present `command` on the display of a launch into `workspace_id`, with
-    /// a private audio graph that carries a source only for `microphone`.
+    /// Present `command` as `shown` says until it ends, with a private audio
+    /// graph that carries a source only for `microphone`, on an X11 display of
+    /// the keeper's when `x11`.
     fn present(
         &self,
-        workspace_id: &str,
+        shown: &windows_vm::Shown<'_>,
         microphone: bool,
+        x11: bool,
         command: windows_vm::CommandRequest,
         failed: fn(Option<i32>, String) -> windows_vm::RemoteAppError,
     ) -> Result<windows_vm::RemoteAppProcess, windows_vm::RemoteAppError> {
-        let display = self
+        let (entry_id, app_id) = (
+            vm_entry_id(shown.application_id),
+            vm_app_id(shown.application_id),
+        );
+        let kept = self
             .displays
-            .display_for(workspace_id)
+            .kept_display(&crate::KeptProgram {
+                app_id: &app_id,
+                display_name: shown.display_name,
+                entry_id: &entry_id,
+                workspace_id: shown.workspace_id,
+                x11,
+            })
+            .transpose()
             .map_err(|error| failed(None, error))?;
+        let display = match &kept {
+            Some(kept) => kept.display().clone(),
+            None => self
+                .displays
+                .display_for(shown.workspace_id)
+                .map_err(|error| failed(None, error))?,
+        };
         let sequence = self.next.fetch_add(1, Ordering::Relaxed);
-        let graph = AudioGraph::prepare(
+        let graph = (self.prepare_audio_graph)(
             display.runtime_dir.join("tilo-windows-vm").join(format!(
                 "{}-{}-{sequence}",
                 self.kind,
@@ -369,112 +404,171 @@ impl<R: windows_vm::CommandRunner> Presenter<R> {
             microphone,
         )
         .map_err(|error| failed(None, format!("private audio setup failed: {error}")))?;
-        let started = graph.start(&Daemons::installed());
-        let output = started
-            .map_err(|error| failed(None, format!("private audio setup failed: {error}")))
-            .and_then(|_started| self.present_with(&graph, &display, command, failed));
+        let ended = self
+            .command(&graph, &display, command)
+            .and_then(|command| match kept {
+                Some(kept) => kept.start(command),
+                None => command.spawn(),
+            })
+            .and_then(|program| program.wait())
+            .map_err(|error| failed(None, error.to_string()));
         graph.remove();
-        output
+        let ended = ended?;
+        if !ended.success {
+            return Err(failed(ended.exit_code, String::new()));
+        }
+        Ok(windows_vm::RemoteAppProcess {
+            exit_code: ended.exit_code,
+        })
     }
 
-    /// Present `command` on `display`, heard through the started `graph`.
-    fn present_with(
+    /// `request` started by the launcher after the private `graph`, shown on
+    /// `display` (its own Wayland socket, whatever the session's process
+    /// inherited) and heard through the graph. A secret `request` would write
+    /// to its standard input reaches it through a pipe at a descriptor of its
+    /// own instead, whose number its arguments name: a kept program has no
+    /// standard input of the service's.
+    fn command(
         &self,
         graph: &AudioGraph,
         display: &LaunchDisplay,
-        command: windows_vm::CommandRequest,
-        failed: fn(Option<i32>, String) -> windows_vm::RemoteAppError,
-    ) -> Result<windows_vm::RemoteAppProcess, windows_vm::RemoteAppError> {
+        request: windows_vm::CommandRequest,
+    ) -> Result<crate::SandboxCommand, crate::ExecutionError> {
         let native = graph.pipewire_socket();
         let audio_runtime = native.parent().ok_or_else(|| {
-            failed(
-                None,
-                "private audio endpoint has no runtime directory".into(),
-            )
+            crate::ExecutionError::Io(std::io::Error::other(
+                "private audio endpoint has no runtime directory",
+            ))
         })?;
-        let command = on_display(command, display, audio_runtime, &graph.pulse_socket());
-        let output = self.runner.run(&command)?;
-        if !output.success {
-            return Err(failed(
-                output.code,
-                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        let mut environment: Vec<(OsString, OsString)> = vec![
+            (
+                "WAYLAND_DISPLAY".into(),
+                display.wayland_socket.clone().into(),
+            ),
+            ("PIPEWIRE_RUNTIME_DIR".into(), audio_runtime.into()),
+            ("PIPEWIRE_REMOTE".into(), "pipewire-0".into()),
+            (
+                "PULSE_SERVER".into(),
+                format!("unix:{}", graph.pulse_socket().display()).into(),
+            ),
+        ];
+        environment.extend(request.environment);
+        let mut args: Vec<OsString> = vec![
+            "windows-audio".into(),
+            "--graph".into(),
+            graph.root().into(),
+            "--".into(),
+            "/usr/bin/env".into(),
+        ];
+        args.extend(environment.into_iter().map(|(name, value)| {
+            let mut setting = name;
+            setting.push("=");
+            setting.push(value);
+            setting
+        }));
+        args.push(request.program);
+        args.extend(request.args);
+        let mut command = crate::SandboxCommand::new(&self.launcher, args);
+        if !request.stdin.is_empty() {
+            let (reader, mut writer) = std::io::pipe()?;
+            // Far below a pipe's capacity: written whole before anyone reads, and gone from
+            // the pipe once read.
+            std::io::Write::write_all(&mut writer, &request.stdin)?;
+            drop(writer);
+            command.inherited.push((
+                crate::execute::duplicate_above_handed_numbers(OwnedFd::from(reader).as_fd())?,
+                crate::execute::PASSWORD_CHILD_FD,
             ));
+            command
+                .args
+                .push(format!("{PASSWORD_ARGUMENT}={}", crate::execute::PASSWORD_CHILD_FD).into());
         }
-        Ok(windows_vm::RemoteAppProcess {
-            exit_code: output.code,
-        })
+        Ok(command)
     }
 }
 
-/// `command` shown on `display` (its own Wayland socket, whatever the
-/// session's process inherited) and heard through the private graph whose
-/// native socket is in `audio_runtime` and whose Pulse socket is `pulse`.
-fn on_display(
-    command: windows_vm::CommandRequest,
-    display: &LaunchDisplay,
-    audio_runtime: &Path,
-    pulse: &Path,
-) -> windows_vm::CommandRequest {
-    command
-        .env("WAYLAND_DISPLAY", &display.wayland_socket)
-        .env("XDG_RUNTIME_DIR", &display.runtime_dir)
-        .env("PIPEWIRE_RUNTIME_DIR", audio_runtime)
-        .env("PIPEWIRE_REMOTE", "pipewire-0")
-        .env("PULSE_SERVER", format!("unix:{}", pulse.display()))
-}
-
-impl<R: windows_vm::CommandRunner> AudioIsolatedRailLauncher<R> {
+impl AudioIsolatedRailLauncher {
     #[must_use]
-    pub fn new(runner: R, displays: Arc<dyn LaunchDisplays>) -> Self {
+    pub fn new(displays: Arc<dyn LaunchDisplays>) -> Self {
         Self {
-            presenter: Presenter::new(runner, displays, "rail"),
+            presenter: Presenter::new(displays, "rail"),
             binary: PathBuf::from(RAIL_PRESENTER),
         }
     }
-}
 
-impl<R: windows_vm::CommandRunner> windows_vm::RemoteAppLauncher for AudioIsolatedRailLauncher<R> {
-    fn launch(
-        &self,
-        workspace_id: &str,
-        guest: &windows_vm::GuestLaunch,
-        brokered: &windows_vm::BrokeredLaunch,
-    ) -> Result<windows_vm::RemoteAppProcess, windows_vm::RemoteAppError> {
-        let command = windows_vm::FreeRdpLauncher::new(())
-            .with_binary(&self.binary)
-            .command(guest, brokered)?;
-        self.presenter.present(
-            workspace_id,
-            brokered.microphone,
-            command,
-            |code, stderr| windows_vm::RemoteAppError::FreeRdp { code, stderr },
+    /// Present through the wrapper at `binary`, started by the launcher at
+    /// `launcher`, after audio graphs `prepare_audio_graph` prepares, instead
+    /// of the installed ones: a test's stand-ins.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn with_stand_ins(
+        mut self,
+        binary: PathBuf,
+        launcher: PathBuf,
+        prepare_audio_graph: fn(
+            PathBuf,
+            u32,
+            bool,
         )
+            -> Result<AudioGraph, launcher::audio_graph::AudioGraphError>,
+    ) -> Self {
+        self.binary = binary;
+        self.presenter.launcher = launcher;
+        self.presenter.prepare_audio_graph = prepare_audio_graph;
+        self
     }
 }
 
-impl<R: windows_vm::CommandRunner> AudioIsolatedSpiceLauncher<R> {
+impl windows_vm::RemoteAppLauncher for AudioIsolatedRailLauncher {
+    fn launch(
+        &self,
+        shown: &windows_vm::Shown<'_>,
+        guest: &windows_vm::GuestLaunch,
+        brokered: &windows_vm::BrokeredLaunch,
+    ) -> Result<windows_vm::RemoteAppProcess, windows_vm::RemoteAppError> {
+        let command = windows_vm::FreeRdpLauncher::new()
+            .with_binary(&self.binary)
+            .command(guest, brokered)?;
+        // FreeRDP's RAIL client is an X11 program: the keeper serves it a display of its own.
+        self.presenter
+            .present(shown, brokered.microphone, true, command, |code, stderr| {
+                windows_vm::RemoteAppError::FreeRdp { code, stderr }
+            })
+    }
+}
+
+impl AudioIsolatedSpiceLauncher {
     #[must_use]
-    pub fn new(runner: R, displays: Arc<dyn LaunchDisplays>) -> Self {
+    pub fn new(displays: Arc<dyn LaunchDisplays>) -> Self {
         Self {
-            presenter: Presenter::new(runner, displays, "spice"),
+            presenter: Presenter::new(displays, "spice"),
         }
     }
 }
 
-impl<R: windows_vm::CommandRunner> windows_vm::RemoteAppLauncher for AudioIsolatedSpiceLauncher<R> {
+impl windows_vm::RemoteAppLauncher for AudioIsolatedSpiceLauncher {
     fn launch(
         &self,
-        workspace_id: &str,
+        shown: &windows_vm::Shown<'_>,
         guest: &windows_vm::GuestLaunch,
         brokered: &windows_vm::BrokeredLaunch,
     ) -> Result<windows_vm::RemoteAppProcess, windows_vm::RemoteAppError> {
-        let command = windows_vm::AppFocusedSpiceLauncher::new(()).command(guest, brokered)?;
+        let command = windows_vm::AppFocusedSpiceLauncher::new().command(guest, brokered)?;
         self.presenter
-            .present(workspace_id, false, command, |code, stderr| {
+            .present(shown, false, false, command, |code, stderr| {
                 windows_vm::RemoteAppError::Spice { code, stderr }
             })
     }
 }
+
+/// Whether `entry_id` names a program of the Windows appliance: it closes
+/// inside Windows, so the manager never offers to quit it.
+#[must_use]
+pub(crate) fn is_appliance_entry(entry_id: &str) -> bool {
+    entry_id.starts_with(APPLIANCE_ENTRY_PREFIX)
+}
+
+const APPLIANCE_ENTRY_PREFIX: &str = "windows-vm-";
 
 /// Concrete delegate installed in Tilo's privileged compatibility host.
 ///
@@ -1006,11 +1100,18 @@ where
     }
 }
 
-fn vm_entry_id(published_id: &str) -> String {
-    format!("windows-vm-{}", vm_identity_digest(published_id))
+/// The manager's entry for the guest's published application `published_id`.
+#[must_use]
+pub fn vm_entry_id(published_id: &str) -> String {
+    format!(
+        "{APPLIANCE_ENTRY_PREFIX}{}",
+        vm_identity_digest(published_id)
+    )
 }
 
-fn vm_app_id(published_id: &str) -> String {
+/// The app id the windows of the guest's published application `published_id` are shown under.
+#[must_use]
+pub fn vm_app_id(published_id: &str) -> String {
     format!("so.tilo.windows.vm.{}", vm_identity_digest(published_id))
 }
 
@@ -1372,37 +1473,85 @@ mod tests {
 mod presentation_tests {
     use std::net::{IpAddr, Ipv4Addr};
 
-    use windows_vm::CommandRunner as _;
+    use windows_vm::RemoteAppLauncher as _;
 
     use super::*;
 
-    /// The rail wrapper is given the launch's display, not whatever display the session's own
-    /// process inherited: a stand-in for it reports the display it was started on.
-    #[test]
-    fn the_rail_presentation_shows_on_the_launch_display() {
-        let directory = tempfile::tempdir().unwrap();
-        let seen = directory.path().join("seen");
-        let stand_in = directory.path().join("tilo-windows-rail");
-        std::fs::write(
-            &stand_in,
-            format!(
-                "#!/bin/sh\nprintf '%s %s' \"$WAYLAND_DISPLAY\" \"$PULSE_SERVER\" > {}\n",
-                seen.display()
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(
-            &stand_in,
-            std::os::unix::fs::PermissionsExt::from_mode(0o700),
-        )
-        .unwrap();
-        let display = LaunchDisplay {
-            uid: 1000,
-            runtime_dir: directory.path().to_path_buf(),
-            wayland_socket: directory.path().join("wayland-5"),
-            render_node: PathBuf::from("/dev/dri/renderD128"),
-        };
-        let guest = windows_vm::GuestLaunch {
+    /// What a presentation asked for its keeper, and the commands it started behind it.
+    #[derive(Default)]
+    struct Recorded {
+        asked: Vec<(String, String, String, bool)>,
+        commands: Vec<crate::SandboxCommand>,
+    }
+
+    /// A session that keeps every program, in `dir`.
+    struct Keeping {
+        dir: PathBuf,
+        recorded: Arc<Mutex<Recorded>>,
+    }
+
+    impl LaunchDisplays for Keeping {
+        fn display_for(&self, _: &str) -> Result<LaunchDisplay, String> {
+            Err("this session keeps every program".to_owned())
+        }
+
+        fn kept_display(
+            &self,
+            program: &crate::KeptProgram<'_>,
+        ) -> Option<Result<Box<dyn crate::KeptDisplay>, String>> {
+            self.recorded.lock().unwrap().asked.push((
+                program.app_id.to_owned(),
+                program.entry_id.to_owned(),
+                program.display_name.to_owned(),
+                program.x11,
+            ));
+            Some(Ok(Box::new(Kept {
+                display: LaunchDisplay {
+                    uid: rustix::process::geteuid().as_raw(),
+                    runtime_dir: self.dir.clone(),
+                    wayland_socket: self.dir.join("wayland-0"),
+                    render_node: PathBuf::from("/dev/dri/renderD128"),
+                },
+                recorded: Arc::clone(&self.recorded),
+            })))
+        }
+    }
+
+    struct Kept {
+        display: LaunchDisplay,
+        recorded: Arc<Mutex<Recorded>>,
+    }
+
+    impl crate::KeptDisplay for Kept {
+        fn display(&self) -> &LaunchDisplay {
+            &self.display
+        }
+
+        fn start(
+            self: Box<Self>,
+            command: crate::SandboxCommand,
+        ) -> Result<Box<dyn crate::StartedProgram>, crate::ExecutionError> {
+            self.recorded.lock().unwrap().commands.push(command);
+            Ok(Box::new(Ended))
+        }
+    }
+
+    /// A presentation that was closed at once.
+    struct Ended;
+
+    impl crate::StartedProgram for Ended {
+        fn wait(&self) -> Result<crate::ExecutionOutcome, crate::ExecutionError> {
+            Ok(crate::ExecutionOutcome {
+                success: true,
+                exit_code: Some(0),
+            })
+        }
+
+        fn stop(&self) {}
+    }
+
+    fn guest(presentation: windows_vm::ApplicationPresentation) -> windows_vm::GuestLaunch {
+        windows_vm::GuestLaunch {
             endpoint: windows_vm::RdpEndpoint {
                 address: (IpAddr::V4(Ipv4Addr::LOCALHOST), 3389).into(),
                 username: "tilo-remoteapp".to_string(),
@@ -1411,29 +1560,65 @@ mod presentation_tests {
             password: windows_vm::Secret::new(b"one-time-password".to_vec()),
             remote_app_alias: "tilo-word".to_string(),
             launch_nonce: "nonce".to_string(),
-            presentation: windows_vm::ApplicationPresentation::NativeRail,
-        };
-        let command = windows_vm::FreeRdpLauncher::new(())
-            .with_binary(&stand_in)
-            .command(&guest, &windows_vm::BrokeredLaunch::deny_all("lease"))
-            .unwrap();
-        let command = on_display(
-            command,
-            &display,
-            &directory.path().join("audio"),
-            &directory.path().join("audio/pulse/native"),
-        );
+            presentation,
+        }
+    }
 
-        let output = windows_vm::StdCommandRunner.run(&command).unwrap();
+    const SHOWN: windows_vm::Shown<'static> = windows_vm::Shown {
+        workspace_id: "workspace",
+        application_id: "published.word",
+        display_name: "Word",
+    };
 
-        assert!(output.success);
-        assert_eq!(
-            std::fs::read_to_string(&seen).unwrap(),
-            format!(
-                "{} unix:{}",
-                display.wayland_socket.display(),
-                directory.path().join("audio/pulse/native").display()
+    /// The SPICE viewer starts as a kept program of the appliance's entry, as a `RemoteApp`
+    /// window does (the session's own tests follow that one through a restart), but as a Wayland
+    /// client with nothing handed to it.
+    #[test]
+    fn a_spice_presentation_is_kept_on_wayland() {
+        let directory = tempfile::tempdir().unwrap();
+        let recorded = Arc::new(Mutex::new(Recorded::default()));
+        let mut spice = AudioIsolatedSpiceLauncher::new(Arc::new(Keeping {
+            dir: directory.path().to_path_buf(),
+            recorded: Arc::clone(&recorded),
+        }));
+        spice.presenter.prepare_audio_graph = prepared;
+        spice
+            .launch(
+                &SHOWN,
+                &guest(windows_vm::ApplicationPresentation::AppFocusedSpice),
+                &windows_vm::BrokeredLaunch::deny_all("lease"),
             )
+            .unwrap();
+        let recorded = std::mem::take(&mut *recorded.lock().unwrap());
+        assert_eq!(
+            recorded.asked,
+            [(
+                vm_app_id("published.word"),
+                vm_entry_id("published.word"),
+                "Word".to_owned(),
+                false
+            )]
         );
+        assert!(is_appliance_entry(&recorded.asked[0].1));
+        let command = &recorded.commands[0];
+        assert!(command.inherited.is_empty());
+        assert!(command.args.iter().any(|arg| arg == "virt-viewer"));
+        assert!(
+            !command
+                .args
+                .iter()
+                .any(|arg| arg.to_string_lossy().starts_with(PASSWORD_ARGUMENT))
+        );
+    }
+
+    /// A graph prepared where `PipeWire`'s configuration is not installed: its directories alone.
+    fn prepared(
+        root: PathBuf,
+        _: u32,
+        _: bool,
+    ) -> Result<AudioGraph, launcher::audio_graph::AudioGraphError> {
+        std::fs::create_dir_all(root.join("audio/pulse"))
+            .map_err(launcher::audio_graph::AudioGraphError::Io)?;
+        Ok(AudioGraph::at(root))
     }
 }

@@ -22,7 +22,8 @@ use compat_service::{
     Assembly, CapsuleCommandPlan, CapsuleProgram, CapsuleStore, ExecutionError, LaunchLease,
     LaunchResourceBroker, LazyVmDelegate, PROTOCOL_VERSION, ProgramKind, ProtocolRequest,
     ResourceError, ResourceRequest, SandboxCommand, SandboxExecutor, SessionClient,
-    SystemRuntimeRegistry,
+    SystemRuntimeRegistry, VmAvailability, VmDelegate, VmInventory, VmPresentation,
+    VmPublishedApplication, VmRouteRequest,
 };
 use serde_json::{Value, json};
 use tilo_session::apps::Apps;
@@ -203,6 +204,13 @@ impl SandboxExecutor for Probe {
 const PROBE_DIR: &str = "TILO_TEST_WINDOWS_PROBE";
 /// The directory of the private audio graph a program with sound starts after ([`audio_step`]).
 const AUDIO_GRAPH: &str = "TILO_TEST_WINDOWS_AUDIO_GRAPH";
+/// The command [`audio_step`] becomes, one argument a line, in place of [`probe_program`].
+const AUDIO_COMMAND: &str = "TILO_TEST_WINDOWS_AUDIO_COMMAND";
+/// What makes this test binary the stand-in for the RAIL wrapper and `FreeRDP`: its arguments, one
+/// a line ([`rail_program`]).
+const RAIL_ARGS: &str = "TILO_TEST_WINDOWS_RAIL";
+/// The RDP password the appliance hands a `RemoteApp` launch.
+const PASSWORD: &[u8] = b"a-one-time-rdp-password";
 
 /// Not a test: the launcher's `windows-audio` as a sandbox with sound starts behind it, through
 /// the same call, with [`audio_daemon`] for both daemons: it starts the graph, then becomes the
@@ -231,12 +239,16 @@ fn audio_step() {
         pipewire: daemon.clone(),
         pulse: daemon,
     };
-    let program = [
-        exe.into_os_string(),
-        "--exact".into(),
-        "windows_compat::probe_program".into(),
-        "--nocapture".into(),
-    ];
+    // The command `windows-audio` was handed, when the launcher's stand-in passed one on.
+    let program: Vec<std::ffi::OsString> = match std::env::var(AUDIO_COMMAND) {
+        Ok(command) => command.lines().map(Into::into).collect(),
+        Err(_) => vec![
+            exe.into_os_string(),
+            "--exact".into(),
+            "windows_compat::probe_program".into(),
+            "--nocapture".into(),
+        ],
+    };
     // The keeper started this process to die with it, but this test is on a thread of the test
     // harness's, which a new thread never inherits that from: the launcher's own step is on its
     // main thread, so the program it becomes keeps it.
@@ -315,6 +327,42 @@ fn probe_program() {
         }
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+/// Not a test: the RAIL wrapper and `FreeRDP` as one X11 client, started behind its keeper as the
+/// appliance's presentation starts the real wrapper. It reads the password at the descriptor its
+/// private argument names (writing only its digest, to `password`), then shows like the X11 probe.
+#[test]
+fn rail_program() {
+    use std::os::fd::FromRawFd as _;
+    let (Ok(dir), Ok(args)) = (std::env::var(PROBE_DIR), std::env::var(RAIL_ARGS)) else {
+        return;
+    };
+    let dir = PathBuf::from(dir);
+    let fd: i32 = args
+        .lines()
+        .find_map(|arg| arg.strip_prefix("--tilo-password-fd="))
+        .expect("the password's descriptor is named")
+        .parse()
+        .expect("a descriptor number");
+    // SAFETY: the descriptor was handed to this process for this read alone.
+    let mut password = unsafe { fs::File::from_raw_fd(fd) };
+    let mut read = Vec::new();
+    std::io::Read::read_to_end(&mut password, &mut read).expect("the password reads");
+    drop(password);
+    fs::write(
+        dir.join("password"),
+        hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&read)),
+    )
+    .expect("its digest written");
+    let mut started = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("started"))
+        .expect("the starts");
+    std::io::Write::write_all(&mut started, format!("{}\n", std::process::id()).as_bytes())
+        .expect("the start recorded");
+    x11_probe(&dir);
 }
 
 /// The probe as a program that shows through X11, as Proton's Wine does: it writes the display
@@ -597,6 +645,13 @@ fn manager_steps() {
                     entry_id: entry_id.clone(),
                 },
             ),
+            "launch-vm" => ask(
+                &mut client,
+                &ProtocolRequest::LaunchVmFallback {
+                    version: PROTOCOL_VERSION,
+                    entry_id: entry_id.clone(),
+                },
+            ),
             "stop" => ask(
                 &mut client,
                 &ProtocolRequest::Stop {
@@ -635,6 +690,8 @@ struct KeptRig {
     root: PathBuf,
     /// Where the programs' private audio graphs are, when they have sound.
     sound: Option<PathBuf>,
+    /// The Windows appliance is set up, with [`PUBLISHED`] in its catalogue.
+    appliance: bool,
 }
 
 /// One desktop, until it ends.
@@ -712,7 +769,58 @@ impl KeptRig {
             keeper,
             root,
             sound: None,
+            appliance: false,
         }
+    }
+
+    /// A rig whose Windows appliance publishes [`PUBLISHED`], shown through the real RAIL
+    /// presentation: the stand-ins are the wrapper with `FreeRDP` ([`rail_program`]) and the
+    /// launcher's `windows-audio` ([`audio_step`], handed the presentation's command).
+    fn with_appliance() -> Self {
+        let mut rig = Self::new();
+        let exe = std::env::current_exe().expect("this test binary");
+        write_program(
+            &rig.home.home().join("rail"),
+            &format!(
+                "{PROBE_DIR}='{}' {RAIL_ARGS}=\"$(printf '%s\\n' \"$@\")\" exec '{}' --exact windows_compat::rail_program --nocapture",
+                rig.probe.display(),
+                exe.display()
+            ),
+        );
+        write_program(
+            &rig.home.home().join("audio-launcher"),
+            &format!(
+                "[ \"$1 $2 $4\" = 'windows-audio --graph --' ] || exit 2\ng=$3; shift 4\n\
+                 {AUDIO_GRAPH}=\"$g\" {AUDIO_COMMAND}=\"$(printf '%s\\n' \"$@\")\" exec '{}' --exact windows_compat::audio_step --nocapture",
+                exe.display()
+            ),
+        );
+        rig.entry = compat_service::vm_entry_id(PUBLISHED);
+        rig.appliance = true;
+        rig
+    }
+
+    /// The daemons of the newest appliance presentation's audio graph, once both are there: it is
+    /// in the presentation's keeper's directory.
+    fn appliance_daemons(&self, desktop: &mut KeptDesktop) -> [u32; 2] {
+        crate::common::wait_for(
+            &mut desktop.session,
+            "the presentation's audio daemons",
+            |_| {
+                let pids: Vec<u32> = entries(&self.root)
+                    .into_iter()
+                    .flat_map(|kept| entries(&kept.join("tilo-windows-vm")))
+                    .filter_map(|graph| fs::read_to_string(graph.join("audio/daemons")).ok())
+                    .flat_map(|daemons| {
+                        daemons
+                            .lines()
+                            .filter_map(|line| line.parse().ok())
+                            .collect::<Vec<u32>>()
+                    })
+                    .collect();
+                <[u32; 2]>::try_from(pids).ok()
+            },
+        )
     }
 
     /// A rig whose programs have sound: each starts after a private audio graph of its own.
@@ -741,6 +849,15 @@ impl KeptRig {
         })
     }
 
+    /// Wait, with no desktop there, until each of `pids` ended.
+    fn gone<const N: usize>(pids: [u32; N]) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while pids.iter().any(|pid| alive(*pid)) {
+            assert!(std::time::Instant::now() < deadline, "{pids:?} did not end");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     /// Wait until each of `daemons` ended.
     fn ended(desktop: &mut KeptDesktop, daemons: [u32; 2], why: &str) {
         crate::common::wait_for(&mut desktop.session, why, |_| {
@@ -759,10 +876,24 @@ impl KeptRig {
         let catalogue = self.catalogue.clone();
         let dir = self.probe.clone();
         let sound = self.sound.clone();
+        let appliance = self.appliance.then(|| {
+            (
+                self.home.home().join("rail"),
+                self.home.home().join("audio-launcher"),
+            )
+        });
         let assembly = Assembly::with(move |mut side| {
             // The manager is this test binary, not the stand-in launcher the programs start
             // through.
             side.launcher = std::env::current_exe().expect("this test binary");
+            let displays = Arc::clone(&side.displays);
+            let vm = LazyVmDelegate::new(move || match &appliance {
+                Some((rail, launcher)) => Ok(Arc::new(Appliance {
+                    rail: compat_service::AudioIsolatedRailLauncher::new(Arc::clone(&displays))
+                        .with_stand_ins(rail.clone(), launcher.clone(), stand_in_graph),
+                }) as Arc<dyn VmDelegate>),
+                None => Err("no appliance is set up here".to_owned()),
+            });
             compat_service::serve(
                 side,
                 catalogue,
@@ -774,7 +905,7 @@ impl KeptRig {
                     planned: Arc::default(),
                     sound,
                 },
-                LazyVmDelegate::new(|| Err("no appliance is set up here".to_owned())),
+                vm,
             )
         });
         let apps = Rc::new(Apps::with_launcher(
@@ -1358,4 +1489,233 @@ fn a_saved_tab_of_another_workspace_starts_nothing() {
         "nothing started in another workspace's place"
     );
     second.end(tilo_app_launch::Teardown::Logout);
+}
+
+/// The entries of `dir`, none when it cannot be read.
+fn entries(dir: &Path) -> Vec<PathBuf> {
+    fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .collect()
+}
+
+/// A shell script at `path` running `body`.
+fn write_program(path: &Path, body: &str) {
+    fs::write(path, format!("#!/bin/sh\n{body}\n")).expect("the stand-in written");
+    fs::set_permissions(
+        path,
+        <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
+    )
+    .expect("the stand-in is executable");
+}
+
+/// A private audio graph prepared where `PipeWire`'s configuration is not installed: its
+/// directories, for [`audio_daemon`] to listen in.
+fn stand_in_graph(
+    root: PathBuf,
+    _: u32,
+    _: bool,
+) -> Result<launcher::audio_graph::AudioGraph, launcher::audio_graph::AudioGraphError> {
+    fs::create_dir_all(root.join("audio/pulse"))
+        .map_err(launcher::audio_graph::AudioGraphError::Io)?;
+    Ok(launcher::audio_graph::AudioGraph::at(root))
+}
+
+/// The application the stand-in appliance publishes.
+const PUBLISHED: &str = "probe.published";
+
+/// The Windows appliance with [`PUBLISHED`] in its catalogue, set up and running: a launch shows
+/// it through the RAIL presentation the computer's appliance uses, with the password a guest
+/// hands each launch.
+struct Appliance {
+    rail: compat_service::AudioIsolatedRailLauncher,
+}
+
+impl VmDelegate for Appliance {
+    fn availability(&self) -> VmAvailability {
+        VmAvailability::ready("set up")
+    }
+
+    fn inventory(&self) -> VmInventory {
+        VmInventory {
+            availability: self.availability(),
+            applications: vec![VmPublishedApplication {
+                entry_id: compat_service::vm_entry_id(PUBLISHED),
+                app_id: compat_service::vm_app_id(PUBLISHED),
+                published_application_id: PUBLISHED.to_owned(),
+                display_name: "Probe".to_owned(),
+                presentation: VmPresentation::NativeRail,
+                uninstall_available: false,
+            }],
+        }
+    }
+
+    fn launch(
+        &self,
+        request: VmRouteRequest<'_>,
+    ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
+        use windows_vm::RemoteAppLauncher as _;
+        let guest = windows_vm::GuestLaunch {
+            endpoint: windows_vm::RdpEndpoint {
+                address: ([127, 0, 0, 1], 3389).into(),
+                username: "tilo-remoteapp".to_owned(),
+                certificate_sha256: "a".repeat(64),
+            },
+            password: windows_vm::Secret::new(PASSWORD.to_vec()),
+            remote_app_alias: "tilo-probe".to_owned(),
+            launch_nonce: "nonce".to_owned(),
+            presentation: windows_vm::ApplicationPresentation::NativeRail,
+        };
+        let process = self.rail.launch(
+            &windows_vm::Shown {
+                workspace_id: request.workspace_id,
+                application_id: request.published_application_id,
+                display_name: "Probe",
+            },
+            &guest,
+            &windows_vm::BrokeredLaunch::deny_all("lease"),
+        )?;
+        Ok(windows_vm::RunningRemoteApp {
+            application_id: PUBLISHED.to_owned(),
+            workspace_id: request.workspace_id.to_owned(),
+            lease_id: "lease".to_owned(),
+            process,
+        })
+    }
+}
+
+/// The application `entry` in the list `answer`.
+fn listed<'a>(answer: &'a Value, entry: &str) -> &'a Value {
+    answer["applications"]
+        .as_array()
+        .and_then(|applications| applications.iter().find(|listed| listed["id"] == entry))
+        .unwrap_or_else(|| panic!("{entry} is not listed: {answer}"))
+}
+
+/// Whether `bytes` holds `needle`.
+fn holds(bytes: &[u8], needle: &[u8]) -> bool {
+    bytes.windows(needle.len()).any(|window| window == needle)
+}
+
+/// Every file under `dir` that holds `needle`.
+fn files_holding(dir: &Path, needle: &[u8]) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for path in entries(dir) {
+        let Ok(kind) = fs::symlink_metadata(&path).map(|metadata| metadata.file_type()) else {
+            continue;
+        };
+        if kind.is_dir() {
+            found.extend(files_holding(&path, needle));
+        } else if kind.is_file() && fs::read(&path).is_ok_and(|bytes| holds(&bytes, needle)) {
+            found.push(path);
+        }
+    }
+    found
+}
+
+/// A `RemoteApp` window of the Windows appliance stays open through an in-place restart: its
+/// presentation is a launch behind a keeper, on the keeper's X11 display, with its private audio
+/// graph as its own children. The RDP password reaches it at a descriptor of its own and appears
+/// in no argument, environment or file. After the restart the manager lists it open and cannot
+/// quit it (it closes inside Windows), its end is reported even when no desktop was there, and a
+/// logout ends it with its keeper and sound.
+#[test]
+fn a_remote_app_window_stays_open_through_an_in_place_restart() {
+    tilo_test_env::require_capability!(XServer, x_servers(), "the keeper's X server");
+    let rig = KeptRig::with_appliance();
+    let mut first = rig.start(false);
+    let answers = first.manage(&rig, "first", &["launch-vm", "list"]);
+    assert_eq!(answers[0]["result"], "launched", "{answers:?}");
+    let launched =
+        tilo_app_launch::kept::testing::launcher_handed(&rig.home.home().join("tilo-launcher"));
+    assert!(
+        launched.contains(&"--x11".to_owned()),
+        "the presentation asks its keeper for an X11 display: {launched:?}"
+    );
+    first.shown();
+    let [pid] = rig.starts()[..] else {
+        panic!("one start: {:?}", rig.starts());
+    };
+    assert!(
+        fs::read_to_string(rig.probe.join("display")).is_ok_and(|display| display.starts_with(':')),
+        "the presentation was served its keeper's X11 display"
+    );
+    assert_eq!(
+        fs::read_to_string(rig.probe.join("password")).unwrap(),
+        hex::encode(<sha2::Sha256 as sha2::Digest>::digest(
+            [PASSWORD, b"\n"].concat()
+        )),
+        "the password reaches the presentation through its descriptor"
+    );
+    let mut process = Some(pid);
+    while let Some(at) = process.filter(|at| *at != std::process::id()) {
+        for part in ["cmdline", "environ"] {
+            let read = fs::read(format!("/proc/{at}/{part}")).unwrap_or_default();
+            assert!(
+                !holds(&read, PASSWORD),
+                "process {at}'s {part} holds the password"
+            );
+        }
+        process = parent(at);
+    }
+    for dir in [rig.home.home(), rig.home.runtime(), rig.home.data()] {
+        assert_eq!(files_holding(dir, PASSWORD), Vec::<PathBuf>::new());
+    }
+    let daemons = rig.appliance_daemons(&mut first);
+    for daemon in daemons {
+        assert_eq!(
+            parent(daemon),
+            Some(pid),
+            "the sound is the presentation's own"
+        );
+        assert!(
+            !Path::new(&format!("/proc/{daemon}/fd/38")).exists(),
+            "the audio daemons do not inherit the password's descriptor"
+        );
+    }
+
+    // The desktop restarts in place: the presentation stays connected, and the next desktop shows
+    // it and lists it open, without a way to quit it.
+    first.end(tilo_app_launch::Teardown::InPlaceRestart);
+    assert!(alive(pid), "the presentation outlives the desktop");
+    let mut second = rig.start(true);
+    second.shown();
+    assert_eq!(rig.starts(), [pid], "the same presentation, not a new one");
+    let answers = second.manage(&rig, "second", &["list", "stop"]);
+    assert_eq!(
+        listed(&answers[0], &rig.entry)["running"],
+        true,
+        "{answers:?}"
+    );
+    assert_eq!(answers[1]["error"]["code"], "not_running", "{answers:?}");
+    assert!(alive(pid), "on the same X11 connection, not quit");
+    assert!(daemons.iter().all(|daemon| alive(*daemon)));
+
+    // It ends while no desktop is there (the program closed inside Windows): the next desktop
+    // reports it.
+    second.end(tilo_app_launch::Teardown::InPlaceRestart);
+    rig.exit(4);
+    KeptRig::gone(daemons);
+    let mut third = rig.start(true);
+    let answers = third.manage(&rig, "third", &["ended"]);
+    assert_eq!(answers[0]["ended"][0]["entry_id"], rig.entry, "{answers:?}");
+    assert_eq!(answers[0]["ended"][0]["exit_code"], 4, "{answers:?}");
+
+    // The tab it left reopens it, as any saved tab of a Windows program; a logout ends that
+    // presentation, its keeper and its sound.
+    crate::common::wait_for(&mut third.session, "the tab's program again", |_| {
+        (rig.starts().len() == 2).then_some(())
+    });
+    third.shown();
+    let pid = *rig.starts().last().unwrap();
+    let daemons = rig.appliance_daemons(&mut third);
+    third.end(tilo_app_launch::Teardown::Logout);
+    KeptRig::gone([pid]);
+    KeptRig::gone(daemons);
+    assert!(
+        tilo_app_launch::kept::testing::described(&rig.root).is_empty(),
+        "no keeper is left"
+    );
 }

@@ -146,17 +146,22 @@ impl Programs {
 }
 
 /// Watch `program` on a thread of its own until it ended: then give back what its launch was
-/// lent (`release`) and keep its end in `programs`.
+/// lent (`release`) and keep its end in `programs`. A manager may end it only when `stoppable`.
 pub(crate) fn watch(
     programs: &Arc<Programs>,
     entry_id: &str,
     workspace_id: &str,
     display_name: &str,
     program: Box<dyn StartedProgram>,
+    stoppable: bool,
     release: Box<dyn FnOnce() + Send>,
 ) -> Result<(), std::io::Error> {
     let program: Arc<dyn StartedProgram> = Arc::from(program);
-    let id = programs.started(entry_id, workspace_id, Some(Arc::clone(&program)));
+    let id = programs.started(
+        entry_id,
+        workspace_id,
+        stoppable.then(|| Arc::clone(&program)),
+    );
     let (watched, name) = (Arc::clone(programs), display_name.to_owned());
     let stopping = Arc::clone(&program);
     let spawned = std::thread::Builder::new()
@@ -235,6 +240,7 @@ mod tests {
             "one",
             "Probe",
             Box::new(program),
+            true,
             Box::new(move || release.store(true, std::sync::atomic::Ordering::Release)),
         )
         .expect("watched");

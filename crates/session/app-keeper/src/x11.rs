@@ -256,8 +256,8 @@ fn spawn(display: &XDisplay, socket: &Path, dir: &Path) -> io::Result<Child> {
         .env_remove("NOTIFY_SOCKET")
         .stdin(Stdio::null());
     let keeper = std::process::id();
-    // SAFETY: only async-signal-safe calls between fork and exec: signal, prctl, getppid, fcntl
-    // and _exit.
+    // SAFETY: only async-signal-safe calls between fork and exec: signal, prctl, getppid,
+    // close_range, fcntl and _exit.
     unsafe {
         command.pre_exec(move || {
             // The keeper ignores SIGPIPE; the server starts with the default.
@@ -267,6 +267,17 @@ fn spawn(display: &XDisplay, socket: &Path, dir: &Path) -> io::Result<Child> {
             }
             if u32::try_from(libc::getppid()).ok() != Some(keeper) {
                 libc::_exit(1);
+            }
+            // What the keeper was handed for its app (a sandbox's descriptors, a password) stays
+            // with the app.
+            if libc::syscall(
+                libc::SYS_close_range,
+                3,
+                libc::c_uint::MAX,
+                libc::CLOSE_RANGE_CLOEXEC,
+            ) != 0
+            {
+                return Err(io::Error::last_os_error());
             }
             // The sockets are inherited by the server alone.
             for fd in &fds {

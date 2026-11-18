@@ -74,5 +74,5 @@ pub use translated::run_translated_command;
 pub use vm_adapter::{
     AudioIsolatedRailLauncher, AudioIsolatedSpiceLauncher, CanonicalRailPortalAuthority,
     LiveVmDelegate, PortalRailPortalAuthority, RAIL_PRESENTER, SharedSessionCapabilityBroker,
-    VmPortalAuthority, VmSharedSessionTracker,
+    VmPortalAuthority, VmSharedSessionTracker, vm_app_id, vm_entry_id,
 };

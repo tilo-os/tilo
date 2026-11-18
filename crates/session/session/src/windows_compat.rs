@@ -16,6 +16,7 @@
 //!   display it shows on ([`Kept`]): the keeper and the program live in a scope of the launch's
 //!   own, so memory tiers, a force quit, a crash notice and a logout treat it as any app. The
 //!   session that follows a restart takes the program back and hands it to its service again.
+//!   A window of the Windows appliance (a `RemoteApp`, or the SPICE viewer) starts the same way.
 //!
 //! The service works on threads of its own; nothing here blocks the session's loop.
 
