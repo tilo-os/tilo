@@ -3,7 +3,9 @@ name = "tilo-unlock-protocol"
 version = "0.1.0"
 edition = "2024"
 publish = true
-license.workspace = true
+# A desktop's session reaches the server protocol that carries this crate's boot-open report,
+# so it is on the client side, which is MIT end to end (LICENSING.md).
+license = "MIT"
 description = "Wire protocol for unlocking an encrypted Tilo disk with a sibling device's consent."
 repository.workspace = true
 homepage.workspace = true
