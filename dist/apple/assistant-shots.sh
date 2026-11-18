@@ -13,6 +13,10 @@
 #   dist/apple/assistant-shots.sh OUT secret   the protected field with something typed into it, in front and as
 #                                              the app leaves the front: OUT/phone/secret.txt and its pictures
 #   dist/apple/assistant-shots.sh OUT typing   the main chat with the keyboard up, as the whole screen shows it
+#   dist/apple/assistant-shots.sh OUT keyboard the main chat with the keyboard up, put away and up again, light
+#                                              and dark: what a drag on the conversation does to the keyboard
+#                                              and what is kept (OUT/phone/keyboard-*.txt; a line FAULT fails
+#                                              it), and the whole screen with the keyboard up and with it away
 #
 # The simulator is one of its own, made when it is missing and shut down again after.
 #
@@ -242,6 +246,30 @@ typing() {
   xcrun simctl terminate "$device" "$id" >/dev/null 2>&1 || true
 }
 
+# The keyboard up and put away again, in both looks. A line FAULT is the tool's own refusal.
+keyboard() {
+  local device kept look way
+  for look in light dark; do
+    device="$(simulator)"
+    xcrun simctl ui "$device" appearance "$look" >/dev/null 2>&1 || true
+    # The keyboard shows its keys, not the tip it shows a new person once.
+    xcrun simctl spawn "$device" defaults write com.apple.keyboard.preferences DidShowContinuousPathIntroduction -bool true >/dev/null 2>&1 || true
+    way=--keyboard
+    [ "$look" != dark ] || way=--keyboard-dark
+    device="$(started "$way")"
+    kept="$(waited "$device" keyboard.txt '^KEYBOARD ready up')" || die "the tool did not bring the keyboard up"
+    xcrun simctl io "$device" screenshot "$out/phone/keyboard-up-$look.png" >/dev/null 2>&1
+    waited "$device" keyboard.txt '^KEYBOARD ready down' >/dev/null || die "the tool did not put the keyboard away"
+    xcrun simctl io "$device" screenshot "$out/phone/keyboard-down-$look.png" >/dev/null 2>&1
+    waited "$device" keyboard.txt '^KEYBOARD done' >/dev/null || say "the tool did not finish"
+    cp "$kept" "$out/phone/keyboard-$look.txt"
+    cat "$out/phone/keyboard-$look.txt"
+    xcrun simctl terminate "$device" "$id" >/dev/null 2>&1 || true
+  done
+  xcrun simctl ui "$(simulator)" appearance light >/dev/null 2>&1 || true
+  ! grep -q '^KEYBOARD FAULT' "$out/phone/keyboard-light.txt" "$out/phone/keyboard-dark.txt" || die "the keyboard: a fault, named in the lines above"
+}
+
 faces
 case "$what" in
   all) mac; phone; told ;;
@@ -251,7 +279,8 @@ case "$what" in
   said) said ;;
   secret) secret ;;
   typing) typing ;;
-  *) die "mac, phone, told, said, secret or typing" ;;
+  keyboard) keyboard ;;
+  *) die "mac, phone, told, said, secret, typing or keyboard" ;;
 esac
 if [ "$what" != mac ]; then
   xcrun simctl shutdown "$(simulator)" >/dev/null 2>&1 || true

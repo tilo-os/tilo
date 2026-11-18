@@ -3,10 +3,7 @@ use std::path::Path;
 
 use thiserror::Error;
 
-use crate::{
-    ApplicationPresentation, BrokeredLaunch, CommandError, CommandRequest, CommandRunner,
-    GuestLaunch,
-};
+use crate::{ApplicationPresentation, BrokeredLaunch, CommandError, CommandRequest, GuestLaunch};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RemoteAppProcess {
@@ -15,28 +12,42 @@ pub struct RemoteAppProcess {
     pub exit_code: Option<i32>,
 }
 
+/// What a presentation shows: the launch's workspace, and the guest's application (or the setup
+/// or uninstall operation) the window belongs to, by its id and the name a person knows it by.
+#[derive(Clone, Copy, Debug)]
+pub struct Shown<'a> {
+    pub workspace_id: &'a str,
+    pub application_id: &'a str,
+    pub display_name: &'a str,
+}
+
 pub trait RemoteAppLauncher: Send + Sync {
-    /// Show the guest's application `guest` for a launch into `workspace_id`,
-    /// whose display the presentation is put on.
+    /// Show the guest's application `guest` as `shown` says, on a display of
+    /// the launch's workspace, until the presentation ends.
     fn launch(
         &self,
-        workspace_id: &str,
+        shown: &Shown<'_>,
         guest: &GuestLaunch,
         brokered: &BrokeredLaunch,
     ) -> Result<RemoteAppProcess, RemoteAppError>;
 }
 
+/// The `FreeRDP` RAIL command line for one guest application.
 #[derive(Clone, Debug)]
-pub struct FreeRdpLauncher<R> {
-    runner: R,
+pub struct FreeRdpLauncher {
     binary: OsString,
 }
 
-impl<R> FreeRdpLauncher<R> {
+impl Default for FreeRdpLauncher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FreeRdpLauncher {
     #[must_use]
-    pub fn new(runner: R) -> Self {
+    pub fn new() -> Self {
         Self {
-            runner,
             // FreeRDP's upstream RAIL client is xfreerdp.  It is only used
             // when Tilo has explicitly provisioned a RAIL-capable local
             // surface; there is no upstream `wlfreerdp` binary to assume.
@@ -142,27 +153,6 @@ impl<R> FreeRdpLauncher<R> {
     }
 }
 
-impl<R: CommandRunner> RemoteAppLauncher for FreeRdpLauncher<R> {
-    fn launch(
-        &self,
-        _workspace_id: &str,
-        guest: &GuestLaunch,
-        brokered: &BrokeredLaunch,
-    ) -> Result<RemoteAppProcess, RemoteAppError> {
-        let request = self.command(guest, brokered)?;
-        let output = self.runner.run(&request)?;
-        if !output.success {
-            return Err(RemoteAppError::FreeRdp {
-                code: output.code,
-                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-            });
-        }
-        Ok(RemoteAppProcess {
-            exit_code: output.code,
-        })
-    }
-}
-
 /// Upstream virt-viewer fallback for hosts without a local RAIL
 /// surface. The guest bridge is responsible for focusing the requested
 /// application before this command is issued. This is a whole guest display,
@@ -170,16 +160,20 @@ impl<R: CommandRunner> RemoteAppLauncher for FreeRdpLauncher<R> {
 /// application path or guest shell text crosses this boundary; the viewer
 /// attaches only to Tilo's fixed singleton domain.
 #[derive(Clone, Debug)]
-pub struct AppFocusedSpiceLauncher<R> {
-    runner: R,
+pub struct AppFocusedSpiceLauncher {
     binary: OsString,
 }
 
-impl<R> AppFocusedSpiceLauncher<R> {
+impl Default for AppFocusedSpiceLauncher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AppFocusedSpiceLauncher {
     #[must_use]
-    pub fn new(runner: R) -> Self {
+    pub fn new() -> Self {
         Self {
-            runner,
             binary: OsString::from("virt-viewer"),
         }
     }
@@ -224,27 +218,6 @@ impl<R> AppFocusedSpiceLauncher<R> {
             ])
             .arg(format!("--title=Tilo — {}", guest.remote_app_alias))
             .arg(crate::APPLIANCE_DOMAIN_NAME))
-    }
-}
-
-impl<R: CommandRunner> RemoteAppLauncher for AppFocusedSpiceLauncher<R> {
-    fn launch(
-        &self,
-        _workspace_id: &str,
-        guest: &GuestLaunch,
-        brokered: &BrokeredLaunch,
-    ) -> Result<RemoteAppProcess, RemoteAppError> {
-        let request = self.command(guest, brokered)?;
-        let output = self.runner.run(&request)?;
-        if !output.success {
-            return Err(RemoteAppError::Spice {
-                code: output.code,
-                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-            });
-        }
-        Ok(RemoteAppProcess {
-            exit_code: output.code,
-        })
     }
 }
 
@@ -323,23 +296,10 @@ pub enum RemoteAppError {
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
-    use std::sync::Mutex;
 
-    use crate::{CommandOutput, RdpEndpoint, Secret, ShareBinding};
+    use crate::{RdpEndpoint, Secret, ShareBinding};
 
     use super::*;
-
-    #[derive(Default)]
-    struct Runner {
-        request: Mutex<Option<CommandRequest>>,
-    }
-
-    impl CommandRunner for Runner {
-        fn run(&self, request: &CommandRequest) -> Result<CommandOutput, CommandError> {
-            *self.request.lock().unwrap() = Some(request.clone());
-            Ok(CommandOutput::successful(""))
-        }
-    }
 
     fn guest() -> GuestLaunch {
         GuestLaunch {
@@ -358,7 +318,7 @@ mod tests {
     #[test]
     fn remote_app_redirects_only_brokered_capabilities() {
         {
-            let launcher = FreeRdpLauncher::new(Runner::default());
+            let launcher = FreeRdpLauncher::new();
             let request = launcher
                 .command(&guest(), &BrokeredLaunch::deny_all("lease"))
                 .unwrap();
@@ -374,7 +334,7 @@ mod tests {
             assert!(String::from_utf8_lossy(&request.stdin).contains("one-time-password"));
         }
         {
-            let launcher = FreeRdpLauncher::new(Runner::default());
+            let launcher = FreeRdpLauncher::new();
             let brokered = BrokeredLaunch {
                 lease_id: "lease".to_string(),
                 network_binding: None,
@@ -404,7 +364,7 @@ mod tests {
             assert!(args.iter().any(|arg| arg == "/network:lan"));
         }
         {
-            let launcher = FreeRdpLauncher::new(Runner::default());
+            let launcher = FreeRdpLauncher::new();
             let request = launcher
                 .command(&guest(), &BrokeredLaunch::deny_all("lease"))
                 .unwrap();
@@ -429,7 +389,7 @@ mod tests {
     #[test]
     fn spice_fallback_is_singleton_and_never_redirects_silently() {
         {
-            let launcher = AppFocusedSpiceLauncher::new(Runner::default());
+            let launcher = AppFocusedSpiceLauncher::new();
             let mut guest = guest();
             guest.presentation = ApplicationPresentation::AppFocusedSpice;
             let request = launcher
@@ -448,7 +408,7 @@ mod tests {
             assert!(!args.iter().any(|arg| arg.contains("/app")));
         }
         {
-            let launcher = AppFocusedSpiceLauncher::new(Runner::default());
+            let launcher = AppFocusedSpiceLauncher::new();
             let mut guest = guest();
             guest.presentation = ApplicationPresentation::AppFocusedSpice;
             let brokered = BrokeredLaunch {

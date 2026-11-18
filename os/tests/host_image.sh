@@ -62,6 +62,26 @@ grep -q 'tilolang-process: exiting: no api' <<<"$said" \
 [[ $(readlink "$root/usr/libexec/tilo-uki-cmdline") == tilo-esp-write ]] \
   || die 'no /usr/libexec/tilo-uki-cmdline link to the esp writer'
 
+# Opening the encrypted root in early boot. The installed machine's initramfs is
+# generated from the image's dracut modules and the programs they start, so the
+# server image ships the desktop's unlock chain rather than a copy of it.
+for bin in usr/libexec/tilo/tilo-auth usr/libexec/tilo/tilo-boot-signin \
+  usr/libexec/tilo/tilo-rollback usr/libexec/tilo/tilo-sibling-unlock \
+  usr/libexec/tilo-disk-encrypt usr/libexec/tilo-store-volume \
+  usr/libexec/tilo-rollback-initrd-unlock usr/libexec/tilo-root-discover \
+  usr/share/tilo/tpm2-pcr-signing.public.pem; do
+  [[ -e $root/$bin ]] || die "no /$bin, so an encrypted root cannot be opened"
+done
+for module in 91tilo-rollback 92tilo-sibling-unlock; do
+  [[ -f $root/usr/lib/dracut/modules.d/$module/module-setup.sh ]] \
+    || die "the image carries no $module, so its initramfs cannot unlock the root"
+done
+[[ -d $root/usr/share/tilo/pcr-predictions ]] \
+  || die 'no /usr/share/tilo/pcr-predictions, where a signed PCR prediction is read from'
+for t in cryptsetup tpm2_createprimary; do
+  inside sh -c "command -v $t" >/dev/null || die "no $t, which the early-boot unlock runs"
+done
+
 helper=$root/usr/libexec/tilo/tilo-hosted-jail
 [[ $(stat -c '%u:%g %a' "$helper") == "0:10001 750" ]] \
   || die "the jail helper is $(stat -c '%u:%g %a' "$helper"), not root:tilo-hosted 0750"
@@ -96,7 +116,7 @@ for unit in tilo-server.service tilo-fs-replica.service tilo-server-firstboot.se
   [[ -L $wants/multi-user.target.wants/$unit ]] || die "$unit is not enabled"
 done
 for timer in tilo-boot-entries.timer bootc-fetch-apply-updates.timer \
-  tilo-server-update-apply.timer; do
+  tilo-server-update-apply.timer tilo-rollback-harden.timer tilo-rollback-confirm.timer; do
   [[ -L $wants/timers.target.wants/$timer ]] || die "$timer is not enabled"
 done
 [[ -L $wants/boot-complete.target.requires/tilo-boot-health.service ]] \

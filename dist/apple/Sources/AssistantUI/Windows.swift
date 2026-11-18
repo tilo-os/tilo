@@ -285,6 +285,8 @@ public struct PhoneRoot: View {
                         .padding(.horizontal, 16).padding(.vertical, 6)
                 }
                 ConversationView(chat: chat, head: textSize.isAccessibilitySize ? head : nil)
+                    // A touch on the conversation puts the keyboard away. What is touched still takes the touch.
+                    .simultaneousGesture(TapGesture().onEnded { Self.putKeyboardAway() })
                 ReachLine()
                 Composer(chat: chat).layoutPriority(1)
             case .assistantView:
@@ -292,6 +294,8 @@ public struct PhoneRoot: View {
             }
         }
         .background(Token.content)
+        // A drag down the conversation takes the keyboard down with the finger, as the system's own apps do.
+        .scrollDismissesKeyboard(.interactively)
         .navigationTitle(title(place))
         .navigationBarTitleDisplayMode(.inline)
         // The bar stands on the window's own ground: the conversation does not show through its title.
@@ -315,6 +319,12 @@ public struct PhoneRoot: View {
                 .accessibilityLabel(AssistantWords.newSubAgent.said)
             }
         }
+    }
+
+    /// Whoever holds the keyboard lets it go. The field keeps its words, and sending does not call
+    /// this: after a message the field is empty and takes the next one.
+    private static func putKeyboardAway() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 
     private func title(_ place: AssistantModel.Place) -> String {

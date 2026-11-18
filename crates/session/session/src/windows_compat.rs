@@ -16,11 +16,12 @@
 //!   display it shows on ([`Kept`]): the keeper and the program live in a scope of the launch's
 //!   own, so memory tiers, a force quit, a crash notice and a logout treat it as any app. The
 //!   session that follows a restart takes the program back and hands it to its service again.
+//!   A window of the Windows appliance (a `RemoteApp`, or the SPICE viewer) starts the same way.
 //!
 //! The service works on threads of its own; nothing here blocks the session's loop.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 
 use compat_service::{
@@ -50,6 +51,9 @@ pub struct Display {
     identities: Mutex<Option<BTreeMap<(String, String), String>>>,
     /// A saved tab's program the service would not open, for the restore to say why in the tab.
     refused: Mutex<Vec<Refused>>,
+    /// What each kept program's network proxy was last told to allow, by its control socket, so
+    /// only a change is sent and a grant taken back cuts the connections it allowed.
+    networks: Mutex<std::collections::BTreeMap<PathBuf, SentPolicy>>,
 }
 
 /// How a saved tab's Windows program is found: ready to start, still waiting for the service to
@@ -133,6 +137,14 @@ fn write_identities(identities: &BTreeMap<(String, String), String>) {
     }
 }
 
+/// One kept program's network policy: what its proxy was last told to allow, and when a policy
+/// it did not take was last tried.
+#[derive(Default)]
+struct SentPolicy {
+    allowed: Vec<String>,
+    tried: Option<std::time::Instant>,
+}
+
 #[derive(Default)]
 struct Shown {
     wayland_socket: Option<PathBuf>,
@@ -160,6 +172,68 @@ impl Display {
         let mut asked = self.kept.asked.lock_recover();
         asked.dirs = Some(dirs);
         asked.wake = wake;
+    }
+
+    /// Set each kept program's filtered network to `wanted`, by its proxy's control socket: the
+    /// grant spellings the workspace allows it now. A policy that changed cuts the connections
+    /// the old one allowed; one that did not is not sent again. Sockets of launches that are gone
+    /// are forgotten.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "whether a policy is sent is decided and recorded under one hold, so two passes never both send it"
+    )]
+    pub(crate) fn apply_networks(&self, wanted: Vec<(PathBuf, Vec<String>)>) {
+        // How long a policy a proxy did not take is left before it is tried again: a proxy that
+        // is gone never holds the loop for a second attempt a frame.
+        const RETRY: std::time::Duration = std::time::Duration::from_secs(2);
+        let mut pending = Vec::new();
+        {
+            let mut sent = self.networks.lock_recover();
+            sent.retain(|control, _| wanted.iter().any(|(at, _)| at == control));
+            for (control, allowed) in wanted {
+                let sent_here = sent.entry(control.clone()).or_default();
+                if sent_here.allowed == allowed && sent_here.tried.is_none() {
+                    continue;
+                }
+                if sent_here.tried.is_some_and(|tried| tried.elapsed() < RETRY) {
+                    continue;
+                }
+                pending.push((control, allowed));
+            }
+        }
+        for (control, allowed) in pending {
+            let policy = launcher::egress_proxy::EgressPolicy::from_grants(
+                allowed.iter().map(String::as_str),
+            );
+            match launcher::netproxy::set_policy(&control, &policy) {
+                Ok(()) => self.policy_sent(&control, Some(allowed)),
+                Err(error) => {
+                    self.policy_sent(&control, None);
+                    tracing::warn!(
+                        control = %control.display(),
+                        %error,
+                        "a kept program's network policy was not set"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Keep what `control`'s proxy was last told: the policy it took, or that one it did not.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the entry borrows the hold it is written through; dropping it before the write is not possible"
+    )]
+    fn policy_sent(&self, control: &Path, allowed: Option<Vec<String>>) {
+        let mut sent = self.networks.lock_recover();
+        let sent_here = sent.entry(control.to_path_buf()).or_default();
+        match allowed {
+            Some(allowed) => {
+                sent_here.allowed = allowed;
+                sent_here.tried = None;
+            }
+            None => sent_here.tried = Some(std::time::Instant::now()),
+        }
     }
 
     /// The window class `app` a Windows program's window showed in `workspace` is its entry

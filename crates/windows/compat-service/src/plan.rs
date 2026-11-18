@@ -15,9 +15,30 @@ use crate::store::{
 const PREFIX_MOUNT: &str = "/run/tilo/capsule/prefix";
 pub(crate) const HOME_MOUNT: &str = "/run/tilo/capsule/home";
 const FILES_MOUNT: &str = "/run/tilo/files";
-pub(crate) const SHIM_HOST: &str = "/usr/libexec/tilo/tilo-launcher";
+pub(crate) const TILO_LAUNCHER: &str = "/usr/libexec/tilo/tilo-launcher";
 const SHIM_MOUNT: &str = "/tilo-launcher";
 const LEASE_ROOT: &str = "/run/tilo/windows-compat/leases";
+
+/// Where launches' leases live: the computer's own root, or the one a test pointed the service at
+/// ([`test_lease_root_at`]).
+pub(crate) fn lease_root() -> PathBuf {
+    #[cfg(feature = "test-support")]
+    if let Some(root) = TEST_LEASE_ROOT.get() {
+        return root.clone();
+    }
+    PathBuf::from(LEASE_ROOT)
+}
+
+/// The root a test of a crate that serves this service leases in: the first one it named, which
+/// every later call answers too.
+#[cfg(feature = "test-support")]
+static TEST_LEASE_ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Point leases at `root` for a test, and answer the root this process uses: the first test's.
+#[cfg(feature = "test-support")]
+pub fn test_lease_root_at(root: PathBuf) -> PathBuf {
+    TEST_LEASE_ROOT.get_or_init(|| root).clone()
+}
 const PINNED_PROTON: &str = "UMU-Proton-10.0-4";
 const PROTON_HOST: &str = "/usr/lib/tilo/windows-runners/proton/UMU-Proton-10.0-4";
 const PROTON_MOUNT: &str = "/opt/tilo/proton";
@@ -500,7 +521,7 @@ impl LaunchLease {
         network: NetworkShape,
     ) -> Result<(), PlanError> {
         validate_id("lease id", &self.id)?;
-        let root = PathBuf::from(LEASE_ROOT).join(&self.id);
+        let root = lease_root().join(&self.id);
         let microphone = capabilities
             .devices
             .contains(&collab_types::caps::DeviceCap::Microphone);
@@ -569,6 +590,11 @@ pub struct CapsuleCommandPlan {
     pub lease_id: String,
     /// The private audio graph to start right before the sandbox, whose sockets it binds.
     pub audio_graph: Option<PathBuf>,
+    /// The program shows its windows through X11: the sandbox is given the X11 display its
+    /// keeper serves (the launcher's `windows-x11-sandbox`).
+    pub x11: bool,
+    /// The network proxy to start right before the sandbox, whose socket it binds.
+    pub network_proxy: Option<NetworkProxy>,
     // Open directory descriptors backing the prefix/home bind sources. Kept
     // private so a plan cannot be copied after its authority-bearing handles.
     launch_paths: LaunchPaths,
@@ -582,10 +608,21 @@ impl CapsuleCommandPlan {
     }
 }
 
+/// A launch's filtered network as the launch starts it: the directory the compatibility service
+/// prepared the policy in, and the control socket the session reaches the live proxy on.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkProxy {
+    pub dir: PathBuf,
+    pub control: PathBuf,
+}
+
 pub struct SandboxPlanner<'a, R> {
     store: &'a CapsuleStore,
     runtimes: &'a R,
     display: &'a LaunchDisplay,
+    /// Where the proxy's control socket goes for a kept launch: its keeper's directory, which the
+    /// desktop that adopts the program after a restart finds again.
+    network_control: Option<PathBuf>,
     icd_search: IcdSearch,
 }
 
@@ -600,8 +637,16 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
             store,
             runtimes,
             display,
+            network_control: None,
             icd_search: IcdSearch::default(),
         })
+    }
+
+    /// The control socket a kept launch's network proxy answers the session on.
+    #[must_use]
+    pub fn with_network_control(mut self, control: PathBuf) -> Self {
+        self.network_control = Some(control);
+        self
     }
 
     #[allow(
@@ -626,6 +671,17 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
         let runtime = self.runtimes.resolve(capsule.layer, &capsule.runner)?;
         let network = NetworkShape::from_capabilities(capabilities);
         lease.validate(capabilities, network)?;
+        let network_proxy = lease.egress_proxy.as_ref().map(|proxy| {
+            let dir = proxy
+                .host_socket
+                .parent()
+                .map_or_else(|| proxy.host_socket.clone(), Path::to_path_buf);
+            let control = self
+                .network_control
+                .clone()
+                .unwrap_or_else(|| launcher::netproxy::control_beside(&dir));
+            NetworkProxy { dir, control }
+        });
 
         let launch_paths = self.store.open_launch_paths(&capsule.id)?;
 
@@ -754,7 +810,7 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
         }
         argv.extend([
             "--ro-bind".to_string(),
-            SHIM_HOST.to_string(),
+            TILO_LAUNCHER.to_string(),
             SHIM_MOUNT.to_string(),
             SHIM_MOUNT.to_string(),
             launcher::landlock_shim::SANDBOX_EXEC_SUBCOMMAND.to_string(),
@@ -815,11 +871,20 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
             latency_sensitive: route.runtime.layer == Layer::Proton,
             lease_id: lease.id.clone(),
             audio_graph: lease.audio_graph.clone(),
+            x11: shows_through_x11(route.runtime.layer),
+            network_proxy,
             launch_paths,
             runtime_lock_required: runtime.runtime_lock_mount.is_some(),
             identity_uid: self.display.uid,
         })
     }
+}
+
+/// Whether a program of `layer` shows its windows through X11. The pinned Proton's Wine has no
+/// Wayland driver (it ships winex11 alone), so a Proton program given only a Wayland socket opens
+/// no window at all.
+pub(crate) fn shows_through_x11(layer: Layer) -> bool {
+    layer == Layer::Proton
 }
 
 fn map_granted_files(

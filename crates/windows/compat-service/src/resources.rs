@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use launcher::egress_proxy::{EgressPolicy, EgressProxy, RELAY_PORT};
+use launcher::egress_proxy::{EgressPolicy, RELAY_PORT};
 use launcher::sandbox::EgressProxyBind;
 
 use launcher::audio_graph::{AudioGraph, AudioGraphError};
@@ -13,10 +13,9 @@ use crate::{
     ResourceRequest,
 };
 
-const LEASE_ROOT: &str = "/run/tilo/windows-compat/leases";
 const SANDBOX_PROXY: &str = "/run/tilo/network/proxy.sock";
 
-type PrepareAudioGraph = fn(PathBuf, u32, bool) -> Result<AudioGraph, AudioGraphError>;
+pub(crate) type PrepareAudioGraph = fn(PathBuf, u32, bool) -> Result<AudioGraph, AudioGraphError>;
 
 /// Concrete Tilo adapter for resources that already have a secure broker.
 /// Host-filtered networking reuses the launcher's net-proxy implementation.
@@ -28,7 +27,6 @@ type PrepareAudioGraph = fn(PathBuf, u32, bool) -> Result<AudioGraph, AudioGraph
 /// ([`launcher::audio_graph`]).
 pub struct SystemResourceBroker {
     next: AtomicU64,
-    proxies: Mutex<BTreeMap<String, EgressProxy>>,
     audio: Mutex<BTreeMap<String, AudioGraph>>,
     uid: u32,
     prepare_audio_graph: PrepareAudioGraph,
@@ -48,7 +46,6 @@ impl SystemResourceBroker {
     pub fn for_uid(uid: u32) -> Self {
         Self {
             next: AtomicU64::new(1),
-            proxies: Mutex::new(BTreeMap::new()),
             audio: Mutex::new(BTreeMap::new()),
             uid,
             prepare_audio_graph: AudioGraph::prepare,
@@ -59,7 +56,6 @@ impl SystemResourceBroker {
     fn for_uid_with_audio_graph(uid: u32, prepare_audio_graph: PrepareAudioGraph) -> Self {
         Self {
             next: AtomicU64::new(1),
-            proxies: Mutex::new(BTreeMap::new()),
             audio: Mutex::new(BTreeMap::new()),
             uid,
             prepare_audio_graph,
@@ -77,7 +73,7 @@ impl SystemResourceBroker {
         loop {
             let id = self.lease_id();
             match (self.prepare_audio_graph)(
-                PathBuf::from(LEASE_ROOT).join(&id),
+                crate::plan::lease_root().join(&id),
                 self.uid,
                 microphone,
             ) {
@@ -94,7 +90,7 @@ impl SystemResourceBroker {
         let Ok(held) = self.audio.lock() else {
             return;
         };
-        let Ok(leases) = std::fs::read_dir(LEASE_ROOT) else {
+        let Ok(leases) = std::fs::read_dir(crate::plan::lease_root()) else {
             return;
         };
         for lease in leases.flatten() {
@@ -145,25 +141,22 @@ impl LaunchResourceBroker for SystemResourceBroker {
         let audio_graph = Some(graph.root().to_path_buf());
         let network = NetworkShape::from_capabilities(request.capabilities);
         let egress_proxy = if network == NetworkShape::Filtered {
-            let host_socket = PathBuf::from(LEASE_ROOT).join(&id).join("net.sock");
-            let proxy = match EgressProxy::start(
-                &host_socket,
-                EgressPolicy::from_grants(
+            // The launch starts the proxy that enforces this policy as the sandbox's child, so
+            // the program keeps its network through an in-place restart and the proxy ends with
+            // it. The session updates the policy through its control socket, which a kept
+            // program's desktop finds again in its keeper's directory.
+            let dir = crate::plan::lease_root().join(&id).join("netproxy");
+            if let Err(error) = launcher::netproxy::prepare(
+                &dir,
+                &EgressPolicy::from_grants(
                     request.capabilities.net_hosts.iter().map(String::as_str),
                 ),
             ) {
-                Ok(proxy) => proxy,
-                Err(error) => {
-                    graph.remove();
-                    return Err(ResourceError::Refused(error.to_string()));
-                }
-            };
-            self.proxies
-                .lock()
-                .map_err(|_| ResourceError::Unavailable)?
-                .insert(id.clone(), proxy);
+                graph.remove();
+                return Err(ResourceError::Refused(error.to_string()));
+            }
             Some(EgressProxyBind {
-                host_socket,
+                host_socket: dir.join("proxy.sock"),
                 sandbox_socket: PathBuf::from(SANDBOX_PROXY),
                 port: RELAY_PORT,
             })
@@ -183,9 +176,7 @@ impl LaunchResourceBroker for SystemResourceBroker {
     }
 
     fn revoke(&self, lease_id: &str) {
-        if let Ok(mut proxies) = self.proxies.lock() {
-            proxies.remove(lease_id);
-        }
+        // The network proxy ends with the program it serves, so the program's end revokes it.
         if let Some(graph) = self
             .audio
             .lock()

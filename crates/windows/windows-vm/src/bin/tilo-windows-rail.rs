@@ -1,29 +1,29 @@
-//! Run `FreeRDP`'s X11 RAIL client through one private rootless Xwayland bridge.
+//! Run `FreeRDP`'s X11 RAIL client on the X11 display the launch's app keeper serves.
 //!
-//! Tilo does not implement an XWM in its compositor. `xwayland-satellite` is a
-//! deliberately small Wayland client/XWM which maps each X11 window to an
-//! `xdg_toplevel`; that lets `FreeRDP` RAIL windows participate in the ordinary
-//! Tilo layout instead of placing a nested Windows desktop in one host window.
+//! Tilo does not implement an XWM in its compositor. The keeper serves each launch a display of
+//! its own through `xwayland-satellite`, a deliberately small Wayland client/XWM which maps each
+//! X11 window to an `xdg_toplevel`; that lets `FreeRDP` RAIL windows participate in the ordinary
+//! Tilo layout instead of placing a nested Windows desktop in one window of its own. The keeper
+//! and its display stay while the desktop restarts in place, so `FreeRDP` stays connected and the
+//! program inside Windows keeps its windows.
+//!
+//! The RDP password arrives at a descriptor the private `--tilo-password-fd=N` argument names,
+//! never on a command line, in the environment or in a file: it becomes `FreeRDP`'s standard
+//! input (`/from-stdin`) and nothing else this starts inherits it.
 
 use std::env;
-use std::ffi::OsStr;
-use std::fs::{self, File, OpenOptions};
-use std::io;
-use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+use std::ffi::{OsStr, OsString};
+use std::fs;
+use std::os::fd::{FromRawFd as _, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitCode, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::process::{Command, ExitCode, Stdio};
 
-use getrandom::{SysRng, rand_core::UnwrapErr};
-use rand::Rng as _;
-
+/// The X server the keeper serves a launch's display with.
 const SATELLITE: &str = "/usr/bin/xwayland-satellite";
 const FREERDP: &str = "/usr/bin/xfreerdp";
 const BWRAP: &str = "/usr/bin/bwrap";
 const READ_ONLY_DRIVE_PREFIX: &str = "--tilo-read-only-drive=";
-const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
-const DISPLAY_ATTEMPTS: usize = 64;
+const PASSWORD_FD_PREFIX: &str = "--tilo-password-fd=";
 
 fn main() -> ExitCode {
     match run() {
@@ -44,47 +44,26 @@ fn run() -> Result<u8, String> {
     if arguments.is_empty() {
         return Err("no FreeRDP request was supplied".to_string());
     }
-    let (arguments, read_only_drives) = split_private_arguments(arguments)?;
-
-    let runtime = private_runtime_root()?;
-    let (display_number, reservation) = reserve_display(&runtime)?;
-    let launch_root = PrivateLaunchRoot::new(private_launch_root(&runtime)?);
-    let authority = launch_root.path().join("Xauthority");
-    write_xauthority(&authority, display_number)?;
-
-    let display = format!(":{display_number}");
-    let socket = PathBuf::from(format!("/tmp/.X11-unix/X{display_number}"));
-    let mut satellite = Command::new(SATELLITE)
-        .arg(&display)
-        .args(["-auth", authority.to_string_lossy().as_ref()])
-        .args(["-nolisten", "tcp", "-terminate"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
+    let Private {
+        free_rdp,
+        read_only_drives,
+        password,
+    } = split_private_arguments(arguments)?;
+    // The keeper serves the display and its cookie; the program never makes either.
+    if env::var_os("DISPLAY").is_none() || env::var_os("XAUTHORITY").is_none() {
+        return Err("the launch's keeper serves no X11 display".to_string());
+    }
+    let status = free_rdp_command(&free_rdp, &read_only_drives)
+        .env("_JAVA_AWT_WM_NONREPARENTING", "1")
+        .stdin(Stdio::from(password))
+        .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|error| format!("could not start xwayland-satellite: {error}"))?;
-
-    let result = (|| {
-        wait_for_xwayland(&mut satellite, &socket)?;
-        let mut command = free_rdp_command(&arguments, &read_only_drives);
-        let status = command
-            .env("DISPLAY", &display)
-            .env("XAUTHORITY", &authority)
-            .env("_JAVA_AWT_WM_NONREPARENTING", "1")
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .status()
-            .map_err(|error| format!("could not start xfreerdp: {error}"))?;
-        Ok(status
-            .code()
-            .and_then(|code| u8::try_from(code).ok())
-            .unwrap_or(1))
-    })();
-
-    stop_child(&mut satellite);
-    drop(reservation);
-    result
+        .status()
+        .map_err(|error| format!("could not start xfreerdp: {error}"))?;
+    Ok(status
+        .code()
+        .and_then(|code| u8::try_from(code).ok())
+        .unwrap_or(1))
 }
 
 fn verify_runtime() -> Result<(), String> {
@@ -95,35 +74,34 @@ fn verify_runtime() -> Result<(), String> {
             ));
         }
     }
-    let wayland = env::var_os("WAYLAND_DISPLAY")
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| "WAYLAND_DISPLAY is not set".to_string())?;
-    let runtime = runtime_directory()?;
-    let wayland = Path::new(&wayland);
-    let socket = if wayland.is_absolute() {
-        wayland.to_path_buf()
-    } else {
-        runtime.join(wayland)
-    };
-    if !socket.exists() {
-        return Err("the Tilo Wayland socket is not available".to_string());
-    }
     Ok(())
 }
 
-fn split_private_arguments(
-    arguments: Vec<std::ffi::OsString>,
-) -> Result<(Vec<std::ffi::OsString>, Vec<PathBuf>), String> {
+/// What the rail takes for itself out of its arguments: the rest is `FreeRDP`'s.
+#[derive(Debug)]
+struct Private {
+    free_rdp: Vec<OsString>,
+    read_only_drives: Vec<PathBuf>,
+    /// The descriptor the RDP password is read from, close-on-exec: it reaches `FreeRDP` only as
+    /// its standard input.
+    password: OwnedFd,
+}
+
+fn split_private_arguments(arguments: Vec<OsString>) -> Result<Private, String> {
     let mut free_rdp = Vec::new();
-    let mut read_only = Vec::new();
+    let mut read_only_drives = Vec::new();
+    let mut password = None;
     for argument in arguments {
-        if let Some(value) = argument
-            .to_str()
-            .and_then(|value| value.strip_prefix(READ_ONLY_DRIVE_PREFIX))
-        {
+        let text = argument.to_str();
+        if let Some(value) = text.and_then(|value| value.strip_prefix(READ_ONLY_DRIVE_PREFIX)) {
             let path = PathBuf::from(value);
             validate_portal_drive(&path)?;
-            read_only.push(path);
+            read_only_drives.push(path);
+        } else if let Some(value) = text.and_then(|value| value.strip_prefix(PASSWORD_FD_PREFIX)) {
+            if password.is_some() {
+                return Err("two RDP password descriptors were supplied".to_string());
+            }
+            password = Some(take_descriptor(value)?);
         } else {
             free_rdp.push(argument);
         }
@@ -131,7 +109,31 @@ fn split_private_arguments(
     if free_rdp.is_empty() {
         return Err("no FreeRDP request was supplied".to_string());
     }
-    Ok((free_rdp, read_only))
+    Ok(Private {
+        free_rdp,
+        read_only_drives,
+        password: password.ok_or("no RDP password descriptor was supplied")?,
+    })
+}
+
+/// Take the inherited descriptor `number` names, close-on-exec from now on.
+fn take_descriptor(number: &str) -> Result<OwnedFd, String> {
+    let fd: RawFd = number
+        .parse()
+        .ok()
+        .filter(|fd| *fd > 2)
+        .ok_or("the RDP password descriptor is not a descriptor number")?;
+    // SAFETY: F_SETFD on a number this process was handed changes only that descriptor's flags,
+    // and fails without effect when it is not open.
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+        return Err(format!(
+            "the RDP password descriptor is not open: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: the descriptor is open, was handed to this process for this use alone, and nothing
+    // else here owns it.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
 fn validate_portal_drive(path: &Path) -> Result<(), String> {
@@ -152,7 +154,7 @@ fn validate_portal_drive(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn free_rdp_command(arguments: &[std::ffi::OsString], read_only_drives: &[PathBuf]) -> Command {
+fn free_rdp_command(arguments: &[OsString], read_only_drives: &[PathBuf]) -> Command {
     let mut command = if read_only_drives.is_empty() {
         Command::new(FREERDP)
     } else {
@@ -170,162 +172,46 @@ fn free_rdp_command(arguments: &[std::ffi::OsString], read_only_drives: &[PathBu
     command
 }
 
-fn runtime_directory() -> Result<PathBuf, String> {
-    tilo_paths::xdg::runtime_dir()
-        .ok_or_else(|| "XDG_RUNTIME_DIR is not an absolute path".to_string())
-}
-
-fn private_runtime_root() -> Result<PathBuf, String> {
-    let root = runtime_directory()?.join("tilo-windows-vm/rail");
-    fs::create_dir_all(&root)
-        .map_err(|error| format!("could not create the private RAIL runtime: {error}"))?;
-    fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
-        .map_err(|error| format!("could not protect the private RAIL runtime: {error}"))?;
-    Ok(root)
-}
-
-fn private_launch_root(runtime: &Path) -> Result<PathBuf, String> {
-    for _ in 0..DISPLAY_ATTEMPTS {
-        let mut nonce = [0_u8; 16];
-        UnwrapErr(SysRng).fill_bytes(&mut nonce);
-        let candidate = runtime.join(format!("launch-{}", hex::encode(nonce)));
-        match fs::create_dir(&candidate) {
-            Ok(()) => {
-                fs::set_permissions(&candidate, fs::Permissions::from_mode(0o700)).map_err(
-                    |error| format!("could not protect the private launch directory: {error}"),
-                )?;
-                return Ok(candidate);
-            }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(error) => {
-                return Err(format!(
-                    "could not create a private launch directory: {error}"
-                ));
-            }
-        }
-    }
-    Err("could not allocate a private launch directory".to_string())
-}
-
-fn reserve_display(runtime: &Path) -> Result<(u16, DisplayReservation), String> {
-    let mut random = [0_u8; 2];
-    UnwrapErr(SysRng).fill_bytes(&mut random);
-    let first = 1000_u16.saturating_add(u16::from_be_bytes(random) % 20_000);
-    for offset in 0..DISPLAY_ATTEMPTS {
-        let display = first.wrapping_add(u16::try_from(offset).unwrap_or(0));
-        let x_socket = PathBuf::from(format!("/tmp/.X11-unix/X{display}"));
-        let x_lock = PathBuf::from(format!("/tmp/.X{display}-lock"));
-        if x_socket.exists() || x_lock.exists() {
-            continue;
-        }
-        let path = runtime.join(format!("display-{display}.lock"));
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)
-        {
-            Ok(file) => return Ok((display, DisplayReservation { path, _file: file })),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(format!("could not reserve an X display: {error}")),
-        }
-    }
-    Err("no private X display number is available".to_string())
-}
-
-/// Write one `FamilyWild` MIT-MAGIC-COOKIE-1 record without putting the cookie
-/// in argv. Xauthority uses network byte order and length-prefixed fields.
-fn write_xauthority(path: &Path, display: u16) -> Result<(), String> {
-    let mut cookie = [0_u8; 16];
-    UnwrapErr(SysRng).fill_bytes(&mut cookie);
-    tilo_files::native::x11_authority::write(path, display.into(), &cookie)
-        .map_err(|error| format!("could not write private X authority: {error}"))
-}
-
-fn wait_for_xwayland(child: &mut Child, socket: &Path) -> Result<(), String> {
-    let deadline = Instant::now()
-        .checked_add(STARTUP_TIMEOUT)
-        .ok_or_else(|| "could not calculate the Xwayland startup deadline".to_string())?;
-    loop {
-        if socket.exists() {
-            return Ok(());
-        }
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|error| format!("could not inspect xwayland-satellite: {error}"))?
-        {
-            return Err(format!(
-                "xwayland-satellite exited during startup ({status})"
-            ));
-        }
-        if Instant::now() >= deadline {
-            return Err("xwayland-satellite did not create its display in time".to_string());
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-}
-
-fn stop_child(child: &mut Child) {
-    if matches!(child.try_wait(), Ok(None)) {
-        let _ = child.kill();
-    }
-    let _ = child.wait();
-}
-
-fn remove_private_launch_root(root: &Path) {
-    let _ = fs::remove_file(root.join("Xauthority"));
-    let _ = fs::remove_dir(root);
-}
-
-struct PrivateLaunchRoot(PathBuf);
-
-impl PrivateLaunchRoot {
-    fn new(path: PathBuf) -> Self {
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for PrivateLaunchRoot {
-    fn drop(&mut self) {
-        remove_private_launch_root(&self.0);
-    }
-}
-
-struct DisplayReservation {
-    path: PathBuf,
-    _file: File,
-}
-
-impl Drop for DisplayReservation {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The password descriptor is the rail's own: it leaves `FreeRDP`'s arguments, and no program
+    /// the rail starts inherits it but through its standard input.
     #[test]
-    fn rail_launches_keep_cookies_and_private_paths_out_of_argv() {
+    fn rail_launches_keep_secrets_and_private_paths_out_of_argv() {
         {
-            let directory = tempfile::tempdir().unwrap();
-            let path = directory.path().join("authority");
-            write_xauthority(&path, 1234).unwrap();
-            assert_eq!(fs::read(path).unwrap().len(), 48);
-        }
-        {
-            let directory = tempfile::tempdir().unwrap();
-            let launch = directory.path().join("launch-test");
-            fs::create_dir(&launch).unwrap();
-            fs::write(launch.join("Xauthority"), b"test").unwrap();
-            remove_private_launch_root(&launch);
-            assert!(!launch.exists());
-            assert!(directory.path().exists());
+            let (reader, _writer) = std::io::pipe().unwrap();
+            let number = std::os::fd::IntoRawFd::into_raw_fd(OwnedFd::from(reader));
+            // SAFETY: clears the flag on the descriptor this test owns, as a handed one arrives.
+            assert_eq!(unsafe { libc::fcntl(number, libc::F_SETFD, 0) }, 0);
+            let private = split_private_arguments(vec![
+                "/v:guest".into(),
+                format!("{PASSWORD_FD_PREFIX}{number}").into(),
+                "/from-stdin".into(),
+            ])
+            .unwrap();
+            assert_eq!(private.free_rdp, ["/v:guest", "/from-stdin"]);
+            assert_eq!(std::os::fd::AsRawFd::as_raw_fd(&private.password), number);
+            // SAFETY: reads the flags of a descriptor the rail owns.
+            let flags = unsafe { libc::fcntl(number, libc::F_GETFD) };
+            assert_eq!(
+                flags & libc::FD_CLOEXEC,
+                libc::FD_CLOEXEC,
+                "nothing the rail starts inherits it at its own number"
+            );
+            assert!(
+                split_private_arguments(vec!["/v:guest".into(), "/from-stdin".into()]).is_err(),
+                "a launch without its password does not start"
+            );
+            assert!(
+                split_private_arguments(vec![
+                    "/v:guest".into(),
+                    format!("{PASSWORD_FD_PREFIX}1").into()
+                ])
+                .is_err(),
+                "standard streams are not a password descriptor"
+            );
         }
         {
             let drive = windows_vm::portal_lease_root().join("rail-test/TILO01");

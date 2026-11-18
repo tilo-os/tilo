@@ -85,11 +85,11 @@ the machinery `tilo device swap` uses on a development machine:
    lists it open again, can quit it, and reports its end. A Proton program is
    one too, on an X display of the keeper's own: UMU-Proton carries no Wayland
    driver, so the keeper gives its sandbox that display's socket and authority
-   file and the program's window opens through Xwayland. A program of the
-   Windows appliance is not: its RAIL or SPICE presentation is a process of the
-   desktop's own and ends with it. A keeper started by an
-   older desktop that speaks another version of its interface cannot be shown:
-   the new desktop counts it as a launch (tiers, memory watch, ended at
+   file and the program's window opens through Xwayland. A window of the
+   Windows appliance (FreeRDP RemoteApp on such a display, or the SPICE viewer
+   of a setup) is one too, without a Quit: it closes inside Windows. A keeper
+   started by an older desktop that speaks another version of its interface
+   cannot be shown: the new desktop counts it as a launch (tiers, memory watch, ended at
    logout), starts no second copy of its app, and offers to restart it, which
    ends the old app (process group asked first, then the launch's own scope)
    and starts it again. One part of that interface is not versioned and never

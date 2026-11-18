@@ -8,6 +8,8 @@
 #   tilo-disk-encrypt prepare-partition <root-part> --efi <esp> [...]
 #   tilo-disk-encrypt enrol    <luks-part> [--key-file F] [--pin-file F] [--fido2] [--passphrase]
 #                              [--pin-is-account-password] [--store-part P --store-key-file F]
+#   tilo-disk-encrypt enrol    <luks-part> --tpm-automatic [--require-tpm]
+#                              [--predictions D --generation N [--rollback-state F]]
 #   tilo-disk-encrypt enrol    <luks-part> --reseal   # currently fails closed
 #   tilo-disk-encrypt enrol    <luks-part> --sibling [--key-file F] [--network NAME]...
 #                              [--session-uid UID] [--unattended]
@@ -52,6 +54,17 @@
 # here. `tilo-sibling-unlock remove <luks-part>` takes the slot and token away.
 # `--replace-networks` keeps an existing sibling unlock and only chooses its
 # networks again (Settings does the same through polkit).
+#
+# `enrol --tpm-automatic` adds the factor a machine with no person at its
+# keyboard boots with: a keyslot no secret opens, sealed to the signed boot
+# chain of the generation this image carries (`tilo-rollback enroll
+# --automatic`). It is the same seal a PIN-sealed volume gets, minus the
+# PolicyAuthValue step, and it is only offered while the running boot is one
+# the machine can prove it approved — Secure Boot on, a `db` holding only the
+# authorities recorded at enrolment, kernel lockdown active — and a signed
+# prediction for that generation exists. When either is absent the volume keeps
+# the recovery key as its way in and this says so; `--require-tpm` turns that
+# into an error instead, for a caller that must not finish a server without it.
 #
 # ## Why the volume is not created by `bootc install --block-setup tpm2-luks`
 #
@@ -269,8 +282,12 @@ cmd_prepare() {
   for t in blockdev sfdisk cryptsetup wipefs blkid lsblk "mkfs.$fs" mkfs.vfat mkfs.ext4 "$STORE_VOLUME"; do need "$t"; done
 
   [ -b "$disk" ] || die "prepare: $disk is not a block device"
-  [ "$(lsblk -dno TYPE "$disk" 2>/dev/null)" = "disk" ] \
-    || die "prepare: $disk is not a whole disk"
+  # A loop device is a whole disk too, and is how a disk image is built and how
+  # the checks install onto a file-backed target.
+  case "$(lsblk -dno TYPE "$disk" 2>/dev/null)" in
+    disk|loop) ;;
+    *) die "prepare: $disk is not a whole disk" ;;
+  esac
 
   # A previous attempt that died partway leaves the tree mounted and the mapping
   # open, and every check below would then refuse. Since this command's whole job
@@ -409,6 +426,7 @@ EOF
 cmd_enrol() {
   local dev="" key="" pin_file="" want_fido2=0 reseal=0 predictions="" generation="" rollback_state=""
   local require_tpm_prediction=0 store_part="" store_key="" sibling=0 account_password=0
+  local tpm_automatic=0 require_tpm=0
   local sibling_args=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -421,6 +439,8 @@ cmd_enrol() {
       --generation) generation="${2:-}"; shift 2 ;;
       --rollback-state) rollback_state="${2:-}"; shift 2 ;;
       --require-tpm-prediction) require_tpm_prediction=1; shift ;;
+      --tpm-automatic) tpm_automatic=1; shift ;;
+      --require-tpm) require_tpm=1; shift ;;
       --fido2) want_fido2=1; shift ;;
       --sibling) sibling=1; shift ;;
       --network) sibling_args+=(--network "${2:?--network needs a connection name}"); shift 2 ;;
@@ -544,6 +564,41 @@ cmd_enrol() {
     cryptsetup open --test-passphrase --key-file "$scratch/recovery" "$store_part" 2>/dev/null \
       || die "the recovery key was added to $store_part but does not open it"
     log "  recovery key verified: it opens the store volume."
+  fi
+
+  # (2) The unattended factor, for a machine with no person at its keyboard.
+  # Only a signed boot chain can carry it: the keyslot is sealed to the signed
+  # prediction of this image's generation, so a boot the release did not sign
+  # cannot produce the session that unseals it. A machine that has no such
+  # chain keeps the recovery key (and the sibling factor, enrolled later from
+  # the owner's session), which is why this is not an error by default.
+  if [ "$tpm_automatic" -eq 1 ]; then
+    local have_chain=0
+    if [ -n "$predictions" ] && [ -n "$generation" ] \
+       && compgen -G "$predictions/generation-$generation*.json" >/dev/null; then
+      have_chain=1
+    fi
+    if ! { [ -c /dev/tpmrm0 ] || [ -c /dev/tpm0 ]; }; then
+      have_chain=0
+    fi
+    if ! command -v tilo-rollback >/dev/null 2>&1; then
+      have_chain=0
+    fi
+    if [ "$have_chain" -eq 1 ]; then
+      need tilo-rollback
+      log "  enrolling the TPM keyslot that opens this signed boot chain with nothing typed…"
+      rollback_args=(--predictions "$predictions")
+      [ -z "$rollback_state" ] || rollback_args+=(--state "$rollback_state")
+      tilo-rollback "${rollback_args[@]}" enroll --device "$dev" \
+        --generation "$generation" --recovery-key-file "$scratch/recovery" --automatic \
+        || die "TPM enrolment failed; the volume is unchanged and the recovery key remains valid"
+      log "  TPM keyslot enrolled and verified."
+    fi
+    [ "$require_tpm" -eq 0 ] \
+      || die "enrol: --require-tpm needs a signed prediction for generation '${generation:-}', a TPM, and tilo-rollback"
+    log "  no signed boot chain for this image (prediction for generation"
+    log "  '${generation:-}', TPM and tilo-rollback), so no keyslot opens by itself."
+    log "  The recovery key above is this machine's way in."
   fi
 
   # (2) FIDO2, if a token was asked for. An explicit installer choice is a

@@ -20,7 +20,8 @@ out=${4:?$usage}
 cd "$repo_root"
 for bin in tilo-server tilo-server-admin tilo-enroll fs tilo-legacy tilo-hosted-jail tilo-api \
   tilolang-process \
-  tilo-esp-write tilo-image-policy-check tilo-image-trust tilo-board-successor; do
+  tilo-esp-write tilo-image-policy-check tilo-image-trust tilo-board-successor \
+  tilo-rollback tilo-auth tilo-boot-signin tilo-sibling-unlock; do
   [[ -x $binaries/$bin ]] || die "no $bin in $binaries"
 done
 # The mirrored bootc base and the install-time boot loader configuration the desktop image also
@@ -49,6 +50,8 @@ mkdir -p "$context/bin" "$context/keys/release" \
   "$context/os/etc/modules-load.d" \
   "$context/os/usr/lib/bootc/install" "$context/os/usr/lib/sysusers.d" \
   "$context/os/usr/lib/tmpfiles.d" "$context/os/usr/lib/systemd/system" \
+  "$context/os/usr/lib/systemd/system-generators" \
+  "$context/os/usr/lib/dracut/modules.d" \
   "$context/os/usr/libexec" "$context/docs/app-model"
 cp os/Containerfile.host "$context/Containerfile"
 cp "$binaries"/* "$context/bin/"
@@ -61,9 +64,11 @@ cp os/usr/lib/tmpfiles.d/*.conf "$context/os/usr/lib/tmpfiles.d/"
 cp os/etc/modules-load.d/tilo-hosted.conf "$context/os/etc/modules-load.d/"
 cp os/usr/libexec/* "$context/os/usr/libexec/"
 cp -r os/usr/lib/systemd/system/. "$context/os/usr/lib/systemd/system/"
+cp -r os/usr/lib/systemd/system-generators/. "$context/os/usr/lib/systemd/system-generators/"
+cp -r os/usr/lib/dracut/modules.d/. "$context/os/usr/lib/dracut/modules.d/"
 cp docs/recovery.md "$context/docs/"
 cp docs/app-model/environments.md "$context/docs/app-model/"
-cp keys/cosign.pub "$context/keys/"
+cp keys/cosign.pub keys/tpm2-pcr-signing.public.pem "$context/keys/"
 cp -r keys/release/. "$context/keys/release/"
 bash tools/ci/publish/oci-build.sh "$context" "$context/Containerfile" "$out" \
   --platform linux/amd64 \

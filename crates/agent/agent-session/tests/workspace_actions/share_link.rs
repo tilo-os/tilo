@@ -14,7 +14,7 @@ use tilo_peer_state::join::Role;
 use tilo_session_client::Outbox;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_host_mints_a_message_link_with_its_range() {
+async fn the_server_mints_a_message_link_with_its_range() {
     let (owner, _) = tilo_user_identity::UserIdentity::generate("Host fixture", 1);
     let (author, _) = tilo_user_identity::UserIdentity::generate("Writer", 1);
     let host = enrol(
@@ -53,7 +53,7 @@ async fn the_host_mints_a_message_link_with_its_range() {
     .unwrap();
     let mut doc = source.read(Clone::clone).unwrap();
     crate::common::add_channel(&mut doc, &writer, "general", None);
-    let channel = crate::common::channel(&doc, chat::model::ChannelKind::Text);
+    let general = crate::common::channel(&doc, chat::model::ChannelKind::Text);
     source
         .apply(&collab_types::DocumentMutation::Snapshot(doc.save()))
         .unwrap();
@@ -62,7 +62,7 @@ async fn the_host_mints_a_message_link_with_its_range() {
     let message = on_messages(
         &mut source,
         "post",
-        &serde_json::json!({"channel": channel.id, "text": "Hello é, linked"}),
+        &serde_json::json!({"channel": general.id, "text": "Hello é, linked"}),
     );
     let (id, kind) = published_message(&source, &message);
     let route = DocumentRoute {

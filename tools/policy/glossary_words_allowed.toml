@@ -537,3 +537,44 @@ reason = "The existing wire's name for the document a refusal names (neighbour_w
 words = ["record"]
 identifiers = ["record"]
 paths = ["crates/collab/tilo-peer-state/src/owner/refused_change_tests.rs"]
+
+[[allow]]
+reason = "The keys a mail account's settings keep its two servers' names under, as mail programs call them."
+words = ["host"]
+identifiers = ["imap_host", "smtp_host"]
+paths = ["crates/platform/account-probe/src/mail_servers.rs"]
+
+[[allow]]
+reason = "Tokio's broadcast channel constructor: a Rust API name, not one of Chat's channels."
+words = ["channel"]
+identifiers = ["channel"]
+paths = ["crates/packaging/launcher/src/egress_proxy.rs"]
+
+[[allow]]
+reason = "The launcher's egress API names the machine side of a socket and the network grants of a capability plan: `SHIM_HOST`, `host_socket`, `net_hosts`."
+words = ["host"]
+identifiers = ["SHIM_HOST", "host_socket", "net_hosts"]
+paths = [
+    "crates/windows/compat-service/src/execute.rs",
+    "crates/windows/compat-service/src/plan.rs",
+    "crates/windows/compat-service/src/resources.rs",
+    "crates/session/session/src/apps/windows.rs",
+]
+
+[[allow]]
+reason = "The in-sandbox loopback port that carries an app's traffic to the egress proxy; its name says what it carries."
+words = ["relay"]
+identifiers = ["RELAY_PORT"]
+paths = ["crates/windows/compat-service/src/resources.rs"]
+
+[[allow]]
+reason = "The compatibility service's egress API names in its session test: a plan's network grants and the machine side of a socket."
+words = ["host"]
+identifiers = ["net_hosts", "host_socket", "NetHost"]
+paths = ["crates/session/session/tests/windows_compat.rs"]
+
+[[allow]]
+reason = "The in-sandbox loopback port that carries an app's traffic to the egress proxy, by its constant's name."
+words = ["relay"]
+identifiers = ["RELAY_PORT"]
+paths = ["crates/session/session/tests/windows_compat.rs"]

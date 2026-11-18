@@ -70,6 +70,7 @@ pub use presentation::{ApplicationPresentation, RecoveryPresentation};
 pub use publication::{Association, AssociationKind, Catalog, CatalogError, PublishedApplication};
 pub use remote_app::{
     AppFocusedSpiceLauncher, FreeRdpLauncher, RemoteAppError, RemoteAppLauncher, RemoteAppProcess,
+    Shown,
 };
 pub use state::{
     AppliancePhase, ApplianceState, LicenseState, ProvisioningError, ProvisioningStore,

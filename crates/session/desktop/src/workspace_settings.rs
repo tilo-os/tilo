@@ -225,46 +225,35 @@ pub fn grant_allows(grant: &tilo_action_policy::Grant, apps: &dyn AppDirectory) 
     grant_set_sentence(std::slice::from_ref(grant), apps)
 }
 
+/// The names this tab paints a node with: apps, resources and items by the names people know them
+/// by, and the whole tree as the workspace.
+struct Named<'a>(&'a dyn AppDirectory);
+
+impl tilo_action_policy::Labels for Named<'_> {
+    fn label(&self, level: tilo_action_policy::Level, id: &str) -> Option<String> {
+        use tilo_action_policy::Level;
+        match level {
+            Level::App => Some(app_display_name(self.0, id)),
+            Level::Resource | Level::Item => self.0.resource_label(id),
+            _ => None,
+        }
+    }
+
+    fn everything(&self) -> String {
+        t("workspace-settings-scope-everything")
+    }
+}
+
 /// A grant set as people and agents talk about it: one sentence per grant — where it applies, then
 /// what it answers for each kind of action it covers — from the most specific node to the least. An
 /// empty set grants nothing.
 pub fn grant_set_sentence(grants: &[tilo_action_policy::Grant], apps: &dyn AppDirectory) -> String {
-    struct Named<'a>(&'a dyn AppDirectory);
-    impl tilo_action_policy::Labels for Named<'_> {
-        fn label(&self, level: tilo_action_policy::Level, id: &str) -> Option<String> {
-            use tilo_action_policy::Level;
-            match level {
-                Level::App => Some(app_display_name(self.0, id)),
-                Level::Resource | Level::Item => self.0.resource_label(id),
-                _ => None,
-            }
-        }
-
-        fn everything(&self) -> String {
-            t("workspace-settings-scope-everything")
-        }
-    }
     tilo_action_policy::sentences(grants, &Named(apps))
 }
 
 /// Where a grant applies, named the way people know the workspace's parts: the app by its name, a
 /// resource or item by its own, then the rest of the path.
 pub fn node_phrase(node: &tilo_action_policy::TreePath, apps: &dyn AppDirectory) -> String {
-    struct Named<'a>(&'a dyn AppDirectory);
-    impl tilo_action_policy::Labels for Named<'_> {
-        fn label(&self, level: tilo_action_policy::Level, id: &str) -> Option<String> {
-            use tilo_action_policy::Level;
-            match level {
-                Level::App => Some(app_display_name(self.0, id)),
-                Level::Resource | Level::Item => self.0.resource_label(id),
-                _ => None,
-            }
-        }
-
-        fn everything(&self) -> String {
-            t("workspace-settings-scope-everything")
-        }
-    }
     let below_workspace = node.within_workspace();
     if below_workspace.is_root() {
         return t("workspace-settings-scope-workspace");
@@ -287,31 +276,20 @@ fn given_by_label(who: &MemberId, ws: &Workspace, local_user: &str) -> String {
 }
 
 /// How long a grant lives, in the words the tab and its composer use for it. A lifetime that ends
-/// at a time names it, as the composer's date chip shows the end the person picked.
+/// at a time says when, in the words the composer's date chip shows the end the person picked.
 #[must_use]
 pub fn lifetime_label(lifetime: Lifetime) -> String {
-    match lifetime {
-        Lifetime::Until(at) => ends_at(at),
-        lifetime => lifetime_word(lifetime),
-    }
-}
-
-/// The word a lifetime kind is called in the composer: `Always`, `Until`, `Once`, `Session`.
-fn lifetime_word(lifetime: Lifetime) -> String {
-    t(&format!("workspace-settings-expiry-{}", lifetime.key()))
-}
-
-/// A lifetime that ends at `at` (Unix milliseconds) says when, in the words the composer's date
-/// chip shows the end it picked.
-fn ends_at(at: u64) -> String {
     use ui::format::Moment as _;
+    let Lifetime::Until(at) = lifetime else {
+        return t(&format!("workspace-settings-expiry-{}", lifetime.key()));
+    };
     let day = i64::try_from(at)
         .ok()
         .and_then(|at| ui::format::Timestamp::from_millisecond(at).ok())
         .and_then(|at| at.local());
     day.map_or_else(
         // Past the calendar's range there is no day to name, only the lifetime.
-        || lifetime_word(Lifetime::Until(at)),
+        || t("workspace-settings-expiry-until"),
         |at| {
             let fact = ui::format::day_fact(at.date(), Some(at.time()), ui::clock::today());
             t_args(
@@ -533,7 +511,10 @@ pub fn lifetime_choices() -> Vec<(&'static str, String)> {
         .into_iter()
         .rev()
         .filter(|lifetime| lifetime.is_durable())
-        .map(|lifetime| (lifetime.key(), lifetime_word(lifetime)))
+        .map(|lifetime| {
+            let key = lifetime.key();
+            (key, t(&format!("workspace-settings-expiry-{key}")))
+        })
         .collect()
 }
 

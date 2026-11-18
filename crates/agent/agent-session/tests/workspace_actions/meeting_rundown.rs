@@ -414,3 +414,7 @@ async fn the_rundown_whole(process: tilo_clock::testing::OwnProcess) {
     );
     up.down().await;
 }
+
+/// The same calendar server, connected by telling the assistant where it is.
+#[path = "hosted_calendar_connect.rs"]
+mod connect;

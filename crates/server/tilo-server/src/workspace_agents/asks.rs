@@ -703,6 +703,10 @@ impl HostAgents {
     /// agents asked them: each answer once, started before it is done. Costs one
     /// look at what this server keeps when nothing waits.
     pub(super) async fn settle_asks(&self, workspace: &str) {
+        // What a person typed where they were asked for a calendar's password is carried out
+        // first: its question says how it stands before this look reads which answers wake
+        // their askers.
+        Box::pin(self.settle_connects(workspace)).await;
         let open = self.workspaces.open_asks(workspace);
         if open.is_empty() {
             return;

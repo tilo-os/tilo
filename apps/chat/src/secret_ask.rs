@@ -113,6 +113,161 @@ impl Asked {
     }
 }
 
+/// The kinds a secret's detail names, as it writes them.
+const KINDS: [&str; 5] = ["login", "key", "code-generator", "ssh-key", "value"];
+/// What is often written where a detail says `belongsTo`.
+const FOR_BELONGS_TO: [&str; 9] = [
+    "belongs_to",
+    "belongsto",
+    "places",
+    "place",
+    "url",
+    "urls",
+    "site",
+    "server",
+    "origin",
+];
+/// What is often written where a detail says `username`.
+const FOR_USERNAME: [&str; 5] = ["user", "user_name", "userName", "login", "name"];
+/// What stands in the arguments written out where a kind has to be chosen.
+const KIND_HERE: &str = "<login, key, code-generator, ssh-key or value>";
+/// What stands there where a place has to be written.
+const PLACE_HERE: &str = "<https://the-site or imap://the-server:993>";
+/// The longest words of a question written out whole in the arguments that
+/// work.
+const MOST_WORDS_BYTES: usize = 600;
+
+/// The texts `value` holds: itself, or each text of a list.
+fn texts_of(value: &serde_json::Value) -> Vec<String> {
+    match value {
+        serde_json::Value::String(one) => vec![one.clone()],
+        serde_json::Value::Array(many) => many
+            .iter()
+            .filter_map(|one| one.as_str().map(str::to_owned))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The kind the arguments that work name, from the one that was given;
+/// what was wrong with it joins `wrong`.
+fn kind_written(given: Option<&serde_json::Value>, wrong: &mut Vec<String>) -> String {
+    match given.and_then(serde_json::Value::as_str) {
+        Some(kind) if KINDS.contains(&kind) => kind.to_owned(),
+        Some("password") => {
+            wrong.push("the `kind` `password` is written `login`".to_owned());
+            "login".to_owned()
+        }
+        Some(other) => {
+            wrong.push(format!(
+                "`kind` is one of login, key, code-generator, ssh-key and value, and yours is \
+                 `{other}`"
+            ));
+            KIND_HERE.to_owned()
+        }
+        None => {
+            wrong.push(
+                "`kind` is missing: one of login, key, code-generator, ssh-key and value"
+                    .to_owned(),
+            );
+            KIND_HERE.to_owned()
+        }
+    }
+}
+
+/// The places the arguments that work name, from what was given; what was
+/// wrong with them joins `wrong`.
+fn places_written(given: Option<&serde_json::Value>, wrong: &mut Vec<String>) -> Vec<String> {
+    let given = given.map(texts_of).unwrap_or_default();
+    if given.is_empty() {
+        wrong.push("`belongsTo` is missing: the list of places the secret belongs to".to_owned());
+        return vec![PLACE_HERE.to_owned()];
+    }
+    given
+        .into_iter()
+        .map(|place| {
+            if person_vault::looks_like_place(&place) {
+                place
+            } else {
+                wrong.push(format!(
+                    "a place is written with what it is reached by, such as \
+                     https://example.com or imap://mail.example.com:993, and yours is `{place}`"
+                ));
+                PLACE_HERE.to_owned()
+            }
+        })
+        .collect()
+}
+
+/// What whoever asked for a secret is told when the question is refused for
+/// its detail: `why`, what was wrong with the detail it gave, key by key,
+/// and the arguments that work, written out whole with the channel, the
+/// words and whatever of the detail it gave was usable. Its next call is
+/// then the right one.
+#[must_use]
+pub fn call_that_works(
+    why: &str,
+    channel: &str,
+    words: &str,
+    given: Option<&serde_json::Value>,
+) -> String {
+    let nothing = serde_json::Map::new();
+    let mut wrong: Vec<String> = Vec::new();
+    let given = given
+        .and_then(serde_json::Value::as_object)
+        .unwrap_or_else(|| {
+            wrong.push("it is an object, and yours is none".to_owned());
+            &nothing
+        });
+    let mut places = given.get("belongsTo");
+    let mut username = given.get("username").and_then(serde_json::Value::as_str);
+    for (key, value) in given {
+        match key.as_str() {
+            "kind" | "belongsTo" | "username" | "sentIn" => {}
+            other if FOR_BELONGS_TO.contains(&other) => {
+                wrong.push(format!("`{other}` is written `belongsTo`"));
+                places = places.or(Some(value));
+            }
+            other if FOR_USERNAME.contains(&other) => {
+                wrong.push(format!("`{other}` is written `username`"));
+                username = username.or_else(|| value.as_str());
+            }
+            other => wrong.push(format!("it takes no `{other}`: leave that out")),
+        }
+    }
+    let mut detail = serde_json::Map::new();
+    let kind = kind_written(given.get("kind"), &mut wrong);
+    detail.insert("kind".to_owned(), kind.into());
+    let places = places_written(places, &mut wrong);
+    detail.insert("belongsTo".to_owned(), places.into());
+    if let Some(username) = username {
+        detail.insert("username".to_owned(), username.into());
+    }
+    if let Some(sent) = given.get("sentIn").and_then(serde_json::Value::as_str) {
+        detail.insert("sentIn".to_owned(), sent.into());
+    }
+    let words = if words.len() <= MOST_WORDS_BYTES {
+        words
+    } else {
+        "<your words>"
+    };
+    let call = serde_json::json!({
+        "channel": channel,
+        "text": words,
+        "kind": SECRET,
+        "detail": detail,
+    });
+    let wrong = if wrong.is_empty() {
+        String::new()
+    } else {
+        format!(" In your detail: {}.", wrong.join("; "))
+    };
+    format!(
+        "{why}.{wrong} Ask again with exactly these arguments, with your own value where one \
+         stands in angle brackets: {call}"
+    )
+}
+
 /// A place as a person reads it: a site by its name, a server as it is.
 fn shown_place(place: &str) -> &str {
     place.strip_prefix("https://").map_or(place, |site| {

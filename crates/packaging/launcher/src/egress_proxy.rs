@@ -151,11 +151,55 @@ pub enum ProxyError {
     Runtime(#[source] io::Error),
 }
 
+/// A proxy's policy as it stands, and a signal that cuts every open connection when it changes:
+/// a person who takes a grant back ends the traffic it allowed, not only the next connection.
+#[derive(Debug)]
+pub struct LivePolicy {
+    policy: std::sync::RwLock<EgressPolicy>,
+    cut: tokio::sync::broadcast::Sender<()>,
+}
+
+impl LivePolicy {
+    #[must_use]
+    pub fn new(policy: EgressPolicy) -> Self {
+        let (cut, _) = tokio::sync::broadcast::channel(1);
+        Self {
+            policy: std::sync::RwLock::new(policy),
+            cut,
+        }
+    }
+
+    /// The policy a connection is decided against now.
+    #[must_use]
+    pub fn policy(&self) -> EgressPolicy {
+        self.policy
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Replace the policy, and cut every connection that was open under the old one.
+    pub fn replace(&self, policy: EgressPolicy) {
+        *self
+            .policy
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = policy;
+        // A send nobody hears has cut nothing, and that is right: no connection was open.
+        let _ = self.cut.send(());
+    }
+
+    /// News of the next cut.
+    fn cut_signal(&self) -> tokio::sync::broadcast::Receiver<()> {
+        self.cut.subscribe()
+    }
+}
+
 /// A running proxy.
 #[derive(Debug)]
 pub struct EgressProxy {
     socket_path: PathBuf,
     stats: Arc<ProxyStats>,
+    policy: Arc<LivePolicy>,
     /// Dropping this sender ends the accept loop, which closes the listener.
     _stop: oneshot::Sender<()>,
 }
@@ -198,10 +242,12 @@ impl EgressProxy {
             "egress proxy listening; the sandbox netns stays empty and this socket is its \
              only route out"
         );
-        let (stats, stop) = serve_proxy(runtime, listener, policy, max_connections);
+        let policy = Arc::new(LivePolicy::new(policy));
+        let (stats, stop) = serve_proxy(runtime, listener, Arc::clone(&policy), max_connections);
         Ok(EgressProxy {
             socket_path: socket_path.to_path_buf(),
             stats,
+            policy,
             _stop: stop,
         })
     }
@@ -212,6 +258,11 @@ impl EgressProxy {
 
     pub fn stats(&self) -> &Arc<ProxyStats> {
         &self.stats
+    }
+
+    /// Replace the policy this proxy enforces, cutting the connections allowed under the old one.
+    pub fn set_policy(&self, policy: EgressPolicy) {
+        self.policy.replace(policy);
     }
 }
 
@@ -247,6 +298,7 @@ impl LoopbackProxy {
             tokio::net::TcpListener::from_std(listener).map_err(bind_error)?
         };
         tracing::info!(%addr, hosts = ?policy.describe(), "loopback egress proxy listening");
+        let policy = Arc::new(LivePolicy::new(policy));
         let (stats, stop) = serve_proxy(runtime, listener, policy, MAX_CONNECTIONS);
         Ok(LoopbackProxy {
             addr,
@@ -269,7 +321,7 @@ impl LoopbackProxy {
 fn serve_proxy<L>(
     runtime: &tokio::runtime::Handle,
     listener: L,
-    policy: EgressPolicy,
+    policy: Arc<LivePolicy>,
     max_connections: usize,
 ) -> (Arc<ProxyStats>, oneshot::Sender<()>)
 where
@@ -278,7 +330,6 @@ where
 {
     let stats = Arc::new(ProxyStats::default());
     let (stop, stopped) = oneshot::channel();
-    let policy = Arc::new(policy);
     let served = Arc::clone(&stats);
     runtime.spawn(accept_bounded(
         listener,
@@ -643,9 +694,13 @@ fn head_text(head: Vec<u8>) -> io::Result<String> {
 
 async fn serve_connection<C: AsyncRead + AsyncWrite + Unpin>(
     mut client: C,
-    policy: &EgressPolicy,
+    live: &LivePolicy,
     stats: &ProxyStats,
 ) -> io::Result<()> {
+    // Subscribed before the destination is read, so a policy taken back while the connection is
+    // being set up cuts it as surely as one taken back while it carries traffic.
+    let mut cut = live.cut_signal();
+    let policy = live.policy();
     let mut handshake = Handshake {
         client: &mut client,
         received: Vec::new(),
@@ -658,8 +713,8 @@ async fn serve_connection<C: AsyncRead + AsyncWrite + Unpin>(
     }
     let first = handshake.received.first().copied().unwrap_or_default();
     let upstream = match detect_protocol(first) {
-        Protocol::Socks5 => open_socks5(&mut handshake, policy, stats).await?,
-        Protocol::HttpConnect => open_http(&mut handshake, policy, stats).await?,
+        Protocol::Socks5 => open_socks5(&mut handshake, &policy, stats).await?,
+        Protocol::HttpConnect => open_http(&mut handshake, &policy, stats).await?,
     };
     let Some(mut upstream) = upstream else {
         return Ok(());
@@ -672,7 +727,15 @@ async fn serve_connection<C: AsyncRead + AsyncWrite + Unpin>(
     if !early.is_empty() {
         tokio::io::AsyncWriteExt::write_all(&mut upstream, &early).await?;
     }
-    let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+    if cut.try_recv().is_ok() {
+        return Ok(());
+    }
+    tokio::select! {
+        _ = tokio::io::copy_bidirectional(&mut client, &mut upstream) => {}
+        _ = cut.recv() => {
+            tracing::info!("egress connection cut: the policy changed under it");
+        }
+    }
     Ok(())
 }
 

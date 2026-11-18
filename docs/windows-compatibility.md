@@ -76,6 +76,21 @@ long as the program: they stay while the desktop restarts in place, and they
 end when the program ends, is quit, or is ended with its group at logout,
 which disconnects any audio handles the program holds.
 
+### Network
+
+A program the workspace grants specific network destinations gets a private proxy, in its
+launch's own process tree: `tilo-launcher windows-network` starts it right before the sandbox
+and becomes the sandbox, so the proxy lives exactly as long as the program. It stays while the
+desktop restarts in place, and it ends when the program ends, is quit, or is ended with its
+group at logout. The sandbox's network namespace stays empty; the proxy's socket, bound into
+it, is its only route out.
+
+The desktop prepares the policy from the workspace's grants and updates it while the program
+lives, through a control socket in the program's keeper, which the desktop that adopts the
+program after a restart finds again. Taking a grant back cuts the connections it allowed. With
+no desktop up the proxy keeps enforcing the last policy; a proxy that dies leaves the program
+offline, never unfiltered.
+
 ### Installing and opening software
 
 Windows Apps uses the shared file chooser for **Add Windows app…** and registers
@@ -190,11 +205,12 @@ so it opens its window through Xwayland, and the keeper gives its sandbox that
 display's socket and authority file. Both stay open across an in-place restart;
 each is shut down with the desktop only when the login ends.
 
-A program shown from the Windows appliance does not stay open that way. Its RAIL
-or SPICE presentation is a process of the session's own, so it ends with the
-desktop that started it, and the desktop that follows neither shows it again nor
-lists it open. Each program shown that way also ends when the appliance itself
-restarts: the manager lists it closed once Windows is back.
+A program shown from the Windows appliance stays open the same way: its RAIL or
+SPICE presentation starts behind a keeper of its own
+(`docs/windows-presentation.md`, "Through a desktop restart"). The manager
+lists it open again after the restart and, as before it, offers no Quit: it
+closes inside Windows. Each program shown that way ends when the appliance
+itself restarts: the manager lists it closed once Windows is back.
 
 A saved tab reopens its program after a reboot or a logout too, not only after
 an in-place restart. The session keeps the window class each program showed

@@ -26,5 +26,9 @@ mod workspace_confinement;
 mod managed;
 
 #[cfg(target_os = "linux")]
+#[path = "netproxy.rs"]
+mod netproxy;
+
+#[cfg(target_os = "linux")]
 #[path = "capture_service.rs"]
 mod capture_service;

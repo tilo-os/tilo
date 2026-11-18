@@ -8,18 +8,54 @@ the host and guest presentation stack enforce.
 
 When the appliance is first found set up, the compatibility service starts
 `/usr/libexec/tilo-windows-rail --probe`. Native RAIL is selected only when the
-immutable image contains both upstream FreeRDP and `xwayland-satellite`, and
-the active Tilo Wayland socket exists. Otherwise the authenticated guest bridge
-is configured for app-focused SPICE. A failed RAIL launch never silently
-normalizes into a Windows desktop; a later explicit launch may use SPICE only
-after the service has selected that typed backend.
+immutable image contains upstream FreeRDP, Bubblewrap and `xwayland-satellite`.
+Otherwise the authenticated guest bridge is configured for app-focused SPICE.
+A failed RAIL launch never silently normalizes into a Windows desktop; a later
+explicit launch may use SPICE only after the service has selected that typed
+backend.
 
 `xwayland-satellite` is required because the Tilo compositor does not embed an
-X window manager. The wrapper creates a private, random X display for one
-launch, writes a mode-0600 MIT-MAGIC-COOKIE authority without exposing its
-cookie in argv, disables the TCP X listener, starts FreeRDP, then kills the
-satellite and removes the authority. Satellite maps each FreeRDP RAIL X window
-to an ordinary Wayland `xdg_toplevel`, so Tilo owns placement and chrome.
+X window manager. Each launch's app keeper (`tilo-app-keeper --x11`) serves the
+presentation an X display of its own with a per-launch cookie and no TCP
+listener (`DISPLAY`, `XAUTHORITY`); the wrapper only checks it was given one and
+starts FreeRDP on it. Satellite maps each FreeRDP RAIL X window to an ordinary
+Wayland `xdg_toplevel`, so Tilo owns placement and chrome.
+
+## Through a desktop restart
+
+Each presentation starts as one of the session's own launches, the way a
+capsule program does: `tilo-launcher windows-program` starts the keeper in the
+launch's scope, then `tilo-launcher windows-audio` starts the launch's private
+audio graph as children of the presentation and becomes the wrapper (RAIL) or
+the SPICE viewer (`virt-viewer --attach`, a Wayland client of the keeper's,
+with no X display). When the desktop restarts in place:
+
+- FreeRDP stays connected, so the RemoteApp windows stay and the program inside
+  Windows keeps running; the SPICE viewer stays attached, so a setup or an
+  uninstaller shown over SPICE goes on undisturbed.
+- The desktop that follows takes the keeper back and the manager lists the
+  application open again. It offers no Quit for it, as before the restart: an
+  appliance program closes inside Windows.
+- Its end is reported like a capsule program's, also when it ended while no
+  desktop was there.
+- A logout ends the presentation, its keeper and its sound.
+
+The RDP password never reaches a command line, an environment or a file: the
+service writes it into a pipe whose read end the launch inherits at descriptor
+38, named by the wrapper's private `--tilo-password-fd=38` argument. The
+wrapper marks it close-on-exec and makes it FreeRDP's standard input
+(`/from-stdin`); the audio daemons and the keeper's X server inherit no
+descriptor of the launch's.
+
+When the appliance shuts down or restarts, each presentation's connection
+ends, so FreeRDP or the viewer exits; its end is reported, and its keeper, its
+audio graph and the keeper's directory go with it.
+
+What the service holds for a launch while it is shown does not outlive the
+desktop that started it: a RemoteApp launched with network egress loses that
+egress at an in-place restart, a portal document's projection stays until the
+login ends, and the guest setup's choice of applications to publish is not
+offered again after one (the setup itself goes on).
 
 ## One Windows identity and session
 

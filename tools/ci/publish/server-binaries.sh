@@ -38,7 +38,9 @@ case $image in
   host)
     # The server OS: the server and replica, the hosted-VM service and its jail helper, the API
     # server with the program it starts a task's tilolang programs in (it finds it beside
-    # itself), and the boot tools the update log and the boot-entry pass read. One feature
+    # itself), the boot tools the update log and the boot-entry pass read, and the early-boot
+    # unlock chain its encrypted root needs (tilo-auth, tilo-rollback, the sign-in screen the
+    # root discovery steps aside from, and the sibling factor's enrolment program). One feature
     # resolution, so the shared workspace crates compile once.
     packages=(-p tilo-server -p tilo-fs --bin tilo-server --bin tilo-server-admin \
                 --bin tilo-enroll --bin fs
@@ -48,10 +50,15 @@ case $image in
               -p tilo-esp-write --bin tilo-esp-write
               -p tilo-image-policy-check --bin tilo-image-policy-check
               -p tilo-user-identity --bin tilo-image-trust
-              -p tilo-board-successor --bin tilo-board-successor)
+              -p tilo-board-successor --bin tilo-board-successor
+              -p tilo-rollback --bin tilo-rollback
+              -p tilo-auth --bin tilo-auth
+              -p tilo-boot-signin --bin tilo-boot-signin
+              -p tilo-sibling-unlock --bin tilo-sibling-unlock)
     bins=(tilo-server tilo-server-admin tilo-enroll fs tilo-legacy tilo-hosted-jail tilo-api
           tilolang-process
-          tilo-esp-write tilo-image-policy-check tilo-image-trust tilo-board-successor) ;;
+          tilo-esp-write tilo-image-policy-check tilo-image-trust tilo-board-successor
+          tilo-rollback tilo-auth tilo-boot-signin tilo-sibling-unlock) ;;
   *)
     die "unknown server image $image: api, vm-host, server or host" ;;
 esac

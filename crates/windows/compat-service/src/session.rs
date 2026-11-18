@@ -216,6 +216,8 @@ where
                 &taken.workspace_id,
                 &taken.display_name,
                 taken.program,
+                // An appliance program closes inside Windows, as it did before the restart.
+                !crate::vm_adapter::is_appliance_entry(&taken.entry_id),
                 Box::new(|| {}),
             ) {
                 tracing::warn!(%error, "a kept Windows program is not watched");
@@ -250,6 +252,7 @@ where
             workspace_id,
             &entry.program.display_name,
             program,
+            true,
             release,
         )?;
         Ok(receipt)
