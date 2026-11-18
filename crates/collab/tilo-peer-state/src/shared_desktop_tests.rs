@@ -146,23 +146,26 @@ fn workspace_with(role: Role) -> (StatePeer, String, SigningKey, DeviceCert) {
     (peer, owner_person, guest_key, guest)
 }
 
-/// The guest's signed write of the workspace's desktop as `desktop`.
+/// The guest's signed write of the workspace's desktop as `desktop`, made as
+/// `person`.
 fn write(
     peer: &StatePeer,
     key: &SigningKey,
+    person: &str,
     sequence: u64,
     desktop: &SharedDesktop,
 ) -> NeighbourMsg {
-    write_of(peer, key, sequence, DESKTOP_DOCUMENT, |doc| {
+    write_of(peer, key, person, sequence, DESKTOP_DOCUMENT, |doc| {
         shared_resource::write(doc, desktop).unwrap();
     })
 }
 
-/// `key`'s signed write of `record` in the workspace, as `change` makes it: a record nobody wrote
-/// yet is founded by the whole document.
+/// `key`'s signed write of `record` in the workspace, as `person` makes it with
+/// `change`: a document nobody wrote yet is founded by the whole of it.
 fn write_of(
     peer: &StatePeer,
     key: &SigningKey,
+    person: &str,
     sequence: u64,
     record: &str,
     change: impl FnOnce(&mut AutoCommit),
@@ -177,10 +180,9 @@ fn write_of(
     ));
     let heads = doc.get_heads();
     change(&mut doc);
-    let person = hex::encode(key.verifying_key().to_bytes());
     doc.commit_with(
         automerge::transaction::CommitOptions::default()
-            .with_message(shared_resource::change_message(Some(&person))),
+            .with_message(shared_resource::change_message(Some(person))),
     );
     let mutation = if held.is_some() {
         collab_types::DocumentMutation::Incremental(doc.save_after(&heads))
@@ -223,7 +225,8 @@ tilo_test_env::scenario! {
             ..PersonView::default()
         };
         let theirs = resource_of(&owner);
-        let intrudes = write_of(&peer, &key, 1, &theirs, |doc| {
+        let person = hex::encode(guest.user_public_key);
+        let intrudes = write_of(&peer, &key, &person, 1, &theirs, |doc| {
             view.write(doc).unwrap();
         });
         let refused = receive(&mut peer, &guest, intrudes).unwrap_err();
@@ -240,16 +243,16 @@ tilo_test_env::scenario! {
     {
         let (mut peer, owner, key, guest) = workspace_with(Role::Editor);
         let person = hex::encode(guest.user_public_key);
-        let opened = write(&peer, &key, 1, &desktop(&[(1, &owner), (2, &person)]));
+        let opened = write(&peer, &key, &person, 1, &desktop(&[(1, &owner), (2, &person)]));
         receive(&mut peer, &guest, opened).expect("an editor opens a window");
         assert_eq!(windows(&peer), [1, 2]);
 
-        let closes_owners = write(&peer, &key, 2, &desktop(&[(2, &person)]));
+        let closes_owners = write(&peer, &key, &person, 2, &desktop(&[(2, &person)]));
         let refused = receive(&mut peer, &guest, closes_owners).unwrap_err();
         assert!(refused.contains("may not close 1"), "{refused}");
         assert_eq!(windows(&peer), [1, 2], "refused, the desktop is as it was");
 
-        let closes_own = write(&peer, &key, 3, &desktop(&[(1, &owner)]));
+        let closes_own = write(&peer, &key, &person, 3, &desktop(&[(1, &owner)]));
         receive(&mut peer, &guest, closes_own).expect("an editor closes their own window");
         assert_eq!(windows(&peer), [1]);
     }
@@ -258,7 +261,8 @@ tilo_test_env::scenario! {
     // A moderator closes anyone's window.
     {
         let (mut peer, _, key, guest) = workspace_with(Role::Moderator);
-        let closes_owners = write(&peer, &key, 1, &desktop(&[]));
+        let person = hex::encode(guest.user_public_key);
+        let closes_owners = write(&peer, &key, &person, 1, &desktop(&[]));
         receive(&mut peer, &guest, closes_owners).expect("a moderator closes any window");
         assert!(windows(&peer).is_empty());
     }
@@ -280,6 +284,7 @@ tilo_test_env::scenario! {
         let opened = write(
             &peer,
             &key,
+            &person,
             1,
             &desktop_with_page(&owner, &person, "Draft", "draft"),
         );
@@ -307,6 +312,7 @@ tilo_test_env::scenario! {
         let renamed = write(
             &peer,
             &key,
+            &person,
             2,
             &desktop_with_page(&owner, &person, "Draft, for review", "draft"),
         );
