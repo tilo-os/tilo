@@ -106,7 +106,20 @@ pub(super) struct Notes {
     /// The action the agent's permissions deny it, listed to it as not allowed, as the
     /// workspace lists one its person's settings for it deny.
     refuses: Arc<Mutex<Option<&'static str>>>,
+    /// An action still under way, by its name, and when it ends: until then the app says
+    /// only that it accepted it.
+    late: Arc<Mutex<Option<(&'static str, tokio::time::Instant)>>>,
+    /// An action its person is asked to allow, by its name, and when they answer: until
+    /// then the app says that its person is asked, and nothing of it has happened.
+    person_asked: Arc<Mutex<Option<(&'static str, tokio::time::Instant)>>>,
+    /// An action its person is asked about in the conversation, by its name, and whether the
+    /// question was put: the app ends its call there, as a workspace's service does.
+    asked_there: Arc<Mutex<Option<(&'static str, bool)>>>,
 }
+
+/// Where the test app says a person is asked, as a workspace's service says it.
+pub(super) const ASKED_ON_DEVICES: &str = "Its person is asked about this on their devices, \
+     and it is done when they allow it there. Nothing happened yet.";
 
 /// What a workspace answers about its installed apps.
 #[derive(Clone, Copy, PartialEq)]
@@ -169,6 +182,9 @@ impl Notes {
             level_page: Arc::default(),
             placed: Arc::default(),
             refuses: Arc::default(),
+            late: Arc::default(),
+            person_asked: Arc::default(),
+            asked_there: Arc::default(),
         }
     }
 
@@ -1098,7 +1114,26 @@ impl ActionProvider for Notes {
             },
         };
         let long = *self.long.lock().unwrap();
+        let late = self.late.lock().unwrap().is_some_and(|(late, ends)| {
+            late == action.as_str() && tokio::time::Instant::now() < ends
+        });
+        let person_asked = self
+            .person_asked
+            .lock()
+            .unwrap()
+            .is_some_and(|(asked, answers)| {
+                asked == action.as_str() && tokio::time::Instant::now() < answers
+            });
         let update = match action.as_str() {
+            _ if person_asked => InvocationUpdate::Progress {
+                invocation: *id,
+                sequence: 1,
+                phase: tilo_actions::remote::CONFIRMATION_REQUIRED_CODE.to_owned(),
+                completed: None,
+                total: None,
+                message: Some(ASKED_ON_DEVICES.to_owned()),
+            },
+            _ if late => InvocationUpdate::Accepted { invocation: *id },
             "slow" => InvocationUpdate::Accepted { invocation: *id },
             // The workspace's start of Notes names the instance it started.
             "start" => succeeded(Some(json!({"peer_id": 1}))),
@@ -1147,7 +1182,7 @@ impl ActionProvider for Notes {
             }))),
             _ => succeeded(None),
         };
-        Some(InvocationState::new(*id, update))
+        Some(InvocationState::new(*id, self.or_asked(id, update)))
     }
 
     fn cancel(
@@ -2797,47 +2832,6 @@ tilo_test_env::scenario! {
     }
 }
 
-/// [`Notes`] publishing everything it does, and no search of its own: a
-/// host that holds no records to search.
-#[derive(Clone)]
-struct NoSearch(Notes);
-
-impl NoSearch {
-    fn new(notes: &Notes) -> Self {
-        Self(notes.clone())
-    }
-}
-
-impl ActionProvider for NoSearch {
-    fn query(
-        &self,
-        caller: &Caller,
-        query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        self.0.query(caller, query)
-    }
-
-    fn invoke(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.0.invoke(caller, request)
-    }
-
-    fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
-        self.0.observe(caller, id)
-    }
-
-    fn cancel(
-        &self,
-        caller: &Caller,
-        id: &tilo_actions::InvocationId,
-    ) -> Pending<Result<(), ActionCallError>> {
-        self.0.cancel(caller, id)
-    }
-}
-
 /// What one call made the app's directory do: the queries it was asked and
 /// the rows it answered.
 fn work_of(host: &Notes, name: &str, arguments: &Value) -> (usize, usize, String) {
@@ -2933,11 +2927,14 @@ fn tilolang_kind(host: &Notes) -> Notes {
     live
 }
 
+use no_search::NoSearch;
 pub(super) use typed_calls::answer;
 use typed_calls::typed;
 
 #[path = "mcp_agent_flux_tests.rs"]
 mod flux;
+#[path = "mcp_agent_held_tests.rs"]
+mod held;
 #[path = "mcp_agent_level_tests.rs"]
 mod levels;
 #[path = "mcp_agent_listed_tests.rs"]
@@ -2946,6 +2943,8 @@ mod listed;
 mod naming;
 #[path = "mcp_agent_narrowed_tests.rs"]
 mod narrowed;
+#[path = "mcp_agent_no_search_tests.rs"]
+mod no_search;
 #[path = "mcp_agent_open_tests.rs"]
 mod opening;
 #[path = "mcp_agent_outside_tests.rs"]

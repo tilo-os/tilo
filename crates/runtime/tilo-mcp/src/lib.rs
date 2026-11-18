@@ -143,6 +143,10 @@ pub struct McpServer<H> {
     /// Who waits for the next run event of this session: one of its invocations
     /// starting, being held for its person, or ending ([`McpServer::invocations_moved`]).
     pub(crate) invocation_waiters: std::sync::Mutex<Vec<tilo_actions::remote::Completer<()>>>,
+    /// Whether a call that names no wait is held until its action has ended, however long
+    /// that takes ([`McpServer::for_turn`]). Any other server answers such a call `pending`
+    /// after [`DEFAULT_WAIT_MS`].
+    until_ended: bool,
 }
 
 pub use agent::{PersonStep, literals_in};
@@ -594,6 +598,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             showed: std::sync::Mutex::default(),
             invocations: std::sync::Mutex::default(),
             invocation_waiters: std::sync::Mutex::default(),
+            until_ended: false,
         }
     }
 
@@ -1255,7 +1260,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 Err(message) => return Some(error(&id, -32602, message)),
             },
             "ping" => Ok(json!({})),
-            "tools/list" => Ok(json!({"tools":self.tools()})),
+            "tools/list" => Ok(json!({"tools":self.tools_told()})),
             "tools/call" => self.call_tool(params, metadata.as_ref()).await,
             "resources/list" => self.resources(params).await,
             "resources/read" => self.read_resource(params).await,
@@ -1947,10 +1952,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .invocation_id
             .as_deref()
             .map_or_else(|| Ok(tilo_actions::InvocationId::new()), invocation_id)?;
-        let wait =
-            std::time::Duration::from_millis(a.wait_ms.unwrap_or(DEFAULT_WAIT_MS).min(MAX_WAIT_MS));
+        let wait = self.held_for(a.wait_ms);
         // A launch is answered once the instance it started is up.
-        let wait = launching.as_ref().map_or(wait, |_| wait.max(LAUNCH_WAIT));
+        let wait = launching
+            .as_ref()
+            .map_or(wait, |_| wait.at_least(LAUNCH_WAIT));
         let mut target = RemoteActionTarget {
             provider,
             address: tilo_actions::ActionAddress::new(self.full_id(a.resource), a.action),
@@ -2030,13 +2036,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// Complete an `open` of `app_id`'s answer `value` with the instance it
     /// started: the file at `path` opened in it, its directory and the
     /// file's first page.
-    async fn answer_open(
-        &self,
-        value: &mut Value,
-        app_id: &str,
-        path: Option<String>,
-        wait: std::time::Duration,
-    ) {
+    async fn answer_open(&self, value: &mut Value, app_id: &str, path: Option<String>, wait: Hold) {
         // The instance the host started, as it names it. A host that names
         // none (one older than this answer, or one that could not tell
         // which instance it started) leaves the caller to list them rather
@@ -2104,7 +2104,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         &self,
         peer: u64,
         reader: tilo_actions::ActionAddress,
-        wait: std::time::Duration,
+        wait: Hold,
     ) -> Value {
         let mut answer = serde_json::Map::new();
         answer.insert(
@@ -2159,7 +2159,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         mut arguments: serde_json::Map<String, Value>,
         invocation: tilo_actions::InvocationId,
         revision: Option<String>,
-        wait: std::time::Duration,
+        wait: Hold,
         record: &mut Option<(tilo_actions::InvocationId, &RemoteActionTarget)>,
     ) -> Result<Value, BridgeError> {
         let literal = self
@@ -2193,7 +2193,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         arguments: serde_json::Map<String, Value>,
         invocation: tilo_actions::InvocationId,
         revision: Option<String>,
-        wait: std::time::Duration,
+        wait: Hold,
         record: &mut Option<(tilo_actions::InvocationId, &RemoteActionTarget)>,
     ) -> Result<Value, BridgeError> {
         let mut value = self
@@ -2210,7 +2210,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         arguments: serde_json::Map<String, Value>,
         invocation: tilo_actions::InvocationId,
         revision: Option<String>,
-        wait: std::time::Duration,
+        wait: Hold,
         record: &mut Option<(tilo_actions::InvocationId, &RemoteActionTarget)>,
     ) -> Result<Value, BridgeError> {
         if revision.as_deref() == Some("") {
@@ -2273,7 +2273,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// Open `path` in instance `peer` through the app's own action, so the
     /// app reads it inside its sandbox, under the file grants it holds: the
     /// action the app declares as opening paths ([`Self::path_opener`]).
-    async fn open_path(&self, peer: u64, path: &str, wait: std::time::Duration) -> Value {
+    async fn open_path(&self, peer: u64, path: &str, wait: Hold) -> Value {
         let provider = peer.to_string();
         let opener = match self.path_opener(&provider, path).await {
             Ok(Some(opener)) => opener,
@@ -2514,19 +2514,17 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
         Ok((page, truncated))
     }
-    /// The invocation's update once it is terminal, or after `wait`.
+    /// The invocation's update once it is terminal, or after `wait`. A call held until its
+    /// action has ended ([`Hold::UntilEnded`]) is answered only then, for as long as its
+    /// provider says the action is under way.
     ///
     /// Woken by the host when the invocation may have changed, not on a
     /// timer: an action that finishes at once answers at once. A host that
     /// cannot tell is observed every [`SETTLE_POLL`]. Waiting is authorized
     /// exactly as observing: a host offers no change of an invocation this
     /// caller may not observe.
-    async fn settled(
-        &self,
-        id: tilo_actions::InvocationId,
-        wait: std::time::Duration,
-    ) -> Result<Value, String> {
-        let deadline = tokio::time::Instant::now().checked_add(wait);
+    async fn settled(&self, id: tilo_actions::InvocationId, wait: Hold) -> Result<Value, String> {
+        let began = tokio::time::Instant::now();
         loop {
             // Asked before observing, so a change in between still wakes it.
             let change = self.host().next_change(&self.caller(), &id);
@@ -2534,6 +2532,39 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             if let Some(state) = state.as_ref().filter(|state| state.update.is_terminal()) {
                 return Ok(state_json(id, state));
             }
+            // Its person is asked to allow it. A person who may not be there is no tool: a
+            // call held until its action has ended is answered now, and its turn goes on.
+            if matches!(wait, Hold::UntilEnded)
+                && let Some(state) = state.as_ref().filter(|state| person_asked(&state.update))
+            {
+                return Ok(state_json(id, state));
+            }
+            let wait = match wait {
+                Hold::For(wait) => wait,
+                // Held for as long as its provider says the action is under way: nothing
+                // is answered meanwhile and no clock ends the wait. Whoever waits may let go.
+                Hold::UntilEnded
+                    if state.as_ref().is_some_and(|state| {
+                        matches!(
+                            state.update,
+                            tilo_actions::InvocationUpdate::Accepted { .. }
+                                | tilo_actions::InvocationUpdate::Progress { .. }
+                        )
+                    }) =>
+                {
+                    match change {
+                        Some(change) => {
+                            let _ = tokio::time::timeout(HELD_LOOK, change).await;
+                        }
+                        None => tokio::time::sleep(SETTLE_POLL).await,
+                    }
+                    continue;
+                }
+                // An action that answers as it goes (a live read never ends), or one its
+                // provider says nothing of, is answered with what there is, as to any caller.
+                Hold::UntilEnded => std::time::Duration::from_millis(DEFAULT_WAIT_MS),
+            };
+            let deadline = began.checked_add(wait);
             let Some(deadline) =
                 deadline.filter(|deadline| tokio::time::Instant::now() < *deadline)
             else {
@@ -2566,6 +2597,26 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 tokio::time::sleep_until(next).await;
             }
         }
+    }
+    /// How long a call that named `wait_ms`, or none, is held for its action. A caller that
+    /// named a wait asked to be answered `pending` after it. One that named none is answered
+    /// so after [`DEFAULT_WAIT_MS`], except on a turn's own server, whose call waits for its
+    /// tool until the tool has ended.
+    fn held_for(&self, wait_ms: Option<u64>) -> Hold {
+        match wait_ms {
+            Some(wait_ms) => Hold::For(std::time::Duration::from_millis(wait_ms.min(MAX_WAIT_MS))),
+            None if self.until_ended => Hold::UntilEnded,
+            None => Hold::For(std::time::Duration::from_millis(DEFAULT_WAIT_MS)),
+        }
+    }
+    /// The session's tools as it is told them: a server that holds a call until its action
+    /// has ended says so of `tilo_do`.
+    fn tools_told(&self) -> Vec<Value> {
+        let mut tools = self.tools();
+        if self.until_ended {
+            agent::held_until_ended(&mut tools);
+        }
+        tools
     }
     /// The action host every caller shares; this bridge is one more caller.
     fn host(&self) -> &H {
@@ -2732,6 +2783,39 @@ const OPENED_NO_ACTION: &str = "the app offers no open action taking a path, so 
 /// than told the run is still pending after 30.
 const DEFAULT_WAIT_MS: u64 = 5_000;
 const MAX_WAIT_MS: u64 = 60_000;
+/// Whether `update` says that its invocation's person is asked to allow it: nothing of it
+/// happened yet, and nothing will for as long as they take to answer. Its provider says so
+/// by a progress whose phase is the protocol's own word for a confirmation that is required.
+fn person_asked(update: &tilo_actions::InvocationUpdate) -> bool {
+    matches!(
+        update,
+        tilo_actions::InvocationUpdate::Progress { phase, .. }
+            if phase == tilo_actions::remote::CONFIRMATION_REQUIRED_CODE
+    )
+}
+/// How long a call is held for its action.
+#[derive(Clone, Copy)]
+enum Hold {
+    /// Until the action has ended: a turn's own call that named no wait. Nothing is answered
+    /// meanwhile, and whoever waits may let go of it, as a turn does when its person stops it.
+    UntilEnded,
+    /// This long: an action still under way then is answered `pending`, with the id
+    /// `tilo_status` takes.
+    For(std::time::Duration),
+}
+
+impl Hold {
+    /// At least `least`, where the hold has an end at all.
+    fn at_least(self, least: std::time::Duration) -> Self {
+        match self {
+            Self::UntilEnded => self,
+            Self::For(wait) => Self::For(wait.max(least)),
+        }
+    }
+}
+/// How often a call held until its action has ended looks at it again where no wake came.
+/// A look ends nothing.
+const HELD_LOOK: std::time::Duration = std::time::Duration::from_secs(1);
 /// Actions one `calls` batch runs. A document's edits and its save fit;
 /// more than this is several turns.
 const MAX_CALLS: usize = 32;

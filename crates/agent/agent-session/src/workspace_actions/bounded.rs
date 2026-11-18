@@ -891,6 +891,12 @@ impl Worker {
             }
             return None;
         };
+        // Kept as asked before the answer can land: whoever follows the invocation reads
+        // that its person is asked, and need not wait for them.
+        let waiting = asked_on_devices(invocation);
+        if let Some(entry) = self.log().entries.get_mut(&invocation) {
+            entry.update = waiting.clone();
+        }
         let shared = Arc::clone(&self.shared);
         let asking = Asking {
             workspace_id,
@@ -898,7 +904,7 @@ impl Worker {
             binding: ApprovalBinding::of(workspace_id, caller, request),
         };
         asked.then(move |reply| shared.answered(asking, reply.as_ref()));
-        Some(InvocationState::new(invocation, InvocationUpdate::Accepted { invocation }).receipt())
+        Some(InvocationState::new(invocation, waiting).receipt())
     }
 
     /// `invocation` waits for the person's answer, asked as `about` says.
@@ -1145,6 +1151,24 @@ pub(super) fn placed((anchor, head): (LiveAnchor, LiveAnchor)) -> ActorPlace {
     }
 }
 
+/// What an invocation says while its person is asked to allow it on their devices.
+const ASKED_ON_DEVICES: &str = "Its person is asked about this on their devices, and it is done \
+     when they allow it there. Nothing happened yet.";
+
+/// How `invocation` stands while its person is asked to allow it: under way, with nothing
+/// of it done. The phase is the protocol's own word for a confirmation that is required, so
+/// whoever follows the invocation can tell it from one that is merely slow.
+fn asked_on_devices(invocation: InvocationId) -> InvocationUpdate {
+    InvocationUpdate::Progress {
+        invocation,
+        sequence: 1,
+        phase: tilo_actions::remote::CONFIRMATION_REQUIRED_CODE.to_owned(),
+        completed: None,
+        total: None,
+        message: Some(ASKED_ON_DEVICES.to_owned()),
+    }
+}
+
 /// What a bounded caller's invocation waiting on the person needs to go on.
 pub(super) struct Asking {
     pub(super) workspace_id: WorkspaceId,
@@ -1202,6 +1226,10 @@ impl super::Shared {
                 Ok(token) => {
                     if let Some(entry) = self.log.lock_recover().entries.get_mut(&invocation) {
                         entry.approval = Some(token);
+                        // Allowed: it is under way now, and no longer waits for its person.
+                        if !entry.update.is_terminal() {
+                            entry.update = InvocationUpdate::Accepted { invocation };
+                        }
                     }
                     let (done, _) = tilo_actions::remote::pending();
                     let job = super::Job::Invoke {
