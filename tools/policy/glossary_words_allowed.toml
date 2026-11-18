@@ -93,6 +93,7 @@ paths = [
     "crates/platform/tilo-net-p2p/src/lib.rs",
     "crates/session/client/src/session.rs",
     "crates/session/session/src/sync/client/mod.rs",
+    "crates/session/session/src/enrollment.rs",
     "crates/session/session/src/window_share.rs",
     "crates/system/fs/src/full_replica.rs",
     "crates/system/tilo-auth/Cargo.toml",

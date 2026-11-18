@@ -44,6 +44,36 @@ pub enum PairDeviceEffect {
     /// Close the sheet
     #[effect(own_device, kind = "read")]
     Done,
+    /// Admit the machine whose ask this is
+    #[effect(own_device, kind = "read")]
+    Approve {
+        #[param("The machine's ask, as the sheet lists it")]
+        ask: String,
+    },
+    /// Turn the machine whose ask this is away
+    #[effect(own_device, kind = "read")]
+    Decline {
+        #[param("The machine's ask, as the sheet lists it")]
+        ask: String,
+    },
+    /// Let in the machine whose `tilo://enroll?…` link the person pasted
+    #[effect(own_device, kind = "read")]
+    Link {
+        #[param("The machine's line, as it printed it")]
+        link: String,
+    },
+}
+
+/// One machine waiting for the person's answer, as the sheet lists it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WaitingMachine {
+    /// Names the machine in the person's answer.
+    pub ask: String,
+    pub label: String,
+    /// What the machine is, in its own words.
+    pub hardware: String,
+    /// The code both sides show.
+    pub code: String,
 }
 
 /// What the sheet shows: the link the session made, and how long it works.
@@ -67,6 +97,21 @@ pub struct AddDevice {
     pub in_tilo: String,
     /// Why there is no link to show, when there is none.
     pub refusal: Option<String>,
+    /// Machines of theirs that asked to join over the internet, waiting here.
+    pub waiting: Vec<WaitingMachine>,
+    /// What the waiting section is called.
+    pub waiting_title: String,
+    /// What the waiting section says when nothing waits.
+    pub waiting_nothing: String,
+    /// What a waiting machine's answers say.
+    pub approve: String,
+    pub decline: String,
+    /// The field a machine's own `tilo://enroll?…` line is pasted into, and
+    /// what the button beside it says.
+    pub link_field: String,
+    pub link_use: String,
+    /// What the field is for, for a person who has not seen such a line.
+    pub link_hint: String,
 }
 
 impl AddDevice {
@@ -87,6 +132,21 @@ impl AddDevice {
             lasting: crate::t_args("pair-device-lasting", &[("minutes", minutes)]),
             in_tilo: word("pair-device-in-tilo"),
             refusal: None,
+            ..Self::waiting_words()
+        }
+    }
+
+    /// What a sheet says of the machines waiting to join it, in the person's language.
+    fn waiting_words() -> Self {
+        Self {
+            waiting_title: word("pair-device-waiting-title"),
+            waiting_nothing: word("pair-device-waiting-nothing"),
+            approve: word("pair-device-waiting-approve"),
+            decline: word("pair-device-waiting-decline"),
+            link_field: word("pair-device-link-field"),
+            link_use: word("pair-device-link-use"),
+            link_hint: word("pair-device-link-hint"),
+            ..Self::default()
         }
     }
 
@@ -98,7 +158,7 @@ impl AddDevice {
             description: word("pair-device-description"),
             close: word("pair-device-close"),
             refusal: Some(reason.to_owned()),
-            ..Self::default()
+            ..Self::waiting_words()
         }
     }
 
@@ -115,6 +175,7 @@ impl AddDevice {
 pub fn sheet(
     device: &AddDevice,
     link: &LocalState<String>,
+    typed: &LocalState<String>,
     ask: &Ask,
     presentation: Option<&Presentation>,
 ) -> Element {
@@ -126,6 +187,7 @@ pub fn sheet(
         Some(reason) => body = body.push(Box::new(Text::new(reason).with_role(TextRole::Body))),
         None => body = body.push(code(device, link, ask)),
     }
+    body = body.push(waiting(device, typed, ask));
     let dismissed = ask.clone();
     let escaped = ask.clone();
     Box::new(presented(
@@ -183,6 +245,73 @@ fn code(device: &AddDevice, link: &LocalState<String>, ask: &Ask) -> Element {
 
 /// What the sheet asks for, as a press in it hands it back.
 pub type Ask = Rc<dyn Fn(PairDeviceEffect)>;
+
+/// The machines that asked to join over the internet, each with what it is and
+/// the code both sides show, and the field for a machine's own line.
+fn waiting(device: &AddDevice, typed: &LocalState<String>, ask: &Ask) -> Element {
+    let mut rows: Vec<Element> = vec![caption(&device.waiting_title)];
+    if device.waiting.is_empty() {
+        rows.push(Box::new(
+            Text::new(&device.waiting_nothing).with_role(TextRole::Body),
+        ));
+    }
+    for machine in &device.waiting {
+        let approving = ask.clone();
+        let declining = ask.clone();
+        let approved_ask = machine.ask.clone();
+        let declined_ask = machine.ask.clone();
+        let what = if machine.hardware.is_empty() {
+            format!("{} · {}", machine.label, machine.code)
+        } else {
+            format!(
+                "{} · {} · {}",
+                machine.label, machine.hardware, machine.code
+            )
+        };
+        rows.push(Box::new(
+            Row::new()
+                .with_rhythm(Rhythm::Tight)
+                .push(Box::new(Text::new(&what).with_role(TextRole::Body)))
+                .push(Box::new(
+                    Button::new("pair-device-approve", &device.approve)
+                        .role(ButtonRole::Primary)
+                        .on_view(move || {
+                            approving(PairDeviceEffect::Approve {
+                                ask: approved_ask.clone(),
+                            });
+                        }),
+                ))
+                .push(Box::new(
+                    Button::new("pair-device-decline", &device.decline).on_view(move || {
+                        declining(PairDeviceEffect::Decline {
+                            ask: declined_ask.clone(),
+                        });
+                    }),
+                )),
+        ));
+    }
+    let linking = ask.clone();
+    let field = typed.clone();
+    rows.push(caption(&device.link_hint));
+    rows.push(Box::new(
+        Row::new()
+            .with_rhythm(Rhythm::Tight)
+            .push(Box::new(
+                TextInput::from_state(typed)
+                    .with_id("pair-device-machine-link")
+                    .with_accessible_name(device.link_field.clone()),
+            ))
+            .push(Box::new(
+                Button::new("pair-device-link-use", &device.link_use).on_view(move || {
+                    let link = field.get();
+                    if !link.trim().is_empty() {
+                        linking(PairDeviceEffect::Link { link });
+                    }
+                }),
+            )),
+    ));
+    Box::new(Section::new(rows))
+}
 
 /// What the shell lends the sheet: whether it is up, what it shows, and where its requests go.
 #[derive(Clone, Default)]
@@ -263,6 +392,7 @@ impl ResourceApp for AddDeviceApp {
         };
         let shown = cx.local(initial);
         let link = cx.local(String::new());
+        let typed = cx.local(String::new());
         if let Some(state) = &state {
             *state.lent.borrow_mut() = Some(shown.clone());
             // The sheet follows what the shell says of its presentation: being opened, taken down,
@@ -288,10 +418,11 @@ impl ResourceApp for AddDeviceApp {
         cx.switch(&shown, move |cx, device| {
             let device = device.clone();
             let writing = link.clone();
+            let typed_link = typed.clone();
             let ask = ask.clone();
             let presentation = presentation.clone();
             cx.switch(&link, move |_cx, _shown| {
-                sheet(&device, &writing, &ask, presentation.as_ref())
+                sheet(&device, &writing, &typed_link, &ask, presentation.as_ref())
             })
         })
     }

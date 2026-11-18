@@ -9,7 +9,7 @@
 //! the device that opens it ([`crate::certification::watch_host`]). A workspace no host on the web
 //! keeps has no link: the sheet says to add the device nearby.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -58,6 +58,15 @@ pub(crate) struct Adding {
     copied: RefCell<Option<String>>,
     /// Where the link last shown sends a new device.
     waiting: RefCell<Option<Waiting>>,
+    /// Machines that asked to join over the internet while the sheet is up, and what tells the
+    /// person of each once.
+    serving: RefCell<Option<crate::enrollment::Serving>>,
+    told: RefCell<std::collections::BTreeSet<String>>,
+    /// Machines approved by pasting their own line, until the helper is done with each.
+    dialing: RefCell<Vec<std::process::Child>>,
+    /// Whether answering machines was tried for this window: a device that
+    /// cannot answer says so once, not every pass.
+    attempted: Cell<bool>,
 }
 
 impl Adding {
@@ -68,6 +77,10 @@ impl Adding {
             clipboard,
             copied: RefCell::default(),
             waiting: RefCell::default(),
+            serving: RefCell::default(),
+            told: RefCell::default(),
+            dialing: RefCell::default(),
+            attempted: Cell::new(false),
         }
     }
 
@@ -82,8 +95,16 @@ impl Adding {
     pub(crate) fn device(&self, place: Result<Place, NoLink>, now_ms: u64) -> AddDevice {
         let place = match place {
             Ok(place) => place,
-            Err(NoLink::Nearby) => return AddDevice::nearby(),
-            Err(NoLink::Because(key)) => return AddDevice::refusing(&tilo_sheets::word(key)),
+            Err(NoLink::Nearby) => {
+                let mut device = AddDevice::nearby();
+                device.waiting = self.waiting_machines();
+                return device;
+            }
+            Err(NoLink::Because(key)) => {
+                let mut device = AddDevice::refusing(&tilo_sheets::word(key));
+                device.waiting = self.waiting_machines();
+                return device;
+            }
         };
         match self.invites.borrow_mut().at(
             &place.site,
@@ -103,13 +124,112 @@ impl Adding {
                     person: place.person,
                     until_ms: shown.expires_at_ms,
                 });
+                device.waiting = self.waiting_machines();
                 device
             }
             Err(reason) => {
                 tracing::warn!(%reason, "no pairing link could be made");
-                AddDevice::refusing(&tilo_sheets::word("pair-device-no-link"))
+                let mut device = AddDevice::refusing(&tilo_sheets::word("pair-device-no-link"));
+                device.waiting = self.waiting_machines();
+                device
             }
         }
+    }
+
+    /// The machines waiting for the person's answer now.
+    pub(crate) fn enrolling(&self) -> Vec<crate::enrollment::Waiting> {
+        self.serving
+            .borrow()
+            .as_ref()
+            .map(crate::enrollment::Serving::waiting)
+            .unwrap_or_default()
+    }
+
+    /// The machines waiting for the person's answer, as the sheet lists them.
+    fn waiting_machines(&self) -> Vec<tilo_sheets::pair_device::WaitingMachine> {
+        self.serving
+            .borrow()
+            .as_ref()
+            .map(|serving| {
+                serving
+                    .waiting()
+                    .into_iter()
+                    .map(|machine| tilo_sheets::pair_device::WaitingMachine {
+                        ask: machine.ask,
+                        label: machine.label,
+                        hardware: machine.hardware,
+                        code: machine.code,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Answer machines over the internet while the sheet is up, and stop once it is taken down:
+    /// one window at a time, as one link is.
+    pub(crate) fn serve(&self, open: bool) {
+        let mut serving = self.serving.borrow_mut();
+        if !open {
+            if serving.take().is_some() || self.attempted.replace(false) {
+                self.told.borrow_mut().clear();
+            }
+            return;
+        }
+        if serving.is_some() || self.attempted.replace(true) {
+            return;
+        }
+        let Ok(paths) = tilo_identity::device_admin::PersonPaths::from_env() else {
+            return;
+        };
+        match crate::enrollment::Serving::start(&paths.root, &paths.dir) {
+            Ok(started) => *serving = Some(started),
+            Err(error) => tracing::info!(%error, "this session answers no machines"),
+        }
+    }
+
+    /// Answer the machine whose ask this is: `approve` admits it.
+    pub(crate) fn answer(&self, ask: &str, approve: bool) {
+        if let Some(serving) = self.serving.borrow_mut().as_mut()
+            && let Err(error) = serving.answer(ask, approve)
+        {
+            tracing::warn!(%error, "a machine was not answered");
+        }
+        self.told.borrow_mut().remove(ask);
+    }
+
+    /// Let in the machine whose own `tilo://enroll?…` line the person pasted.
+    pub(crate) fn scan(&self, link: &str) {
+        let Ok(paths) = tilo_identity::device_admin::PersonPaths::from_env() else {
+            return;
+        };
+        match crate::enrollment::scan(link, &paths.root, &paths.dir) {
+            Ok(child) => {
+                let mut dialing = self.dialing.borrow_mut();
+                dialing.retain_mut(|child| child.try_wait().ok().flatten().is_none());
+                dialing.push(child);
+            }
+            Err(error) => tracing::warn!(%error, "a machine's link was not approved"),
+        }
+    }
+
+    /// Note that the person was told of the machine whose ask this is; `false` when they were
+    /// already.
+    pub(crate) fn note_told(&self, ask: &str) -> bool {
+        self.told.borrow_mut().insert(ask.to_owned())
+    }
+
+    /// The asks the person was told of and that no longer wait.
+    pub(crate) fn gone(&self, waiting: &[crate::enrollment::Waiting]) -> Vec<String> {
+        let mut told = self.told.borrow_mut();
+        let gone: Vec<String> = told
+            .iter()
+            .filter(|ask| !waiting.iter().any(|machine| &machine.ask == *ask))
+            .cloned()
+            .collect();
+        for ask in &gone {
+            told.remove(ask);
+        }
+        gone
     }
 
     /// Carry out what the person pressed in the sheet, and say the link is on the clipboard when it
@@ -121,6 +241,9 @@ impl Adding {
                     self.clipboard.copy(link.clone(), ON_CLIPBOARD_FOR);
                     *self.copied.borrow_mut() = Some(link);
                 }
+                PairDeviceEffect::Approve { ask } => self.answer(&ask, true),
+                PairDeviceEffect::Decline { ask } => self.answer(&ask, false),
+                PairDeviceEffect::Link { link } => self.scan(&link),
                 // Its own close: the sheet took itself down as it asked.
                 PairDeviceEffect::Done => {}
             }
@@ -183,6 +306,32 @@ impl crate::Shared {
             ui::time::unix_now_ms(),
         );
         self.wait_for_new_device();
+        self.follow_enrolling();
+    }
+
+    /// Put each machine that asks to join to the person once, and take back the asks that are
+    /// gone: the sheet answers machines while it is up, and a machine that joined or left the
+    /// window takes its notification with it.
+    pub(crate) fn follow_enrolling(&self) {
+        let Some(state) = self.pair_device.as_ref() else {
+            return;
+        };
+        self.adding.serve(state.presentation().is_open());
+        let waiting = self.adding.enrolling();
+        for machine in &waiting {
+            if self.adding.note_told(&machine.ask) {
+                self.telling().show(&crate::enrollment::notice(machine));
+            }
+        }
+        for ask in self.adding.gone(&waiting) {
+            self.telling().withdraw(&crate::enrollment::tag(&ask));
+        }
+    }
+
+    /// The person answered a machine that asked to join: approving admits it.
+    pub(crate) fn answer_enrolling(&self, ask: &str, approve: bool) {
+        self.adding.answer(ask, approve);
+        self.telling().withdraw(&crate::enrollment::tag(ask));
     }
 
     /// When the sheet next changes on its own while it is up: its minutes count down, and the link
