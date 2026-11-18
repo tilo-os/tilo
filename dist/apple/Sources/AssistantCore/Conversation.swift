@@ -64,9 +64,9 @@ public struct Conversation: Equatable, Sendable {
     }
 
     /// The piece that what happened since the person left stands before: the first that came
-    /// after they left. Nil when every piece held is older: then it stands at the foot.
+    /// after they left and is drawn. Nil when every piece held is older: then it stands at the foot.
     public func first(since left: Date) -> Item.ID? {
-        items.first { $0.at > left }?.id
+        items.first { $0.at > left && !$0.showsNothing }?.id
     }
 
     /// What the conversation draws, top to bottom: marks where time passed, a task's line over
@@ -75,9 +75,11 @@ public struct Conversation: Equatable, Sendable {
         var rows: [Row] = []
         var before: Item?
         for (index, item) in items.enumerated() {
+            // A piece that shows nothing has no row, and no mark, line or caption stands for it.
+            if item.showsNothing { continue }
             // A sub-agent's window says in its head when it was started: its first piece needs no mark.
             var marked = wording.marks(item.at, after: before?.at)
-            if index == 0, chat != .main { marked = false }
+            if before == nil, chat != .main { marked = false }
             if marked { rows.append(.mark(wording.mark(item.at), before: item.id)) }
             if let line = item.task, marked || before?.task?.task != line.task {
                 let run = items[index...].prefix { $0.task?.task == line.task }
