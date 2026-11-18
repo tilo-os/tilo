@@ -187,7 +187,9 @@ curl -sS --fail-with-body "$members" -H "$auth" \
 
 A key you created that reaches all your workspaces invites as you would, as far as your role in the
 workspace goes. An agent asks you first, unless you allowed it in the workspace's settings, under Agents. Listing the members also
-shows the invitations nobody has accepted yet. Once the person is in, your agent's record links open
+shows the invitations nobody has accepted yet. One you no longer want is cancelled with
+`tilo workspace people revoke <invitation>` (`DELETE /v1/workspaces/{workspace}/members/invitations/{invitation}`):
+its link lets nobody in from then on. Once the person is in, your agent's record links open
 straight in the record's app for them, because a link opens for the workspace's members and carries no
 secret.
 

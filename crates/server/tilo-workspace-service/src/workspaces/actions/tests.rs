@@ -338,12 +338,12 @@ async fn invitations_run_through_the_workspaces_own_methods() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, governing) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
 
     // The owner invites: the workspace records a pending invitation.
     let invite = request(&workspace, governance::INVITE, json!({ "role": "editor" }));
-    let issued = invoke(&host, workspace_id, &caller(&owner), invite.clone())
+    let issued = invoke(&governing, workspace_id, &caller(&owner), invite.clone())
         .await
         .unwrap();
     let invite_id = issued["invite"].as_str().unwrap().to_owned();
@@ -355,7 +355,7 @@ async fn invitations_run_through_the_workspaces_own_methods() {
         "{pending:?}"
     );
     // A retry of the same invocation is the same invitation.
-    let again = invoke(&host, workspace_id, &caller(&owner), invite)
+    let again = invoke(&governing, workspace_id, &caller(&owner), invite)
         .await
         .unwrap();
     assert_eq!(again, issued);
@@ -364,7 +364,7 @@ async fn invitations_run_through_the_workspaces_own_methods() {
         pending.len()
     );
     let listed = invoke(
-        &host,
+        &governing,
         workspace_id,
         &caller(&owner),
         request(&workspace, INVITATIONS, json!({})),
@@ -376,12 +376,39 @@ async fn invitations_run_through_the_workspaces_own_methods() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|invitation| invitation["invite"] == invite_id.as_str())
+            .any(|invitation| invitation["invite"] == invite_id.as_str()
+                && invitation["place"] == "editor")
     );
+    // An owner's invitation lists as what it makes whoever redeems it: an owner, not the
+    // administrator and editor its signed grant names beneath.
+    let owners = invoke(
+        &governing,
+        workspace_id,
+        &caller(&owner),
+        request(&workspace, governance::INVITE, json!({ "role": "owner" })),
+    )
+    .await
+    .unwrap();
+    let listed = invoke(
+        &governing,
+        workspace_id,
+        &caller(&owner),
+        request(&workspace, INVITATIONS, json!({})),
+    )
+    .await
+    .unwrap();
+    let listed_owners = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|invitation| invitation["invite"] == owners["invite"])
+        .unwrap_or_else(|| panic!("the owner invitation is listed: {listed:?}"));
+    assert_eq!(listed_owners["place"], "owner", "{listed_owners:?}");
+    assert_eq!(listed_owners["owner"], true, "{listed_owners:?}");
 
     // An Editor may not invite: the action does not exist for them.
     let refused = invoke(
-        &host,
+        &governing,
         workspace_id,
         &caller(&ada),
         request(&workspace, governance::INVITE, json!({ "role": "viewer" })),
@@ -393,7 +420,7 @@ async fn invitations_run_through_the_workspaces_own_methods() {
     let mut cancel = Map::new();
     cancel.insert("invite".into(), invite_id.clone().into());
     invoke(
-        &host,
+        &governing,
         workspace_id,
         &caller(&owner),
         request(&workspace, CANCEL_INVITATION, Value::Object(cancel)),
@@ -411,7 +438,7 @@ async fn invitations_run_through_the_workspaces_own_methods() {
 
     // A resource naming another workspace is not this workspace's action.
     let elsewhere = invoke(
-        &host,
+        &governing,
         workspace_id,
         &caller(&owner),
         request(

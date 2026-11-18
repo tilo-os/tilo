@@ -368,6 +368,14 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         .body(Body::Json("NewInvitation"))
         .json(201, "Invitation"),
         op(
+            "revokeInvitation",
+            Method::DELETE,
+            "/v1/workspaces/{workspace}/members/invitations/{invite}",
+            "Revoke an open invitation, by its id: its link lets nobody in from then on",
+        )
+        .mutating()
+        .json(200, "Members"),
+        op(
             "namePerson",
             Method::POST,
             "/v1/workspaces/{workspace}/members/name",

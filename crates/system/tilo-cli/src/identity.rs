@@ -133,6 +133,21 @@ pub fn ensure(name: Option<&str>) -> Result<(Person, bool)> {
     ))
 }
 
+/// Name the person kept here `name`, when they go by none yet: how a person who joins a
+/// workspace from a computer that holds their identity already names themselves there.
+///
+/// # Errors
+/// The name could not be written.
+pub fn keep_name(person: &mut Person, name: &str) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() || !person.name.is_empty() {
+        return Ok(());
+    }
+    std::fs::write(dir()?.join("name"), format!("{name}\n"))?;
+    name.clone_into(&mut person.name);
+    Ok(())
+}
+
 /// `tilo login --new-identity`: make the person, or say there is one, and
 /// print their user public key — or, as one line of JSON, the key and the
 /// name they go by, for a script that declares them somewhere.

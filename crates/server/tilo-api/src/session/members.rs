@@ -72,6 +72,7 @@ const UNLIST: &str = "wait-list.remove";
 const MAIL: &str = "wait-list.mail";
 const MEMBERS: &str = "member.list";
 const INVITATIONS: &str = "invitation.list";
+const CANCEL: &str = "invitation.cancel";
 const NAME: &str = "member.name";
 
 /// Whether `tool` with `arguments` is about the workspace's people.
@@ -103,6 +104,7 @@ impl Session {
             ("tilo_do", "workspace/members#add") => self.add(workspace, &args).await,
             ("tilo_do", "workspace/members#role") => self.role(workspace, &args).await,
             ("tilo_do", "workspace/members#remove") => self.remove(workspace, &args).await,
+            ("tilo_do", "workspace/members#revoke") => self.revoke(workspace, &args).await,
             ("tilo_do", "workspace/members#name") => self.name(workspace, &args).await,
             ("tilo_do", "workspace/members#wait-list") | ("tilo_read", WAIT_LIST_ROOT) => {
                 self.wait_list(workspace, WAIT_LIST, Map::new()).await
@@ -123,7 +125,8 @@ impl Session {
                 format!("the workspace has no action {other}"),
                 "workspace/members#list, workspace/members#invite {role, email?, waiting?}, \
                  workspace/members#add {person, role, name?}, workspace/members#role {person, role}, \
-                 workspace/members#remove {person}, workspace/members#name {name}, \
+                 workspace/members#remove {person}, workspace/members#revoke {invite}, \
+                 workspace/members#name {name}, \
                  workspace/members#wait-list and workspace/members#unlist {entry} are its actions",
             ),
         };
@@ -389,6 +392,31 @@ impl Session {
             ),
             Err(Administration::Unanswered(why)) => failed("unavailable", why, "try again shortly"),
         }
+    }
+
+    /// Revoke the open invitation `args.invite` names (its id, as the list names it): its link
+    /// lets nobody in from then on. Answers the workspace's people and invitations.
+    async fn revoke(&self, workspace: &str, args: &Value) -> Outcome {
+        let Some(invite) = args
+            .get("invite")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|invite| {
+                invite.len() == 64 && invite.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+        else {
+            return failed(
+                "invalid_arguments",
+                "`invite` is the invitation's id: 64 hex characters",
+                "workspace/members#list names each open invitation's id",
+            );
+        };
+        let mut asked = Map::new();
+        asked.insert("invite".into(), json!(invite));
+        if let Err(outcome) = self.govern(workspace, CANCEL, asked).await {
+            return outcome;
+        }
+        self.list(workspace).await
     }
 
     /// The workspace's wait list, after `verb` with `asked`.

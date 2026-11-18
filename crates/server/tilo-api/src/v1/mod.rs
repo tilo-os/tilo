@@ -724,6 +724,14 @@ impl<'a> Caller<'a> {
                 shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
                     .map(Answer::ok)
             }
+            "revokeInvitation" => {
+                let invite = self.params.get("invite").to_owned();
+                let revoked =
+                    json!({"path": "workspace/members#revoke", "args": {"invite": invite}});
+                let listed = self.call("tilo_do", revoked).await?;
+                shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
+                    .map(Answer::ok)
+            }
             "removeMember" => {
                 let person = self.params.get("person").to_owned();
                 let removed =

@@ -518,14 +518,46 @@ async fn redeem_over_iroh(
                  it is on may be asleep or offline. Try again in a minute."
             )
         })?;
-        session.redeem(invitation, shown_as).await.map_err(|error| {
-            debug_why("redeeming the invitation", &error);
-            anyhow!("{}", invitation_said(&error))
-        })
+        let admission = session
+            .redeem(invitation, shown_as)
+            .await
+            .map_err(|error| {
+                debug_why("redeeming the invitation", &error);
+                anyhow!("{}", invitation_said(&error))
+            })?;
+        name_person(&session, &admission.workspace, shown_as).await;
+        anyhow::Ok(admission)
     }
     .await;
     session.close();
     Ok(Some(admitted?.name))
+}
+
+/// How long naming the person in a workspace they just joined may take.
+const NAMING_WITHIN: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Tell `workspace` that the person `session` is a device of goes by `name`, as a page tells it
+/// as it joins: what its member list and everyone's lists of people show for them, rather than
+/// this device's label. A workspace that does not answer keeps the name it admitted them with.
+async fn name_person(session: &Entered, workspace: &str, name: &str) {
+    use tilo_session_client::Outbox as _;
+    let asked = tilo_server_protocol::workspaces::WorkspacesRequest::Name {
+        workspace: workspace.to_owned(),
+        name: name.to_owned(),
+    };
+    let answer = match session.session().ask_workspaces(asked) {
+        Ok(receipt) => tokio::time::timeout(NAMING_WITHIN, receipt).await,
+        Err(closed) => {
+            debug_why("naming the person in the workspace", &closed);
+            return;
+        }
+    };
+    match answer {
+        Ok(Ok(Ok(_))) => {}
+        Ok(Ok(Err(refused))) => debug_why("naming the person in the workspace", &refused),
+        Ok(Err(_)) => debug_why("naming the person in the workspace", &"the session ended"),
+        Err(_) => debug_why("naming the person in the workspace", &"no answer in time"),
+    }
 }
 
 /// `tilo login <invitation link>`: this computer joins the workspace a member invited the person
@@ -551,7 +583,12 @@ pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Res
     })?;
     let grant = verified.grant().clone();
     let server = invited_server(&grant)?;
-    let (person, made) = crate::identity::ensure(name.or(grant.invitee_name.as_deref()))?;
+    // The name the person gave is theirs in the workspace; the device keeps a label of its own.
+    let asked = name.map(str::trim).filter(|name| !name.is_empty());
+    let (mut person, made) = crate::identity::ensure(asked.or(grant.invitee_name.as_deref()))?;
+    if let Some(name) = asked {
+        crate::identity::keep_name(&mut person, name)?;
+    }
     if made {
         println!(
             "This computer now holds a Tilo identity for {}: `tilo login --new-identity` prints its key.",
@@ -580,11 +617,11 @@ pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Res
             .map(|url| url.to_string()),
         web: None,
     };
-    let shown_as = if person.name.is_empty() {
-        label.clone()
-    } else {
-        person.name.clone()
-    };
+    let shown_as = asked
+        .or_else(|| Some(person.name.as_str()).filter(|name| !name.is_empty()))
+        .or(grant.invitee_name.as_deref())
+        .unwrap_or("Tilo user")
+        .to_owned();
     let device = Device {
         site: format!("{DEFAULT_SITE}/"),
         host_origin: format!("{IROH_ONLY}{}", server.endpoint_addr.id),
@@ -837,8 +874,36 @@ pub(crate) fn first_act(agent: &Agent) -> String {
     )
 }
 
-/// What `tilo login` prints last: what the agent does next, in order.
-fn next_steps(agent: &Agent, tools: &Tools, tilo: &Path) -> String {
+/// The streamable HTTP MCP server that reaches `device`'s workspace, when one does: the API
+/// server `TILO_API_URL` names, else tilo.sh's for a workspace on tilo.sh's own server. A
+/// workspace on another server (one joined over iroh, a company's own) is reached through the
+/// stdio server alone.
+fn http_mcp(device: &Device) -> Option<String> {
+    if let Some(api) = std::env::var(tilo_api::client::API_URL_ENV)
+        .ok()
+        .filter(|api| !api.trim().is_empty())
+    {
+        return Some(api);
+    }
+    let domain = host_of(&device.host_origin);
+    let on_tilo_sh =
+        device.server_address.is_none() && (domain == "tilo.sh" || domain.ends_with(".tilo.sh"));
+    on_tilo_sh.then(|| agent::MCP_URL.to_owned())
+}
+
+/// Where an agent finds Tilo's MCP server: the stdio server `tilo mcp`, and the streamable HTTP
+/// server `http` where one reaches the workspace.
+fn mcp_servers(tilo: &Path, http: Option<&str>) -> String {
+    let stdio = format!("the stdio server {} with the argument mcp", tilo.display());
+    match http {
+        Some(http) => format!("{stdio}, or the streamable HTTP server {http}"),
+        None => stdio,
+    }
+}
+
+/// What `tilo login` prints last: what the agent does next, in order. `http` is the streamable
+/// HTTP MCP server that reaches the workspace, when one does ([`http_mcp`]).
+fn next_steps(agent: &Agent, tools: &Tools, tilo: &Path, http: Option<&str>) -> String {
     let checks = format!(
         "Run `{} agent check`: it says whether Tilo's server is in you, and answers.",
         tilo.display()
@@ -863,12 +928,10 @@ fn next_steps(agent: &Agent, tools: &Tools, tilo: &Path) -> String {
         }
         Tools::Yours => {
             steps.push(format!(
-                "Add Tilo's MCP server to yourself, as the server tilo: the stdio server {} with \
-                 the argument mcp, or the streamable HTTP server {}. Put it where your own MCP \
-                 configuration keeps servers, beside the ones already there, with your own \
+                "Add Tilo's MCP server to yourself, as the server tilo: {}. Put it where your own \
+                 MCP configuration keeps servers, beside the ones already there, with your own \
                  tooling.",
-                tilo.display(),
-                agent::MCP_URL
+                mcp_servers(tilo, http)
             ));
             steps.push(format!(
                 "{checks} If your configuration is a file, `{} agent check --config <its path>` \
@@ -906,11 +969,9 @@ fn next_steps(agent: &Agent, tools: &Tools, tilo: &Path) -> String {
         steps.push(format!(
             "If Tilo's tools are not in you — Tilo added them to {}'s configuration, and another \
              agent may be the one the person's prompt reached — add them to yourself the same \
-             way: the server tilo, the stdio server {} with the argument mcp, or the streamable \
-             HTTP server {}.",
+             way: the server tilo, {}.",
             tool.title(),
-            tilo.display(),
-            agent::MCP_URL
+            mcp_servers(tilo, http)
         ));
     }
     steps.push(format!(
@@ -1151,7 +1212,10 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
         }
     }
     println!();
-    println!("{}", next_steps(agent, &tools, &tilo));
+    println!(
+        "{}",
+        next_steps(agent, &tools, &tilo, http_mcp(&device).as_deref())
+    );
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1328,7 +1392,10 @@ fn entered_after_login(
         }
     }
     println!();
-    println!("{}", next_steps(agent, &tools, &tilo));
+    println!(
+        "{}",
+        next_steps(agent, &tools, &tilo, http_mcp(device).as_deref())
+    );
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1720,7 +1787,7 @@ mod tests {
         {
             let tilo = Path::new("/home/me/.local/bin/tilo");
             let claude = agent::named("claude");
-            let next = next_steps(&claude, &Tools::Added(Tool::Claude), tilo);
+            let next = next_steps(&claude, &Tools::Added(Tool::Claude), tilo, Some(agent::MCP_URL));
             let steps: Vec<&str> = next.lines().collect();
             assert_eq!(steps[0], "Next, in order:");
             assert_eq!(
@@ -1748,7 +1815,7 @@ mod tests {
         {
             let tilo = Path::new("/home/me/.local/bin/tilo");
             let cursor = agent::named("cursor");
-            let next = next_steps(&cursor, &Tools::Added(Tool::Cursor), tilo);
+            let next = next_steps(&cursor, &Tools::Added(Tool::Cursor), tilo, Some(agent::MCP_URL));
             assert!(!next.contains("restart"), "{next}");
             // Cursor holds a server's tools back until it is told to let it run.
             assert!(next.contains("run `agent mcp enable tilo`"), "{next}");
@@ -1761,7 +1828,12 @@ mod tests {
             assert!(next.contains("https://mcp.tilo.sh"), "{next}");
             // Claude Code is not such an editor: nothing hedges its steps.
             assert!(
-                !next_steps(&agent::named("claude"), &Tools::Added(Tool::Claude), tilo)
+                !next_steps(
+                    &agent::named("claude"),
+                    &Tools::Added(Tool::Claude),
+                    tilo,
+                    Some(agent::MCP_URL)
+                )
                     .contains("another agent may be the one"),
                 "only an editor's steps say another agent may be reading them"
             );
@@ -1770,7 +1842,7 @@ mod tests {
                 "{next}"
             );
             let other = agent::named("Your agent");
-            let next = next_steps(&other, &Tools::Yours, tilo);
+            let next = next_steps(&other, &Tools::Yours, tilo, Some(agent::MCP_URL));
             assert!(
                 next.contains(
                     "1. Add Tilo's MCP server to yourself, as the server tilo: the stdio server \
@@ -1781,6 +1853,16 @@ mod tests {
             );
             assert!(next.contains("agent check --config"), "{next}");
             assert!(next.contains("Call the tilo_ls tool"), "{next}");
+            // A workspace no HTTP server reaches (one on a company's own server, joined over
+            // iroh) is offered the stdio server alone.
+            let elsewhere = next_steps(&other, &Tools::Yours, tilo, None);
+            assert!(
+                elsewhere.contains(
+                    "the stdio server /home/me/.local/bin/tilo with the argument mcp. Put it"
+                ),
+                "{elsewhere}"
+            );
+            assert!(!elsewhere.contains("streamable HTTP"), "{elsewhere}");
         }
 
         phase the_check_tells_the_agent_what_it_does_first;

@@ -550,6 +550,9 @@ impl Server {
             path: cfg.full_replica_status.clone(),
             clock: replica_clock,
         };
+        // The packet relay this server is reached through when it starts none of its own: one it
+        // cannot reach leaves it reachable by nobody, which its start says rather than serving.
+        let mut reached_through = None;
         let (packet_relay, relay_mode) = match cfg.packet_relay {
             Some(addr) if endpoint.is_none() && relay_mode.is_none() => {
                 let (server, url) = spawn_packet_relay(addr).await?;
@@ -576,6 +579,7 @@ impl Server {
                         ServerError::Iroh(format!("packet relay URL {published}: {error}"))
                     })?;
                     tracing::info!(%url, "reached through another packet relay");
+                    reached_through = Some(url.clone());
                     (None, Some(iroh::RelayMode::Custom(url.into())))
                 }
                 (_, relay_mode) => (None, relay_mode),
@@ -615,7 +619,16 @@ impl Server {
         // below name it straight away, and a host that has none yet names it when
         // it makes its first, so wait for the relay before serving either.
         if !relayless {
-            tilo_workspace_service::workspaces::await_relay(&endpoint).await;
+            let addr = tilo_workspace_service::workspaces::await_relay(&endpoint).await;
+            if let Some(url) = &reached_through
+                && addr.relay_urls().next().is_none()
+            {
+                return Err(ServerError::Iroh(format!(
+                    "the packet relay at {url}, which this server is to be reached through, did \
+                     not answer: no one could reach the server. Check that the URL names a packet \
+                     relay this computer reaches (tilo.sh's is https://live-eu1.tilo.sh)"
+                )));
+            }
         }
         let (sessions, governed) = crate::service::HostSessions::open(
             crate::service::HostConfig {

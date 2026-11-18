@@ -1078,11 +1078,27 @@ impl Args {
 }
 
 /// A pending invitation, as listing invitations reports it.
-fn pending_json(invitation: &super::PendingInvitation) -> Value {
+/// The one place a person holds in the workspace, or an invitation gives: an owner is an
+/// administrator and holds a role beneath, and is named by the highest of them alone.
+fn place(owner: bool, administrator: bool, role: Option<&str>) -> Option<&str> {
+    if owner {
+        Some("owner")
+    } else if administrator {
+        Some("administrator")
+    } else {
+        role
+    }
+}
+
+/// An open invitation as the workspace lists it; `owner` when redeeming it makes an owner
+/// ([`super::Workspaces::owner_invitation`]), which only this server knows.
+fn pending_json(invitation: &super::PendingInvitation, owner: bool) -> Value {
     json!({
         "invite": hex::encode(invitation.invite_id),
         "role": invitation.role.key(),
         "administrator": invitation.administrator,
+        "owner": owner,
+        "place": place(owner, invitation.administrator, Some(invitation.role.key())),
         "recipient": invitation.recipient_user_public_key.map(hex::encode),
         "invitee_name": invitation.invitee_name,
         "expires_at_ns": invitation.expires_at_ns,
@@ -1856,12 +1872,14 @@ impl Workspaces {
             .iter()
             .filter(|member| !member.removed)
             .map(|member| {
+                let owner = member.root().is_some_and(owns);
                 json!({
                     "member": member.id,
                     "name": (!member.name.is_empty()).then_some(&member.name),
                     "role": member.role.map(Role::key),
-                    "owner": member.root().is_some_and(owns),
+                    "owner": owner,
                     "administrator": member.administrator,
+                    "place": place(owner, member.administrator, member.role.map(Role::key)),
                 })
             })
             .collect())
@@ -1929,7 +1947,15 @@ impl Workspaces {
                     .pending(workspace, device)
                     .await
                     .map_err(|error| refused(&error))?;
-                Ok(pending.iter().map(pending_json).collect())
+                Ok(pending
+                    .iter()
+                    .map(|invitation| {
+                        pending_json(
+                            invitation,
+                            self.owner_invitation(invitation.invite_id, workspace),
+                        )
+                    })
+                    .collect())
             }
             MEMBERS => Ok(self
                 .members(workspace)

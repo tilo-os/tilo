@@ -67,7 +67,7 @@ Optional, with these defaults:
 | `TILO_WORKSPACES_SITE_ORIGINS` | none | comma-separated origins besides the relay's that may join |
 | `TILO_WORKSPACES_SERVER_PLAIN` | `0.0.0.0:9780` | the listener the ingress forwards the workspace to |
 | `TILO_WORKSPACES_LIVE` | `0.0.0.0:9782` | the address the packet relay binds, as the ingress forwards to it; `none` starts no packet relay of its own |
-| `TILO_WORKSPACES_LIVE_ORIGIN` | the address it bound | the `https://name[:port]` origin devices dial the packet relay at; with `TILO_WORKSPACES_LIVE=none`, the packet relay elsewhere (such as `https://live.eu1.tilo.sh`) the server is reached through, which is how a server behind a router nobody dials into is reached |
+| `TILO_WORKSPACES_LIVE_ORIGIN` | the address it bound | the `https://name[:port]` origin devices dial the packet relay at; with `TILO_WORKSPACES_LIVE=none`, the packet relay elsewhere (such as `https://live-eu1.tilo.sh`) the server is reached through, which is how a server behind a router nobody dials into is reached |
 | `TILO_WORKSPACES_TLS_CERT` | none | a publicly trusted certificate chain (PEM) the host's HTTPS listener presents instead of its own development one; read again when it changes |
 | `TILO_WORKSPACES_TLS_KEY` | none | its private key (PEM); set with `TILO_WORKSPACES_TLS_CERT` |
 | `TILO_WORKSPACES_LINK` | beside `TILO_WORKSPACES_WEB` | the UDP address the WebTransport listener binds, how pages reach the host |

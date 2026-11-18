@@ -282,6 +282,15 @@ pub enum PeopleCmd {
         /// viewer, commenter, editor, moderator, administrator or owner.
         role: String,
     },
+    /// Revoke an open invitation: its link lets nobody in from then on.
+    #[command(
+        after_help = "Example:\n  tilo workspace people revoke 7a41…c9 -w Acme\n\n\
+                      INVITE is the invitation's id, as `tilo workspace people ls` lists it."
+    )]
+    Revoke {
+        /// The invitation's id, as `tilo workspace people ls` names it.
+        invite: String,
+    },
     /// Remove someone from the workspace, with every device of theirs.
     #[command(
         after_help = "Example:\n  tilo workspace people rm 3f9c…e1 -w Acme\n\n\
@@ -1524,6 +1533,10 @@ async fn get_content(
 
 /// `tilo workspace people … -w <workspace>`: the workspace's people, and inviting one
 /// more.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match over the people commands, each a few lines"
+)]
 fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
     run(async {
         let client = Client::open(reach)?;
@@ -1572,6 +1585,15 @@ fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
                     )
                     .await?;
                 Ok(show(reach.json, &moved, &members_text(&moved)))
+            }
+            PeopleCmd::Revoke { invite } => {
+                let left = client
+                    .delete(&format!(
+                        "/v1/workspaces/{workspace}/members/invitations/{}",
+                        api::encode_path(&invite)
+                    ))
+                    .await?;
+                Ok(show(reach.json, &left, &members_text(&left)))
             }
             PeopleCmd::Rm { key } => {
                 let left = client
@@ -1720,17 +1742,10 @@ fn members_text(listed: &Value) -> String {
         .unwrap_or_default();
     let mut said = String::from("members:");
     for member in &members {
-        let mut what = text(member, "role").to_owned();
-        for (field, word) in [("owner", "owner"), ("administrator", "administrator")] {
-            if member.get(field).and_then(Value::as_bool) != Some(true) || what.contains(word) {
-                continue;
-            }
-            if what.is_empty() {
-                what.push_str(word);
-            } else {
-                let _ = write!(what, ", {word}");
-            }
-        }
+        // One place each: an owner is an administrator with a role beneath, named by the first.
+        let what = Some(text(member, "place"))
+            .filter(|place| !place.is_empty())
+            .unwrap_or_else(|| text(member, "role"));
         let _ = write!(said, "\n  {} — {what}", text(member, "name"));
         // A person is named by their key, which `role` and `rm` take.
         if let Some(key) = member.pointer("/member/person").and_then(Value::as_str) {
@@ -1751,13 +1766,11 @@ fn members_text(listed: &Value) -> String {
     }
     said.push_str("\ninvitations:");
     for invitation in &invitations {
-        // An administrator's invitation joins someone as an Editor and makes
-        // them one, so it is named by what redeeming it makes them.
-        let what = if invitation.get("administrator").and_then(Value::as_bool) == Some(true) {
-            "administrator"
-        } else {
-            text(invitation, "role")
-        };
+        // Named by what redeeming it makes them: an owner's or an administrator's invitation
+        // joins someone as an Editor and makes them more.
+        let what = Some(text(invitation, "place"))
+            .filter(|place| !place.is_empty())
+            .unwrap_or_else(|| text(invitation, "role"));
         // Who it is for, when the inviter named them, and its id, which
         // cancelling it takes.
         let named = text(invitation, "invitee_name");
@@ -2878,15 +2891,21 @@ mod tests {
 
         phase the_people_of_a_workspace_are_a_line_each;
         {
+            // One place each, as the workspace names it: an owner is an administrator and an
+            // editor beneath, and reads as an owner alone.
             let listed = serde_json::json!({
-                "members": [{"name": "Ada", "role": "owner", "owner": true, "administrator": true},
-                            {"name": "Rosa Ortiz", "role": "editor"}],
-                "invitations": [{"invite": "inv-1", "role": "viewer", "invitee_name": "Bo"}],
+                "members": [{"name": "Ada", "role": "editor", "owner": true, "administrator": true,
+                             "place": "owner"},
+                            {"name": "Rosa Ortiz", "role": "editor", "place": "editor"}],
+                "invitations": [{"invite": "inv-1", "role": "viewer", "invitee_name": "Bo",
+                                 "place": "viewer"},
+                                {"invite": "inv-2", "role": "editor", "administrator": true,
+                                 "owner": true, "place": "owner"}],
             });
             assert_eq!(
                 members_text(&listed),
-                "members:\n  Ada — owner, administrator\n  Rosa Ortiz — editor\n\
-             invitations:\n  viewer invitation for Bo, inv-1"
+                "members:\n  Ada — owner\n  Rosa Ortiz — editor\n\
+             invitations:\n  viewer invitation for Bo, inv-1\n  owner invitation, inv-2"
             );
             let alone = serde_json::json!({"members": [], "invitations": []});
             assert_eq!(
