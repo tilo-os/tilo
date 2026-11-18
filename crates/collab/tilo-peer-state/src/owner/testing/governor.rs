@@ -406,8 +406,8 @@ impl TestGovernor {
             self.workspace(),
             None,
             grants,
-            ns(now).saturating_sub(1),
-            expires_at_ns,
+            Vec::new(),
+            (ns(now).saturating_sub(1), expires_at_ns),
         )
         .map_err(|error| error.to_string())?;
         candidate

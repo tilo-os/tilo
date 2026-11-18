@@ -1768,8 +1768,8 @@ mod tests {
                 workspace,
                 None,
                 vec![grant.clone()],
-                issued,
-                expires,
+                Vec::new(),
+                (issued, expires),
             )
             .unwrap()
         };
