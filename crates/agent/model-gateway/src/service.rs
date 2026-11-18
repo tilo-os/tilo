@@ -2191,6 +2191,8 @@ struct PlanTiming {
     plan_call: Option<Duration>,
     prompt_tokens: Option<u64>,
     completion_tokens: Option<u64>,
+    /// Every token the provider counted for the call, as it says it.
+    total_tokens: Option<u64>,
     reasoning_tokens: Option<u64>,
     /// Prompt tokens the provider served from its prompt cache.
     cached_tokens: Option<u64>,
@@ -2262,6 +2264,7 @@ impl PlanTiming {
             plan_call: None,
             prompt_tokens: None,
             completion_tokens: None,
+            total_tokens: None,
             reasoning_tokens: None,
             cached_tokens: None,
             cache_write_tokens: None,
@@ -2334,6 +2337,7 @@ impl PlanTiming {
         let number = |pointer: &str| usage.pointer(pointer).and_then(serde_json::Value::as_u64);
         self.prompt_tokens = number("/prompt_tokens").or_else(|| number("/input_tokens"));
         self.completion_tokens = number("/completion_tokens").or_else(|| number("/output_tokens"));
+        self.total_tokens = number("/total_tokens");
         self.reasoning_tokens = number("/completion_tokens_details/reasoning_tokens");
         // OpenAI-compatible (Cerebras, OpenAI) and Anthropic spellings.
         self.cached_tokens = number("/prompt_tokens_details/cached_tokens")
@@ -2341,18 +2345,22 @@ impl PlanTiming {
         self.cache_write_tokens = number("/cache_creation_input_tokens");
     }
 
-    /// What the tokens this call counted cost, at the model's price.
-    fn cost_micros(&self, model_id: &str) -> u64 {
-        crate::pricing::cost_micros(
-            model_id,
-            &agent_provider_config::protocol::Usage {
-                input_tokens: self.prompt_tokens.unwrap_or_default(),
-                output_tokens: self.completion_tokens.unwrap_or_default(),
-                total_tokens: 0,
-                cached_input_tokens: self.cached_tokens.unwrap_or_default(),
-                cache_write_tokens: self.cache_write_tokens.unwrap_or_default(),
-                reasoning_tokens: self.reasoning_tokens.unwrap_or_default(),
-            },
+    /// What the tokens this call counted cost by the gateway's own price
+    /// table, said as the table's figure: it is no bill. A model the table
+    /// lists no price for, a family's newer model among them, costs what
+    /// nobody here knows.
+    fn cost_fields(&self, model_id: &str) -> String {
+        let counted = agent_provider_config::protocol::Usage {
+            input_tokens: self.prompt_tokens.unwrap_or_default(),
+            output_tokens: self.completion_tokens.unwrap_or_default(),
+            total_tokens: 0,
+            cached_input_tokens: self.cached_tokens.unwrap_or_default(),
+            cache_write_tokens: self.cache_write_tokens.unwrap_or_default(),
+            reasoning_tokens: self.reasoning_tokens.unwrap_or_default(),
+        };
+        crate::pricing::listed_price_of(model_id).map_or_else(
+            || "cost_micros=- cost_source=unknown".to_owned(),
+            |price| format!("cost_micros={} cost_source=table", price.of(&counted)),
         )
     }
 
@@ -2360,6 +2368,11 @@ impl PlanTiming {
         if std::env::var_os("TILO_MODEL_GATEWAY_TIMING").is_some_and(|value| value == "0") {
             return;
         }
+        eprintln!("{}", self.line(call, outcome));
+    }
+
+    /// The call's timing line: counts, times and names, never content.
+    fn line(&self, call: &PlanCall<'_>, outcome: Result<(), &String>) -> String {
         let ms = |value: Option<Duration>| {
             value.map_or_else(|| "-".to_string(), |value| value.as_millis().to_string())
         };
@@ -2369,12 +2382,12 @@ impl PlanTiming {
             || "-".to_string(),
             |trace| format!("{:016x}/{}", trace.id, trace.turn),
         );
-        eprintln!(
+        format!(
             "tilo-model-gateway: timing plan trace={trace} profile={} model={} stream={} status={} \
              start_unix_ms={} headers_ms={} first_event_ms={} first_byte_ms={} first_reasoning_ms={} \
              first_token_ms={} first_tool_call_ms={} \
-             plan_call_ms={} done_ms={} prompt_tokens={} completion_tokens={} \
-             reasoning_tokens={} cached_tokens={} cache_write_tokens={} cost_micros={} tool_calls={} output_allowance={} \
+             plan_call_ms={} done_ms={} prompt_tokens={} completion_tokens={} total_tokens={} \
+             reasoning_tokens={} cached_tokens={} cache_write_tokens={} {} tool_calls={} output_allowance={} \
              source_context={} runtime_context={} timeout_ms={} quiet_ms={} {} outcome={}{}",
             log_token(call.profile_id),
             log_token(call.model_id),
@@ -2392,10 +2405,11 @@ impl PlanTiming {
             self.started.elapsed().as_millis(),
             count(self.prompt_tokens),
             count(self.completion_tokens),
+            count(self.total_tokens),
             count(self.reasoning_tokens),
             count(self.cached_tokens),
             count(self.cache_write_tokens),
-            self.cost_micros(call.model_id),
+            self.cost_fields(call.model_id),
             self.tool_calls,
             count(self.output_allowance),
             count(self.source_context.map(u64::from)),
@@ -2410,7 +2424,7 @@ impl PlanTiming {
             outcome
                 .err()
                 .map_or_else(String::new, |why| format!(" reason={why:?}")),
-        );
+        )
     }
 }
 
@@ -2441,13 +2455,15 @@ fn unix_ms() -> u128 {
     u128::from(tilo_clock::unix_now_ms())
 }
 
-/// A configuration identifier, reduced to a log-safe token.
+/// A configuration identifier, reduced to a log-safe token. A model's name
+/// goes whole as its provider lists it (`models/NAME`, `vendor/NAME`): a
+/// slash is no secret.
 fn log_token(value: &str) -> String {
     if !value.is_empty()
         && value.len() <= 128
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/')
+        })
     {
         value.into()
     } else {

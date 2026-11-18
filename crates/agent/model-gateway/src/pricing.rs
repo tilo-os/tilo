@@ -4,8 +4,9 @@
 //! keeper bounds what an agent may spend in a day. Bounding it needs a price
 //! for every call, so the trusted gateway prices each answer here, as list
 //! prices in millionths of the currency per million tokens: an exact integer,
-//! never a rounded estimate. The same figure is what the gateway's own log
-//! records per call.
+//! never a rounded estimate. The gateway's own log records the same figure
+//! per call where the table lists the model itself, and says it is the
+//! table's ([`listed_price_of`]).
 //!
 //! The table is keyed by the model id its provider lists, most specific row
 //! first, the way [`agent_provider_config::capabilities`] reads families. A
@@ -230,6 +231,31 @@ pub fn price_of(id: &str) -> Option<Price> {
         .map(|row| row.price)
 }
 
+/// The patterns that name a whole family and no model of it. Such a row
+/// prices whatever newer model the family gains, at a guess: enough to
+/// bound a day's spending by, and nothing to read as that model's price.
+const FAMILIES: &[&str] = &[
+    "claude-opus",
+    "claude-sonnet",
+    "claude-haiku",
+    "claude",
+    "gemini",
+    "grok",
+    "deepseek",
+];
+
+/// The price the table lists for model `id` itself: `None` for a model no
+/// row names, and for one only a family's row would price.
+#[must_use]
+pub fn listed_price_of(id: &str) -> Option<Price> {
+    let id = id.to_ascii_lowercase();
+    PRICES
+        .iter()
+        .find(|row| id.contains(row.pattern))
+        .filter(|row| !FAMILIES.contains(&row.pattern))
+        .map(|row| row.price)
+}
+
 /// What one answer of model `id` costs, in millionths of the currency: zero
 /// for a model no price is known for.
 #[must_use]
@@ -339,5 +365,30 @@ mod tests {
             // A reply with no usage counted costs nothing.
             assert_eq!(cost_micros("claude-sonnet-4-5", &Usage::default()), 0);
         }
+    }
+
+    /// Only a model's own row is its listed price: a family's row prices a
+    /// newer model for the day's bound and says nothing of what it costs.
+    #[test]
+    fn only_a_models_own_row_is_its_listed_price() {
+        for listed in [
+            "gemini-2.5-pro",
+            "models/gemini-2.5-pro",
+            "vendor/gpt-4o-mini",
+        ] {
+            assert_eq!(listed_price_of(listed), price_of(listed), "{listed}");
+            assert!(listed_price_of(listed).is_some(), "{listed}");
+        }
+        for guessed in [
+            "models/gemini-9-ultra",
+            "claude-opus-9",
+            "grok-7",
+            "deepseek-chat",
+        ] {
+            assert!(listed_price_of(guessed).is_none(), "{guessed}");
+            // What a keeper's bound counts by stays as it was.
+            assert!(price_of(guessed).is_some(), "{guessed}");
+        }
+        assert!(listed_price_of("my-local-model").is_none());
     }
 }
