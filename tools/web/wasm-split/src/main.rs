@@ -22,6 +22,10 @@
 //! writes only a `__wasm_split.js` that answers the split points from it,
 //! for quick development bundles.
 //!
+//! `wasm-split --models LINKED OUT_DIR` splits the combined build of every
+//! app's model into the model runtime the apps share and one module per app
+//! (src/models.rs).
+//!
 //! A split point is a pair of functions the Rust side declares by name
 //! (`__wasm_split_00___<module>___00_import_<hash>_<name>` imported from
 //! `./__wasm_split.js`, `…_export_…` exported); see
@@ -34,6 +38,7 @@ mod cache;
 mod content;
 mod data;
 mod dedupe;
+mod models;
 mod parts;
 mod plan;
 mod relocations;
@@ -68,10 +73,25 @@ fn main() -> Result<()> {
         if flag == "--unsplit" {
             return unsplit(bindgened, &PathBuf::from(out));
         }
+        if flag == "--models" {
+            let linked =
+                std::fs::read(bindgened).with_context(|| format!("reading {bindgened}"))?;
+            let split = models::split(&linked)?;
+            models::write(&split, &PathBuf::from(out))?;
+            eprintln!(
+                "wasm-split: model runtime {} of {} bytes in {} modules, {} apps, in {:.1} s",
+                split.hash,
+                split.runtime.iter().map(Vec::len).sum::<usize>(),
+                split.runtime.len(),
+                split.apps.len(),
+                started.elapsed().as_secs_f64()
+            );
+            return Ok(());
+        }
     }
     let [original, bindgened, out, name] = args.as_slice() else {
         bail!(
-            "usage: wasm-split ORIGINAL BINDGENED PKG_DIR NAME | wasm-split --unsplit BINDGENED PKG_DIR"
+            "usage: wasm-split ORIGINAL BINDGENED PKG_DIR NAME | wasm-split --unsplit BINDGENED PKG_DIR | wasm-split --models LINKED OUT_DIR"
         );
     };
     let original = std::fs::read(original).with_context(|| format!("reading {original}"))?;
