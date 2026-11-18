@@ -218,6 +218,7 @@ final class AssistantDrive {
         case .unknown: once("setup", ["is": "unknown"])
         case .findingAssistant: once("setup", ["is": "findingAssistant"])
         case .makingWorkspace: once("setup", ["is": "makingWorkspace"])
+        case .makingAssistant: once("setup", ["is": "makingAssistant"])
         case .noAssistant(let why): once("setup", ["is": "noAssistant", "why": .string(why)])
         case .needsProvider(let providers): once("setup", ["is": "needsProvider", "providers": .array(providers.map { .string($0.id.value) })])
         case .needsModel(let models): once("setup", ["is": "needsModel", "models": .number(Double(models.count))])

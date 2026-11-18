@@ -478,8 +478,8 @@ bluetooth-prompt-accept-match = Sie stimmen überein
 bluetooth-prompt-accept-allow = Erlauben
 bluetooth-prompt-accept-pair = Koppeln
 portal-allowed-title = Dauerhaft erlaubt
-portal-allowed-detail = { $app } darf { $what } jetzt ohne Nachfrage nutzen. Widerrufe es, damit Tilo beim nächsten Mal wieder fragt.
-portal-revoke = Widerrufen
+portal-allowed-detail = { $app } darf { $what } jetzt ohne Nachfrage nutzen. Nimm es zurück, damit Tilo beim nächsten Mal wieder fragt.
+portal-revoke = Zurücknehmen
 portal-keep = Behalten
 
 ## Adding a program the person downloaded to their apps, and uninstalling an app

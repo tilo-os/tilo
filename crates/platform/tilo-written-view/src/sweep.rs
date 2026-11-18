@@ -3,7 +3,8 @@
 //! A view reads what an app publishes, and an app gets that by publishing. So for every app whose
 //! surface this build carries, and every kind of that surface that stores fields, a value filled
 //! from the declared types alone (every field, every case of every enum whose cases carry
-//! values, and once with every option empty) is laid out as a read answers a stored value,
+//! values, once with every option empty, and once as a store keeps a number at 0 and a flag
+//! that is off: with no key for it) is laid out as a read answers a stored value,
 //! handed through [`App::reading`], and read back field by field as a view's code reads it
 //! ([`Runtime::read`]). What does not arrive whole is a stop: it traps, comes empty, or loses
 //! something.
@@ -82,6 +83,8 @@ fields = [
   { path = "map_map", type = { map = { map = "int" } } },
   { path = "map_rich", type = { map = "rich_text" } },
   { path = "reference", type = { resource = "sweep.shapes" } },
+  { path = "named_view", type = { named = "View" } },
+  { path = "map_bytes", type = { map = { named = "Bytes" } } },
   { path = "any", type = "any" },
   { path = "reactions", type = "reactions" },
 ]
@@ -117,6 +120,23 @@ fields = [
   { name = "title", type = "text" },
   { name = "count", type = "int" },
   { name = "done", type = "bool" },
+]
+
+# Two types named as the app language names two of its own: an app names its types without
+# knowing which names the language holds. One holds what only reads by its declared type.
+[[resources.types]]
+name = "View"
+fields = [
+  { name = "source", type = "text" },
+  { name = "by", type = "actor" },
+  { name = "parts", type = { collection = { named = "Part" } } },
+]
+
+[[resources.types]]
+name = "Bytes"
+fields = [
+  { name = "received", type = "int" },
+  { name = "sent", type = "int" },
 ]
 "#;
 
@@ -175,6 +195,10 @@ struct Filler<'a> {
     turn: usize,
     /// Whether every option holds nothing.
     empty: bool,
+    /// Whether every number stands at 0 and every flag is off, with no key for one that is a
+    /// declared type's field: a store keeps what an absent key reads as by leaving it out
+    /// (`tilo_resource`'s `write_fields_leaving`), and a read answers what the store keeps.
+    sparse: bool,
     /// The last id an item was given: no two items of one value share one.
     ids: Cell<usize>,
 }
@@ -184,6 +208,12 @@ impl Filler<'_> {
         let next = self.ids.get().saturating_add(1);
         self.ids.set(next);
         next
+    }
+
+    /// Whether a declared type's field of type `ty` has no key in what is stored
+    /// ([`Self::sparse`]).
+    fn left_out(&self, ty: &FieldType) -> bool {
+        self.sparse && matches!(ty, FieldType::Int | FieldType::Float | FieldType::Bool)
     }
 
     /// Whether the app language has a type for `ty` (`catalogue`'s own rule).
@@ -263,7 +293,9 @@ impl Filler<'_> {
             let (value, want) = self
                 .fill(&field.ty, &field.path, 1, &mut Vec::new())
                 .unwrap_or((Json::Null, Want::Nothing));
-            stored.insert(field.path.clone(), value);
+            if !self.left_out(&field.ty) {
+                stored.insert(field.path.clone(), value);
+            }
             wanted.push(Field {
                 name: written(&field.path),
                 want,
@@ -287,6 +319,10 @@ impl Filler<'_> {
         }
         let plain = |value: Json| Some((value.clone(), Want::Plain(value)));
         match ty {
+            // What a store leaves out of a declared type's fields, as its absent key reads.
+            FieldType::Int if self.sparse => plain(json!(0)),
+            FieldType::Float if self.sparse => plain(json!(0.0)),
+            FieldType::Bool if self.sparse => plain(json!(false)),
             FieldType::Text => plain(json!(format!("{at} #{mark}"))),
             FieldType::Int => plain(json!(mark.saturating_add(7))),
             FieldType::Float => plain(json!(1.5)),
@@ -429,26 +465,32 @@ impl Filler<'_> {
         let filled = if declared.is_enum() {
             self.case_value(declared, at, mark, open)
         } else {
-            self.fields_value(&declared.fields, at, mark, open)
+            self.fields_value(&declared.fields, at, mark, open, true)
                 .map(|(stored, wanted)| (Json::Object(stored), Want::Fields(wanted)))
         };
         open.pop();
         filled
     }
 
+    /// A value of each of `fields`, by name. `leave`: they are a declared type's own, which a
+    /// store keeps without a key for what stands at its start ([`Self::left_out`]); the values
+    /// a case carries are each kept.
     fn fields_value(
         &self,
         fields: &[TypeField],
         at: &str,
         mark: usize,
         open: &mut Vec<String>,
+        leave: bool,
     ) -> Option<(Map<String, Json>, Vec<Field>)> {
         let mut stored = Map::new();
         let mut wanted = Vec::new();
         for field in fields {
             let inside = format!("{at}.{}", field.name);
             let (value, want) = self.fill(&field.ty, &inside, mark, open)?;
-            stored.insert(field.name.clone(), value);
+            if !(leave && self.left_out(&field.ty)) {
+                stored.insert(field.name.clone(), value);
+            }
             wanted.push(Field {
                 name: written(&field.name),
                 want,
@@ -479,7 +521,8 @@ impl Filler<'_> {
             .take(count)
             .find_map(|case| {
                 let inside = format!("{at}.{}", case.name);
-                let (mut stored, wanted) = self.fields_value(&case.fields, &inside, mark, open)?;
+                let (mut stored, wanted) =
+                    self.fields_value(&case.fields, &inside, mark, open, false)?;
                 let value = if carries {
                     stored.insert("$variant".to_owned(), json!(case.name));
                     Json::Object(stored)
@@ -815,8 +858,8 @@ impl Table {
         }
     }
 
-    /// Fill the kind `surface` describes, once for every case and once empty, and read each
-    /// filling back through the app's reader.
+    /// Fill the kind `surface` describes, once for every case, once empty and once as a store
+    /// keeps what stands at its start, and read each filling back through the app's reader.
     fn kind(
         &mut self,
         id: &str,
@@ -842,7 +885,7 @@ impl Table {
             meta: &app.meta,
             stops: BTreeMap::new(),
         };
-        for turn in 0..=turns {
+        for turn in 0..=turns.saturating_add(1) {
             let filler = Filler {
                 named,
                 kept: surface
@@ -852,6 +895,7 @@ impl Table {
                     .collect(),
                 turn,
                 empty: turn == turns,
+                sparse: turn > turns,
                 ids: Cell::new(0),
             };
             let (stored, wanted) = filler.kind(surface);

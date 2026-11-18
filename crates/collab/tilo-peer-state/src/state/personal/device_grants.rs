@@ -9,11 +9,10 @@
 //! the laptop never opens the phone's camera. An answer for the session stays
 //! in this device's memory, and one for once is never kept.
 //!
-//! A workspace never answers here. What it may do is put a ceiling on the
-//! apps in it ([`DeviceGrants::decide`]): refuse, or have the person asked
-//! each time.
+//! A workspace never answers here. What it may do is refuse a device to the
+//! apps in it ([`DeviceGrants::refuse_in`]), whatever the person answered.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use automerge::transaction::Transactable as _;
@@ -79,7 +78,14 @@ pub struct DeviceGrants {
     store: Arc<OnceLock<PersonalSync>>,
     /// The answers given for this session, by app and capability.
     session: Arc<Mutex<BTreeMap<(String, DeviceCap), Answer>>>,
+    /// What the workspaces refuse their apps, as `(workspace, app, device)`.
+    refused: Arc<Mutex<BTreeSet<Refusal>>>,
+    /// What this device's apps were allowed at the last look ([`Self::taken_back`]).
+    seen: Arc<Mutex<BTreeSet<(String, DeviceCap)>>>,
 }
+
+/// A workspace refusing one of its apps a device: `(workspace, app, device)`.
+pub type Refusal = (String, String, DeviceCap);
 
 impl DeviceGrants {
     /// Answers kept in the person's store `store`.
@@ -97,6 +103,8 @@ impl DeviceGrants {
         Self {
             store: Arc::default(),
             session: Arc::default(),
+            refused: Arc::default(),
+            seen: Arc::default(),
         }
     }
 
@@ -116,37 +124,49 @@ impl DeviceGrants {
         hex::encode(store.device().device_public_key)
     }
 
-    /// What `app` may do with `cap` on this device: the answer the person gave
-    /// for this session or kept for this device, or [`Answer::Ask`] when they
-    /// gave none. `ceiling` is the most the app's workspace allows:
-    /// [`Answer::Deny`] refuses whatever the person answered, [`Answer::Ask`]
-    /// asks again past what they kept.
+    /// The devices the workspaces refuse their apps from now on, replacing what they refused before.
+    pub fn refuse_in(&self, refused: BTreeSet<Refusal>) {
+        *self.refused.lock_recover() = refused;
+    }
+
+    /// What `app`, running in `workspace`, may do with `cap` on this device:
+    /// [`Answer::Deny`] when the workspace refuses it, else the answer the
+    /// person gave for this session or kept for this device, else
+    /// [`Answer::Ask`].
     #[must_use]
-    pub fn decide(&self, app: &str, cap: DeviceCap, ceiling: Answer) -> Answer {
-        if ceiling == Answer::Deny {
+    pub fn decide(&self, app: &str, workspace: Option<&str>, cap: DeviceCap) -> Answer {
+        let refused = workspace.is_some_and(|workspace| {
+            self.refused
+                .lock_recover()
+                .contains(&(workspace.to_owned(), app.to_owned(), cap))
+        });
+        if refused {
             return Answer::Deny;
         }
+        self.given(app, cap)
+            .map_or(Answer::Ask, |(answer, _)| answer)
+    }
+
+    /// The answer the person gave `app` for `cap` on this device that still
+    /// stands, and how long it lasts: one for the session, else one kept.
+    #[must_use]
+    pub fn given(&self, app: &str, cap: DeviceCap) -> Option<(Answer, Lifetime)> {
         let session = self
             .session
             .lock_recover()
             .get(&(app.to_owned(), cap))
             .copied();
         if let Some(answer) = session {
-            return answer;
+            return Some((answer, Lifetime::Session));
         }
-        if ceiling == Answer::Ask {
-            return Answer::Ask;
-        }
-        let Some(store) = self.store.get() else {
-            return Answer::Ask;
-        };
+        let store = self.store.get()?;
         let now = Some(tilo_clock::unix_now_ms());
         store.read(|store| {
             let key = entry_key(&Self::this_device(store), app, cap);
             entries(store)
                 .remove(&key)
                 .filter(|kept| kept.lifetime.is_live_at(now))
-                .map_or(Answer::Ask, |kept| kept.answer)
+                .map(|kept| (kept.answer, kept.lifetime))
         })
     }
 
@@ -256,6 +276,18 @@ impl DeviceGrants {
         allowed.sort();
         allowed.dedup();
         allowed
+    }
+
+    /// What this device's apps were allowed at the last look and no longer are, as `(app, device)`:
+    /// taken back here or on another of the person's devices, or lapsed. A capture on such an
+    /// answer stops.
+    #[must_use]
+    pub fn taken_back(&self) -> BTreeSet<(String, DeviceCap)> {
+        let now: BTreeSet<(String, DeviceCap)> = self.allowed_here().into_iter().collect();
+        let mut seen = self.seen.lock_recover();
+        let taken = seen.difference(&now).cloned().collect();
+        *seen = now;
+        taken
     }
 
     /// Every answer the person kept that still stands, on any of their devices.

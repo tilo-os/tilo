@@ -1939,6 +1939,20 @@ pub fn resource_items(
     out
 }
 
+/// The collection fields of published items a model of the table `table`
+/// holds, by name: where an item's id (`<kind>/<field>/<item>`) may stand,
+/// read from the table alone.
+#[must_use]
+pub fn item_fields(table: &'static ModelTable) -> Vec<&'static str> {
+    table.record().map_or_else(Vec::new, |desc| {
+        desc.fields
+            .iter()
+            .filter(|field| field.items.is_some())
+            .map(|field| field.name)
+            .collect()
+    })
+}
+
 /// [`Fields::item_collection_sizes`](crate::Fields::item_collection_sizes)
 /// of a record.
 #[must_use]
@@ -3869,10 +3883,9 @@ fn steps<'a>(kind: &str, resource_id: &'a str) -> Option<Vec<Step<'a>>> {
     Some(steps)
 }
 
-/// The position and description of the field named `name` of `record`.
-fn field_named<'a>(record: &'a ResourceDesc, name: &str) -> Option<(usize, &'a FieldDesc)> {
-    record
-        .fields
+/// The position and description of the field named `name` of `desc`.
+fn field_named<'a>(desc: &'a ResourceDesc, name: &str) -> Option<(usize, &'a FieldDesc)> {
+    desc.fields
         .iter()
         .enumerate()
         .find(|(_, desc)| desc.name == name)

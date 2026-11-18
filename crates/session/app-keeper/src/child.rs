@@ -101,7 +101,7 @@ impl App {
             keep_stream(pipe, Stream::Err, dir, &mut streams);
         }
         Ok(Self {
-            started_at: start_time(pid),
+            started_at: tilo_process::start_time(pid),
             child,
             pid,
             pidfd,
@@ -165,14 +165,6 @@ pub(crate) fn pidfd_open(pid: u32) -> io::Result<OwnedFd> {
     let fd = i32::try_from(fd).map_err(io::Error::other)?;
     // SAFETY: the kernel just returned this descriptor, owned by nobody else.
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
-}
-
-/// When `pid` started, in clock ticks since boot: field 22 of `/proc/<pid>/stat`.
-pub(crate) fn start_time(pid: u32) -> Option<u64> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    // The command name is in parentheses and may hold spaces; the fields after it are plain.
-    let (_, rest) = stat.rsplit_once(')')?;
-    rest.split_whitespace().nth(19)?.parse().ok()
 }
 
 /// One of the app's standard streams, as the keeper passes it on.

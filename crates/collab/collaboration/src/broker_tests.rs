@@ -85,6 +85,8 @@ include!("committed_absent_tests.rs");
 #[cfg(test)]
 include!("route_join_wait_tests.rs");
 #[cfg(test)]
+include!("cluster_route_tests.rs");
+#[cfg(test)]
 include!("committed_changes_tests.rs");
 use crate::CollaborationState;
 
@@ -209,6 +211,8 @@ pub struct Captures {
     pub terminal_updates: usize,
     pub invocation_updates: Vec<(u64, tilo_actions::InvocationUpdate)>,
     pub joined: Vec<(String, Vec<u8>)>,
+    /// Each stream subscribed to, by its route, in the order asked.
+    pub subscribed: Vec<(String, Topic)>,
     pub joined_resource_types: Vec<String>,
     pub signed_ops: Vec<Vec<u8>>,
     pub pointer_publishes: Vec<(Vec<u8>, f32, f32)>,
@@ -631,6 +635,11 @@ impl FakeHost {
         feed: Feed,
     ) -> Result<Pin<Box<dyn Future<Output = String>>>, String> {
         let captures = self.broker.captures.clone();
+        captures
+            .lock()
+            .unwrap()
+            .subscribed
+            .push((channel.channel_id.clone(), topic.clone()));
         Ok(match topic {
             Topic::Ops => {
                 let backlog = channel.op_backlog.clone();
@@ -2658,9 +2667,6 @@ tilo_test_env::scenario! {
     }
 }
 
-#[cfg(unix)]
-struct RefusedDocumentIdentity;
-
 /// Keys for a fresh channel group, as a ready identity service answers.
 #[cfg(unix)]
 fn ready_channel_keys() -> runtime_identity::wire::ChannelKeysReply {
@@ -2676,106 +2682,93 @@ fn ready_channel_keys() -> runtime_identity::wire::ChannelKeysReply {
     }
 }
 
+/// A certified identity whose service answers each question for keys with `keys` (the route's
+/// app, and the generation it holds), and that signs every join and, unless `refuses_ops`, every
+/// op. Counts each question and each join it signs.
 #[cfg(unix)]
-impl SdkCertifiedIdentity for RefusedDocumentIdentity {
-    fn group_keys(
-        &self,
-        _: &str,
-        _: &str,
-        _: &str,
-        _: u64,
-    ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable> {
-        // Admitted to the channel, so the edit reaches the signer.
-        Ok(ready_channel_keys())
-    }
-    fn device_certificate(&self) -> Option<&[u8]> {
-        Some(b"fixture")
-    }
-    fn signing_public_key(&self) -> [u8; 32] {
-        [5; 32]
-    }
-    fn sign_collaboration_join(&self, _: &str) -> Result<[u8; 64], runtime_portal::NotAvailable> {
-        Ok([7; 64])
-    }
-    fn sign_collaboration_op(
-        &self,
-        _: &str,
-        _: &str,
-        _: &str,
-        _: &[u8],
-    ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "certified signing refused",
+struct FixtureIdentity {
+    keys: Box<
+        dyn Fn(
+                &str,
+                u64,
+            )
+                -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable>
+            + Send
+            + Sync,
+    >,
+    asked: Arc<std::sync::atomic::AtomicUsize>,
+    joins: Arc<std::sync::atomic::AtomicUsize>,
+    refuses_ops: bool,
+}
+
+#[cfg(unix)]
+impl FixtureIdentity {
+    fn answering(
+        keys: impl Fn(
+            &str,
+            u64,
         )
-        .into())
+            -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        Self {
+            keys: Box::new(keys),
+            asked: Arc::default(),
+            joins: Arc::default(),
+            refuses_ops: false,
+        }
+    }
+
+    /// One whose service holds keys for every route.
+    fn keyed() -> Self {
+        Self::answering(|_, _| Ok(ready_channel_keys()))
     }
 }
 
-/// A certified identity whose service holds keys for every channel, and
-/// counts how often an endpoint asks for them.
+/// A manager on the fake broker at `fd`, admitted as `identity` presenting `presentation`, its
+/// own route for `app_id` in `workspace` joined.
 #[cfg(unix)]
-struct KeyedIdentity {
-    asked: Arc<std::sync::atomic::AtomicUsize>,
+fn certified_manager(
+    fd: RawFd,
+    identity: impl SdkCertifiedIdentity + 'static,
+    presentation: Vec<u8>,
+    (app_id, workspace): (&str, Uuid),
+) -> CollaborationManager {
+    let sdk = CollaborationManager::spawn_sdk(
+        SdkConnectSource::Fd(fd),
+        Some(SdkJoinIdentity {
+            presentation,
+            member_kind: "person",
+            signer: SdkDocumentSigner::Certified(Arc::new(identity)),
+        }),
+    )
+    .unwrap();
+    let mut manager = CollaborationManager::disabled();
+    manager.backend = Backend::Transport(Box::new(sdk));
+    assert!(manager.send(CollabRequest::Hello {
+        app_id: app_id.into(),
+        cluster_id: workspace,
+        record: None,
+        resource_type: None,
+        handle: None,
+    }));
+    manager.await_primary_route().unwrap();
+    manager
 }
 
 #[cfg(unix)]
-impl SdkCertifiedIdentity for KeyedIdentity {
+impl SdkCertifiedIdentity for FixtureIdentity {
     fn group_keys(
         &self,
         _: &str,
-        _: &str,
-        _: &str,
-        _: u64,
-    ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable> {
-        self.asked.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        Ok(ready_channel_keys())
-    }
-    fn device_certificate(&self) -> Option<&[u8]> {
-        Some(b"fixture")
-    }
-    fn signing_public_key(&self) -> [u8; 32] {
-        [5; 32]
-    }
-    fn sign_collaboration_join(&self, _: &str) -> Result<[u8; 64], runtime_portal::NotAvailable> {
-        Ok([7; 64])
-    }
-    fn sign_collaboration_op(
-        &self,
-        _: &str,
-        _: &str,
-        _: &str,
-        _: &[u8],
-    ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
-        Ok([9; 64])
-    }
-}
-
-/// A certified identity whose channel service answers every route with
-/// `access`, or that refuses every question (`None`).
-#[cfg(unix)]
-struct AnsweringIdentity {
-    asked: Arc<std::sync::atomic::AtomicUsize>,
-    access: Option<runtime_identity::wire::KeyAccess>,
-}
-
-#[cfg(unix)]
-impl SdkCertifiedIdentity for AnsweringIdentity {
-    fn group_keys(
-        &self,
-        _: &str,
-        _: &str,
+        app_id: &str,
         _: &str,
         generation: u64,
     ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable> {
         self.asked.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        self.access
-            .map(|access| runtime_identity::wire::ChannelKeysReply {
-                access,
-                generation,
-                keys: None,
-            })
-            .ok_or(runtime_portal::NotAvailable::ServiceFdMissing)
+        (self.keys)(app_id, generation)
     }
     fn device_certificate(&self) -> Option<&[u8]> {
         Some(b"fixture")
@@ -2784,6 +2777,7 @@ impl SdkCertifiedIdentity for AnsweringIdentity {
         [5; 32]
     }
     fn sign_collaboration_join(&self, _: &str) -> Result<[u8; 64], runtime_portal::NotAvailable> {
+        self.joins.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         Ok([7; 64])
     }
     fn sign_collaboration_op(
@@ -2793,6 +2787,13 @@ impl SdkCertifiedIdentity for AnsweringIdentity {
         _: &str,
         _: &[u8],
     ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
+        if self.refuses_ops {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "certified signing refused",
+            )
+            .into());
+        }
         Ok([9; 64])
     }
 }
@@ -2817,28 +2818,23 @@ fn asks_while_waiting(access: Option<runtime_identity::wire::KeyAccess>, on_time
     };
     let (fd, _captures, thread) = stand_up_fake_broker(broker);
     let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let sdk = CollaborationManager::spawn_sdk(
-        SdkConnectSource::Fd(fd),
-        Some(SdkJoinIdentity {
-            presentation: harness_presentation(),
-            member_kind: "person",
-            signer: SdkDocumentSigner::Certified(Arc::new(AnsweringIdentity {
-                asked: Arc::clone(&asked),
-                access,
-            })),
-        }),
-    )
-    .unwrap();
-    let mut manager = CollaborationManager::disabled();
-    manager.backend = Backend::Transport(Box::new(sdk));
-    assert!(manager.send(CollabRequest::Hello {
-        app_id: "so.tilo.test".into(),
-        cluster_id: Uuid::new_v4(),
-        record: None,
-        resource_type: None,
-        handle: None,
-    }));
-    manager.await_primary_route().unwrap();
+    let manager = certified_manager(
+        fd,
+        FixtureIdentity {
+            asked: Arc::clone(&asked),
+            ..FixtureIdentity::answering(move |_, generation| {
+                access
+                    .map(|access| runtime_identity::wire::ChannelKeysReply {
+                        access,
+                        generation,
+                        keys: None,
+                    })
+                    .ok_or(runtime_portal::NotAvailable::ServiceFdMissing)
+            })
+        },
+        harness_presentation(),
+        ("so.tilo.test", Uuid::new_v4()),
+    );
     tilo_test_env::wait_until("the route's endpoint to ask for its channel keys", || {
         asked.load(std::sync::atomic::Ordering::Acquire) > 0
     });
@@ -2899,28 +2895,18 @@ fn a_member_waiting_for_keys_shows_the_cleartext_the_broker_admitted() {
         ..FakeBroker::default()
     };
     let (fd, _captures, thread) = stand_up_fake_broker(broker);
-    let sdk = CollaborationManager::spawn_sdk(
-        SdkConnectSource::Fd(fd),
-        Some(SdkJoinIdentity {
-            presentation: harness_presentation(),
-            member_kind: "person",
-            signer: SdkDocumentSigner::Certified(Arc::new(AnsweringIdentity {
-                asked: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-                access: Some(runtime_identity::wire::KeyAccess::Waiting),
-            })),
+    let mut manager = certified_manager(
+        fd,
+        FixtureIdentity::answering(|_, generation| {
+            Ok(runtime_identity::wire::ChannelKeysReply {
+                access: runtime_identity::wire::KeyAccess::Waiting,
+                generation,
+                keys: None,
+            })
         }),
-    )
-    .unwrap();
-    let mut manager = CollaborationManager::disabled();
-    manager.backend = Backend::Transport(Box::new(sdk));
-    assert!(manager.send(CollabRequest::Hello {
-        app_id: app_id.into(),
-        cluster_id: cluster,
-        record: None,
-        resource_type: None,
-        handle: None,
-    }));
-    manager.await_primary_route().unwrap();
+        harness_presentation(),
+        (app_id, cluster),
+    );
     let shown = |events: &[CollabEvent]| -> Vec<Vec<u8>> {
         events
             .iter()
@@ -2975,27 +2961,15 @@ fn channel_key_requests_on_route(committed: bool) -> usize {
     };
     let (fd, _captures, thread) = stand_up_fake_broker(broker);
     let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let sdk = CollaborationManager::spawn_sdk(
-        SdkConnectSource::Fd(fd),
-        Some(SdkJoinIdentity {
-            presentation: harness_presentation(),
-            member_kind: "person",
-            signer: SdkDocumentSigner::Certified(Arc::new(KeyedIdentity {
-                asked: Arc::clone(&asked),
-            })),
-        }),
-    )
-    .unwrap();
-    let mut manager = CollaborationManager::disabled();
-    manager.backend = Backend::Transport(Box::new(sdk));
-    assert!(manager.send(CollabRequest::Hello {
-        app_id: "so.tilo.test".into(),
-        cluster_id: Uuid::new_v4(),
-        record: None,
-        resource_type: None,
-        handle: None,
-    }));
-    manager.await_primary_route().unwrap();
+    let manager = certified_manager(
+        fd,
+        FixtureIdentity {
+            asked: Arc::clone(&asked),
+            ..FixtureIdentity::keyed()
+        },
+        harness_presentation(),
+        ("so.tilo.test", Uuid::new_v4()),
+    );
     if committed {
         // Asking would be the bug, so there is no event to wait for: the
         // timer is either disarmed or has started a few rounds that
@@ -3014,69 +2988,6 @@ fn channel_key_requests_on_route(committed: bool) -> usize {
     drop(manager);
     thread.join().unwrap();
     asked
-}
-
-/// A certified identity service that answers its first question at
-/// once, with `keys`, and holds every later one until `released`.
-#[cfg(unix)]
-struct SlowIdentity {
-    keys: Vec<u8>,
-    asked: std::sync::atomic::AtomicUsize,
-    released: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
-}
-
-#[cfg(unix)]
-impl SlowIdentity {
-    fn release(released: &(std::sync::Mutex<bool>, std::sync::Condvar)) {
-        *released.0.lock().unwrap() = true;
-        released.1.notify_all();
-    }
-}
-
-#[cfg(unix)]
-impl SdkCertifiedIdentity for SlowIdentity {
-    fn group_keys(
-        &self,
-        _: &str,
-        _: &str,
-        _: &str,
-        _: u64,
-    ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable> {
-        let first = self.asked.fetch_add(1, std::sync::atomic::Ordering::AcqRel) == 0;
-        if !first {
-            let (released, changed) = &*self.released;
-            let _released = changed
-                .wait_timeout_while(
-                    released.lock().unwrap(),
-                    tilo_test_env::hang_bound(),
-                    |released| !*released,
-                )
-                .unwrap();
-        }
-        Ok(runtime_identity::wire::ChannelKeysReply {
-            access: runtime_identity::wire::KeyAccess::Ready,
-            generation: 1,
-            keys: first.then(|| self.keys.clone()),
-        })
-    }
-    fn device_certificate(&self) -> Option<&[u8]> {
-        Some(b"fixture")
-    }
-    fn signing_public_key(&self) -> [u8; 32] {
-        [5; 32]
-    }
-    fn sign_collaboration_join(&self, _: &str) -> Result<[u8; 64], runtime_portal::NotAvailable> {
-        Ok([7; 64])
-    }
-    fn sign_collaboration_op(
-        &self,
-        _: &str,
-        _: &str,
-        _: &str,
-        _: &[u8],
-    ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
-        Ok([9; 64])
-    }
 }
 
 /// An endpoint keeps receiving while its identity service is slow to
@@ -3129,35 +3040,45 @@ fn a_slow_identity_service_never_holds_up_incoming_ops() {
     };
     let (fd, _captures, thread) = stand_up_fake_broker(broker);
     let released = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
-    let sdk = CollaborationManager::spawn_sdk(
-        SdkConnectSource::Fd(fd),
-        Some(SdkJoinIdentity {
-            presentation: harness_presentation(),
-            member_kind: "person",
-            signer: SdkDocumentSigner::Certified(Arc::new(SlowIdentity {
-                keys: group.content_keys().unwrap().to_bytes().unwrap().to_vec(),
-                asked: std::sync::atomic::AtomicUsize::new(0),
-                released: Arc::clone(&released),
-            })),
+    // The identity service answers its first question at once, with the keys, and
+    // holds every later one until released.
+    let mut manager = certified_manager(
+        fd,
+        FixtureIdentity::answering({
+            let keys = group.content_keys().unwrap().to_bytes().unwrap().to_vec();
+            let (released, first) = (
+                Arc::clone(&released),
+                std::sync::atomic::AtomicBool::new(true),
+            );
+            move |_, _| {
+                let first = first.swap(false, std::sync::atomic::Ordering::AcqRel);
+                if !first {
+                    let (released, changed) = &*released;
+                    let _released = changed
+                        .wait_timeout_while(
+                            released.lock().unwrap(),
+                            tilo_test_env::hang_bound(),
+                            |released| !*released,
+                        )
+                        .unwrap();
+                }
+                Ok(runtime_identity::wire::ChannelKeysReply {
+                    access: runtime_identity::wire::KeyAccess::Ready,
+                    generation: 1,
+                    keys: first.then(|| keys.clone()),
+                })
+            }
         }),
-    )
-    .unwrap();
-    let mut manager = CollaborationManager::disabled();
-    manager.backend = Backend::Transport(Box::new(sdk));
-    assert!(manager.send(CollabRequest::Hello {
-        app_id: app_id.into(),
-        cluster_id: cluster,
-        record: None,
-        resource_type: None,
-        handle: None,
-    }));
-    manager.await_primary_route().unwrap();
+        harness_presentation(),
+        (app_id, cluster),
+    );
     let events = poll_until(&mut manager, |events| {
         events
             .iter()
             .any(|event| matches!(event, CollabEvent::Document { .. }))
     });
-    SlowIdentity::release(&released);
+    *released.0.lock().unwrap() = true;
+    released.1.notify_all();
     assert!(
         events.iter().any(|event| matches!(
             event,
@@ -3182,132 +3103,6 @@ fn committed_routes_stay_out_of_channel_keys_while_op_routes_ask() {
     assert!(channel_key_requests_on_route(false) > 0);
 }
 
-/// A certified identity service that, like the real one, refuses channel
-/// keys for a route that names no app (a cluster route) and answers a
-/// real app route with keys. Counts every question.
-#[cfg(unix)]
-struct ClusterRefusingIdentity {
-    asked: Arc<std::sync::atomic::AtomicUsize>,
-}
-
-#[cfg(unix)]
-impl SdkCertifiedIdentity for ClusterRefusingIdentity {
-    fn group_keys(
-        &self,
-        _: &str,
-        app_id: &str,
-        _: &str,
-        _: u64,
-    ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable> {
-        self.asked.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        if app_id.is_empty() {
-            // The identity service refuses a route of no app.
-            return Err(runtime_portal::NotAvailable::ConnectionFailed(
-                std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "channel keys requested for a different launch route",
-                ),
-            ));
-        }
-        Ok(ready_channel_keys())
-    }
-    fn device_certificate(&self) -> Option<&[u8]> {
-        Some(b"fixture")
-    }
-    fn signing_public_key(&self) -> [u8; 32] {
-        [5; 32]
-    }
-    fn sign_collaboration_join(&self, _: &str) -> Result<[u8; 64], runtime_portal::NotAvailable> {
-        Ok([7; 64])
-    }
-    fn sign_collaboration_op(
-        &self,
-        _: &str,
-        _: &str,
-        _: &str,
-        _: &[u8],
-    ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
-        Ok([9; 64])
-    }
-}
-
-/// A cluster-scope route (an empty app id, the workspace-wide discovery
-/// route an agent joins) names no app, so the identity service refuses
-/// it channel keys — and a route left waiting for an answer it cannot get
-/// is asked again every second by the key timer for the whole life of the
-/// connection. It carries no record and writes nothing, so it asks for no
-/// keys at all and the timer never names it.
-///
-/// The broker here pushes channel changes, so the timer asks nothing once
-/// every route either holds its keys or is plaintext. Before the join the
-/// app's own route settles to holding its keys, which disarms the timer;
-/// after a cluster route joins, the timer must stay disarmed and no more
-/// question may be asked. Pre-fix the cluster route waits for keys it can
-/// never get, which arms the timer and asks it every round.
-#[test]
-#[cfg(unix)]
-fn a_cluster_route_asks_for_no_channel_keys_and_polls_nothing() {
-    let changes = Arc::new(tokio::sync::watch::Sender::new(0_u64));
-    let broker = FakeBroker {
-        captures: Arc::new(std::sync::Mutex::new(Captures {
-            key_changes: Some(Arc::clone(&changes)),
-            ..Captures::default()
-        })),
-        ..FakeBroker::default()
-    };
-    let (fd, _captures, thread) = stand_up_fake_broker(broker);
-    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let sdk = CollaborationManager::spawn_sdk(
-        SdkConnectSource::Fd(fd),
-        Some(SdkJoinIdentity {
-            presentation: harness_presentation(),
-            member_kind: "person",
-            signer: SdkDocumentSigner::Certified(Arc::new(ClusterRefusingIdentity {
-                asked: Arc::clone(&asked),
-            })),
-        }),
-    )
-    .unwrap();
-    let mut manager = CollaborationManager::disabled();
-    manager.backend = Backend::Transport(Box::new(sdk));
-    assert!(manager.send(CollabRequest::Hello {
-        app_id: "so.tilo.test".into(),
-        cluster_id: Uuid::new_v4(),
-        record: None,
-        resource_type: None,
-        handle: None,
-    }));
-    manager.await_primary_route().unwrap();
-    // The app's own route learns its keys at its join round and holds
-    // them; the timer is then disarmed (a pushing broker asks nothing
-    // that holds keys and nothing that is plaintext).
-    tilo_test_env::wait_until("the app route's join round to be applied", || {
-        !key_schedule(&manager).armed
-    });
-    let settled = asked.load(std::sync::atomic::Ordering::Acquire);
-    assert!(settled > 0, "the app's own route asked for its keys");
-    manager.join_route(
-        RouteSpec::cluster(Uuid::new_v4()),
-        collab_types::document::ResourceType::new(""),
-    );
-    // The join's key round, were there one, has run before this probe is
-    // answered (the shovel serves its commands in order, and the probe
-    // applies any round still out). A cluster route asks nothing, so the
-    // timer stays disarmed and no route was asked for keys.
-    let seen = key_schedule(&manager);
-    assert!(
-        !seen.armed && seen.timer_rounds == 0,
-        "a cluster route leaves the key timer armed to ask forever: {seen:?}"
-    );
-    assert_eq!(
-        asked.load(std::sync::atomic::Ordering::Acquire),
-        settled,
-        "a cluster route asked the identity service for channel keys it cannot be granted"
-    );
-    drop(manager);
-    thread.join().unwrap();
-}
-
 /// A certified endpoint on one ordinary route of a broker that says when
 /// channel keys change (`changes`) or does not (`None`), with the count
 /// of its key requests.
@@ -3328,27 +3123,15 @@ fn keyed_endpoint(
     };
     let (fd, _captures, thread) = stand_up_fake_broker(broker);
     let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let sdk = CollaborationManager::spawn_sdk(
-        SdkConnectSource::Fd(fd),
-        Some(SdkJoinIdentity {
-            presentation: harness_presentation(),
-            member_kind: "person",
-            signer: SdkDocumentSigner::Certified(Arc::new(KeyedIdentity {
-                asked: Arc::clone(&asked),
-            })),
-        }),
-    )
-    .unwrap();
-    let mut manager = CollaborationManager::disabled();
-    manager.backend = Backend::Transport(Box::new(sdk));
-    assert!(manager.send(CollabRequest::Hello {
-        app_id: "so.tilo.test".into(),
-        cluster_id: Uuid::new_v4(),
-        record: None,
-        resource_type: None,
-        handle: None,
-    }));
-    manager.await_primary_route().unwrap();
+    let manager = certified_manager(
+        fd,
+        FixtureIdentity {
+            asked: Arc::clone(&asked),
+            ..FixtureIdentity::keyed()
+        },
+        harness_presentation(),
+        ("so.tilo.test", Uuid::new_v4()),
+    );
     tilo_test_env::wait_until("the route's endpoint to ask for its channel keys", || {
         asked.load(std::sync::atomic::Ordering::Acquire) > 0
     });
@@ -3412,25 +3195,15 @@ fn without_pushed_changes_routes_are_asked_every_second() {
 fn document_publication_certified_signing_refusal_never_reports_success() {
     let broker = FakeBroker::default();
     let (fd, captures, thread) = stand_up_fake_broker(broker);
-    let sdk = CollaborationManager::spawn_sdk(
-        SdkConnectSource::Fd(fd),
-        Some(SdkJoinIdentity {
-            presentation: harness_presentation(),
-            member_kind: "person",
-            signer: SdkDocumentSigner::Certified(Arc::new(RefusedDocumentIdentity)),
-        }),
-    )
-    .unwrap();
-    let mut manager = CollaborationManager::disabled();
-    manager.backend = Backend::Transport(Box::new(sdk));
-    assert!(manager.send(CollabRequest::Hello {
-        app_id: "worker".into(),
-        cluster_id: Uuid::new_v4(),
-        record: None,
-        resource_type: None,
-        handle: None,
-    }));
-    manager.await_primary_route().unwrap();
+    let mut manager = certified_manager(
+        fd,
+        FixtureIdentity {
+            refuses_ops: true,
+            ..FixtureIdentity::keyed()
+        },
+        harness_presentation(),
+        ("worker", Uuid::new_v4()),
+    );
     let route = manager.primary_route().unwrap().route.clone();
     let ready = broker_state(&manager)
         .document_reads

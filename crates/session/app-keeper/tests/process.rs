@@ -417,3 +417,97 @@ fn a_client_that_vanishes_mid_request_or_speaks_garbage_ends_alone() {
     );
     assert_eq!(windows[0].1.as_deref(), Some("Steady"));
 }
+
+/// The `/tmp/.X<n>-lock` a live X11 display holds for `pid`, once there is one.
+fn x11_lock_of(pid: u32) -> PathBuf {
+    let started = Instant::now();
+    loop {
+        let held = std::fs::read_dir("/tmp")
+            .expect("/tmp")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".X") && name.ends_with("-lock"))
+            })
+            .find(|path| {
+                std::fs::read_to_string(path)
+                    .is_ok_and(|held| held.trim().parse::<u32>().ok() == Some(pid))
+            });
+        if let Some(lock) = held {
+            return lock;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the keeper holds no X11 lock"
+        );
+        std::thread::park_timeout(Duration::from_millis(10));
+    }
+}
+
+/// A login's end tells the keeper to end with SIGTERM: its app ends with it, and the display it
+/// served leaves no lock or socket behind in `/tmp`, where they would pile up login after login.
+#[test]
+fn a_keeper_told_to_end_ends_its_app_and_lets_its_x11_display_go() {
+    let scratch = tempfile::tempdir().expect("a directory");
+    let dir = scratch.path().join("keeper");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tilo-app-keeper"))
+        .arg("--dir")
+        .arg(&dir)
+        .arg("--launch")
+        .arg("process-test")
+        .arg("--x11")
+        .arg("--")
+        .arg("sleep")
+        .arg("600")
+        .stdin(Stdio::null())
+        .spawn_locked()
+        .expect("the keeper starts");
+    let lock = x11_lock_of(child.id());
+    let number = lock
+        .to_string_lossy()
+        .trim_start_matches("/tmp/.X")
+        .trim_end_matches("-lock")
+        .to_owned();
+    let socket = PathBuf::from(format!("/tmp/.X11-unix/X{number}"));
+    assert!(socket.exists(), "the display listens");
+    let desktop = Desktop::new();
+    Control::greet(&dir).attach(&desktop, child.id());
+    let started = Instant::now();
+    let app = loop {
+        if let Some(app) = std::fs::read(dir.join("app"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<wire::AppProcess>(&bytes).ok())
+        {
+            break app;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the app never started"
+        );
+        std::thread::park_timeout(Duration::from_millis(10));
+    };
+
+    // SAFETY: kill takes a pid and a signal number.
+    let sent = unsafe { libc::kill(libc::pid_t::try_from(child.id()).unwrap(), libc::SIGTERM) };
+    assert_eq!(sent, 0);
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("the keeper can be waited for") {
+            break status;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the keeper did not end"
+        );
+        std::thread::park_timeout(Duration::from_millis(10));
+    };
+    assert!(status.success(), "it ended as it chose to: {status:?}");
+    assert!(
+        !Path::new(&format!("/proc/{}", app.pid)).exists(),
+        "its app ended with it"
+    );
+    assert!(!lock.exists(), "no X11 lock is left behind");
+    assert!(!socket.exists(), "no X11 socket is left behind");
+}

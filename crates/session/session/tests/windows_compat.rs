@@ -1089,7 +1089,6 @@ impl KeptRig {
         let ending = Rc::new(std::cell::Cell::new(tilo_app_launch::Teardown::Logout));
         let asked = Rc::clone(&ending);
         let mut session = crate::common::headless(Options {
-            collab: false,
             launch: Some(Rc::clone(&apps)),
             launches: Arc::clone(&launches),
             state: Some(state.to_path_buf()),
@@ -1185,11 +1184,7 @@ fn real_launcher_keeper(handed: &[String]) -> (String, Vec<String>) {
 }
 
 fn alive(pid: u32) -> bool {
-    Path::new(&format!("/proc/{pid}")).exists()
-        && !fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
-            stat.rsplit_once(')')
-                .is_some_and(|(_, rest)| rest.trim_start().starts_with('Z'))
-        })
+    tilo_process::start_time(pid).is_some()
 }
 
 #[test]

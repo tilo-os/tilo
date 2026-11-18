@@ -1154,11 +1154,19 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
     }
     fn tools(&self) -> Vec<Value> {
-        definitions(
+        let mut tools = definitions(
             self.host.content_puts().is_some(),
             self.host.content_gets().is_some(),
             self.devices.is_some(),
-        )
+        );
+        // A session is offered what it can use. Where this server starts no programs (the one
+        // a server takes a person's turn through) `tilo`, the tool for them, is not listed: a
+        // model offered it calls it and is refused. A caller that names it all the same is
+        // still told what does the work here.
+        if !self.starts_programs() {
+            tools.retain(|tool| tool["name"].as_str() != Some("tilo"));
+        }
+        tools
     }
     /// Attribute every invocation of this connection to one agent session, so
     /// history, undo and activity tell concurrent agents apart. Provenance

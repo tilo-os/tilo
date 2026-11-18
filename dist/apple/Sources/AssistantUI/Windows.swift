@@ -99,23 +99,24 @@ struct JobSheet: View {
 }
 
 /// What is said over the message field of whether Tilo answers. After a try that failed: that
-/// Tilo cannot be reached. While the first try is still in work: the quiet word for waiting,
-/// so that a server that takes its time is not silent. A try that is in work is never said
-/// to have failed, however long it takes.
-struct ReachLine: View {
+/// Tilo cannot be reached. From the app's opening until the main chat stands: the quiet word
+/// for waiting, one sentence through every step behind it (the page, the session, the look for
+/// the assistant, what answers for it), so that a server that takes its time is not silent and
+/// no step is said as if it were something new. A try that is in work is never said to have
+/// failed, however long it takes.
+public struct ReachLine: View {
     @Environment(AssistantModel.self) private var model
 
-    var body: some View {
-        switch model.reach {
-        case .unreachable:
+    public init() {}
+
+    public var body: some View {
+        if model.reach == .unreachable {
             Text(AssistantWords.notReachable.said).font(.small12).foregroundStyle(Token.ink2)
                 .padding(.horizontal, 10).padding(.vertical, 3)
                 .background(Token.raised, in: Capsule())
                 .padding(.bottom, 6)
-        case .unknown:
+        } else if model.isStarting {
             Fine(words: AssistantWords.pairing.said).padding(.bottom, 6)
-        case .reachable:
-            EmptyView()
         }
     }
 }

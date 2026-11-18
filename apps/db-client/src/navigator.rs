@@ -9,8 +9,8 @@ use uuid::Uuid;
 use crate::i18n::t;
 use crate::link::{ConnectionRow, Intent, Link};
 use crate::model::{DatabaseSchema, Engine, RelationKind, RelationRef, SchemaInfo};
-use crate::record::{Workspace as Record, id_of};
 use crate::resource::DbEffect;
+use crate::saved::{Workspace as SharedData, id_of};
 
 const CONNECTIONS: &str = "connections";
 /// The connections heading's action, which opens the new-connection form.
@@ -148,7 +148,7 @@ pub struct Navigator {
 
 impl Navigator {
     /// The sidebar over `link`; with the workspace's `actions`, a saved
-    pub fn new(link: &Link, actions: Option<&Actions<Record>>) -> Self {
+    pub fn new(link: &Link, actions: Option<&Actions<SharedData>>) -> Self {
         let ask = link.clone();
         let opened = link.clone();
         let mut list = NavList::new(sections(&[], None))
@@ -165,7 +165,8 @@ impl Navigator {
             });
         if let Some(actions) = actions {
             if let Some(remove) = actions.binding(
-                Record::REMOVE_CONNECTION.try_map(|key: String| parse_connection(&key).map(id_of)),
+                SharedData::REMOVE_CONNECTION
+                    .try_map(|key: String| parse_connection(&key).map(id_of)),
             ) {
                 list = list.item_action(
                     NavAction::new("remove", Icon::Trash2, t("db-remove-connection")),

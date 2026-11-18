@@ -1025,6 +1025,34 @@ final class TiloSourceTests: XCTestCase {
         JSON(text: try await page("return JSON.stringify(window.heard.filter(h => h.action === 'send').map(h => h.args.to[0]))"))
     }
 
+    /// A start that finds its assistant: from the moment the page is in until the main chat
+    /// stands the source says one thing, that it looks, and never that anything is being made.
+    func testAStartThatFindsItsAssistantSaysOneThingUntilTheMainChatStands() async throws {
+        try await start(.assistant)
+        try await enter(device: true, "window.byKind = true; window.agents = [kept('reed', {name: 'Reed'})]")
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        XCTAssertEqual(Array(setups.drop { $0 == .unknown }), [.findingAssistant, .ready],
+                       "between the look for her assistant and the main chat that stands something else was said")
+        let made = try await page("return String(window.asks.filter(what => what === 'chat create-agent').length)")
+        XCTAssertEqual(made, "0")
+    }
+
+    /// A first start, where the person keeps no assistant and one is made: only then is it said
+    /// that an assistant is being made, between the look and the main chat that stands.
+    func testOnlyAStartThatMakesAnAssistantSaysThatOneIsBeingMade() async throws {
+        try await start(.assistant)
+        try await enter(device: true, "window.byKind = true; window.agents = []")
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        let said = Array(setups.drop { $0 == .unknown })
+        XCTAssertEqual(said.count, 3, "\(said)")
+        XCTAssertEqual(said.first, .findingAssistant)
+        XCTAssertEqual(said.last, .ready)
+        XCTAssertFalse([.unknown, .findingAssistant].contains(said.dropFirst().first), "nothing said that her assistant was being made: \(said)")
+        XCTAssertEqual(said, [.findingAssistant, .makingAssistant, .ready])
+        let made = try await page("return String(window.asks.filter(what => what === 'chat create-agent').length)")
+        XCTAssertEqual(made, "1")
+    }
+
     func testWhereThePersonKeepsNoAssistantTheAppMakesItOnTheirServersWordAndWritesToIt() async throws {
         try await start(.assistant)
         // The workspace keeps agents, and none of them is hers to write to: another person's,
@@ -1350,8 +1378,27 @@ final class TiloSourceTests: XCTestCase {
         XCTAssertFalse(String(describing: setups).contains(typed))
         XCTAssertFalse(String(describing: changes).contains(typed))
         XCTAssertFalse(String(describing: defaults.dictionaryRepresentation()).contains(typed))
-        // The model that answers is one of those her server listed.
+        // The model that answers and works is one of those her server listed: one ask for both.
+        try await source.choose("anthropic/m-2", for: .request, .task)
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        let chosen = try await page("return String(window.asks.filter(what => what === 'tilo.models set-assignments').length) + ' ' + JSON.stringify(window.assignments.map(row => row.kind))")
+        XCTAssertEqual(chosen, #"1 ["request","task"]"#)
+    }
+
+    /// Nothing is said to stand in the way no more before a model stands for the kind of work a
+    /// turn in the main chat is worked as: a message sent in between found no model linked.
+    func testNothingIsSaidToBeReadyBeforeAModelStandsForTheKindATurnIsWorkedAs() async throws {
+        try await start(.assistant)
+        try await enter(device: true, "window.byKind = true; window.unlinked = true; window.agents = [kept('assistant', {name: 'Assistant'})]")
+        try await until("the step is offered") { if case .needsProvider = self.setups.last { true } else { false } }
+        // A made-up key, typed as into the protected field.
+        _ = try await source.link("anthropic", key: Secret("sk-made-up-and-typed-into-the-protected-field"))
+        try await until("the models are offered in the main chat") { if case .needsModel = self.setups.last { true } else { false } }
+        // As a choice that reached her server for the answering alone.
         try await source.choose("anthropic/m-2", for: .request)
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertNotEqual(setups.last, .ready, "the app said that nothing stands in the way while no model stood for the work of a turn")
+        try await source.choose("anthropic/m-2", for: .task)
         try await until("nothing more stands in the way") { self.setups.last == .ready }
     }
 
@@ -1362,7 +1409,7 @@ final class TiloSourceTests: XCTestCase {
             window.byKind = true; window.unlinked = true; window.agents = [kept('assistant', {name: 'Assistant'})];
             window.added = [{id: 'p-7', name: 'OpenRouter', protocol: 'openrouter', endpoint: 'https://openrouter.example',
               configured: true, models: [{id: 'm-1', label: 'Model one'}], defaultModel: 'm-1'}];
-            window.assignments = [{kind: 'request', provider: 'p-7', model: 'm-1'}]
+            window.assignments = [{kind: 'request', provider: 'p-7', model: 'm-1'}, {kind: 'task', provider: 'p-7', model: 'm-1'}]
             """)
         try await until("nothing stands in the way of an answer") { self.setups.last == .ready }
         // The step they come back to offers the provider they linked, said to be linked, and the
@@ -1383,7 +1430,7 @@ final class TiloSourceTests: XCTestCase {
         XCTAssertEqual(keys, "[\"\(typed)\"]")
         // The model they chose stands, and nothing came to stand in the way of an answer.
         let assigned = try await page("return JSON.stringify(window.assignments)")
-        XCTAssertEqual(assigned, #"[{"kind":"request","provider":"p-7","model":"m-1"}]"#)
+        XCTAssertEqual(assigned, #"[{"kind":"request","provider":"p-7","model":"m-1"},{"kind":"task","provider":"p-7","model":"m-1"}]"#)
         XCTAssertEqual(setups.dropFirst(said).filter { $0 != .ready }, [])
         XCTAssertEqual(setups.last, .ready)
         // The key stands nowhere else.

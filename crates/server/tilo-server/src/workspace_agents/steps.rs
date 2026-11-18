@@ -161,7 +161,7 @@ pub(super) fn looked(id: &InvocationId, state: Option<&InvocationState>) {
 
 /// `tool` as the log names it: a name a server's tools can have, or `other` for anything else
 /// a model wrote in its place.
-fn offered_name(tool: &str) -> &str {
+pub(super) fn offered_name(tool: &str) -> &str {
     let plain = !tool.is_empty()
         && tool.len() <= 48
         && tool

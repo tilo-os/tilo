@@ -3643,9 +3643,8 @@ async fn drive_shovel(
     let LocalSdkJoinIdentity {
         presentation,
         member_kind,
-        mut signer,
+        signer,
     } = identity;
-    let person = personal_cluster_presentation(&presentation, &mut signer).await;
     let media_routes = native_media::Routes::default();
     let _media_worker = native_media::start(media_rx, media_routes.clone());
     // Every route of a certified endpoint is an encrypted channel whose keys
@@ -3666,6 +3665,7 @@ async fn drive_shovel(
     #[cfg(test)]
     let mut key_timer_rounds = 0_usize;
     let signer: SharedSigner = std::rc::Rc::new(tokio::sync::Mutex::new(signer));
+    let person = PersonalCluster::of(&presentation, &signer).map(std::rc::Rc::new);
     let queue = DocumentQueue::start(signer.clone(), inbound_tx.clone());
     let mut routes = std::collections::HashMap::<String, SdkRoute>::new();
     let mut primary: Option<String> = None;
@@ -3729,7 +3729,7 @@ async fn drive_shovel(
                 key_signals: &key_signals,
                 client: &client,
                 presentation: &presentation,
-                person: person.as_ref(),
+                person: person.as_deref(),
                 member_handle: member_handle.as_deref(),
                 member_kind,
                 inbound_tx: &inbound_tx,
@@ -4321,78 +4321,95 @@ async fn install_sdk_encryption(
     Ok(())
 }
 
-/// This device's join proof for its person's own workspace, as the identity
-/// service lends it to an app that keeps records of theirs there; `None`
-/// for any other app, or a connection without a certified identity.
+/// The person's own workspace, when it is not the launch's, and this
+/// device's join proof for it: what a route there presents instead of the
+/// launch workspace's. The identity service lends the proof only to an app
+/// that keeps something of the person's there, so it is asked when a route
+/// there first joins, and never by an app that joins none.
+struct PersonalCluster {
+    workspace: String,
+    device_certificate: Vec<u8>,
+    signer: SharedSigner,
+    proof: tokio::sync::OnceCell<Option<Vec<u8>>>,
+}
+
 #[allow(
     clippy::future_not_send,
     reason = "the host identity transport is constructed and retained only on the shovel LocalSet"
 )]
-async fn personal_cluster_presentation(
-    presentation: &[u8],
-    signer: &mut LocalSdkDocumentSigner,
-) -> Option<(String, Vec<u8>)> {
-    #[derive(serde::Deserialize)]
-    struct Root {
-        user_public_key: [u8; 32],
+impl PersonalCluster {
+    /// The person's own workspace as `presentation`'s certified identity
+    /// names it, signed for by `signer`; `None` for a connection without a
+    /// certified identity, or one launched into that workspace.
+    fn of(presentation: &[u8], signer: &SharedSigner) -> Option<Self> {
+        #[derive(serde::Deserialize)]
+        struct Root {
+            user_public_key: [u8; 32],
+        }
+        // What the person keeps there then cannot be reached; the log says why.
+        let launch = match runtime_collab::CertifiedJoinIdentity::decode(presentation) {
+            Ok(Some(launch)) => launch,
+            Ok(None) => return None,
+            Err(error) => {
+                tracing::warn!(%error, "no join proof for the person's own workspace: the launch identity does not decode");
+                return None;
+            }
+        };
+        let root: Root = match serde_json::from_slice(&launch.device_certificate) {
+            Ok(root) => root,
+            Err(error) => {
+                tracing::warn!(%error, "no join proof for the person's own workspace: the device certificate does not decode");
+                return None;
+            }
+        };
+        let workspace = collab_types::personal_cluster(&root.user_public_key).to_string();
+        (workspace != launch.workspace_id).then(|| Self {
+            workspace,
+            device_certificate: launch.device_certificate,
+            signer: std::rc::Rc::clone(signer),
+            proof: tokio::sync::OnceCell::new(),
+        })
     }
-    // The person's records then cannot be reached; the log says why.
-    let unavailable = |reason: &dyn std::fmt::Display| {
-        tracing::warn!(%reason, "no join proof for the person's own workspace");
-    };
-    let launch = match runtime_collab::CertifiedJoinIdentity::decode(presentation) {
-        Ok(Some(launch)) => launch,
-        // A connection without a certified identity.
-        Ok(None) => return None,
-        Err(error) => {
-            unavailable(&format_args!(
-                "the launch identity does not decode: {error}"
-            ));
+
+    /// What a route of `spec`'s workspace presents to join, when it is the
+    /// person's own: the proof, asked of the identity service once.
+    async fn presentation(&self, spec: &RouteSpec) -> Option<&[u8]> {
+        if spec.cluster_id.to_string() != self.workspace {
             return None;
         }
-    };
-    let root: Root = match serde_json::from_slice(&launch.device_certificate) {
-        Ok(root) => root,
-        Err(error) => {
-            unavailable(&format_args!(
-                "the device certificate does not decode: {error}"
-            ));
-            return None;
-        }
-    };
-    let workspace = collab_types::personal_cluster(&root.user_public_key).to_string();
-    if workspace == launch.workspace_id {
-        return None;
+        self.proof.get_or_init(|| self.sign()).await.as_deref()
     }
-    let signed = match signer {
-        LocalSdkDocumentSigner::Host(identity) => identity
-            .sign_collaboration_join(&workspace)
-            .await
-            .map_err(|error| error.to_string()),
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
-            let (identity, asked) = (std::sync::Arc::clone(identity), workspace.clone());
-            tokio::task::spawn_blocking(move || identity.sign_collaboration_join(&asked))
+
+    async fn sign(&self) -> Option<Vec<u8>> {
+        let signed = match &mut *self.signer.lock().await {
+            LocalSdkDocumentSigner::Host(identity) => identity
+                .sign_collaboration_join(&self.workspace)
                 .await
-                .map_err(|error| error.to_string())
-                .and_then(|signed| signed.map_err(|error| error.to_string()))
+                .map_err(|error| error.to_string()),
+            LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
+                let (identity, asked) = (std::sync::Arc::clone(identity), self.workspace.clone());
+                tokio::task::spawn_blocking(move || identity.sign_collaboration_join(&asked))
+                    .await
+                    .map_err(|error| error.to_string())
+                    .and_then(|signed| signed.map_err(|error| error.to_string()))
+            }
+            LocalSdkDocumentSigner::Inherited(_) => return None,
+        };
+        let proof = match signed {
+            Ok(proof) => proof,
+            Err(reason) => {
+                tracing::warn!(%reason, "no join proof for the person's own workspace: signing the join failed");
+                return None;
+            }
+        };
+        runtime_collab::CertifiedJoinIdentity {
+            workspace_id: self.workspace.clone(),
+            device_certificate: self.device_certificate.clone(),
+            proof: proof.to_vec(),
         }
-        LocalSdkDocumentSigner::Inherited(_) => return None,
-    };
-    let proof = match signed {
-        Ok(proof) => proof,
-        Err(error) => {
-            unavailable(&format_args!("signing the join failed: {error}"));
-            return None;
-        }
-    };
-    let bytes = runtime_collab::CertifiedJoinIdentity {
-        workspace_id: workspace.clone(),
-        device_certificate: launch.device_certificate,
-        proof: proof.to_vec(),
+        .encode()
+        .ok()
     }
-    .encode()
-    .ok()?;
-    Some((workspace, bytes))
 }
 
 /// The announcements of `key`'s route held while it was joining, as commands
@@ -4452,10 +4469,8 @@ struct SdkJoinContext<'a> {
     key_signals: &'a tokio_mpsc::UnboundedSender<KeySignal>,
     client: &'a runtime_collab::CollabClient,
     presentation: &'a [u8],
-    /// The person's own workspace and this device's join proof for it, when the
-    /// identity service lends one: what a route of a record of theirs
-    /// presents instead of the launch workspace's.
-    person: Option<&'a (String, Vec<u8>)>,
+    /// The person's own workspace, when it is not the launch's.
+    person: Option<&'a PersonalCluster>,
     member_handle: Option<&'a str>,
     member_kind: &'a str,
     inbound_tx: &'a InboundBridge,

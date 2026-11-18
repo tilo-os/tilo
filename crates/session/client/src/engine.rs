@@ -1736,8 +1736,13 @@ impl Engine {
             tracing::warn!(%workspace, "this device's workspace service is not open, so the workspace stays the layout's own");
             return;
         };
+        // Founding redeems the service's invitation into this workspace, and an enrollment installs
+        // only into a workspace on this device's layout: it is put there before the service is
+        // asked, as a join puts the workspace it installs into. One made since the session started
+        // is on no layout the engine opened with, and would be refused as gone.
+        self.bind(workspace);
         match founder.found(workspace, name.to_owned()).await {
-            Ok(()) => self.bind(workspace),
+            Ok(()) => {}
             Err(error) => {
                 tracing::warn!(%error, %workspace, "the workspace was not founded here");
                 self.unfounded.lock_recover().insert(workspace);

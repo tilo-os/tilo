@@ -1134,6 +1134,44 @@ tilo_test_env::scenario! {
     }
 }
 
+/// A verb on a note names it in its change by one line of its title: the change does not
+/// grow with the title.
+#[test]
+fn a_change_names_its_note_by_one_line() {
+    let added_inside = |title: &str| {
+        let mut book = Book::new();
+        let page = note(&mut book, title, None);
+        let part = book
+            .apply(NoteList::NEW_CHILD.with(note_list::NewChild {
+                page,
+                title: "Inside".to_owned(),
+                rank: None,
+            }))
+            .unwrap();
+        let changes = book.part(part).doc_mut().get_changes(&[]);
+        let change = changes.last().unwrap();
+        let label = change
+            .message()
+            .and_then(tilo_actions::ActionContext::from_change_message)
+            .and_then(|entry| entry.item)
+            .map(|item| item.label)
+            .unwrap();
+        (label, change.raw_bytes().len())
+    };
+    let (label, short) = added_inside("Plan");
+    assert_eq!(label, "Plan");
+    let long = "Read the plan ".repeat(4_000);
+    let (label, bytes) = added_inside(&long);
+    assert_eq!(label.chars().count(), 96, "{label}");
+    assert!(long.starts_with(&label), "{label}");
+    assert!(
+        bytes.saturating_sub(short) < 200,
+        "a note inside one titled in {} bytes is a change of {bytes} bytes; inside one titled in \
+         4 bytes, {short}",
+        long.len()
+    );
+}
+
 /// The note titled `title`.
 fn titled(book: &Book, title: &str) -> Id {
     book.merged()

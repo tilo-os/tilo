@@ -51,6 +51,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 # The registry: where keepers live, and a fresh directory's name.
 tilo-paths.workspace = true
+# When the app started, which the session checks it against before it takes it back.
+tilo-process = { path = "../../platform/tilo-process" }
 uuid.workspace = true
 workspace-hack = { version = "0.1" }
 

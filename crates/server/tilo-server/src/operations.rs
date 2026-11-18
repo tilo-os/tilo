@@ -27,6 +27,7 @@ use tilo_server_protocol::transport::{
     HeldCopy, HeldWorkspace, OperationEntry, ServerAnswer, ServerHardware, ServerOperation,
     ServerOperationResult, ServerStatus,
 };
+use tilo_unlock_protocol::opened::{OPENED_PATH, Opening};
 use tilo_user_identity::DeviceCert;
 
 use crate::workspaces::Workspaces;
@@ -401,10 +402,22 @@ async fn status(
             .map(|target| target.trim().to_owned())
             .unwrap_or_default(),
         unlock,
+        unlocked: opening(),
         holding: holding(workspaces).await,
         hardware: hardware(state_root),
         history: history(state_root),
     }
+}
+
+/// How this boot's system volume opened, as early boot left it: `None` when
+/// this boot left no note, as one whose initrd wrote none does.
+fn opening() -> Option<Opening> {
+    opening_at(Path::new(OPENED_PATH))
+}
+
+/// [`opening`] at `path`.
+fn opening_at(path: &Path) -> Option<Opening> {
+    Opening::decode(&std::fs::read(path).ok()?)
 }
 
 /// The updates the server's entry says it follows and how it unlocks; both

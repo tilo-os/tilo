@@ -66,8 +66,18 @@ fi
 # and otherwise shows a code a device of the person's approves; the methods it
 # may use are the ones this image declares in
 # /usr/lib/tilo/enrollment-methods. It burns the token it spends.
-/usr/libexec/tilo/tilo-enroll enroll --identity-root /var/lib/tilo \
-    --home-peer-output /etc/tilo/home-peer.toml --label "$label" --timeout 270
+#
+# The relay its configuration names is where it shows that code: a server
+# behind a network address translation is reached only through it.
+relay=""
+if [[ -r /etc/tilo/server.toml ]]; then
+    relay="$(sed -n 's/^[[:space:]]*relay[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+        /etc/tilo/server.toml | head -n 1)"
+fi
+enroll_args=(--identity-root /var/lib/tilo
+    --home-peer-output /etc/tilo/home-peer.toml --label "$label" --timeout 270)
+[[ -n "$relay" ]] && enroll_args+=(--relay "$relay")
+/usr/libexec/tilo/tilo-enroll enroll "${enroll_args[@]}"
 valid_device_certificate \
     || { echo "tilo-server-firstboot: enrollment produced an unsafe device certificate" >&2; exit 1; }
 handoff_home_peer

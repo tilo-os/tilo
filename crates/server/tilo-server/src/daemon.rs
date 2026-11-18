@@ -2079,6 +2079,8 @@ mod tests {
             let status_clock = publish_status(&status_path, &status);
             let owner_endpoint = EndpointAddr::new(iroh::SecretKey::from_bytes(&[91; 32]).public());
             let workspace = [29; 32];
+            // The workspace this server holds, and the one it does not.
+            let given = WorkspaceId::from_u128(7);
             let bundle_path = temp.path().join("home-peer.toml");
             let bundle = fs::full_replica::HomePeerSet {
                 status_file: status_path.clone(),
@@ -2093,7 +2095,7 @@ mod tests {
                     capability_json: "[]".into(),
                     authority: None,
                     members: Vec::new(),
-                    server_workspace_ids: vec![WorkspaceId::from_u128(0)],
+                    server_workspace_ids: vec![given],
                 }],
             };
             std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
@@ -2118,6 +2120,18 @@ mod tests {
             )
             .await
             .unwrap();
+            // The workspace enters the server the way production does it: the
+            // person makes it on their server and their device enters it.
+            let server_workspaces = server.workspaces().expect("the server holds workspaces");
+            let server_workspace = given.to_string();
+            server_workspaces
+                .create_workspace("Workspace", Some(&server_workspace))
+                .await
+                .unwrap();
+            server_workspaces
+                .enter(&server_workspace, &client_cert)
+                .await
+                .unwrap();
             assert_ne!(
                 server.node_addr().id.as_bytes(),
                 host.public_key.as_slice(),
@@ -2127,7 +2141,7 @@ mod tests {
             let discovered = crate::client::ServerClient::discover_content_endpoint(
                 &client_endpoint,
                 server.node_addr(),
-                WorkspaceId::from_u128(0),
+                given,
                 user.public_key,
                 host.public_key,
                 client_cert.clone(),
@@ -2141,7 +2155,7 @@ mod tests {
             let registration = crate::client::ServerClient::discover_content_peer(
                 &client_endpoint,
                 server.node_addr(),
-                WorkspaceId::from_u128(0),
+                given,
                 user.public_key,
                 host.public_key,
                 client_cert.clone(),
@@ -2155,21 +2169,25 @@ mod tests {
             assert_eq!(advertised_ticket.node, owner_endpoint);
             assert_ne!(advertised_ticket.node, registration.endpoint);
             assert_eq!(advertised_ticket.workspace, workspace);
-            let auto_bound = crate::client::ServerClient::discover_content_peer(
-                &client_endpoint,
-                server.node_addr(),
-                WorkspaceId::from_u128(99),
-                user.public_key,
-                host.public_key,
-                client_cert.clone(),
-                client_key.clone(),
-                RevocationList::new(),
-            )
-            .await
-            .unwrap();
-            assert_eq!(auto_bound.endpoint, filesystem);
+            // A workspace the server does not hold is not discoverable through
+            // it, and discovery does not make one: a workspace enters a server
+            // by being made or handed over there, never by a device asking.
             assert!(
-                server
+                crate::client::ServerClient::discover_content_peer(
+                    &client_endpoint,
+                    server.node_addr(),
+                    WorkspaceId::from_u128(99),
+                    user.public_key,
+                    host.public_key,
+                    client_cert.clone(),
+                    client_key.clone(),
+                    RevocationList::new(),
+                )
+                .await
+                .is_err()
+            );
+            assert!(
+                !server
                     .sessions
                     .workspaces
                     .lock()
@@ -2181,7 +2199,7 @@ mod tests {
                 crate::client::ServerClient::discover_content_endpoint(
                     &client_endpoint,
                     server.node_addr(),
-                    WorkspaceId::from_u128(0),
+                    given,
                     user.public_key,
                     wrong_device,
                     // The client certificate remains valid; only the enrolled host
@@ -2478,14 +2496,18 @@ mod tests {
             .unwrap();
             assert!(removed.decommissioned);
             assert!(temp.path().join("server/decommissioned").exists());
-            assert!(
-                crate::servers::read(server.workspaces().unwrap())
-                    .await
-                    .unwrap()
-                    .active(&host.public_key)
-                    .is_none(),
-                "a decommissioned server is retired among its person's servers"
-            );
+            // A retired server serves nothing: it applies its own retirement
+            // and lets go of everything it holds, its person's admin
+            // workspace among them. Its entry stays retired where their
+            // devices read it.
+            let held = server.workspaces().unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !held.list().await.is_empty() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("a decommissioned server lets go of everything it holds");
             assert!(
                 crate::client::ServerClient::manage_home_peer(
                     &client_endpoint,

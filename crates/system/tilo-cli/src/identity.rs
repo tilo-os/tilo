@@ -103,7 +103,9 @@ pub fn ensure(name: Option<&str>) -> Result<(Person, bool)> {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: device.verifying_key().to_bytes(),
         device_label: login::label("tilo", &login::hostname()),
-        capabilities: DeviceCapabilities::member(),
+        // The root is here: this is the person's primary device, and the one
+        // that admits their others.
+        capabilities: DeviceCapabilities::primary(),
         issued_at_ns: tilo_clock::unix_now_ns().saturating_sub(1_000_000_000),
         expires_at_ns: None,
         signature: [0; 64],

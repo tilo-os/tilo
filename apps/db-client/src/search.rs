@@ -462,7 +462,7 @@ mod tests {
 
     /// The app's search source over the index's entries, as the framework
     fn source(index: &DbSearchIndex) -> impl SearchProvider + use<> {
-        ui::framework::testing::search_source::<crate::record::Workspace>(index.entries())
+        ui::framework::testing::search_source::<crate::saved::Workspace>(index.entries())
     }
 
     fn assert_address_resolves(index: &DbSearchIndex, result: &SearchResult) {

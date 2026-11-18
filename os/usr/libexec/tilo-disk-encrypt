@@ -331,6 +331,14 @@ type=$GUID_TILO_ROOT, name="Tilo root"
 EOF
   fi
   udevadm settle 2>/dev/null || true
+  # The kernel exposes new partitions before anything has made their device
+  # nodes: udev, usually, or the node holder a sandbox without udev runs beside
+  # this. Wait for the first one so the inventory below reads what sfdisk wrote
+  # rather than the empty table it replaced.
+  for _ in $(seq 1 100); do
+    [ -b "$(parts_of "$disk" | sed -n 1p)" ] && break
+    sleep 0.05
+  done
 
   local esp boot_part luks_part store_part="" want_parts=3
   [ "$store_bytes" -eq 0 ] || want_parts=4

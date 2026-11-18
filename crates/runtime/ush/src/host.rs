@@ -11,127 +11,40 @@
 //! 2. never for an agent: a session asked for by an agent carries `requested_by: agent`,
 //!    which the Terminal forwards and the supervisor refuses regardless of any allow;
 //! 3. only for the device owner ([`DeviceOwnership`]);
-//! 4. only after the person allowed it once, as a `CapOverride` on
-//!    `Scope::Device(DeviceCap::HostShell)` in this runtime's store ([`HostPolicy`]).
+//! 4. only while the person allows it: their answer for the host shell is one of their device
+//!    answers, which the session keeps with the others and hands here ([`hand_allow`]).
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use collab_types::caps::{
-    Access, CapDecision, CapOverride, DeviceCap, ResourceRef, Scope, decide_app,
-};
 use tilo_action_policy::Lifetime;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct HostPolicy {
-    #[serde(default)]
-    pub capabilities: Vec<CapOverride>,
+/// How long the person allows the Host target on this device, as the session last handed it. Their
+/// answer lives in their own store with their other device answers; nothing of it is written here,
+/// and it is gone with the supervisor.
+static ALLOWED: std::sync::Mutex<Option<Lifetime>> = std::sync::Mutex::new(None);
+
+fn allowed() -> std::sync::MutexGuard<'static, Option<Lifetime>> {
+    ALLOWED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// This login session's allows: [`Lifetime::Session`] and [`Lifetime::Once`]
-/// grants, which are never written to disk. They live in the supervisor,
-/// which the user's service manager runs for the login session, so they are
-/// gone at logout.
-static SESSION_GRANTS: std::sync::Mutex<Vec<CapOverride>> = std::sync::Mutex::new(Vec::new());
+/// Take the person's answer the session handed: allowed for `lifetime`, or not at all.
+pub fn hand_allow(lifetime: Option<Lifetime>) {
+    *allowed() = lifetime;
+}
 
-impl HostPolicy {
-    pub fn in_force(store: &crate::store::Store) -> Self {
-        let mut policy = Self::load(&Self::path(store));
-        if let Ok(session) = SESSION_GRANTS.lock() {
-            policy.capabilities.extend(session.iter().cloned());
-        }
-        policy
-    }
+/// Whether the person allows the Host target at `now_ms`.
+pub fn host_allowed(now_ms: u64) -> bool {
+    allowed().is_some_and(|lifetime| lifetime.is_live_at(Some(now_ms)))
+}
 
-    /// Record the person's allow for `app_id` for `lifetime`: a durable one on
-    /// disk, a one-use or session one in this session only.
-    pub fn record_allow(
-        store: &crate::store::Store,
-        app_id: &str,
-        lifetime: Lifetime,
-    ) -> std::io::Result<()> {
-        let mut grant = Self::default();
-        let id = grant.allow_host_shell(app_id);
-        let Some(mut cap) = grant.capabilities.pop() else {
-            return Ok(());
-        };
-        cap.lifetime = lifetime;
-        if lifetime.is_durable() {
-            let path = Self::path(store);
-            let mut policy = Self::load(&path);
-            policy.capabilities.retain(|c| c.id != id);
-            policy.capabilities.push(cap);
-            return policy.save(&path);
-        }
-        if let Ok(mut session) = SESSION_GRANTS.lock() {
-            session.retain(|c| c.id != id);
-            session.push(cap);
-        }
-        Ok(())
-    }
-
-    pub fn spend_one_time(app_id: &str) {
-        let id = format!("ush-host-shell-{app_id}");
-        if let Ok(mut session) = SESSION_GRANTS.lock() {
-            session.retain(|c| !(c.id == id && c.lifetime == Lifetime::Once));
-        }
-    }
-
-    pub fn path(store: &crate::store::Store) -> PathBuf {
-        store.root().join("host-shell.json")
-    }
-
-    /// Read the decisions. Never fails: anything unreadable allows nothing.
-    pub fn load(path: &Path) -> Self {
-        std::fs::read(path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
-    }
-
-    pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        let durable = Self {
-            capabilities: self
-                .capabilities
-                .iter()
-                .filter(|c| c.is_durable())
-                .cloned()
-                .collect(),
-        };
-        tilo_files::native::atomic::write_creating_parent(
-            path,
-            &serde_json::to_vec_pretty(&durable).map_err(std::io::Error::other)?,
-        )
-    }
-
-    /// Has the person allowed `app_id` to open the Host target? Asked of the
-    /// same `decide_app` every other decision goes through, so a
-    /// `Restrict` takes it away again.
-    pub fn allows_host_shell(&self, app_id: &str, now: Option<u64>) -> bool {
-        decide_app(
-            app_id,
-            &ResourceRef::Device(DeviceCap::HostShell),
-            Access::Write,
-            &self.capabilities,
-            // `now` in seconds; a lifetime ends in milliseconds.
-            now.map(|now| now.saturating_mul(1000)),
-        ) == CapDecision::Allow
-    }
-
-    pub fn allow_host_shell(&mut self, app_id: &str) -> String {
-        let id = format!("ush-host-shell-{app_id}");
-        self.capabilities.retain(|c| c.id != id);
-        self.capabilities.push(
-            CapOverride::grant(
-                tilo_action_policy::Grantee::person("local"),
-                Scope::Device(DeviceCap::HostShell),
-                Access::Write,
-            )
-            .through(app_id)
-            .with_id(id.clone())
-            .granted_by(tilo_action_policy::MemberId::person("local")),
-        );
-        id
+/// A one-time allow is spent by the shell it opened.
+pub fn spend_one_time() {
+    let mut allowed = allowed();
+    if *allowed == Some(Lifetime::Once) {
+        *allowed = None;
     }
 }
 
@@ -347,8 +260,7 @@ pub fn decide_host(
     caller: &Caller,
     requested_by: RequestedBy,
     ownership: &dyn DeviceOwnership,
-    policy: &HostPolicy,
-    now: Option<u64>,
+    allowed: bool,
 ) -> Result<(), HostDenied> {
     if caller.app_id() != TERMINAL_APP_ID {
         return Err(HostDenied::NotTerminal(caller.app_id().to_string()));
@@ -359,7 +271,7 @@ pub fn decide_host(
     if !ownership.signed_in_person_owns_device() {
         return Err(HostDenied::NotOwner);
     }
-    if !policy.allows_host_shell(TERMINAL_APP_ID, now) {
+    if !allowed {
         return Err(HostDenied::NotAllowed);
     }
     Ok(())
@@ -476,38 +388,19 @@ mod tests {
         }
     }
 
-    fn allowed() -> HostPolicy {
-        let mut policy = HostPolicy::default();
-        policy.allow_host_shell(TERMINAL_APP_ID);
-        policy
-    }
-
     tilo_test_env::scenario! {
         /// The Host target: who may have a shell on the device itself, and what that shell is.
-        fn the_host_target_is_decided_by_caller_owner_and_allow;
+        fn the_host_target_is_decided_by_caller_owner_and_answer;
 
-        phase the_host_target_is_terminal_only_owner_only_person_only_and_allowed_once;
+        phase the_host_target_is_terminal_only_owner_only_person_only_and_allowed;
         {
             let terminal = Caller::App(TERMINAL_APP_ID.into());
-            let now = Some(1_000);
             assert_eq!(
-                decide_host(
-                    &terminal,
-                    RequestedBy::Person,
-                    &Owner(true),
-                    &allowed(),
-                    now
-                ),
+                decide_host(&terminal, RequestedBy::Person, &Owner(true), true),
                 Ok(())
             );
             assert_eq!(
-                decide_host(
-                    &Caller::Session,
-                    RequestedBy::Person,
-                    &Owner(true),
-                    &allowed(),
-                    now
-                ),
+                decide_host(&Caller::Session, RequestedBy::Person, &Owner(true), true),
                 Ok(()),
                 "the shell hosting Terminal in-process is the Terminal"
             );
@@ -516,56 +409,22 @@ mod tests {
                     &Caller::App("so.tilo.notes".into()),
                     RequestedBy::Person,
                     &Owner(true),
-                    &allowed(),
-                    now
+                    true
                 ),
                 Err(HostDenied::NotTerminal("so.tilo.notes".into()))
             );
             assert_eq!(
-                decide_host(&terminal, RequestedBy::Agent, &Owner(true), &allowed(), now),
+                decide_host(&terminal, RequestedBy::Agent, &Owner(true), true),
                 Err(HostDenied::Agent)
             );
             assert_eq!(
-                decide_host(
-                    &terminal,
-                    RequestedBy::Person,
-                    &Owner(false),
-                    &allowed(),
-                    now
-                ),
+                decide_host(&terminal, RequestedBy::Person, &Owner(false), true),
                 Err(HostDenied::NotOwner)
             );
             assert_eq!(
-                decide_host(
-                    &terminal,
-                    RequestedBy::Person,
-                    &Owner(true),
-                    &HostPolicy::default(),
-                    now
-                ),
+                decide_host(&terminal, RequestedBy::Person, &Owner(true), false),
                 Err(HostDenied::NotAllowed)
             );
-
-            // An allow for another app is not an allow for Terminal, and a
-            // restriction from the permissions panel takes Terminal's away.
-            let mut other = HostPolicy::default();
-            other.allow_host_shell("so.tilo.notes");
-            assert!(!other.allows_host_shell(TERMINAL_APP_ID, now));
-            let mut restricted = allowed();
-            restricted.capabilities.push(
-                collab_types::caps::CapOverride::new(
-                    tilo_action_policy::Grantee::person("local"),
-                    collab_types::caps::Scope::Device(DeviceCap::HostShell),
-                    collab_types::caps::Effect::Restrict,
-                    collab_types::caps::Access::Read,
-                )
-                .through(TERMINAL_APP_ID),
-            );
-            assert!(!restricted.allows_host_shell(TERMINAL_APP_ID, now));
-
-            let mut twice = allowed();
-            twice.allow_host_shell(TERMINAL_APP_ID);
-            assert_eq!(twice.capabilities.len(), 1);
         }
 
         phase the_owner_check_compares_the_device_claim_with_the_signed_in_identity;

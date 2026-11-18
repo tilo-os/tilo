@@ -500,6 +500,27 @@ pub fn survey_placed_each(
         .all(|resource| placed_each(resource, "", visit))
 }
 
+/// [`survey_placed_each`] of one level: the rows of `children`, the
+/// resources `parent` holds (`""` for the top), and none further down, which
+/// stand under those. What a listing of one level walks, however much its
+/// resources hold. `false` when `visit` stopped it.
+pub fn survey_placed_level(
+    children: &[ResourceSpec],
+    parent: &str,
+    visit: &mut dyn FnMut(PlacedAction) -> bool,
+) -> bool {
+    children.iter().all(|child| {
+        let has_children = !child.children.is_empty();
+        child.actions.iter().all(|action| {
+            visit(PlacedAction {
+                parent: parent.to_owned(),
+                has_children,
+                action: describe(child, action),
+            })
+        })
+    })
+}
+
 /// [`survey_placed_each`] for one resource's subtree, as a child of
 /// `parent`: the items a listing keeps past the published page, walked as
 /// the tree would walk them.

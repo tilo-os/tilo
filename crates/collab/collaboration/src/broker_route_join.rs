@@ -28,7 +28,7 @@ pub(super) struct JoinInputs {
     pub(super) key_signals: tokio_mpsc::UnboundedSender<KeySignal>,
     pub(super) client: runtime_collab::CollabClient,
     pub(super) presentation: Vec<u8>,
-    pub(super) person: Option<(String, Vec<u8>)>,
+    pub(super) person: Option<std::rc::Rc<super::PersonalCluster>>,
     pub(super) member_handle: Option<String>,
     pub(super) member_kind: &'static str,
     pub(super) inbound_tx: InboundBridge,
@@ -54,7 +54,7 @@ pub(super) fn start_route_join(
             key_signals: &inputs.key_signals,
             client: &inputs.client,
             presentation: &inputs.presentation,
-            person: inputs.person.as_ref(),
+            person: inputs.person.as_deref(),
             member_handle: inputs.member_handle.as_deref(),
             member_kind: inputs.member_kind,
             inbound_tx: &inputs.inbound_tx,
@@ -132,8 +132,8 @@ pub(super) async fn join_route(
         .lock_recover()
         .remove(&channel_id);
     let identity_bytes = match person {
-        Some((workspace, proof)) if *workspace == spec.cluster_id.to_string() => proof.as_slice(),
-        _ => presentation,
+        Some(person) => person.presentation(spec).await.unwrap_or(presentation),
+        None => presentation,
     };
     // Each round trip of the join is marked, so a launch's startup line says which one
     // its wait for the route went to (the route's join has been most of a cold start).
@@ -251,11 +251,14 @@ pub(super) async fn join_route(
     // A cluster-scope route (an empty app id: discovery and presence for
     // every app of the workspace, as an agent joins to learn the catalogue)
     // names no app of its own, so the identity service can never grant it
-    // channel keys: it refuses the question, and a route left waiting for an
+    // keys: it refuses the question, and a route left waiting for an
     // answer it cannot get asks again on the timer for the whole life of the
     // connection. It carries no record and writes nothing, so it asks for no
     // keys and reads nothing about sealing: it stays plaintext, and its
-    // timer is never armed for it.
+    // timer is never armed for it. Nor does it follow the workspace's
+    // changes: the broker hands a route of no app every app's changes, sealed
+    // under keys it never holds, so it takes no op stream and asks for no
+    // snapshot. Each app's own routes carry them.
     let cluster_route = spec.app_id.is_empty();
     let sealed = if cluster_route {
         false
@@ -293,7 +296,7 @@ pub(super) async fn join_route(
     // join one broker round trip instead of one per stream.
     let ((), (), (), (), (), presence) = tokio::join!(
         async {
-            if !committed {
+            if !committed && !cluster_route {
                 spawn_op_stream(
                     &channel,
                     RouteLabel::of(spec),
@@ -313,7 +316,10 @@ pub(super) async fn join_route(
     tilo_startup_metrics::startup_mark("collab-join-streams");
     // Subscriptions are installed first so an existing holder's response
     // cannot race ahead of our document stream.
-    if !committed && let Err(error) = channel.request_document_snapshot().await {
+    if !committed
+        && !cluster_route
+        && let Err(error) = channel.request_document_snapshot().await
+    {
         tracing::warn!(%error, "collab: late-join snapshot request failed");
     }
 

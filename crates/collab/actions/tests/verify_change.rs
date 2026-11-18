@@ -7,8 +7,8 @@ use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{AutoCommit, ROOT, ReadDoc};
 use serde::{Deserialize, Serialize};
 use tilo_actions::{
-    Action, ActionContext, ActionError, ActionRegistry, Doc, EncodedAction, LocalTransport,
-    Verified, dispatch_with_context, verify_change,
+    Action, ActionContext, ActionError, ActionItem, ActionKey, ActionRegistry, Described, Did, Doc,
+    EncodedAction, LocalTransport, Verified, dispatch_with_context, verify_change,
 };
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -335,4 +335,134 @@ tilo_test_env::scenario! {
         assert_eq!(peer.get_heads(), origin.get_heads());
         assert_eq!(verify_change(&mut origin, last, &registry).unwrap(), Verified::Reproduced);
     }
+}
+
+/// How [`Retitle`] names the card it writes: by the card's whole title, as an
+/// entry was written before an item's label was kept as one line, or by one
+/// line of it.
+#[derive(Clone, Copy)]
+enum Naming {
+    Whole,
+    OneLine,
+}
+
+thread_local! {
+    static NAMING: std::cell::Cell<Naming> = const { std::cell::Cell::new(Naming::Whole) };
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Retitle(String);
+
+fn title(doc: &Doc) -> Option<String> {
+    Some(doc.get(ROOT, "title").ok()??.0.as_str()?.to_owned())
+}
+
+impl Action for Retitle {
+    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        doc.put(ROOT, "title", self.0.as_str())?;
+        Ok(())
+    }
+
+    fn inverse_encoded(&self, doc: &Doc) -> Option<EncodedAction> {
+        EncodedAction::encode("test.retitle", &Self(title(doc)?)).ok()
+    }
+
+    fn describe(&self, doc: &Doc) -> Option<Described> {
+        let title = title(doc)?;
+        let label = match NAMING.get() {
+            Naming::Whole => title,
+            Naming::OneLine => title.chars().take(96).collect(),
+        };
+        Some(Described {
+            what: Did::verb(ActionKey::new("test", "card", "retitle"), []),
+            item: Some(ActionItem {
+                id: "card".into(),
+                label,
+            }),
+        })
+    }
+}
+
+/// A change is verified, and its undo found, under the entry it was written
+/// with: nothing describes its action again. So a change that names its item
+/// by a whole text (every change kept from before a label was one line) and
+/// a change that names it by one line are both taken, whichever of the two
+/// the verifying code would write itself.
+#[test]
+fn a_change_verifies_and_undoes_under_the_entry_it_was_written_with() {
+    let registry = ActionRegistry::with(|r| r.register::<Retitle>("test.retitle"));
+    let long = "word ".repeat(2_000);
+    for (written, verified, carried) in [
+        (Naming::Whole, Naming::OneLine, long.chars().count()),
+        (Naming::OneLine, Naming::Whole, 96),
+    ] {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "title", long.as_str()).unwrap();
+        doc.commit();
+        let mut transport = LocalTransport::new();
+        NAMING.set(written);
+        dispatch_with_context(
+            &mut doc,
+            &Retitle("Short".into()),
+            EncodedAction::encode("test.retitle", &Retitle("Short".into())).unwrap(),
+            &mut transport,
+            ActionContext::for_resource("r", "k", "l"),
+        )
+        .unwrap();
+        let hash = doc.get_heads()[0];
+        let label = transport.replicated[0]
+            .context
+            .as_ref()
+            .and_then(|context| context.item.as_ref())
+            .map(|item| item.label.chars().count());
+        assert_eq!(label, Some(carried), "the entry names the card as written");
+
+        NAMING.set(verified);
+        // The kept entry reads back as it was written, a whole text too.
+        let kept = doc
+            .get_changes(&[])
+            .last()
+            .and_then(|change| change.message())
+            .and_then(ActionContext::from_change_message)
+            .and_then(|entry| entry.item)
+            .map(|item| item.label.chars().count());
+        assert_eq!(kept, Some(carried), "the kept entry reads as written");
+        assert_eq!(
+            verify_change(&mut doc, hash, &registry).unwrap(),
+            Verified::Reproduced
+        );
+        let undo = tilo_actions::executor::verified_compensation(&mut doc, hash, &registry)
+            .unwrap()
+            .expect("the change's undo is found");
+        undo.apply(&mut doc).unwrap();
+        assert_eq!(title(&doc).as_deref(), Some(long.as_str()));
+    }
+}
+
+/// An entry names the item it is about by one line, never by what the item
+/// reads: a message is labelled by its text, and a label kept whole put the
+/// whole reply so far into every change that grew it.
+#[test]
+fn an_entry_names_its_item_by_one_line() {
+    let on = |id: &str, label: &str| {
+        Described::new(Did::verb(ActionKey::default(), []))
+            .on(id, label)
+            .item
+            .unwrap()
+    };
+    let reply = "word ".repeat(12_000);
+    let item = on("m1", &format!("\n  {reply}\nA second line"));
+    assert_eq!(item.id, "m1");
+    assert_eq!(
+        item.label.chars().count(),
+        tilo_actions::context::MAX_LABEL_CHARS,
+        "a label of {} bytes",
+        item.label.len()
+    );
+    assert!(reply.starts_with(&item.label), "{}", item.label);
+    assert_eq!(on("s1", "First").label, "First");
+    // An item with no name of its own is called by its id, whole: a reader
+    // takes a label that repeats the id for no name.
+    let id = "i".repeat(200);
+    assert_eq!(on(&id, &id).label, id);
 }

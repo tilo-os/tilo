@@ -3,10 +3,11 @@
 //! history through the hosted app.
 
 use super::*;
-use crate::record::{adding, uuid_of};
+use crate::saved::{adding, uuid_of};
 use ui::framework::testing::TestApp;
 use ui::tilo_actions::ResourceSpec as Published;
-use ui::tilo_resource::{Edit, NonBlank, Replica, Resource as _};
+use ui::tilo_resource::items::item_resource_id;
+use ui::tilo_resource::{Edit, Id, Invoke, NonBlank, Replica, Resource as _};
 
 fn edit(workspace: &mut Replica<Workspace>, edit: &Edit<Workspace>) -> Result<(), String> {
     let invoke = Invoke::edit(edit).map_err(|error| error.to_string())?;

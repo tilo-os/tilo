@@ -226,11 +226,12 @@ these hold (`crates/runtime/ush/src/host.rs`):
 3. **The device owner is signed in.** The owner's root key
    (`/var/lib/tilo/user-identity/pubkey.bin`) must be the session's default
    identity (`$XDG_CONFIG_HOME/tilo/identity/registry.json`).
-4. **The person allowed it once.** A `CapOverride` granting
-   `Scope::Device("host-shell")` to `so.tilo.terminal`, in the store's
-   `host-shell.json`. Without it the answer is
-   `{"result":"host-not-allowed",…}`; a shell-hosted Terminal tab then raises
-   the shell's permission prompt, which records the answer there.
+4. **The person allows it.** Their answer for the host shell is one of their
+   device answers, kept by the session with the others in their own store and
+   handed to the supervisor (`{"op":"allow-host","expiry":…}`, `null` once
+   taken back); the supervisor writes nothing of it down. Without it the answer
+   is `{"result":"host-not-allowed",…}`; a shell-hosted Terminal tab then
+   raises the session's permission prompt.
 
 ### Environments
 

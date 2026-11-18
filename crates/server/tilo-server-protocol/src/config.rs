@@ -118,6 +118,14 @@ pub struct ServerConfig {
         rename = "max_workspace_grants"
     )]
     pub max_workspace_grants: Option<usize>,
+
+    /// The packet relay this machine enrolls through on its first boot, and
+    /// what a device of the person dials it at when it shows a code: a
+    /// data-centre server behind a network address translation is reached
+    /// through it. `None` leaves it on the public relays every Tilo device
+    /// uses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<String>,
 }
 
 fn default_work() -> WorkSetting {
@@ -166,6 +174,7 @@ impl Default for ServerConfig {
             services: default_services(),
             web_entry: None,
             max_workspace_grants: None,
+            relay: None,
         }
     }
 }

@@ -19,8 +19,8 @@ use crate::i18n::{t, t_args};
 use crate::link::{Dialog, Intent, Link};
 use crate::model::QueryResult;
 use crate::query::query_pane;
-use crate::record::Workspace as Record;
 use crate::results::{CaptionLine, ResultsTable, fill_remaining_height};
+use crate::saved::Workspace as SharedData;
 use crate::session::{MainTab, RunStatus};
 use crate::structure::StructureView;
 
@@ -320,7 +320,7 @@ impl Part {
 pub struct Workspace {
     link: Link,
     /// The workspace's published actions, which the query tab's starter
-    actions: Option<Actions<Record>>,
+    actions: Option<Actions<SharedData>>,
     column: Column,
     /// What `column` holds now.
     shown: Vec<Part>,
@@ -330,7 +330,7 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    pub fn new(link: &Link, actions: Option<&Actions<Record>>) -> Self {
+    pub fn new(link: &Link, actions: Option<&Actions<SharedData>>) -> Self {
         let mut workspace = Self {
             link: link.clone(),
             actions: actions.cloned(),

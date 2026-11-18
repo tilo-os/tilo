@@ -38,10 +38,19 @@
 set -euo pipefail
 kver="${1:?usage: build-initramfs.sh KVER}"
 
-find "/usr/lib/modules/$kver" -type f -path '*/fs/ext4/ext4.ko*' -print -quit \
-  | grep -q . || { echo 'signed Ext4 rescue module is missing' >&2; exit 1; }
-find "/usr/lib/modules/$kver" -type f -path '*/fs/xfs/xfs.ko*' -print -quit \
-  | grep -q . || { echo 'signed XFS rescue module is missing' >&2; exit 1; }
+# A filesystem the rescue path needs is either a module this kernel carries or
+# built into it: the custom Tilo kernel builds both as modules, the base kernel a
+# headless image boots may have them built in, and the initramfs is complete
+# either way.
+filesystem_present() {
+  local name="$1"
+  if find "/usr/lib/modules/$kver" -type f -path "*/fs/$name/$name.ko*" -print -quit | grep -q .; then
+    return 0
+  fi
+  grep -qx "kernel/fs/$name/$name.ko" "/usr/lib/modules/$kver/modules.builtin" 2>/dev/null
+}
+filesystem_present ext4 || { echo 'signed Ext4 rescue module is missing' >&2; exit 1; }
+filesystem_present xfs || { echo 'signed XFS rescue module is missing' >&2; exit 1; }
 # ldconfig -r in dracut requires absolute include patterns. Fedora's
 # default relative pattern resolves to the same directory without -r.
 sed -i 's@^include ld\.so\.conf\.d/\*\.conf$@include /etc/ld.so.conf.d/*.conf@' /etc/ld.so.conf

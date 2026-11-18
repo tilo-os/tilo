@@ -305,3 +305,17 @@ fn a_code_shown_on_a_machine_enrolls_it_over_a_packet_relay() {
         approver.root_key.verifying_key().to_bytes()
     );
 }
+
+#[test]
+fn the_machines_line_is_drawn_as_a_code_a_camera_reads() {
+    let line = "tilo://enroll?endpoint=00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff&relay=https%3A%2F%2Frelay.example.&code=123456";
+    let drawn = super::qr(line).expect("the line fits a code");
+    // Every line of the drawing is as wide as the code it draws, and the
+    // drawing is taller than wide because two module rows share a line.
+    let width = drawn.lines().next().expect("a first line").chars().count();
+    assert!(drawn.lines().all(|row| row.chars().count() == width));
+    assert!(drawn.lines().count() > 10, "{drawn}");
+    assert!(drawn.contains('\u{2584}') && drawn.contains(' '), "{drawn}");
+    // A payload no code carries is left to the line itself.
+    assert!(super::qr(&"x".repeat(10_000)).is_none());
+}

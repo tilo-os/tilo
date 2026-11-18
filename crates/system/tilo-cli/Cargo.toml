@@ -80,6 +80,9 @@ collab-types = { path = "../../collab/collab-types" }
 # and narrates what its actions are doing on the live session.
 tilo-actions = { path = "../../collab/actions" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+# An install plan is the installer's own model: `tilo machine add` writes a
+# plan the live installer and the Imager both read.
+install-profile-model = { path = "../../session/install-profile-model" }
 # The peer `tilo login` leaves running: the person's workspaces' file trees,
 # held over the device's session and mounted at ~/Tilo with the filesystem
 # Tilo OS mounts.

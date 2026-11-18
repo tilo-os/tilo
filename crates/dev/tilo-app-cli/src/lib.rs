@@ -29,6 +29,7 @@ pub mod examples;
 mod font_assets;
 pub mod interface_versions;
 mod json;
+pub mod model_wasm;
 pub mod native_libs;
 pub mod native_sdk;
 mod pack;
@@ -5276,7 +5277,9 @@ fn shipped_binaries(
     Ok(vec![(bin, path)])
 }
 
-/// Fill `payload` with the app's `payload/` tree, its committed surface and the built binaries.
+/// Fill `payload` with the app's `payload/` tree, its committed surface, the
+/// built binaries and, when the app keeps a model, the module its package
+/// carries for every device to apply its actions with.
 fn stage_payload(
     spec: &AppPackageSpec,
     shipped: &[(String, PathBuf)],
@@ -5294,6 +5297,12 @@ fn stage_payload(
     if surface.is_file() {
         std::fs::copy(&surface, payload.join(surface::FILE))
             .with_context(|| format!("copying {}", surface.display()))?;
+    }
+    if let Some(module) = model_wasm::build(&spec.app_dir)? {
+        let destination = payload.join(model_wasm::MODEL_MODULE);
+        std::fs::copy(&module, &destination).with_context(|| {
+            format!("copying {} to {}", module.display(), destination.display())
+        })?;
     }
     for (cargo_bin, payload_path) in shipped {
         let source = built

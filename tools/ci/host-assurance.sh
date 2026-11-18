@@ -113,14 +113,24 @@ digest=$(loud skopeo inspect --format '{{.Digest}}' "oci:$layout${tag:+:$tag}") 
 image=$(loud podman pull -q "oci:$layout${tag:+:$tag}") \
   || die "podman could not load the image in $pub/image.oci.tar"
 loud podman tag "$image" localhost/tilo-host:ci || die "cannot name the loaded image"
-say 'install the image on a disk'
+say 'install the image on an encrypted disk'
 TILO_IMAGE=localhost/tilo-host:ci TILO_SKIP_BUILD=1 TILO_DISTROBOX="" \
   TILO_OUTPUT=$work/install TILO_RUN=$work/install-run TILO_DISK_SIZE=64G \
+  TILO_ENCRYPT_INSTALL=1 \
   TILO_TARGET_IMGREF="registry.tilo.so/tilo/tilo-host:main-${target:0:7}-ci" \
   ./os/dev/build-image.sh 2> >(tee /dev/console >&2) \
   || die "the disk install failed"
 disk=$work/disk.qcow2
 mv "$work/install/qcow2/disk.qcow2" "$disk"
+# The install made one recovery key and handed it over in a file, never in the
+# log. It is this check's way into the machine at every boot: the disk opens
+# with nothing typed only where the image carries a signed boot chain for a TPM
+# keyslot, and this image does not (it boots split entries, not a sealed UKI).
+[[ -s $work/install/recovery-key.txt ]] \
+  || die "the encrypted install left no recovery key; the disk would be unopenable"
+TILO_UNLOCK_SECRET=$(cat "$work/install/recovery-key.txt")
+[[ -n $TILO_UNLOCK_SECRET ]] || die "the install's recovery key file is empty"
+export TILO_UNLOCK_SECRET
 
 # The update: the same image and one more layer, a different deployment, carried
 # to the guest on a small disk of its own (there is no sshd to copy it with).
@@ -180,8 +190,24 @@ as_root() { console "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bash -c $(printf
 ok()   { printf 'ok    %s\n' "$*" >&2; }
 refuse() { local what="$1"; shift; as_root "$@" > "$out/$what.txt" 2>&1 || die "FAIL $what (see $out/$what.txt)"; ok "$what"; }
 
+# The prompt comes before any network, so the serial console is the only input,
+# and the console runner cannot be used to ask whether the guest is up: while
+# the volume is closed it waits out its own deadline. The log the unlock helper
+# keeps is the signal instead: a login prompt in it means the volume opened.
+unlock_until_console() {
+  local tries="${1:-120}"
+  for _ in $(seq 1 "$tries"); do
+    ./os/dev/unlock-prompt.sh "$TILO_UNLOCK_SECRET" >/dev/null 2>&1 || true
+    if tail -c 20000 "$TILO_CONSOLE_LOG" 2>/dev/null | grep -qi 'login:'; then
+      console 'true' >/dev/null 2>&1 && return 0
+    fi
+    sleep 3
+  done
+  return 1
+}
 boot_vm
-for _ in $(seq 1 60); do console 'true' >/dev/null 2>&1 && break; sleep 2; done
+unlock_until_console \
+  || die 'the installed disk never answered at its console: its encrypted root did not open'
 console 'true' >/dev/null || die 'the installed disk never answered at its console'
 # Keep the console to the runner: kernel messages — auditd's lines among them,
 # one per sudo call — interleave mid-line with the marker it reads, and a marker
@@ -202,6 +228,47 @@ for _ in $(seq 1 90); do
   sleep 5
 done
 refuse 'multi-user.target is active' 'systemctl is-active --quiet multi-user.target'
+say 'the installed machine keeps its root on an encrypted disk'
+refuse 'the root is a LUKS2 volume the initramfs opened' '
+set -eu
+src=$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
+case "$src" in
+  /dev/mapper/*) ;;
+  *) echo "root is $src, not a device-mapper volume"; exit 1 ;;
+esac
+name=${src#/dev/mapper/}
+cryptsetup status "$name" | grep -q LUKS2 || { cryptsetup status "$name"; exit 1; }
+backing=""
+while read -r n t; do
+  [ "$t" = part ] || continue
+  backing=$n
+  break
+done <<EOF
+$(lsblk -sno NAME,TYPE "$src")
+EOF
+[ -n "$backing" ] || { echo "no partition under $src"; lsblk -s "$src"; exit 1; }
+cryptsetup isLuks "/dev/$backing" || { echo "/dev/$backing is not LUKS"; exit 1; }
+echo "the root is $src: LUKS2 over /dev/$backing"
+'
+refuse 'the root has the recovery key and no throwaway install key' '
+set -eu
+src=$(findmnt -nro SOURCE /sysroot)
+name=${src#/dev/mapper/}
+dump=$(cryptsetup luksDump "$name")
+printf "%s\n" "$dump" | grep -q systemd-recovery \
+  || { echo "no systemd-recovery token in the header"; exit 1; }
+slots=$(printf "%s\n" "$dump" | sed -n "/^Keyslots:/,/^Tokens:/p" | grep -cE "^  [0-9]+:")
+[ "$slots" = 1 ] \
+  || { echo "$slots keyslots; the throwaway install key was not removed"; exit 1; }
+echo "one keyslot: the recovery key the install handed over"
+'
+refuse 'the store volume is LUKS2 and mounts' '
+set -eu
+cryptsetup status tilo-store | grep -q LUKS2
+findmnt -nro FSTYPE /var/lib/tilo/store | grep -qx btrfs
+grep -q tilo-store /etc/crypttab
+echo "the store is a LUKS2 + btrfs volume, unlocked from the root"
+'
 refuse 'the API server is enabled and inert without its configuration' \
   'systemctl is-enabled --quiet tilo-api.service && ! systemctl is-active --quiet tilo-api.service'
 refuse 'the update timers are enabled' \
@@ -262,7 +329,8 @@ ok 'the update image is on the machine'
 # and any ordering cycle the boot loader resolved against them.
 if ! RUNNER='./os/tests/serial_runner.sh' SUDO_PASS="$TILO_PASS" FAULT=server \
      SUBJECT_UNIT=tilo-server-health.service \
-     RESET="./os/dev/vm.sh stop; ./os/dev/vm.sh boot --2d --disk '$disk' --attach '$work/update.qcow2'" \
+     UNLOCK='./os/dev/unlock-prompt.sh' \
+     RESET="./os/dev/vm.sh stop; ./os/dev/vm.sh boot --2d --disk '$disk' --attach '$work/update.qcow2'; ./os/dev/unlock-prompt.sh || true" \
      SERIAL='./os/dev/vm.sh serial' \
      BOOT_TIMEOUT=900 HEALTH_TIMEOUT=900 SWITCH_TIMEOUT=1800 \
      ./os/tests/boot_assessment_rollback.sh oci:/mnt/update/image:tilo-host "$out/boot-assessment"; then

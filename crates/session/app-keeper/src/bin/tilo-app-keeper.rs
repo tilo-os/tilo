@@ -20,6 +20,10 @@ fn main() -> std::process::ExitCode {
         .with_target(false)
         .log_internal_errors(false)
         .init();
+    if let Err(error) = tilo_app_keeper::end_when_told() {
+        eprintln!("tilo-app-keeper: {error}");
+        return ExitCode::FAILURE;
+    }
     let options = match tilo_app_keeper::Options::from_args(std::env::args_os().skip(1)) {
         Ok(options) => options,
         Err(error) => {

@@ -1,6 +1,6 @@
 //! The Privacy & Security tab: what the workspace lets its people, agents
 //! and apps do beyond their roles, grouped by who holds it, each with its
-//! Revoke, and a composer giving one more: who, what it allows, and for how
+//! Take back, and a composer giving one more: who, what it allows, and for how
 //! long.
 //!
 //! The composer's choices are the sheet's own until the person grants; the
@@ -321,7 +321,7 @@ fn picker(
 }
 
 /// One permission: who holds it, what it allows and who gave it, how long
-/// it lasts, and Revoke, which asks first.
+/// it lasts, and Take back, which asks first.
 fn row(permissions: &Permissions, permission: &Permission, parts: &Parts) -> Element {
     let confirm = parts.clone();
     let (grant, holder) = (permission.key.clone(), permission.holder.clone());
@@ -420,18 +420,18 @@ pub(super) fn sample() -> Permissions {
                 )],
             },
         ],
-        revoke: "Revoke".to_owned(),
+        revoke: "Take back".to_owned(),
         empty: (
             "Nothing given yet".to_owned(),
             "Permissions you give show here.".to_owned(),
         ),
         footnote: None,
         revoke_decision: super::Decision {
-            title: "Revoke this permission?".to_owned(),
+            title: "Take back this permission?".to_owned(),
             description: "It stops working at once, on every device.".to_owned(),
             keep: "Keep permission".to_owned(),
             review: "Review activity".to_owned(),
-            confirm: "Revoke permission".to_owned(),
+            confirm: "Take back permission".to_owned(),
         },
     }
 }

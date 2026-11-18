@@ -14,7 +14,6 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 SOURCES = (
     "os/Containerfile",
     "os/Containerfile.dev",
-    "os/Containerfile.host",
     "os/Containerfile.host-base",
     "os/dev/composefs/Containerfile",
     "os/containers/tilo-server/Containerfile",

@@ -14,10 +14,12 @@ use ed25519_dalek::SigningKey;
 use std::future::Future;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tilo_ask_password as askpass;
 use tilo_rollback::exec::{Real, Runner};
 use tilo_rollback::policy::Workspace;
+use tilo_unlock_protocol::opened::UnlockMethod;
 use tilo_unlock_protocol::{BootId, BootKeyCert, Half, RefusalReason, derive_slot_key};
 
 /// Why no sibling released its half. Each is in the owner's history on the
@@ -134,7 +136,25 @@ pub fn say(message: &str) {
     }
 }
 
-struct BootScreen;
+/// The boot screen's part in an attempt, and what its answers say of the
+/// unlock: a sibling that asked the owner released after their answer, and
+/// one that released without asking did so on the boot chain this machine
+/// attested.
+struct BootScreen {
+    asked: AtomicBool,
+}
+
+impl BootScreen {
+    /// Which way a sibling released: the owner's answer after being asked, or
+    /// the boot chain's own, released with nobody asked.
+    fn method(asked: bool) -> UnlockMethod {
+        if asked {
+            UnlockMethod::PersonDevice
+        } else {
+            UnlockMethod::SiblingServer
+        }
+    }
+}
 
 /// Show `message` on the boot screen, where plymouth is up.
 fn screen(message: &str) {
@@ -165,6 +185,7 @@ fn decided_message(name: &str, allowed: bool) -> String {
 
 impl Progress for BootScreen {
     fn pending(&self, sibling: &Sibling, approval_code: &str) {
+        self.asked.store(true, Ordering::Relaxed);
         let message = format!(
             "Approve unlocking on {}: code {approval_code}",
             device_name(sibling)
@@ -238,8 +259,11 @@ pub async fn unlock(runner: &Real, device: &Path) -> Result<()> {
         tpm: runner.clone(),
         key,
     });
+    let screen = BootScreen {
+        asked: AtomicBool::new(false),
+    };
     let peers = Peers {
-        progress: &BootScreen,
+        progress: &screen,
         transcript: Some(Path::new(exchange::TRANSCRIPT)),
         attestation: attestation.as_ref(),
     };
@@ -271,7 +295,15 @@ pub async fn unlock(runner: &Real, device: &Path) -> Result<()> {
         }
     };
     match outcome {
-        Outcome::Unlocked => say("unlocked with the consent of your other device"),
+        Outcome::Unlocked => {
+            // The volume is open: how it opened is what the booted system
+            // reports, and a note that cannot be written stops nothing.
+            let asked = screen.asked.load(Ordering::Relaxed);
+            if let Err(error) = super::note_opening(BootScreen::method(asked)) {
+                say(&format!("how the volume opened is not noted ({error:#})"));
+            }
+            say("unlocked with the consent of your other device");
+        }
         Outcome::Refused(refusal) => say(&format!("{refusal}; enter the passphrase to unlock")),
     }
     Ok(())
@@ -369,6 +401,20 @@ mod tests {
         )
         .unwrap();
         (dir, ask_dir, receiver)
+    }
+
+    #[test]
+    fn a_sibling_unlock_says_whether_the_owner_answered_it() {
+        assert_eq!(
+            BootScreen::method(false),
+            UnlockMethod::SiblingServer,
+            "released on the boot chain this machine attested, nobody asked"
+        );
+        assert_eq!(
+            BootScreen::method(true),
+            UnlockMethod::PersonDevice,
+            "released after the owner answered on one of their devices"
+        );
     }
 
     #[test]

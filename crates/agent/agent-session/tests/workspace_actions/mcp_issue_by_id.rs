@@ -1,21 +1,25 @@
 //! An issue named by its id through the API an agent calls: an id is matched
 //! exactly, before any label, and answered from the resource's items, so a
 //! delete and a rename find their issue in one answer however many issues
-//! the tracker holds. Paging the Issues listing to find it read one page of
-//! twenty-five issues and several of a thousand, so the count is held to
-//! none: the server is asked the name, never paged for it.
+//! the tracker holds, whether or not the page its part publishes carries it.
+//! Paging the Issues listing to find it read one page of twenty-five issues
+//! and several of a thousand, so the count is held to none: the server is
+//! asked the name, never paged for it. What the replica answering it builds
+//! is counted in that replica's own test (`issue_reads`).
 
 use super::api::ISSUER;
 use super::api_on_server::{api_on_server, approved_key, headers, json_of};
-use super::mcp_note_create::{CATALOGUES, CatalogueJobs, LISTINGS};
+use super::mcp_note_create::{CATALOGUES, LISTINGS, count_jobs};
 use super::*;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tilo_api::Server;
-use tracing_subscriber::layer::SubscriberExt as _;
-use tracing_subscriber::{Layer as _, filter::Targets};
 use ui::tilo_resource::Resource as _;
+
+/// The place in the tracker of an issue that stands past the page of issues its part publishes:
+/// the part holds it, the chain names it, and no published tree carries it.
+const PAST_PAGE: usize = 400;
 
 /// What one call asked of the workspace's server: its catalogue requests, and
 /// the pages among them that listed a level's items rather than answering a
@@ -24,6 +28,11 @@ use ui::tilo_resource::Resource as _;
 struct Asked {
     catalogues: usize,
     listings: usize,
+}
+
+/// Every count [`Asked`] keeps, as they stand now.
+fn counts() -> [usize; 2] {
+    [&CATALOGUES, &LISTINGS].map(|count| count.load(Ordering::Relaxed))
 }
 
 /// A key's calls of the API, as an agent's own `tilo_do`.
@@ -71,22 +80,16 @@ impl Key<'_> {
         action: &str,
         args: &Value,
     ) -> (Value, Asked, Duration) {
-        let before = (
-            CATALOGUES.load(Ordering::Relaxed),
-            LISTINGS.load(Ordering::Relaxed),
-        );
+        let before = counts();
         let began = Instant::now();
         let value = self.act(base, resource, action, args).await;
         let took = began.elapsed();
-        let after = (
-            CATALOGUES.load(Ordering::Relaxed),
-            LISTINGS.load(Ordering::Relaxed),
-        );
+        let [catalogues, listings] = counts();
         (
             value,
             Asked {
-                catalogues: after.0.saturating_sub(before.0),
-                listings: after.1.saturating_sub(before.1),
+                catalogues: catalogues.saturating_sub(before[0]),
+                listings: listings.saturating_sub(before[1]),
             },
             took,
         )
@@ -166,17 +169,51 @@ async fn file_issues(key: &Key<'_>, base: &str, size: usize) {
     }
 }
 
-/// A delete and a rename by id at twenty-five issues and at a thousand read
-/// the same pages of the Issues listing: none.
+/// `target` renamed and then deleted by its id alone, as an agent names it,
+/// with what each asked of the server: the tracker of `size` issues keeps
+/// it renamed, then not at all, and its other issues as they were.
+async fn rename_and_delete(
+    (key, workspaces): (&Key<'_>, &tilo_server::workspaces::Workspaces),
+    (base, id): (&str, &str),
+    size: usize,
+    target: &str,
+) -> (Asked, Asked) {
+    let path = format!("tasks/Issues/{target}");
+    let (_renamed, rename, took) = key
+        .act_and_count(base, &path, "rename", &json!({"title": "Renamed by id"}))
+        .await;
+    eprintln!("{size} issues: rename {rename:?} in {took:?}");
+    let held = issues(workspaces, id, Duration::from_secs(10), |held| {
+        held.iter()
+            .any(|(id, title)| id == target && title == "Renamed by id")
+    })
+    .await;
+    assert_eq!(
+        held.iter()
+            .find(|(id, _)| id == target)
+            .map(|(_, title)| title.as_str()),
+        Some("Renamed by id"),
+        "the issue is renamed: {held:?}"
+    );
+    let (_deleted, delete, took) = key.act_and_count(base, &path, "delete", &json!({})).await;
+    eprintln!("{size} issues: delete {delete:?} in {took:?}");
+    let held = issues(workspaces, id, Duration::from_secs(10), |held| {
+        !held.iter().any(|(id, _)| id == target)
+    })
+    .await;
+    assert!(
+        !held.iter().any(|(id, _)| id == target),
+        "the issue is gone, and its neighbours stay: {held:?}"
+    );
+    (rename, delete)
+}
+
+/// A delete and a rename by id at twenty-five issues and at a thousand ask
+/// the server the same and read no page of the Issues listing; an issue past
+/// the page its part publishes is renamed and deleted the same way.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_issue_named_by_its_id_is_found_in_one_answer_however_many_there_are() {
-    let counting = CatalogueJobs.with_filter(Targets::new().with_target(
-        "tilo_agent_session::workspace_actions",
-        tracing::Level::DEBUG,
-    ));
-    // Counting the server's jobs: each test of this binary counts the same
-    // two, so one already installed serves both.
-    let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry().with(counting));
+    count_jobs();
     let on_server = api_on_server(ISSUER).await;
     let api = Arc::clone(&on_server.api);
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
@@ -199,55 +236,38 @@ async fn an_issue_named_by_its_id_is_found_in_one_answer_however_many_there_are(
             size,
             "the tracker holds every issue it was sent"
         );
-        // An issue the page the tracker publishes carries, named by its id
-        // alone: one of the first the tracker holds.
-        let target = held[100.min(size - 1)].0.clone();
-
-        let (_renamed, rename, took) = key
-            .act_and_count(
-                &base,
-                &format!("tasks/Issues/{target}"),
-                "rename",
-                &json!({"title": "Renamed by id"}),
-            )
-            .await;
-        eprintln!("{size} issues: rename {rename:?} in {took:?}");
-        let held = issues(&workspaces, &id, Duration::from_secs(10), |held| {
-            held.iter()
-                .any(|(id, title)| *id == target && title == "Renamed by id")
-        })
-        .await;
+        // An issue the page its part publishes carries: one of the first
+        // the tracker holds.
+        let on_page = held[100.min(size - 1)].0.clone();
+        asked.push(rename_and_delete((&key, &workspaces), (&base, &id), size, &on_page).await);
+        if size > PAST_PAGE {
+            // One its part holds past the page it publishes of them, which
+            // the chain names but no published tree carries.
+            let past = held[PAST_PAGE].0.clone();
+            const {
+                assert!(
+                    PAST_PAGE >= ui::tilo_resource::items::ITEM_PAGE,
+                    "the issue stands past its part's published page"
+                );
+            }
+            let (rename, delete) =
+                rename_and_delete((&key, &workspaces), (&base, &id), size, &past).await;
+            assert_eq!(
+                (&rename, &delete),
+                (&asked[0].0, &asked[0].1),
+                "an issue past its part's page costs what one on it does"
+            );
+        }
+        let held = issues_held(&workspaces, &id).await;
         assert_eq!(
-            held.iter()
-                .find(|(id, _)| *id == target)
-                .map(|(_, title)| title.as_str()),
-            Some("Renamed by id"),
-            "the issue is renamed: {held:?}"
+            held.len(),
+            size - 1 - usize::from(size > PAST_PAGE),
+            "only the issues deleted went"
         );
-
-        let (_deleted, delete, took) = key
-            .act_and_count(
-                &base,
-                &format!("tasks/Issues/{target}"),
-                "delete",
-                &json!({}),
-            )
-            .await;
-        eprintln!("{size} issues: delete {delete:?} in {took:?}");
-        let held = issues(&workspaces, &id, Duration::from_secs(10), |held| {
-            !held.iter().any(|(id, _)| *id == target)
-        })
-        .await;
-        assert!(
-            !held.iter().any(|(id, _)| *id == target),
-            "the issue is gone, and its neighbours stay: {held:?}"
-        );
-        assert_eq!(held.len(), size - 1, "one issue went: {}", held.len());
-        asked.push((rename, delete));
     }
     assert_eq!(
         asked[1], asked[0],
-        "a rename and a delete by id read as many pages at a thousand issues as at twenty-five"
+        "a rename and a delete by id ask as much at a thousand issues as at twenty-five"
     );
     for (rename, delete) in &asked {
         assert_eq!(

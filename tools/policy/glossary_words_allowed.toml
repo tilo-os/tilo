@@ -13,7 +13,11 @@ paths = ["crates/system/tilo-cli/src/server.rs"]
 [[allow]]
 reason = "systemd's runtime directory, its own name."
 words = ["run"]
-paths = ["crates/server/tilo-server/src/operations.rs"]
+paths = [
+    "crates/server/tilo-server/src/operations.rs",
+    "crates/collab/tilo-unlock-protocol/src/opened.rs",
+    "crates/system/tilo-auth/src/boot/mod.rs",
+]
 
 [[allow]]
 reason = "The hosted-VM service's load of the machine running its VMs, which the glossary keeps as host."
@@ -85,6 +89,9 @@ paths = [
     "crates/server/tilo-api/src/client/device.rs",
     "crates/server/tilo-api/src/direct.rs",
     "crates/server/tilo-api/src/server.rs",
+    "crates/server/tilo-server-protocol/src/config.rs",
+    "crates/server/tilo-server-protocol/tests/formats.rs",
+    "crates/runtime/tilo-identity/src/enrollment/mod.rs",
     "crates/server/tilo-server/src/agents.rs",
     "crates/server/tilo-server/src/daemon.rs",
     "crates/server/tilo-server/src/web_cli.rs",
@@ -562,6 +569,12 @@ paths = [
 ]
 
 [[allow]]
+reason = "A test of the workspace service's in-process asks builds its service with the fixture main already names `test_host`, and reads it back by `.host()`."
+words = ["host"]
+identifiers = ["test_host", "host"]
+paths = ["crates/server/tilo-workspace-service/src/own_workspaces.rs"]
+
+[[allow]]
 # A device runs its workspaces' work; the API main already names that with it.
 words = ["run"]
 identifiers = ["run", "runs", "run_jobs", "runner"]
@@ -679,7 +692,7 @@ paths = ["crates/agent/agent-session/tests/workspace_actions/key_writes.rs"]
 
 [[allow]]
 reason = "t's name for this check and the image it tests, the console of the VM it boots the image in, and the boot-assessment runner's own variable naming the unit it breaks: names those tools give them, not Tilo concepts."
-words = ["host", "run", "record", "subject"]
+words = ["host", "run", "record", "slot", "subject"]
 paths = ["tools/ci/host-assurance.sh"]
 
 [[allow]]
@@ -737,6 +750,7 @@ paths = [
     "crates/server/tilo-server/src/enroll_transport.rs",
     "crates/server/tilo-server/src/enroll_transport_tests.rs",
     "crates/server/tilo-server/src/enroll_tests.rs",
+    "crates/system/tilo-cli/src/server.rs",
 ]
 
 [[allow]]
@@ -748,3 +762,13 @@ paths = ["crates/server/tilo-server/src/enroll.rs"]
 reason = "A test's readiness handoff between two threads, which is what mpsc's channel is."
 words = ["channel"]
 paths = ["crates/server/tilo-server/src/enroll_transport_tests.rs"]
+
+[[allow]]
+reason = "The Database app's effect that executes a query on a server: its variant, its label and its key say run, as the app offers them."
+words = ["run"]
+paths = ["apps/db-client-model/*"]
+
+[[allow]]
+reason = "The network host a connection profile reaches, which the glossary keeps as a network host name."
+words = ["host"]
+paths = ["apps/db-client-model/*"]

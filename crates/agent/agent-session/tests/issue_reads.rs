@@ -18,6 +18,10 @@ use tilo_actions::MemberId;
 use tilo_actions::api::ActionAddress;
 use tilo_agent_session::{ReplicaActor, Seed};
 
+/// The place in the tracker of an issue that stands past the page of issues its part publishes:
+/// the part holds it, the chain names it, and no published tree carries it.
+const PAST_PAGE: usize = 400;
+
 /// The address the tracker publishes its issues under.
 fn issues() -> String {
     ui::resource::chain_resource_id(&ui::resource::DocumentId::derived(
@@ -156,4 +160,125 @@ fn an_issue_in_a_part_offers_the_view_its_link_opens() {
             .any(|view| view.address.resource == issue && view.address.action == "open"),
         "the issue offers the view its link opens: {views:?}"
     );
+}
+
+/// Every issue `page` keeps, by the id a path names it by, in the order its
+/// parts hold them: an issue at 300 or more within its part stands past the
+/// page that part publishes.
+fn held_issues(page: &tilo_agent_session::Replica) -> Vec<String> {
+    use ui::tilo_resource::Resource as _;
+    let mut held = Vec::new();
+    for index in 0..16 {
+        let Some(Ok(part)) = page.read_resource(&tasks::issue_list::chain().part(index), |doc| {
+            tasks::issue_list::IssueList::read(doc)
+        }) else {
+            break;
+        };
+        held.extend(part.issues.iter().map(|(id, _)| id.as_str().to_owned()));
+    }
+    held
+}
+
+/// The times `observed` built the whole tree a view publishes, and laid the
+/// view out.
+fn built(observed: &[ui::tilo_resource::profiling::Sample]) -> (usize, usize) {
+    let calls = |name: &str| {
+        observed
+            .iter()
+            .filter(|phase| phase.phase == name)
+            .map(|phase| phase.calls)
+            .sum::<usize>()
+    };
+    (calls("framework.published_tree"), calls("ui.layout"))
+}
+
+/// An issue named by its id, as an agent's path names one and acts on it:
+/// found under the chain, its action looked up by address, renamed and
+/// deleted. None of it builds the tree the tracker publishes or lays its
+/// view out, at twenty-five issues as at a thousand, and an issue past the
+/// page its part publishes is found and acted on the same way.
+#[test]
+fn an_issue_named_by_its_id_is_acted_on_without_building_the_tree() {
+    for size in [25, 1000] {
+        let mut page = crate::common::open(
+            "so.tilo.tasks",
+            &MemberId::person("ada"),
+            ReplicaActor::Owner,
+            Seed::New,
+        )
+        .unwrap();
+        let group = ActionAddress::new(issues(), "group");
+        for start in (0..size).step_by(tasks::model::MAX_MANY) {
+            let actions: Vec<serde_json::Value> = (start
+                ..(start + tasks::model::MAX_MANY).min(size))
+                .map(|n| {
+                    serde_json::json!({"action": "create", "args": {"title": format!("Issue {n}")}})
+                })
+                .collect();
+            page.invoke(
+                &group,
+                serde_json::json!({"actions": actions}).as_object().unwrap(),
+                false,
+            )
+            .expect("the issues are filed");
+        }
+        let held = held_issues(&page);
+        assert_eq!(held.len(), size, "the tracker keeps every issue filed");
+        // The first lookups of a view pay what opening it left owed; what an
+        // agent's next call costs is what is counted.
+        let _ = page.survey_page(
+            &tilo_actions::remote::CatalogueQuery::default(),
+            (false, (0, 50)),
+        );
+        let mut targets = vec![held[100.min(size - 1)].clone()];
+        if size > PAST_PAGE {
+            targets.push(held[PAST_PAGE].clone());
+        }
+        for target in targets {
+            let named = tilo_actions::remote::CatalogueQuery {
+                parent_resource: Some(issues()),
+                resource_name: Some(target.clone()),
+                max_results: 50,
+                ..tilo_actions::remote::CatalogueQuery::default()
+            };
+            let (rows, observed) = ui::tilo_resource::profiling::observe(|| {
+                let (_, rows) = page.survey_page(&named, (false, (0, 50)));
+                let item = rows.iter().find_map(|row| row.action.as_ref()).map_or_else(
+                    || panic!("{target} is found under the chain"),
+                    |action| action.address.resource.clone(),
+                );
+                for (action, arguments, confirmed) in [
+                    (
+                        "rename",
+                        serde_json::json!({"title": "Renamed by id"}),
+                        false,
+                    ),
+                    ("delete", serde_json::json!({}), true),
+                ] {
+                    let address = ActionAddress::new(item.as_str(), action);
+                    let target_query = tilo_actions::remote::CatalogueQuery {
+                        target: Some(address.clone()),
+                        max_results: 1,
+                        ..tilo_actions::remote::CatalogueQuery::default()
+                    };
+                    let (_, found) = page.survey_page(&target_query, (false, (0, 1)));
+                    assert_eq!(found.len(), 1, "{action} is found by its address");
+                    assert!(page.descriptor(&address).is_some());
+                    page.invoke(&address, arguments.as_object().unwrap(), confirmed)
+                        .unwrap_or_else(|error| panic!("{action} of {target}: {error}"));
+                }
+                rows
+            });
+            assert!(!rows.is_empty());
+            assert_eq!(
+                built(&observed),
+                (0, 0),
+                "{target} of {size} issues was acted on by building the tree or laying it out"
+            );
+            assert!(
+                !held_issues(&page).contains(&target),
+                "{target} of {size} issues is deleted"
+            );
+        }
+    }
 }

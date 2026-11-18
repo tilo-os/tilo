@@ -283,6 +283,7 @@ impl HistoryHost {
     }
 
     /// The host's own menus list History's recent changes ([`Self::lists_recent`]).
+    #[cfg(any(feature = "native", test))]
     pub(crate) fn list_recent(&mut self) {
         self.lists_recent = true;
     }
@@ -2292,6 +2293,7 @@ pub(crate) trait HistoryChromeApi: Widget {
     fn current_entries(&self) -> Vec<crate::widget::HistoryEntry>;
     fn remove_fallback_bar(&mut self);
     fn remove_open_button(&mut self);
+    #[cfg(any(feature = "native", test))]
     fn list_recent(&mut self);
     fn set_open_button(&mut self, shown: bool);
     fn set_window_presents(&mut self, presents: bool);
@@ -2491,6 +2493,7 @@ impl HistoryChromeApi for HistoryHost {
     fn remove_fallback_bar(&mut self) {
         HistoryHost::remove_fallback_bar(self)
     }
+    #[cfg(any(feature = "native", test))]
     fn list_recent(&mut self) {
         HistoryHost::list_recent(self);
     }

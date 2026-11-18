@@ -149,7 +149,11 @@ class Console:
         # at. A bare return asks for that prompt: a signed-in shell prints it
         # again, and a login prompt prints itself again.
         self.send("")
-        _, prompt = self.read_until(r"login: |[#$] ")
+        # At line start only: boot messages and prompts carry '# ' and '$ '
+        # mid-line, and taking one for a shell sends the command into
+        # whatever is drawing it — at a disk-unlock prompt that then waits for
+        # the command's whole deadline instead of letting the caller answer.
+        _, prompt = self.read_until(r"(?m)^login: |(?m)^[#$] ")
         if not prompt.group(0).startswith(b"login"):
             return
         user, _, password = userpass.partition(":")

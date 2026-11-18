@@ -942,7 +942,7 @@ tilo_test_env::scenario! {
     {
         let (mut app, state) = mounted("permissions");
         press(&mut app, "ws-permission-revoke-grant-2");
-        assert!(says(&mut app, "Revoke this permission?"));
+        assert!(says(&mut app, "Take back this permission?"));
         assert!(state.take_asked().is_empty());
         press(&mut app, "ws-settings-decision.primary");
         assert_eq!(

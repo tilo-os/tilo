@@ -329,9 +329,9 @@ fn the_access_question_is_answered_on_the_portal_sheet() {
     assert_eq!(
         grant.detail,
         "org.example.Recorder may now use your screen without asking. \
-         Revoke it to make Tilo ask again next time."
+         Take it back to make Tilo ask again next time."
     );
-    assert_eq!(grant.confirm_label, "Revoke");
+    assert_eq!(grant.confirm_label, "Take back");
     assert_eq!(grant.cancel_label, "Keep");
 }
 
@@ -883,7 +883,7 @@ fn the_allowance_given_for_good_is_revoked_or_left_access() {
         let _answer = answered(&mut session, &questions, asked);
         assert_eq!(
             dialog(&session).confirm_label,
-            "Revoke",
+            "Take back",
             "the allowance is shown at once"
         );
 

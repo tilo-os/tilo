@@ -38,6 +38,7 @@ mod health;
 mod hosted;
 mod identity;
 mod login;
+mod machine;
 mod mcp;
 mod migrate;
 mod nouns;
@@ -265,6 +266,17 @@ enum Cmd {
     Server {
         #[command(subcommand)]
         cmd: server::ServerCmd,
+    },
+    /// Machines you prepared to install, and how they reach them.
+    #[command(after_help = "Examples:\n  tilo machine add --name cupboard\n  \
+                      tilo machine add --os os --name spare-laptop --disk largest\n  \
+                      tilo machine list\n  tilo machine show 3f2b1c00d4e5f60718293a4b5c6d7e8f\n\n\
+                      A plan's choices are made here or left open; an open choice is answered \
+                      from your own devices against the machine's real hardware. The token an \
+                      installation enrolls with is written to a file, never printed.")]
+    Machine {
+        #[command(subcommand)]
+        cmd: machine::MachineCmd,
     },
     /// Keys to your hosted workspaces, for your code and its agents.
     #[command(
@@ -598,7 +610,7 @@ fn command_here(here: Here) -> clap::Command {
                 // A computer logged in as one of the person's devices tells of its folders.
                 "status" => !(here.system || login::logged_in()),
                 // Its servers are reached as the device it enrolled them with.
-                "server" => !login::logged_in(),
+                "server" | "machine" => !login::logged_in(),
                 "rollback" => !here.system,
                 "update" => !(here.apps || here.system),
                 "agent" => {
@@ -1231,6 +1243,20 @@ fn login_without_a_tab(cli: &Cli) -> Option<Result<ExitCode>> {
     None
 }
 
+/// `tilo status` on a computer with a system provider: the peer's state when logged in, then
+/// the deployment's.
+fn system_status(json: bool) -> Result<ExitCode> {
+    if login::logged_in() && !json {
+        peer_status(false);
+    }
+    require_system_provider()?;
+    let code = deployment_status(json)?;
+    if !json {
+        print_cleanup_status();
+    }
+    Ok(code)
+}
+
 fn run(cli: Cli) -> Result<ExitCode> {
     let spelling = tilo_control::front::Spelling::tilo();
     if let Some(logged_in) = login_without_a_tab(&cli) {
@@ -1263,6 +1289,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Action { cmd } => Ok(desktop::run_action(cmd, &spelling)),
         Cmd::Actions { filter } => Ok(list_actions(filter, &spelling)),
         Cmd::Server { cmd } => server::serve(cmd),
+        Cmd::Machine { cmd } => machine::serve(cmd),
         Cmd::Complete { what, prefix } => Ok(desktop::complete(
             what,
             prefix.as_deref().unwrap_or_default(),
@@ -1297,17 +1324,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         // Read-only, so it never needs to become anything. A person diagnosing a machine should not
         // have to authenticate to be told what is on it.
         Cmd::Status { json } if !system_available() && login::logged_in() => Ok(peer_status(json)),
-        Cmd::Status { json } => {
-            if login::logged_in() && !json {
-                peer_status(false);
-            }
-            require_system_provider()?;
-            let code = deployment_status(json)?;
-            if !json {
-                print_cleanup_status();
-            }
-            Ok(code)
-        }
+        Cmd::Status { json } => system_status(json),
         Cmd::Rollback { yes } => {
             require_system_provider()?;
             privileged(

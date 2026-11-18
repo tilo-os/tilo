@@ -451,6 +451,30 @@ impl ViewStorage {
             .unwrap_or_default()
     }
 
+    /// The item `id` of a chain the views opened, built alone by the part
+    /// keeping it ([`ResourceApi::item`]) and carried out where the chain is:
+    /// what an action addressed to it resolves, however many items the chain
+    /// holds.
+    pub(crate) fn chain_item(&self, id: &str) -> Option<tilo_actions::ResourceSpec> {
+        self.chains
+            .apis()
+            .into_iter()
+            .find_map(|api| Some(self.kept_where(api.id(), api.item(id)?)))
+    }
+
+    /// `resource`, of the one `owner` names, with its actions carried out by
+    /// the provider keeping `owner` when another one does.
+    fn kept_where(
+        &self,
+        owner: &str,
+        mut resource: tilo_actions::ResourceSpec,
+    ) -> tilo_actions::ResourceSpec {
+        if let Some(provider) = self.kept_provider(owner) {
+            run_by(&mut resource, provider);
+        }
+        resource
+    }
+
     /// A revision that moves whenever a chain the views opened changed.
     pub(crate) fn chains_revision(&self) -> u64 {
         self.chains.apis().iter().fold(0u64, |revision, api| {
@@ -530,11 +554,9 @@ impl ViewStorage {
     /// publication carried wherever its parts are unchanged.
     pub(crate) fn resource_resources_shared(&self) -> Vec<ui_core::published::SharedResource> {
         let kept_by = self.kept_by.borrow();
-        let owned = |mut resource: tilo_actions::ResourceSpec| {
-            if let Some(provider) = kept_by.get(resource.id.as_str()) {
-                run_by(&mut resource, provider);
-            }
-            ui_core::published::SharedResource::from_resource(resource)
+        let owned = |resource: tilo_actions::ResourceSpec| {
+            let owner = resource.id.as_str().to_owned();
+            ui_core::published::SharedResource::from_resource(self.kept_where(&owner, resource))
         };
         let mut resources: Vec<ui_core::published::SharedResource> = self
             .person

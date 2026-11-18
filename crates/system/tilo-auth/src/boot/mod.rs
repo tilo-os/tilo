@@ -33,6 +33,32 @@ use serde::Serialize;
 use std::path::Path;
 use tilo_rollback::exec::Runner;
 use tilo_rollback::policy::Workspace;
+use tilo_unlock_protocol::opened::{OPENED_PATH, Opening, UnlockMethod};
+
+/// Leave how this boot's volume opened where the booted system reads it: in
+/// the initrd's `/run`, which survives the switch to the booted system, and
+/// which the server reports in its status. Root owns the file, and it holds
+/// no secret, so it is world-readable.
+///
+/// # Errors
+///
+/// The opening could not be written.
+pub fn note_opening(method: UnlockMethod) -> Result<()> {
+    note_opening_at(
+        Path::new(OPENED_PATH),
+        Opening {
+            method,
+            at_ns: tilo_clock::unix_now_ns(),
+        },
+    )
+}
+
+/// [`note_opening`] at `path`, for a test's own runtime directory.
+pub(crate) fn note_opening_at(path: &Path, opened: Opening) -> Result<()> {
+    let bytes = opened.encode().context("how the volume opened")?;
+    tilo_files::native::atomic::write_with_mode(path, &bytes, 0o644)
+        .with_context(|| format!("writing {}", path.display()))
+}
 
 pub struct BootUnlock<'a> {
     pub runner: &'a dyn Runner,
@@ -105,7 +131,7 @@ impl BootUnlock<'_> {
             for token in &candidates {
                 for wrapper in token.known() {
                     if let Some(key) = wrapper.open_with_recovery(token.uid, &recovery)? {
-                        return self.finish(token, &key);
+                        return self.finish(token, &key, UnlockMethod::RecoveryKey);
                     }
                 }
             }
@@ -117,7 +143,7 @@ impl BootUnlock<'_> {
                 if let Some(Outcome::Key(key)) =
                     wrapper.open_with_secret(None, token.uid, &secret)?
                 {
-                    return self.finish(token, &key);
+                    return self.finish(token, &key, UnlockMethod::Passphrase);
                 }
             }
         }
@@ -144,7 +170,7 @@ impl BootUnlock<'_> {
         };
         Ok(
             match wrapper.open_with_secret(Some(tpm), token.uid, &secret)? {
-                Some(Outcome::Key(key)) => return self.finish(token, &key),
+                Some(Outcome::Key(key)) => return self.finish(token, &key, UnlockMethod::Tpm),
                 Some(Outcome::Wrong(tries)) => BootOutcome::Wrong(tries),
                 None => BootOutcome::Wrong(None),
                 Some(Outcome::LockedOut(tries)) => BootOutcome::LockedOut(tries),
@@ -152,7 +178,12 @@ impl BootUnlock<'_> {
         )
     }
 
-    fn finish(&self, token: &SigninToken, key: &UserKey) -> Result<BootOutcome> {
+    fn finish(
+        &self,
+        token: &SigninToken,
+        key: &UserKey,
+        method: UnlockMethod,
+    ) -> Result<BootOutcome> {
         let Some(slot) = token.keyslot() else {
             return Ok(BootOutcome::CouldNotTry(format!(
                 "the sign-in token for {} names no single keyslot",
@@ -178,6 +209,12 @@ impl BootUnlock<'_> {
             .with_context(|| format!("creating {}", self.keys_dir.display()))?;
         tilo_files::native::atomic::write_private(&key_file, passphrase.as_bytes())
             .with_context(|| format!("writing {}", key_file.display()))?;
+        // The volume is open: how it opened is noted before anything else
+        // uses the key, and a note that cannot be written does not stop the
+        // sign-in.
+        if let Err(error) = note_opening(method) {
+            eprintln!("tilo-auth: the volume opens, but how it did is not noted ({error:#})");
+        }
         if let Some(description) = self.handoff {
             let handoff = Handoff {
                 uid: token.uid,
@@ -191,5 +228,45 @@ impl BootUnlock<'_> {
             }
         }
         Ok(BootOutcome::Unlocked { uid: token.uid })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    #[test]
+    fn the_note_says_which_way_the_volume_opened_and_when() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("tilo-unlock.json");
+        note_opening_at(
+            &path,
+            Opening {
+                method: UnlockMethod::SiblingServer,
+                at_ns: 1_700_000_000_000_000_000,
+            },
+        )
+        .unwrap();
+        let read = Opening::decode(&std::fs::read(&path).unwrap()).expect("the boot's note");
+        assert_eq!(read.method, UnlockMethod::SiblingServer);
+        assert_eq!(read.at_ns, 1_700_000_000_000_000_000);
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o644,
+            "root owns it and it holds no secret, so the server reads it"
+        );
+        // A later boot's note replaces this one; nothing piles beside it.
+        note_opening_at(
+            &path,
+            Opening {
+                method: UnlockMethod::Tpm,
+                at_ns: 1_700_000_000_000_000_001,
+            },
+        )
+        .unwrap();
+        let read = Opening::decode(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(read.method, UnlockMethod::Tpm);
     }
 }

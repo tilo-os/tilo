@@ -326,7 +326,8 @@ pub enum HistoryOp {
     },
 }
 
-/// The item an action addressed, with its label at the time.
+/// The item an action addressed, with its label at the time: one line that
+/// names it ([`Described::on`]), never its text.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionItem {
     pub id: String,
@@ -347,12 +348,27 @@ impl Described {
         Self { what, item: None }
     }
 
+    /// About the item `id`, named by `label` as one line people read
+    /// ([`one_line`](crate::context::one_line), at most
+    /// [`MAX_LABEL_CHARS`](crate::context::MAX_LABEL_CHARS) characters): an
+    /// entry names its item, it never carries what the item reads. A message
+    /// is labelled by its text, so a label kept whole put the whole reply so
+    /// far into every change that grew it. An item with no name of its own
+    /// is called by its id, which stays whole: a reader takes a label that
+    /// repeats the id for no name.
+    ///
+    /// Only an entry being written passes here. A kept entry is read back as
+    /// it was written, so a change from before this rule keeps its bytes, and
+    /// is verified and undone under them ([`crate::verify_change`]).
     #[must_use]
     pub fn on(mut self, id: impl Into<String>, label: impl Into<String>) -> Self {
-        self.item = Some(ActionItem {
-            id: id.into(),
-            label: label.into(),
-        });
+        let (id, label) = (id.into(), label.into());
+        let label = if label == id {
+            label
+        } else {
+            crate::context::one_line(&label, crate::context::MAX_LABEL_CHARS).unwrap_or_default()
+        };
+        self.item = Some(ActionItem { id, label });
         self
     }
 

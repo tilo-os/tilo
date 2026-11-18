@@ -106,12 +106,23 @@ impl Consents {
         &self.questions
     }
 
+    /// What `caller` may do with `device`: allowed or refused without asking, or asked.
+    #[must_use]
+    pub fn answer(&self, caller: &PortalCaller, device: DeviceCap) -> tilo_action_policy::Answer {
+        self.grants
+            .decide(&caller.app_id, caller.workspace.as_deref(), device)
+    }
+
     /// Whether `caller` may use `device` without asking.
     #[must_use]
     pub fn allowed(&self, caller: &PortalCaller, device: DeviceCap) -> bool {
-        self.grants
-            .decide(&caller.app_id, device, tilo_action_policy::Answer::Allow)
-            == tilo_action_policy::Answer::Allow
+        self.answer(caller, device) == tilo_action_policy::Answer::Allow
+    }
+
+    /// Whether `caller` is refused `device` without asking: its workspace refuses it.
+    #[must_use]
+    pub fn refused(&self, caller: &PortalCaller, device: DeviceCap) -> bool {
+        self.answer(caller, device) == tilo_action_policy::Answer::Deny
     }
 
     /// The answers the person kept that still stand, on any of their devices.
@@ -136,8 +147,9 @@ impl Consents {
     /// the person's answer. Keeps what the answer allows beyond this request.
     ///
     /// # Errors
-    /// [`Ended::Cancelled`] when the person declined, or the same question
-    /// of the same app is already waiting.
+    /// [`Ended::Cancelled`] when the person declined, the app's workspace
+    /// refuses it the device, or the same question of the same app is
+    /// already waiting.
     pub async fn decide(
         &self,
         caller: &PortalCaller,
@@ -145,8 +157,10 @@ impl Consents {
         device: DeviceCap,
         question: AccessQuestion,
     ) -> Result<(), Ended> {
-        if self.allowed(caller, device) {
-            return Ok(());
+        match self.answer(caller, device) {
+            tilo_action_policy::Answer::Allow => return Ok(()),
+            tilo_action_policy::Answer::Deny => return Err(Ended::Cancelled),
+            tilo_action_policy::Answer::Ask => {}
         }
         let key = (caller.app_id.clone(), device);
         let _asking = Asking::claim(&self.asking, key).ok_or(Ended::Cancelled)?;
@@ -299,6 +313,51 @@ mod tests {
         };
         let (decided, ()) = tokio::join!(deciding, answering);
         assert_eq!(decided, Ok(()));
+    }
+
+    /// A workspace that refuses its apps the screen or the input refuses them without asking,
+    /// whatever the person answered; the same app elsewhere is answered as the person said.
+    #[tokio::test]
+    async fn a_workspace_refusal_refuses_without_asking() {
+        let questions = Questions::new();
+        let consents = consents(questions.clone());
+        consents
+            .grants()
+            .answer(
+                "org.example.Recorder",
+                DeviceCap::Screen,
+                tilo_action_policy::Answer::Allow,
+                Lifetime::Session,
+            )
+            .unwrap();
+        consents.grants().refuse_in(
+            [
+                (
+                    "studio".to_owned(),
+                    "org.example.Recorder".to_owned(),
+                    DeviceCap::Screen,
+                ),
+                (
+                    "studio".to_owned(),
+                    "org.example.Recorder".to_owned(),
+                    DeviceCap::Input,
+                ),
+            ]
+            .into(),
+        );
+        let in_studio = PortalCaller {
+            workspace: Some("studio".into()),
+            ..caller()
+        };
+        for device in [DeviceCap::Screen, DeviceCap::Input] {
+            assert_eq!(
+                consents.decide(&in_studio, "a", device, screencast()).await,
+                Err(Ended::Cancelled)
+            );
+            assert!(consents.refused(&in_studio, device));
+        }
+        assert!(questions.pending().is_empty(), "nobody is asked");
+        assert!(consents.allowed(&caller(), DeviceCap::Screen));
     }
 
     #[test]

@@ -1288,3 +1288,8 @@ settings-text-assistance = Spelling and text
 
 # What a screen reader says for an agent's name beside its mark.
 member-agent-spoken = { $name }, agent
+format-lifetime-once = Once
+format-lifetime-session = Until log out
+format-lifetime-until = Until
+format-lifetime-until-at = Until { $when }
+format-lifetime-always = Always

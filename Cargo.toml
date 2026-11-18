@@ -119,6 +119,7 @@ members = [
     "apps/contacts",
     "apps/containers",
     "apps/db-client",
+    "apps/db-client-model",
     "apps/diffmerge",
     "apps/disks",
     "apps/disk-usage",

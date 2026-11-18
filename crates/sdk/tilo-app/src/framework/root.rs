@@ -2339,6 +2339,13 @@ impl RootPublishes for ResourceRoot {
         let _viewer = member
             .cloned()
             .map(ui_core::invocation_scope::ViewerScope::enter);
+        // An item a chain keeps is built alone by the part keeping it, as
+        // the chain carries it, whether or not the chain's published page
+        // does: one past that page is addressed as one on it is, and either
+        // costs the item, never the whole publication.
+        if let Some(item) = self.storage.chain_item(id) {
+            return Some(item);
+        }
         // A change from another window or member may not have reached
         // this view yet: an item it removed is gone, one it made is there.
         if let Some(published) = find(&[self.current_publication(doc)], id) {

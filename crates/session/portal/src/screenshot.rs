@@ -100,6 +100,13 @@ async fn take(
     // What is asked for is settled before the person is asked anything: a
     // target this session cannot take is refused at once.
     let target = target(options, portal.capture.targets())?;
+    // A workspace that refuses its apps the screen refuses a picture the person would pick too.
+    if portal
+        .consents
+        .refused(caller, collab_types::caps::DeviceCap::Screen)
+    {
+        return Err(Ended::Cancelled);
+    }
     match decision(options) {
         Decision::Ask => {
             let question = ScreenshotQuestion {

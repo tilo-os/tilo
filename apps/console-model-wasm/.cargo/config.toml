@@ -5,6 +5,8 @@
 # wasm-bindgen glue, which is what lets any host run it.
 [target.wasm32-unknown-unknown]
 rustflags = [
-    '--cfg', 'tilo_no_js',
-    '--cfg', 'getrandom_backend="custom"',
+    "--cfg",
+    "tilo_no_js",
+    "--cfg",
+    'getrandom_backend="custom"',
 ]

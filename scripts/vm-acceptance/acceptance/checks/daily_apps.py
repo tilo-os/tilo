@@ -203,6 +203,7 @@ def _open(ctx, res, app: DailyApp):
     frame = wait_until(presented, FIRST_FRAME_S, 0.5)
     if frame is None:
         ctx.shot(f"{app.label}-no-frame")
+        print_launch_log(ctx, app)
         frames = [(f["app_id"], f.get("frames"), f.get("rect")) for f in ctx.vm.windows()]
         raise CheckFailed(f"{app.name} never drew a first frame within {FIRST_FRAME_S} s "
                           f"(windows: {frames})")
@@ -254,6 +255,16 @@ def _open(ctx, res, app: DailyApp):
         res.metrics["xwayland"] = xw[:2]
         expect(xw, f"no Xwayland server is running while {app.name} is open")
     return gid, sid, procs
+
+
+def print_launch_log(ctx, app: DailyApp) -> None:
+    """Print what the session logged about `app`'s launch and its keeper: a failed check keeps
+    no report files, so the job's own output is where the reason survives."""
+    print(f"--- session log about {app.program} and its keeper ---")
+    print(ctx.vm.exec(
+        "sed 's/\\x1b\\[[0-9;]*m//g' \"$HOME/.local/state/tilo/session-logs/latest.log\" 2>/dev/null "
+        f"| grep -aiE '{app.desktop_id}|{app.program}|keeper|kept_apps|xwayland' | tail -n 60 | cut -c1-400; true",
+        check=False), flush=True)
 
 
 def group_of_surface(st, sid):

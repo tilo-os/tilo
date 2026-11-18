@@ -225,6 +225,10 @@ struct Data {
     desktop_lost: Option<(Instant, Option<Instant>)>,
     delivered: bool,
     finished: bool,
+    /// When the keeper was told to end (SIGTERM, SIGHUP or SIGINT, as a login's end sends them):
+    /// it ends once its app did, so what it holds of the display (its X11 lock and socket) goes
+    /// with it.
+    told_to_end: Option<Instant>,
 }
 
 impl Keeper {
@@ -296,9 +300,11 @@ impl Keeper {
                 desktop_lost: None,
                 delivered: false,
                 finished: false,
+                told_to_end: None,
             },
         };
         x11::watch(&mut keeper.data);
+        termination::watch(&keeper.data.handle)?;
         Ok(keeper)
     }
 
@@ -392,6 +398,80 @@ fn listen(path: &Path) -> io::Result<UnixListener> {
     let listener = tilo_files::native::socket::bind(path)?;
     listener.set_nonblocking(true)?;
     Ok(listener)
+}
+
+/// End, with the app, when the process is told to (SIGTERM, SIGHUP or SIGINT, as a login's end
+/// sends them), rather than at once: a keeper killed by one would leave its X11 lock and socket
+/// in `/tmp` behind. The handlers are the process's own, so only the keeper program installs
+/// them, before it makes its keeper.
+///
+/// # Errors
+/// The handlers could not be installed.
+pub fn end_when_told() -> io::Result<()> {
+    termination::install()
+}
+
+/// The signals that end a keeper, heard in its event loop.
+mod termination {
+    use std::io;
+    use std::os::fd::{AsRawFd as _, OwnedFd};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicI32, Ordering};
+
+    use smithay::reexports::calloop::LoopHandle;
+
+    use crate::Data;
+
+    /// The write end of the pipe the handler wakes the loop through.
+    static WAKE: AtomicI32 = AtomicI32::new(-1);
+    /// Its read end, until a keeper's loop takes it.
+    static HEARD: Mutex<Option<OwnedFd>> = Mutex::new(None);
+
+    extern "C" fn heard(_: libc::c_int) {
+        let fd = WAKE.load(Ordering::Relaxed);
+        if fd >= 0 {
+            // SAFETY: write(2) is async-signal-safe; the byte only wakes the loop, and a full
+            // pipe already holds one.
+            unsafe { libc::write(fd, [1_u8].as_ptr().cast(), 1) };
+        }
+    }
+
+    pub(crate) fn install() -> io::Result<()> {
+        let (read, write) = rustix::pipe::pipe_with(
+            rustix::pipe::PipeFlags::CLOEXEC | rustix::pipe::PipeFlags::NONBLOCK,
+        )?;
+        WAKE.store(write.as_raw_fd(), Ordering::Relaxed);
+        // The write end stays open for the life of the process: a signal may come until it exits.
+        std::mem::forget(write);
+        *HEARD.lock().map_err(|_| io::Error::other("poisoned"))? = Some(read);
+        for signal in [libc::SIGTERM, libc::SIGHUP, libc::SIGINT] {
+            // SAFETY: the handler only loads an atomic and writes to a pipe.
+            unsafe {
+                let mut action: libc::sigaction = std::mem::zeroed();
+                action.sa_sigaction = heard as *const () as libc::sighandler_t;
+                action.sa_flags = libc::SA_RESTART;
+                libc::sigemptyset(&raw mut action.sa_mask);
+                if libc::sigaction(signal, &raw const action, std::ptr::null_mut()) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Hear the signals in the keeper's loop, when the program installed the handlers.
+    pub(crate) fn watch(handle: &LoopHandle<'static, Data>) -> io::Result<()> {
+        let Some(read) = HEARD.lock().ok().and_then(|mut heard| heard.take()) else {
+            return Ok(());
+        };
+        let read: OwnedFd = read;
+        super::insert(handle, read, |read, data: &mut Data| {
+            let mut drained = [0_u8; 16];
+            while rustix::io::read(read, &mut drained).is_ok_and(|count| count > 0) {}
+            data.terminate();
+        })?;
+        Ok(())
+    }
 }
 
 fn insert<F: std::os::fd::AsFd + 'static>(
@@ -813,6 +893,10 @@ impl Data {
             tracing::warn!(%error, "the app's connections could not be written");
         }
         self.end_without_desktop();
+        if self.told_to_end.is_some() && (self.app.is_none() || self.ended.is_some()) {
+            self.finished = true;
+            return;
+        }
         let grace = self.options.grace;
         match self.ended_at {
             Some(at) => self.finished = self.delivered || at.elapsed() >= grace,
@@ -825,6 +909,18 @@ impl Data {
                     self.finished = true;
                 }
             }
+        }
+    }
+
+    /// The keeper was told to end: its app is asked to as well, and the keeper ends with it.
+    fn terminate(&mut self) {
+        if self.told_to_end.is_some() {
+            return;
+        }
+        tracing::info!("the keeper was told to end; its app ends too");
+        self.told_to_end = Some(Instant::now());
+        if let (Some(app), None) = (&self.app, self.ended) {
+            app.signal(libc::SIGTERM);
         }
     }
 

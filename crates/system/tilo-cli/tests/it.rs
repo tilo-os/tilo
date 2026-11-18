@@ -15,6 +15,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
+#[path = "machine_tests.rs"]
+mod machine_tests;
+
 /// The old names, as `tilo` lists them in `src/aliases.rs`.
 fn moved() -> Vec<String> {
     let source = include_str!("../src/aliases.rs");

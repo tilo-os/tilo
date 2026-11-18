@@ -275,31 +275,6 @@ fn given_by_label(who: &MemberId, ws: &Workspace, local_user: &str) -> String {
     t_args(key, &[("id", member_name_or_short_id(ws, who).into())])
 }
 
-/// How long a grant lives, in the words the tab and its composer use for it. A lifetime that ends
-/// at a time says when, in the words the composer's date chip shows the end the person picked.
-#[must_use]
-pub fn lifetime_label(lifetime: Lifetime) -> String {
-    use ui::format::Moment as _;
-    let Lifetime::Until(at) = lifetime else {
-        return t(&format!("workspace-settings-expiry-{}", lifetime.key()));
-    };
-    let day = i64::try_from(at)
-        .ok()
-        .and_then(|at| ui::format::Timestamp::from_millisecond(at).ok())
-        .and_then(|at| at.local());
-    day.map_or_else(
-        // Past the calendar's range there is no day to name, only the lifetime.
-        || t("workspace-settings-expiry-until"),
-        |at| {
-            let fact = ui::format::day_fact(at.date(), Some(at.time()), ui::clock::today());
-            t_args(
-                "workspace-settings-expiry-until-at",
-                &[("when", fact.text.into())],
-            )
-        },
-    )
-}
-
 /// A subject the grant composer can target, and the subject axis the Permissions list groups by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SubjectKind {
@@ -489,7 +464,7 @@ pub fn lifetime_choices() -> Vec<(&'static str, String)> {
         .filter(|lifetime| lifetime.is_durable())
         .map(|lifetime| {
             let key = lifetime.key();
-            (key, t(&format!("workspace-settings-expiry-{key}")))
+            (key, ui::format::lifetime_kind(key))
         })
         .collect()
 }
@@ -928,14 +903,14 @@ pub fn listed_permissions(
             let (allows, expiry, granted_by) = match entry {
                 Listed::Sandbox(cap) => (
                     capability_allows(cap, apps),
-                    lifetime_label(cap.lifetime),
+                    ui::format::lifetime(cap.lifetime),
                     cap.granted_by
                         .as_ref()
                         .map(|who| given_by_label(who, ws, local_user)),
                 ),
                 Listed::Grant(grant) => (
                     grant_allows(grant, apps),
-                    lifetime_label(grant.lifetime),
+                    ui::format::lifetime(grant.lifetime),
                     match &grant.granted_by {
                         Grantee::Member(who) => Some(given_by_label(who, ws, local_user)),
                         Grantee::Role(_) => None,
@@ -1426,9 +1401,9 @@ mod permissions_tests {
 
     #[test]
     fn a_lifetime_that_ends_says_when_it_ends() {
-        assert_eq!(lifetime_label(Lifetime::UntilRevoked), "Always");
+        assert_eq!(ui::format::lifetime(Lifetime::UntilRevoked), "Always");
         assert_eq!(
-            lifetime_label(Lifetime::Until(tomorrow_at(17, 30))),
+            ui::format::lifetime(Lifetime::Until(tomorrow_at(17, 30))),
             "Until Tomorrow 5:30 PM",
             "a timed grant shows its end in the composer's own date words"
         );

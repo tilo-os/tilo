@@ -479,8 +479,8 @@ bluetooth-prompt-accept-match = They match
 bluetooth-prompt-accept-allow = Allow
 bluetooth-prompt-accept-pair = Pair
 portal-allowed-title = Allowed for good
-portal-allowed-detail = { $app } may now use { $what } without asking. Revoke it to make Tilo ask again next time.
-portal-revoke = Revoke
+portal-allowed-detail = { $app } may now use { $what } without asking. Take it back to make Tilo ask again next time.
+portal-revoke = Take back
 portal-keep = Keep
 
 ## Adding a program the person downloaded to their apps, and uninstalling an app

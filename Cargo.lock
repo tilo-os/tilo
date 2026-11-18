@@ -3668,6 +3668,7 @@ name = "db-client"
 version = "0.1.0"
 dependencies = [
  "db-client",
+ "db-client-model",
  "hex",
  "jiff",
  "mysql",
@@ -3684,6 +3685,17 @@ dependencies = [
  "tilo-vello",
  "tilo-winit",
  "tracing",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "db-client-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-resource",
  "uuid",
  "workspace-hack",
 ]
@@ -7764,6 +7776,7 @@ name = "install-profile-model"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -17492,6 +17505,7 @@ dependencies = [
  "tilo-compositor",
  "tilo-files",
  "tilo-paths",
+ "tilo-process",
  "tilo-test-env",
  "tilo-x11-transfer",
  "tracing",
@@ -17539,6 +17553,7 @@ dependencies = [
  "tilo-lock",
  "tilo-mime",
  "tilo-paths",
+ "tilo-process",
  "tilo-render-protocol",
  "tilo-resource",
  "tilo-service",
@@ -17768,6 +17783,7 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "tilo-ask-password",
+ "tilo-clock",
  "tilo-files",
  "tilo-nm",
  "tilo-rollback",
@@ -18193,6 +18209,7 @@ dependencies = [
  "futures-util",
  "hex",
  "http-body-util",
+ "install-profile-model",
  "iroh",
  "iroh-base",
  "iroh-blobs",
@@ -21456,6 +21473,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "install-profile-model",
  "iroh",
  "iroh-base",
  "iroh-relay",
@@ -21468,6 +21486,7 @@ dependencies = [
  "package-store",
  "photos",
  "postcard",
+ "qrcode",
  "rand 0.10.3",
  "rcgen",
  "ring",
@@ -21529,6 +21548,7 @@ dependencies = [
  "tilo-test-env",
  "tilo-thumbnail",
  "tilo-ui",
+ "tilo-unlock-protocol",
  "tilo-user-identity",
  "tilo-web-search",
  "tilo-workspace-agent",
@@ -21610,6 +21630,7 @@ dependencies = [
  "tilo-paths",
  "tilo-process",
  "tilo-test-env",
+ "tilo-unlock-protocol",
  "tilo-user-identity",
  "tilo-workspace-join",
  "toml 1.0.6+spec-1.1.0",
@@ -22655,6 +22676,7 @@ dependencies = [
  "postcard",
  "serde",
  "serde_bytes",
+ "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.21",
  "tilo-seal",
@@ -23200,7 +23222,6 @@ dependencies = [
  "accounts",
  "agent-provider-config",
  "app-cli",
- "base64 0.22.1",
  "blake3",
  "calendar",
  "chat",
@@ -23295,7 +23316,6 @@ dependencies = [
  "word-processor",
  "workspace-hack",
  "zeroize",
- "zstd",
 ]
 
 [[package]]

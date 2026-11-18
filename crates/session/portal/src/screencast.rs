@@ -243,6 +243,13 @@ pub(crate) struct Ask<'a> {
 /// the same sources again; devices alone are always asked for), then start a stream of every source picked, each held
 /// as a capture lease.
 pub(crate) async fn share(portal: &Portal, ask: Ask<'_>) -> Result<Shared, Ended> {
+    // A workspace that refuses its apps the screen or the input refuses the share without asking.
+    let refused = |device| portal.consents.refused(ask.caller, device);
+    if (ask.selection.is_some() && refused(collab_types::caps::DeviceCap::Screen))
+        || (ask.devices != 0 && refused(collab_types::caps::DeviceCap::Input))
+    {
+        return Err(Ended::Cancelled);
+    }
     let offered: Vec<CaptureSource> = ask.selection.map_or_else(Vec::new, |selection| {
         portal
             .streams

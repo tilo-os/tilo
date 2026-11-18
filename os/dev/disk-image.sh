@@ -186,10 +186,6 @@ if [ "$ENCRYPT" = 1 ]; then
   # root, and a store when the disk is large enough for one) made by tilo-disk-encrypt, and
   # bootc installing into the opened mapping. Options of the plain layout that
   # disagree with it are refused rather than silently dropped.
-  [ "$HAS_UKI" = no ] \
-    || die "--encrypt needs an image that boots split kernel/initrd entries. This
-  image carries a sealed UKI, whose signed command line cannot carry the
-  install-time rd.luks.uuid; the desktop installer builds that layout instead."
   [ -z "$SEED_RAW" ] || die "--encrypt cannot reuse a seed disk"
   [ -z "$BOOT_GAP$ROCKCHIP_LOADER" ] || die "--encrypt does not lay out a board disk with a loader gap"
   [ -z "$ROOT_MAX" ] || die "--encrypt sizes the root from the disk, not --root-max"
@@ -394,6 +390,12 @@ if [ ${#KARGS[@]} -gt 0 ] && [ "$HAS_UKI" = yes ]; then
   here would be silently absent at boot. Put it in the image's
   /usr/lib/bootc/kargs.d/ — \`bootc container ukify\` reads that directory — or
   ship it as a separately signed UKI addon."
+fi
+
+if [ "$ENCRYPT" = 1 ] && [ "$HAS_UKI" = yes ]; then
+  die "--encrypt needs an image that boots split kernel/initrd entries. This
+  image carries a sealed UKI, whose signed command line cannot carry the
+  install-time rd.luks.uuid; the desktop installer builds that layout instead."
 fi
 
 # Where the ESP goes, which is not the same on both layouts:
@@ -693,11 +695,13 @@ fi
 # The rest of this script then installs into that tree exactly as into the plain
 # one, and enrols the volume's factors after bootc has written the ESP.
 encrypted_layout() {
-  local disk_bytes reserved plan want key
+  local disk_bytes reserved plan want
   ENC_DISK_ENCRYPT="$SCRIPT_DIR/../usr/libexec/tilo-disk-encrypt"
   ENC_STORE_VOLUME="$SCRIPT_DIR/../usr/libexec/tilo-store-volume"
   [ -x "$ENC_DISK_ENCRYPT" ] && [ -x "$ENC_STORE_VOLUME" ] \
     || die "the encrypted layout needs $ENC_DISK_ENCRYPT and $ENC_STORE_VOLUME"
+  [ "$SIZE_MIB" -ge 40960 ] \
+    || die "an encrypted install needs a disk of at least 40 GiB (a LUKS root and its store); got $SIZE"
   truncate -s "$SIZE" "$RAW"
   disk_bytes="$(stat -c %s "$RAW")"
   # The plan is needed before the disk exists, only to know how many partitions
@@ -720,14 +724,17 @@ encrypted_layout() {
   LOOP_NODE_HOLDER_PID=$!
   LOOP_NODE_HOLDER_IN=${LOOP_NODE_HOLDER[1]}
   LOOP_NODE_HOLDER_OUT=${LOOP_NODE_HOLDER[0]}
-  IFS= read -r loop_nodes_ready <&"$LOOP_NODE_HOLDER_OUT" || die "loop partition node holder failed"
-  [ "$loop_nodes_ready" = READY ] || die "loop partition node holder did not become ready"
 
-  local prep
+  # The helper writes the partitions; the holder materializes their nodes as
+  # they appear. So the helper starts first and READY is read after it returns:
+  # waiting for READY before it would wait for partitions nobody made.
+  local prep prep_status=0
   prep="$(sudo -n env TILO_ESP_SIZE="$ESP_SIZE" TILO_BOOT_SIZE="$ENC_BOOT_SIZE" \
     TILO_STORE_VOLUME="$ENC_STORE_VOLUME" \
-    "$ENC_DISK_ENCRYPT" prepare "$LOOP" --filesystem "$ROOTFS" --mnt "$MNT")" \
-    || die "tilo-disk-encrypt prepare failed"
+    "$ENC_DISK_ENCRYPT" prepare "$LOOP" --filesystem "$ROOTFS" --mnt "$MNT")" || prep_status=$?
+  IFS= read -r loop_nodes_ready <&"$LOOP_NODE_HOLDER_OUT" || true
+  [ "$prep_status" -eq 0 ] || die "tilo-disk-encrypt prepare failed"
+  [ "${loop_nodes_ready:-}" = READY ] || die "loop partition node holder did not become ready"
   field_of() { printf '%s\n' "$prep" | sed -n "s/^$1=//p"; }
   local mapper
   MNT="$(field_of MNT)"
@@ -748,12 +755,20 @@ encrypted_layout() {
   ENC_BOOT_UUID="$(sudo -n blkid -s UUID -o value "$ENC_BOOT_PART")"
   [ -n "$ENC_BOOT_UUID" ] || die "could not read the encrypted install's /boot UUID"
   root_dev="/dev/mapper/$mapper"
-  esp_at="$MNT/boot/efi"
-  ESP_AT="$esp_at"
-  # /boot is a partition of its own on the installer's layout, not the ESP.
-  BOOT_IS_ESP=no
-  [ -d "$ESP_AT" ] || die "the encrypted install has no $ESP_AT"
-  msg "2/4 mounted $root_dev -> $MNT, $esp_dev -> $ESP_AT, $ENC_BOOT_PART -> $MNT/boot"
+  # /boot is the ESP on this layout. An unsealed image boots split
+  # kernel/initrd entries, and systemd-boot reads those from the ESP (or an
+  # XBOOTLDR partition Tilo does not define), not from a plain Linux /boot.
+  # The installer's separate /boot partition stays unused: a sealed image is
+  # the only layout that gives it a job.
+  sudo -n umount "$MNT/boot/efi" || die "could not unmount the prepared $MNT/boot/efi"
+  sudo -n umount "$MNT/boot" || die "could not unmount the prepared $MNT/boot"
+  sudo -n mount "$esp_dev" "$MNT/boot" || die "could not mount the ESP at $MNT/boot"
+  ESP_AT="$MNT/boot"
+  ENC_BOOT_UUID="$(sudo -n blkid -s UUID -o value "$esp_dev")"
+  [ -n "$ENC_BOOT_UUID" ] || die "could not read the encrypted install's ESP UUID"
+  # /boot is the ESP here, as on a plain composefs install.
+  BOOT_IS_ESP=yes
+  msg "2/4 mounted $root_dev -> $MNT, $esp_dev -> $ESP_AT"
 }
 
 if [ "$ENCRYPT" = 1 ]; then
@@ -933,7 +948,6 @@ if [ "$ENCRYPT" = 1 ]; then
   # `--karg console=ttyS0` itself and answers there).
   install_args+=(--boot-mount-spec "UUID=$ENC_BOOT_UUID")
   for karg in $ENC_KARGS; do install_args+=(--karg "$karg"); done
-  install_args+=(--karg console=tty0)
 fi
 [ "$DIRECT_SEALED_SOURCE" = 0 ] || install_args+=(--enforce-container-sigpolicy)
 install_args+=("/run/tilo-install-target")
@@ -1030,7 +1044,9 @@ if [ "$ENCRYPT" = 1 ]; then
   if [ -n "$ENC_STORE_PART" ]; then
     enrol_args+=(--store-part "$ENC_STORE_PART" --store-key-file "$ENC_STORE_KEY")
   fi
-  enc_generation="$(sudo -n cat "$MNT/usr/lib/tilo/generation" 2>/dev/null | tr -d '\r\n ' || true)"
+  enc_generation=""
+  enc_generation_file="$(sudo -n find "$MNT" -maxdepth 8 -path '*/usr/lib/tilo/generation' -print -quit 2>/dev/null || true)"
+  [ -z "$enc_generation_file" ] || enc_generation="$(sudo -n cat "$enc_generation_file" 2>/dev/null | tr -d '\r\n ' || true)"
   case "$enc_generation" in ''|*[!0-9]*) enc_generation="" ;; esac
   if [ -n "$enc_generation" ]; then
     for enc_predictions in "$ESP_AT/tilo-target/predictions" "$MNT/usr/share/tilo/pcr-predictions"; do

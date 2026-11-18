@@ -81,6 +81,7 @@ mod coding;
 mod going;
 mod issue_work;
 mod learned;
+mod logged;
 mod mail;
 mod mail_connect;
 mod skills;
@@ -2543,16 +2544,20 @@ async fn run_calls(
         }
         noted = Some(call.name.clone());
         step.say(content.len(), is_error);
-        // What it asked is logged with a refusal, so the call can be made again by hand; every
-        // call's whole answer only at debug, where what a tool showed it can be looked up.
-        let asked: String = call.input.to_string().chars().take(LOGGED_CHARS).collect();
+        // A line of the log names the call's tool and each argument by its name and the bytes
+        // of its value, which is where making a refused call again by hand begins; of a refusal
+        // it keeps the sentence without anything the call wrote, and of an answer its size
+        // ([`logged`]). No value of an argument and nothing of an answer stands in the log, at
+        // any level.
+        let tool = steps::offered_name(&call.name);
+        let arguments = logged::arguments(&call.input);
         if is_error {
-            let said: String = content.chars().take(LOGGED_CHARS).collect();
-            tracing::info!(tool = %call.name, %asked, %said, "a tool of an agent on the workspace's server was refused or failed");
+            let said = logged::refusal(&content, &call.input);
+            tracing::info!(%tool, %arguments, %said, "a tool of an agent on the workspace's server was refused or failed");
         } else {
-            tracing::info!(tool = %call.name, "an agent on the workspace's server used a tool");
+            tracing::info!(%tool, "an agent on the workspace's server used a tool");
         }
-        tracing::debug!(tool = %call.name, %asked, answered = %content, "what a tool of an agent on the workspace's server answered");
+        tracing::debug!(%tool, %arguments, answered_bytes = content.len(), "what a tool of an agent on the workspace's server answered");
         results.push(Content::ToolResult(ToolResult {
             call_id: call.id.clone(),
             content,

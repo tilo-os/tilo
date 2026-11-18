@@ -41,6 +41,10 @@ impl ResourceApi for ChainState {
         ChainState::items_named(self, name)
     }
 
+    fn item(&self, id: &str) -> Option<tilo_actions::ResourceSpec> {
+        ChainState::item(self, id)
+    }
+
     fn read(&self, payload: &[u8]) -> Result<serde_json::Value, String> {
         ChainState::read(self, payload)
     }

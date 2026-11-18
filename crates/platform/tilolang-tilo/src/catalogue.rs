@@ -21,6 +21,7 @@ use tilo_actions::ActionKind;
 use tilo_actions::surface::{FieldType, NamedType, Surface, VerbSurface};
 use tilolang::meta::NamedRootMeta;
 use tilolang::meta::SearchMeta;
+use tilolang::types::Ty;
 use tilolang_runtime::meta::{
     ActionMeta, DefaultMeta, EffectClass, EnumMeta, FieldMeta, MergeKind, PackageMeta, ParamMeta,
     TypeMeta, VariantMeta,
@@ -506,6 +507,23 @@ impl Reader<'_> {
         self.ids.id(self.app, name)
     }
 
+    /// The app's own type `name` as package metadata writes it. The language holds types of
+    /// its own under some names (`View`, `Bytes`) and begins others with one (`List`), and an
+    /// app names its types and its kinds without knowing which. Where the language reads the
+    /// bare name as anything but this app's type, the type is written with its app before it,
+    /// as the language itself writes a package's type of such a name ([`Ty::meta_text`]): it
+    /// stays the app's, under the name the app gave it.
+    fn own(&self, name: &str) -> String {
+        let qualified = format!("{}.{name}", self.app);
+        match (
+            Ty::parse_meta(name, self.app),
+            Ty::parse_meta(&qualified, self.app),
+        ) {
+            (bare, Some(own)) if bare.as_ref() != Some(&own) => qualified,
+            _ => name.to_owned(),
+        }
+    }
+
     fn surface(&mut self, surface: &Surface) {
         let own = self.kinds.get(&surface.kind).cloned();
         let renamed = self.named_types(surface, own.as_deref());
@@ -634,7 +652,7 @@ impl Reader<'_> {
         if let Some(own) = own {
             params.push(ParamMeta {
                 name: snake_case(own),
-                ty: own.to_owned(),
+                ty: self.own(own),
                 default: None,
                 place: false,
                 entry: false,
@@ -766,7 +784,7 @@ impl Reader<'_> {
                 let name = rename(name);
                 match self.declared.get(&name) {
                     Some((_, true)) => format!("enum {name}"),
-                    Some((_, false)) => name,
+                    Some((_, false)) => self.own(&name),
                     None => return None,
                 }
             }
@@ -801,7 +819,7 @@ impl Reader<'_> {
             ));
         }
         if let Some(name) = self.kinds.get(kind) {
-            return Some(name.clone());
+            return Some(self.own(name));
         }
         let (app, name) = tilolang_kind(kind)?;
         Some(if app == self.app {

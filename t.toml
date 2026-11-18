@@ -580,6 +580,31 @@ run = "crates/platform/tilolang-tilo/bench/imagefilter/build.sh"
 outputs = ["/target/wasm32-unknown-unknown/release/tilolang_bench_imagefilter.wasm"]
 default = false
 
+# Every app's model module, built once and kept for the checks that read one:
+# the `model.wasm` a package carries so every device holding a workspace's keys
+# applies the app's actions with no build of its own. One mechanism for every
+# app (tools/ci/app-models.sh): an app keeps its model as a guest crate beside
+# it (`apps/tasks` → `apps/tasks-model-wasm`), and the module is what that
+# crate builds for wasm32. A run that asks for a package's output runs this
+# first.
+[[check]]
+name = "app-models"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "bash tools/ci/app-models.sh"
+outputs = ["/target/app-models/**"]
+default = false
+
+# The one test that installs an app from its package and applies its action
+# through the module the package carries: it reads what `app-models` built, so
+# it is left out of the package's own test family (which builds no module) and
+# runs here, where the module is in place. `workspace-unify` comes beside the
+# package so its features resolve as the test family's build gives them.
+[[check]]
+name = "test-packaged-model"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "TILO_APP_MODELS=\"$CARGO_TARGET_DIR/app-models\" cargo test --locked -p tilo-workspace-service -p workspace-unify --lib packaged_model -- --ignored\n"
+needs = ["app-models"]
+
 [[check]]
 name = "codemap"
 run = "python3 -I tools/docs/codemap.py --check"

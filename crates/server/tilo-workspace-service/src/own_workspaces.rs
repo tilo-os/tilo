@@ -7,8 +7,9 @@
 use serde_json::{Map, Value};
 use tilo_actions::ActionAddress;
 use tilo_actions::remote::{
-    InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
+    InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
 };
+use tilo_server_protocol::WorkspaceId;
 use tilo_server_session::workspaces::{
     CREATE_WORKSPACE, CreatedWorkspace, ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER,
     HOST_WORKSPACES_RESOURCE,
@@ -60,57 +61,41 @@ impl WorkspaceService {
         action: &str,
         arguments: Map<String, Value>,
     ) -> Result<Value, String> {
-        self.ask(
-            caller,
-            RemoteActionTarget {
-                provider: tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
-                address: ActionAddress::new(
-                    tilo_actions::remote::workspace_governance_resource(workspace),
-                    action,
-                ),
-            },
-            arguments,
-        )
-        .await
+        let Some(workspace_id) = WorkspaceId::parse(workspace) else {
+            return Err(format!("{workspace} is not a workspace's id"));
+        };
+        let target = RemoteActionTarget {
+            provider: tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
+            address: ActionAddress::new(
+                tilo_actions::remote::workspace_governance_resource(workspace),
+                action,
+            ),
+        };
+        let pending = self
+            .actions()
+            .serve_certified(
+                workspace_id,
+                &local_caller(caller),
+                caller,
+                message(target, arguments),
+            )
+            .ok_or("this workspace service does not answer in process")?;
+        answered(pending).await
     }
 
+    /// Ask `target` as `caller`, outside any workspace: the service's own operations are its own,
+    /// and only its workspaces' governance is theirs.
     async fn ask(
         &self,
         caller: &DeviceCert,
         target: RemoteActionTarget,
         arguments: Map<String, Value>,
     ) -> Result<Value, String> {
-        let invoke = InvokeRequest {
-            invocation: tilo_actions::InvocationId::new(),
-            target,
-            argument: InvokeArgument::Json(arguments),
-            context: None,
-            confirmation: None,
-            revision: None,
-            on_behalf_of: None,
-            wait_ms: None,
-            appearance: None,
-        };
         let pending = self
             .actions()
-            .serve_host(
-                &local_caller(caller),
-                caller,
-                RemoteActionMessage::Invoke(invoke),
-            )
+            .serve_host(&local_caller(caller), caller, message(target, arguments))
             .ok_or("this workspace service does not answer in process")?;
-        match pending.await {
-            Some(RemoteActionMessage::Receipt(receipt)) => match receipt.status {
-                ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
-                ReceiptStatus::Rejected { error } => Err(format!("refused: {error}")),
-                ReceiptStatus::Failed { error } => Err(error.message),
-                ReceiptStatus::Accepted | ReceiptStatus::Cancelled { .. } => {
-                    Err("the request did not finish".into())
-                }
-            },
-            Some(_) => Err("the workspace service answered with something else".into()),
-            None => Err("the workspace service dropped the request".into()),
-        }
+        answered(pending).await
     }
 
     /// Place `workspace`, a workspace called `name`, on this host for `caller`, a
@@ -150,7 +135,81 @@ impl WorkspaceService {
     }
 }
 
+/// What the service answered `pending` with: the value the operation answered, or why it did not.
+async fn answered(pending: Pending<RemoteActionMessage>) -> Result<Value, String> {
+    match pending.await {
+        Some(RemoteActionMessage::Receipt(receipt)) => match receipt.status {
+            ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
+            ReceiptStatus::Rejected { error } => Err(format!("refused: {error}")),
+            ReceiptStatus::Failed { error } => Err(error.message),
+            ReceiptStatus::Accepted | ReceiptStatus::Cancelled { .. } => {
+                Err("the request did not finish".into())
+            }
+        },
+        Some(_) => Err("the workspace service answered with something else".into()),
+        None => Err("the workspace service dropped the request".into()),
+    }
+}
+
+/// The question `target` with `arguments` asks, as a connection asks the service.
+fn message(target: RemoteActionTarget, arguments: Map<String, Value>) -> RemoteActionMessage {
+    RemoteActionMessage::Invoke(InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target,
+        argument: InvokeArgument::Json(arguments),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+    })
+}
+
 fn answer<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
     serde_json::from_value(value)
         .map_err(|error| format!("the host answered unexpectedly: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspaces::tests::{governor, test_host};
+
+    /// A session asks its own workspace's governance where the workspace is, as a member asks it
+    /// over a session: an invitation made by the session that holds the workspace reaches it, with
+    /// the invitation another device joins by. Asked outside the workspace, a workspace's
+    /// governance is no action at all.
+    #[tokio::test]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the service the test binds is shut down at its end, not dropped early"
+    )]
+    async fn a_session_asks_its_workspaces_governance_in_the_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, cert) = governor();
+        let server = test_host(dir.path(), &key, &cert).await;
+        let created = server.workspaces().create("Home").await.unwrap();
+        let mut arguments = Map::new();
+        arguments.insert("role".to_owned(), "editor".into());
+        let issued = server
+            .host()
+            .ask_workspace(
+                &cert,
+                created.workspace.as_str(),
+                tilo_action_policy::roles::governance::INVITE,
+                arguments,
+            )
+            .await
+            .expect("the workspace issues the invitation its session asked for");
+        let invitation = issued
+            .get("invitation")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert!(
+            !invitation.is_empty(),
+            "the invitation another device joins by: {issued:?}"
+        );
+        server.shutdown().await;
+    }
 }

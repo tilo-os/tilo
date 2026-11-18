@@ -7,7 +7,7 @@ license = "MIT OR Apache-2.0"
 description = "The Tasks model as the WebAssembly module its package carries: the tracker's verbs, applied by any device holding the workspace's keys."
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 path = "src/lib.rs"
 
 [profile.release]
@@ -20,11 +20,11 @@ lto = true
 strip = "symbols"
 
 [dependencies]
-tasks-model = { path = "../../tasks-model" }
-tilo-model-guest = { path = "../../../crates/sdk/tilo-model-guest" }
+tasks-model = { path = "../tasks-model" }
+tilo-model-guest = { path = "../../crates/sdk/tilo-model-guest" }
 
-# Not a member of the repository's workspace: built only for wasm32
-# (`build.sh`), as the module a `.tapp` carries.
+# Not a member of the repository's workspace: a package carries it built for
+# wasm32 (`tilo-app model`), never for the machine that packages it.
 [workspace]
 
 # The module links no browser glue: getrandom takes its custom backend here,
@@ -32,4 +32,4 @@ tilo-model-guest = { path = "../../../crates/sdk/tilo-model-guest" }
 # the rest of the repository enables for wasm targets
 # (`vendor/getrandom/TILO-PATCH.md`).
 [patch.crates-io]
-getrandom = { path = "../../../vendor/getrandom" }
+getrandom = { path = "../../vendor/getrandom" }

@@ -124,6 +124,10 @@ public final class TiloSource: AssistantSource {
     private var standsInOwn = false
     /// Whether the person's assistant is being found right now: two at once could make two.
     private var finding = false
+    /// The page is in and what a start reads behind it is not all read yet: her assistant, her
+    /// conversation with it, what answers for it. Until it is, nothing is said of what is not
+    /// read yet, so that one word stands from the look for her assistant until the main chat does.
+    private var starts = false
     /// How often this page refused to read the workspace's agents since the device got in. A
     /// page that just got in publishes them a moment later, so they are asked for again at its
     /// next words; a page that never does is left alone after a few.
@@ -428,6 +432,10 @@ public final class TiloSource: AssistantSource {
             lost()
             return
         }
+        // The page is in, and her assistant is looked for next. It is said before the word that
+        // Tilo answers, so that the window's one sentence stands from its opening until the
+        // main chat does, with no moment between the two in which nothing is said.
+        if case .open = state, mainChat == .assistant { setups.set(.findingAssistant) }
         // Whether Tilo answers is said the moment a try ends, before anything is asked of the page.
         sayReach()
         if case .open(let route) = state {
@@ -445,6 +453,7 @@ public final class TiloSource: AssistantSource {
     private func arrived(at route: String) async {
         var root: String?
         finds = true
+        starts = true
         defer {
             finds = false
             endWaits()
@@ -502,6 +511,17 @@ public final class TiloSource: AssistantSource {
         for chat in Array(feeds.keys) { feeds[chat]?.told = false }
         await look()
         await survey(.everything)
+        // The start has read what it reads. What her server left unsaid is waited for no
+        // longer: where nothing stands in the way, or nothing is known of it, nothing is said.
+        // A page that is on its way in again reads all of it anew when it is in.
+        starts = false
+        if case .open = engine.state {
+            if mainChat == .assistant, assistant == nil {
+                if setups.now == .findingAssistant, !finding { setups.set(.unknown) }
+            } else {
+                saySetup()
+            }
+        }
         toldWanted = true
         followTold()
         await handAddress()
@@ -509,9 +529,9 @@ public final class TiloSource: AssistantSource {
 
     /// Ask her server which workspace is her own. It makes that workspace the first time it is
     /// asked, and a busy server takes minutes over it. The page has said whose device this is,
-    /// so she is signed in from here on, and the main chat says what is waited for: that her
-    /// assistant is being set up, and once the ask has been out for `makingAfter`, that her
-    /// server is making her workspace. Her name and the rest come as the way in goes on.
+    /// so she is signed in from here on. The window goes on saying that it waits for Tilo, and
+    /// once the ask has been out for `makingAfter` the main chat says that her server is making
+    /// her workspace. Her name and the rest come as the way in goes on.
     private func ownAsked(of root: String) async -> String? {
         if person == nil {
             person = Person(id: .init(root), name: "", workspace: "")
@@ -789,6 +809,9 @@ public final class TiloSource: AssistantSource {
                     if ownRoute == nil { findLater() }
                     return
                 }
+                // Her server's word is that she keeps none: one is made now, the first time. Only
+                // from here on is it said that her assistant is being set up.
+                setups.set(.makingAssistant)
                 do {
                     try await engine.askAgents("create-agent", ["name": .string(TiloSource.assistantName)])
                 } catch TiloEngine.Problem.noAnswer {
@@ -881,6 +904,9 @@ public final class TiloSource: AssistantSource {
     /// Say what stands in the way now: the assistant first, then a provider of the person's own.
     private func saySetup() {
         if mainChat == .assistant, assistant == nil { return }
+        // Her assistant is found and what answers for it is not read yet: the start goes on,
+        // and nothing is said between the two.
+        if starts, providerSetup == .unknown { return }
         setups.set(providerSetup)
     }
 
@@ -1942,9 +1968,10 @@ public final class TiloSource: AssistantSource {
     private static let catalogue = [("anthropic", "Anthropic"), ("gemini", "Google Gemini"), ("openai", "OpenAI"),
                                     ("openrouter", "OpenRouter")]
 
-    /// What the person's providers leave to do before the main chat is answered.
+    /// What the person's providers leave to do before the main chat is answered. A turn in the
+    /// main chat is worked as a task, so nothing is said to be ready before a model stands for that.
     private static func setup(of linked: ModelProviders, choices: [ModelChoice]) -> Setup {
-        if let answers = linked.model(for: WorkKind.request.rawValue), answers.provider.hasKey { return .ready }
+        if let answers = linked.model(for: WorkKind.task.rawValue), answers.provider.hasKey { return .ready }
         if !choices.isEmpty { return .needsModel(choices) }
         return .needsProvider(linkable(beside: linked))
     }
@@ -1967,10 +1994,10 @@ public final class TiloSource: AssistantSource {
         return read
     }
 
-    public func choose(_ model: ModelChoice.ID, for work: WorkKind) async throws {
+    public func choose(_ model: ModelChoice.ID, for work: [WorkKind]) async throws {
         let parts = model.value.split(separator: "/", maxSplits: 1).map(String.init)
         guard parts.count == 2 else { throw SourceProblem.refused("This is no model of a provider you linked") }
-        try await taken { try await self.engine.chooseModel((id: parts[1], provider: parts[0]), for: [work.rawValue]) }
+        try await taken { try await self.engine.chooseModel((id: parts[1], provider: parts[0]), for: work.map(\.rawValue)) }
         await survey(.server)
     }
 

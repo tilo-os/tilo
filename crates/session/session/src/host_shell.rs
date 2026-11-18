@@ -1,51 +1,55 @@
-//! Terminal's "This device" target, allowed once by the person.
-//! The runtime (`ush`) refuses a login on the device's own shell until the person allowed it here.
-//! A window asks on its `shell-ui` connection ([`FloatingSurfaceClientMessage::AllowHostShell`]):
-//! this session puts its ordinary permission question in front of them, hands their answer to the
-//! supervisor as the allow it records (`ush`'s `allow-host` ), and tells the app on the same
-//! connection whether the target is open to it now
-//! ([`FloatingSurfaceHostMessage::HostShellAllowed`]).
-//! The question is answered between two of the session's passes, and the supervisor writes the
-//! allow to disk before it answers: both run off the session's own pass, so a slow disk never holds
-//! up the shell.
+//! Terminal's "This device" target, allowed by the person like any device of theirs.
+//! The runtime (`ush`) refuses a login on the device's own shell until this session hands it the
+//! person's answer. A window asks on its `shell-ui` connection
+//! ([`FloatingSurfaceClientMessage::AllowHostShell`]): the answer is decided as every device answer
+//! is ([`Consents::decide`]), kept where the person keeps those, handed to the supervisor (`ush`'s
+//! `allow-host`), and the app is told on the same connection whether the target is open to it now
+//! ([`FloatingSurfaceHostMessage::HostShellAllowed`]). When the person takes the answer back, here or
+//! on another of their devices, the supervisor is told the target is closed again.
 
 use std::io::{BufRead as _, Write as _};
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tilo_action_policy::Lifetime;
-use tilo_portal::consent::{ACCESS_QUESTION, AccessQuestion};
-use tilo_service::{Answer, Asked, Question};
+use collab_types::caps::DeviceCap;
+use tilo_action_policy::{Answer, Lifetime};
+use tilo_peer_state::DeviceGrants;
+use tilo_portal::PortalCaller;
+use tilo_portal::consent::{AccessQuestion, Consents};
 use ui::floating_surface::FloatingSurfaceHostMessage;
 
 use crate::desktop_services::DesktopServices;
 
-/// The capability the question is worded for in the person's language (`portal-access-host-shell`).
-pub const HOST_SHELL: &str = "host-shell";
-
-/// How long this session waits for the supervisor to record an allow before it takes the answer as
-/// not recorded.
+/// How long this session waits for the supervisor to take an answer before it takes it as not
+/// taken.
 const SUPERVISOR_ANSWER: Duration = Duration::from_secs(5);
 
-/// The questions asked for the device's own shell that the person has not answered yet.
+/// The questions asked for the device's own shell that the person has not answered yet, and what
+/// the supervisor was last handed.
 #[derive(Default)]
 pub(crate) struct HostShellAsks {
-    waiting: Vec<Waiting>,
+    asking: Vec<(u64, tokio::task::AbortHandle)>,
+    /// The person's store's revision the answer was last looked at.
+    followed: Option<u64>,
+    /// What the supervisor was last handed.
+    handed: Arc<Mutex<Handed>>,
 }
 
-/// One question up for the person, and the connection waiting for its answer.
-struct Waiting {
-    connection: u64,
-    asked: Asked,
-    reply: Arc<Mutex<UnixStream>>,
-    app: String,
+/// What the supervisor was handed of the person's answer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Handed {
+    /// Nothing yet.
+    #[default]
+    Nothing,
+    /// How long they allow the target; `None`: not at all.
+    Answer(Option<Lifetime>),
 }
 
 impl HostShellAsks {
-    /// Ask the person, for the app on `connection` , whether it may reach the device's own shell.
-    /// The answer reaches the app on the same connection. An app whose launches are not handed
-    /// `ush` has no use for it: it is told no without asking, and this returns false.
+    /// Ask, for the app on `connection`, whether it may reach the device's own shell. The answer
+    /// reaches the app on the same connection. An app whose launches are not handed `ush` has no
+    /// use for it: it is told no without asking, and this returns false.
     pub(crate) fn ask(
         &mut self,
         services: Option<&DesktopServices>,
@@ -54,8 +58,11 @@ impl HostShellAsks {
         reply: Arc<Mutex<UnixStream>>,
     ) -> bool {
         let handed = crate::apps::declares_service(app, launcher::services::USH_SERVICE);
-        let Some(services) = services.filter(|_| handed) else {
-            // A session without the questions service has nobody to ask, and an app not handed
+        let Some((services, consents)) = services
+            .filter(|_| handed)
+            .and_then(|services| Some((services, services.consents()?.clone())))
+        else {
+            // A session without the portal's answers has nobody to ask, and an app not handed
             // `ush` is asked nothing: the target stays closed and the app is told.
             answer(&reply, app, false);
             return handed;
@@ -63,92 +70,89 @@ impl HostShellAsks {
         // Asking again on the same connection replaces the question it is already waiting on rather
         // than stacking a second one.
         self.closed(connection);
-        let details = serde_json::to_value(AccessQuestion {
-            capability: HOST_SHELL.to_owned(),
-            reason: None,
-            may_remember: true,
-            text: None,
-        })
-        .unwrap_or_default();
-        let asked = services.questions().ask(Question {
-            handle: format!("shell-ui:{HOST_SHELL}:{connection}"),
-            kind: ACCESS_QUESTION.to_owned(),
-            app_id: Some(app.to_owned()),
-            label: crate::app_names::claimant(app),
-            details,
+        let app = app.to_owned();
+        let last = Arc::clone(&self.handed);
+        let asked = services.runtime().spawn(async move {
+            let question = AccessQuestion {
+                capability: DeviceCap::HostShell.name().to_owned(),
+                reason: None,
+                may_remember: true,
+                text: None,
+            };
+            let handle = format!("shell-ui:{}:{connection}", DeviceCap::HostShell.name());
+            let decided = consents
+                .decide(
+                    &PortalCaller::new(app.clone()),
+                    &handle,
+                    DeviceCap::HostShell,
+                    question,
+                )
+                .await;
+            // Refused or never answered, the target stays closed and the app is told so.
+            let allowed = if decided.is_ok() {
+                // An answer for once is kept nowhere: it stands for this one shell.
+                let lifetime = allowed_for(consents.grants()).or(Some(Lifetime::Once));
+                tokio::task::spawn_blocking(move || hand(&last, lifetime))
+                    .await
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+            answer(&reply, &app, allowed);
         });
-        self.waiting.push(Waiting {
-            connection,
-            asked,
-            reply,
-            app: app.to_owned(),
-        });
+        self.asking.push((connection, asked.abort_handle()));
         true
     }
 
     /// The connection closed: the question it waits on goes with it, and the person is asked no
     /// more of it.
     pub(crate) fn closed(&mut self, connection: u64) {
-        self.waiting
-            .retain(|waiting| waiting.connection != connection);
+        self.asking.retain(|(asking, question)| {
+            let gone = *asking == connection || question.is_finished();
+            if *asking == connection {
+                question.abort();
+            }
+            !gone
+        });
     }
 
-    /// Hand the person's answer to the supervisor and tell the app, for every question they
-    /// answered since the last pass.
-    pub(crate) fn settle(&mut self, services: Option<&DesktopServices>) {
-        if self.waiting.is_empty() {
+    /// Hand the supervisor the person's answer whenever their store changed: an answer taken back
+    /// on another of their devices closes the target here too.
+    pub(crate) fn follow(&mut self, services: Option<&DesktopServices>) {
+        let Some(services) = services else {
+            return;
+        };
+        let Some(grants) = services.consents().map(Consents::grants) else {
+            return;
+        };
+        let revision = grants.changes().map_or(0, |changes| *changes.borrow());
+        if self.followed == Some(revision) {
             return;
         }
-        let waker = noop_waker();
-        let mut still = Vec::with_capacity(self.waiting.len());
-        for mut waiting in std::mem::take(&mut self.waiting) {
-            let polled = {
-                let mut context = std::task::Context::from_waker(&waker);
-                std::pin::Pin::new(&mut waiting.asked).poll(&mut context)
-            };
-            let std::task::Poll::Ready(chosen) = polled else {
-                still.push(waiting);
-                continue;
-            };
-            // The question is answered: the app hears of it through the supervisor, which records
-            // the allow before anything opens.
-            let lifetime = lifetime(chosen);
-            let app = waiting.app;
-            let reply = waiting.reply;
-            match (lifetime, services) {
-                (Some(lifetime), Some(services)) => {
-                    services.runtime().spawn(async move {
-                        let allowed = tokio::task::spawn_blocking(move || record(lifetime))
-                            .await
-                            .unwrap_or(false);
-                        answer(&reply, &app, allowed);
-                    });
-                }
-                _ => answer(&reply, &app, false),
-            }
+        self.followed = Some(revision);
+        let lifetime = allowed_for(grants);
+        if *self
+            .handed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            == Handed::Answer(lifetime)
+        {
+            return;
         }
-        self.waiting = still;
+        let last = Arc::clone(&self.handed);
+        services
+            .runtime()
+            .spawn_blocking(move || hand(&last, lifetime));
     }
 }
 
-/// The lifetime the person chose; `None` for a refusal.
-fn lifetime(answer: Option<Answer>) -> Option<Lifetime> {
-    Lifetime::chosen(answer?.choice?, tilo_clock::unix_now_ms())
-}
-
-/// A waker that does nothing: the questions are looked at again on the next pass, so nothing waits
-/// on being told they changed.
-fn noop_waker() -> std::task::Waker {
-    use std::task::{RawWaker, RawWakerVTable, Waker};
-    const VTABLE: RawWakerVTable = RawWakerVTable::new(
-        |_| RawWaker::new(std::ptr::null(), &VTABLE),
-        |_| {},
-        |_| {},
-        |_| {},
-    );
-    // SAFETY: the vtable's functions do nothing with the pointer, which is
-    // never dereferenced.
-    unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
+/// How long the person's answer for the device's own shell stands on this device; `None` when it
+/// does not allow it.
+fn allowed_for(grants: &DeviceGrants) -> Option<Lifetime> {
+    grants
+        .given(tilo_app_id::apps::TERMINAL, DeviceCap::HostShell)
+        .filter(|(answer, _)| *answer == Answer::Allow)
+        .map(|(_, lifetime)| lifetime)
 }
 
 /// Tell the app on `reply` whether the device's own shell is open to it.
@@ -170,23 +174,29 @@ fn answer(reply: &Arc<Mutex<UnixStream>>, app: &str, allowed: bool) {
     }
 }
 
-/// Hand `lifetime` to the supervisor, which records it where the device's own shell reads it.
-/// Returns whether it did.
-fn record(lifetime: Lifetime) -> bool {
+/// Hand `lifetime` to the supervisor (`None`: the target is closed), and note it in `last` when
+/// it took it. Returns whether it did.
+fn hand(last: &Mutex<Handed>, lifetime: Option<Lifetime>) -> bool {
     // The runtime's socket: a service of the login, outside every app sandbox, which is what lets
-    // it take the allow this session gives it.
+    // it take the answer this session gives it.
     let socket = launcher::services::socket_for(launcher::services::USH_SERVICE);
-    ask_supervisor(&socket, lifetime, SUPERVISOR_ANSWER).unwrap_or_else(|error| {
-        tracing::warn!(%error, "the allow for the device's own shell could not be recorded");
+    let taken = ask_supervisor(&socket, lifetime, SUPERVISOR_ANSWER).unwrap_or_else(|error| {
+        tracing::warn!(%error, "the supervisor did not take the answer for the device's own shell");
         false
-    })
+    });
+    if taken {
+        *last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Handed::Answer(lifetime);
+    }
+    taken
 }
 
 /// One `allow-host` request on a fresh connection, waiting at most `patience` for the supervisor's
 /// reply.
 fn ask_supervisor(
     socket: &std::path::Path,
-    lifetime: Lifetime,
+    lifetime: Option<Lifetime>,
     patience: Duration,
 ) -> std::io::Result<bool> {
     let stream = tilo_files::native::socket::connect(socket)?;
@@ -223,31 +233,6 @@ mod tests {
     use super::*;
     use std::io::BufReader;
 
-    /// What the person chose, as the questions service hands it back.
-    fn chosen(choice: Option<usize>) -> Answer {
-        Answer {
-            choice,
-            uris: Vec::new(),
-            remember: false,
-            values: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn the_persons_choices_are_the_shared_lifetimes() {
-        for offered in Lifetime::offered(tilo_clock::unix_now_ms()) {
-            let chosen = lifetime(Some(chosen(Some(offered.choice()))));
-            assert_eq!(chosen.map(Lifetime::key), Some(offered.key()));
-        }
-        assert_eq!(lifetime(Some(chosen(None))), None, "a refusal");
-        assert_eq!(
-            lifetime(Some(chosen(Some(9)))),
-            None,
-            "no choice this session asks"
-        );
-        assert_eq!(lifetime(None), None, "the question went away");
-    }
-
     /// A session without the questions service has nobody to ask, so the device's own shell stays
     /// closed and the app is told on its own connection.
     #[test]
@@ -262,7 +247,7 @@ mod tests {
             serde_json::from_str::<FloatingSurfaceHostMessage>(line.trim()).unwrap(),
             FloatingSurfaceHostMessage::HostShellAllowed { allowed: false }
         );
-        assert!(asks.waiting.is_empty(), "no question is left up");
+        assert!(asks.asking.is_empty(), "no question is left up");
     }
 
     /// Hand `reply` to the first connection and return what was asked on it.
@@ -285,14 +270,14 @@ mod tests {
     }
 
     /// The supervisor reads the request the runtime's own type writes: the allow, with the lifetime
-    /// the person chose.
+    /// the person chose, and `null` once they took it back.
     #[test]
     fn the_allow_reaches_the_supervisor_as_the_runtime_reads_it() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("ush.sock");
         let asked = supervisor_at(&socket, r#"{"result":"allowed"}"#);
         assert!(
-            ask_supervisor(&socket, Lifetime::Once, Duration::from_secs(10)).unwrap(),
+            ask_supervisor(&socket, Some(Lifetime::Once), Duration::from_secs(10)).unwrap(),
             "the supervisor records the allow"
         );
         // How long the allow lasts, as the runtime reads it.
@@ -303,6 +288,11 @@ mod tests {
             Some(2),
             "{asked}"
         );
+        let taken_back = dir.path().join("taken-back.sock");
+        let asked = supervisor_at(&taken_back, r#"{"result":"allowed"}"#);
+        assert!(ask_supervisor(&taken_back, None, Duration::from_secs(10)).unwrap());
+        let asked = serde_json::from_str::<serde_json::Value>(&asked.recv().unwrap()).unwrap();
+        assert!(asked["expiry"].is_null(), "{asked}");
     }
 
     #[test]
@@ -311,13 +301,18 @@ mod tests {
         let socket = dir.path().join("ush.sock");
         let _asked = supervisor_at(&socket, r#"{"result":"denied","reason":"not the shell"}"#);
         assert!(
-            !ask_supervisor(&socket, Lifetime::UntilRevoked, Duration::from_secs(10)).unwrap(),
+            !ask_supervisor(
+                &socket,
+                Some(Lifetime::UntilRevoked),
+                Duration::from_secs(10)
+            )
+            .unwrap(),
             "a refusal is not an allow"
         );
         assert!(
             ask_supervisor(
                 &dir.path().join("absent.sock"),
-                Lifetime::UntilRevoked,
+                Some(Lifetime::UntilRevoked),
                 Duration::from_secs(1)
             )
             .is_err(),

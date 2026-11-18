@@ -28,7 +28,6 @@ mapfile -t frozen_consumers < <(
   grep -lE 'from=rpms|enablerepo=frozen|RPMS_REF' \
     "$repo/os/Containerfile" \
     "$repo/os/Containerfile.dev" \
-    "$repo/os/Containerfile.host" \
     "$repo/os/Containerfile.host-base" \
     "$repo/os/containers/tilo-server/Containerfile" \
     "$repo/os/containers/tilo-api/Containerfile" \
