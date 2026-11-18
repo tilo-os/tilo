@@ -92,6 +92,10 @@ pub struct ConfirmationQuestion {
     pub id: [u8; 32],
     /// The device that asks, as it is labelled to the person.
     pub device_label: String,
+    /// The agent the invocation is by, by its id: the device asks for an agent it acts for
+    /// over its own session. Empty for the person's own invocation.
+    #[serde(default)]
+    pub agent: String,
     /// The workspace the invocation runs in.
     pub workspace: String,
     /// The group the invocation is a step of, by the title its agent gave it;

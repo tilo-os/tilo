@@ -716,7 +716,11 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         question: tilo_actions::remote::ConfirmationQuestion,
     ) -> Option<Pending<Result<tilo_actions::remote::ConfirmationReply, ActionCallError>>> {
         let person = *caller.user_public_key()?;
-        let agent_id = caller.acting().agent_id().unwrap_or_default().to_owned();
+        // The agent the person's device asks for, when the device asks over its own session.
+        let agent_id = caller
+            .acting()
+            .agent_id()
+            .map_or(question.agent, str::to_owned);
         let pending = PendingConfirmation {
             id: question.id,
             agent_id,

@@ -355,6 +355,7 @@ pub(super) fn question(
     Ok(ConfirmationQuestion {
         id,
         device_label: agent,
+        agent: caller.acting().agent_id().unwrap_or_default().to_owned(),
         workspace: workspace.to_owned(),
         title,
         action_label: about.descriptor.action_label.clone(),

@@ -777,7 +777,7 @@ impl HostAgents {
                 }
             }
         }
-        self.carry(workspace, asks.sub).await;
+        Box::pin(self.carry(workspace, asks.sub)).await;
         Ok(())
     }
 
@@ -790,7 +790,7 @@ impl HostAgents {
         past: (String, Ask),
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
         Box::pin(async move {
-            if let Err(error) = self.look_past(&workspace, Some(&past)).await {
+            if let Err(error) = Box::pin(self.look_past(&workspace, Some(&past))).await {
                 tracing::debug!(%workspace, %error, "the host's agents did not look at a workspace");
             }
         })

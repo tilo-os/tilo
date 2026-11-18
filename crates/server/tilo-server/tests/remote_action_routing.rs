@@ -406,11 +406,9 @@ async fn expired_agent_delegation_cannot_invoke_host() {
         from_user_public_key: [0xEE; 32],
         frame,
     };
-    let delegated = [Caller::delegated_agent(
-        "helper",
-        user.user_pk,
-        agent.device_pubkey(),
-    )];
+    // The agent by the name its delegation gives it.
+    let delegated =
+        [Caller::delegated_agent("helper", user.user_pk, agent.device_pubkey()).named("Helper")];
 
     // Delegate the subscribed device briefly; until expiry it acts as the
     // agent. The live half only proves something if its answer came back
