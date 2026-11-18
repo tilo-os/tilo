@@ -1429,11 +1429,18 @@ impl Reconciler {
             }
         };
         let label = crate::date::shown(node, "label").unwrap_or_default();
-        if label.is_empty() {
+        let help = crate::date::shown(node, "help").unwrap_or_default();
+        let field = if label.is_empty() {
             // The form's title says what its one field asks: no label beside it.
-            return Field::unlabeled(content);
+            Field::unlabeled(content)
+        } else {
+            Field::custom(label, content)
+        };
+        if help.is_empty() {
+            field
+        } else {
+            field.with_help(help)
         }
-        Field::custom(label, content)
     }
 
     fn pane(&mut self, node: &UiNode) -> Element {

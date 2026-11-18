@@ -141,6 +141,15 @@ d-ii5w5nej = Tastenkürzel
 d-lnvof4vo = Empfänger
     .doc = An wen es geht, getippt.
 
+d-pmwcb6eh = Notiz
+    .doc = Eine Notiz neben dem Titel des Berichts, getippt.
+
+d-4xgrystj = Notizen
+    .doc = Die längeren Notizen des Berichts: ein Feld, das umbricht und wächst.
+
+d-guhixmds = Unterschrieben
+    .doc = Wer unterschrieben hat, was der Arbeitsbereich behält.
+
 d-an7amte4 = Hintergrund
     .doc = Ob die Hintergrundebene zu sehen ist.
 
@@ -570,6 +579,12 @@ d-z5ai6zk5 = Bedienelemente
     .w-text = Text
     .w-open-with = Öffnen mit
     .w-bo = Bo
+    .w-note = Notiz
+    .w-shown-with-the-title = Steht beim Titel.
+    .w-a-note-for-the-team = Eine Notiz für das Team
+    .w-notes = Notizen
+    .w-anything-else-worth-saying = Noch etwas, das gesagt werden sollte
+    .w-signed = Unterschrieben
     .w-pictures = Bilder
     .w-small = Klein
     .w-regular = Normal

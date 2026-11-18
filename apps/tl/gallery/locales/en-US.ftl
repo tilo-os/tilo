@@ -144,6 +144,15 @@ d-ii5w5nej = Shortcut
 d-lnvof4vo = Recipient
     .doc = Who it goes to, typed.
 
+d-pmwcb6eh = Note
+    .doc = A note beside the report's title, typed.
+
+d-4xgrystj = Notes
+    .doc = The report's longer notes: a field that wraps and grows.
+
+d-guhixmds = Signed
+    .doc = Who signed it, which the workspace keeps.
+
 d-an7amte4 = Background
     .doc = Whether the background layer shows.
 
@@ -667,6 +676,12 @@ d-z5ai6zk5 = Controls
     .w-name-or-address = Name or address
     .w-ada = Ada
     .w-bo = Bo
+    .w-note = Note
+    .w-shown-with-the-title = Shown with the title.
+    .w-a-note-for-the-team = A note for the team
+    .w-notes = Notes
+    .w-anything-else-worth-saying = Anything else worth saying
+    .w-signed = Signed
     .w-read-about-tilo = Read about Tilo
     .w-layers = Layers
     .w-background = Background

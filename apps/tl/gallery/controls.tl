@@ -46,6 +46,12 @@ type Controls {
     shortcut: Text = "Ctrl+K"
     /// Who it goes to, typed.
     recipient: Text = ""
+    /// A note beside the report's title, typed.
+    note: Text = ""
+    /// The report's longer notes: a field that wraps and grows.
+    notes: Text = ""
+    /// Who signed it, which the workspace keeps.
+    signed: Text = "Ada Lovelace"
     /// Whether the background layer shows.
     background: Bool = true
     /// Whether the text layer shows.
@@ -189,6 +195,15 @@ view controls(c: Controls) {
                         ui.Suggestion("ada@example.com", label: "Ada")
                         ui.Suggestion("bo@example.com", label: "Bo")
                     }
+                }
+                field("Note", help: "Shown with the title.") {
+                    ui.TextInput(bind: c.note, placeholder: "A note for the team")
+                }
+                field("Notes") {
+                    ui.TextInput(bind: c.notes, lines: 3, placeholder: "Anything else worth saying")
+                }
+                field("Signed") {
+                    ui.TextInput(bind: c.signed, enabled: false)
                 }
             }
             ui.Link("https://tilo.sh", label: "Read about Tilo")
