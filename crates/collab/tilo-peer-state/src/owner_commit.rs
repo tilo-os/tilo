@@ -331,7 +331,8 @@ pub trait OwnerCommitService: Send + Sync {
 impl OwnerCommitReceipt {
     /// Check that this receipt answers `asked`, a document write of this
     /// device, with `committed`: the same write of the same author to the
-    /// same record, at most signed again under another sequence
+    /// same document, at most signed again under another sequence and naming
+    /// the governance the owner took it under
     /// ([`OwnerCommitService::commit_local_document`]).
     pub fn validate_local_document(
         &self,
@@ -357,6 +358,7 @@ impl OwnerCommitReceipt {
         };
         let mut resigned = (**taken).clone();
         resigned.seq = envelope.seq;
+        resigned.governance.clone_from(&envelope.governance);
         resigned.signature = envelope.signature;
         if asked.workspace != committed.workspace
             || app != taken_app

@@ -383,7 +383,7 @@ impl NativeWorkspaceOwner {
             }),
             vouched: None,
             host_hint: None,
-            peer: peer.durable_parts()?.into(),
+            peer: peer.durable_layout()?.into(),
             generation: 1,
             continuity: 0,
             publication: Some(publication::StoredPublication::default()),

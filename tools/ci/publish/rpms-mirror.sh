@@ -37,6 +37,7 @@ tagged() {
 }
 if [[ -f $src/ref ]]; then
   printf 'the snapshot is in the registry already: %s\n' "$(cat "$src/ref")"
+  printf '%s\n' "$(cat "$src/ref")" > "$out/ref"
   exit 0
 fi
 # The source built one here (a package set no tag has published yet): load it and push it under
@@ -44,6 +45,7 @@ fi
 [[ -s $src/image.oci.tar ]] || die "$src names neither a snapshot in the registry nor one built here"
 if digest=$(tagged "$mirrored"); then
   printf 'the snapshot %s is mirrored already, as registry.tilo.so/tilo/rpms@%s\n' "$arch" "$digest"
+  printf '%s\n' "registry.tilo.so/tilo/rpms@$digest" > "$out/ref"
   exit 0
 fi
 use_buildah buildah "${TILO_BUILDAH_DRIVER:-overlay}"

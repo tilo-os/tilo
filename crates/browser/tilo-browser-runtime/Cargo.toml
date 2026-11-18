@@ -77,7 +77,7 @@ tilo-workspace-directory = { version = "0.1.0", path = "../../session/workspace-
 # The invitation behind a short link, opened from what a site's shelf keeps.
 tilo-workspace-join = { version = "0.1.0", path = "../../collab/workspace-join" }
 # The server an invitation names, read from its own signed address in it.
-tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
+tilo-delivery-protocol = { version = "0.1.0", path = "../../server/tilo-delivery-protocol" }
 serde.workspace = true
 serde_json.workspace = true
 # Large records verified in the page's worker before they load (src/record_verify.rs).
@@ -101,7 +101,7 @@ web-sys = { version = "=0.3.85", features = [
 ] }
 # The certified peer over WebTransport, its live session and the member's client.
 tilo-session-client = { version = "0.1.0", path = "../../session/client", features = ["toolkit"] }
-tilo-session-actions = { path = "../../session/session-actions" }
+tilo-session-actions = { version = "0.1.0", path = "../../session/session-actions" }
 # The identity layer's device side: certification, pairing, the sign-in proof.
 tilo-server-client = { version = "0.1.0", path = "../../server/tilo-server-client", features = ["dial"] }
 tilo-peer-state = { version = "0.1.0", path = "../../collab/tilo-peer-state" }

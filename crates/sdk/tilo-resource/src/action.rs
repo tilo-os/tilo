@@ -248,6 +248,12 @@ pub fn take_minted() -> Vec<String> {
     MINTED.with(|minted| std::mem::take(&mut *minted.borrow_mut()))
 }
 
+/// Note `ids` again, which [`take_minted`] took: what a layer that took them to answer its own
+/// caller puts back, so the caller that invoked the action learns what it made too.
+pub fn restore_minted(ids: impl IntoIterator<Item = String>) {
+    MINTED.with(|minted| minted.borrow_mut().extend(ids));
+}
+
 thread_local! {
     /// The seed and count of the UUIDs [`fresh_uuid`] mints while a verb
     /// performs on this thread.

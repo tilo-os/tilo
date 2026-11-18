@@ -30,10 +30,5 @@ view channels(w: chat.Workspace, m: chat.Messages) {
                 }
             }
         }
-        section("People") {
-            for p in w.people {
-                text("{p.name}: {p.color}")
-            }
-        }
     }
 }

@@ -1080,18 +1080,22 @@ impl StatePeer {
     }
 
     /// The heads of the workspace's governance as this peer holds it: what a
-    /// write it drafts says it was written under ([`SignedOp::governance`]).
-    pub(super) fn governance_heads(&self) -> Vec<[u8; 32]> {
-        self.core
+    /// write it drafts or admits says it was written under
+    /// ([`SignedOp::governance`]).
+    ///
+    /// # Errors
+    /// This peer holds no governance of the workspace, so no write of it can
+    /// say what it was decided under.
+    pub(crate) fn governance_heads(&self) -> Result<Vec<[u8; 32]>, String> {
+        let doc = self
+            .core
             .workspace_doc
             .as_ref()
-            .map(|doc| {
-                automerge::transaction::Transactable::base_heads(&**doc)
-                    .into_iter()
-                    .map(|head| head.0)
-                    .collect()
-            })
-            .unwrap_or_default()
+            .ok_or("the workspace's governance is not here to write under")?;
+        Ok(automerge::transaction::Transactable::base_heads(&**doc)
+            .into_iter()
+            .map(|head| head.0)
+            .collect())
     }
 
     /// Whether `envelope` names governance heads this peer does not hold yet.

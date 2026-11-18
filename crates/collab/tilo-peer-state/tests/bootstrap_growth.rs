@@ -440,21 +440,9 @@ fn durable_generation_growth(documents: usize, generations: u64) -> (usize, usiz
         .collect::<Vec<_>>();
     changes.reverse();
     eprintln!("last changes (bytes, ops): {changes:?}");
-    // Every change carries an entry naming who made it, the same whatever the
-    // change writes: what a layout costs is the rest of the change, here and
-    // in the whole-map layout alike.
-    let attribution = workspace
-        .get_changes(&[])
-        .into_iter()
-        .rev()
-        .take(end.changes - start.changes)
-        .map(|change| change.message().map_or(0, str::len))
-        .sum::<usize>();
-    (
-        end.bytes - start.bytes - attribution,
-        whole_map_bytes,
-        saved,
-    )
+    // A governance change names who wrote it by its actor and when by its time, both automerge's
+    // own fields: what a layout costs is the change itself.
+    (end.bytes - start.bytes, whole_map_bytes, saved)
 }
 
 #[test]

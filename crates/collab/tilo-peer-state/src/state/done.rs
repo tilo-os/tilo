@@ -118,14 +118,7 @@ impl PeerWorkspaceMut<'_> {
         })
         .map_err(|error| error.to_string())?;
         let key = device_rows::row_key(id, &device.device_public_key);
-        self.write_row(
-            DONE_KEY,
-            &key,
-            &device.device_public_key,
-            &device.user_public_key,
-            Some(&json),
-            now,
-        )?;
+        self.write_row(DONE_KEY, &key, &device.device_public_key, Some(&json), now)?;
         Ok(true)
     }
 }

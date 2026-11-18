@@ -78,13 +78,14 @@ fn policy_changed() {
     tilo_identity::policy_change::announce();
 }
 
-/// Whether `hint` names this device, `device`, as the workspace's host: a workspace
-/// placed on this device, whose host runs in this process. Such a workspace is
-/// joined over the host's in-process carrier, never dialled: an endpoint
-/// cannot dial itself.
+/// Whether `hint` names this device, `device`, or the workspace service it
+/// certified, as the workspace's holder: a workspace placed on this device,
+/// whose service is in this process. Such a workspace is joined over the
+/// service's in-process carrier, never dialled: an endpoint cannot dial
+/// itself.
 #[must_use]
 pub fn hosted_by(hint: &crate::join::TransportHint, device: &[u8; 32]) -> bool {
-    &hint.host.device_public_key == device
+    hint.host.is_of_device(device)
 }
 
 /// Check `hint` as the address of `device`'s own host of `workspace_id`: the
@@ -106,7 +107,7 @@ pub(crate) fn validate_host_hint(
     if payload.workspace_id != workspace_id {
         return Err("the workspace's host hint names another workspace".into());
     }
-    if payload.device_certificate != *device {
+    if payload.device_certificate != hint.host {
         return Err("the workspace's host hint is not the host's own signed address".into());
     }
     Ok(())
@@ -647,7 +648,7 @@ impl NativeWorkspaceOwner {
         workspace: WorkspaceId,
         written: &mut journal::Written,
     ) -> bool {
-        self.with_current(workspace, |view| view.peer().durable_parts())
+        self.with_current(workspace, |view| view.peer().durable_layout())
             .is_ok_and(|parts| written.resume(parts))
     }
 
@@ -692,7 +693,7 @@ impl NativeWorkspaceOwner {
         let durable = {
             let live = view.live();
             publication::refresh_governance_checkpoint(&live, &mut record)?;
-            stored::DurablePeer::from(live.durable_parts()?)
+            stored::DurablePeer::from(live.durable_layout()?)
         };
         if durable == record.peer && record.publication == previous {
             return Ok(());
@@ -822,7 +823,7 @@ impl NativeWorkspaceOwner {
             publication::settle(&mut record, self.0.store.as_ref())?;
             publication::retire_member_changes(&live, &mut record, &governed)?;
             publication::refresh_governance_checkpoint(&live, &mut record)?;
-            let durable = stored::DurablePeer::from(live.durable_parts()?);
+            let durable = stored::DurablePeer::from(live.durable_layout()?);
             // Authentication and causal admission still run for every replay.
             // Reuse the actual committed barrier only when both durable peer
             // state and outgoing ownership are byte-for-byte unchanged. In
@@ -963,7 +964,7 @@ impl NativeWorkspaceOwner {
             let live = replica.lock();
             publication::settle(&mut record, self.0.store.as_ref())?;
             publication::refresh_governance_checkpoint(&live, &mut record)?;
-            record.peer = live.durable_parts()?.into();
+            record.peer = live.durable_layout()?.into();
             Self::snapshot(&live, &mut record)?
         };
         self.install_snapshot(workspace, replica, record, snapshot, enrollment)

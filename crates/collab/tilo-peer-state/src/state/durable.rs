@@ -310,12 +310,7 @@ impl StatePeer {
 
     /// Encode this peer's durable state.
     pub fn durable(&self) -> Result<Vec<u8>, String> {
-        let parts = self.durable_parts()?;
-        let mut bytes = Vec::with_capacity(parts.iter().map(|part| part.len()).sum());
-        for part in &parts {
-            bytes.extend_from_slice(part);
-        }
-        Ok(bytes)
+        Ok(self.durable_layout()?.to_vec())
     }
     /// Append the workspace's document to `head`, the durable encoding's head,
     /// as postcard writes an `Option<&[u8]>`: its stored base a part of its
@@ -356,33 +351,40 @@ impl StatePeer {
 
     /// [`Self::durable`] in parts, in order: concatenated, they are its
     /// bytes, and [`Self::restore`] takes them so.
-    ///
-    /// A workspace's history is most of its state and hardly changes per
-    /// governance change, yet re-encoding all of it made every change cost
-    /// the whole history. So each record's part is encoded once per state of
-    /// the record, and the exact admission index's settled entries once per
-    /// settling: a part nothing changed since an earlier call is the same
-    /// allocation as then, and whoever stores the parts apart rewrites only
-    /// what changed.
     pub fn durable_parts(&self) -> Result<Vec<std::sync::Arc<[u8]>>, String> {
-        Ok(self
-            .durable_pieces()?
-            .into_iter()
-            .flat_map(|piece| match piece {
-                Piece::Part(part) => vec![part],
-                Piece::Since(runs) => runs,
-                Piece::Digested(..) => Vec::new(),
-            })
-            .collect())
+        Ok(self.durable_layout()?.parts().cloned().collect())
     }
 
-    /// [`Self::durable_parts`] as stretches.
-    fn durable_pieces(&self) -> Result<Vec<Piece>, String> {
-        let (mut parts, after) = self.around_documents(Digests::Kept)?;
-        self.documents_into(&mut parts)?;
-        parts.extend(after);
-        self.sealed_into(&mut parts)?;
-        Ok(parts)
+    /// [`Self::durable`] as its stretches before the documents, each
+    /// document's, and those after them.
+    ///
+    /// A workspace's history is most of its state and hardly changes per
+    /// write, yet re-encoding all of it made every change cost the whole
+    /// history. So each document's part is encoded once per state of the
+    /// document, made again only for the documents changed since it was last
+    /// made, and the exact admission index's settled entries once per
+    /// settling: a part nothing changed since an earlier call is the same
+    /// allocation as then, the documents' parts are a map whose copies share
+    /// what neither changed, and whoever stores the parts apart rewrites only
+    /// what changed.
+    pub(crate) fn durable_layout(&self) -> Result<DurableParts, String> {
+        let (before, after) = self.around_documents(Digests::Kept)?;
+        let documents = self.core.documents.parts(|route, entry| {
+            let own = self.core.own.get(route);
+            let encoded = entry.encoded(route, || encode_document(route, entry, own))?;
+            Ok(DocumentParts {
+                document: flatten(&encoded.document),
+                sealed: encoded
+                    .sealed
+                    .as_ref()
+                    .map(|sealed| sealed.as_slice().into()),
+            })
+        })?;
+        Ok(DurableParts {
+            head: flatten(&before),
+            documents,
+            tail: flatten(&after),
+        })
     }
 
     /// The stretches of [`Self::durable_parts`] before its documents, and those after them up to
@@ -391,7 +393,7 @@ impl StatePeer {
         fn put<T: Serialize + ?Sized>(value: &T, out: Vec<u8>) -> Result<Vec<u8>, String> {
             postcard::to_extend(value, out).map_err(err)
         }
-        let sealed = self.core.documents.sealed().len();
+        let sealed = self.core.documents.sealed_count();
         if sealed > 0 && !self.core.exact_selected {
             return Err("sealed record history requires exact admissions".into());
         }
@@ -435,17 +437,6 @@ impl StatePeer {
         Ok((parts, after))
     }
 
-    /// Each record's part of the durable encoding, in route order: its document as a store
-    /// writes it.
-    fn documents_into(&self, parts: &mut Vec<Piece>) -> Result<(), String> {
-        for (route, entry) in &self.core.documents {
-            let own = self.core.own.get(route);
-            let encoded = entry.encoded(route, || encode_document(route, entry, own))?;
-            parts.extend(encoded.document.iter().cloned());
-        }
-        Ok(())
-    }
-
     /// The exact admission index's stretches, appended to `tail`: its flag and the settled
     /// entries, then what is left of the tail for the sealed writes after them.
     fn exact_into(
@@ -482,18 +473,6 @@ impl StatePeer {
                 Ok(rest)
             }
         }
-    }
-
-    /// Each sealed document's history, after every other stretch, as its parts.
-    fn sealed_into(&self, parts: &mut Vec<Piece>) -> Result<(), String> {
-        for (route, entry) in self.core.documents.sealed() {
-            let own = self.core.own.get(route);
-            let encoded = entry.encoded(route, || encode_document(route, entry, own))?;
-            if let Some(sealed) = &encoded.sealed {
-                parts.extend(sealed.iter().cloned().map(Piece::Part));
-            }
-        }
-        Ok(())
     }
 
     /// The durable encoding as one `postcard` value, made whole each time:
@@ -816,6 +795,223 @@ fn encode_document(
 fn digested(bytes: &[u8]) -> Piece {
     let (len, digest) = length_and_digest(bytes);
     Piece::Digested(len, digest)
+}
+
+/// The parts `pieces` hold, in order.
+fn flatten(pieces: &[Piece]) -> std::sync::Arc<[std::sync::Arc<[u8]>]> {
+    pieces
+        .iter()
+        .flat_map(|piece| match piece {
+            Piece::Part(part) => vec![std::sync::Arc::clone(part)],
+            Piece::Since(since) => since.clone(),
+            Piece::Digested(..) => Vec::new(),
+        })
+        .collect()
+}
+
+/// The fields of `Durable` after its documents and before its sealed histories.
+type TailFields<'a> = (
+    BTreeMap<String, Vec<u8>>,
+    Vec<DeviceCert>,
+    Vec<tilo_user_identity::RevocationEntry>,
+    VecDeque<([u8; 32], NeighbourMsg, bool)>,
+    usize,
+    Option<&'a [u8]>,
+);
+
+/// One document's part of a durable encoding: its `DurableDocument`, and its
+/// entry of the sealed histories after every document, when it has one.
+#[derive(Clone, Debug)]
+pub(crate) struct DocumentParts {
+    pub(crate) document: std::sync::Arc<[std::sync::Arc<[u8]>]>,
+    pub(crate) sealed: Option<std::sync::Arc<[std::sync::Arc<[u8]>]>>,
+}
+
+impl DocumentParts {
+    /// Whether `a` and `b` are one encoding no copy changed.
+    pub(crate) fn same(a: &Self, b: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&a.document, &b.document)
+            && match (&a.sealed, &b.sealed) {
+                (None, None) => true,
+                (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+                _ => false,
+            }
+    }
+
+    /// Whether `a` and `b` are the same bytes, however they are split.
+    fn same_bytes(a: &Self, b: &Self) -> bool {
+        same_bytes(&a.document, &b.document)
+            && match (&a.sealed, &b.sealed) {
+                (None, None) => true,
+                (Some(a), Some(b)) => same_bytes(a, b),
+                _ => false,
+            }
+    }
+}
+
+/// A replica's durable encoding ([`StatePeer::durable`]) as its stretches: those
+/// before its documents, each document's, and those after them. Concatenated
+/// in that order, each document's sealed history last, they are its bytes.
+/// The documents are a map whose copies share what neither changed, so two
+/// encodings tell what changed between them by what they no longer share.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DurableParts {
+    pub(crate) head: std::sync::Arc<[std::sync::Arc<[u8]>]>,
+    pub(crate) documents: crate::ordered::Ordered<Route, DocumentParts>,
+    pub(crate) tail: std::sync::Arc<[std::sync::Arc<[u8]>]>,
+}
+
+impl DurableParts {
+    /// The parts, in the order of the bytes.
+    pub(crate) fn parts(&self) -> impl Iterator<Item = &std::sync::Arc<[u8]>> + '_ {
+        self.head
+            .iter()
+            .chain(
+                self.documents
+                    .values()
+                    .flat_map(|parts| parts.document.iter()),
+            )
+            .chain(self.tail.iter())
+            .chain(
+                self.documents
+                    .values()
+                    .flat_map(|parts| parts.sealed.iter().flat_map(|sealed| sealed.iter())),
+            )
+    }
+
+    /// How many bytes they hold.
+    pub(crate) fn len(&self) -> usize {
+        self.parts().map(|part| part.len()).sum()
+    }
+
+    /// The bytes whole.
+    pub(crate) fn to_vec(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(self.len());
+        for part in self.parts() {
+            bytes.extend_from_slice(part);
+        }
+        bytes
+    }
+
+    /// `bytes` as one stretch before no documents.
+    pub(crate) fn whole(bytes: &[u8]) -> Self {
+        Self {
+            head: std::sync::Arc::from([std::sync::Arc::from(bytes)]),
+            ..Self::default()
+        }
+    }
+
+    /// The durable encoding `bytes` as its stretches, each one part.
+    ///
+    /// # Errors
+    /// The bytes are not a durable encoding this build reads.
+    pub(crate) fn read(bytes: &[u8]) -> Result<Self, String> {
+        fn take<'a, T: Deserialize<'a>>(rest: &mut &'a [u8]) -> Result<T, String> {
+            let (value, after) = postcard::take_from_bytes(rest).map_err(|error| {
+                format!(
+                    "this state cannot be read by this build (it may be from another \
+                     format): {error}. Move the state directory aside, or start with an \
+                     empty one"
+                )
+            })?;
+            *rest = after;
+            Ok(value)
+        }
+        let at = |rest: &[u8]| bytes.len().saturating_sub(rest.len());
+        let part = |from: usize, to: usize| -> std::sync::Arc<[u8]> {
+            bytes.get(from..to).unwrap_or_default().into()
+        };
+        let mut rest = bytes;
+        let version: u32 = take(&mut rest)?;
+        if version != DURABLE_VERSION {
+            return Err(format!(
+                "this state is of durable layout {version}, and this build reads layout \
+                 {DURABLE_VERSION}. Move the state directory aside, or start with an empty one"
+            ));
+        }
+        let (_workspace, _owner, _governance): (String, [u8; 32], Option<&[u8]>) = take(&mut rest)?;
+        let count: usize = take(&mut rest)?;
+        let head_end = at(rest);
+        let mut documents = crate::ordered::Ordered::default();
+        for _ in 0..count {
+            let from = at(rest);
+            let document: DurableDocument = take(&mut rest)?;
+            documents.insert(
+                document.route,
+                DocumentParts {
+                    document: std::sync::Arc::from([part(from, at(rest))]),
+                    sealed: None,
+                },
+            );
+        }
+        let tail_from = at(rest);
+        let _fields: TailFields<'_> = take(&mut rest)?;
+        let sealed: usize = take(&mut rest)?;
+        let tail = part(tail_from, at(rest));
+        for _ in 0..sealed {
+            let from = at(rest);
+            let (route, _): (Route, Vec<collab_types::SignedOp>) = take(&mut rest)?;
+            let held: &mut DocumentParts = documents
+                .get_mut(&route)
+                .ok_or("a sealed history names a document the state does not hold")?;
+            held.sealed = Some(std::sync::Arc::from([part(from, at(rest))]));
+        }
+        if !rest.is_empty() {
+            return Err("trailing bytes after durable state".into());
+        }
+        Ok(Self {
+            head: std::sync::Arc::from([part(0, head_end)]),
+            documents,
+            tail: std::sync::Arc::from([tail]),
+        })
+    }
+}
+
+/// The same bytes, however they are split: what neither copy changed is not read.
+impl PartialEq for DurableParts {
+    fn eq(&self, other: &Self) -> bool {
+        same_bytes(&self.head, &other.head)
+            && same_bytes(&self.tail, &other.tail)
+            && self.documents.len() == other.documents.len()
+            && crate::ordered::Ordered::changes(&self.documents, &other.documents, |a, b| {
+                DocumentParts::same(a, b) || DocumentParts::same_bytes(a, b)
+            })
+            .is_empty()
+    }
+}
+
+/// Whether the parts `a` and `b` hold the same bytes, however they are split:
+/// parts that are one allocation are not read.
+pub(crate) fn same_bytes(a: &[std::sync::Arc<[u8]>], b: &[std::sync::Arc<[u8]>]) -> bool {
+    if a.len() == b.len() && a.iter().zip(b).all(|(a, b)| std::sync::Arc::ptr_eq(a, b)) {
+        return true;
+    }
+    let (mut ours, mut theirs) = (a.iter().map(|part| &**part), b.iter().map(|part| &**part));
+    let (mut a, mut b): (&[u8], &[u8]) = (&[], &[]);
+    loop {
+        while a.is_empty() {
+            match ours.next() {
+                Some(next) => a = next,
+                None => return b.is_empty() && theirs.all(<[u8]>::is_empty),
+            }
+        }
+        while b.is_empty() {
+            match theirs.next() {
+                Some(next) => b = next,
+                None => return false,
+            }
+        }
+        let n = a.len().min(b.len());
+        let (Some((a_now, a_next)), Some((b_now, b_next))) =
+            (a.split_at_checked(n), b.split_at_checked(n))
+        else {
+            return false;
+        };
+        if a_now != b_now {
+            return false;
+        }
+        (a, b) = (a_next, b_next);
+    }
 }
 
 /// A document's leaf in the documents' tree: the lengths and digests of its part of the durable

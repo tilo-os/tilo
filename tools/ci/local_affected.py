@@ -571,7 +571,7 @@ def main() -> int:
                           "tilo-app", "--", "certify", "--workspace", *flags(row_tests)])
             if want("scenarios") and any(n.startswith("example-") or n == "tilo-app-cli" for n in row_tests):
                 post.run(f"example scenarios shard {row['shard']}", local,
-                         ["bash", "tools/test-env.sh", "bash", "tools/ci/example-scenarios.sh", *flags(row_tests)])
+                         ["bash", "tools/ci/example-scenarios.sh", *flags(row_tests)])
             if want("scoped") and row.get("scoped_tests"):
                 post.run(f"scoped reader tests shard {row['shard']}", local,
                          ["env", f"SCOPED_TESTS={row['scoped_tests']}", sys.executable,

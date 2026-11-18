@@ -197,12 +197,11 @@ pub(crate) fn work_takes(
     own: &DeviceCert,
     request: &HostWorkspaceRequest,
 ) -> bool {
-    // A person's Servers workspace is theirs: every one of their devices holds
-    // it, whatever work that device takes.
-    if request.workspace_id.to_string()
-        == tilo_server_protocol::servers::admin_workspace_id(&own.user_public_key)
-        && owners(request)
-            .is_ok_and(|owners| owners.iter().all(|owner| *owner == own.user_public_key))
+    // A workspace belongs to the person who governs it, not to the device it
+    // was made on: every device of that person holds it, whatever work the
+    // device takes from others, so it outlasts any one of them.
+    if replica(&request.bootstrap, tilo_clock::wall())
+        .is_ok_and(|peer| peer.owner() == own.user_public_key)
     {
         return true;
     }

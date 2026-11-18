@@ -157,6 +157,7 @@ tilo_test_env::scenario! {
             ty: list,
             app: tilolang_runtime::ids::AppId::from(APP),
             fields: Vec::new(),
+            text_defaults: Vec::new(),
         };
         let before = held(&host);
         store.create_with_id(&new, "third").unwrap();
@@ -186,6 +187,7 @@ tilo_test_env::scenario! {
                         ty: list.clone(),
                         app: tilolang_runtime::ids::AppId::from(APP),
                         fields: Vec::new(),
+            text_defaults: Vec::new(),
                     },
                     id,
                 )

@@ -37,7 +37,7 @@ use tilo_server::Reaching;
 use tilo_server::service::{ServiceConfig, ServiceIdentity, WorkspaceService};
 use tilo_server::workspaces::IssueInvitationRequest;
 use tilo_server_protocol::WorkSetting;
-use tilo_user_identity::{DeviceCert, RevocationList};
+use tilo_user_identity::DeviceCert;
 use web_time::SystemTime;
 
 const WORKSPACE: &str = "a0a0a0a0-a0a0-4a0a-8a0a-a0a0a0a0a0a0";
@@ -82,19 +82,14 @@ impl Desktop {
         // The group's endpoints reach each other on this machine alone: no
         // other machine names where they are reached.
         config.reaching = Reaching::OnItsOwn;
-        let service = WorkspaceService::open(
-            config,
-            ServiceIdentity {
-                user_public_key: cert.user_public_key,
-                device_signing_key: key.clone(),
-                device_cert: cert.clone(),
-                revocations: RevocationList::new(),
-            },
-            endpoint.clone(),
-            None,
-        )
-        .await
-        .expect("this desktop's workspace service opens");
+        // The service writes under a key of its own, which this desktop
+        // certifies as its workspace service, as every desktop's does.
+        let identity = ServiceIdentity::beside_device(&config.state_root, &cert, &key)
+            .await
+            .expect("this desktop certifies its workspace service");
+        let service = WorkspaceService::open(config, identity, endpoint.clone(), None)
+            .await
+            .expect("this desktop's workspace service opens");
         let mut router = Router::builder(endpoint.clone());
         for (alpn, handler) in service.protocols() {
             router = router.accept(alpn, handler);
@@ -151,6 +146,15 @@ impl Desktop {
             .hosts(WORKSPACE)
             .await
             .expect("this desktop's service holds the workspace")
+    }
+
+    /// Where this desktop's own service holds the workspace.
+    async fn own_holder(&self) -> TransportHint {
+        self.holders()
+            .await
+            .into_iter()
+            .find(|hint| hint.host.is_of_device(&self.id()))
+            .expect("this desktop holds the workspace")
     }
 
     /// The invitation this desktop's service issues for the workspace, as the
@@ -529,12 +533,6 @@ async fn five_desktops_hold_one_workspace_with_no_server_in_it() {
 /// The desktop the workspace was made on writes to it once the others linked,
 /// and its write reaches them, as every other desktop's does.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "the workspace service of the desktop the workspace was made on refuses that \
-            desktop's own write with ConflictingSequence: when another desktop links, the \
-            service answers it with a checkpoint of every document (DirectSync::catch_up \
-            bootstraps as the owner's device) signed under the device key it shares with the \
-            desktop's engine, which takes the sequence numbers the engine numbers its next write \
-            of the document with"]
 async fn the_desktop_a_workspace_was_made_on_writes_to_it_after_the_others_linked() {
     let directory = tempfile::tempdir().unwrap();
     let desktops = Box::pin(held_by_five(directory.path())).await;
@@ -554,31 +552,50 @@ async fn the_desktop_a_workspace_was_made_on_writes_to_it_after_the_others_linke
 }
 
 /// The desktop the workspace was made on leaves, and the rest keep it: the
-/// other desktops hold it too, each on its own service, and a desktop whose
-/// link was to the one that left links to another holder.
+/// workspace is its person's, so that person's other desktops hold it too,
+/// each on its own service, and every desktop whose link was to the one that
+/// left links to a holder still up. A desktop of the coworker, who does not
+/// govern the workspace, holds none of it, and still has every write.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "a desktop's own workspace service opens with WorkSetting::none(), and its \
-            HOST_WORKSPACE answer (Workspaces::kept_for, through holding::work_takes) takes no \
-            workspace another device governs, not even one of its own person's, so \
-            Workspaces::attach_server is refused: the workspace is held only on the desktop it \
-            was made on and ends for everyone when that desktop leaves"]
 async fn the_rest_keep_the_workspace_when_the_desktop_it_was_made_on_leaves() {
     let directory = tempfile::tempdir().unwrap();
     let [a1, mut a2, mut a3, mut b1, mut b2] = Box::pin(held_by_five(directory.path())).await;
 
-    // The workspace's owner has the group's other desktops hold it too.
-    for holder in [&a2, &a3, &b1] {
+    // The workspace's person has their other desktops hold it too.
+    for holder in [&a2, &a3] {
         a1.service
             .workspaces()
             .attach_server(
                 WORKSPACE,
-                holder.id(),
+                holder
+                    .service
+                    .workspaces()
+                    .serving_certificate()
+                    .device_public_key,
                 holder.service.node_addr(),
                 CopyRole::KeyHolder,
             )
             .await
-            .expect("another desktop of the group holds the workspace too");
+            .expect("another desktop of the workspace's person holds it too");
     }
+    // The coworker does not govern the workspace: their desktop holds none of
+    // it.
+    assert!(
+        a1.service
+            .workspaces()
+            .attach_server(
+                WORKSPACE,
+                b1.service
+                    .workspaces()
+                    .serving_certificate()
+                    .device_public_key,
+                b1.service.node_addr(),
+                CopyRole::KeyHolder,
+            )
+            .await
+            .is_err(),
+        "a desktop of someone who does not govern the workspace holds none of it"
+    );
     a2.write("before", "written while every desktop was up");
     let all: [&Desktop; 5] = [&a1, &a2, &a3, &b1, &b2];
     until(&all, "every desktop has the first write", |desktop| {
@@ -587,27 +604,20 @@ async fn the_rest_keep_the_workspace_when_the_desktop_it_was_made_on_leaves() {
     .await;
 
     // The desktop the workspace was made on goes away. Each of the others
-    // links to a holder still up: the holders to their own service, B's second
-    // desktop to B's first.
+    // links to a holder still up: A's desktops to their own service, B's to
+    // one of A's.
     a1.leaves().await;
-    let at_b1 = b1
-        .holders()
-        .await
-        .into_iter()
-        .find(|hint| hint.host.device_public_key == b1.id())
-        .expect("B's first desktop holds the workspace");
-    for desktop in [&mut a2, &mut a3, &mut b1] {
+    let at_a2 = a2.own_holder().await;
+    let at_a3 = a3.own_holder().await;
+    for (desktop, at) in [
+        (&mut a2, &at_a2),
+        (&mut a3, &at_a3),
+        (&mut b1, &at_a2),
+        (&mut b2, &at_a3),
+    ] {
         desktop.drops_link().await;
-        let own = desktop
-            .holders()
-            .await
-            .into_iter()
-            .find(|hint| hint.host.device_public_key == desktop.id())
-            .expect("this desktop holds the workspace");
-        desktop.links_to(&own).await;
+        desktop.links_to(at).await;
     }
-    b2.drops_link().await;
-    b2.links_to(&at_b1).await;
 
     a3.write("after-a1", "written with the founder gone");
     b2.write("from-b2", "through another holder");

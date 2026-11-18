@@ -57,12 +57,13 @@ pub struct PackagedAction<'a> {
 }
 
 /// The app version's signed surface: what a change it makes is decided
-/// against, read from the package at its payload root.
+/// against, and what the action API lists the app's actions from, read from
+/// the package at its payload root.
 ///
 /// # Errors
 /// Bytes that hold no package, a package that is not `app`, or one whose
 /// payload has no surface.
-fn package_surface(package: &[u8], app: &str) -> Result<Vec<u8>, CollaborationError> {
+pub fn package_surface(package: &[u8], app: &str) -> Result<Vec<u8>, CollaborationError> {
     let mut blobs: BTreeMap<BlobHash, Vec<u8>> = BTreeMap::new();
     let package = tapp::read(package, &mut blobs)
         .map_err(|error| CollaborationError::new(format!("the package: {error}")))?;
@@ -352,30 +353,6 @@ impl Workspaces {
             .envelope
             .ok_or_else(|| CollaborationError::new("the model made no invocation"))
     }
-}
-
-/// The verb `action` of the app version `package` carries, when the package's
-/// signed surface declares it: what the action API offers a caller and the
-/// kind the invocation is decided by, read without the app's code.
-///
-/// # Errors
-/// Bytes that hold no package, a package that is not `app`, or one whose
-/// surface does not parse.
-pub fn packaged_action_verb(
-    package: &[u8],
-    app: &str,
-    action: &str,
-) -> Result<tilo_actions::surface::VerbSurface, CollaborationError> {
-    let bytes = package_surface(package, app)?;
-    let surface = collab_types::surface::SurfaceFile::parse(&bytes)
-        .map_err(|error| CollaborationError::new(format!("the package's surface: {error}")))?;
-    surface
-        .resources
-        .iter()
-        .flat_map(|resource| resource.verbs.iter())
-        .find(|verb| verb.id == action)
-        .cloned()
-        .ok_or_else(|| CollaborationError::new("the app declares no such action"))
 }
 
 /// `member` as the model module reads it ([`MemberId::of_actor_bytes`]).

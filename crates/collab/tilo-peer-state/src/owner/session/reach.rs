@@ -43,7 +43,7 @@ enum Host {
     /// A host dialled over its endpoint.
     Dialled(Box<Dialed>),
     /// This device's own host: the two ends pair in process.
-    Paired(DirectSync),
+    Paired(crate::direct::Pairing),
 }
 
 impl Linked {
@@ -56,7 +56,8 @@ impl Linked {
     pub async fn run(self) -> Result<(), tilo_server_protocol::refusal::Refusal> {
         match self.host {
             Host::Dialled(dialed) => dialed.run(&self.link).await,
-            Host::Paired(host) => DirectSync::pair(&self.link, &host)
+            Host::Paired(pairing) => pairing
+                .sync()
                 .await
                 .map_err(tilo_server_protocol::refusal::Refusal::Other),
         }
@@ -93,9 +94,12 @@ impl Reach {
                 .ok_or("this device's workspace host is not running")?
                 .direct(payload.workspace_id)
                 .ok_or("this device's workspace host holds no such workspace")?;
+            // Paired now, so what this device writes before the link syncs
+            // is not lost.
+            let pairing = DirectSync::pairing(&link, &host);
             return Ok(Linked {
                 link,
-                host: Host::Paired(host),
+                host: Host::Paired(pairing),
             });
         }
         // The server answers on a service key of its own, which the hint's signature binds to the

@@ -72,7 +72,6 @@ impl StatePeer {
                 );
             }
         }
-        let author = self.governance_author(key, now);
         let workspace_doc = self
             .core
             .workspace_doc
@@ -101,11 +100,7 @@ impl StatePeer {
             }
             Ok(receipts)
         })?;
-        crate::state::commit_governance(
-            workspace_doc,
-            author.as_ref(),
-            crate::state::now_secs(now),
-        );
+        crate::state::commit_governance(workspace_doc, crate::state::now_secs(now));
         for message in &messages {
             self.receive(key.device_public_key(), message.clone(), now)?;
         }

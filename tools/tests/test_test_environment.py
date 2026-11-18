@@ -777,6 +777,66 @@ class CargoRunnerTests(unittest.TestCase):
             self.assertFalse((work / "target" / "test-env-vars").exists(),
                              "the handoff is removed afterwards")
 
+    def test_a_cargo_run_targets_environment_goes_beside_the_build_directory_too(self) -> None:
+        # An example a job runs is a program the job starts, like its tests: the build gets the
+        # caller's environment, and the target finds the test environment where the runner reads
+        # it (tools/cargo-runner.sh).
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            programs, dumped, stage = work / "bin", work / "cargo-env", work / "vars"
+            programs.mkdir()
+            (programs / "cargo").write_text(
+                f'#!/bin/sh\npython3 -c \'{DUMP}\' >"{dumped}"\n'
+                f'cp -- "$CARGO_TARGET_DIR/test-env-vars" "{stage}"\n')
+            (programs / "cargo").chmod(0o755)
+            env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+                   "HOME": str(work / "home"), "CARGO_TARGET_DIR": str(work / "target"),
+                   "TILO_REQUIRE_GPU": "0", "TILO_REQUIRE_AUDIO": "0",
+                   "TILO_TEST_NTFS_FIXTURES": "0"}
+            result = subprocess.run(
+                ["bash", str(TEST_ENV), "cargo", "run", "--example", "window_share_shots"],
+                env=env, capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            cargo_env = json.loads(dumped.read_text())
+            self.assertEqual(cargo_env["HOME"], str(work / "home"),
+                             "the build gets the caller's HOME")
+            for name in ("PULSE_SERVER", "PULSE_RUNTIME_PATH", "TILO_HEADLESS_AUDIO_PID",
+                         "TILO_TEST_CACHE_DIR", "TILO_TEST_ENVIRONMENT"):
+                self.assertNotIn(name, cargo_env, "the build carries no test environment")
+            provided = dict(line.split("=", 1) for line in stage.read_text().splitlines()[1:])
+            self.assertIn("TILO_TEST_CACHE_DIR", provided)
+            self.assertFalse((work / "target" / "test-env-vars").exists(),
+                             "the handoff is removed afterwards")
+
+    def test_a_build_runs_in_the_callers_environment_with_the_build_inputs(self) -> None:
+        # tools/test-env.sh --build: for a command that builds and then runs what it built
+        # (tools/ci/layout-check.sh, tools/ci/example-scenarios.sh) the build is the one every
+        # other job's build shares, and nothing of the test environment reaches it.
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            programs, dumped = work / "bin", work / "cargo-env"
+            programs.mkdir()
+            (programs / "cargo").write_text(
+                f'#!/bin/sh\npython3 -c \'{DUMP}\' >"{dumped}"\n')
+            (programs / "cargo").chmod(0o755)
+            env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+                   "HOME": str(work / "home"), "CARGO_TARGET_DIR": str(work / "target"),
+                   "TILO_TEST_NTFS_FIXTURES": "0"}
+            result = subprocess.run(
+                ["bash", str(TEST_ENV), "--build", "cargo", "build", "--locked"],
+                env=env, capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            cargo_env = json.loads(dumped.read_text())
+            self.assertEqual(cargo_env["HOME"], str(work / "home"))
+            self.assertEqual(cargo_env["TILO_FONT_ASSET_CACHE"],
+                             str(work / "target" / "font-artifacts"),
+                             "the build inputs every job's build shares are exported")
+            for name in ("PULSE_SERVER", "PULSE_RUNTIME_PATH", "MESA_SHADER_CACHE_DIR",
+                         "TILO_TEST_CACHE_DIR", "TILO_REQUIRE_MEDIA", "TILO_TEST_ENVIRONMENT",
+                         "TILO_TEST_NTFS_FIXTURES"):
+                self.assertNotIn(name, cargo_env, "the build carries no test environment")
+            self.assertFalse((work / "target").exists(), "no environment was prepared")
+
     def test_a_nextest_command_passes_unchanged(self) -> None:
         # Its ci profile sets the test environment up itself, where its tests execute.
         with tempfile.TemporaryDirectory() as tmp:

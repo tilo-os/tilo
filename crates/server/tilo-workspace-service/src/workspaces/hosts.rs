@@ -159,14 +159,18 @@ impl Workspaces {
             .transport_hint(governed)
             .map_err(|error| error.to_string())?;
         let now = tilo_clock::wall();
-        let mut candidate = governed.peer().clone();
-        if candidate
-            .governance_mut()
-            .author_keeping_device(&hint, &host.key, now)?
-        {
-            governed.commit(candidate, &host.key, now, |record, _| {
-                Ok(record.collaboration.clone())
-            })?;
+        let named = governed.change_held(
+            &host.key,
+            now,
+            |_, candidate| {
+                let named = candidate
+                    .governance_mut()
+                    .author_keeping_device(&hint, &host.key, now)?;
+                Ok((named, named))
+            },
+            |record, _| Ok(record.collaboration.clone()),
+        )?;
+        if named {
             self.settle(governed).await?;
         }
         Ok(())
@@ -241,11 +245,16 @@ impl Workspaces {
             .map_err(|error| error.to_string())?;
         let mut governed = state.lock().await;
         let now = tilo_clock::wall();
-        let mut candidate = governed.peer().clone();
-        if change(candidate.governance_mut(), &host.key, now)? {
-            governed.commit(candidate, &host.key, now, |record, _| {
-                Ok(record.collaboration.clone())
-            })?;
+        let changed = governed.change_held(
+            &host.key,
+            now,
+            |_, candidate| {
+                let changed = change(candidate.governance_mut(), &host.key, now)?;
+                Ok((changed, changed))
+            },
+            |record, _| Ok(record.collaboration.clone()),
+        )?;
+        if changed {
             self.settle(&mut governed).await?;
         }
         Ok(())

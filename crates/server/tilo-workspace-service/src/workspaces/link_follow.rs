@@ -123,20 +123,35 @@ impl Workspaces {
         }
     }
 
-    /// Carry `message`, `author`'s record write the workspace's link
-    /// admitted, to the members that take part through server sessions: the
-    /// server retains it in `author`'s name and sends it to every session, as
-    /// it does a session's own write, trying again until it is durable there
+    /// Carry `message`, `author`'s document write or change to the
+    /// workspace's own state the workspace's link admitted, to the members
+    /// and the other holders that take part through server sessions: the
+    /// server retains it in `author`'s name and sends it to every session, as it does a
+    /// session's own write, trying again until it is durable there
     /// ([`Self::carry_until_landed`]). Only the link's first copy of a frame
     /// comes here ([`tilo_peer_state::direct::Heard::fresh`]), so nothing a
     /// session sent reaches the sessions twice.
+    ///
+    /// A member's change to the workspace's state (a lease it claims, a
+    /// verdict it files) lands in this holder's replica as the link admits
+    /// it, so no governance this holder commits carries it; the holder's next
+    /// change builds on it all the same. Carried here, every other holder
+    /// takes it in before the changes that build on it, rather than holding
+    /// those back for good for history it was never sent.
     fn carry_to_sessions(
         &self,
         workspace: &str,
         author: [u8; 32],
         message: &neighbour_wire::NeighbourMsg,
     ) {
-        if !matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. }) {
+        let carried = match message {
+            neighbour_wire::NeighbourMsg::AppDocument { .. } => true,
+            neighbour_wire::NeighbourMsg::SyncResp {
+                workspace: named, ..
+            } => named == workspace,
+            _ => false,
+        };
+        if !carried {
             return;
         }
         let (Some(workspace_id), Some((channel, retention))) = (

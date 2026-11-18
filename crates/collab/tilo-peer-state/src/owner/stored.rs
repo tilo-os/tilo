@@ -247,89 +247,41 @@ impl StoredPendingEnrollment {
     }
 }
 
-/// A replica's durable encoding as [`crate::StatePeer::durable_parts`] gives
-/// it: the parts concatenated are the bytes stored. A part no change touched
-/// is the same allocation as in the encoding before, so a store keeping the
-/// record writes only what changed ([`crate::owner::file_store`]).
-#[derive(Clone, Debug, Default)]
-pub(crate) struct DurablePeer(Vec<std::sync::Arc<[u8]>>);
+/// A replica's durable encoding as [`crate::StatePeer::durable_layout`] gives
+/// it: its stretches concatenated are the bytes stored. A part no change
+/// touched is the same allocation as in the encoding before, and a document
+/// no change touched is shared with it, so a store keeping the workspace writes
+/// only what changed ([`crate::owner::journal`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct DurablePeer(crate::state::DurableParts);
 
 impl DurablePeer {
-    pub(crate) fn parts(&self) -> &[std::sync::Arc<[u8]>] {
+    pub(crate) fn layout(&self) -> &crate::state::DurableParts {
         &self.0
-    }
-    pub(crate) fn len(&self) -> usize {
-        self.0.iter().map(|part| part.len()).sum()
     }
     /// The bytes whole.
     pub(crate) fn to_vec(&self) -> Vec<u8> {
-        self.0.concat()
+        self.0.to_vec()
     }
-    fn bytes(&self) -> impl Iterator<Item = &[u8]> {
-        self.parts().iter().map(|part| &**part)
+    /// The durable encoding `bytes`, as its stretches: bytes that do not read
+    /// as one are kept whole, for the restore that reads them to refuse.
+    pub(crate) fn read(bytes: &[u8]) -> Self {
+        Self(
+            crate::state::DurableParts::read(bytes)
+                .unwrap_or_else(|_| crate::state::DurableParts::whole(bytes)),
+        )
     }
 }
 
-impl From<Vec<std::sync::Arc<[u8]>>> for DurablePeer {
-    fn from(parts: Vec<std::sync::Arc<[u8]>>) -> Self {
+impl From<crate::state::DurableParts> for DurablePeer {
+    fn from(parts: crate::state::DurableParts) -> Self {
         Self(parts)
-    }
-}
-
-impl From<Vec<u8>> for DurablePeer {
-    fn from(bytes: Vec<u8>) -> Self {
-        Self(vec![bytes.into()])
-    }
-}
-
-/// The same bytes, however they are split: parts that are one allocation are
-/// not read.
-impl PartialEq for DurablePeer {
-    fn eq(&self, other: &Self) -> bool {
-        if self.len() != other.len() {
-            return false;
-        }
-        if self.0.len() == other.0.len()
-            && self
-                .0
-                .iter()
-                .zip(&other.0)
-                .all(|(a, b)| std::sync::Arc::ptr_eq(a, b))
-        {
-            return true;
-        }
-        let (mut ours, mut theirs) = (self.bytes(), other.bytes());
-        let (mut a, mut b): (&[u8], &[u8]) = (&[], &[]);
-        loop {
-            while a.is_empty() {
-                match ours.next() {
-                    Some(next) => a = next,
-                    None => return b.is_empty() && theirs.all(<[u8]>::is_empty),
-                }
-            }
-            while b.is_empty() {
-                match theirs.next() {
-                    Some(next) => b = next,
-                    None => return false,
-                }
-            }
-            let n = a.len().min(b.len());
-            let (Some((a_now, a_next)), Some((b_now, b_next))) =
-                (a.split_at_checked(n), b.split_at_checked(n))
-            else {
-                return false;
-            };
-            if a_now != b_now {
-                return false;
-            }
-            (a, b) = (a_next, b_next);
-        }
     }
 }
 
 impl PartialEq<Vec<u8>> for DurablePeer {
     fn eq(&self, other: &Vec<u8>) -> bool {
-        *self == Self(vec![std::sync::Arc::from(other.as_slice())])
+        self.to_vec() == *other
     }
 }
 
@@ -341,7 +293,8 @@ impl Serialize for DurablePeer {
 
 impl<'de> Deserialize<'de> for DurablePeer {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        base64_bytes::deserialize(deserializer).map(Self::from)
+        let bytes = base64_bytes::deserialize(deserializer)?;
+        Ok(Self::read(&bytes))
     }
 }
 

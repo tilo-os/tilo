@@ -194,7 +194,8 @@ fn default_value(field: &FieldSchema) -> Result<DynValue, ModelError> {
     Ok(match field.kind {
         MergeKind::Register => DynValue::Register(field.default.clone()),
         MergeKind::Counter => DynValue::Counter(Counter::default()),
-        MergeKind::Text => DynValue::Text(String::new()),
+        // A text field starts at the text its type declares, as a register does at its own.
+        MergeKind::Text => DynValue::Text(field.default.as_str().unwrap_or_default().to_owned()),
         MergeKind::RichText => DynValue::RichText(Box::default()),
         MergeKind::Set => DynValue::Set(Set::new()),
         MergeKind::Map => DynValue::Map(Map::new()),

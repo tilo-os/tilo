@@ -881,6 +881,7 @@ impl Core {
             ty: item_ty.id.clone(),
             app: AppId::default(),
             fields: item_ty.specs(),
+            text_defaults: item_ty.text_defaults(),
         };
         // The id it is given is a read like any other: a run that is run again after it waited
         // gives the item the id it gave it before.

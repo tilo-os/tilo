@@ -28,6 +28,8 @@ root Notebook
 
 default view notebook for Notebook
 
+default view detail for Note
+
 row view note_row for Note
 
 primary action add(nb: Notebook, title: Text, pinned: Bool) -> Note (icon: .plus) {

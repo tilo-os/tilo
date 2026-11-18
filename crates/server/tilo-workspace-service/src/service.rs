@@ -1052,6 +1052,83 @@ pub struct ServiceIdentity {
     pub revocations: RevocationList,
 }
 
+/// Where a device's workspace service keeps its own key and the certificate
+/// its device issued for it, under the service's state root.
+const OWN_KEY_DIR: &str = "service-key";
+
+impl ServiceIdentity {
+    /// The identity of the workspace service of the device `device`, whose
+    /// key `signer` holds, keeping its state under `root`: a
+    /// key of the service's own, made the first time and kept there, and the
+    /// certificate `device` issues for it as its workspace service
+    /// ([`tilo_user_identity::prepare_service_cert`]). The certificate is
+    /// issued again whenever the one kept no longer holds for `device` as it
+    /// is certified now.
+    ///
+    /// The service never signs under the device's key: the device and its
+    /// service each write under a key of their own, so neither takes a
+    /// sequence number the other already gave a change.
+    ///
+    /// # Errors
+    ///
+    /// The key or certificate cannot be kept under `root`, or `signer` does
+    /// not sign for `device`.
+    pub async fn beside_device(
+        root: &std::path::Path,
+        device: &DeviceCert,
+        signer: &dyn collab_types::signer::DeviceSigner,
+    ) -> Result<Self, ServiceError> {
+        use tilo_device_identity::persist;
+        let fail = |what: &str, error: &dyn std::fmt::Display| {
+            ServiceError::Identity(format!("this device's workspace service {what}: {error}"))
+        };
+        let dir = root.join(OWN_KEY_DIR);
+        let key_path = dir.join("key.bin");
+        let cert_path = dir.join("cert.bin");
+        let key = if key_path.exists() {
+            persist::read_signing_key(&key_path).map_err(|error| fail("key", &error))?
+        } else {
+            std::fs::create_dir_all(&dir).map_err(|error| fail("key", &error))?;
+            let key = ed25519_dalek::SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(
+                getrandom::SysRng,
+            ));
+            persist::write_signing_key(&key_path, &key).map_err(|error| fail("key", &error))?;
+            key
+        };
+        let public = key.verifying_key().to_bytes();
+        let now = unix_now_ns();
+        let kept = persist::read_device_cert(&cert_path).ok().filter(|cert| {
+            cert.device_public_key == public
+                && cert.issuer.as_deref() == Some(device)
+                && verify_device_cert_at(cert, now).is_ok()
+        });
+        let cert = if let Some(cert) = kept {
+            cert
+        } else {
+            let mut cert = tilo_user_identity::prepare_service_cert(
+                device,
+                public,
+                &device.device_label,
+                now.max(device.issued_at_ns),
+            );
+            tilo_user_identity::sign_device_cert_async(&mut cert, signer)
+                .await
+                .map_err(|error| fail("certificate", &error))?;
+            persist::write_device_cert(&cert_path, &cert)
+                .map_err(|error| fail("certificate", &error))?;
+            cert
+        };
+        Ok(Self {
+            user_public_key: cert.user_public_key,
+            device_signing_key: key,
+            device_cert: cert,
+            // Each workspace's own revocations reach the service through its
+            // governance.
+            revocations: RevocationList::new(),
+        })
+    }
+}
+
 pub fn validate_service_device_identity(identity: &ServiceIdentity) -> Result<(), ServiceError> {
     verify_device_cert_at(&identity.device_cert, unix_now_ns())
         .map_err(|error| ServiceError::Identity(format!("invalid device certificate: {error}")))?;

@@ -136,16 +136,13 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     ) -> Result<Option<serde_json::Value>, String> {
         Ok(None)
     }
-    /// The action `action` of `app` as the version `workspace` installs
-    /// declares it in its package's surface: what the caller is offered and
-    /// the kind it is decided by. `None` for an app or action it does not
-    /// declare.
-    fn packaged_action(
-        &self,
-        _workspace: WorkspaceId,
-        _app: &str,
-        _action: &str,
-    ) -> Option<tilo_actions::surface::VerbSurface> {
+    /// The signed `surface.toml` of the version of `app` the workspace
+    /// installs, when this device keeps its package: every resource kind the
+    /// app publishes with its verbs, by which the catalogue lists its actions
+    /// exactly as an app compiled in is listed. `None` for an app the
+    /// workspace installs no such version of, or one this device holds no
+    /// package of.
+    fn packaged_surface(&self, _workspace: WorkspaceId, _app: &str) -> Option<Vec<u8>> {
         None
     }
     /// Read an exact existing source using already-owned host keys. The host

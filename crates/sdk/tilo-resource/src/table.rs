@@ -2814,8 +2814,9 @@ pub static UNIT_OPS: ModelOps = ModelOps {
         }
     },
     collect_text: |table, value, out| {
+        // The case the surface shows, not the token a value's JSON form spells.
         if let Some(name) = unit_wire_name(table, value) {
-            out.push(name.to_owned());
+            out.push(tilo_actions::field_type::label_of(name));
         }
     },
     check: |_, _| Ok(()),

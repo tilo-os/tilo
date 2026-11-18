@@ -128,6 +128,7 @@ mod construction;
 mod durable;
 #[cfg(test)]
 pub(crate) use durable::{DURABLE_VERSION, Durable};
+pub(crate) use durable::{DocumentParts, DurableParts};
 mod receiving;
 mod records;
 mod sealing;
@@ -238,7 +239,7 @@ pub enum TransportOrigin {
     UntrustedPresence([u8; 32]),
 }
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-struct Route {
+pub(crate) struct Route {
     app: String,
     record: String,
 }

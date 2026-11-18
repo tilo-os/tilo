@@ -22,6 +22,8 @@ root Board
 
 default view board for Board
 
+default view note_page for Note
+
 row view note_row for Note
 
 row view item_row for Item

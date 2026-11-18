@@ -1327,6 +1327,15 @@ fn place_own_workspace(
     let workspace_id = WorkspaceId::parse(&workspace_id)
         .ok_or_else(|| io::Error::other("invalid runtime workspace"))?;
     let key_sessions = crate::key_sessions::KeySessions::new();
+    let store = profile.join(HOST_STORE);
+    // The workspace service writes under a key of its own, which this device certifies: the
+    // device and its service never number changes from one count.
+    let identity = tilo_rt::app()
+        .handle()
+        .block_on(
+            tilo_workspace_service::service::ServiceIdentity::beside_device(&store, &cert, &key),
+        )
+        .map_err(io::Error::other)?;
     let host = Arc::new(
         tilo_rt::app()
             .handle()
@@ -1335,16 +1344,11 @@ fn place_own_workspace(
                     apps: Some(Arc::clone(&key_sessions)
                         as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>),
                     ..tilo_workspace_service::service::ServiceConfig::new(
-                        profile.join(HOST_STORE),
+                        store,
                         tilo_server_protocol::WorkSetting::none(),
                     )
                 },
-                tilo_workspace_service::service::ServiceIdentity {
-                    user_public_key: cert.user_public_key,
-                    device_signing_key: key,
-                    device_cert: cert,
-                    revocations: tilo_user_identity::RevocationList::new(),
-                },
+                identity,
                 joined.endpoint(),
                 Some(workspace_keys::DeviceGroupKeys::device(
                     keys.clone(),

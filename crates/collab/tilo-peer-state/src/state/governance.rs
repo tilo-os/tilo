@@ -97,7 +97,7 @@ impl PeerGovernance<'_> {
     /// The governance's heads now.
     #[must_use]
     pub fn heads(self) -> Vec<[u8; 32]> {
-        self.peer.governance_heads()
+        self.peer.governance_heads().unwrap_or_default()
     }
     /// Whether the governance carries a device's removal without its cut
     /// ([`crate::removals`]): one recorded before cuts were kept. Until the
@@ -857,15 +857,8 @@ impl PeerGovernanceMut<'_> {
         let mut document = (**cached).clone();
         document.set_actor(self.peer.workspace_actor_of(key));
         let before = document.get_heads();
-        let author = self.peer.governance_author(key, now);
-        match crate::governance::admit_invited_member(
-            &mut document,
-            cached,
-            redemption,
-            name,
-            author.as_ref(),
-            now,
-        )? {
+        match crate::governance::admit_invited_member(&mut document, cached, redemption, name, now)?
+        {
             crate::governance::AdmissionOutcome::AlreadyApplied => Ok(false),
             crate::governance::AdmissionOutcome::Applied { .. } => {
                 // The workspace's owner is not one of its members: they hold

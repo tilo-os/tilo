@@ -485,9 +485,14 @@ fn a_task_typed_into_todays_entry_is_due_the_persons_today() {
             // The day a row is grouped under is the day the window heads by its own clock
             // (`ui::clock::today()`): the day it is due. They are one day, so the row heads
             // Today and stands in Today's list.
+            // The zone the platform names, resolved against the database built into Tilo: the
+            // window reads its day by it, not by whatever zoneinfo the machine installed.
+            let zone = tilo_clock::local_zone_name()
+                .and_then(|name| tilo_recurrence::zone::named(&name))
+                .unwrap_or(jiff::tz::TimeZone::UTC);
             let headed_by = jiff::Timestamp::try_from(tilo_clock::to_std(tilo_clock::wall()))
                 .unwrap()
-                .to_zoned(jiff::tz::TimeZone::system())
+                .to_zoned(zone)
                 .date()
                 .to_string();
             assert_eq!(

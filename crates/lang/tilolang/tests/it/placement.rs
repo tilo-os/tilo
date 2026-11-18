@@ -30,6 +30,12 @@ root board: Board
 
 default view board for Board
 
+default view task for Task
+
+view task(t: Task) {
+    text(t.title)
+}
+
 action check(t: Task, done: Bool = not t.done) { t.done = done }
 
 action schedule(t: Task, at: Time) { }

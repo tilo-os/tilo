@@ -1037,16 +1037,20 @@ impl ChainCore {
                     context,
                 )
                 .map(|envelope| {
-                    // What it minted, a group's members' together, in order.
+                    // What it minted, a group's members' together, in order, put back once the
+                    // part's items are worked out: whoever invoked the write answers what it made
+                    // from the same list.
                     let minted = tilo_resource::take_minted();
                     written(doc, &before);
-                    ui_core::bound_dispatch::minted_items(
+                    let items = ui_core::bound_dispatch::minted_items(
                         doc,
                         self.part.kind,
                         &minted,
                         &envelope,
                         &before,
-                    )
+                    );
+                    tilo_resource::restore_minted(minted);
+                    items
                 })
                 .map_err(|error| ActionError::Refused(error.to_string()));
                 // Nobody's undo step: a part's edits are kept in its

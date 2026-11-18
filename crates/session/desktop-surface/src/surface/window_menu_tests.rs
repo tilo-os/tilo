@@ -313,9 +313,9 @@ fn the_float_row_lifts_the_window_over_the_shell_and_puts_it_back() {
     assert!(row(&handle.window_menu(route.tab), SNAP_BACK).is_none());
 
     handle.choose_window_menu(route.tab, FLOAT, None).unwrap();
-    settle(&mut frame);
+    play_frames(&mut frame, 60);
     handle.arrange_asked_floats();
-    settle(&mut frame);
+    play_frames(&mut frame, 60);
     assert!(floating(&handle), "the record has it floating");
     let floated = rect_of(&handle, route.tab);
     assert!(
@@ -334,9 +334,10 @@ fn the_float_row_lifts_the_window_over_the_shell_and_puts_it_back() {
     handle
         .choose_window_menu(route.tab, SNAP_BACK, None)
         .unwrap();
-    settle(&mut frame);
+    // The window beside it gives back the width it took while alone, on the strip's clock.
+    play_frames(&mut frame, 60);
     handle.arrange_asked_floats();
-    settle(&mut frame);
+    play_frames(&mut frame, 60);
     assert!(!floating(&handle), "the record has it back in its strip");
     let back = rect_of(&handle, route.tab);
     assert!(

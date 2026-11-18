@@ -1,17 +1,25 @@
 //! What a workspace's record became after its last snapshot: one entry per
 //! publication, appended and synced before the publication is installed.
 //!
-//! An entry holds the bytes its publication changed and nothing else: the
-//! record's own fields (as JSON) and its replica's durable encoding, each as
-//! a delta of what the entry before left. A publication of one keystroke into
-//! a record with a long history appends that keystroke, not the history, so
-//! what a write costs does not grow with what the workspace already holds.
+//! An entry holds what its publication changed and nothing else: the
+//! workspace's own fields (as JSON), the server's answers that changed, and
+//! of its replica's durable encoding the stretches before and after the
+//! documents and each document it changed, each as a delta of what the entry
+//! before left. The answers and the documents are maps whose
+//! copies share what neither changed, so telling what a publication changed
+//! skips everything it did not: a publication of one keystroke into one
+//! document of thousands appends that keystroke, and costs what it changed
+//! however much the workspace already holds.
 //!
 //! Each entry is framed with its length and digest: an entry a crash cut
 //! short fails its digest, and it and anything after it were never
 //! acknowledged, so the journal is read up to it.
-use crate::owner::stored::StoredWorkspace;
+use crate::ordered::Ordered;
+use crate::owner::publication::{Answer, Answered};
+use crate::owner::stored::{DurablePeer, StoredWorkspace};
+use crate::state::{DocumentParts, DurableParts, Route};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// One run of the new bytes: a range of the old ones, or bytes of its own.
@@ -24,27 +32,43 @@ enum Op {
 #[derive(Debug, Serialize, Deserialize)]
 struct Entry {
     revision: u64,
+    /// The workspace's fields, without its answers and its replica.
     fields: Vec<Op>,
-    peer: Vec<Op>,
+    /// Each document whose answers changed, with what it holds now.
+    answered: Vec<((String, String), Option<Answer>)>,
+    /// The replica's stretches before its documents.
+    head: Vec<Op>,
+    /// Each document that changed, with its stretches now, or `None` when
+    /// it is no longer held.
+    documents: Vec<(Route, Option<DocumentOps>)>,
+    /// The replica's stretches after its documents.
+    tail: Vec<Op>,
+}
+
+/// A document's stretches as a delta of what it held before.
+#[derive(Debug, Serialize, Deserialize)]
+struct DocumentOps {
+    document: Vec<Op>,
+    sealed: Option<Vec<Op>>,
 }
 
 /// What the next entry is a delta of: the record as the last entry left it.
 pub(crate) struct Written {
     fields: Arc<[u8]>,
-    peer: Vec<Arc<[u8]>>,
+    answered: Answered,
+    peer: DurableParts,
 }
 
 impl Written {
     /// Go on from `parts`, the replica restored from these bytes as it
-    /// encodes itself: read back, the replica is one stretch of bytes no part
-    /// of its own encoding shares, and a delta of that matches nothing by place.
-    /// `false`, with nothing changed, when `parts` are other bytes.
-    pub(super) fn resume(&mut self, parts: Vec<Arc<[u8]>>) -> bool {
-        let parts = crate::owner::stored::DurablePeer::from(parts);
-        if parts != crate::owner::stored::DurablePeer::from(self.peer.clone()) {
+    /// encodes itself: read back, each stretch of the replica is one part no
+    /// part of its own encoding shares, and a delta of that matches nothing
+    /// by place. `false`, with nothing changed, when `parts` are other bytes.
+    pub(super) fn resume(&mut self, parts: DurableParts) -> bool {
+        if parts != self.peer {
             return false;
         }
-        self.peer = parts.parts().to_vec();
+        self.peer = parts;
         true
     }
 }
@@ -52,16 +76,28 @@ impl Written {
 /// Length and digest ahead of each entry.
 const FRAME_HEAD: usize = 4 + 32;
 
-/// The record's own fields, without its replica: JSON, as the snapshot
-/// holds them.
+/// The workspace's own fields, without its answers and its replica: JSON, as
+/// the snapshot holds them.
 fn fields_of(stored: &StoredWorkspace) -> Result<Arc<[u8]>, String> {
-    let fields = StoredWorkspace {
-        peer: crate::owner::stored::DurablePeer::default(),
+    let mut fields = StoredWorkspace {
+        peer: DurablePeer::default(),
         ..stored.clone()
     };
+    if let Some(publication) = fields.publication.as_mut() {
+        publication.set_answered(Answered::default());
+    }
     serde_json::to_vec(&fields)
         .map(Into::into)
         .map_err(|error| error.to_string())
+}
+
+/// The server's answers `stored` holds.
+fn answered_of(stored: &StoredWorkspace) -> Answered {
+    stored
+        .publication
+        .as_ref()
+        .map(|publication| publication.answered().clone())
+        .unwrap_or_default()
 }
 
 /// What the first entry of a snapshot's journal is a delta of: `stored`,
@@ -73,7 +109,8 @@ pub(super) fn first(stored: &StoredWorkspace, snapshot: &[u8]) -> Result<Written
         serde_json::from_slice(snapshot).map_err(|error| error.to_string())?;
     Ok(Written {
         fields: fields_of(&read)?,
-        peer: stored.peer.parts().to_vec(),
+        answered: answered_of(&read),
+        peer: stored.peer.layout().clone(),
     })
 }
 
@@ -82,7 +119,8 @@ pub(super) fn first(stored: &StoredWorkspace, snapshot: &[u8]) -> Result<Written
 pub(super) fn first_of(stored: &StoredWorkspace) -> Result<Written, String> {
     Ok(Written {
         fields: fields_of(stored)?,
-        peer: stored.peer.parts().to_vec(),
+        answered: answered_of(stored),
+        peer: stored.peer.layout().clone(),
     })
 }
 
@@ -94,13 +132,55 @@ pub(super) fn next(
     revision: u64,
 ) -> Result<(Vec<u8>, Written), String> {
     let fields = fields_of(stored)?;
-    let peer = stored.peer.parts().to_vec();
+    let answered = answered_of(stored);
+    let peer = stored.peer.layout().clone();
+    let empty: Arc<[Arc<[u8]>]> = Arc::from([]);
+    let documents = Ordered::changes(
+        &written.peer.documents,
+        &peer.documents,
+        DocumentParts::same,
+    )
+    .into_iter()
+    .map(|change| {
+        let ops = change.after.map(|now| {
+            let before = change.before;
+            DocumentOps {
+                document: delta(
+                    before.map_or(&empty, |before| &before.document),
+                    &now.document,
+                ),
+                sealed: now.sealed.as_ref().map(|sealed| {
+                    delta(
+                        before
+                            .and_then(|before| before.sealed.as_ref())
+                            .unwrap_or(&empty),
+                        sealed,
+                    )
+                }),
+            }
+        });
+        (change.key.clone(), ops)
+    })
+    .collect();
     let entry = Entry {
         revision,
         fields: delta_chunked(&written.fields, &fields),
-        peer: delta(&written.peer, &peer),
+        answered: Ordered::changes(&written.answered, &answered, |a, b| a == b)
+            .into_iter()
+            .map(|change| (change.key.clone(), change.after.copied()))
+            .collect(),
+        head: delta(&written.peer.head, &peer.head),
+        documents,
+        tail: delta(&written.peer.tail, &peer.tail),
     };
-    Ok((frame(&entry)?, Written { fields, peer }))
+    Ok((
+        frame(&entry)?,
+        Written {
+            fields,
+            answered,
+            peer,
+        },
+    ))
 }
 
 fn frame(entry: &Entry) -> Result<Vec<u8>, String> {
@@ -121,13 +201,53 @@ pub(super) fn replay(
     stored: StoredWorkspace,
     log: &[u8],
 ) -> Result<(StoredWorkspace, Option<u64>), String> {
+    let rope = |parts: &[Arc<[u8]>]| Rope::of(&parts.concat().into());
     let mut fields = Rope::of(&fields_of(&stored)?);
-    let mut peer = Rope::of(&stored.peer.to_vec().into());
+    let mut answered = answered_of(&stored);
+    let layout = stored.peer.layout();
+    let mut head = rope(&layout.head);
+    let mut tail = rope(&layout.tail);
+    let mut documents: BTreeMap<Route, (Rope, Option<Rope>)> = layout
+        .documents
+        .iter()
+        .map(|(route, parts)| {
+            (
+                route.clone(),
+                (rope(&parts.document), parts.sealed.as_deref().map(rope)),
+            )
+        })
+        .collect();
     let mut revision = None;
     let mut rest = log;
     while let Some(entry) = take(&mut rest) {
         fields = fields.apply(entry.fields)?;
-        peer = peer.apply(entry.peer)?;
+        for (key, answer) in entry.answered {
+            match answer {
+                Some(answer) => answered.insert(key, answer),
+                None => answered.remove(&key),
+            };
+        }
+        head = head.apply(entry.head)?;
+        tail = tail.apply(entry.tail)?;
+        for (route, ops) in entry.documents {
+            let Some(ops) = ops else {
+                documents.remove(&route);
+                continue;
+            };
+            let empty = Rope::of(&Arc::from([]));
+            let (document, sealed) = documents
+                .get(&route)
+                .map_or((&empty, None), |(document, sealed)| {
+                    (document, sealed.as_ref())
+                });
+            let next = (
+                document.apply(ops.document)?,
+                ops.sealed
+                    .map(|ops| sealed.unwrap_or(&empty).apply(ops))
+                    .transpose()?,
+            );
+            documents.insert(route, next);
+        }
         revision = Some(entry.revision);
     }
     if revision.is_none() {
@@ -135,7 +255,27 @@ pub(super) fn replay(
     }
     let mut replayed: StoredWorkspace = serde_json::from_slice(&fields.to_vec())
         .map_err(|error| format!("the record's journal does not parse: {error}"))?;
-    replayed.peer = peer.to_vec().into();
+    if let Some(publication) = replayed.publication.as_mut() {
+        publication.set_answered(answered);
+    }
+    let whole = |rope: &Rope| -> Arc<[Arc<[u8]>]> { Arc::from([Arc::from(rope.to_vec())]) };
+    replayed.peer = DurableParts {
+        head: whole(&head),
+        documents: documents
+            .iter()
+            .map(|(route, (document, sealed))| {
+                (
+                    route.clone(),
+                    DocumentParts {
+                        document: whole(document),
+                        sealed: sealed.as_ref().map(whole),
+                    },
+                )
+            })
+            .collect(),
+        tail: whole(&tail),
+    }
+    .into();
     Ok((replayed, revision))
 }
 
@@ -631,7 +771,10 @@ mod tests {
                 frame(&Entry {
                     revision,
                     fields: Vec::new(),
-                    peer: vec![Op::Bytes(revision.to_le_bytes().to_vec())],
+                    answered: Vec::new(),
+                    head: vec![Op::Bytes(revision.to_le_bytes().to_vec())],
+                    documents: Vec::new(),
+                    tail: Vec::new(),
                 })
                 .unwrap()
             };

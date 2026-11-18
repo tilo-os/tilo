@@ -216,7 +216,7 @@ impl Worker {
         };
         let state = workspace.state();
         let mut heads: Vec<DocumentRoute> = Vec::new();
-        for listed in self.documents(&state, &cluster_id) {
+        for listed in self.documents(Some(workspace_id), &state, &cluster_id) {
             if listed.app_id != app_id {
                 continue;
             }

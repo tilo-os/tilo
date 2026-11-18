@@ -227,7 +227,7 @@ pub struct Engine {
     group_keys: std::sync::Mutex<RouteKeys>,
     /// Sealed records as this device last opened them for a reader, so the next read opens only
     /// what was sealed since: a record its apps follow is opened once per write, not whole per read.
-    kept: std::sync::Mutex<KeptRecords>,
+    kept: std::sync::Mutex<KeptResources>,
     /// Where this device's own workspace service keeps the workspaces it holds, under the state
     /// the engine was opened on; `None` for an engine that keeps no state.
     service_root: Option<std::path::PathBuf>,
@@ -302,9 +302,15 @@ pub trait Founder: Send + Sync {
     ) -> Option<ServiceAnswer>;
 }
 
-/// The sealed records this device keeps opened, by workspace, app and record, with the keys that
-/// opened each.
-type KeptRecords = BTreeMap<(WorkspaceId, String, String), (KeysUsed, KeptDocument)>;
+/// The sealed resources this device keeps opened, by workspace, app and document id, with the
+/// keys that opened each. Each is behind a lock of its own, held while it is read: a second read
+/// of the same resource waits for the first and goes on from what it opened, rather than opening
+/// it whole beside it.
+type KeptResources = BTreeMap<(WorkspaceId, String, String), Arc<std::sync::Mutex<KeptResource>>>;
+
+/// One sealed resource as this device last opened it, with the keys that opened it; `None` until
+/// a read opened it.
+type KeptResource = Option<(KeysUsed, KeptDocument)>;
 
 /// The keys a sealed record was opened with: the channel and epoch of the record's own keys and of
 /// the channel's history keys. A rotation moves the epoch.
@@ -905,9 +911,8 @@ impl Engine {
         // what they carry; the channel's own history keys open the rest.
         let mut unopened = false;
         let key = (workspace, app.to_owned(), record.to_owned());
-        // Taken out while it is read: a read of the same record meanwhile opens it whole. What was
-        // opened under other keys than these — the channel rotated, as removing a member rotates
-        // it — is let go, and the record opens whole under the keys held now.
+        // What was opened under other keys than these — the channel rotated, as removing a member
+        // rotates it — is let go, and it opens whole under the keys held now.
         let used: KeysUsed = [
             keys.as_ref()
                 .map(tilo_workspace_keys::HistoryKeys::generation),
@@ -916,7 +921,18 @@ impl Engine {
                 .and_then(|history| history.as_ref().ok())
                 .map(tilo_workspace_keys::HistoryKeys::generation),
         ];
-        let mut kept = kept_under(self.kept.lock_recover().remove(&key), &used);
+        // A sealed resource another read is opening now is waited for, and read on from what that
+        // one opened: taking it out while it was read made the second reader open it whole, which
+        // for a chain part of a thousand items costs the second caller most of a second.
+        let opening = sealed.then(|| {
+            let mut kept = self.kept.lock_recover();
+            if !kept.contains_key(&key) && kept.len() >= KEPT_RECORDS {
+                kept.pop_first();
+            }
+            Arc::clone(kept.entry(key).or_default())
+        });
+        let mut held = opening.as_deref().map(|opening| opening.lock_recover());
+        let mut kept = kept_under(held.as_deref_mut().and_then(Option::take), &used);
         let read = read(
             workspace,
             &mut |write| {
@@ -938,12 +954,10 @@ impl Engine {
         if unopened && let (Some(link), Some(Ok(history))) = (self.link(), &history) {
             link.want_frames(workspace, history.generation().1);
         }
-        if sealed && kept.is_open() {
-            let mut records = self.kept.lock_recover();
-            if records.len() >= KEPT_RECORDS {
-                records.pop_first();
-            }
-            records.insert(key, (used, kept));
+        if let Some(held) = held.as_deref_mut()
+            && kept.is_open()
+        {
+            *held = Some((used, kept));
         }
         match read {
             Err(_) if unopened => Ok(None),
@@ -1100,8 +1114,8 @@ impl Engine {
         self.link.lock_recover().as_ref().map(|link| link.replays())
     }
 
-    /// Whether this device is `workspace`'s own host: everything the workspace retains is here,
-    /// and no other device replays any of it.
+    /// Whether `workspace` is held on this device, by its own workspace service: everything the
+    /// workspace retains is here, and no other device replays any of it.
     #[must_use]
     pub fn hosts_itself(&self, workspace: &str) -> bool {
         WorkspaceId::parse(workspace).is_some_and(|workspace| {
@@ -1630,12 +1644,18 @@ impl Engine {
         self.owner.host_addr(workspace)
     }
 
-    /// The device hosting `workspace`: the one whose host orders its commits,
+    /// The device hosting `workspace`: the one whose workspace service orders its commits,
     /// which is where the person's other devices enter it.
     pub fn host_of(&self, workspace: WorkspaceId) -> Option<[u8; 32]> {
         self.owner
             .with_current(workspace, |view| {
-                Ok(view.workspace_host().device_public_key)
+                let host = view.workspace_host();
+                // A device's workspace service writes under a key of its own, which the device
+                // certified: the device is the one it serves.
+                Ok(match &host.issuer {
+                    Some(device) if host.capabilities.workspace_service => device.device_public_key,
+                    _ => host.device_public_key,
+                })
             })
             .ok()
     }

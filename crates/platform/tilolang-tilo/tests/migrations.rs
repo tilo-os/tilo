@@ -70,20 +70,17 @@ fn shown(replica: &Replica) -> Vec<String> {
 #[test]
 fn a_migration_that_calls_an_action_fills_a_fresh_root_and_a_second_open_changes_nothing() {
     let (mut replica, packages) = Replica::new("ada", AutoCommit::new(), &[(GALLERY, "")]);
-    // The root the package's window opens, as the first start makes it.
-    assert!(shown(&replica).is_empty(), "a fresh root shows nothing yet");
-    replica.commit();
-
-    assert_eq!(migrate(&replica), 1, "the first start fills the root");
-    replica.commit();
+    // A root made for the window that first asks for it has the package's migrations behind it:
+    // what the seed action fills is there before the window is drawn.
     assert_eq!(
         shown(&replica),
         vec!["Everyday parts".to_owned(), "Collections".to_owned()],
         "the root the action filled"
     );
+    replica.commit();
 
-    assert_eq!(migrate(&replica), 0, "it happened once");
-    assert_eq!(replica.commit(), 0, "and made no change");
+    assert_eq!(migrate(&replica), 0, "the root's making ran it");
+    assert_eq!(replica.commit(), 0, "and a second open made no change");
     let ids = packages[0].ids.clone();
     let peer = Replica::new("peer", replica.doc.fork(), &[(GALLERY, ids.as_str())]).0;
     assert_eq!(

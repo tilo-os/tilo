@@ -633,7 +633,10 @@ fn background_check(case: &str, presentation: super::owner_background_work::Pres
         super::owner_background_work::run(presentation, || frame.service_pending_owner_models())
             .unwrap();
     let after = (seen.updates.get(), seen.syncs.get(), seen.saves.get());
-    let retained = queue.has_pending();
+    // The write the service made is offered to the store after the model
+    // pass, so a save it settles wakes the owner once more to show the
+    // status alone: no model pass waits, and nothing is laid out.
+    let model_work_left = queue.has_pending_model_work();
     // The original writer offer and replication snapshot are requested only
     // after the actual model/record loans returned, before any frame/paint.
     host.records.try_flush().unwrap();
@@ -687,7 +690,13 @@ fn background_check(case: &str, presentation: super::owner_background_work::Pres
     assert!(!outcome.paint_available, "{case}");
     assert_eq!(after, (before.0 + 1, before.1 + 1, before.2 + 1), "{case}");
     assert_eq!(frame.relayout_frames(), layouts, "{case}");
-    assert!(!retained, "{case}");
+    assert!(
+        !model_work_left,
+        "{case}: a model pass waits after the service (updates {}, syncs {}, saves {})",
+        after.0.saturating_sub(before.0),
+        after.1.saturating_sub(before.1),
+        after.2.saturating_sub(before.2),
+    );
 }
 /// An owner whose window cannot paint (hidden, suspended, no GPU, or all three) still has its
 /// model and save serviced.

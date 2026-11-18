@@ -38,7 +38,7 @@ tilo_test_env::scenario! {
         for line in [
             "    categories: Collection<Category>",
             "    channels: Collection<Conversation>",
-            "    people: Collection<Person>",
+            "    feedback: Collection<FeedbackReport>",
         ] {
             assert!(workspace.contains(line), "`{line}` in:\n{workspace}");
         }

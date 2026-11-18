@@ -144,7 +144,21 @@ impl Demo {
                 id,
                 definition.resource_type.clone(),
             );
-            store.create_resource(&checkout).unwrap();
+            // The record as its app starts one: its genesis, storage version
+            // included, so an app that moved what it keeps still reads it.
+            let genesis = tilo_app::framework::hosted_kinds()
+                .get(checkout.kind.as_str())
+                .copied();
+            store
+                .reserve_resource(&checkout)
+                .and_then(|mut reservation| {
+                    reservation.initialize(|doc| {
+                        genesis.map_or(Ok(()), |kind| {
+                            kind.initialize(doc).map_err(|error| error.to_string())
+                        })
+                    })
+                })
+                .unwrap();
             records.push((app_key, checkout, store));
             tabs.push(Tab {
                 id,
@@ -223,17 +237,20 @@ impl Demo {
             .and_then(|node| node.name)
     }
 
-    /// The note's record as its committed heads stand: what typing into the
-    /// note changes.
+    /// The note's records as their committed heads stand: the notebook and
+    /// the parts its notes are kept in. What typing into the note changes.
     pub fn note_heads(&self) -> Vec<ui::automerge::ChangeHash> {
-        let (_, checkout, store) = self
+        let (_, _, store) = self
             .records
             .iter()
             .find(|(owner, _, _)| *owner == TYPED_INTO)
             .expect("the note is open");
         store
-            .with(&checkout.id, ui::automerge::AutoCommit::get_heads)
-            .expect("the note's record is open")
+            .held_resources()
+            .into_iter()
+            .flat_map(|id| store.with(&id, ui::automerge::AutoCommit::get_heads))
+            .flatten()
+            .collect()
     }
 
     /// How many app windows the shell has open.

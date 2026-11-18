@@ -2210,7 +2210,11 @@ impl RootSearch for ResourceRoot {
             }
         });
         let opens = self.dispatch.resource_id();
-        let is_item = self.resource.opens_as_item;
+        // An item of the app's resource and one of a part kept beside it publish an `open` of
+        // their own, alike, so each keeps it rather than addressing the resource's.
+        let kinds = super::hosted_kinds();
+        let app = self.dispatch.app_id();
+        let is_item = |id: &str| (self.resource.opens_as_item)(id) || kinds.opens_as_item(app, id);
         ui_core::search::index_publication::merged_by_key(
             entries
                 .iter()
@@ -2346,9 +2350,24 @@ impl RootPublishes for ResourceRoot {
         if let Some(item) = self.storage.chain_item(id) {
             return Some(item);
         }
+        // The chain itself is its head part's resource and the chain's own
+        // verbs, as the tree carries it: never the whole publication, which
+        // holds every item the chain keeps.
+        if let Some(mut head) = self.storage.chain_head(id) {
+            if self.stages.opens() {
+                offer_item_open(self.resource.opens_as_item, &mut head);
+            }
+            return Some(head);
+        }
         // A change from another window or member may not have reached
         // this view yet: an item it removed is gone, one it made is there.
-        if let Some(published) = find(&[self.current_publication(doc)], id) {
+        if let Some(mut published) = find(&[self.current_publication(doc)], id) {
+            // The publication's items are listed with the read each answers;
+            // this one is built alone, so it carries the same
+            // ([`Self::resources_for`]).
+            if let Some(table) = self.resource.resource_table {
+                offer_item_reads(&mut published, table, self.resource.kind);
+            }
             return Some(published);
         }
         let current = if self.follow_document(doc) {
@@ -2358,10 +2377,16 @@ impl RootPublishes for ResourceRoot {
         };
         let state = current.unwrap_or_else(|| self.typed.state());
         let mut child = self.typed.child(&*state, doc, id);
-        if self.resource.readable
-            && let Some(child) = &mut child
-        {
-            offer_document_reads(child, &|id| self.typed.document_child(&*state, id));
+        if let Some(child) = &mut child {
+            if self.resource.readable {
+                offer_document_reads(child, &|id| self.typed.document_child(&*state, id));
+            }
+            // The published tree offers each item of the app's collections a
+            // read of its own ([`Self::resources_for`]); one built alone carries
+            // the same, so an item's address answers the read it lists.
+            if let Some(table) = self.resource.resource_table {
+                offer_item_reads(child, table, self.resource.kind);
+            }
         }
         let mut row = None;
         self.surfaces(&mut |surface| {

@@ -466,7 +466,12 @@ fn spec(field: &FieldInfo) -> FieldSpec {
 
 // ----- writing ---------------------------------------------------------------------------
 
-fn init_fields(doc: &mut AutoCommit, obj: &ObjId, fields: &[FieldSpec]) -> Result<(), StoreError> {
+fn init_fields(
+    doc: &mut AutoCommit,
+    obj: &ObjId,
+    fields: &[FieldSpec],
+    text_defaults: &[(String, String)],
+) -> Result<(), StoreError> {
     for f in fields {
         let key = f.id.as_str();
         match f.kind {
@@ -476,7 +481,15 @@ fn init_fields(doc: &mut AutoCommit, obj: &ObjId, fields: &[FieldSpec]) -> Resul
                 .put(obj, key, ScalarValue::counter(0))
                 .map_err(backend)?,
             FieldKind::Text => {
-                doc.put_object(obj, key, ObjType::Text).map_err(backend)?;
+                let text = text_defaults
+                    .iter()
+                    .find(|(id, _)| id == key)
+                    .map(|(_, text)| text.as_str())
+                    .unwrap_or_default();
+                let object = doc.put_object(obj, key, ObjType::Text).map_err(backend)?;
+                if !text.is_empty() {
+                    doc.splice_text(&object, 0, 0, text).map_err(backend)?;
+                }
             }
             FieldKind::RichText => {
                 crate::rich::ensure_field(doc, obj, key).map_err(backend)?;
@@ -631,7 +644,7 @@ impl Inner {
             .put_object(&items, id.as_str(), ObjType::Map)
             .map_err(backend)?;
         doc.put(&rec, TYPE_KEY, item.ty.as_str()).map_err(backend)?;
-        init_fields(doc, &rec, &item.fields)?;
+        init_fields(doc, &rec, &item.fields, &item.text_defaults)?;
         doc.put(&rec, AT_KEY, placement.encode()).map_err(backend)?;
         self.forget(&at.doc);
         Ok(Applied::Item(id))
@@ -775,17 +788,17 @@ fn commit_with_note(doc: &mut AutoCommit, note: &ChangeNote) -> Result<(), Store
 
 /// The document of `record`, as it starts: its type, the app that keeps it, its items, and
 /// each field of it as its kind has it.
-fn new_doc(record: &NewResource) -> Result<AutoCommit, StoreError> {
+fn new_doc(made: &NewResource) -> Result<AutoCommit, StoreError> {
     let mut doc = AutoCommit::new_with_encoding(TextEncoding::UnicodeCodePoint);
-    doc.put(&ROOT, TYPE_KEY, record.ty.as_str())
+    doc.put(&ROOT, TYPE_KEY, made.ty.as_str())
         .map_err(backend)?;
-    doc.put(&ROOT, APP_KEY, record.app.as_str())
+    doc.put(&ROOT, APP_KEY, made.app.as_str())
         .map_err(backend)?;
     doc.put_object(&ROOT, OUTBOX_KEY, ObjType::Map)
         .map_err(backend)?;
     doc.put_object(&ROOT, ITEMS_KEY, ObjType::Map)
         .map_err(backend)?;
-    init_fields(&mut doc, &ROOT, &record.fields)?;
+    init_fields(&mut doc, &ROOT, &made.fields, &made.text_defaults)?;
     Ok(doc)
 }
 

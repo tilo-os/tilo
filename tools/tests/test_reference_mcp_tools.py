@@ -55,6 +55,8 @@ TOOLS = [
     tool("tilo_put_begin", "Upload bytes: begin.", {"size": {"type": "integer", "description": "How many."}}, ("size",), WRITE),
     tool("tilo_put_append", "Append the next chunk.", {"offset": {"type": "integer", "description": "Bytes sent so far."}}, ("offset",), WRITE),
     tool("tilo_put_finish", "Finish an upload.", {}, (), WRITE),
+    tool("tilo_put_many", "Store several small files whole.", {"files": {"type": "array", "description": "The files, each base64."}}, ("files",), WRITE),
+    tool("tilo_put_have", "Which hashes the workspace holds.", {"hashes": {"type": "array", "description": "The hashes."}}, ("hashes",), READ),
     tool("tilo_get", "Download a file.", {"content": {"type": "string", "description": "The reference."}}, ("content",), READ),
     tool("tilo_devices", "List your other devices.", {}, (), {"readOnlyHint": True, "openWorldHint": True}),
 ]

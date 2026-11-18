@@ -406,7 +406,7 @@ impl Worker {
             return kept;
         }
         kept.from = Some(person.clone());
-        let documents = self.documents(state, &route.cluster_id);
+        let documents = self.documents(None, state, &route.cluster_id);
         for document in documents.iter().filter(|held| held.app_id == route.app_id) {
             for (key, conversation) in self.directly_kept_in(document, state).iter() {
                 if !said_to(person, conversation) {
