@@ -1453,7 +1453,7 @@ fn a_write_through_the_mount_names_its_file_actions_and_the_agent_that_wrote() {
     )
     .named(Some("Tidy the notes".into()));
     let (ino, chunk) = {
-        let _acting = acting_as(Some(agent));
+        let _acting = acting_as(Some(tilo_actions::ActionContext::default().with_invoker(agent)));
         let ino = ns
             .create_file(ROOT_INO, "plan.md", Some(&h(1)), 4, 1)
             .unwrap();

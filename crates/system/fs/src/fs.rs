@@ -2382,7 +2382,11 @@ impl QuickFS {
             return WriterNote(false, None);
         };
         let writer = writers.resolve(pid);
-        let acting = crate::namespace::acting_as(writer.invoker());
+        let acting = crate::namespace::acting_as(
+            writer
+                .invoker()
+                .map(|invoker| tilo_actions::ActionContext::default().with_invoker(invoker)),
+        );
         let attribution = writer.attribution();
         if let Some(ino) = ino {
             let mut last = self.last_writers.lock_recover();

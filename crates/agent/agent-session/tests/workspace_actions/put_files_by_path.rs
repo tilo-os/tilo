@@ -415,11 +415,7 @@ async fn with_no_page_open_the_server_keeps_a_folder_for_a_task_by_paths() {
     .unwrap();
     assert_eq!(made["entries"][0]["to"], TASK, "{made}");
     assert_eq!(made["made"], json!(["Tasks"]), "{made}");
-    assert_eq!(
-        made["undo"],
-        json!({"action": "trash", "args": {"folder": "", "entries": ["Tasks"]}}),
-        "one call takes it back: {made}"
-    );
+    assert!(made["invocation"].is_string(), "the call it was: {made}");
     let again = asked(
         &provider,
         &person,
@@ -452,12 +448,7 @@ async fn with_no_page_open_the_server_keeps_a_folder_for_a_task_by_paths() {
     )
     .await
     .unwrap();
-    assert_eq!(
-        moved["undo"],
-        json!({"action": "move", "args":
-            {"from": TASK, "entries": ["drafts", "sources"], "to": "Inbox", "create": false}}),
-        "{moved}"
-    );
+    assert!(moved["invocation"].is_string(), "{moved}");
     let renamed = asked(
         &provider,
         &person,
@@ -482,7 +473,7 @@ async fn with_no_page_open_the_server_keeps_a_folder_for_a_task_by_paths() {
     .await
     .unwrap();
 
-    // The trash takes a folder, and the call it answered brings it back.
+    // The trash takes a folder, and History's undo of that call brings it back.
     let gone = asked(
         &provider,
         &person,
@@ -492,7 +483,6 @@ async fn with_no_page_open_the_server_keeps_a_folder_for_a_task_by_paths() {
     )
     .await
     .unwrap();
-    assert_eq!(gone["undo"]["action"], "restore", "{gone}");
     let tree = kept_when(&workspaces, &workspace, |tree| {
         !folder_at(tree, TASK, "sources")
     })
@@ -502,16 +492,12 @@ async fn with_no_page_open_the_server_keeps_a_folder_for_a_task_by_paths() {
         &provider,
         &person,
         &workspace,
-        "restore",
-        gone["undo"]["args"].clone(),
+        "undo",
+        json!({"invocation": gone["invocation"]}),
     )
     .await
     .unwrap();
-    assert_eq!(
-        back["entries"][0]["to"],
-        format!("{TASK}/sources"),
-        "{back}"
-    );
+    assert_eq!(back["taken"], 1, "{back}");
 
     // What the server keeps is the tree every member's folder shows.
     let tree = kept_when(&workspaces, &workspace, |tree| {
@@ -1154,11 +1140,7 @@ async fn with_no_page_open_a_file_is_written_from_text_and_from_content_and_take
     assert_eq!(written["size"], NOTES.len(), "{written}");
     assert_eq!(written["replaced"], false, "{written}");
     assert_eq!(written["made"], json!(["Tasks", TASK]), "{written}");
-    assert_eq!(
-        written["undo"],
-        json!({"action": "trash", "args": {"folder": "", "entries": ["Tasks"]}}),
-        "one call takes it back: {written}"
-    );
+    assert!(written["invocation"].is_string(), "the call it was: {written}");
     assert_eq!(text_of(&report).await, NOTES);
     let tree = kept_when(&workspaces, &workspace, |tree| {
         content_at(tree, TASK, "report.md").is_some()
@@ -1177,7 +1159,7 @@ async fn with_no_page_open_a_file_is_written_from_text_and_from_content_and_take
         .unwrap_err();
     assert!(said.contains("is there already"), "{said}");
     assert_eq!(text_of(&report).await, NOTES);
-    // Asked to, it writes over it, and the call it answers writes back what the file held.
+    // Asked to, it writes over it, and History's undo of that call puts back what it held.
     let over = write(json!({"folder": TASK, "name": "report.md", "text": moved, "replace": true}))
         .await
         .unwrap();
@@ -1188,10 +1170,16 @@ async fn with_no_page_open_a_file_is_written_from_text_and_from_content_and_take
         "the same file"
     );
     assert_eq!(text_of(&report).await, moved);
-    assert_eq!(over["undo"]["action"], "write-file", "{over}");
-    let back = write(over["undo"]["args"].clone()).await.unwrap();
-    assert_eq!(back["replaced"], true, "{back}");
-    assert_eq!(back["size"], NOTES.len(), "{back}");
+    let back = asked(
+        &provider,
+        &person,
+        &workspace,
+        "undo",
+        json!({"invocation": over["invocation"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(back["taken"], 1, "{back}");
     assert_eq!(text_of(&report).await, NOTES);
 
     // What another app answers as content, here a PDF put into the workspace's store, is
@@ -1218,14 +1206,13 @@ async fn with_no_page_open_a_file_is_written_from_text_and_from_content_and_take
         Some(manifest_of(&pdf)),
         "{exported}"
     );
-    // The call it answered takes the file back, with the folder made for it.
-    assert_eq!(exported["undo"]["action"], "trash", "{exported}");
+    // History's undo of the call takes the file back, with the folder made for it.
     asked(
         &provider,
         &person,
         &workspace,
-        "trash",
-        exported["undo"]["args"].clone(),
+        "undo",
+        json!({"invocation": exported["invocation"]}),
     )
     .await
     .unwrap();

@@ -421,23 +421,24 @@ pub struct NamespaceChangeToken {
 }
 
 thread_local! {
-    /// Who the file actions this thread writes are done by ([`acting_as`]).
-    static ACTING: std::cell::RefCell<Option<tilo_actions::ActionInvoker>> =
+    /// What the file actions this thread writes are part of ([`acting_as`]).
+    static ACTING: std::cell::RefCell<Option<tilo_actions::ActionContext>> =
         const { std::cell::RefCell::new(None) };
 }
 
-/// Write this thread's file actions as `invoker` until the guard is dropped: an agent writing
-/// through the mount, an agent's call carried out where the tree is kept. `None` is the
-/// person at this device. Each change of the tree then names who made it, which History
-/// shows, grants decide and Undo takes back as theirs. A thread, not the namespace, carries
-/// it: requests of several writers share one namespace at once.
+/// Write this thread's file actions as part of `ambient` until the guard is dropped: who does
+/// them (an agent writing through the mount, an agent's call carried out where the tree is
+/// kept), and the invocation and run they belong to. `None` is the person at this device.
+/// Each change of the tree then names who made it and in which call, which History shows,
+/// grants decide and Undo takes back as theirs. A thread, not the namespace, carries it:
+/// requests of several writers share one namespace at once.
 #[must_use]
-pub fn acting_as(invoker: Option<tilo_actions::ActionInvoker>) -> ActingAs {
-    ActingAs(ACTING.with(|acting| acting.replace(invoker)))
+pub fn acting_as(ambient: Option<tilo_actions::ActionContext>) -> ActingAs {
+    ActingAs(ACTING.with(|acting| acting.replace(ambient)))
 }
 
-/// Puts back whoever the thread acted for before [`acting_as`].
-pub struct ActingAs(Option<tilo_actions::ActionInvoker>);
+/// Puts back what the thread acted as before [`acting_as`].
+pub struct ActingAs(Option<tilo_actions::ActionContext>);
 
 impl Drop for ActingAs {
     fn drop(&mut self) {
@@ -603,8 +604,8 @@ impl Namespace {
 
     /// Write `action` into the tree as whoever this thread acts for ([`acting_as`]).
     fn write_action(&mut self, action: &fs_protocol::FileAction) -> bool {
-        let invoker = ACTING.with(|acting| acting.borrow().clone());
-        let written = self.doc.write_action(action, invoker.as_ref());
+        let ambient = ACTING.with(|acting| acting.borrow().clone());
+        let written = self.doc.write_action(action, ambient.as_ref());
         if let Err(error) = &written {
             tracing::warn!(?error, ?action, "a file action did not apply to the tree");
         }

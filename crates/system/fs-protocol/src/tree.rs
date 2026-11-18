@@ -119,14 +119,20 @@ pub const FILES_APP: &str = <FilesTree as SharedResource>::OWNER;
 /// of its people is off, or the device that keeps the workspace. The same verbs naming a
 /// `device` and absolute paths change that device's own disk, and only that device carries
 /// them out.
-pub const TREE_VERBS: [&str; 6] = [
+pub const TREE_VERBS: [&str; 7] = [
     "new-folder",
     "rename",
     "move",
     "copy-into",
     "trash",
     "restore",
+    UNDO,
 ];
+
+/// The verb of Files that takes back a call's changes of a workspace's own folder, by the
+/// invocation the call answered: History's undo of that step, in every document of the tree
+/// it wrote.
+pub const UNDO: &str = "undo";
 
 /// Whether `action` is one of [`TREE_VERBS`].
 #[must_use]

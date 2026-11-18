@@ -33,7 +33,7 @@ use automerge::transaction::{CommitOptions, Transactable as _};
 use automerge::{AutoCommit, ChangeHash};
 use collab_types::FrameworkChange;
 use fs_protocol::FileAction;
-use tilo_actions::{ActionContext, ActionInvoker, Described, Did, GroupOf};
+use tilo_actions::{ActionContext, Described, Did, GroupOf};
 use tokio::sync::watch;
 
 /// What the pending edits of one document of the tree did, and for whom: the change they become
@@ -48,8 +48,8 @@ struct Naming {
     count: u32,
     /// Every distinct verb among them.
     distinct: Vec<Did>,
-    /// Who they were done by: `None` for the person at this device.
-    invoker: Option<ActionInvoker>,
+    /// Who they were done by and in which call: `None` for the person at this device.
+    ambient: Option<ActionContext>,
 }
 
 impl Naming {
@@ -64,11 +64,11 @@ impl Naming {
                 distinct: self.distinct.clone(),
             }))
         };
-        Some(fs_protocol::file_action::change_context(
-            &self.document,
-            described,
-            self.invoker.clone(),
-        ))
+        let context = fs_protocol::file_action::change_context(&self.document, described, None);
+        Some(match &self.ambient {
+            Some(ambient) => context.enriched_by(ambient),
+            None => context,
+        })
     }
 }
 
@@ -102,20 +102,20 @@ impl ChangeTrackedDoc {
         }
     }
 
-    /// Write `action` into this document, the document `document` of the tree, done by `invoker`
-    /// (`None`: the person at this device). Edits of one writer gather into one change, as
+    /// Write `action` into this document, the document `document` of the tree, done in `ambient`
+    /// (who did it and in which call; `None`: the person at this device). Edits of one writer gather into one change, as
     /// a folder copied in is one change per document; a different writer's edit closes the
     /// change first, so each change names only who made it.
     pub(super) fn write_action(
         &mut self,
         document: &str,
         action: &FileAction,
-        invoker: Option<&ActionInvoker>,
+        ambient: Option<&ActionContext>,
     ) -> Result<(), tilo_actions::ActionError> {
         if self
             .naming
             .as_ref()
-            .is_some_and(|naming| naming.invoker.as_ref() != invoker)
+            .is_some_and(|naming| naming.ambient.as_ref() != ambient)
             || (self.naming.is_none() && self.doc.pending_ops() > 0)
         {
             self.commit_named();
@@ -123,7 +123,7 @@ impl ChangeTrackedDoc {
         action.write(self)?;
         let naming = self.naming.get_or_insert_with(|| Naming {
             document: document.to_owned(),
-            invoker: invoker.cloned(),
+            ambient: ambient.cloned(),
             ..Naming::default()
         });
         let verb = action.described().what;

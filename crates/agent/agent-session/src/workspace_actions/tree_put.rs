@@ -66,14 +66,26 @@ pub(super) struct Putting {
     pub(super) name: String,
 }
 
-/// Write the tree's file actions as `caller`, as the host admitted them, until dropped: each
-/// change the call makes then names who made it, which History shows and Undo takes back as
-/// theirs ([`tilo_fs::namespace::acting_as`]).
-pub(super) fn acting_for(caller: &Caller) -> tilo_fs::namespace::ActingAs {
-    tilo_fs::namespace::acting_as(Some(
-        tilo_actions::ActionInvoker::admitted(caller.acting())
-            .named(caller.agent_name().map(str::to_owned)),
-    ))
+/// Write the tree's file actions as `caller` in the call `request`, as the host admitted them,
+/// until dropped: each change the call makes then names who made it, in which run and under
+/// which invocation, which History shows and Undo takes back as one step of theirs, in every
+/// document of the tree it touched ([`tilo_fs::namespace::acting_as`]).
+pub(super) fn acting_for(caller: &Caller, request: &InvokeRequest) -> tilo_fs::namespace::ActingAs {
+    tilo_fs::namespace::acting_as(Some(acting_context(caller, request)))
+}
+
+/// What the tree's changes of the call `request` by `caller` are part of: who made them, in
+/// which run, under which invocation.
+pub(super) fn acting_context(
+    caller: &Caller,
+    request: &InvokeRequest,
+) -> tilo_actions::ActionContext {
+    let invoker = tilo_actions::ActionInvoker::admitted(caller.acting())
+        .named(caller.agent_name().map(str::to_owned));
+    super::caller_context(caller, request)
+        .unwrap_or_default()
+        .with_invoker(invoker)
+        .with_source_invocation(Some(request.invocation))
 }
 
 fn refused(reason: impl Into<String>) -> Outcome {
@@ -431,7 +443,7 @@ impl Worker {
         ) {
             return Err(Outcome::Rejected(ActionCallError::NotPermitted));
         }
-        let _acting = acting_for(caller);
+        let _acting = acting_for(caller, request);
         let arguments = invoke_arguments(&request.argument);
         let many = arguments.contains_key("files");
         let store = self

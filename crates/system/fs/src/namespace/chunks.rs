@@ -229,7 +229,7 @@ impl Chunks {
     pub(super) fn write_action(
         &mut self,
         action: &fs_protocol::FileAction,
-        invoker: Option<&tilo_actions::ActionInvoker>,
+        ambient: Option<&tilo_actions::ActionContext>,
     ) -> Result<(), tilo_actions::ActionError> {
         let node = action.node();
         let chunk = match action {
@@ -250,7 +250,7 @@ impl Chunks {
         let doc = self
             .doc_mut(chunk)
             .ok_or_else(|| tilo_actions::ActionError::Refused(format!("no chunk {chunk}")))?;
-        doc.write_action(&document, action, invoker)?;
+        doc.write_action(&document, action, ambient)?;
         self.located.insert(node.to_owned(), chunk);
         Ok(())
     }

@@ -126,33 +126,14 @@ fn kept(store: &ContentStore, hash: &str) -> Result<(String, u64), String> {
 }
 
 /// What `write-file` answers: where the file is and how long, whether it took the place of
-/// another's content, the folders made on the way, and the one call that takes it back: the
-/// trash for a new file (of the outermost folder made for it, when one was), and for a file
-/// written over, the write of what it held before.
-fn answer(written: &Written, size: u64) -> Value {
+/// another's content, the folders made on the way, and the call it was, which `undo` takes
+/// back.
+fn answer(written: &Written, size: u64, invocation: tilo_actions::InvocationId) -> Value {
     let changed = &written.changed;
     let path = changed
         .entries
         .first()
         .and_then(|entry| entry.to.as_deref());
-    let undo = if written.replaced {
-        written.was.as_ref().zip(path).map(|(was, path)| {
-            let (folder, name) = path.rsplit_once('/').unwrap_or(("", path));
-            json!({"action": "write-file", "args": {
-                "folder": folder,
-                "name": name,
-                "content": format!("tilo.content:{was}"),
-                "replace": true,
-            }})
-        })
-    } else {
-        changed
-            .made
-            .first()
-            .map(String::as_str)
-            .or(path)
-            .map(|taken| json!({"action": "trash", "args": {"folder": "", "entries": [taken]}}))
-    };
     let entries: Vec<Value> = changed
         .entries
         .iter()
@@ -172,7 +153,7 @@ fn answer(written: &Written, size: u64) -> Value {
         "replaced": written.replaced,
         "entries": entries,
         "made": changed.made,
-        "undo": undo,
+        "invocation": invocation.0.to_string(),
     })
 }
 
@@ -205,7 +186,7 @@ impl Worker {
         ) {
             return Err(Outcome::Rejected(ActionCallError::NotPermitted));
         }
-        let _acting = super::acting_for(caller);
+        let _acting = super::acting_for(caller, request);
         let arguments = invoke_arguments(&request.argument);
         if arguments.contains_key("device") {
             return Err(refused(
@@ -238,7 +219,7 @@ impl Worker {
                 now,
             )
             .map_err(refused)?;
-        let value = answer(&written, size);
+        let value = answer(&written, size, request.invocation);
         let writes = match &held {
             Some(_) => written.changed.writes,
             // A tree founded now: every document of it from nothing.

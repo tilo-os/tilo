@@ -14,15 +14,17 @@ pub use ui_core::history_source::verbs::{
 
 /// A history edit of `R`'s document: `R`'s own registry is the only decoder
 /// for its recorded compensation. Wire context never installs a decoder or
-/// a caller.
-pub(crate) struct ResourceHistoryEdit<R> {
+/// a caller. A host holding `R`'s documents outside a window (the tree of a
+/// workspace's files, where it is kept) applies its history with this too.
+pub struct ResourceHistoryEdit<R> {
     edit: HistoryEdit,
     resource: std::marker::PhantomData<fn() -> R>,
 }
 
 impl<R> ResourceHistoryEdit<R> {
     /// `edit` as `R`'s history applies it.
-    pub(crate) const fn new(edit: HistoryEdit) -> Self {
+    #[must_use]
+    pub const fn new(edit: HistoryEdit) -> Self {
         Self {
             edit,
             resource: std::marker::PhantomData,

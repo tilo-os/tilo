@@ -11,14 +11,15 @@
 //! made there.
 //!
 //! One call is one change of the tree, checked whole before anything is written
-//! ([`tilo_fs::tree_put`]), and it answers the one call that takes it back (`undo`): a trash
-//! answers the restore of what it took, a move the move back.
+//! ([`tilo_fs::tree_put`]), named in History as the caller's and answered with its
+//! invocation, which `#undo` takes back as History takes back any step.
 
 use std::collections::BTreeMap;
 
 use serde_json::{Map, Value, json};
 use tilo_actions::ActionOutput;
 use tilo_actions::remote::{ActionCallError, ActorPlace, Caller, InvokeRequest};
+use fs_protocol::tree;
 use tilo_fs::namespace::Namespace;
 use tilo_fs::tree_put::Changed;
 use tilo_server_protocol::WorkspaceId;
@@ -78,128 +79,95 @@ fn split(path: &str) -> (&str, &str) {
     path.rsplit_once('/').unwrap_or(("", path))
 }
 
-/// The one call that takes a move back: the entries out of where they are now, into the folder
-/// they shared. `None` when they came from several folders, where each is moved back by itself.
-fn moved_back(changed: &Changed) -> Option<Value> {
-    let mut origin: Option<&str> = None;
-    let mut target = "";
-    let mut names = Vec::new();
-    for entry in &changed.entries {
-        let (was_in, _) = split(entry.from.as_deref()?);
-        let (now_in, name) = split(entry.to.as_deref()?);
-        if origin.is_some_and(|origin| origin != was_in) {
-            return None;
-        }
-        origin = Some(was_in);
-        target = now_in;
-        names.push(name);
-    }
-    Some(json!({"action": "move",
-        "args": {"from": target, "entries": names, "to": origin?, "create": false}}))
-}
-
-/// Where each entry `changed` touched is now, as a path in the workspace.
-fn now_at(changed: &Changed) -> Vec<&str> {
-    changed
-        .entries
-        .iter()
-        .filter_map(|entry| entry.to.as_deref())
-        .collect()
-}
-
-/// The one call that puts `paths` in the trash, each a path in the workspace.
-fn trashing(paths: &[&str]) -> Option<Value> {
-    (!paths.is_empty())
-        .then(|| json!({"action": "trash", "args": {"folder": "", "entries": paths}}))
-}
-
-/// Carry `verb` out on `tree` as `arguments` say, at the time `now`: what it changed, and the
-/// one call that takes it back, when something was changed.
+/// Carry `verb` out on `tree` as `arguments` say, at the time `now`: what it changed.
 fn carry_out(
     tree: &mut Namespace,
     verb: &str,
     arguments: &Map<String, Value>,
     now: u64,
-) -> Result<(Changed, Option<Value>), String> {
+) -> Result<Changed, String> {
     match verb {
         "new-folder" => {
             let parent = folder(arguments, "parent")?;
-            let changed = tree.make_folder(&parent, &word(arguments, "name")?, now)?;
-            // Taking it back takes the outermost folder it made, with what it made in it.
-            let made = changed.made.first().map(String::as_str).or_else(|| {
-                changed
-                    .entries
-                    .first()
-                    .and_then(|entry| entry.to.as_deref())
-            });
-            let undo = trashing(&made.into_iter().collect::<Vec<_>>());
-            Ok((changed, undo))
+            tree.make_folder(&parent, &word(arguments, "name")?, now)
         }
-        "rename" => {
-            let changed = tree.rename_entry(
-                &folder(arguments, "folder")?,
-                &word(arguments, "entry")?,
-                &word(arguments, "name")?,
-                now,
-            )?;
-            let undo = changed.entries.first().and_then(|entry| {
-                let (within, named) = split(entry.to.as_deref()?);
-                let (_, was) = split(entry.from.as_deref()?);
-                Some(json!({"action": "rename",
-                    "args": {"folder": within, "entry": named, "name": was}}))
-            });
-            Ok((changed, undo))
-        }
+        "rename" => tree.rename_entry(
+            &folder(arguments, "folder")?,
+            &word(arguments, "entry")?,
+            &word(arguments, "name")?,
+            now,
+        ),
         "move" => {
             let create = arguments
                 .get("create")
                 .and_then(Value::as_bool)
                 .unwrap_or(true);
-            let changed = tree.move_entries(
+            tree.move_entries(
                 &folder(arguments, "from")?,
                 &listed(arguments, "entries")?,
                 &destination(arguments)?,
                 create,
                 now,
-            )?;
-            let undo = moved_back(&changed);
-            Ok((changed, undo))
+            )
         }
-        "copy-into" => {
-            let changed = tree.copy_entries(
-                &folder(arguments, "from")?,
-                &listed(arguments, "entries")?,
-                &destination(arguments)?,
-                now,
-            )?;
-            let undo = trashing(&now_at(&changed));
-            Ok((changed, undo))
-        }
-        "trash" => {
-            let changed = tree.trash_entries(
-                &folder(arguments, "folder")?,
-                &listed(arguments, "entries")?,
-            )?;
-            let ids: Vec<&str> = changed
-                .entries
-                .iter()
-                .map(|entry| entry.id.as_str())
-                .collect();
-            let undo = json!({"action": "restore", "args": {"entries": ids}});
-            Ok((changed, Some(undo)))
-        }
-        "restore" => {
-            let changed = tree.restore_entries(&listed(arguments, "entries")?)?;
-            let undo = trashing(&now_at(&changed));
-            Ok((changed, undo))
-        }
+        "copy-into" => tree.copy_entries(
+            &folder(arguments, "from")?,
+            &listed(arguments, "entries")?,
+            &destination(arguments)?,
+            now,
+        ),
+        "trash" => tree.trash_entries(
+            &folder(arguments, "folder")?,
+            &listed(arguments, "entries")?,
+        ),
+        "restore" => tree.restore_entries(&listed(arguments, "entries")?),
         _ => Err(format!("Files has no `{verb}` on a workspace's own folder")),
     }
 }
 
+/// Take back the call `invocation` made to `tree`, as History takes back any step: its change
+/// in each document of the tree it wrote, through the history verb `undo` every resource
+/// answers ([`HistoryEdit`]), done as `context` says. What somebody changed since stays theirs.
+/// How many of its changes were taken back.
+fn undo_call(
+    tree: &mut Namespace,
+    invocation: tilo_actions::InvocationId,
+    context: &tilo_actions::ActionContext,
+) -> Result<usize, String> {
+    use ui::framework::history::{EDIT_TYPE, HistoryEdit, ResourceHistoryEdit};
+    let changes = tree.changes_of_invocation(invocation);
+    if changes.is_empty() {
+        return Err("the workspace's folder holds no change of that call".to_owned());
+    }
+    let mut taken = 0;
+    let mut why = None;
+    for (chunk, hash) in changes.into_iter().rev() {
+        let edit = HistoryEdit::Undo {
+            steps: None,
+            invocation: None,
+            by: None,
+            to: None,
+            step: Some(hash.to_string()),
+        };
+        let encoded = tilo_actions::EncodedAction {
+            type_id: EDIT_TYPE.to_owned(),
+            payload: serde_json::to_vec(&edit).map_err(|error| error.to_string())?,
+        };
+        let action = ResourceHistoryEdit::<fs_protocol::FilesTree>::new(edit);
+        match tree.apply_history(chunk, (&action, encoded), context.clone()) {
+            Ok(()) => taken += 1,
+            Err(error) => why = Some(error.to_string()),
+        }
+    }
+    match (taken, why) {
+        (0, Some(why)) => Err(why),
+        (taken, _) => Ok(taken),
+    }
+}
+
 /// What a verb answers: each entry it touched with where it was and where it is, the folders it
-/// made on the way, and the one call that takes it back.
-fn answer(verb: &str, changed: &Changed, undo: Option<&Value>) -> Value {
+/// made on the way, and the call it was, which `undo` takes back.
+fn answer(verb: &str, changed: &Changed, invocation: tilo_actions::InvocationId) -> Value {
     let entries: Vec<Value> = changed
         .entries
         .iter()
@@ -216,7 +184,7 @@ fn answer(verb: &str, changed: &Changed, undo: Option<&Value>) -> Value {
         "action": verb,
         "entries": entries,
         "made": changed.made,
-        "undo": undo,
+        "invocation": invocation.0.to_string(),
     })
 }
 
@@ -229,6 +197,7 @@ fn file_actions_of(verb: &str) -> &'static [&'static str] {
         "copy-into" => &[verbs::NEW_FOLDER, verbs::NEW_FILE],
         "trash" => &[verbs::TRASH],
         "restore" => &[verbs::RESTORE],
+        // Taking a call back may undo any of what the tree takes.
         // A verb nobody knows is decided as everything the tree takes.
         _ => &verbs::ALL,
     }
@@ -258,7 +227,7 @@ impl Worker {
         if !self.may_on_tree(workspace_id, caller, file_actions_of(verb)) {
             return Err(Outcome::Rejected(ActionCallError::NotPermitted));
         }
-        let _acting = super::acting_for(caller);
+        let _acting = super::acting_for(caller, request);
         let arguments = invoke_arguments(&request.argument);
         if arguments.contains_key("device") {
             return Err(refused(
@@ -269,13 +238,33 @@ impl Worker {
         // The tree of a governed workspace is sealed: its keys are what reading it and
         // writing to it need.
         let (mut tree, held) = self.tree_in_workspace(workspace_id, named)?;
-        let now = tilo_clock::unix_now_ns() / 1_000_000;
-        let (changed, undo) = carry_out(&mut tree, verb, &arguments, now).map_err(refused)?;
-        let value = answer(verb, &changed, undo.as_ref());
-        let writes = match &held {
-            Some(_) => changed.writes,
-            // A tree founded now: every document of it from nothing.
-            None => tree.document_writes(&BTreeMap::new()),
+        let (value, writes) = if verb == tree::UNDO {
+            let invocation = word(&arguments, "invocation")
+                .and_then(|id| {
+                    uuid::Uuid::parse_str(&id)
+                        .map(tilo_actions::InvocationId)
+                        .map_err(|_| format!("`{id}` names no call"))
+                })
+                .map_err(refused)?;
+            let before = tree.before_change();
+            let context = super::acting_context(caller, request);
+            let taken = undo_call(&mut tree, invocation, &context).map_err(refused)?;
+            let value = json!({
+                "action": verb,
+                "taken": taken,
+                "invocation": request.invocation.0.to_string(),
+            });
+            (value, tree.document_writes(&before))
+        } else {
+            let now = tilo_clock::unix_now_ns() / 1_000_000;
+            let changed = carry_out(&mut tree, verb, &arguments, now).map_err(refused)?;
+            let value = answer(verb, &changed, request.invocation);
+            let writes = match &held {
+                Some(_) => changed.writes,
+                // A tree founded now: every document of it from nothing.
+                None => tree.document_writes(&BTreeMap::new()),
+            };
+            (value, writes)
         };
         self.commit_tree_writes(workspace_id, named, held.as_ref(), writes)
             .map_err(|reason| commit_failed(reason, true))?;
