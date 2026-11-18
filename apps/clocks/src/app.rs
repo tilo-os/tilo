@@ -251,7 +251,7 @@ fn timezone_results(query: &str) -> Vec<String> {
         .map(str::to_owned)
         .collect();
     }
-    jiff_tzdb::available()
+    tilo_recurrence::zone::available()
         .map(str::to_owned)
         .filter(|zone| {
             !zone.starts_with("Etc/")

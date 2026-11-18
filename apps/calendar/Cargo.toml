@@ -46,10 +46,6 @@ jiff.workspace = true
 # RRULE/EXDATE expansion and the one fold/gap wall-time policy, shared with
 # every other iCalendar consumer.
 tilo-recurrence = { path = "../../crates/sdk/tilo-recurrence" }
-# RFC 5545 TZID values are IANA names.  Keep the transition database in the
-# app so imported wall times resolve identically on every peer, including DST
-# gaps/folds, rather than depending on the host's current `/usr/share/zoneinfo`.
-jiff-tzdb.workspace = true
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -75,10 +71,15 @@ thin = ["dep:runtime-dylib"]
 # libtilo_accounts_engine.so and libtilo_contact_directory_engine.so, under
 # crates/runtime/engines/) instead of the runtime. The release collection
 # enables it (dist/apps/app-collections.toml); a `thin` build without it
-# (`tilo-app dev`) links jiff-tzdb, tilo-dav and tilo-contact-directory
-# statically, because an engine library links only through
-# tools/ci/rustc-thin-app-wrapper.sh.
-runtime-engine = ["thin", "tilo-timezone-engine/thin", "tilo-accounts-engine/thin", "tilo-contact-directory-engine/thin"]
+# (`tilo-app dev`) links their crates statically, because an engine library
+# links only through tools/ci/rustc-thin-app-wrapper.sh.
+runtime-engine = [
+    "thin",
+    "tilo-timezone-engine/thin",
+    "tilo-accounts-engine/thin",
+    "tilo-contact-directory-engine/thin",
+    "tilo-recurrence/runtime-engine",
+]
 # The CalDAV transport runs on the app runtime and is a no-op without a
 # configured account.
 default = ["live"]

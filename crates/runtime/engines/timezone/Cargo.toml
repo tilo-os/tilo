@@ -43,7 +43,7 @@ runtime-dylib = { path = "../../runtime-dylib", optional = true }
 # graph, or the apps' symbols would name a crate hash this library does not
 # export.
 jiff-tzdb = { workspace = true, optional = true }
-# The runtime's; only for the self-check to read a zone.
+# The runtime's: the type a zone is read as.
 jiff = { workspace = true, optional = true }
 # Optional like everything else: an empty build must not link the hack's whole
 # dependency set into a shared object.

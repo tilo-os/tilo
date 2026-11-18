@@ -23,12 +23,36 @@ pub enum Resolution {
     ShiftedForward { minutes: i64 },
 }
 
-/// The zone named `name` (`Europe/Vienna`, any letter case) from the database built into Tilo,
-/// so every device reads a named zone the same way whatever its host has installed.
-#[must_use]
-pub fn named(name: &str) -> Option<TimeZone> {
-    let (name, data) = jiff_tzdb::get(name)?;
-    TimeZone::tzif(name, data).ok()
+/// The database built into Tilo: read from its engine library in a release
+/// build, so no app carries a copy, and from the linked crate otherwise.
+#[cfg(feature = "runtime-engine")]
+pub use tilo_timezone_engine::{available, canonical, named};
+
+#[cfg(not(feature = "runtime-engine"))]
+pub use linked::*;
+
+#[cfg(not(feature = "runtime-engine"))]
+mod linked {
+    use jiff::tz::TimeZone;
+
+    /// The zone named `name` (`Europe/Vienna`, any letter case) from the database built into Tilo,
+    /// so every device reads a named zone the same way whatever its host has installed.
+    #[must_use]
+    pub fn named(name: &str) -> Option<TimeZone> {
+        let (name, data) = jiff_tzdb::get(name)?;
+        TimeZone::tzif(name, data).ok()
+    }
+
+    /// The database's own spelling of the zone named `name`.
+    #[must_use]
+    pub fn canonical(name: &str) -> Option<&'static str> {
+        jiff_tzdb::get(name).map(|(name, _)| name)
+    }
+
+    /// Every zone name in the database.
+    pub fn available() -> impl Iterator<Item = &'static str> {
+        jiff_tzdb::available()
+    }
 }
 
 /// Validate a persisted zone spelling. `floating` deliberately has no instant;
@@ -41,7 +65,7 @@ pub fn canonical_zone(value: &str) -> Option<String> {
     } else if value.eq_ignore_ascii_case("UTC") || value == "Etc/UTC" {
         Some("UTC".into())
     } else {
-        jiff_tzdb::get(value).map(|(name, _)| name.to_string())
+        canonical(value).map(str::to_owned)
     }
 }
 

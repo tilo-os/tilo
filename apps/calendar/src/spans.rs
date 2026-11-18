@@ -389,7 +389,7 @@ fn written_in(at: jiff::Timestamp, zone: &str) -> String {
 
 /// The database's own spelling of the zone named `name`.
 fn zone_name(name: &str) -> Option<&'static str> {
-    jiff_tzdb::get(name).map(|(name, _)| name)
+    crate::timezone::canonical(name)
 }
 
 /// The zone a reader's times are read and answered in: the one they name,

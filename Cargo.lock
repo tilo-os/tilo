@@ -1854,7 +1854,6 @@ dependencies = [
  "fnv",
  "hex",
  "jiff",
- "jiff-tzdb",
  "mail",
  "pim-lines",
  "rrule",
@@ -2405,7 +2404,6 @@ name = "clocks"
 version = "0.1.0"
 dependencies = [
  "jiff",
- "jiff-tzdb",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -21115,6 +21113,7 @@ dependencies = [
  "jiff-tzdb",
  "rrule",
  "tilo-resource",
+ "tilo-timezone-engine",
  "workspace-hack",
 ]
 
