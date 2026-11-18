@@ -378,10 +378,27 @@ public struct TiloLiveView: View {
         return Unshown(sentence: says?(trouble) ?? own.said, asksAgain: trouble == .notShown)
     }
 
+    /// Whether the place keeps a page's shape now: while the page shows, while its picture
+    /// stands for it, and while the page comes. A thing that is not shown says so at the height
+    /// of its words.
+    private var keepsShape: Bool {
+        if size == .working || stage.pictures[thing.id] != nil { return true }
+        switch stage.state(of: thing) {
+        case .live, .loading: return true
+        // Nothing is in front, so this one is brought at once.
+        case .asleep: return stage.front == nil
+        case .offline, .failed: return false
+        }
+    }
+
     public var body: some View {
+        let shows = stage.front == thing.id && stage.state(of: thing) == .live
+        let shaped = keepsShape
         ZStack {
-            Rectangle().fill(.background.secondary)
-            if stage.front == thing.id, stage.state(of: thing) == .live {
+            // A page and its picture stand on a ground of their own. Words alone stand on the
+            // ground of whoever holds the place: one tone, no ground under them and no box in it.
+            if shows || stage.pictures[thing.id] != nil { Rectangle().fill(.background.secondary) }
+            if shows {
                 HolderView(holder: Holder(made: { [stage] view in stage.stand(in: view) },
                                           gone: { [stage] view in stage.leaves(view) }))
                     .allowsHitTesting(size == .working)
@@ -389,9 +406,9 @@ public struct TiloLiveView: View {
                 resting
             }
         }
-        .aspectRatio(size == .compact && asked == nil ? 16.0 / 10.0 : nil, contentMode: .fit)
-        .frame(height: size == .compact ? asked : nil)
-        .clipShape(RoundedRectangle(cornerRadius: size == .compact ? 10 : 0, style: .continuous))
+        .modifier(PageShape(keeps: shaped, ratio: size == .compact && asked == nil ? 16.0 / 10.0 : nil))
+        .frame(height: shaped && size == .compact ? asked : nil)
+        .clipShape(RoundedRectangle(cornerRadius: shaped && size == .compact ? 10 : 0, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityLabel(thing.title)
         .task(id: "\(thing.id) \(size)") {
@@ -413,37 +430,64 @@ public struct TiloLiveView: View {
 
     @ViewBuilder private var resting: some View {
         let state = stage.state(of: thing)
-        ZStack {
-            if let picture = stage.pictures[thing.id] {
+        if let picture = stage.pictures[thing.id] {
+            // Over the picture of how the thing looked, its words stand in a box of their own.
+            ZStack {
                 #if os(macOS)
                 Image(nsImage: picture).resizable().aspectRatio(contentMode: .fill)
                 #else
                 Image(uiImage: picture).resizable().aspectRatio(contentMode: .fill)
                 #endif
+                said(state, inTheMiddle: true)
+                    .padding(12)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .padding(12)
             }
-            VStack(spacing: 8) {
-                Text(thing.title).font(.headline).lineLimit(2).multilineTextAlignment(.center)
-                switch state {
-                case .loading:
-                    ProgressView().accessibilityLabel(LiveWords.loading.said)
-                case .asleep, .live:
-                    Button(LiveWords.showLive.said) { Task { await stage.bring(thing) } }
-                case .offline:
-                    Text(LiveWords.offline.said).foregroundStyle(.secondary)
-                    Button(LiveWords.tryAgain.said) { Task { await stage.bring(thing) } }
-                case .failed:
-                    if let unshown = Self.unshown(thing, on: stage, says: says) {
-                        Text(unshown.sentence).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                        if unshown.asksAgain { Button(LiveWords.tryAgain.said) { Task { await stage.bring(thing) } } }
-                    }
-                }
-                if let openInTilo, state != .loading, state != .asleep {
-                    Button(LiveWords.openInTilo.said, action: openInTilo)
-                }
-            }
-            .padding(12)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .padding(12)
+        } else {
+            // In the middle of a page's shape while the page comes; else from the leading edge,
+            // as high as the words are.
+            let middle = keepsShape
+            said(state, inTheMiddle: middle)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .frame(maxWidth: .infinity, maxHeight: middle ? .infinity : nil, alignment: middle ? .center : .leading)
         }
+    }
+
+    /// The thing's name and what there is to say or do about it. The name takes the type of the
+    /// place it stands in, a weight heavier.
+    private func said(_ state: LiveStage.State, inTheMiddle: Bool) -> some View {
+        VStack(alignment: inTheMiddle ? .center : .leading, spacing: 8) {
+            Text(thing.title).fontWeight(.semibold).lineLimit(2).multilineTextAlignment(inTheMiddle ? .center : .leading)
+            switch state {
+            case .loading:
+                ProgressView().accessibilityLabel(LiveWords.loading.said)
+            case .asleep, .live:
+                Button(LiveWords.showLive.said) { Task { await stage.bring(thing) } }
+            case .offline:
+                Text(LiveWords.offline.said).foregroundStyle(.secondary)
+                Button(LiveWords.tryAgain.said) { Task { await stage.bring(thing) } }
+            case .failed:
+                if let unshown = Self.unshown(thing, on: stage, says: says) {
+                    Text(unshown.sentence).foregroundStyle(.secondary).multilineTextAlignment(inTheMiddle ? .center : .leading)
+                    if unshown.asksAgain { Button(LiveWords.tryAgain.said) { Task { await stage.bring(thing) } } }
+                }
+            }
+            if let openInTilo, state != .loading, state != .asleep {
+                Button(LiveWords.openInTilo.said, action: openInTilo)
+            }
+        }
+    }
+}
+
+/// A page's shape for a place that keeps one: sixteen to ten, or the page's own where the
+/// place is given a height. A place that only says words keeps none: its words take the width
+/// they are given and begin at its leading edge.
+private struct PageShape: ViewModifier {
+    let keeps: Bool
+    let ratio: CGFloat?
+
+    func body(content: Content) -> some View {
+        if keeps { content.aspectRatio(ratio, contentMode: .fit) } else { content }
     }
 }
