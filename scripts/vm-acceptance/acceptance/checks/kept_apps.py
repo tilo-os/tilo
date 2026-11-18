@@ -19,7 +19,8 @@ from ..core import CheckFailed, check, expect
 from ..vm import wait_until
 from .apps import AREA, _app_procs, _procs
 from .daily_apps import (ALACRITTY, FIRST_FRAME_S, DailyApp, _action_id, _frame, _home_file, _open,
-                         _require_installed, _token, place_of_surface)
+                         _require_installed, _token, place_of_surface,
+                         print_launch_log)
 
 FOOT = DailyApp("A18-foot", "foot", "foot", "foot", "foot", ("foot",), x11=False, fractional=True)
 # An X11 program of a machine application: it draws through the display its keeper serves,
@@ -127,6 +128,7 @@ def _open_beside(ctx, app: DailyApp):
     frame = wait_until(presented, FIRST_FRAME_S, 0.5)
     if frame is None:
         ctx.shot(f"{app.label}-no-frame")
+        print_launch_log(ctx, app)
         raise CheckFailed(f"{app.name} never drew a first frame within {FIRST_FRAME_S} s")
     _, procs, _ = _app_procs(ctx, before, app.desktop_id)
     expect(any(app.program in c.cmd for c in procs.values()),
