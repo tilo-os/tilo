@@ -275,7 +275,7 @@ pub fn resolve_shell_ui_bind(
     if no_services || !path.exists() {
         return Ok(None);
     }
-    let mut stream = match UnixStream::connect(&path) {
+    let mut stream = match tilo_files::native::socket::connect(&path) {
         Ok(stream) => stream,
         Err(error) => {
             tracing::warn!(%error, path = %path.display(), "shell-ui service refused connection");
@@ -325,7 +325,7 @@ pub fn resolve_identity_bind_for_contract(
         tracing::warn!("identity service is unavailable; the app runs without an identity");
         return Ok(None);
     }
-    let mut stream = match UnixStream::connect(&path) {
+    let mut stream = match tilo_files::native::socket::connect(&path) {
         Ok(stream) => stream,
         Err(error) => {
             tracing::warn!(%error, path = %path.display(), "identity service refused connection");
@@ -416,7 +416,7 @@ fn resolve_chooser_bind_at(
     if no_services || !path.exists() {
         return Ok(None);
     }
-    let mut stream = match UnixStream::connect(path) {
+    let mut stream = match tilo_files::native::socket::connect(path) {
         Ok(stream) => stream,
         Err(error) => {
             tracing::warn!(%error, path = %path.display(), "chooser service refused connection");
@@ -465,7 +465,7 @@ fn resolve_render_bind_at(
     if no_services || !path.exists() {
         return Ok(None);
     }
-    let mut stream = match UnixStream::connect(path) {
+    let mut stream = match tilo_files::native::socket::connect(path) {
         Ok(stream) => stream,
         Err(error) => {
             tracing::warn!(%error, path = %path.display(), "render broker refused connection");
@@ -547,7 +547,7 @@ fn resolve_blob_bind_at(
             return Ok(None);
         }
     }
-    let mut stream = match UnixStream::connect(path) {
+    let mut stream = match tilo_files::native::socket::connect(path) {
         Ok(stream) => stream,
         Err(error) => {
             tracing::warn!(%error, path = %path.display(), "document media service refused connection");
@@ -798,7 +798,7 @@ fn resolve_service_binds_inner(
         }
 
         // A socket file that exists is not the same as a service that answers.
-        let mut stream = match UnixStream::connect(&path) {
+        let mut stream = match tilo_files::native::socket::connect(&path) {
             Ok(stream) => stream,
             Err(source) => {
                 if req.is_required() {

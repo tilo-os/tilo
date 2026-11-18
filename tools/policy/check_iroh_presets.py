@@ -48,13 +48,14 @@ EXEMPT = {
     # The server's own diagnostic probes.
     "crates/server/tilo-server/src/files_probe.rs": "server diagnostic probe",
     "crates/server/tilo-server/src/admin.rs": "server admin client",
-    # `tilo app push`: one command dialing the workspace host its link names.
-    "crates/server/tilo-server-session/src/workspaces/govern.rs": "workspace governance client of one command",
     # A client of the device administrator, which chooses its own relays.
     "crates/dev/tilo-device-admin/src/net.rs": "device-admin client",
     # The initrd's sibling unlock: it asks the siblings named in a token that
     # a boot already holds, and the process ends with the unlock.
     "crates/system/tilo-auth/src/sibling/exchange.rs": "initrd unlock exchange",
+    # The initrd's sibling enrolment: it reaches a sibling by the peer network's
+    # own names where the token gives no address, and ends with the enrolment.
+    "crates/system/tilo-auth/src/sibling/enrol.rs": "initrd sibling enrolment",
     # A P2P node that dials the peers a caller names.
     "crates/platform/tilo-net-p2p/src/lib.rs": "net-p2p dialer",
     # The server daemon's own endpoint, which is what devices dial.

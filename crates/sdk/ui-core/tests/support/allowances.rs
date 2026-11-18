@@ -430,6 +430,13 @@ pub const ALLOWANCES: &[Allowance] = &[
         Rule::SocketPath,
         "the check's own directory, kept short by construction",
     ),
+    // The X11 display socket is `/tmp/.X11-unix/X<display>`, short by construction.
+    allowance(
+        "crates/session/x11-transfer/src/bridge.rs",
+        "connect",
+        Rule::SocketPath,
+        "the X server's socket lives at a fixed short path under /tmp",
+    ),
 ];
 
 /// The line ranges (half-open, 0-based) of each named item in `source`, with
