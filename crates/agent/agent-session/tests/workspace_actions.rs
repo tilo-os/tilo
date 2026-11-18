@@ -233,7 +233,7 @@ use tilo_actions::{
     ConfirmationPolicy,
     remote::{ActionCallError, Confirmation, ReceiptStatus, RemoteActionMessage},
 };
-use tilo_agent_session::{ModelChoice, Replica, ReplicaActor, Seed, record_provider};
+use tilo_agent_session::{Replica, ReplicaActor, Seed, record_provider};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_client::Host;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
@@ -691,7 +691,10 @@ async fn start_lending(
 ) -> Hosted {
     let options = Options {
         feedback_reviewer,
-        ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
+        ..Options::working_with(
+            crate::common::catalogue,
+            crate::harness::written_out::model(),
+        )
     };
     let options = match page {
         Some(origin) => options.serving(origin),

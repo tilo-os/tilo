@@ -8,9 +8,10 @@
 //! key a person approved there, and plays another person who follows the
 //! invitation links the run hands them ([`accept_invitation`]).
 
-use super::{Arc, Device, DeviceCapabilities, Hosted, ModelChoice, Options, SigningKey, enrol};
+use super::{Arc, Device, DeviceCapabilities, Hosted, Options, SigningKey, enrol};
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use tilo_agent_session::ModelChoice;
 use tilo_api::{Config, Server, store::Store};
 use tilo_server_protocol::directory::Listing;
 use tilo_server_protocol::workspaces::Role;

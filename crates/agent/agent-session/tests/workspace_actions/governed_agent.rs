@@ -28,6 +28,7 @@ use super::resource_support::{admit_person, open_admitted_peer};
 use super::{
     Browser, Device, DeviceCapabilities, DocumentRoute, SHEETS, enrol, request, sheet_names, start,
 };
+use crate::harness::written_out::{doing, task};
 use tilo_server_protocol::WorkspaceId;
 
 /// The laptop: a root holder answering every agent request with the
@@ -261,6 +262,9 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
     let mut page =
         Browser::open_workspace(&hosted, &page_device, &host, &workspace.workspace).await;
     let mut member = open_admitted_peer(&hosted, &member_device, &host, &workspace.workspace).await;
+    // The workbook the agent adds a sheet to: its workspace holds it, and the
+    // agent is admitted to the keys of its sealed document when it opens it.
+    let _ = page.create(SHEETS);
     let approver = approve_agents(&hosted.server, owner.clone(), &laptop);
 
     // One consent step: Ada's page asks, her laptop approves the agent with
@@ -313,14 +317,16 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
         "an agent is never on the roster of a workspace its grant does not name"
     );
 
-    // The agent works in the governed workspace under its own key.
+    // The agent works in the governed workspace under its own key. Its task is
+    // written out as the tool call its turn makes, adding a sheet named
+    // "InvocationLog" to the workspace's workbook.
     let spawned = supervise(
         &mut page,
         SUPERVISOR_RESOURCE,
         SPAWN_ACTION,
         json(&serde_json::json!({
             "grant": grant,
-            "task": "Add a new sheet named \"InvocationLog\"",
+            "task": task(&[doing("sheets#new-sheet", serde_json::json!({"name": "InvocationLog"}))]),
             "workspace": workspace.workspace,
         })),
     )

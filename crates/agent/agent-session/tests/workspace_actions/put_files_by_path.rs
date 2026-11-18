@@ -18,6 +18,7 @@ use tilo_actions::remote::{
     ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_actions::{InvocationId, InvocationUpdate, api::ActionAddress};
+use tilo_agent_session::ModelChoice;
 use tilo_server::workspace_agents::WorkspaceActionProvider;
 use tilo_server::workspaces::Workspaces;
 
