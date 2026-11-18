@@ -9,31 +9,16 @@
 
 use super::api::ISSUER;
 use super::api_on_server::{api_on_server, approved_key, headers, json_of};
-use super::mcp_note_create::{CATALOGUES, LISTINGS, count_jobs};
+use super::mcp_note_create::{Catalogue, count_jobs, counted};
 use super::*;
 use serde_json::{Value, json};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use tilo_api::Server;
 use ui::tilo_resource::Resource as _;
 
 /// The place in the tracker of an issue that stands past the page of issues its part publishes:
 /// the part holds it, the chain names it, and no published tree carries it.
 const PAST_PAGE: usize = 400;
-
-/// What one call asked of the workspace's server: its catalogue requests, and
-/// the pages among them that listed a level's items rather than answering a
-/// name.
-#[derive(Debug, PartialEq, Eq)]
-struct Asked {
-    catalogues: usize,
-    listings: usize,
-}
-
-/// Every count [`Asked`] keeps, as they stand now.
-fn counts() -> [usize; 2] {
-    [&CATALOGUES, &LISTINGS].map(|count| count.load(Ordering::Relaxed))
-}
 
 /// A key's calls of the API, as an agent's own `tilo_do`.
 struct Key<'a> {
@@ -71,25 +56,26 @@ impl Key<'_> {
         reply["result"].clone()
     }
 
-    /// [`Self::act`] with what it asked of the server counted around it, and
-    /// how long it took.
+    /// [`Self::act`] with what it asked of `workspace`'s server counted around
+    /// it, and how long it took.
     async fn act_and_count(
         &self,
         base: &str,
+        workspace: &str,
         resource: &str,
         action: &str,
         args: &Value,
-    ) -> (Value, Asked, Duration) {
-        let before = counts();
+    ) -> (Value, Catalogue, Duration) {
+        let before = counted(workspace);
         let began = Instant::now();
         let value = self.act(base, resource, action, args).await;
         let took = began.elapsed();
-        let [catalogues, listings] = counts();
+        let after = counted(workspace);
         (
             value,
-            Asked {
-                catalogues: catalogues.saturating_sub(before[0]),
-                listings: listings.saturating_sub(before[1]),
+            Catalogue {
+                requests: after.requests.saturating_sub(before.requests),
+                listings: after.listings.saturating_sub(before.listings),
             },
             took,
         )
@@ -177,10 +163,16 @@ async fn rename_and_delete(
     (base, id): (&str, &str),
     size: usize,
     target: &str,
-) -> (Asked, Asked) {
+) -> (Catalogue, Catalogue) {
     let path = format!("tasks/Issues/{target}");
     let (_renamed, rename, took) = key
-        .act_and_count(base, &path, "rename", &json!({"title": "Renamed by id"}))
+        .act_and_count(
+            base,
+            id,
+            &path,
+            "rename",
+            &json!({"title": "Renamed by id"}),
+        )
         .await;
     eprintln!("{size} issues: rename {rename:?} in {took:?}");
     let held = issues(workspaces, id, Duration::from_secs(10), |held| {
@@ -195,7 +187,9 @@ async fn rename_and_delete(
         Some("Renamed by id"),
         "the issue is renamed: {held:?}"
     );
-    let (_deleted, delete, took) = key.act_and_count(base, &path, "delete", &json!({})).await;
+    let (_deleted, delete, took) = key
+        .act_and_count(base, id, &path, "delete", &json!({}))
+        .await;
     eprintln!("{size} issues: delete {delete:?} in {took:?}");
     let held = issues(workspaces, id, Duration::from_secs(10), |held| {
         !held.iter().any(|(id, _)| id == target)

@@ -1709,6 +1709,7 @@ impl Worker {
     fn timed(&mut self, queued: Instant, job: Job) {
         let started = Instant::now();
         let kind = job.kind();
+        let workspace = job.workspace().map(|id| id.to_string()).unwrap_or_default();
         let (parent, named) = match &job {
             Job::Catalogue { query, .. } => (
                 query.parent_resource.clone().unwrap_or_default(),
@@ -1723,6 +1724,7 @@ impl Worker {
         let (waited, ran) = (started.duration_since(queued), started.elapsed());
         tracing::debug!(
             kind,
+            workspace,
             parent,
             named,
             waited_ms = waited.as_millis(),
@@ -1732,6 +1734,7 @@ impl Worker {
         if waited.max(ran) >= SLOW_JOB {
             tracing::warn!(
                 kind,
+                workspace,
                 parent,
                 named,
                 step = step.unwrap_or("-"),
