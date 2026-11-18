@@ -26,7 +26,7 @@ import {createLeaveGuard} from './leave-guard.mjs';
 import {bareEntry, startRouter} from './router.mjs';
 import {createTabAttention} from './tab-attention.mjs';
 import {sealedHandle, sealedLink} from './sealed-link.mjs';
-import {nameSiteHost} from './site-host.mjs';
+import {nameSiteServer} from './site-host.mjs';
 import {listedAt, listedWorkspaces, workspaceAt} from './workspaces.mjs';
 
 const PRIMARY_RECORD = '@tilo:package-primary';
@@ -325,7 +325,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   const loaded = deps.loadRuntime();
   const entry = await readEntry({mode, location: window.location, fetch: deps.fetch});
   // The host the site names with its home workspace: the page dials it as named.
-  nameSiteHost(entry.home);
+  nameSiteServer(entry.home);
   const linked = loaded.then(runtime => grammar(runtime, entry));
   // Awaited below; a failure is the first entry's to report.
   void linked.catch(() => {});

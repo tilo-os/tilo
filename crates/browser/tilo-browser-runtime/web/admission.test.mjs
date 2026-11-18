@@ -177,6 +177,26 @@ test('an invitation is opened, inspected and confirmed before it is redeemed', a
   assert.ok(!other.calls.some(([name]) => name === 'confirmInvitation'));
 });
 
+test('an invitation whose server only it names is joined at that server, its offer read from it, nothing asked over HTTP', async () => {
+  const invited = 'https://f97887d9895250ef7d60f7929cc947cc.iroh.invalid';
+  const offer = {workspaceName: '', role: 'editor', workspace: target.workspace, members: null};
+  const {calls, deps} = entries({invitedServer: async (invitation, origin) => {
+    calls.push(['invitedServer', invitation, origin]);
+    return {origin: invited, offer};
+  }});
+  const {peer} = await admit({scope: target, secrets: {invite: 'AAEC'}, runtime: rules(['invitation']).runtime, deps});
+  assert.deepEqual(peer, {joined: true});
+  assert.deepEqual(calls.map(([name]) => name), ['openInvitation', 'invitedServer', 'confirmInvitation', 'joinWorkspace']);
+  assert.equal(calls[1][1], 'opened AAEC');
+  assert.deepEqual(calls[2][1], offer, 'the card shows what the invitation itself offers');
+  assert.equal(calls[3][1].origin, invited, 'the workspace is joined at the server the invitation names');
+  // A server the link or its site names already is asked as it always was.
+  const named = entries({invitedServer: async () => null});
+  await admit({scope: target, secrets: {invite: 'AAEC'}, runtime: rules(['invitation']).runtime, deps: named.deps});
+  assert.deepEqual(named.calls.map(([name]) => name), ['openInvitation', 'inspectInvitation', 'confirmInvitation', 'joinWorkspace']);
+  assert.equal(named.calls[3][1].origin, target.host);
+});
+
 test('a link a site hands over opens at the site, and asks the host the invitation names', async () => {
   const sealed = {kind: 'sealed', site: 'https://tilo.sh', handle: 'abcdefghijklmnop'};
   const key = 'A'.repeat(43);

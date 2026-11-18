@@ -18018,6 +18018,7 @@ dependencies = [
  "tilo-content",
  "tilo-content-types",
  "tilo-cpu-raster",
+ "tilo-delivery-protocol",
  "tilo-desktop",
  "tilo-desktop-model",
  "tilo-desktop-search",

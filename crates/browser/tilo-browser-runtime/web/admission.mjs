@@ -68,8 +68,8 @@ async function openedAt({site, secret, deps}) {
 /** What `invitation` offers at `origin`, shown to the person, then joined
  * with: the invitation is the approval of whoever made it, so the host
  * admits it at once and nobody in the workspace answers for it. */
-async function viaInvitation({origin, invitation, id = null, secrets, runtime, deps, onProgress}) {
-  const offer = await deps.inspectInvitation(origin, invitation);
+async function viaInvitation({origin, invitation, offered = null, id = null, secrets, runtime, deps, onProgress}) {
+  const offer = offered ?? await deps.inspectInvitation(origin, invitation);
   if (!runtime.admittedAsAsked(id ?? undefined, offer.workspace ?? undefined)) {
     throw new AdmissionError('mismatch', 'This invitation is for another workspace than the link names');
   }
@@ -200,7 +200,13 @@ export async function admit({scope, secrets = {}, tickets, home = null, runtime,
         // key in the link; the page opens it before anything reads it. An
         // invitation's own text is its own secret.
         const opened = await openedAt({site: origin, secret: secrets.invite, deps});
-        return viaInvitation({origin: opened.host ?? origin, invitation: opened.invitation, id, secrets, runtime, deps, onProgress});
+        // An invitation the link names no server beside names its server in itself: one reached
+        // only over iroh is dialled as the invitation says, and what it offers is read from it.
+        const invited = opened.host ? null : await deps.invitedServer?.(opened.invitation, origin);
+        return viaInvitation({
+          origin: invited?.origin ?? opened.host ?? origin, invitation: opened.invitation, offered: invited?.offer ?? null,
+          id, secrets, runtime, deps, onProgress,
+        });
       }
       case 'ticket':
         onProgress({phase: 'joining'});

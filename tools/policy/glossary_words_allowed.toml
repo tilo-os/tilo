@@ -52,7 +52,11 @@ identifiers = ["RelayMode", "RelayUrl", "RelayMap", "RelayNode", "RelayUrlParseE
 reason = "iroh's NAT and packet relay, and the live session's relaying device: iroh's own infrastructure, and the one Tilo role that keeps the word relay."
 words = ["relay"]
 paths = [
+    "crates/browser/tilo-browser-runtime/src/invited_server.rs",
+    "crates/browser/tilo-browser-runtime/web/entry-page.mjs",
     "crates/browser/tilo-browser-runtime/web/peer.mjs",
+    "crates/browser/tilo-browser-runtime/web/site-host.mjs",
+    "crates/browser/tilo-browser-runtime/web/site-host.test.mjs",
     "crates/browser/tilo-web-desktop/scripts/agent-shell.mjs",
     "crates/dev/test-server/Cargo.toml",
     "crates/dev/test-server/src/lib.rs",
