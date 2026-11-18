@@ -35,6 +35,8 @@ mod removed_names_tests;
 #[cfg(test)]
 mod shared_desktop_tests;
 #[cfg(test)]
+mod withdrawal_base_tests;
+#[cfg(test)]
 tilo_automerge_isolate::test_worker!();
 /// Actions between the devices of a workspace, with no host in between.
 #[cfg(not(target_arch = "wasm32"))]
