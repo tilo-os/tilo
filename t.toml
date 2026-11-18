@@ -2551,7 +2551,7 @@ id_token = ["registry.tilo.so"]
 
 [[check]]
 name = "image-ci-sdk"
-# Pinned: every byte it fetches is named by what it read. The base is the ci-fast image by digest,
+# Pinned: every byte it fetches is named by what it read. The base is the builder image by digest,
 # uv and bun are release assets named by version and checked against the SHA-256 the Containerfile
 # holds, and the two SDK environments come from sdk/python/uv.lock and sdk/typescript/bun.lock,
 # each naming its packages with their hashes. Nothing floats: the one input that did (an `unzip`
