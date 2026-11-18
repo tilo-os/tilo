@@ -35,6 +35,7 @@ pub mod query;
 pub mod record;
 pub mod resource;
 pub mod results;
+pub(crate) mod row_types;
 pub mod sample;
 pub mod search;
 pub mod session;
