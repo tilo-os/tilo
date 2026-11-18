@@ -314,7 +314,7 @@ pub(super) enum RowStance {
 )]
 #[crate::component::not_a_component(
     part,
-    "`ui.VirtualList` (`DescribedList`) is its described form"
+    "the rows of a `VirtualList`, which reads them as its model's"
 )]
 pub struct VirtualRows {
     test_id: Option<String>,

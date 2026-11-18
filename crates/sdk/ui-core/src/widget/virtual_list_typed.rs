@@ -278,6 +278,10 @@ impl<K: Clone + Eq + Hash + 'static> KeyedMarks for TreeMarks<K> {
 
 /// A sparse, variable-height list of `M`'s rows: [`VirtualRows`], read as `M` and keyed by
 /// its keys.
+#[crate::component::not_a_component(
+    part,
+    "`ui.VirtualList` (`DescribedList`) is its described form"
+)]
 pub struct VirtualList<M: ListModel> {
     rows: VirtualRows,
     typed: PhantomData<fn() -> M>,
