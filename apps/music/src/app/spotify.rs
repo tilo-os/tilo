@@ -169,16 +169,15 @@ impl Music {
         else {
             return;
         };
-        let resource = ui::framework::LiveRow::new(
+        let row = ui::framework::LiveRow::new(
             "music.library",
             "music.library",
             crate::i18n::CATALOG.t("music-resource-library"),
         )
-        .operation(spec.clone())
-        .into_resource();
+        .operation(spec.clone());
         let arguments = effect.arguments();
         let Ok(binding) =
-            tilo_actions::ActionBinding::new(&resource, &spec, move |()| arguments.clone())
+            tilo_actions::ActionBinding::new(&row, &spec, move |()| arguments.clone())
         else {
             return;
         };
@@ -368,11 +367,13 @@ impl Music {
         } else {
             MusicEffect::SpotifyUnsave { uri: track.into() }
         };
-        let Some(resource) = self.publish_resource(&crate::actions::track_resource_id(track))
+        let Some(row) = self
+            .music_rows()
+            .row(&crate::actions::track_resource_id(track))
         else {
             return;
         };
-        let Ok(binding) = tilo_actions::ActionBinding::unit_for(&resource, effect.id()) else {
+        let Ok(binding) = tilo_actions::ActionBinding::unit_for(&row, effect.id()) else {
             return;
         };
         if self.spotify_menu_controls.len() >= 16 {
@@ -655,12 +656,10 @@ impl Music {
                         _ => "music-spotify-select-device",
                     };
                     let label = crate::i18n::t_args(key, &[("device", (&device.name).into())]);
-                    let resource =
+                    let row =
                         ui::framework::LiveRow::new(&address, "music.spotify-device", &device.name)
-                            .effect(&effect)
-                            .into_resource();
-                    let binding =
-                        tilo_actions::ActionBinding::unit_for(&resource, effect.id()).ok()?;
+                            .effect(&effect);
+                    let binding = tilo_actions::ActionBinding::unit_for(&row, effect.id()).ok()?;
                     Some(
                         ui::widget::Button::new(&id, &label)
                             .with_enabled(!device.restricted)

@@ -29,8 +29,7 @@ fn on_player(effect: &MusicEffect) -> Option<ui::tilo_actions::ActionBinding<()>
         "music.player",
         crate::i18n::CATALOG.t("music-resource-player"),
     )
-    .effect(effect)
-    .into_resource();
+    .effect(effect);
     ui::tilo_actions::ActionBinding::unit_for(&player, effect.id()).ok()
 }
 

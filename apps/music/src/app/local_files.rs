@@ -7,14 +7,13 @@ use ui::widget::toast::ToastKind;
 impl Music {
     /// The invocation of the library's Open audio file, as the bar's slot runs it.
     pub(super) fn open_file_invocation() -> Option<tilo_actions::ControlInvocation> {
-        let resource = ui::framework::LiveRow::new(
+        let row = ui::framework::LiveRow::new(
             "music.library",
             "music.library",
             crate::i18n::CATALOG.t("music-resource-library"),
         )
-        .effect(&crate::actions::MusicEffect::OpenFile)
-        .into_resource();
-        tilo_actions::ActionBinding::unit_for(&resource, "open-file")
+        .effect(&crate::actions::MusicEffect::OpenFile);
+        tilo_actions::ActionBinding::unit_for(&row, "open-file")
             .ok()?
             .invoke(())
             .ok()
@@ -1499,14 +1498,13 @@ impl Music {
         ]
         .into_iter()
         .filter_map(|(effect, key)| {
-            let resource = ui::framework::LiveRow::new(
+            let row = ui::framework::LiveRow::new(
                 "music.library",
                 "music.library",
                 crate::i18n::CATALOG.t("music-resource-library"),
             )
-            .effect(&effect)
-            .into_resource();
-            tilo_actions::ActionBinding::unit_for(&resource, effect.id())
+            .effect(&effect);
+            tilo_actions::ActionBinding::unit_for(&row, effect.id())
                 .ok()
                 .map(|binding| ui::widget::Button::new(key, key).on_action(binding))
         })
