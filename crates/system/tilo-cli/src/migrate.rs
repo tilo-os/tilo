@@ -41,6 +41,8 @@ mod workspace;
 #[cfg(test)]
 mod files_tests;
 #[cfg(test)]
+mod services_tests;
+#[cfg(test)]
 mod tests;
 
 use std::fmt::Write as _;
@@ -979,17 +981,17 @@ impl Lander<'_> {
         self.landed(std::iter::empty(), kind, count)
     }
 
-    /// Note that this run brought `key` of a source that keeps its own journal, so taking the
-    /// run back forgets it there too.
+    /// Note that this run brought `keys` of a source that keeps its own journal, so taking the
+    /// run back forgets them there too.
     ///
     /// # Errors
     /// The journal could not be kept.
-    pub fn note(&mut self, key: &str) -> Result<()> {
+    pub fn note(&mut self, keys: impl IntoIterator<Item = String>) -> Result<()> {
         self.journal
             .runs
             .entry(self.invocation.id.clone())
             .or_default()
-            .insert(key.to_owned());
+            .extend(keys);
         self.place.keep_journal(self.source, self.journal)
     }
 

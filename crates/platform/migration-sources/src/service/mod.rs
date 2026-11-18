@@ -6,7 +6,7 @@
 //! (Outline's collections, Linear's teams, Forgejo's repositories, the mail account itself), and
 //! the person chooses the groups that come over. [`run`] brings exactly the reviewed items of the chosen groups over,
 //! recording each one in the operation's [`ServiceJournal`] the moment its app has it, so an
-//! interrupted run resumes where it stopped and a second run lands nothing twice.
+//! interrupted import resumes where it stopped and a second import lands nothing twice.
 //!
 //! What comes over lands in the app that owns it, as the Thunderbird address books and
 //! calendars do: Outline documents become Notes pages and issues from Linear and Forgejo become
@@ -48,8 +48,8 @@ use zeroize::Zeroizing;
 
 pub use journal::{JournalState, ServiceJournal, valid_id};
 pub use landing::{
-    InboxLanding, IncomingAuthor, IncomingComment, IncomingGroup, IncomingIssue, IncomingPage,
-    IncomingRelation, Landing,
+    Delivered, InboxLanding, IncomingAuthor, IncomingComment, IncomingGroup, IncomingIssue,
+    IncomingPage, IncomingRelation, Landing, RefusedItem,
 };
 
 /// The account type a reviewed Outline key is kept under.
@@ -127,7 +127,7 @@ pub enum ServiceError {
     TooLarge,
     /// The mail address already has an account here that this source did not make.
     AlreadyThere,
-    /// The person stopped the run.
+    /// The person stopped the import.
     Cancelled,
     /// The journal could not be kept.
     Journal(String),
@@ -245,7 +245,7 @@ impl ServiceReview {
     }
 }
 
-/// How a run went: what its apps now have, what was already there, and what could not come.
+/// How an import went: what its apps now have, what was already there, and what could not come.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServiceReport {
     pub landed: usize,
@@ -254,6 +254,9 @@ pub struct ServiceReport {
     pub not_reviewed: usize,
     /// Reviewed items the source no longer holds.
     pub gone: Vec<String>,
+    /// Items the destination refused, each with why; the next import tries them again.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refused: Vec<RefusedItem>,
 }
 
 /// Check what the person typed against the service and keep the key or password in the vault
@@ -436,10 +439,10 @@ pub fn review(config_root: &Path, account: &str) -> Result<ServiceReview, Servic
 
 /// Bring the reviewed, chosen items of `journal` over through `landing`, saving the journal
 /// with `save` after every item its app has. Items the journal already records are not landed
-/// again, so a run after an interruption, or after it finished, lands only what is missing.
+/// again, so an import after an interruption, or after it finished, lands only what is missing.
 ///
 /// # Errors
-/// The source could not be read, the run was cancelled, or the journal could not be saved; the
+/// The source could not be read, the import was cancelled, or the journal could not be saved; the
 /// journal keeps what landed before.
 pub fn run(
     config_root: &Path,
@@ -452,11 +455,26 @@ pub fn run(
     save(journal).map_err(ServiceError::Journal)?;
     let result = land(config_root, journal, landing, save, cancel);
     journal.state = match &result {
+        // What the destination refused did not come over: the import is not complete.
+        Ok(report) if !report.refused.is_empty() => JournalState::Failed,
         Ok(_) => JournalState::Complete,
         Err(ServiceError::Cancelled) => JournalState::Interrupted,
         Err(_) => JournalState::Failed,
     };
-    journal.failure = result.as_ref().err().map(ToString::to_string);
+    journal.failure = match &result {
+        Ok(report) if !report.refused.is_empty() => Some(format!(
+            "{} of the items were refused: {}",
+            report.refused.len(),
+            report
+                .refused
+                .iter()
+                .map(|item| format!("{} ({})", item.name, item.why))
+                .collect::<Vec<_>>()
+                .join("; ")
+        )),
+        Ok(_) => None,
+        Err(error) => Some(error.to_string()),
+    };
     if let Ok(report) = &result {
         journal.report = Some(report.clone());
     }
@@ -478,62 +496,116 @@ fn land(
         .map(str::to_owned)
         .collect();
     let mut report = ServiceReport::default();
-    let mut landed_one = |key: &str,
-                          journal: &mut ServiceJournal,
-                          deliver: &mut dyn FnMut() -> std::io::Result<()>|
-     -> Result<(), ServiceError> {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(ServiceError::Cancelled);
-        }
-        if journal.landed.contains(key) {
-            report.already_there += 1;
-            return Ok(());
-        }
-        deliver().map_err(|error| ServiceError::Unavailable(error.to_string()))?;
-        journal.landed.insert(key.to_owned());
-        save(journal).map_err(ServiceError::Journal)?;
-        report.landed += 1;
-        Ok(())
-    };
     match journal.review.kind {
         ServiceKind::Outline => {
             let (_, server, key) = reach(config_root, &journal.review.account)?;
             let pages = outline::pages(&server, &key, &journal.review, &chosen, cancel)?;
-            for page in pages.pages {
-                landed_one(&page.key.clone(), journal, &mut || landing.page(&page))?;
+            let pending = waiting(pages.pages, journal, &mut report, |page| &page.key);
+            for part in pending.chunks(landing.batch().max(1)) {
+                stop_check(cancel)?;
+                let delivered = landing.pages(part).map_err(|error| unavailable(&error))?;
+                keep_delivered(delivered, journal, &mut report, save)?;
             }
             report.not_reviewed = pages.not_reviewed;
             report.gone = pages.gone;
         }
-        ServiceKind::Linear => {
-            let (_, server, key) = reach(config_root, &journal.review.account)?;
-            let issues = linear::issues(&server, &key, &chosen, cancel)?;
-            for issue in issues.issues {
-                landed_one(&issue.key.clone(), journal, &mut || landing.issue(&issue))?;
-            }
-            report.not_reviewed = issues.not_reviewed;
-            report.gone = issues.gone;
-        }
-        ServiceKind::Forgejo => {
-            let (account, server, key) = reach(config_root, &journal.review.account)?;
-            let scope = forgejo_scope(&account, server);
-            let issues = forgejo::issues(&scope, &key, &chosen, cancel)?;
-            for issue in issues.issues {
-                landed_one(&issue.key.clone(), journal, &mut || landing.issue(&issue))?;
-            }
-            report.not_reviewed = issues.not_reviewed;
-            report.gone = issues.gone;
+        ServiceKind::Linear | ServiceKind::Forgejo => {
+            let issues = if journal.review.kind == ServiceKind::Linear {
+                let (_, server, key) = reach(config_root, &journal.review.account)?;
+                let issues = linear::issues(&server, &key, &chosen, cancel)?;
+                (issues.issues, issues.not_reviewed, issues.gone)
+            } else {
+                let (account, server, key) = reach(config_root, &journal.review.account)?;
+                let scope = forgejo_scope(&account, server);
+                let issues = forgejo::issues(&scope, &key, &chosen, cancel)?;
+                (issues.issues, issues.not_reviewed, issues.gone)
+            };
+            let (issues, not_reviewed, gone) = issues;
+            hand_issues(issues, journal, landing, &mut report, save, cancel)?;
+            report.not_reviewed = not_reviewed;
+            report.gone = gone;
         }
         ServiceKind::Mail => {
             let account = journal.review.account.clone();
             if chosen.contains(&account) {
-                landed_one(&account, journal, &mut || {
-                    mail::publish(config_root, &account).map_err(std::io::Error::other)
-                })?;
+                stop_check(cancel)?;
+                if journal.landed.contains(&account) {
+                    report.already_there += 1;
+                } else {
+                    mail::publish(config_root, &account).map_err(ServiceError::Unavailable)?;
+                    journal.landed.insert(account);
+                    save(journal).map_err(ServiceError::Journal)?;
+                    report.landed += 1;
+                }
             }
         }
     }
     Ok(report)
+}
+
+/// Hand those of `issues` the journal lacks to `landing`, as many at once as it takes, keeping
+/// the journal after each hand-over; `report` counts what landed, was there or was refused.
+///
+/// # Errors
+/// The import was cancelled, the destination could not be reached, or the journal not saved; the
+/// journal keeps what landed before.
+pub fn hand_issues(
+    issues: Vec<IncomingIssue>,
+    journal: &mut ServiceJournal,
+    landing: &mut dyn Landing,
+    report: &mut ServiceReport,
+    save: &mut dyn FnMut(&ServiceJournal) -> Result<(), String>,
+    cancel: &AtomicBool,
+) -> Result<(), ServiceError> {
+    let pending = waiting(issues, journal, report, |issue| &issue.key);
+    for part in pending.chunks(landing.batch().max(1)) {
+        stop_check(cancel)?;
+        let delivered = landing.issues(part).map_err(|error| unavailable(&error))?;
+        keep_delivered(delivered, journal, report, save)?;
+    }
+    Ok(())
+}
+
+fn stop_check(cancel: &AtomicBool) -> Result<(), ServiceError> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err(ServiceError::Cancelled);
+    }
+    Ok(())
+}
+
+fn unavailable(error: &std::io::Error) -> ServiceError {
+    ServiceError::Unavailable(error.to_string())
+}
+
+/// Those of `items` the journal does not keep as landed, counting the others as there already.
+fn waiting<T>(
+    items: Vec<T>,
+    journal: &ServiceJournal,
+    report: &mut ServiceReport,
+    key: impl Fn(&T) -> &String,
+) -> Vec<T> {
+    let mut pending = Vec::with_capacity(items.len());
+    for item in items {
+        if journal.landed.contains(key(&item)) {
+            report.already_there += 1;
+        } else {
+            pending.push(item);
+        }
+    }
+    pending
+}
+
+/// Keep what a landing answered for one hand-over in the journal, and save it.
+fn keep_delivered(
+    delivered: Delivered,
+    journal: &mut ServiceJournal,
+    report: &mut ServiceReport,
+    save: &mut dyn FnMut(&ServiceJournal) -> Result<(), String>,
+) -> Result<(), ServiceError> {
+    report.landed += delivered.landed.len();
+    journal.landed.extend(delivered.landed);
+    report.refused.extend(delivered.refused);
+    save(journal).map_err(ServiceError::Journal)
 }
 
 fn short_digest(text: &str) -> String {
