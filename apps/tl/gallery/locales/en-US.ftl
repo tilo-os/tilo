@@ -25,6 +25,9 @@ d-x3epwv5u = Gallery
        *[other] galleries
     }
 
+d-bmdkc22s = Name
+    .doc = What the gallery is called: its name, so no field a page edits is taken for its title.
+
 d-cbwtcaei = Basics note
     .doc = The note the basics' text input writes.
 

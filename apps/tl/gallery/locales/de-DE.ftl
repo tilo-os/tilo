@@ -789,3 +789,6 @@ d-pshdk4bg = Reagieren
 d-pshdk4bg-emoji = Emoji
 
 d-iemy5gb4 = Eintrag hinzufügen~present
+
+d-bmdkc22s = Name
+    .doc = Wie die Galerie heißt: ihr Name, damit kein Feld, das eine Seite bearbeitet, für ihren Titel gehalten wird.

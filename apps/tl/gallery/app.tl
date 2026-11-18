@@ -17,7 +17,9 @@ type Item {
 /// and, where a control on it is bound to a field, the field here. The root is made with the
 /// package and holds every value the pages show, so a window opens on its components from the
 /// first frame, whatever the document holds.
-type Gallery {
+type Gallery (title: name) {
+    /// What the gallery is called: its name, so no field a page edits is taken for its title.
+    name: Text = "Gallery"
     /// The note the basics' text input writes.
     basics_note: Text = ""
     /// The report the controls' page edits: every control there writes one of these.
