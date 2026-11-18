@@ -24,6 +24,7 @@ impl ServedHistory {
     }
 
     /// The session took up `doc` as it is now: every follower is served its history again.
+    #[cfg(test)]
     pub(crate) fn write(&self, doc: &automerge::AutoCommit) {
         {
             let mut feed = self.feed.lock().unwrap();
@@ -102,6 +103,7 @@ pub(crate) fn serve(doc: &automerge::AutoCommit) {
 
 /// The session took up `doc` as it is now: what this thread serves ([`serve`]) answers every
 /// History that follows it again.
+#[cfg(test)]
 pub(crate) fn sync(doc: &automerge::AutoCommit) {
     let served = SERVED.with(|current| current.borrow().clone());
     served.expect("a history is served").write(doc);
@@ -155,10 +157,12 @@ fn read(doc: &automerge::AutoCommit) -> wire::Feed {
     }
 }
 
+#[cfg(test)]
 fn hex(byte: u8) -> String {
     wire::entry_hex(&[byte; 16])
 }
 
+#[cfg(test)]
 fn entry(listed: u8, change: u8, name: &str, at_ms: i64) -> wire::Entry {
     wire::Entry {
         id: hex(listed),
