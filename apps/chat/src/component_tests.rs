@@ -282,7 +282,11 @@ fn a_window_that_has_not_opened_a_conversation_opens_the_workspace_first() {
     assert_eq!(app.active_channel, first);
 }
 #[test]
-fn canonical_idle_projection_does_not_request_perpetual_frames() {
+fn an_idle_chat_requests_no_frames_and_solves_no_layout() {
+    // Chat paints inside the box its window gives it: idle, it asks for no
+    // frame of its own and solves no layout, and neither does a frame that
+    // something else on the desktop asked for (an animation, another window
+    // opening, a peer's pointer).
     let mut doc = AutoCommit::new();
     let me = LocalIdentity::demo();
     crate::testing::starter(&mut doc, me.id.id(), &me.name);
@@ -297,6 +301,11 @@ fn canonical_idle_projection_does_not_request_perpetual_frames() {
         "idle Chat must not keep requesting frames"
     );
     assert!(!app.needs_redraw());
+    assert!(
+        !app.layout_needs_measure(),
+        "idle Chat asks for no layout solve"
+    );
+
     remote_change(&mut doc, "remote-change", "newer");
     doc.commit();
     app.sync(&doc, &ROOT);
@@ -304,26 +313,6 @@ fn canonical_idle_projection_does_not_request_perpetual_frames() {
         app.needs_redraw(),
         "a conversation change still requests one paint"
     );
-}
-#[test]
-fn idle_chat_asks_no_frame_to_solve_its_layout() {
-    // Chat paints inside the box its window gives it: a frame that something
-    // else on the desktop asked for (an animation, another window opening, a
-    // peer's pointer) re-solves nothing in Chat.
-    let mut doc = AutoCommit::new();
-    let me = LocalIdentity::demo();
-    crate::testing::starter(&mut doc, me.id.id(), &me.name);
-    doc.commit();
-    let mut app = projection(&doc, me);
-    let _ = app.update(&doc, &ROOT);
-    app.mark_drawn();
-    assert!(
-        !app.layout_needs_measure(),
-        "idle Chat asks for no layout solve"
-    );
-    remote_change(&mut doc, "remote-change", "newer");
-    doc.commit();
-    app.sync(&doc, &ROOT);
     assert!(
         !app.layout_needs_measure(),
         "a new message is painted inside Chat's box, which keeps its size"
