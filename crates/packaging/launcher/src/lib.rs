@@ -43,6 +43,8 @@ pub mod memory_monitor;
 pub mod memory_pressure;
 pub mod mesa_seed;
 #[cfg(target_os = "linux")]
+pub mod netproxy;
+#[cfg(target_os = "linux")]
 pub mod ordinary_child;
 #[cfg(target_os = "linux")]
 pub mod ordinary_namespace;

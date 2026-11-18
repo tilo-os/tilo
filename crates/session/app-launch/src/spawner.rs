@@ -240,6 +240,15 @@ pub struct Handed {
     pub latency_sensitive: bool,
 }
 
+/// A kept launch whose network is filtered: the control socket its proxy answers on, and the app
+/// and workspace whose grants decide what it reaches.
+#[cfg(target_os = "linux")]
+pub struct KeptNetwork {
+    pub control: PathBuf,
+    pub app: String,
+    pub workspace: String,
+}
+
 /// What ends a session: a logout ends every app it runs; an in-place restart of the desktop leaves
 /// the apps kept behind a keeper running for the run that follows ([`crate::kept`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -314,6 +323,25 @@ impl Spawner {
             .collect();
         displays.sort();
         displays
+    }
+
+    /// The network proxy of each kept launch that has one, with the app and the workspace whose
+    /// grants decide the policy it enforces.
+    #[cfg(target_os = "linux")]
+    pub fn kept_networks(&self) -> Vec<KeptNetwork> {
+        running(&self.running)
+            .values()
+            .filter_map(|app| {
+                let kept = app.kept.as_ref()?;
+                let control = kept.network_control()?;
+                let launch = crate::kept::written_launch(&kept.dir)?;
+                Some(KeptNetwork {
+                    control,
+                    app: launch.app,
+                    workspace: launch.workspace,
+                })
+            })
+            .collect()
     }
 
     /// Start the apps that are not Tilo's behind `keeping`'s keeper from now on, attached to its

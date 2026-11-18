@@ -3,6 +3,11 @@
 #
 #   build-initramfs.sh KVER
 #
+# TILO_INITRAMFS_MODULES overrides the dracut modules the initramfs must
+# contain; its default is the desktop's set, and a headless image names the ones
+# it has, which drops the greeter and the splash from both the build and its
+# checks.
+#
 # Used by the rootfs build and by the dev image's board layer, so a board dev
 # image boots from the same initramfs recipe as the released image.
 #
@@ -44,15 +49,39 @@ sed -i 's@^include ld\.so\.conf\.d/\*\.conf$@include /etc/ld.so.conf.d/*.conf@' 
 printf 'sysloglvl=0\n' > /etc/dracut.conf.d/99-tilo-build-logging.conf
 omit_modules="network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh"
 required_modules="crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock tilo-greeter"
+add_modules="$required_modules"
 log="$(mktemp /tmp/tilo-dracut.XXXXXX)"
 trap 'rm -f -- "$log"' EXIT
-dracut --force --reproducible --compress zstd -v --kver "$kver" \
-    --omit "network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh" \
-    --omit-drivers "amdgpu nouveau xe xfs" \
-    --add-drivers ext4 \
-    --add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock tilo-greeter" \
-    "/usr/lib/modules/$kver/initramfs.img" > "$log" 2>&1 \
-  || { cat "$log" >&2; exit 1; }
+if [ -z "${TILO_INITRAMFS_MODULES:-}" ]; then
+  # The desktop image: it signs in before the root is open, so the initramfs
+  # carries the greeter and the splash.
+  dracut --force --reproducible --compress zstd -v --kver "$kver" \
+      --omit "network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh" \
+      --omit-drivers "amdgpu nouveau xe xfs" \
+      --add-drivers ext4 \
+      --add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock tilo-greeter" \
+      "/usr/lib/modules/$kver/initramfs.img" > "$log" 2>&1 \
+    || { cat "$log" >&2; exit 1; }
+else
+  # A headless image (the server OS) names the modules it has. It has no
+  # greeter and draws no splash, so those are omitted along with everything the
+  # desktop omits; the same checks below still hold it to what it asked for.
+  required_modules="$TILO_INITRAMFS_MODULES"
+  add_modules="$TILO_INITRAMFS_MODULES"
+  for optional in plymouth tilo-greeter; do
+    case " $required_modules " in
+      *" $optional "*) ;;
+      *) omit_modules="$omit_modules $optional" ;;
+    esac
+  done
+  dracut --force --reproducible --compress zstd -v --kver "$kver" \
+      --omit "$omit_modules" \
+      --omit-drivers "amdgpu nouveau xe xfs" \
+      --add-drivers ext4 \
+      --add "$add_modules" \
+      "/usr/lib/modules/$kver/initramfs.img" > "$log" 2>&1 \
+    || { cat "$log" >&2; exit 1; }
+fi
 test -s "/usr/lib/modules/$kver/initramfs.img"
 # Record what dracut says it included, and check THAT rather than reading the
 # image back. dracut wraps the contents in a squashfs, and listing one needs
@@ -84,6 +113,8 @@ done
 # os/Containerfile) adds about 80.8 MB: its size is reported, not held to the budget.
 # The touch screen drivers with input drivers of their own and virtio input added
 # 0.56 MB; with them the x86_64 greeter added 65,013,902 bytes.
+case " $required_modules " in
+*" tilo-greeter "*)
 greeter_budget=65600000
 greeter_bytes="$(sed -n 's/.*tilo-greeter: the greeter adds \([0-9]*\) bytes.*/\1/p' "$log")"
 [ -n "$greeter_bytes" ] || {
@@ -96,6 +127,8 @@ if [ "$greeter_bytes" -gt "$greeter_budget" ]; then
     exit 1
   fi
 fi
+;;
+esac
 # A board image (one with a hardware-profile definition) also reads its
 # initramfs back: the profile's firmware and boot modules, and the Wi-Fi pieces
 # sibling unlock installs only optionally. Generic images skip this.

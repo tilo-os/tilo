@@ -10,6 +10,11 @@
 #     --root-min 12G          minimum root partition size
 #     --root-max 40G          optional root partition ceiling
 #     --rootfs btrfs|ext4     root filesystem (default: btrfs)
+#     --encrypt               make the root a LUKS2 volume (os/usr/libexec/
+#                            tilo-disk-encrypt), with its recovery key written to
+#                            OUTDIR/recovery-key.txt; the image must boot split
+#                            kernel/initrd entries, because a sealed UKI's signed
+#                            command line cannot carry the install's rd.luks.uuid
 #     --esp 2G                ESP size
 #     --boot-gap 16M          free space before the ESP (Rockchip loader gap)
 #     --rockchip-loader DIR   idbloader.img + u-boot.itb written into that gap
@@ -134,7 +139,7 @@ DIRECT_SEALED_SOURCE=0
 OFFLINE_TARGET_DIR=""
 ETC_OVERLAY=""
 DIRECT_BOOT_DIR=""
-KEEP_RAW=0; DEFAULT_KARGS=yes; SEED_RAW=""
+KEEP_RAW=0; DEFAULT_KARGS=yes; SEED_RAW=""; ENCRYPT=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -162,6 +167,7 @@ while [ $# -gt 0 ]; do
     --etc-overlay) ETC_OVERLAY="$2"; shift ;;
     --direct-boot-bundle) DIRECT_BOOT_DIR="$2"; shift ;;
     --raw) KEEP_RAW=1 ;;
+    --encrypt) ENCRYPT=1 ;;
     --seed-raw) SEED_RAW="$2"; shift ;;
     -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     -*) die "unknown option: $1" ;;
@@ -175,6 +181,20 @@ case "$ROOTFS" in
   btrfs|ext4) ;;
   *) die "--rootfs must be btrfs or ext4, got: $ROOTFS" ;;
 esac
+if [ "$ENCRYPT" = 1 ]; then
+  # The encrypted layout is the one the installer builds: GPT (ESP, /boot, LUKS
+  # root, and a store when the disk is large enough for one) made by tilo-disk-encrypt, and
+  # bootc installing into the opened mapping. Options of the plain layout that
+  # disagree with it are refused rather than silently dropped.
+  [ "$HAS_UKI" = no ] \
+    || die "--encrypt needs an image that boots split kernel/initrd entries. This
+  image carries a sealed UKI, whose signed command line cannot carry the
+  install-time rd.luks.uuid; the desktop installer builds that layout instead."
+  [ -z "$SEED_RAW" ] || die "--encrypt cannot reuse a seed disk"
+  [ -z "$BOOT_GAP$ROCKCHIP_LOADER" ] || die "--encrypt does not lay out a board disk with a loader gap"
+  [ -z "$ROOT_MAX" ] || die "--encrypt sizes the root from the disk, not --root-max"
+  [ -z "$DIRECT_BOOT_DIR" ] || die "--encrypt does not export a direct boot bundle"
+fi
 if [ -n "$BOOT_GAP" ]; then
   case "${BOOT_GAP^^}" in
     *M|*MIB) boot_gap_mib="${BOOT_GAP%%[Mm]*}" ;;
@@ -485,6 +505,11 @@ cleanup() {
     sudo -n umount "$ESP_AT" 2>/dev/null || true
     ESP_STAGE_BIND_MOUNTED=0
   fi
+  # A failed encrypted install leaves the mapping open; close it before the tree
+  # and the loop go, or the next attempt finds a mapped volume it cannot wipe.
+  if [ -n "${ENC_LUKS:-}" ] && [ -n "${ENC_DISK_ENCRYPT:-}" ]; then
+    sudo -n "$ENC_DISK_ENCRYPT" teardown "$LOOP" --mnt "$MNT" >/dev/null 2>&1 || true
+  fi
   sudo -n umount -R "$MNT" 2>/dev/null || true
   if [ -n "${LOOP_NODE_HOLDER_PID:-}" ]; then
     printf 'release\n' >&"$LOOP_NODE_HOLDER_IN" || true
@@ -661,6 +686,80 @@ fi
 [ -n "$TARGET_IMGREF" ] || TARGET_IMGREF="$IMAGE"
 
 # --- partition ----------------------------------------------------------------
+# The encrypted layout is the installer's, not a second one: os/usr/libexec/
+# tilo-disk-encrypt writes the GPT (ESP, /boot, the LUKS2 root and, when the
+# disk is large enough, the LUKS2 + Btrfs store), makes the filesystems, mounts the
+# tree and prints what bootc install needs (KARGS, the /boot UUID, the volume).
+# The rest of this script then installs into that tree exactly as into the plain
+# one, and enrols the volume's factors after bootc has written the ESP.
+encrypted_layout() {
+  local disk_bytes reserved plan want key
+  ENC_DISK_ENCRYPT="$SCRIPT_DIR/../usr/libexec/tilo-disk-encrypt"
+  ENC_STORE_VOLUME="$SCRIPT_DIR/../usr/libexec/tilo-store-volume"
+  [ -x "$ENC_DISK_ENCRYPT" ] && [ -x "$ENC_STORE_VOLUME" ] \
+    || die "the encrypted layout needs $ENC_DISK_ENCRYPT and $ENC_STORE_VOLUME"
+  truncate -s "$SIZE" "$RAW"
+  disk_bytes="$(stat -c %s "$RAW")"
+  # The plan is needed before the disk exists, only to know how many partitions
+  # the loop device will gain: the helper that materializes their nodes without
+  # udev (Kata) insists on the exact inventory.
+  reserved=$(( 2 * 1024 * 1024 + $(to_mib "$ESP_SIZE") * 1024 * 1024 + $(to_mib "$ENC_BOOT_SIZE") * 1024 * 1024 ))
+  plan="$(TILO_ESP_SIZE="$ESP_SIZE" TILO_BOOT_SIZE="$ENC_BOOT_SIZE" \
+    "$ENC_STORE_VOLUME" plan --disk-bytes "$disk_bytes" --reserved-bytes "$reserved")" \
+    || die "could not plan the store volume"
+  want=3
+  grep -q '^STORE_BYTES=[1-9]' <<<"$plan" && want=4
+  local layout="ESP $ESP_SIZE + /boot $ENC_BOOT_SIZE + LUKS root"
+  [ "$want" = 4 ] && layout="$layout + LUKS store"
+  msg "1/4 LUKS2 install layout on $RAW ($layout)"
+  LOOP="$(sudo -n losetup -fP --show "$RAW")"
+  # Partitions appear as the helper writes them, and no udev daemon is needed.
+  coproc LOOP_NODE_HOLDER {
+    sudo -n python3 -u "$SCRIPT_DIR/hold-loop-partition-nodes.py" "$LOOP" "$want" 120
+  }
+  LOOP_NODE_HOLDER_PID=$!
+  LOOP_NODE_HOLDER_IN=${LOOP_NODE_HOLDER[1]}
+  LOOP_NODE_HOLDER_OUT=${LOOP_NODE_HOLDER[0]}
+  IFS= read -r loop_nodes_ready <&"$LOOP_NODE_HOLDER_OUT" || die "loop partition node holder failed"
+  [ "$loop_nodes_ready" = READY ] || die "loop partition node holder did not become ready"
+
+  local prep
+  prep="$(sudo -n env TILO_ESP_SIZE="$ESP_SIZE" TILO_BOOT_SIZE="$ENC_BOOT_SIZE" \
+    TILO_STORE_VOLUME="$ENC_STORE_VOLUME" \
+    "$ENC_DISK_ENCRYPT" prepare "$LOOP" --filesystem "$ROOTFS" --mnt "$MNT")" \
+    || die "tilo-disk-encrypt prepare failed"
+  field_of() { printf '%s\n' "$prep" | sed -n "s/^$1=//p"; }
+  local mapper
+  MNT="$(field_of MNT)"
+  esp_dev="$(field_of ESP)"
+  ENC_BOOT_PART="$(field_of BOOT_PART)"
+  ENC_LUKS="$(field_of LUKS_PART)"
+  mapper="$(field_of MAPPER)"
+  ENC_KEY="$(field_of KEY_FILE)"
+  ENC_KARGS="$(field_of KARGS)"
+  ENC_ROOT_UUID="$(field_of ROOT_FS_UUID)"
+  ENC_STORE_PART="$(field_of STORE_PART)"
+  ENC_STORE_LUKS="$(field_of STORE_LUKS_UUID)"
+  ENC_STORE_FS="$(field_of STORE_FS_UUID)"
+  ENC_STORE_KEY="$(field_of STORE_KEY_FILE)"
+  [ -n "$MNT" ] && [ -n "$esp_dev" ] && [ -n "$ENC_BOOT_PART" ] && [ -n "$ENC_LUKS" ] \
+    && [ -n "$mapper" ] && [ -n "$ENC_KEY" ] && [ -n "$ENC_ROOT_UUID" ] && [ -n "$ENC_KARGS" ] \
+    || die "encrypted prepare did not report the layout it made: $prep"
+  ENC_BOOT_UUID="$(sudo -n blkid -s UUID -o value "$ENC_BOOT_PART")"
+  [ -n "$ENC_BOOT_UUID" ] || die "could not read the encrypted install's /boot UUID"
+  root_dev="/dev/mapper/$mapper"
+  esp_at="$MNT/boot/efi"
+  ESP_AT="$esp_at"
+  # /boot is a partition of its own on the installer's layout, not the ESP.
+  BOOT_IS_ESP=no
+  [ -d "$ESP_AT" ] || die "the encrypted install has no $ESP_AT"
+  msg "2/4 mounted $root_dev -> $MNT, $esp_dev -> $ESP_AT, $ENC_BOOT_PART -> $MNT/boot"
+}
+
+if [ "$ENCRYPT" = 1 ]; then
+  ENC_BOOT_SIZE="${TILO_ENCRYPT_BOOT_SIZE:-1G}"
+  encrypted_layout
+else
 mkdir -p "$DEFS"
 printf '[Partition]\nType=esp\nFormat=vfat\nSizeMinBytes=%s\nSizeMaxBytes=%s\n' \
   "$ESP_SIZE" "$ESP_SIZE" > "$DEFS/01-esp.conf"
@@ -811,6 +910,7 @@ if [ "$SEEDED" = 1 ]; then
     -exec rm -rf -- {} +
   sudo -n mount --bind "$MNT/composefs" "$MNT/composefs"
 fi
+fi
 
 # --- install ------------------------------------------------------------------
 # --generic-image is what keeps the install off the *build host's* firmware: it
@@ -825,6 +925,16 @@ install_args=(to-filesystem --generic-image --skip-fetch-check
   && install_args+=(--boot-mount-spec "UUID=$ESP_UUID")
 [ -n "$SRC_REF" ] && install_args+=(--source-imgref "$SRC_REF")
 install_args+=("${KARGS[@]+"${KARGS[@]}"}")
+if [ "$ENCRYPT" = 1 ]; then
+  # /boot is a partition, and the LUKS volume is found by the UUID the initramfs
+  # was told about. The unlock prompt is written to /dev/console, which is the
+  # last console= argument: the screen here, because a VM's disk unlock is
+  # answered at the display (a server at its serial console passes
+  # `--karg console=ttyS0` itself and answers there).
+  install_args+=(--boot-mount-spec "UUID=$ENC_BOOT_UUID")
+  for karg in $ENC_KARGS; do install_args+=(--karg "$karg"); done
+  install_args+=(--karg console=tty0)
+fi
 [ "$DIRECT_SEALED_SOURCE" = 0 ] || install_args+=(--enforce-container-sigpolicy)
 install_args+=("/run/tilo-install-target")
 
@@ -904,6 +1014,40 @@ fi
 if [ "$COMPOSEFS" = yes ]; then
   sudo -n python3 "$SCRIPT_DIR/check-composefs-verity.py" "$MNT/composefs/objects" \
     || die "the installed composefs objects lack fs-verity: check $ROOTFS feature flags and kernel $(uname -r) support"
+fi
+
+# --- the encrypted root's unlock factors --------------------------------------
+# The recovery key first and always: it is the one factor whose loss is
+# unrecoverable, and `enrol` proves it opens the volume before returning. The
+# TPM keyslot that opens the volume with nothing typed needs a signed boot chain
+# (this image's generation and its signed prediction), which an unsealed image
+# has not; `--tpm-automatic` then says so and keeps the recovery key, and
+# `--require-tpm` is there for a caller that must not go on without it.
+RECOVERY_FILE=""
+if [ "$ENCRYPT" = 1 ]; then
+  enrolment_log="$OUTDIR/.enrol.log"
+  enrol_args=(enrol "$ENC_LUKS" --key-file "$ENC_KEY")
+  if [ -n "$ENC_STORE_PART" ]; then
+    enrol_args+=(--store-part "$ENC_STORE_PART" --store-key-file "$ENC_STORE_KEY")
+  fi
+  enc_generation="$(sudo -n cat "$MNT/usr/lib/tilo/generation" 2>/dev/null | tr -d '\r\n ' || true)"
+  case "$enc_generation" in ''|*[!0-9]*) enc_generation="" ;; esac
+  if [ -n "$enc_generation" ]; then
+    for enc_predictions in "$ESP_AT/tilo-target/predictions" "$MNT/usr/share/tilo/pcr-predictions"; do
+      [ -d "$enc_predictions" ] || continue
+      compgen -G "$enc_predictions/generation-$enc_generation*.json" >/dev/null || continue
+      enrol_args+=(--tpm-automatic --predictions "$enc_predictions" --generation "$enc_generation")
+      break
+    done
+  fi
+  sudo -n "$ENC_DISK_ENCRYPT" "${enrol_args[@]}" >"$enrolment_log" 2>&1 \
+    || { cat "$enrolment_log" >&2; die "enrolling the encrypted root failed; see $enrolment_log"; }
+  RECOVERY_FILE="$OUTDIR/recovery-key.txt"
+  sed -n 's/^::tilo-recovery-key:://p' "$enrolment_log" | tail -1 > "$RECOVERY_FILE"
+  chmod 0600 "$RECOVERY_FILE"
+  [ -s "$RECOVERY_FILE" ] \
+    || die "no recovery key in the enrolment output; refusing a disk nothing can open"
+  msg "the encrypted root's recovery key is in $RECOVERY_FILE (0600), never in this log"
 fi
 
 # --- bib's customizations.user, replaced --------------------------------------
@@ -989,6 +1133,21 @@ if [ -n "$FIRSTBOOT_SEED" ]; then
   sudo -n ln -sfn /usr/lib/systemd/system/tilo-firstboot-user.service \
     "$t_etc/systemd/system/multi-user.target.wants/tilo-firstboot-user.service"
   msg "seeded $firstboot_user for first-boot account creation"
+fi
+
+# The store volume the encrypted layout made unlocks from a key file inside the
+# root (no second prompt) and mounts where the storage backend serves it. The
+# recovery key opens it too, from any rescue system.
+if [ "$ENCRYPT" = 1 ] && [ -n "$ENC_STORE_PART" ]; then
+  t_etc="$(sudo -n sh -c "ls -d $MNT/state/deploy/*/etc $MNT/ostree/deploy/*/deploy/*/etc 2>/dev/null | head -1")"
+  [ -n "$t_etc" ] || die "could not find the installed system's /etc for the store's unlock configuration"
+  sudo -n mount -o remount,rw "$MNT"
+  sudo -n "$ENC_STORE_VOLUME" install-config --etc "$t_etc" \
+    --luks-uuid "$ENC_STORE_LUKS" --fs-uuid "$ENC_STORE_FS" \
+    --key-file "$ENC_STORE_KEY" --owner "${TILO_ENCRYPT_STORE_OWNER:-tilo-hosted}" >&2 \
+    || die "could not write the store volume's unlock configuration"
+  sudo -n shred -u "$ENC_STORE_KEY" 2>/dev/null || sudo -n rm -f "$ENC_STORE_KEY"
+  msg "the store volume ($ENC_STORE_PART) unlocks from the encrypted root"
 fi
 
 # Validation access for the release check, written into this disk copy only and
@@ -1162,6 +1321,15 @@ if [ -n "$DIRECT_BOOT_DIR" ]; then
   fi
   sudo -n chown -R "$(id -u):$(id -g)" "$DIRECT_BOOT_DIR"
   msg "exported installed $bundle_source direct boot bundle -> $DIRECT_BOOT_DIR"
+fi
+
+if [ "$ENCRYPT" = 1 ]; then
+  # Drops the throwaway install key (refusing if no other factor was enrolled),
+  # unmounts the tree and closes the mapping, so what is left on the disk is
+  # only what its owner's factors open.
+  sudo -n "$ENC_DISK_ENCRYPT" finish "$ENC_LUKS" --key-file "$ENC_KEY" --mnt "$MNT" >&2 \
+    || die "could not close the encrypted install"
+  msg "the encrypted root is closed; its recovery key is $RECOVERY_FILE"
 fi
 
 cleanup

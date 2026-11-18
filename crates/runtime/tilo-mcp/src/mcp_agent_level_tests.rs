@@ -268,4 +268,48 @@ tilo_test_env::scenario! {
             "the note is named by the path its listing names it: {text}"
         );
     }
+
+    phase a_find_of_many_notes_asks_each_step_of_their_paths_once;
+    // A find that names many notes of one notebook asks the directory for each note's own
+    // rows once and for the steps above them once for all: what it asks grows by four
+    // listings a note (the note is asked for at the app's top and, in its notebook, by its
+    // name and by its key, and its own level is read), whatever actions of the note the
+    // search answers beside it. It used to ask for the note in its notebook again for each
+    // step of its path, and all of it again for each action.
+    {
+        let notes = || Notes::new(true).live().with_notes(15);
+        let one = work_of(
+            &notes(),
+            "tilo_find",
+            &json!({"query": "Bench note 007", "app": "notes", "limit": 100}),
+        );
+        let many = work_of(
+            &notes(),
+            "tilo_find",
+            &json!({"query": "Bench note", "app": "notes", "limit": 100}),
+        );
+        // The lines that name a note itself; an action of a note is written after `#`.
+        let named = |text: &str| {
+            text.lines()
+                .filter(|line| line.contains("Bench note") && !line.contains('#'))
+                .count()
+        };
+        eprintln!(
+            "find one note: {} queries, {} rows; find {} notes: {} queries, {} rows",
+            one.0,
+            one.1,
+            named(&many.2),
+            many.0,
+            many.1
+        );
+        assert_eq!(named(&one.2), 1, "one note is found: {}", one.2);
+        assert_eq!(named(&many.2), 15, "each of the fifteen is named once: {}", many.2);
+        assert!(
+            many.0 <= one.0.saturating_add(4 * 14),
+            "fifteen notes of one notebook cost {} queries where one costs {}: more than four \
+             for each further note",
+            many.0,
+            one.0
+        );
+    }
 }

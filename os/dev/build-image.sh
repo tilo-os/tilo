@@ -37,6 +37,10 @@
 #     build when the question is "does it boot?". Default is the full image.
 #   * TILO_IMAGE_ONLY=1 builds the container and stops: the base a dev image is
 #     derived from (os/dev/build-dev-image.sh, tilo-vm vm upgrade --from local).
+#   * TILO_ENCRYPT_INSTALL=1 installs onto a LUKS2 root (the desktop installer's
+#     os/usr/libexec/tilo-disk-encrypt layout) with its recovery key in
+#     $OUTDIR/recovery-key.txt. It is for images that boot split kernel/initrd
+#     entries, such as the server OS.
 #   * The image is SEALED: it carries a Unified Kernel Image whose signed command
 #     line includes the hardening kargs and `tilo.generation=<N>`, which
 #     systemd-stub measures into PCR 11. Two consequences for this script:
@@ -770,6 +774,13 @@ if [ -n "${TILO_DEV_DIRECT_BUNDLE_DIR:-}" ]; then
 fi
 if [ -n "${TILO_TARGET_IMGREF:-}" ]; then
   disk_args+=(--target-imgref "$TILO_TARGET_IMGREF")
+fi
+# Make the installed root a LUKS2 volume (disk-image.sh --encrypt), unlocked at
+# boot by the factors tilo-disk-encrypt enrols. Its recovery key is written to
+# $OUTDIR/recovery-key.txt; a headless server's boot asks for it unless the
+# image carries a signed boot chain for the TPM keyslot.
+if [ "${TILO_ENCRYPT_INSTALL:-0}" = 1 ]; then
+  disk_args+=(--encrypt)
 fi
 # A seed disk to start from (disk-image.sh --seed-raw): a build host that writes disk after
 # disk keeps the composefs objects the images share instead of installing every one again.

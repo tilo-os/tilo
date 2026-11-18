@@ -14,15 +14,16 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use compat_catalogue::{ApplicationQuery, Catalogue, VmFallback};
 use compat_service::{
     Assembly, CapsuleCommandPlan, CapsuleProgram, CapsuleStore, ExecutionError, LaunchLease,
-    LaunchResourceBroker, LazyVmDelegate, PROTOCOL_VERSION, ProgramKind, ProtocolRequest,
-    ResourceError, ResourceRequest, SandboxCommand, SandboxExecutor, SessionClient,
-    SystemRuntimeRegistry, VmAvailability, VmDelegate, VmInventory, VmPresentation,
+    LaunchResourceBroker, LazyVmDelegate, NetworkShape, PROTOCOL_VERSION, ProgramKind,
+    ProtocolRequest, ResourceError, ResourceRequest, SandboxCommand, SandboxExecutor,
+    SessionClient, SystemRuntimeRegistry, VmAvailability, VmDelegate, VmInventory, VmPresentation,
     VmPublishedApplication, VmRouteRequest,
 };
 use serde_json::{Value, json};
@@ -142,6 +143,45 @@ impl LaunchResourceBroker for NoResources {
     fn revoke(&self, _: &str) {}
 }
 
+/// Prepares a private network proxy for a filtered launch, as the computer's broker does: the
+/// proxy itself is the launch's, started from this policy by the launcher.
+struct NetResources {
+    root: PathBuf,
+}
+
+/// Lease names no two launches in this test process share: a kept program's lease outlives the
+/// desktop that made it, and a lease is never reused.
+static NETWORK_LEASE: AtomicU64 = AtomicU64::new(1);
+
+impl LaunchResourceBroker for NetResources {
+    fn materialize(&self, request: ResourceRequest<'_>) -> Result<LaunchLease, ResourceError> {
+        if NetworkShape::from_capabilities(request.capabilities) != NetworkShape::Filtered {
+            return Ok(LaunchLease::deny_all("lease"));
+        }
+        let id = format!("net-{}", NETWORK_LEASE.fetch_add(1, Ordering::Relaxed));
+        let dir = self.root.join(&id).join("netproxy");
+        launcher::netproxy::prepare(
+            &dir,
+            &launcher::egress_proxy::EgressPolicy::from_grants(
+                request.capabilities.net_hosts.iter().map(String::as_str),
+            ),
+        )
+        .map_err(|error| ResourceError::Refused(error.to_string()))?;
+        Ok(LaunchLease {
+            id,
+            audio: Vec::new(),
+            audio_graph: None,
+            egress_proxy: Some(launcher::sandbox::EgressProxyBind {
+                host_socket: dir.join("proxy.sock"),
+                sandbox_socket: PathBuf::from("/run/tilo/network/proxy.sock"),
+                port: launcher::egress_proxy::RELAY_PORT,
+            }),
+        })
+    }
+
+    fn revoke(&self, _: &str) {}
+}
+
 /// Stands in for Bubblewrap and Wine: starts [`probe_program`] with `dir`, on the display the plan
 /// binds into the sandbox (told it when `tell_display`; a keeper tells it its own), handing it a
 /// descriptor at the number Bubblewrap reads its seccomp filter from.
@@ -153,6 +193,9 @@ struct Probe {
     /// sandbox then starts as the compatibility service starts one with sound, after its graph
     /// ([`audio_step`]).
     sound: Option<PathBuf>,
+    /// The real launcher: a launch whose network is filtered starts through its
+    /// `windows-network`, as the computer's own launches do.
+    launcher: PathBuf,
 }
 
 /// What the probe finds at the descriptor it is handed.
@@ -178,6 +221,12 @@ impl SandboxExecutor for Probe {
             args.push(format!("{AUDIO_GRAPH}={}", graph.display()));
             step = "windows_compat::audio_step";
         }
+        if let Some(proxy) = &plan.network_proxy {
+            args.push(format!(
+                "{PROXY_SOCKET}={}",
+                proxy.dir.join("proxy.sock").display()
+            ));
+        }
         args.extend([
             std::env::current_exe()
                 .expect("this test binary")
@@ -192,7 +241,27 @@ impl SandboxExecutor for Probe {
         rustix::io::write(&memfd, HANDED_DOWN).map_err(|error| ExecutionError::Io(error.into()))?;
         let above = rustix::io::fcntl_dupfd_cloexec(&memfd, 64)
             .map_err(|error| ExecutionError::Io(error.into()))?;
-        let mut command = SandboxCommand::new("/usr/bin/env", args);
+        let program = PathBuf::from("/usr/bin/env");
+        if let Some(proxy) = &plan.network_proxy {
+            let wrapped: Vec<std::ffi::OsString> = [
+                "windows-network".into(),
+                "--dir".into(),
+                proxy.dir.clone().into(),
+                "--control".into(),
+                proxy.control.clone().into(),
+                "--".into(),
+                program.into_os_string(),
+            ]
+            .into_iter()
+            .chain(args.into_iter().map(Into::into))
+            .collect();
+            let mut command = SandboxCommand::new(self.launcher.clone(), wrapped);
+            command
+                .inherited
+                .push((above, compat_service::SECCOMP_CHILD_FD));
+            return Ok(command);
+        }
+        let mut command = SandboxCommand::new(program, args);
         command
             .inherited
             .push((above, compat_service::SECCOMP_CHILD_FD));
@@ -211,6 +280,12 @@ const AUDIO_COMMAND: &str = "TILO_TEST_WINDOWS_AUDIO_COMMAND";
 const RAIL_ARGS: &str = "TILO_TEST_WINDOWS_RAIL";
 /// The RDP password the appliance hands a `RemoteApp` launch.
 const PASSWORD: &[u8] = b"a-one-time-rdp-password";
+/// The proxy socket a program whose network is filtered reaches the network through.
+const PROXY_SOCKET: &str = "TILO_TEST_WINDOWS_PROXY";
+/// The file the test asks the program to reach a name through its proxy in.
+const REQUEST: &str = "request";
+/// The file the program answers a [`REQUEST`] in.
+const ANSWER: &str = "answer";
 
 /// Not a test: the launcher's `windows-audio` as a sandbox with sound starts behind it, through
 /// the same call, with [`audio_daemon`] for both daemons: it starts the graph, then becomes the
@@ -317,9 +392,17 @@ fn probe_program() {
     if std::env::var_os("DISPLAY").is_some() {
         x11_probe(&dir);
     }
+    let proxy = std::env::var_os(PROXY_SOCKET).map(PathBuf::from);
     let socket = std::env::var("WAYLAND_DISPLAY").expect("a display");
     let mut window = crate::common::window::Client::on(Path::new(&socket), PROGRAM_WINDOW, "Probe");
     loop {
+        if let Some(proxy) = &proxy
+            && let Ok(request) = fs::read_to_string(dir.join(REQUEST))
+        {
+            let _ = fs::remove_file(dir.join(REQUEST));
+            let answer = proxy_answer(proxy, &dir, request.trim());
+            fs::write(dir.join(ANSWER), answer).expect("the answer");
+        }
         window.exchange();
         if let Ok(code) = fs::read_to_string(dir.join("exit")) {
             let _ = fs::remove_file(dir.join("exit"));
@@ -363,6 +446,76 @@ fn rail_program() {
     std::io::Write::write_all(&mut started, format!("{}\n", std::process::id()).as_bytes())
         .expect("the start recorded");
     x11_probe(&dir);
+}
+
+/// The probe asking its proxy for `name`, as an app with a filtered network does: `allowed` or
+/// `refused`, or for `hold` the answer `cut` when the connection ends, which a policy taken back
+/// does.
+fn proxy_answer(proxy: &Path, dir: &Path, request: &str) -> String {
+    let answer = proxy_answer_traced(proxy, dir, request);
+    probe_trace(dir, &format!("{request} -> {answer}"));
+    answer
+}
+
+/// What the probe says of itself while it answers: the test reads it when an answer is not the
+/// one it waits for.
+fn probe_trace(dir: &Path, text: &str) {
+    use std::io::Write as _;
+    if let Ok(mut log) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("proxy.log"))
+    {
+        let _ = writeln!(log, "{text}");
+    }
+}
+
+fn proxy_answer_traced(proxy: &Path, dir: &Path, request: &str) -> String {
+    use std::io::{Read as _, Write as _};
+    let mut parts = request.split_whitespace();
+    let hold = parts.next() == Some("hold");
+    let name = parts.next().unwrap_or_default();
+    let port: u16 = parts.next().and_then(|port| port.parse().ok()).unwrap_or(0);
+    probe_trace(dir, &format!("{request}: connecting"));
+    let Ok(mut stream) = std::os::unix::net::UnixStream::connect(proxy) else {
+        return "no proxy".to_owned();
+    };
+    if stream.write_all(&[0x05, 0x01, 0x00]).is_err() {
+        return "no proxy".to_owned();
+    }
+    let mut ack = [0u8; 2];
+    if stream.read_exact(&mut ack).is_err() {
+        return "no proxy".to_owned();
+    }
+    let Ok(len) = u8::try_from(name.len()) else {
+        return "refused".to_owned();
+    };
+    let mut ask = vec![0x05, 0x01, 0x00, 0x03, len];
+    ask.extend_from_slice(name.as_bytes());
+    ask.extend_from_slice(&port.to_be_bytes());
+    if stream.write_all(&ask).is_err() {
+        return "no proxy".to_owned();
+    }
+    let mut head = [0u8; 4];
+    if stream.read_exact(&mut head).is_err() {
+        return "no proxy".to_owned();
+    }
+    probe_trace(dir, &format!("{request}: reply {}", head[1]));
+    if head[1] != launcher::egress_proxy::reply::SUCCESS {
+        return "refused".to_owned();
+    }
+    let rest = if head[3] == 0x01 { 6 } else { 18 };
+    let mut drain = vec![0u8; rest];
+    if stream.read_exact(&mut drain).is_err() {
+        return "no proxy".to_owned();
+    }
+    if !hold {
+        return "allowed".to_owned();
+    }
+    fs::write(dir.join(ANSWER), "holding").expect("the answer");
+    let mut byte = [0u8; 1];
+    while stream.read(&mut byte).is_ok_and(|read| read > 0) {}
+    "cut".to_owned()
 }
 
 /// The probe as a program that shows through X11, as Proton's Wine does: it writes the display
@@ -429,7 +582,7 @@ fn x11_probe(dir: &Path) -> ! {
 
 /// The catalogue routing `probe.exe` to Wine, and a capsule holding it, set up under the login's
 /// data directory; the manager's entry for it.
-fn set_up_probe(data: &Path) -> (Catalogue, String) {
+fn set_up_probe(data: &Path) -> (Catalogue, String, String) {
     set_up_probe_on(
         data,
         r#"{"layer": "wine", "runner": {"family": "wine", "version": "system"}}"#,
@@ -437,8 +590,9 @@ fn set_up_probe(data: &Path) -> (Catalogue, String) {
 }
 
 /// The catalogue routing `probe.exe` to the runtime `runtime` names (its layer and runner, and
-/// any Proton recipe), and a capsule holding it; the manager's entry for it.
-fn set_up_probe_on(data: &Path, runtime: &str) -> (Catalogue, String) {
+/// any Proton recipe), and a capsule holding it; the manager's entry for it, and the app id a
+/// grant names it by.
+fn set_up_probe_on(data: &Path, runtime: &str) -> (Catalogue, String, String) {
     let mut recipe: Value = serde_json::from_str(runtime).expect("a runtime");
     recipe["settings"] = json!({});
     recipe["security_profile"] = json!("windows-app");
@@ -477,12 +631,8 @@ fn set_up_probe_on(data: &Path, runtime: &str) -> (Catalogue, String) {
             },
         )
         .expect("the program set up");
-    let entry = store
-        .registered_programs()
-        .expect("the programs")
-        .remove(0)
-        .entry_id;
-    (catalogue, entry)
+    let program = store.registered_programs().expect("the programs").remove(0);
+    (catalogue, program.entry_id, program.app_id)
 }
 
 /// Start this test binary as a launcher of the manager reading `dir`.
@@ -497,13 +647,14 @@ fn start_manager(dir: &Path) -> std::process::Child {
 #[test]
 fn the_windows_apps_manager_starts_a_program_on_the_session_display() {
     let home = tilo_test_env::TestHome::new().expect("a home");
-    let (catalogue, entry) = set_up_probe(home.data());
+    let (catalogue, entry, _app_id) = set_up_probe(home.data());
     let planned = Arc::new(Mutex::new(None));
     let probe = home.home().join("probe");
     fs::create_dir_all(&probe).unwrap();
     let assembly = Assembly::with({
         let planned = Arc::clone(&planned);
         let dir = probe.clone();
+        let launcher = tilo_test_env::sibling_binary("launcher", "tilo-launcher");
         move |side| {
             compat_service::serve(
                 side,
@@ -515,6 +666,7 @@ fn the_windows_apps_manager_starts_a_program_on_the_session_display() {
                     tell_display: true,
                     planned,
                     sound: None,
+                    launcher,
                 },
                 LazyVmDelegate::new(|| Err("no appliance is set up here".to_owned())),
             )
@@ -685,9 +837,15 @@ struct KeptRig {
     state: PathBuf,
     catalogue: Catalogue,
     entry: String,
+    /// The app id a workspace grant names the program by.
+    app_id: String,
     probe: PathBuf,
     keeper: PathBuf,
     root: PathBuf,
+    /// The real launcher, which starts a filtered program's network proxy.
+    launcher: PathBuf,
+    /// Where the launches' network leases live, as the service leases in this test process.
+    network_leases: PathBuf,
     /// Where the programs' private audio graphs are, when they have sound.
     sound: Option<PathBuf>,
     /// The Windows appliance is set up, with [`PUBLISHED`] in its catalogue.
@@ -749,7 +907,7 @@ impl KeptRig {
     /// A rig whose program is routed to the runtime `runtime` names ([`set_up_probe_on`]).
     fn on(runtime: &str) -> Self {
         let mut home = tilo_test_env::TestHome::new().expect("a home");
-        let (catalogue, entry) = set_up_probe_on(home.data(), runtime);
+        let (catalogue, entry, app_id) = set_up_probe_on(home.data(), runtime);
         let state = crate::common::device_in(&mut home);
         let probe = home.home().join("probe");
         fs::create_dir_all(&probe).unwrap();
@@ -759,15 +917,20 @@ impl KeptRig {
         // The launcher's `windows-program`: the keeper, started with the command it was handed.
         tilo_app_launch::kept::testing::launcher_program(&home.home().join("tilo-launcher"), &[])
             .unwrap();
+        let launcher = tilo_test_env::sibling_binary("launcher", "tilo-launcher");
+        let network_leases = compat_service::test_lease_root_at(home.runtime().join("leases"));
         let root = home.runtime().join("kept");
         Self {
             home,
             state,
             catalogue,
             entry,
+            app_id,
             probe,
             keeper,
             root,
+            launcher,
+            network_leases,
             sound: None,
             appliance: false,
         }
@@ -882,6 +1045,10 @@ impl KeptRig {
                 self.home.home().join("audio-launcher"),
             )
         });
+        let launcher_bin = self.launcher.clone();
+        let network_leases = NetResources {
+            root: self.network_leases.clone(),
+        };
         let assembly = Assembly::with(move |mut side| {
             // The manager is this test binary, not the stand-in launcher the programs start
             // through.
@@ -898,12 +1065,13 @@ impl KeptRig {
                 side,
                 catalogue,
                 SystemRuntimeRegistry::assuming_provider(),
-                NoResources,
+                network_leases,
                 Probe {
                     dir,
                     tell_display: false,
                     planned: Arc::default(),
                     sound,
+                    launcher: launcher_bin,
                 },
                 vm,
             )
@@ -1207,6 +1375,202 @@ fn a_windows_programs_sound_lives_as_long_as_the_program() {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// Grant the program a filtered network for `name`, through the session's shell, and let the
+/// session publish it before the compatibility service is asked to start it.
+fn grant_network(desktop: &mut KeptDesktop, rig: &KeptRig, name: &str) {
+    use collab_types::caps::{Access, CapOverride, Scope};
+    use tilo_action_policy::Grantee;
+    let handle = desktop.session.handle();
+    let mut tree: tilo_desktop_model::Layout = handle.read(Clone::clone);
+    let workspace = tree
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.id().to_string() == desktop.workspace)
+        .expect("the workspace in front");
+    workspace.sandbox.push(
+        CapOverride::grant(
+            Grantee::person("tester"),
+            Scope::NetHost(name.to_owned()),
+            Access::Write,
+        )
+        .through(rig.app_id.clone()),
+    );
+    handle.replace_tree(tree);
+    for _ in 0..50 {
+        desktop
+            .session
+            .step(Duration::from_millis(1))
+            .expect("step");
+    }
+}
+
+/// Take the program's network grants back, as the person revoking them in the workspace's grants
+/// does.
+fn revoke_network(desktop: &KeptDesktop) {
+    let handle = desktop.session.handle();
+    let mut tree: tilo_desktop_model::Layout = handle.read(Clone::clone);
+    for workspace in &mut tree.workspaces {
+        workspace
+            .sandbox
+            .retain(|grant| !matches!(grant.scope, collab_types::caps::Scope::NetHost(_)));
+    }
+    handle.replace_tree(tree);
+}
+
+/// Ask the program at `probe` to `request` through its network proxy, and wait for its answer,
+/// stepping the session as a desktop does.
+fn answered(desktop: &mut KeptDesktop, probe: &Path, request: &str) -> String {
+    let _ = fs::remove_file(probe.join(ANSWER));
+    fs::write(probe.join(REQUEST), request).expect("the request");
+    crate::common::wait_for(&mut desktop.session, "the program's answer", |_| {
+        fs::read_to_string(probe.join(ANSWER))
+            .ok()
+            .map(|answer| answer.trim().to_owned())
+    })
+}
+
+/// The control socket of the kept program's network proxy, under `root`.
+fn network_control(root: &Path) -> Option<PathBuf> {
+    fs::read_dir(root).ok()?.flatten().find_map(|entry| {
+        let control = entry.path().join(launcher::netproxy::CONTROL);
+        control.exists().then_some(control)
+    })
+}
+
+/// A kept Windows program keeps its filtered network through an in-place restart, because the
+/// proxy lives in the launch: it allows what the workspace granted before, while no desktop is
+/// there and after one comes back. A grant taken back after adoption cuts the connection it
+/// allowed, and the proxy ends with the program at logout.
+#[test]
+fn a_kept_program_keeps_its_filtered_network_through_a_restart_and_a_revoked_grant_cuts_it() {
+    let rig = KeptRig::new();
+    let mut first = rig.start(false);
+    grant_network(&mut first, &rig, "localhost");
+
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a listener");
+    let port = listener.local_addr().expect("its port").port();
+    std::thread::spawn(move || {
+        // Answer each connection and keep it open: a tunnel a grant allows is not one the
+        // destination ends.
+        for mut client in listener.incoming().flatten() {
+            let _ = std::io::Write::write_all(&mut client, b"HTTP/1.0 200 OK\r\n\r\nallowed");
+            std::thread::spawn(move || {
+                use std::io::Read as _;
+                let mut byte = [0u8; 64];
+                while client.read(&mut byte).is_ok_and(|read| read > 0) {}
+            });
+        }
+    });
+
+    let answers = first.manage(&rig, "first", &["launch"]);
+    assert_eq!(answers[0]["result"], "launched", "{answers:?}");
+    first.shown();
+    let [pid] = rig.starts()[..] else {
+        panic!("one start: {:?}", rig.starts());
+    };
+    let control =
+        crate::common::wait_for(&mut first.session, "the program's network proxy", |_| {
+            network_control(&rig.root)
+        });
+    let proxy = crate::common::wait_for(&mut first.session, "the proxy's process", |_| {
+        let children = fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")).ok()?;
+        children.split_whitespace().next()?.parse::<u32>().ok()
+    });
+
+    assert_eq!(
+        answered(&mut first, &rig.probe, &format!("connect localhost {port}")),
+        "allowed",
+        "the grant reaches the program before the restart"
+    );
+    assert_eq!(
+        answered(&mut first, &rig.probe, "connect blocked.invalid 80"),
+        "refused",
+        "a name the grant does not name is refused before the restart"
+    );
+    first.end(tilo_app_launch::Teardown::InPlaceRestart);
+
+    // No desktop is there: the proxy keeps enforcing the policy it has.
+    fs::write(rig.probe.join(REQUEST), format!("connect localhost {port}")).expect("the request");
+    tilo_test_env::wait_until("the program's answer while no desktop is there", || {
+        fs::read_to_string(rig.probe.join(ANSWER)).is_ok_and(|answer| answer.trim() == "allowed")
+    });
+    fs::write(rig.probe.join(REQUEST), "connect blocked.invalid 80").expect("the request");
+    tilo_test_env::wait_until(
+        "an ungranted name is refused while no desktop is there",
+        || {
+            fs::read_to_string(rig.probe.join(ANSWER))
+                .is_ok_and(|answer| answer.trim() == "refused")
+        },
+    );
+
+    let mut second = rig.start(true);
+    // The workspace's grants are the session's to publish: this desktop publishes them again,
+    // as the workspace's grants are published after a restart.
+    grant_network(&mut second, &rig, "localhost");
+    second.shown();
+    assert!(alive(pid), "the program outlived the desktop");
+    assert!(alive(proxy), "so did its network proxy");
+    assert_eq!(
+        answered(
+            &mut second,
+            &rig.probe,
+            &format!("connect localhost {port}")
+        ),
+        "allowed",
+        "the adopted program still reaches what it was granted"
+    );
+    assert_eq!(
+        answered(&mut second, &rig.probe, "connect blocked.invalid 80"),
+        "refused",
+        "what it was never granted is still refused after the restart"
+    );
+
+    // A connection opened now, then the grant taken back: the connection ends, and new ones are
+    // refused.
+    fs::write(rig.probe.join(REQUEST), format!("hold localhost {port}")).expect("the request");
+    let holding = crate::common::steps_within(&mut second.session, Duration::from_secs(15), |_| {
+        fs::read_to_string(rig.probe.join(ANSWER))
+            .ok()
+            .filter(|answer| answer.trim() == "holding")
+            .map(|_| ())
+    });
+    assert!(
+        holding.is_some(),
+        "the tunnel did not open: answer {:?}, trace {:?}",
+        fs::read_to_string(rig.probe.join(ANSWER)).ok(),
+        fs::read_to_string(rig.probe.join("proxy.log")).ok()
+    );
+    revoke_network(&second);
+    crate::common::wait_for(
+        &mut second.session,
+        "the revoked grant cuts the tunnel",
+        |_| {
+            fs::read_to_string(rig.probe.join(ANSWER))
+                .ok()
+                .filter(|answer| answer.trim() == "cut")
+                .map(|_| ())
+        },
+    );
+    assert_eq!(
+        answered(
+            &mut second,
+            &rig.probe,
+            &format!("connect localhost {port}")
+        ),
+        "refused",
+        "nothing it was granted remains reachable"
+    );
+
+    // Logout ends the program and its proxy, and no control socket answers after.
+    second.end(tilo_app_launch::Teardown::Logout);
+    tilo_test_env::wait_until("the program ends", || !alive(pid));
+    tilo_test_env::wait_until("its proxy ends with it", || !alive(proxy));
+    assert!(
+        std::os::unix::net::UnixStream::connect(&control).is_err(),
+        "no proxy answers on its control socket"
+    );
 }
 
 /// Whether the X server a keeper serves an X11 display with is installed here.

@@ -41,16 +41,24 @@ ARG RPMS_REF
 # guest, xfsprogs makes a state disk, libcap gives the jail helper what it needs,
 # util-linux's setpriv drops to the service's uid, tar unpacks the member
 # identity, and gzip unpacks the Firecracker release below, which is a tarball.
+# Its disk is encrypted, so it also carries the early-boot half of that: LUKS and
+# the TPM tools the unlock helper drives, and iproute for the NetworkManager the
+# initramfs brings up when another of the owner's devices releases its half.
 # Then the base's desktop pieces leave: the SSH server, its clients and the VPN
 # plugins (a server is reached at its console and through Tilo's own transport),
 # the image-signing tools, git, fwupd and the modem manager. mokutil stays,
 # because the base's shim requires it and removing it breaks a protected package.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         chrony \
+        cryptsetup \
         firewalld \
         fuse3 \
         ca-certificates \
+        iproute \
         NetworkManager \
+        NetworkManager-wifi \
+        tpm2-tools \
+        wpa_supplicant \
         curl grep gzip libcap passt sed shadow-utils skopeo tar util-linux xfsprogs \
     && dnf clean all \
     && installed="$(rpm -qa --qf '%{NAME}\n')" \
@@ -91,6 +99,14 @@ COPY bin/tilo-esp-write /usr/libexec/tilo-esp-write
 COPY bin/tilo-image-trust /usr/libexec/tilo/tilo-image-trust
 COPY bin/tilo-image-policy-check /usr/libexec/tilo-image-policy-check
 COPY bin/tilo-board-successor /usr/libexec/tilo-board-successor
+# The disk an installed server stores workspaces on is encrypted, and opening it
+# in early boot is the desktop image's own program, not a server variant of it:
+# tilo-auth opens the system volume (a recovery key, the TPM for a signed boot
+# chain, or another of the owner's devices releasing its half), tilo-rollback
+# holds the TPM's generation keyslots and floor, tilo-boot-signin is the sign-in
+# screen tilo-root-discover steps aside from on a machine nobody signs in to,
+# and tilo-sibling-unlock enrols the sibling factor from the owner's session.
+COPY bin/tilo-auth bin/tilo-boot-signin bin/tilo-rollback bin/tilo-sibling-unlock /usr/libexec/tilo/
 # The jail helper is root-owned and runnable only by the service's group (10001,
 # os/usr/lib/sysusers.d/tilo-hosted.conf; numeric here because the accounts are
 # made further down). Its capabilities are given by tilo-hosted.service at start
@@ -106,6 +122,8 @@ RUN chown 0:10001 /usr/libexec/tilo/tilo-hosted-jail \
         /usr/libexec/tilo/tilo-legacy /usr/libexec/tilo/tilo-image-trust \
         /usr/libexec/tilo-esp-write /usr/libexec/tilo-image-policy-check \
         /usr/libexec/tilo-board-successor /usr/bin/fs \
+        /usr/libexec/tilo/tilo-auth /usr/libexec/tilo/tilo-boot-signin \
+        /usr/libexec/tilo/tilo-rollback /usr/libexec/tilo/tilo-sibling-unlock \
     && for name in tilo-server tilo-server-admin tilo-enroll tilo-legacy; do \
          ln -s ../libexec/tilo/"$name" /usr/bin/"$name"; \
        done \
@@ -139,7 +157,40 @@ COPY os/usr/libexec/tilo-hosted-prepare os/usr/libexec/tilo-hosted-serve \
      os/usr/libexec/tilo-image-trust-staged os/usr/libexec/tilo-esp-mount \
      os/usr/libexec/tilo-server-firstboot os/usr/libexec/tilo-server-state-migrate \
      os/usr/libexec/tilo-server-update-policy \
+     os/usr/libexec/tilo-disk-encrypt os/usr/libexec/tilo-store-volume \
+     os/usr/libexec/tilo-rollback-common os/usr/libexec/tilo-rollback-confirm \
+     os/usr/libexec/tilo-rollback-harden os/usr/libexec/tilo-rollback-initrd-unlock \
+     os/usr/libexec/tilo-root-discover \
      /usr/libexec/
+# Finding and opening the root. The same dracut modules the desktop image builds
+# into its initramfs: 91tilo-rollback carries tilo-auth, tilo-rollback's unlock
+# helper and tilo-root-discover, and 92tilo-sibling-unlock the NetworkManager
+# that reaches the owner's other devices. bootc install generates this image's
+# initramfs from them, so an installed server's boot can open its own root.
+COPY os/usr/lib/systemd/system-generators/tilo-rollback-unlock-generator \
+     os/usr/lib/systemd/system-generators/tilo-root-generator \
+     /usr/lib/systemd/system-generators/
+COPY os/usr/lib/dracut/modules.d/91tilo-rollback /usr/lib/dracut/modules.d/91tilo-rollback
+COPY os/usr/lib/dracut/modules.d/92tilo-sibling-unlock /usr/lib/dracut/modules.d/92tilo-sibling-unlock
+# The public half of the key that signs a generation's PCR prediction: what a
+# TPM keyslot is sealed to, and what early boot verifies the prediction against.
+COPY keys/tpm2-pcr-signing.public.pem /usr/share/tilo/tpm2-pcr-signing.public.pem
+RUN install -d -m 0755 /usr/share/tilo/pcr-predictions
+
+# ---- Initramfs ---------------------------------------------------------------
+# The kernel has to open this machine's root before there is a userspace, and the
+# only place that can happen is an initramfs built with the unlock module in it.
+# dracut runs here, from the desktop image's own script, with the module list a
+# headless machine has: the crypt stack, the unlock chain, and the sibling
+# factor's network, without the greeter and the splash. bootc install copies this
+# initramfs into the installed machine's boot entries.
+COPY os/scripts/build-initramfs.sh os/scripts/verify-board-initramfs.py /usr/local/bin/
+RUN chmod 0755 /usr/local/bin/build-initramfs.sh /usr/local/bin/verify-board-initramfs.py \
+    && set -- /usr/lib/modules/*/vmlinuz \
+    && [ "$#" -eq 1 ] && [ -f "$1" ] \
+    && kver="$(basename "$(dirname "$1")")" \
+    && TILO_INITRAMFS_MODULES="crypt systemd-cryptsetup tpm2-tss tilo-rollback tilo-sibling-unlock" \
+       bash /usr/local/bin/build-initramfs.sh "$kver"
 RUN chmod 0755 /usr/libexec/tilo-hosted-prepare /usr/libexec/tilo-hosted-serve \
         /usr/libexec/tilo-server-health /usr/libexec/tilo-server-update-window \
         /usr/libexec/tilo-server-update-apply \
@@ -148,7 +199,15 @@ RUN chmod 0755 /usr/libexec/tilo-hosted-prepare /usr/libexec/tilo-hosted-serve \
         /usr/libexec/tilo-update-policy-check /usr/libexec/tilo-update-policy-set \
         /usr/libexec/tilo-image-trust-staged \
         /usr/libexec/tilo-esp-mount /usr/libexec/tilo-server-firstboot \
-        /usr/libexec/tilo-server-state-migrate /usr/libexec/tilo-server-update-policy
+        /usr/libexec/tilo-server-state-migrate /usr/libexec/tilo-server-update-policy \
+        /usr/libexec/tilo-disk-encrypt /usr/libexec/tilo-store-volume \
+        /usr/libexec/tilo-rollback-common /usr/libexec/tilo-rollback-confirm \
+        /usr/libexec/tilo-rollback-harden /usr/libexec/tilo-rollback-initrd-unlock \
+        /usr/libexec/tilo-root-discover \
+        /usr/lib/systemd/system-generators/tilo-rollback-unlock-generator \
+        /usr/lib/systemd/system-generators/tilo-root-generator \
+        /usr/lib/dracut/modules.d/91tilo-rollback/module-setup.sh \
+        /usr/lib/dracut/modules.d/92tilo-sibling-unlock/module-setup.sh
 
 # ---- Units ------------------------------------------------------------------
 COPY os/usr/lib/systemd/system/tilo-server.service \
@@ -168,6 +227,10 @@ COPY os/usr/lib/systemd/system/tilo-server.service \
     os/usr/lib/systemd/system/tilo-server-update-apply.timer \
     os/usr/lib/systemd/system/tilo-server-update-policy.service \
     os/usr/lib/systemd/system/tilo-server-update-policy.path \
+    os/usr/lib/systemd/system/tilo-rollback-confirm.service \
+    os/usr/lib/systemd/system/tilo-rollback-confirm.timer \
+    os/usr/lib/systemd/system/tilo-rollback-harden.service \
+    os/usr/lib/systemd/system/tilo-rollback-harden.timer \
     /usr/lib/systemd/system/
 # An update stages where the desktop's does — verified, counted before the
 # reboot, finalized at the next boot — and this image's own step boots into it
@@ -249,6 +312,8 @@ RUN systemctl enable tilo-server-firstboot.service \
     && systemctl enable tilo-server-update-apply.timer \
     && systemctl enable tilo-server-update-policy.path \
     && systemctl enable bootc-fetch-apply-updates.timer \
+    && systemctl enable tilo-rollback-harden.timer \
+    && systemctl enable tilo-rollback-confirm.timer \
     && systemctl set-default multi-user.target
 
 # The server does not run a graphical session; disable greetd + gdm

@@ -332,3 +332,143 @@ async fn a_provider_that_takes_what_is_added_is_asked_once() {
         assert_eq!(body["provider"], json!({"sort": "latency"}), "{body}");
     }
 }
+
+const GOOGLE: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
+
+/// What Google's endpoint is asked beside a step that streams: its thought.
+fn its_thought() -> Value {
+    json!({"google": {"thinking_config": {"include_thoughts": true}}})
+}
+
+/// A step's answer as Google's endpoint streams one it was asked the
+/// thought of: the thought in the content, marked, then the words.
+fn thinking_then(thought: &str, text: &str) -> test_http::Reply {
+    use std::fmt::Write as _;
+    let chunk = |delta: Value, finish: Value| {
+        json!({"id": "reply", "object": "chat.completion.chunk", "created": 1,
+            "model": "vendor/frontier",
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]})
+    };
+    let marked = json!({"role": "assistant", "content": thought,
+        "extra_content": {"google": {"thought": true}}});
+    let mut body = String::new();
+    for event in [
+        chunk(marked, Value::Null),
+        chunk(json!({"content": text}), Value::Null),
+        chunk(json!({}), json!("stop")),
+    ] {
+        write!(body, "data: {event}\n\n").unwrap();
+    }
+    body.push_str("data: [DONE]\n\n");
+    test_http::Reply::status(200)
+        .header("Content-Type", "text/event-stream")
+        .body(body)
+}
+
+/// A wait shows the model thinking: Google's endpoint thinks before every
+/// step and returns the answer alone unless it is asked for its thought.
+/// It is asked where the answer streams. The model and how hard it thinks
+/// stay as they are.
+#[test]
+fn googles_endpoint_is_asked_for_its_thought_where_the_answer_streams() {
+    let body = sent(&at(GOOGLE), "models/frontier", step(INSTRUCTION, "Hello"));
+    assert_eq!(body["extra_body"], its_thought(), "{body}");
+    assert_eq!(body["model"], "models/frontier");
+    assert!(body.get("reasoning_effort").is_none(), "{body}");
+
+    // An answer that comes whole shows nothing while it is made: not asked.
+    let whole = step(INSTRUCTION, "Hello");
+    let body = outbound_body(&at(GOOGLE), "models/frontier", whole, false, false).unwrap();
+    assert!(body.get("extra_body").is_none(), "{body}");
+
+    // The level its person chose goes beside it, as they chose it.
+    let mut levelled = at(GOOGLE);
+    levelled.reasoning = Some(agent_provider_config::ReasoningSetting {
+        param: agent_provider_config::ReasoningParam::ReasoningEffort,
+        effort: "low".into(),
+    });
+    let body = sent(&levelled, "models/frontier", step(INSTRUCTION, "Hello"));
+    assert_eq!(body["reasoning_effort"], "low", "{body}");
+    assert_eq!(body["extra_body"], its_thought(), "{body}");
+
+    // What a caller asked of Google itself stays as it asked it.
+    let kept = json!({"google": {"cached_content": "cachedContents/kept"}});
+    let mut own = step(INSTRUCTION, "Hello");
+    own["extra_body"] = kept.clone();
+    let body = sent(&at(GOOGLE), "models/frontier", own);
+    assert_eq!(body["extra_body"], kept, "{body}");
+
+    // A person switches it off as they switch off any field.
+    let mut quiet = at(GOOGLE);
+    quiet.omit_params = vec!["extra_body".into()];
+    let body = sent(&quiet, "models/frontier", step(INSTRUCTION, "Hello"));
+    assert!(body.get("extra_body").is_none(), "{body}");
+
+    // No other provider is asked it.
+    for endpoint in [OPENROUTER, OPENAI, ELSEWHERE] {
+        let body = sent(&at(endpoint), "frontier", step(INSTRUCTION, "Hello"));
+        assert!(body.get("extra_body").is_none(), "{endpoint}: {body}");
+    }
+}
+
+/// Asked for its thought, Google's endpoint is answered with one, and the
+/// turn keeps it as a thought before the answer's words. Where the endpoint
+/// refuses the asking, the step is asked once more without it, answers, and
+/// is not asked for a thought again.
+#[tokio::test(flavor = "current_thread")]
+async fn googles_thought_is_kept_as_one_and_a_refused_asking_is_asked_again_once() {
+    let stand_in = test_http::Responder::start(vec![
+        thinking_then("THE THOUGHT.", "done"),
+        test_http::Reply::status(400)
+            .header("Content-Type", "application/json")
+            .body(r#"{"error":{"message":"Unknown name \"extra_body\": Cannot find field."}}"#),
+        answering("done"),
+        answering("done again"),
+    ]);
+    // The stand-in answers under Google's own name, so it is asked what
+    // Google's endpoint is asked.
+    let name = "generativelanguage.googleapis.com";
+    let client = provider_builder()
+        .resolve(
+            name,
+            std::net::SocketAddr::from(([127, 0, 0, 1], stand_in.port())),
+        )
+        .build()
+        .unwrap();
+    let profile = at(&format!("http://{name}:{}/v1beta/openai", stand_in.port()));
+    let sent = |stand_in: &test_http::Responder| -> Vec<Value> {
+        stand_in
+            .drain_requests()
+            .iter()
+            .map(|request| serde_json::from_slice(&request.body).unwrap())
+            .collect()
+    };
+
+    let answer = asked(&client, &profile).await.unwrap();
+    let seen = sent(&stand_in);
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert_eq!(seen[0]["extra_body"], its_thought(), "{}", seen[0]);
+    assert_eq!(
+        json!(answer.message.content),
+        json!([
+            {"type": "reasoning", "text": "THE THOUGHT."},
+            {"type": "text", "text": "done"},
+        ])
+    );
+
+    // Refused: asked again once, and nothing but the asking differs.
+    let answer = asked(&client, &profile).await.unwrap();
+    assert_eq!(answer.usage.input_tokens, 10);
+    let seen = sent(&stand_in);
+    assert_eq!(seen.len(), 2, "asked again once: {seen:?}");
+    assert_eq!(seen[0]["extra_body"], its_thought(), "{}", seen[0]);
+    let mut without = seen[0].clone();
+    without.as_object_mut().unwrap().remove("extra_body");
+    assert_eq!(seen[1], without);
+
+    // The next step is not asked for what was refused.
+    asked(&client, &profile).await.unwrap();
+    let seen = sent(&stand_in);
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert!(seen[0].get("extra_body").is_none(), "{}", seen[0]);
+}

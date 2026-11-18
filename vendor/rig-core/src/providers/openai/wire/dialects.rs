@@ -46,6 +46,16 @@ pub const OPENAI: Dialect = Dialect {
     )
 };
 
+/// Google's Gemini API through its OpenAI-compatible endpoint: OpenAI's own
+/// Chat wire, with a thought read out of the content it stands in.
+pub const GEMINI: Dialect = Dialect {
+    quirks: Quirks {
+        thought_tags: true,
+        ..OPENAI.quirks
+    },
+    ..OPENAI
+};
+
 /// Azure OpenAI: the deployment is in the URL, the API version is a query
 /// parameter, and the credential is an `api-key` header.
 pub const AZURE: Dialect = Dialect {
