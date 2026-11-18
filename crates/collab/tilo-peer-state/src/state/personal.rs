@@ -45,7 +45,9 @@ use neighbour_wire::{RefusalReason, WriteRefusal};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
-use tilo_action_policy::{Authority, Grantee, Party, TreePath};
+use tilo_action_policy::{
+    Acting, ActionKind, Answer, Authority, Context, Grantee, Party, TreePath, WorkspacePolicy,
+};
 use tilo_lock::MutexRecover;
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
 use web_time::{Duration, SystemTime};
@@ -1101,8 +1103,10 @@ impl PersonalStore {
         // as itself in it: a resource of one device's own subtree is that
         // device's alone, and every other write is decided as the edit of its
         // document that it is.
-        let grantees = vec![Grantee::person(hex::encode(source))];
-        let authority = Authority::person(Party::new(grantees, []).owning(TreePath::root()));
+        let author = OwnStoreAuthor {
+            device: hex::encode(source),
+            store: &store_key,
+        };
         // What a device hands on was signed when its owner wrote it, which may
         // be long before: its age is no reason to refuse it.
         let validate = if origin == Origin::Relayed {
@@ -1110,7 +1114,7 @@ impl PersonalStore {
         } else {
             collab_types::validate_admitted_inbound_op
         };
-        validate(envelope, &authority, &mut validated, now, CLOCK_SKEW)
+        validate(envelope, &author, &mut validated, now, CLOCK_SKEW)
             .map_err(|error| format!("the write is not admitted: {error}"))?;
         candidate.channel = validated;
         collab_types::check_claimed(envelope)?;
@@ -1585,6 +1589,48 @@ impl PeerPersonal {
         self.read(PersonalStore::durable)
     }
 }
+
+/// Who a write to the person's own store is decided as: the device that
+/// signed it owns every node of the store, and a change naming its invoker (an
+/// agent the device handed its session to) is decided as that invoker too,
+/// bounded by the device, through the same decision a workspace takes.
+struct OwnStoreAuthor<'a> {
+    /// The signing device, as the store names its owner.
+    device: String,
+    /// The store's key: the workspace its nodes are under.
+    store: &'a str,
+}
+
+impl collab_types::ChangeAuthor for OwnStoreAuthor<'_> {
+    fn answer(
+        &self,
+        invoker: Option<&Acting>,
+        node: &TreePath,
+        kind: ActionKind,
+        cx: &Context<'_>,
+    ) -> Answer {
+        let owner = Authority::person(
+            Party::new(vec![Grantee::person(self.device.clone())], []).owning(TreePath::root()),
+        )
+        .decide(node, kind, cx)
+        .answer;
+        let Some(invoker) = invoker else {
+            return owner;
+        };
+        let acting = invoker
+            .clone()
+            .signed_by(&Acting::person(self.device.clone()));
+        let policy = WorkspacePolicy::new(self.store, self.device.clone());
+        let preset = acting.handed_preset(self.store);
+        let as_invoker = Authority::of_acting(&acting, &policy, &preset)
+            .decide(node, kind, cx)
+            .answer;
+        owner.min(as_invoker)
+    }
+}
+
+#[cfg(test)]
+mod own_store_tests;
 
 #[cfg(test)]
 mod tests {

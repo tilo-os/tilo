@@ -57,17 +57,20 @@ impl ChangeAuthor for MemberAccess {
     }
 }
 
-/// An authority with no workspace policy to decide an invoker by (a person's
-/// own store, where they own every node) decides every change as itself.
+/// An authority alone holds no policy to decide an invoker by: it decides a
+/// change naming none, and refuses one that names one.
 impl ChangeAuthor for tilo_action_policy::Authority<'_> {
     fn answer(
         &self,
-        _invoker: Option<&Acting>,
+        invoker: Option<&Acting>,
         node: &TreePath,
         kind: ActionKind,
         cx: &Context<'_>,
     ) -> Answer {
-        self.decide(node, kind, cx).answer
+        match invoker {
+            None => self.decide(node, kind, cx).answer,
+            Some(_) => Answer::Deny,
+        }
     }
 }
 
