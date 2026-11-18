@@ -30,7 +30,7 @@ impl<T, E> PendingRead<T, E> {
     /// Subsequent polls after completion return `None`.
     pub fn poll(&mut self, service: &BlockingClient) -> Option<Result<T, E>> {
         let future = self.future.as_mut()?;
-        let outcome = service.local.block_on(&service.runtime, async {
+        let outcome = service.runtime.block_on(async {
             tokio::task::yield_now().await;
             poll_fn(|cx| Poll::Ready(future.as_mut().poll(cx))).await
         });
@@ -50,7 +50,7 @@ impl BlockingClient {
             .future
             .take()
             .ok_or_else(|| E::from("app-process read already completed".to_string()))?;
-        self.local.block_on(&self.runtime, future)
+        self.runtime.block_on(future)
     }
 
     /// Start bounded app-side catalogue work on this client's owned runtime. It has no service
@@ -74,7 +74,7 @@ impl BlockingClient {
         &self,
         resource: Resource,
     ) -> impl Future<Output = Result<Answer, String>> + use<> {
-        self.connection.call(Operation::Read(resource))
+        self.connection.call(Operation::Read(resource), |_| {})
     }
 
     pub fn begin_list(&self) -> PendingRead<Vec<ListedPackage>> {

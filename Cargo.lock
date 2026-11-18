@@ -8634,6 +8634,7 @@ version = "0.1.0"
 dependencies = [
  "accesskit",
  "accesskit_unix",
+ "app-process",
  "ash",
  "blake3",
  "bounded-command",
@@ -15400,6 +15401,7 @@ dependencies = [
  "account-credentials",
  "accounts",
  "agent-provider-config",
+ "app-process",
  "bounded-command",
  "calendar",
  "cloud-source",
@@ -15419,7 +15421,6 @@ dependencies = [
  "quick-xml 0.41.0",
  "rcgen",
  "runtime-dylib",
- "runtime-portal",
  "serde",
  "serde_json",
  "settings-sections",

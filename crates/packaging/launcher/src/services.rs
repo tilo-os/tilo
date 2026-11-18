@@ -136,9 +136,6 @@ fn child_fd_reserved(fd: i32) -> bool {
 /// the app id stamped on the connection).
 use tilo_app_id::apps::SETTINGS as SETTINGS_APP_ID;
 use tilo_app_id::apps::STORE as STORE_APP_ID;
-pub const APP_HOST_LAUNCH_MAGIC: [u8; 4] = *b"QAH1";
-/// After [`APP_HOST_LAUNCH_MAGIC`]: a big-endian `u32` length, then the JSON handoff.
-const APP_HOST_HANDOFF_FRAMING: Framing = Framing::big_endian(1024).reject_empty();
 /// The version of the handoff the launcher writes the compatibility service, apart from the
 /// version of the requests the app then sends.
 pub const COMPAT_HANDOFF_PROTOCOL: u16 = 1;
@@ -732,15 +729,7 @@ fn write_ush_handoff(
 }
 
 fn write_app_process_handoff(stream: &mut UnixStream, app_id: &str) -> std::io::Result<()> {
-    let bytes = serde_json::to_vec(&serde_json::json!({
-        "protocol": 1,
-        "app_id": app_id,
-    }))
-    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    let frame = APP_HOST_HANDOFF_FRAMING.encode(&bytes)?;
-    stream.write_all(&APP_HOST_LAUNCH_MAGIC)?;
-    stream.write_all(&frame)?;
-    stream.flush()
+    app_process::wire::write_handoff(stream, app_id)
 }
 
 fn resolve_service_binds_inner(
@@ -1210,7 +1199,9 @@ mod tests {
                 );
 
                 let bytes = written(|stream| write_app_process_handoff(stream, "so.tilo.notes"));
-                assert_eq!(handshake(b"QAH1", APP_HOST_HANDOFF_FRAMING, &bytes), app_only);
+                let handoff = app_process::wire::read_handoff(&mut bytes.as_slice())
+                    .expect("the package service handoff");
+                assert_eq!(handoff.app_id, "so.tilo.notes");
             }
             {
                 use std::io::Read;

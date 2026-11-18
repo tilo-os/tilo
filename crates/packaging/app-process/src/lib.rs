@@ -13,7 +13,7 @@ use std::path::PathBuf;
 pub mod client;
 pub mod install;
 #[cfg(feature = "service")]
-pub mod runtime_request;
+pub mod language_pack;
 #[cfg(feature = "service")]
 pub mod service;
 #[cfg(all(unix, feature = "test-support"))]
@@ -28,9 +28,13 @@ pub use package_store::PackageStore;
 pub use package_store::{Catalog, InstalledPackage, Pinning};
 pub use tilo_app_package::PackageId;
 
+/// The name the launcher hands this service to an app under, and its socket
+/// file's name without the extension.
+pub const SERVICE: &str = "app-process";
+
 /// The `app-process` interface's one version (crates/packaging/app-process/interface.toml), which the
 /// service speaks to the apps it is handed to, on its own rather than the runtime interface's.
-pub const APP_PROCESS_INTERFACE_VERSION: u32 = 5;
+pub const APP_PROCESS_INTERFACE_VERSION: u32 = 6;
 
 /// `$XDG_RUNTIME_DIR/tilo/services/app-process.sock`, or `None` without a runtime directory. Never
 /// the shared temp directory, where any local user could bind the name first.

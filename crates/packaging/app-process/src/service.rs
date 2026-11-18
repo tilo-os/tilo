@@ -7,11 +7,13 @@ use std::{io::Write as _, rc::Rc, sync::Arc};
 
 use crate::client::Refusal;
 use crate::install::{InstallExpectation, install_verified_tapp};
+use crate::language_pack::{LanguagePackInstalls, SETTINGS_APP_ID};
 use crate::wire::{
     Action, Answer, Catalogue, Expected, FlatpakVerb, Operation, PackageEntry, RemoteVerb,
-    Resource, WirePinning,
+    Resource, Sink, WirePinning,
 };
 use package_store::{Catalog, InstalledPackage, PackageStore, Pinning};
+use tilo_app_id::apps::STORE as STORE_APP_ID;
 use tilo_app_package::id::PackageId;
 
 /// What `tilo-install` runs after every install, update and uninstall, and at every start of the
@@ -51,17 +53,39 @@ pub struct AppProcessServer {
     store: Arc<PackageStore>,
     catalog: Arc<Catalog>,
     max_store_bytes: u64,
+    /// The app the launcher opened this connection for: what it may call.
+    app_id: String,
+    /// The person's language packs, shared by every connection.
+    language_packs: Arc<LanguagePackInstalls>,
 }
 
 impl AppProcessServer {
     /// A server backed by `store`, listing what `catalog` (the same user store plus the image's
     /// preinstalled packages) can run. `max_store_bytes` is the soft cap for the post-install
-    /// sweep; `0` disables it.
-    pub fn new(store: Arc<PackageStore>, catalog: Arc<Catalog>, max_store_bytes: u64) -> Self {
+    /// sweep; `0` disables it. `app_id` is the app the connection was opened for, and
+    /// `language_packs` the person's packs across connections.
+    pub fn new(
+        store: Arc<PackageStore>,
+        catalog: Arc<Catalog>,
+        max_store_bytes: u64,
+        app_id: String,
+        language_packs: Arc<LanguagePackInstalls>,
+    ) -> Self {
         Self {
             store,
             catalog,
             max_store_bytes,
+            app_id,
+            language_packs,
+        }
+    }
+
+    /// Refuse a call `self.app_id` may not make.
+    fn authorized(&self, app: &str, why: &str) -> Result<(), Error> {
+        if self.app_id == app {
+            Ok(())
+        } else {
+            Err(Error::failed(format!("{} {why}", self.app_id)))
         }
     }
 }
@@ -778,20 +802,50 @@ fn run_host_command(command: std::process::Command) -> Result<String, Error> {
 impl crate::wire::Server for AppProcessServer {
     #[allow(
         clippy::future_not_send,
-        reason = "calls run on the connection's LocalSet and never cross a thread"
+        reason = "calls are answered on the connection's LocalSet and never cross a thread"
     )]
-    async fn handle(self: Rc<Self>, request: Operation) -> Result<Answer, String> {
+    async fn handle(self: Rc<Self>, request: Operation, progress: Sink) -> Result<Answer, String> {
         match request {
             Operation::Read(resource) => self.read(resource).await,
-            Operation::Invoke(action) => self.invoke(action).await,
+            Operation::Invoke(action) => self.invoke(action, &progress).await,
         }
         .map_err(|error| error.0)
     }
 }
 
 impl AppProcessServer {
+    /// The language packs the enabled repositories offer.
+    async fn language_packs(&self) -> Result<Answer, Error> {
+        let installs = Arc::clone(&self.language_packs);
+        Ok(Answer::Languages(
+            blocking(move || installs.offers().map_err(Error::failed)).await?,
+        ))
+    }
+
+    /// Install a language pack, reporting where it stands until it lands.
+    async fn install_language_pack(
+        &self,
+        locale: String,
+        progress: &Sink,
+    ) -> Result<Answer, Error> {
+        let installs = Arc::clone(&self.language_packs);
+        let progress = progress.clone();
+        installs
+            .install(locale, move |reported| progress.report(reported))
+            .await
+            .map(|()| Answer::Done)
+            .map_err(Error::failed)
+    }
+
     async fn read(&self, resource: Resource) -> Result<Answer, Error> {
         let catalog = Arc::clone(&self.catalog);
+        // Settings chooses the person's languages and nothing else; the Store
+        // manages packages and nothing else.
+        if matches!(resource, Resource::LanguagePacks) {
+            self.authorized(SETTINGS_APP_ID, "does not choose the person's languages")?;
+        } else {
+            self.authorized(STORE_APP_ID, "does not manage packages")?;
+        }
         match resource {
             Resource::Packages => {
                 let rows = blocking(move || {
@@ -858,6 +912,7 @@ impl AppProcessServer {
                 }
                 Ok(Answer::Text(json))
             }
+            Resource::LanguagePacks => self.language_packs().await,
             Resource::LocalReview { tapp_bytes } => {
                 if tapp_bytes.len() > crate::local_package::MAX_LOCAL_BYTES {
                     return Err(Error::failed(
@@ -878,10 +933,18 @@ impl AppProcessServer {
         clippy::too_many_lines,
         reason = "one arm per action the service performs"
     )]
-    async fn invoke(&self, action: Action) -> Result<Answer, Error> {
+    async fn invoke(&self, action: Action, progress: &Sink) -> Result<Answer, Error> {
         let (store, catalog) = (Arc::clone(&self.store), Arc::clone(&self.catalog));
         let max_bytes = self.max_store_bytes;
+        if matches!(action, Action::InstallLanguagePack { .. }) {
+            self.authorized(SETTINGS_APP_ID, "does not choose the person's languages")?;
+        } else {
+            self.authorized(STORE_APP_ID, "does not manage packages")?;
+        }
         match action {
+            Action::InstallLanguagePack { locale } => {
+                self.install_language_pack(locale, progress).await
+            }
             Action::SetPinned { id, pinned } => {
                 let id = PackageId::from_bytes(id);
                 blocking(move || {

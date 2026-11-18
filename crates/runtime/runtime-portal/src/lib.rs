@@ -28,7 +28,6 @@ pub mod process_binding;
 #[cfg(unix)]
 pub mod request_rendezvous;
 pub mod retained_role;
-pub mod runtime_request;
 pub mod service_socket;
 pub mod tilolang_process;
 pub mod tools;

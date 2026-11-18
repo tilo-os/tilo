@@ -127,7 +127,15 @@ pub fn build_tapp_for(app_id: &str, payload_kib: usize) -> (Vec<u8>, PackageId) 
 /// The Store's connection to the host listening at `socket`, past the
 /// launcher's handoff, once the host accepts connections.
 pub fn store_client(socket: &std::path::Path) -> app_process::client::BlockingClient {
-    use std::io::Write as _;
+    client_for(socket, tilo_app_id::apps::STORE)
+}
+
+/// A connection the launcher would hand Settings.
+pub fn settings_client(socket: &std::path::Path) -> app_process::client::BlockingClient {
+    client_for(socket, tilo_app_id::apps::SETTINGS)
+}
+
+fn client_for(socket: &std::path::Path, app_id: &str) -> app_process::client::BlockingClient {
     let deadline = tilo_test_env::hang_deadline();
     let mut stream = loop {
         if let Ok(stream) = std::os::unix::net::UnixStream::connect(socket) {
@@ -139,11 +147,72 @@ pub fn store_client(socket: &std::path::Path) -> app_process::client::BlockingCl
         );
         std::thread::sleep(std::time::Duration::from_millis(5));
     };
-    let handoff = br#"{"protocol":1,"app_id":"so.tilo.store"}"#;
-    stream.write_all(b"QAH1").unwrap();
-    stream
-        .write_all(&u32::try_from(handoff.len()).unwrap().to_be_bytes())
-        .unwrap();
-    stream.write_all(handoff).unwrap();
+    app_process::wire::write_handoff(&mut stream, app_id).unwrap();
     app_process::client::BlockingClient::from_connected_fd(stream.into()).unwrap()
+}
+
+/// The daemon on a socket of its own, on a thread that ends with the test
+/// process.
+pub struct Harness {
+    socket: std::path::PathBuf,
+    store_root: std::path::PathBuf,
+    _tmp: tempfile::TempDir,
+}
+
+impl Harness {
+    pub fn new() -> Self {
+        Self::with_language_packs(app_process::language_pack::LanguagePackInstalls::new())
+    }
+
+    pub fn with_language_packs(
+        language_packs: std::sync::Arc<app_process::language_pack::LanguagePackInstalls>,
+    ) -> Self {
+        let tmp = tempfile::tempdir().unwrap();
+        let socket = tmp.path().join("app-process.sock");
+        let store_root = tmp.path().join("store");
+        let store = std::sync::Arc::new(package_store::PackageStore::at(&store_root));
+        // An empty image catalog: the host's own preinstalled packages must
+        // not appear in what this store lists.
+        let system_dir = tmp.path().join("system");
+        std::fs::create_dir_all(&system_dir).unwrap();
+        let catalog = std::sync::Arc::new(package_store::Catalog::at(
+            &store_root,
+            Some(package_store::SystemStore {
+                data_dir: system_dir.clone(),
+                payload_dir: system_dir,
+                interfaces: None,
+            }),
+        ));
+        let bound = socket.clone();
+        // `serve` accepts forever; the thread ends with the test process.
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            tokio::task::LocalSet::new().block_on(&runtime, async move {
+                let listener = app_process::transport::bind(&bound).unwrap();
+                app_process::transport::serve(listener, store, catalog, 0, language_packs).await
+            })
+        });
+        Self {
+            socket,
+            store_root,
+            _tmp: tmp,
+        }
+    }
+
+    pub fn socket(&self) -> &std::path::Path {
+        &self.socket
+    }
+
+    pub fn store_root(&self) -> &std::path::Path {
+        &self.store_root
+    }
+}
+
+impl Default for Harness {
+    fn default() -> Self {
+        Self::new()
+    }
 }

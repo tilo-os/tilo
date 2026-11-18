@@ -141,8 +141,8 @@ tilo-paths = { path = "../../crates/platform/tilo-paths" }
 quick-xml.workspace = true
 uuid.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-# The installer service, for the language packs Region & formats offers.
-runtime-portal = { path = "../../crates/runtime/runtime-portal" }
+# The installer service's client, for the language packs Region & formats offers.
+app-process = { path = "../../crates/packaging/app-process", default-features = false }
 tilo-capture = { path = "../../crates/platform/tilo-capture", features = ["scanner"], optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -182,8 +182,6 @@ cloud-source-icloud = { path = "../../crates/system/cloud-source-icloud", featur
 # The keyboard preview's confinement test runs it inside the launcher's real
 # read-only sandbox profile. The app itself never links the launcher.
 launcher = { path = "../../crates/packaging/launcher" }
-# The installer service, for the language packs Region & formats offers.
-runtime-portal = { path = "../../crates/runtime/runtime-portal" }
 provider-settings-ui = { version = "0.1.0", path = "../../crates/sdk/provider-settings-ui", features = ["test-support"] }
 zip.workspace = true
 tilo-ntfs-mount = { path = "../../crates/system/ntfs-mount" }

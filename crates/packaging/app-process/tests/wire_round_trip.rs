@@ -7,61 +7,14 @@
 )]
 
 use crate::common;
-use std::path::PathBuf;
-use std::sync::Arc;
 
 use app_process::install::{InstallExpectation, install_tapp};
-use app_process::transport;
-use package_store::{Catalog, PackageStore, SystemStore};
-
-struct Harness {
-    socket: PathBuf,
-    store_root: PathBuf,
-    _tmp: tempfile::TempDir,
-}
-
-impl Harness {
-    fn new() -> Self {
-        let tmp = tempfile::tempdir().unwrap();
-        let socket = tmp.path().join("app-process.sock");
-        let store_root = tmp.path().join("store");
-        let store = Arc::new(PackageStore::at(&store_root));
-        // An empty image catalog: the host's own preinstalled packages must
-        // not appear in what this store lists.
-        let system_dir = tmp.path().join("system");
-        std::fs::create_dir_all(&system_dir).unwrap();
-        let catalog = Arc::new(Catalog::at(
-            &store_root,
-            Some(SystemStore {
-                data_dir: system_dir.clone(),
-                payload_dir: system_dir,
-                interfaces: None,
-            }),
-        ));
-        let bound = socket.clone();
-        // `serve` accepts forever; the thread ends with the test process.
-        std::thread::spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            tokio::task::LocalSet::new().block_on(&runtime, async move {
-                let listener = transport::bind(&bound).unwrap();
-                transport::serve(listener, store, catalog, 0).await
-            })
-        });
-        Self {
-            socket,
-            store_root,
-            _tmp: tmp,
-        }
-    }
-}
+use package_store::PackageStore;
 
 #[test]
 fn install_list_pin_over_the_wire() {
-    let h = Harness::new();
-    let client = common::store_client(&h.socket);
+    let h = common::Harness::new();
+    let client = common::store_client(h.socket());
 
     let (bytes, expected_id) = common::build_tapp(2);
     let publisher = app_registry::tapp::load(&bytes)
@@ -105,8 +58,8 @@ fn install_list_pin_over_the_wire() {
 
 #[test]
 fn registry_catalogue_refuses_caller_supplied_endpoints() {
-    let h = Harness::new();
-    let client = common::store_client(&h.socket);
+    let h = common::Harness::new();
+    let client = common::store_client(h.socket());
     let error = client
         .registry_catalogue("https://caller-controlled.example.test/")
         .expect_err("caller endpoint must be refused");
@@ -118,8 +71,8 @@ fn registry_catalogue_refuses_caller_supplied_endpoints() {
 
 #[test]
 fn list_reports_payload_bytes_without_walking() {
-    let h = Harness::new();
-    let store = PackageStore::at(&h.store_root);
+    let h = common::Harness::new();
+    let store = PackageStore::at(h.store_root());
     let (bytes, _) = common::build_tapp(2);
     install_tapp(&store, &bytes, app_process::Pinning::Tried, None).unwrap();
     let row = store.registry().unwrap().entries()[0].clone();
@@ -130,7 +83,7 @@ fn list_reports_payload_bytes_without_walking() {
         "install records the tree's size"
     );
 
-    let client = common::store_client(&h.socket);
+    let client = common::store_client(h.socket());
     let listed_size = || {
         let listed = client.list().unwrap();
         assert_eq!(listed.len(), 1);

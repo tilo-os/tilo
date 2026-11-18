@@ -83,7 +83,15 @@ fn main() -> anyhow::Result<()> {
         let _startup = tokio::task::spawn_blocking(move || {
             startup(&startup_store, &startup_catalog, max_store_bytes);
         });
-        transport::serve(listener, store, catalog, cli.max_store_bytes).await
+        let language_packs = app_process::language_pack::LanguagePackInstalls::new();
+        transport::serve(
+            listener,
+            store,
+            catalog,
+            cli.max_store_bytes,
+            language_packs,
+        )
+        .await
     })
 }
 

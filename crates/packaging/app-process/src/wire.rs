@@ -1,11 +1,14 @@
-//! The app-process wire: postcard messages behind `wire_frame` length prefixes on the
-//! launcher-issued `app-process` connection. Every call carries an id the answer echoes, so several
-//! calls are in flight on one connection: a slow catalogue read never holds up a pin or a list.
+//! The package service's wire: postcard messages behind `wire_frame` length prefixes on the
+//! launcher-issued connection. Every call carries an id the answer echoes, so several calls are in
+//! flight on one connection: a slow catalogue read never holds up a pin or a list. A call may also
+//! report progress before its answer, on the same connection, named by its id.
 //! All `id` fields carry the raw 32-byte BLAKE3 package id; presentation (`tapp:<hex>`) is the
 //! caller's.
 
+use std::collections::VecDeque;
 use std::future::Future;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -18,16 +21,137 @@ pub const FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(64 <
 
 pub type WireId = [u8; 32];
 
+/// What the launcher writes first on the connection it hands the service: the
+/// app whose launch asked for it. The connection is the launcher's own, so the
+/// app id is the launcher's statement, and the service decides what that app
+/// may call.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Handoff {
+    pub app_id: String,
+}
+
+/// Prefix that separates the launcher's handoff from a raw diagnostic client.
+pub const HANDOFF_MAGIC: [u8; 4] = *b"QPS1";
+
+/// After [`HANDOFF_MAGIC`]: a little-endian `u32` length, then a postcard [`Handoff`].
+pub const HANDOFF_FRAMING: wire_frame::Framing =
+    wire_frame::Framing::little_endian(1024).reject_empty();
+
+/// Write the launcher's handoff, which the service reads before any call.
+///
+/// # Errors
+///
+/// A write error, or a frame that does not fit [`HANDOFF_FRAMING`].
+pub fn write_handoff(stream: &mut impl std::io::Write, app_id: &str) -> std::io::Result<()> {
+    let handoff = Handoff {
+        app_id: app_id.to_owned(),
+    };
+    stream.write_all(&HANDOFF_MAGIC)?;
+    HANDOFF_FRAMING
+        .write_value(stream, &handoff)
+        .map_err(std::io::Error::other)?;
+    stream.flush()
+}
+
+/// Read the launcher's handoff.
+///
+/// # Errors
+///
+/// A read error, a frame that is not a handoff, or a peer that hung up
+/// before sending one.
+pub fn read_handoff(stream: &mut impl std::io::Read) -> std::io::Result<Handoff> {
+    let mut magic = [0_u8; 4];
+    std::io::Read::read_exact(stream, &mut magic)?;
+    if magic != HANDOFF_MAGIC {
+        return Err(std::io::Error::other("not a package service handoff"));
+    }
+    HANDOFF_FRAMING
+        .read_value::<_, Handoff>(stream)
+        .map_err(std::io::Error::other)?
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "the peer hung up before its handoff",
+            )
+        })
+}
+
+/// Read the launcher's handoff from an async stream, as the service does.
+///
+/// # Errors
+///
+/// As [`read_handoff`].
+pub async fn read_handoff_async(stream: &mut (impl AsyncRead + Unpin)) -> std::io::Result<Handoff> {
+    let mut magic = [0_u8; 4];
+    tokio::io::AsyncReadExt::read_exact(stream, &mut magic).await?;
+    if magic != HANDOFF_MAGIC {
+        return Err(std::io::Error::other("not a package service handoff"));
+    }
+    HANDOFF_FRAMING
+        .read_value_async::<_, Handoff>(stream)
+        .await
+        .map_err(std::io::Error::other)?
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "the peer hung up before its handoff",
+            )
+        })
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Call {
     pub id: u64,
     pub request: Operation,
 }
 
+/// One message the service sends: a call's answer, or progress on a call that
+/// is still in flight.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Frame {
+    Reply(Reply),
+    /// Where the call `id` stands; its [`Frame::Reply`] still follows.
+    Event(Event),
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Reply {
     pub id: u64,
     pub answer: Result<Answer, String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Event {
+    /// The call this progresses.
+    pub id: u64,
+    pub progress: Progress,
+}
+
+/// Where a call in flight stands.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Progress {
+    /// A language pack: the download's phase and bytes so far.
+    LanguagePack {
+        phase: Phase,
+        received: u64,
+        total: Option<u64>,
+    },
+}
+
+/// Where a language-pack install stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Phase {
+    /// Choosing the repository and the build to fetch.
+    Preparing,
+    Downloading,
+    Installing,
+}
+
+/// One of the person's languages a repository offers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OfferedLanguage {
+    pub locale: String,
+    pub installed: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -64,6 +188,9 @@ pub enum Resource {
     /// Review handed bytes using this person's scoped attestors and
     /// revocations.
     LocalReview { tapp_bytes: Vec<u8> },
+    /// The language packs the repositories offer, by locale, and whether each
+    /// is installed. Settings only.
+    LanguagePacks,
 }
 
 /// Retention of an installed package.
@@ -153,6 +280,13 @@ pub enum Action {
         app_id: String,
         branch: String,
     },
+    /// Make the language pack of `locale` (`de-DE`) installed, answering once
+    /// it is, and reporting progress as it goes. Asking again while one is
+    /// under way follows the same install instead of starting a second.
+    /// Settings only.
+    InstallLanguagePack {
+        locale: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -194,14 +328,41 @@ pub enum Answer {
     /// carries skips absent fields, which postcard cannot read back.
     Review(String),
     Installed(WireId),
+    /// The language packs the repositories offer. Settings only.
+    Languages(Vec<OfferedLanguage>),
 }
 
-/// A service's side of the wire: one answer per request. Calls run concurrently on one connection;
-/// one still running when its connection ends is dropped.
+/// Where a call in flight reports progress, before its answer. The service
+/// hands one to every call; a call with nothing to report sends no [`Event`].
+#[derive(Clone)]
+pub struct Sink {
+    outgoing: Arc<Mutex<VecDeque<Frame>>>,
+    queued: Arc<tokio::sync::Notify>,
+    id: u64,
+}
+
+impl Sink {
+    /// Report where the call stands. A connection that has ended drops it.
+    pub fn report(&self, progress: Progress) {
+        self.outgoing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push_back(Frame::Event(Event {
+                id: self.id,
+                progress,
+            }));
+        self.queued.notify_one();
+    }
+}
+
+/// A service's side of the wire: one answer per request, with any progress
+/// reported through its [`Sink`] before it. Calls are answered concurrently on
+/// one connection; one still in flight when its connection ends is dropped.
 pub trait Server: 'static {
     fn handle(
         self: Rc<Self>,
         request: Operation,
+        progress: Sink,
     ) -> impl Future<Output = Result<Answer, String>> + 'static;
 }
 
@@ -212,11 +373,11 @@ async fn next_call<R: AsyncRead + Unpin>(mut reader: R) -> Next<R> {
     (reader, call)
 }
 
-/// Serve `service` on one connection until the peer hangs up. Must run on a
-/// `LocalSet`. A service panic resumes here, ending the connection.
+/// Serve `service` on one connection until the peer hangs up. Must be driven on
+/// a `LocalSet`. A service panic resumes here, ending the connection.
 #[allow(
     clippy::future_not_send,
-    reason = "calls run on the connection's LocalSet and never cross a thread"
+    reason = "calls are answered on the connection's LocalSet and never cross a thread"
 )]
 pub async fn serve<H, R, W>(
     server: Rc<H>,
@@ -229,6 +390,10 @@ where
     W: AsyncWrite + Unpin,
 {
     use tokio::io::AsyncWriteExt as _;
+    // Every message the connection sends is queued here, so a call's progress
+    // and its answer never race for the writer.
+    let outgoing = Arc::new(Mutex::new(VecDeque::<Frame>::new()));
+    let queued = Arc::new(tokio::sync::Notify::new());
     let mut calls = tokio::task::JoinSet::new();
     let mut next = Box::pin(next_call(reader));
     loop {
@@ -237,18 +402,42 @@ where
                 let Some(Call { id, request }) = call? else {
                     return Ok(());
                 };
-                let answer = Rc::clone(&server).handle(request);
-                calls.spawn_local(async move { (id, answer.await) });
+                let progress = Sink {
+                    outgoing: Arc::clone(&outgoing),
+                    queued: Arc::clone(&queued),
+                    id,
+                };
+                let answer = Rc::clone(&server).handle(request, progress);
+                let (outgoing, queued) = (Arc::clone(&outgoing), Arc::clone(&queued));
+                calls.spawn_local(async move {
+                    let answer = answer.await;
+                    outgoing
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push_back(Frame::Reply(Reply { id, answer }));
+                    queued.notify_one();
+                });
                 next = Box::pin(next_call(reader));
             }
+            () = queued.notified() => {
+                loop {
+                    let frame = outgoing
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .pop_front();
+                    let Some(frame) = frame else {
+                        break;
+                    };
+                    FRAMING.write_value_async(&mut writer, &frame).await?;
+                    writer.flush().await?;
+                }
+            }
             Some(done) = calls.join_next() => {
-                let (id, answer) = match done {
-                    Ok(done) => done,
-                    Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
-                    Err(_) => continue,
-                };
-                FRAMING.write_value_async(&mut writer, &Reply { id, answer }).await?;
-                writer.flush().await?;
+                if let Err(error) = done
+                    && error.is_panic()
+                {
+                    std::panic::resume_unwind(error.into_panic());
+                }
             }
         }
     }

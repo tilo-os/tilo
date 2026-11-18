@@ -2,25 +2,20 @@
 # review a change here like an API change (docs/architecture/compatibility.md).
 # Everything above [schema] is authored; [schema] and `version` are written.
 
-# App ↔ app process: the `app-process` service the launcher hands the Store and
-# Settings, and nothing else. The Store's resources and actions (postcard
-# calls, `crate::wire`) and Settings' language-pack requests (length-prefixed
-# JSON) share its socket and its one number, apart from the runtime interface
-# every app speaks. Checked by postcard's rules, the stricter of the two.
+# App ↔ app process: the service the launcher hands the Store and Settings, and
+# nothing else. Both speak postcard calls on its socket: the Store's resources
+# and actions, and Settings' language packs, whose operations only Settings may
+# call. Its own number, apart from the runtime interface every app speaks.
 name = "app-process"
-version = 5
+version = 6
 version_const = "crates/packaging/app-process/src/lib.rs:APP_PROCESS_INTERFACE_VERSION"
 encoding = "postcard"
 served_to_apps = true
 sources = [
-    "crates/runtime/runtime-portal/src/runtime_request.rs",
     "crates/packaging/app-process/src/wire.rs",
     "crates/packaging/app-process/src/client.rs",
 ]
-roots = ["Request", "Response", "Call", "Reply"]
-# The Settings language-pack messages are length-prefixed JSON on this socket; the
-# Store's calls beside them are postcard (see the header above).
-json_roots = ["Request", "Response"]
+roots = ["Call", "Frame", "Handoff", "Progress"]
 
 [opaque]
 
@@ -38,6 +33,8 @@ json_roots = ["Request", "Response"]
 "Action::Install.expected" = "#2 Expected"
 "Action::Install.pinning" = "#1 WirePinning"
 "Action::Install.tapp_bytes" = "#0 Vec<u8>"
+"Action::InstallLanguagePack" = "#10 struct"
+"Action::InstallLanguagePack.locale" = "#0 String"
 "Action::InstallLocal" = "#4 struct"
 "Action::InstallLocal.reviewed_archive_hash" = "#2 String"
 "Action::InstallLocal.reviewed_root" = "#1 String"
@@ -66,6 +63,7 @@ json_roots = ["Request", "Response"]
 "Answer::FlatpakStatus.installed" = "#1 String"
 "Answer::FlatpakStatus.remotes" = "#2 String"
 "Answer::Installed" = "#6 tuple(WireId)"
+"Answer::Languages" = "#7 tuple(Vec<OfferedLanguage>)"
 "Answer::Packages" = "#1 tuple(Vec<PackageEntry>)"
 "Answer::Review" = "#5 tuple(String)"
 "Answer::Text" = "#2 tuple(String)"
@@ -77,6 +75,9 @@ json_roots = ["Request", "Response"]
 "Catalogue::Refused.detail" = "#1 String"
 "Catalogue::Refused.refusal" = "#0 Refusal"
 "Catalogue::Rows" = "#0 tuple(String)"
+"Event" = "struct"
+"Event.id" = "#0 u64"
+"Event.progress" = "#1 Progress"
 "Expected" = "struct"
 "Expected.app_id" = "#2 String"
 "Expected.publisher" = "#1 [u8; 32]"
@@ -87,6 +88,11 @@ json_roots = ["Request", "Response"]
 "FlatpakVerb::Install" = "#0 unit"
 "FlatpakVerb::Remove" = "#2 unit"
 "FlatpakVerb::Update" = "#1 unit"
+"Frame" = "enum external"
+"Frame::Event" = "#1 tuple(Event)"
+"Frame::Reply" = "#0 tuple(Reply)"
+"Handoff" = "struct"
+"Handoff.app_id" = "#0 String"
 "OfferedLanguage" = "struct"
 "OfferedLanguage.installed" = "#1 bool"
 "OfferedLanguage.locale" = "#0 String"
@@ -103,9 +109,14 @@ json_roots = ["Request", "Response"]
 "PackageEntry.size_bytes" = "#4 u64"
 "PackageEntry.user_managed" = "#6 bool"
 "Phase" = "enum external"
-"Phase::downloading" = "#1 unit"
-"Phase::installing" = "#2 unit"
-"Phase::preparing" = "#0 unit"
+"Phase::Downloading" = "#1 unit"
+"Phase::Installing" = "#2 unit"
+"Phase::Preparing" = "#0 unit"
+"Progress" = "enum external"
+"Progress::LanguagePack" = "#0 struct"
+"Progress::LanguagePack.phase" = "#0 Phase"
+"Progress::LanguagePack.received" = "#1 u64"
+"Progress::LanguagePack.total" = "#2 Option<u64>"
 "Refusal" = "enum external"
 "Refusal::DeviceRepositoryStale" = "#3 unit"
 "Refusal::Expired" = "#1 unit"
@@ -119,15 +130,12 @@ json_roots = ["Request", "Response"]
 "Reply" = "struct"
 "Reply.answer" = "#1 Result<Answer, String>"
 "Reply.id" = "#0 u64"
-"Request" = "enum internal tag=request"
-"Request::install_language_pack" = "#1 struct"
-"Request::install_language_pack.locale" = "#0 String"
-"Request::language_packs" = "#0 unit"
 "Resource" = "enum external"
 "Resource::FlatpakCatalogue" = "#5 struct"
 "Resource::FlatpakCatalogue.remote" = "#0 String"
 "Resource::FlatpakCatalogue.user_managed" = "#1 bool"
 "Resource::FlatpakStatus" = "#2 unit"
+"Resource::LanguagePacks" = "#8 unit"
 "Resource::LastVerifiedCatalogue" = "#4 struct"
 "Resource::LastVerifiedCatalogue.registry" = "#0 String"
 "Resource::LocalReview" = "#7 struct"
@@ -139,18 +147,6 @@ json_roots = ["Request", "Response"]
 "Resource::RuntimeOffer" = "#6 struct"
 "Resource::RuntimeOffer.registry" = "#0 String"
 "Resource::RuntimeOffer.runtime" = "#1 String"
-"Response" = "enum internal tag=state"
-"Response::failed" = "#3 struct"
-"Response::failed.message" = "#0 String"
-"Response::installed" = "#0 unit"
-"Response::installing" = "#1 struct"
-"Response::installing.phase" = "#0 Phase"
-"Response::installing.received" = "#1 u64"
-"Response::installing.total" = "#2 Option<u64>"
-"Response::language_packs" = "#2 struct"
-"Response::language_packs.offered" = "#0 Vec<OfferedLanguage>"
-"Response::refused" = "#4 struct"
-"Response::refused.message" = "#0 String"
 "WireId" = "alias [u8"
 "WirePinning" = "enum external"
 "WirePinning::Pinned" = "#1 unit"

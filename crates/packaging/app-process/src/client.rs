@@ -1,16 +1,18 @@
-//! Typed client for the launcher-issued `app-process` connection. The Store worker is synchronous,
-//! so this wrapper owns a current-thread runtime and `LocalSet` while keeping one connection for
-//! its whole lifetime. It never reaches for a path or executable outside the app.
+//! Typed client for the launcher-issued `app-process` connection. Apps are synchronous, so this
+//! wrapper owns a runtime and blocks on each call while keeping one connection for its whole
+//! lifetime. Calls carry ids, so a reader task answers any of them and several app threads may
+//! use the client at once: a long install never holds up a list. It never reaches for a path or
+//! executable outside the app.
 
-use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::future::Future;
-use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::install::InstallExpectation;
 use crate::wire::{
-    Action, Answer, Call, Catalogue, Expected, FlatpakVerb, Operation, RemoteVerb, Reply, Resource,
-    WirePinning,
+    Action, Answer, Call, Catalogue, Event, Expected, FlatpakVerb, Frame, OfferedLanguage,
+    Operation, RemoteVerb, Reply, Resource, WirePinning,
 };
 
 mod pending;
@@ -162,32 +164,50 @@ pub struct FlatpakStatus {
     pub remotes: String,
 }
 
+/// One call in flight: where its progress goes, and where its answer does.
+struct Waiting {
+    /// Where the call's progress goes. It is called on the reader task, so it
+    /// must not call back into the client.
+    progress: Box<dyn FnMut(Event) + Send>,
+    /// The call's answer, once it arrives.
+    answer: Arc<Mutex<Option<Result<Answer, String>>>>,
+    /// Wakes the caller when `answer` is set.
+    answered: Arc<tokio::sync::Notify>,
+}
+
 /// The calls in flight on one connection, answered by its reader task.
 struct Connection {
     writer: tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>,
-    waiting: RefCell<HashMap<u64, tokio::sync::oneshot::Sender<Result<Answer, String>>>>,
-    next: Cell<u64>,
-    closed: Cell<bool>,
+    waiting: Mutex<HashMap<u64, Waiting>>,
+    next: AtomicU64,
+    closed: AtomicBool,
 }
 
 impl Connection {
-    #[allow(
-        clippy::future_not_send,
-        reason = "the connection is shared by Rc on its current-thread runtime"
-    )]
-    fn call(
-        self: &Rc<Self>,
+    fn call<F>(
+        self: &Arc<Self>,
         request: Operation,
-    ) -> impl Future<Output = Result<Answer, String>> + use<> {
-        let connection = Rc::clone(self);
+        progress: F,
+    ) -> impl Future<Output = Result<Answer, String>> + use<F>
+    where
+        F: FnMut(Event) + Send + 'static,
+    {
+        let connection = Arc::clone(self);
         async move {
-            if connection.closed.get() {
+            if connection.closed.load(Ordering::SeqCst) {
                 return Err(DISCONNECTED.to_owned());
             }
-            let id = connection.next.get();
-            connection.next.set(id.wrapping_add(1));
-            let (answer, answered) = tokio::sync::oneshot::channel();
-            connection.waiting.borrow_mut().insert(id, answer);
+            let id = connection.next.fetch_add(1, Ordering::SeqCst);
+            let answer = Arc::new(Mutex::new(None));
+            let answered = Arc::new(tokio::sync::Notify::new());
+            waiting(&connection).insert(
+                id,
+                Waiting {
+                    progress: Box::new(progress),
+                    answer: Arc::clone(&answer),
+                    answered: Arc::clone(&answered),
+                },
+            );
             {
                 use tokio::io::AsyncWriteExt as _;
                 let mut writer = connection.writer.lock().await;
@@ -200,37 +220,72 @@ impl Connection {
                 }
                 .await;
                 if let Err(error) = sent {
-                    connection.waiting.borrow_mut().remove(&id);
+                    waiting(&connection).remove(&id);
                     return Err(format!("app-process: {error}"));
                 }
             }
-            answered.await.map_err(|_| DISCONNECTED.to_owned())?
+            loop {
+                // Registered before the answer is read, so one that lands in
+                // between is never missed.
+                let notified = answered.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                let landed = answer.lock().unwrap_or_else(PoisonError::into_inner).take();
+                if let Some(answer) = landed {
+                    return answer;
+                }
+                notified.await;
+            }
         }
     }
 
-    #[allow(
-        clippy::future_not_send,
-        reason = "the connection is shared by Rc on its current-thread runtime"
-    )]
-    async fn read_replies(self: Rc<Self>, mut reader: tokio::net::unix::OwnedReadHalf) {
-        while let Ok(Some(Reply { id, answer })) =
-            crate::wire::FRAMING.read_value_async(&mut reader).await
+    async fn read_replies(self: Arc<Self>, mut reader: tokio::net::unix::OwnedReadHalf) {
+        while let Ok(Some(frame)) = crate::wire::FRAMING
+            .read_value_async::<_, Frame>(&mut reader)
+            .await
         {
-            if let Some(waiting) = self.waiting.borrow_mut().remove(&id) {
-                let _ = waiting.send(answer);
+            match frame {
+                Frame::Reply(Reply { id, answer }) => {
+                    let answered = waiting(&self).remove(&id);
+                    if let Some(call) = answered {
+                        *call.answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(answer);
+                        call.answered.notify_waiters();
+                    }
+                }
+                Frame::Event(event) => {
+                    // The callback is called without the calls held, so it can
+                    // take its time without holding up another call's answer.
+                    let id = event.id;
+                    let Some(mut call) = waiting(&self).remove(&id) else {
+                        continue;
+                    };
+                    (call.progress)(event);
+                    waiting(&self).insert(id, call);
+                }
             }
         }
-        self.closed.set(true);
-        self.waiting.borrow_mut().clear();
+        self.closed.store(true, Ordering::SeqCst);
+        let hanging: Vec<Waiting> = waiting(&self).drain().map(|(_, call)| call).collect();
+        for call in hanging {
+            *call.answer.lock().unwrap_or_else(PoisonError::into_inner) =
+                Some(Err(DISCONNECTED.to_owned()));
+            call.answered.notify_waiters();
+        }
     }
+}
+
+fn waiting(connection: &Connection) -> std::sync::MutexGuard<'_, HashMap<u64, Waiting>> {
+    connection
+        .waiting
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
 }
 
 const DISCONNECTED: &str = "the app process connection has ended";
 
 pub struct BlockingClient {
     runtime: tokio::runtime::Runtime,
-    local: tokio::task::LocalSet,
-    connection: Rc<Connection>,
+    connection: Arc<Connection>,
 }
 
 impl BlockingClient {
@@ -242,7 +297,7 @@ impl BlockingClient {
         // The launcher hands the process one connection; a second owner would
         // interleave frames and close the descriptor twice.
         static CLAIMED: AtomicBool = AtomicBool::new(false);
-        let fd = runtime_portal::service_fd(runtime_portal::runtime_request::SERVICE)
+        let fd = runtime_portal::service_fd(crate::SERVICE)
             .ok_or_else(|| "the app process was not handed to this app".to_owned())?;
         if CLAIMED.swap(true, Ordering::SeqCst) {
             return Err("the app process connection is already in use".to_owned());
@@ -255,38 +310,45 @@ impl BlockingClient {
     /// Open an explicitly owned connection (a test service).
     #[cfg(unix)]
     pub fn from_connected_fd(fd: std::os::fd::OwnedFd) -> Result<Self, String> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
             .enable_all()
             .build()
             .map_err(|e| format!("create app-process runtime: {e}"))?;
-        let local = tokio::task::LocalSet::new();
         let stream = std::os::unix::net::UnixStream::from(fd);
         stream
             .set_nonblocking(true)
             .map_err(|e| format!("app-process connection: {e}"))?;
-        let connection = local.block_on(&runtime, async {
+        let (reader, writer) = {
+            let _entered = runtime.enter();
             let stream = tokio::net::UnixStream::from_std(stream)
                 .map_err(|e| format!("app-process connection: {e}"))?;
-            let (reader, writer) = stream.into_split();
-            let connection = Rc::new(Connection {
-                writer: tokio::sync::Mutex::new(writer),
-                waiting: RefCell::default(),
-                next: Cell::new(0),
-                closed: Cell::new(false),
-            });
-            tokio::task::spawn_local(Rc::clone(&connection).read_replies(reader));
-            Ok::<_, String>(connection)
-        })?;
+            stream.into_split()
+        };
+        let connection = Arc::new(Connection {
+            writer: tokio::sync::Mutex::new(writer),
+            waiting: Mutex::default(),
+            next: AtomicU64::new(0),
+            closed: AtomicBool::new(false),
+        });
+        runtime.spawn(Arc::clone(&connection).read_replies(reader));
         Ok(Self {
             runtime,
-            local,
             connection,
         })
     }
 
     fn wait(&self, request: Operation) -> Result<Answer, String> {
-        self.local
-            .block_on(&self.runtime, self.connection.call(request))
+        self.wait_progress(request, |_| {})
+    }
+
+    fn wait_progress(
+        &self,
+        request: Operation,
+        progress: impl FnMut(Event) + Send + 'static,
+    ) -> Result<Answer, String> {
+        self.runtime
+            .block_on(self.connection.call(request, progress))
     }
 
     fn read(&self, resource: Resource) -> Result<Answer, String> {
@@ -440,6 +502,33 @@ impl BlockingClient {
     /// Read Flatpak state without executing tools in the app sandbox.
     pub fn flatpak_status(&self) -> Result<FlatpakStatus, String> {
         self.complete(self.begin_flatpak_status())
+    }
+
+    /// The language packs the enabled repositories offer, and whether each is
+    /// installed. Settings only.
+    pub fn language_packs(&self) -> Result<Vec<OfferedLanguage>, String> {
+        match self.read(Resource::LanguagePacks)? {
+            Answer::Languages(offered) => Ok(offered),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Make the language pack of `locale` installed, calling `progress` as it
+    /// goes; returns once it is. Settings only.
+    pub fn install_language_pack(
+        &self,
+        locale: &str,
+        progress: impl FnMut(Event) + Send + 'static,
+    ) -> Result<(), String> {
+        match self.wait_progress(
+            Operation::Invoke(Action::InstallLanguagePack {
+                locale: locale.to_owned(),
+            }),
+            progress,
+        )? {
+            Answer::Done => Ok(()),
+            other => Err(unexpected(&other)),
+        }
     }
 
     /// Enable or disable an existing repository in this account's scope.

@@ -13,6 +13,8 @@ mod common;
 mod gc_removes_tried_under_pressure;
 #[path = "install_resolves_round_trip.rs"]
 mod install_resolves_round_trip;
+#[path = "language_packs.rs"]
+mod language_packs;
 #[path = "pin_unpin_changes_state.rs"]
 mod pin_unpin_changes_state;
 #[path = "socket_activation.rs"]

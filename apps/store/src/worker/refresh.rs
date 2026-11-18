@@ -1126,6 +1126,7 @@ mod tests {
         fn handle(
             self: std::rc::Rc<Self>,
             request: app_process::wire::Operation,
+            _progress: app_process::wire::Sink,
         ) -> impl core::future::Future<Output = Result<app_process::wire::Answer, String>> + 'static
         {
             use app_process::wire::{Answer, Catalogue, Operation, Resource};

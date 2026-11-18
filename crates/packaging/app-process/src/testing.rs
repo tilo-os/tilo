@@ -127,6 +127,7 @@ mod tests {
         fn handle(
             self: Rc<Self>,
             _request: Operation,
+            _progress: crate::wire::Sink,
         ) -> impl core::future::Future<Output = Result<Answer, String>> + 'static {
             std::future::ready(Ok(Answer::Packages(Vec::new())))
         }
@@ -243,6 +244,7 @@ mod tests {
         fn handle(
             self: Rc<Self>,
             _request: Operation,
+            _progress: crate::wire::Sink,
         ) -> impl core::future::Future<Output = Result<Answer, String>> + 'static {
             std::future::ready(Ok(Answer::Packages(vec![crate::wire::PackageEntry {
                 id: [7; 32],
@@ -282,6 +284,7 @@ mod tests {
         fn handle(
             self: Rc<Self>,
             _request: Operation,
+            _progress: crate::wire::Sink,
         ) -> impl core::future::Future<Output = Result<Answer, String>> + 'static {
             std::future::poll_fn(|_| panic!("injected owned service failure"))
         }
@@ -304,6 +307,7 @@ mod tests {
         fn handle(
             self: Rc<Self>,
             _request: Operation,
+            _progress: crate::wire::Sink,
         ) -> impl core::future::Future<Output = Result<Answer, String>> + 'static {
             let pending = PendingCall(std::sync::Arc::clone(&self.canceled));
             let entered = self.entered.clone();
