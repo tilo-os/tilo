@@ -131,9 +131,8 @@ impl super::Loop {
                     return;
                 }
             };
-        let (instance, shown) = self.agent_of(&agent, &facts);
-        tracing::info!(client = %facts.client, pid = facts.pid, %instance, %workspace, "MCP server: the person's agent key admits this client");
-        let consent = super::as_member(members, &facts, (&workspace, person), shown);
+        tracing::info!(client = %facts.client, pid = facts.pid, %agent, %workspace, "MCP server: the person's agent key admits this client");
+        let consent = super::as_member(members, &facts, (&workspace, person));
         self.sessions.admit(&session, &consent, &agent, &name);
         let _ = decide.send(consent);
     }
@@ -181,7 +180,7 @@ impl AgentKey {
         })
     }
 
-    /// The agent the grant admits clients as, before their place and instance: named for its key,
+    /// The agent the grant admits clients as: named for its key,
     /// so what it does is attributed to this grant and no other.
     pub(crate) fn agent(&self) -> String {
         let short = hex::encode(self.grant);

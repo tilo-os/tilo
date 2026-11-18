@@ -89,7 +89,7 @@ pub(crate) fn is_provider_output(message: &crate::model::Message) -> bool {
 
 impl ChatApp {
     pub(crate) fn model_message_label(&self, message: &crate::model::Message) -> String {
-        let author = self.message_author_label(message, crate::identity::RoleWord::InName);
+        let author = self.message_author_label(message);
         let mut label = format!("{author}: {}", message.text);
         // A shared file is the message, or part of it: name it, so a
         // screen reader hears more than who posted.
@@ -161,13 +161,8 @@ impl ChatApp {
         } else if message.author.is_bot() {
             self.bot_name(message)
         } else {
-            self.acting_name(
-                &message.author,
-                message.acting.as_ref(),
-                message.author_name.as_deref(),
-                crate::identity::RoleWord::InName,
-            )
-            .unwrap_or_else(|| self.user_name(&message.author))
+            self.agent_name(&message.author, message.author_name.as_deref())
+                .unwrap_or_else(|| self.user_name(&message.author))
         }
     }
 
@@ -186,11 +181,7 @@ impl ChatApp {
         }
     }
 
-    pub(crate) fn message_author_label(
-        &self,
-        message: &crate::model::Message,
-        word: crate::identity::RoleWord,
-    ) -> String {
+    pub(crate) fn message_author_label(&self, message: &crate::model::Message) -> String {
         let name = self.message_author_name(message);
         if is_provider_output(message) {
             crate::i18n::t_args(
@@ -206,7 +197,7 @@ impl ChatApp {
             // A person a bridge speaks for, by their own name and where
             // they are: "Dana, from Discord".
             let members: Vec<&str> = self.users.iter().map(|user| user.name.as_str()).collect();
-            let author = self.message_author(message, &name, "", None);
+            let author = self.message_author(message, &name, None);
             let shown = author.label(&members);
             // A name that had to say its service to tell it from a member
             // already names it once.
@@ -220,21 +211,14 @@ impl ChatApp {
             }
         } else if message.author.is_bot() {
             let members: Vec<&str> = self.users.iter().map(|user| user.name.as_str()).collect();
-            let shown = self
-                .message_author(message, &name, "", None)
-                .label(&members);
+            let shown = self.message_author(message, &name, None).label(&members);
             crate::i18n::t_args(
                 "chat-bot-attribution",
                 &[("name", shown.into()), ("bot", name.into())],
             )
         } else {
-            self.acting_name(
-                &message.author,
-                message.acting.as_ref(),
-                message.author_name.as_deref(),
-                word,
-            )
-            .unwrap_or_else(|| self.user_name(&message.author))
+            self.agent_name(&message.author, message.author_name.as_deref())
+                .unwrap_or_else(|| self.user_name(&message.author))
         }
     }
 

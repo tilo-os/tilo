@@ -153,7 +153,6 @@ chat-quote-earlier = A message above
 chat-conversation-read-only = You can read this conversation but not write in it.
 chat-direct-unavailable = You can't reach that conversation yet: this device is still loading the workspace.
 chat-person-unknown = There's nobody in this workspace to message.
-chat-agent-author = { $name } (agent)
 chat-resource-link-copied = Link copied
 chat-resource-link-unavailable = Link unavailable
 

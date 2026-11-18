@@ -587,9 +587,7 @@ relative-compact-years = { $count }y
 
 # A software member in history, presence and activity rows.
 history-invocation-step-separator = {", "}
-member-agent = { $name } · Agent
 member-shortcut = { $name } · Shortcut
-member-bot = { $name } · Bot
 # Two or more people in a workspace go by the same name: each is numbered, the
 # same numbers for everyone in it.
 member-numbered = { $name } ({ $number })
@@ -840,6 +838,8 @@ author-persona-suffix = { $name }, via { $service }
 history-writer-agent = External agent
 history-writer-app = App
 history-writer-program = Program
+history-acted-for = For { $person }
+history-acted-for-you = For you
 author-spoken-writer = { $person }, with { $writer }
 author-spoken-device = { $who }, on { $device }
 

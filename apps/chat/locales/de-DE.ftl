@@ -151,7 +151,6 @@ chat-quote-earlier = Eine Nachricht weiter oben
 chat-conversation-read-only = Du kannst diese Unterhaltung lesen, aber nicht darin schreiben.
 chat-direct-unavailable = Diese Unterhaltung ist noch nicht erreichbar: Dieses Gerät lädt den Arbeitsbereich noch.
 chat-person-unknown = In diesem Arbeitsbereich gibt es niemanden zum Anschreiben.
-chat-agent-author = { $name } (Agent)
 chat-resource-link-copied = Link kopiert
 chat-resource-link-unavailable = Link nicht verfügbar
 

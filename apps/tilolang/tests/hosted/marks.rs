@@ -85,7 +85,7 @@ fn the_window_shows_what_the_run_did_in_its_colour_and_opens_the_run() {
     app.harness()
         .click_at(made[0] + made[2] / 4.0, made[1] + made[3] / 2.0);
     settle(&mut app);
-    let face = named(&mut app, "Avatar", "Helper (agent)");
+    let face = named(&mut app, "Avatar", "Helper");
     assert!(
         chroma_in(&mut app, face) > ground.saturating_add(24),
         "the run's entry stands in the agent's colour"

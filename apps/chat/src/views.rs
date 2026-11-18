@@ -384,21 +384,9 @@ impl Channel {
     ) -> Self {
         let channel_id = Id::from_raw(id);
         let channel = chat.conversation(&channel_id);
-        // What software wrote under, as its actions pinned it: the name it went by and the
-        // person it acted for, which keep naming it after it left.
-        let acting: std::collections::HashMap<&MemberId, &sdk::tilo_resource::Acting> = rows
-            .iter()
-            .filter_map(|row| Some((&row.author, row.acting.as_ref()?)))
-            .collect();
         let mut people: Vec<Person> = Vec::new();
         for row in rows {
-            Self::named(
-                &mut people,
-                names,
-                me,
-                &row.author,
-                acting.get(&row.author).copied(),
-            );
+            Self::named(&mut people, names, me, &row.author);
         }
         let messages = rows
             .iter()
@@ -484,40 +472,20 @@ impl Channel {
     /// Add the person `author` to `people` when not already there, as they are named here: the
     /// workspace's member list first, then what the reading's [`Names`] say — the reader's own name, or
     /// the workspace's name for an agent — and otherwise Chat's honest placeholder for someone
-    /// it cannot name. Never their routing id. Software that wrote for a person (`acting`) is
-    /// named with them, as Chat's window names its authors: "Helper for Ada", after it left too.
-    fn named(
-        people: &mut Vec<Person>,
-        names: &Names,
-        me: &MemberId,
-        author: &MemberId,
-        acting: Option<&sdk::tilo_resource::Acting>,
-    ) {
+    /// it cannot name. Never their routing id. Software is named by its own name, as Chat's
+    /// window names its authors.
+    fn named(people: &mut Vec<Person>, names: &Names, me: &MemberId, author: &MemberId) {
         if people.iter().any(|held| held.id == *author) {
             return;
         }
-        let agent = !author.is_person();
         let shown = sdk::tilo_resource::members::name_of(author)
             .or_else(|| listed_name(names, author))
             .or_else(|| (author == me).then(|| names.me.trim().to_owned()))
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| crate::identity::unnamed_label(author));
-        let name = match acting.filter(|_| agent) {
-            Some(acting) => crate::identity::acting_label(
-                &shown,
-                crate::identity::acted_for(acting),
-                crate::identity::RoleWord::InName,
-                |person| {
-                    sdk::tilo_resource::members::name_of(person)
-                        .unwrap_or_else(|| crate::identity::unnamed_label(person))
-                },
-                |person| person == me,
-            ),
-            None => shown,
-        };
         people.push(Person {
             id: author.clone(),
-            name,
+            name: shown,
         });
     }
 }
@@ -1674,11 +1642,7 @@ mod tests {
             };
             let channel = Channel::read(&chat, &rows, "c_ask", &MemberId::person(BOB), &names);
             let agent = channel.person(&MemberId::agent("helper")).expect("the agent is named");
-            assert_eq!(
-                agent.name,
-                sdk::acting_line("Helper", Some("Ada"), false),
-                "the page names the agent with the person it wrote for"
-            );
+            assert_eq!(agent.name, "Helper", "the page names the agent by its own name");
         }
 
         phase a_person_the_resource_cannot_name_is_never_shown_their_id;

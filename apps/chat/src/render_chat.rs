@@ -365,10 +365,9 @@ impl ChatApp {
         max_x: f64,
     ) -> (f64, f64, ui::author::AuthorLine) {
         let name = self.message_author_name(m);
-        let initiator = self.user_name(&m.author);
         // The avatar the bot showed, once the content store has it.
         let shown = self.shown_avatar(m);
-        let author = self.message_author(m, &name, &initiator, shown.as_ref());
+        let author = self.message_author(m, &name, shown.as_ref());
         let members: Vec<&str> = self.users.iter().map(|user| user.name.as_str()).collect();
         let theme = ctx.theme;
         let style = theme.text(TextRole::Body).strong();
@@ -430,18 +429,13 @@ impl ChatApp {
         &'a self,
         m: &'a Message,
         name: &'a str,
-        initiator: &'a str,
         shown: Option<&'a vello::peniko::ImageData>,
     ) -> Author<'a> {
         let color = self.identity_colour(&m.author);
         if m.cause.as_ref().is_some_and(|cause| !cause.by_person()) {
             // What started a turn is named for itself, never drawn as the
             // person it is for.
-            return Author::Agent {
-                name,
-                for_person: None,
-                color,
-            };
+            return Author::Agent { name, color };
         }
         if m.author.is_bot() {
             // The member a persona is linked to, by the name the workspace knows
@@ -467,18 +461,8 @@ impl ChatApp {
                 linked_color: linked.map(|user| self.identity_colour(&user.id)),
                 image: shown,
             }
-        } else if crate::model_stream::is_provider_output(m) {
-            Author::Agent {
-                name,
-                for_person: Some(initiator),
-                color,
-            }
-        } else if !m.author.is_person() {
-            Author::Agent {
-                name,
-                for_person: None,
-                color,
-            }
+        } else if crate::model_stream::is_provider_output(m) || !m.author.is_person() {
+            Author::Agent { name, color }
         } else {
             Author::Person {
                 name,

@@ -578,7 +578,7 @@ impl PresenceCtx {
         let words = self.interaction_status_label(interaction);
         // A caret it writes with may wear its tag already (an agent writing in a document): the
         // pointer then goes without, one tag for one agent, at its caret. The caret's tag names
-        // the agent ("Claude Code · Agent") where this one would say what it does; a second tag
+        // the agent ("Claude Code") where this one would say what it does; a second tag
         // beside it, or floating where the pointer is, says the same agent twice.
         // Its caret is where it acts then, so no pointer is drawn either: a pointer of its own
         // stood on the very words the caret had just written, or apart from them where it last
@@ -1251,8 +1251,7 @@ fn actor_label(presence: &PresenceCtx, interaction: &SemanticInteraction) -> Str
     // raw hex id is no name, so the card says what kind of member acts
     // instead.
     match (interaction.actor.member_id(), roster_name) {
-        (Some(member), Some(name)) if !member.is_person() => presence.kind_label(member, name),
-        (Some(_), Some(name)) => name.to_owned(),
+        (Some(member), Some(name)) => presence.member_label(member, name),
         (None, name) => crate::i18n::widget_format(
             "member-shortcut",
             &[("name", name.unwrap_or_default().into())],
@@ -2001,9 +2000,9 @@ pub(crate) mod tests {
     tilo_test_env::scenario! {
         fn an_actor_and_its_work_are_named_and_coloured;
 
-        phase an_actor_is_named_with_the_person_it_acts_for;
-        // An agent or a Shortcut acting for a person is named with that person
-        // and gets the software mark and marker a person's activity never does.
+        phase an_actor_is_named_by_its_own_name_and_keeps_whom_it_acts_for;
+        // An agent or a Shortcut acting for a person is named by its own name, keeps whom it
+        // acts for, and gets the software mark and marker a person's activity never does.
         {
             let at = crate::time::now();
             let mut presence = PresenceCtx::empty();
@@ -2013,7 +2012,7 @@ pub(crate) mod tests {
             agent.actor.acted_for = vec![tilo_actions::Acting::person("ada")];
             assert!(presence.apply_interaction_at(agent.clone(), at).unwrap());
             let claude = MemberId::agent("quill");
-            assert_eq!(presence.display_name(&claude), "Claude for Ada");
+            assert_eq!(presence.display_name(&claude), "Claude");
             assert_eq!(presence.acting_for(&claude), Some(&MemberId::person("ada")));
             assert!(!claude.is_person());
             assert_eq!(presence.agent_marker_interactions(at), vec![agent]);
@@ -2067,7 +2066,7 @@ pub(crate) mod tests {
                 &mut text,
                 Affine::IDENTITY,
                 &claude,
-                "Claude Code · Agent",
+                "Claude Code",
                 super::super::LabeledCaret::new(Rect::new(200.0, 300.0, 202.0, 318.0)),
             );
             let locus = Rect::new(100.0, 296.0, 400.0, 322.0);
@@ -2087,7 +2086,7 @@ pub(crate) mod tests {
                 .collect();
             assert_eq!(
                 tags,
-                vec!["Claude Code · Agent".to_owned()],
+                vec!["Claude Code".to_owned()],
                 "one tag, at its caret"
             );
         }
@@ -2113,7 +2112,7 @@ pub(crate) mod tests {
                 &mut text,
                 Affine::IDENTITY,
                 &claude,
-                "Claude Code · Agent",
+                "Claude Code",
                 super::super::LabeledCaret::new(Rect::new(600.0, 80.0, 602.0, 98.0)),
             );
             let locus = Rect::new(100.0, 296.0, 400.0, 322.0);
@@ -2250,7 +2249,7 @@ pub(crate) mod tests {
                 let mut presence = PresenceCtx::empty();
                 assert_eq!(actor_label(&presence, &agent), "Agent");
                 presence.names.insert(user.clone(), "Quill".into());
-                assert_eq!(actor_label(&presence, &agent), "Quill · Agent");
+                assert_eq!(actor_label(&presence, &agent), "Quill");
             }
             // A roster that knows a member only by its key hands that key
             // back as its name; the card names the kind of member instead.
@@ -2271,7 +2270,7 @@ pub(crate) mod tests {
                 presence.set_acting_for(agent.clone(), Some(user));
                 assert_eq!(
                     presence.display_name(&agent),
-                    "Claude · Agent",
+                    "Claude",
                     "an unnamed person it acts for is left out, not shown as a key"
                 );
             }
@@ -2284,7 +2283,7 @@ pub(crate) mod tests {
                 let applying = interaction(11, 1, InteractionPhase::Applying);
                 assert_eq!(
                     presence.interaction_announcement(&applying).as_deref(),
-                    Some("Quill · Agent, Applying: Rename on Draft.md")
+                    Some("Quill, Applying: Rename on Draft.md")
                 );
                 assert!(
                     presence

@@ -392,8 +392,6 @@ pub struct ChatApp {
     pub(crate) motion_reduced: bool,
     pub(crate) input_floating_surface: Option<String>,
 
-    /// The person each agent here acts for, as presence knows it.
-    pub(crate) agent_people: HashMap<MemberId, MemberId>,
     /// What the workspace's host keeps of the files members post, as it says:
     /// a file it would not take is refused here, in plain words.
     pub(crate) workspace_files: crate::chat::WorkspaceFiles,
@@ -760,7 +758,6 @@ impl ChatApp {
             recorded_channels: std::collections::HashSet::new(),
             motion_reduced: false,
             input_floating_surface: None,
-            agent_people: HashMap::new(),
             workspace_files: crate::chat::WorkspaceFiles::default(),
             body_views: std::cell::RefCell::new(HashMap::new()),
             body_text_inset: std::cell::Cell::new(0.0),

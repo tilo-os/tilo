@@ -94,7 +94,6 @@ mod tests {
         "chat-conversation-read-only",
         "chat-direct-unavailable",
         "chat-person-unknown",
-        "chat-agent-author",
         "chat-thread-title",
         "chat-thread-close",
         "chat-thread-replies",

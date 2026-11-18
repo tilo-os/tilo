@@ -39,32 +39,24 @@ pub fn sentence(entry: &ActionContext) -> String {
     with_reader(|reader| reader.sentence(entry))
 }
 
-/// An author as one line names them, in this thread's words: "You", "Ada",
-/// "claude for Ada", "Ada via task ‘Prepare Q3 financials’".
+/// An author as one line names them, in this thread's words: "You", "Ada", "Claude", "Ada via
+/// task ‘Prepare Q3 financials’".
 ///
-/// The one place a history row, a pill or an app's list says who made a
-/// change: the name it carries is a name, and whom software acted for is
-/// said here once.
+/// The one place a history row, a pill or an app's list says who made a change: by the name the
+/// author goes by, as every chip, card and caret tag names them. Whom software acted for is a
+/// detail the hover says ([`attribution_hover`]), never part of the name.
 pub fn author_line(author: &HistoryAuthor) -> String {
     actor_line(
         &author.name,
-        // Only software acts for someone: a person's own row, whatever wrote it for them, is
-        // theirs ("Ada", "You"), never "Ada for Ada".
+        // A task software worked names the person it was taken for; a person's own row is theirs.
         author
             .attribution
             .as_ref()
             .filter(|_| author.relation == AuthorRelation::Software)
             .and_then(|attribution| attribution.on_behalf_of_name.as_deref()),
-        author.for_reader,
         author.relation == AuthorRelation::Reader,
         author.task.as_deref(),
     )
-}
-
-/// [`author_line`] for software named `name` acting for `person`: "Helper for Ada", or "Helper
-/// for you" to that person. Where a surface knows no person, the name alone.
-pub fn acting_line(name: &str, person: Option<&str>, for_reader: bool) -> String {
-    actor_line(name, person, for_reader, false, None)
 }
 
 /// [`author_line`] for an author as an app reads it over the wire.
@@ -72,7 +64,6 @@ pub fn wire_author_line(author: &wire::Author) -> String {
     actor_line(
         &author.name,
         author.on_behalf_of.as_deref(),
-        author.for_reader,
         author.relation == wire::Relation::Reader,
         author.task.as_deref(),
     )
@@ -190,6 +181,7 @@ pub fn attribution_hover(author: &HistoryAuthor) -> Option<String> {
             crate::i18n::widget_format("history-writer-agent", &[]),
             author.name.clone(),
         ];
+        parts.extend(acted_for(author));
         if let Some(device) = attribution.device.as_deref()
             && !parts.iter().any(|part| part == device)
         {
@@ -199,7 +191,7 @@ pub fn attribution_hover(author: &HistoryAuthor) -> Option<String> {
         return Some(parts.join("\n"));
     };
     let label = attribution.writer_label.as_deref().unwrap_or_default();
-    let mut parts = Vec::with_capacity(5);
+    let mut parts = Vec::with_capacity(6);
     match writer {
         fs_protocol::AttributedWriter::Agent { agent, .. } => {
             parts.push(crate::i18n::widget_format("history-writer-agent", &[]));
@@ -225,6 +217,7 @@ pub fn attribution_hover(author: &HistoryAuthor) -> Option<String> {
             }
         }
     }
+    parts.extend(acted_for(author));
     // The device whose session vouched for the writer, then the folder the
     // change is in: where a reader goes to look at it.
     // The computer, unless it is what the writer was already called.
@@ -235,6 +228,21 @@ pub fn attribution_hover(author: &HistoryAuthor) -> Option<String> {
     }
     parts.extend(attribution.folder.clone());
     Some(parts.join("\n"))
+}
+
+/// Whom software `author` acted for, as the hover says it: "For Ada", "For you". `None` for a
+/// person's own change and for software that acted for nobody.
+fn acted_for(author: &HistoryAuthor) -> Option<String> {
+    if author.relation != AuthorRelation::Software {
+        return None;
+    }
+    if author.for_reader {
+        return Some(crate::i18n::widget_format("history-acted-for-you", &[]));
+    }
+    let person = author.attribution.as_ref()?.on_behalf_of_name.as_deref()?;
+    (!person.trim().is_empty() && person.trim() != author.name.trim()).then(|| {
+        crate::i18n::widget_format("history-acted-for", &[("person", person.to_owned().into())])
+    })
 }
 
 /// The name of the coding agent `agent` (`claude` is Claude Code). `None`
@@ -248,13 +256,7 @@ fn agent_tool_name(agent: &str) -> Option<&'static str> {
     }
 }
 
-fn actor_line(
-    name: &str,
-    for_person: Option<&str>,
-    for_reader: bool,
-    is_reader: bool,
-    task: Option<&str>,
-) -> String {
+fn actor_line(name: &str, for_person: Option<&str>, is_reader: bool, task: Option<&str>) -> String {
     // A task names who did it: the person it was taken for, else the actor. A task that goes by
     // its agent's own name (an agent's run) is that agent's: it says who it acts for.
     let task = task.filter(|label| label.trim() != name.trim());
@@ -266,8 +268,6 @@ fn actor_line(
     with_reader(|reader| {
         reader.actor(&tilo_history::Who {
             actor,
-            for_person,
-            for_reader,
             is_reader,
             task: task.as_ref(),
         })

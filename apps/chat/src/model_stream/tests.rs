@@ -263,14 +263,11 @@ tilo_test_env::scenario! {
         let initiator = app.user_name(&message.author);
         let name = app.message_author_name(&message);
         assert_eq!(name, "Another person");
-        assert!(
-            matches!(app.message_author(&message, &name, &initiator, None),
-            ui::author::Author::Agent { for_person: Some(person), .. } if person == initiator)
-        );
-        assert!(
-            app.message_author_label(&message, crate::identity::RoleWord::InName)
-                .contains("requested by")
-        );
+        assert!(matches!(
+            app.message_author(&message, &name, None),
+            ui::author::Author::Agent { .. }
+        ));
+        assert!(app.message_author_label(&message).contains("requested by"));
         message.appearance = None;
         assert_eq!(app.message_author_name(&message), "Assistant");
         message.appearance = Some(tilo_actions::Appearance {
@@ -285,14 +282,14 @@ tilo_test_env::scenario! {
             "ordinary people cannot adopt appearance names"
         );
         assert!(
-            matches!(app.message_author(&message, &name, &initiator, None),
+            matches!(app.message_author(&message, &name, None),
             ui::author::Author::Person { identity, .. } if identity == crate::model::ME)
         );
         assert!(!app.model_message_label(&message).contains("Another person"));
         message.work = stream_work;
         message.author = MemberId::bot("installed");
         let name = app.message_author_name(&message);
-        assert!(matches!(app.message_author(&message, &name, "", None),
+        assert!(matches!(app.message_author(&message, &name, None),
             ui::author::Author::Bot { appearance: Some(shown), .. } if shown.name == "Another person"));
         assert!(!crate::model_stream::is_provider_output(&message));
         let label = app.model_message_label(&message);
@@ -304,11 +301,8 @@ tilo_test_env::scenario! {
         assert_eq!(name, app.user_name(&message.author));
         assert!(name.starts_with("Actual agent"));
         assert!(matches!(
-            app.message_author(&message, &name, "", None),
-            ui::author::Author::Agent {
-                for_person: None,
-                ..
-            }
+            app.message_author(&message, &name, None),
+            ui::author::Author::Agent { .. }
         ));
         assert!(!crate::model_stream::is_provider_output(&message));
     }
@@ -432,7 +426,7 @@ tilo_test_env::scenario! {
         // One person, one colour: the bridged tile wears the linked member's.
         let name = app.message_author_name(&message);
         let ui::author::Author::Bot { linked_color, .. } =
-            app.message_author(&message, &name, "", None)
+            app.message_author(&message, &name, None)
         else {
             panic!("a bridged message is the bot's");
         };
@@ -480,7 +474,7 @@ tilo_test_env::scenario! {
         );
         let members: Vec<&str> = app.users.iter().map(|user| user.name.as_str()).collect();
         let name = app.message_author_name(&bridged);
-        let author = app.message_author(&bridged, &name, "", None);
+        let author = app.message_author(&bridged, &name, None);
         assert_eq!(author.label(&members), "Dana");
         assert!(author.chip_label().is_none(), "no text tag");
         assert!(author.service_mark().is_some(), "Discord's mark instead");
@@ -636,9 +630,11 @@ fn assert_mounted_model_attribution(
         assert_eq!(surface.message_author_name(message), "Assistant");
         let initiator = surface.user_name(&message.author);
         assert!(matches!(
-            surface.message_author(message, "Assistant", &initiator, None),
-            ui::author::Author::Agent { name: "Assistant", for_person: Some(person), .. }
-                if person == initiator
+            surface.message_author(message, "Assistant", None),
+            ui::author::Author::Agent {
+                name: "Assistant",
+                ..
+            }
         ));
         let label = surface.model_message_label(message);
         assert!(label.starts_with("Assistant, requested by "));
@@ -706,11 +702,10 @@ fn captured_provider_stream_keeps_the_real_invoker_and_model_attribution() {
                 .unwrap();
             assert_eq!(message.author, MemberId::person(crate::model::ME));
             assert_eq!(surface.message_author_name(message), "Assistant");
-            let initiator = surface.user_name(&message.author);
-            assert!(
-                matches!(surface.message_author(message, "Assistant", &initiator, None),
-            ui::author::Author::Agent { for_person: Some(person), .. } if person == initiator)
-            );
+            assert!(matches!(
+                surface.message_author(message, "Assistant", None),
+                ui::author::Author::Agent { .. }
+            ));
             surface.model_message_label(message)
         })
         .unwrap();

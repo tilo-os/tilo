@@ -223,10 +223,6 @@ fn framework(locale: &str) -> Rc<Catalogue> {
 #[derive(Clone, Copy, Debug)]
 pub struct Who<'a> {
     pub actor: &'a str,
-    /// The display name of the person the actor acted for.
-    pub for_person: Option<&'a str>,
-    /// Whether the person the actor acted for is the reader.
-    pub for_reader: bool,
     pub is_reader: bool,
     /// The task the action was taken in, as its id and the label it carried
     /// at the time. There are no separate agents: everything an agent does
@@ -367,12 +363,6 @@ impl<'a> Reader<'a> {
 
     /// The sentence for `entry`, without naming who did it.
     pub fn sentence(&self, entry: &ActionContext) -> String {
-        self.sentence_by(entry, None)
-    }
-
-    /// The sentence for `entry`, with `$actor` and `$for` for messages that
-    /// name who did it.
-    pub fn sentence_by(&self, entry: &ActionContext, who: Option<&Who<'_>>) -> String {
         let app = entry.app.as_ref().map_or("", |app| app.id.as_str());
         let item = entry.item.as_ref().and_then(item_label);
         // A step on an item of the resource that has no name yet is about that item: it says
@@ -388,7 +378,6 @@ impl<'a> Reader<'a> {
             app,
             item: item.or(resource),
             within: item.is_none() && resource.is_some(),
-            who,
         };
         match &entry.what {
             Some(what) => self.did(what, &scope, &mut false),
@@ -406,31 +395,22 @@ impl<'a> Reader<'a> {
                 app,
                 item,
                 within: false,
-                who: None,
             },
             &mut false,
         )
     }
 
-    /// Who did it, as one line and as presence names them: "You",
-    /// "Ada via task 'Prepare Q3 financials'", "Claude for Ada".
+    /// Who did it, as one line: "You", "Ada", "Ada via task 'Prepare Q3 financials'".
     ///
-    /// Anyone but the reader acted as a task, so the task names them: the
-    /// person under whose authority it was done. Without a named task, the
-    /// actor as it is recorded, and whom it acted for: "for you" when that
-    /// person is the reader. What the actor is — an agent, a Shortcut, an
-    /// app, a bot — is the face beside the line, never words in it.
+    /// Anyone but the reader acted as a task, so the task names them: the person under whose
+    /// authority it was done. Without a named task, the actor by the name it goes by: whom
+    /// software acted for is a fact a detail shows, and what the actor is — an agent, a
+    /// Shortcut, an app, a bot — is the face beside the line, never words in it.
     pub fn actor(&self, who: &Who<'_>) -> String {
         let mut args = FluentArgs::new();
         args.set("actor", who.actor.to_owned());
         if who.is_reader {
-            return match who.for_person {
-                Some(person) => {
-                    args.set("for", person.to_owned());
-                    self.framework_message("history-actor-you-for", &args)
-                }
-                None => self.framework_message("history-actor-you", &args),
-            };
+            return self.framework_message("history-actor-you", &args);
         }
         if who.actor.trim().is_empty() {
             return self.framework_message("history-actor-unknown", &args);
@@ -443,20 +423,7 @@ impl<'a> Reader<'a> {
             args.set("task", task.label.to_owned());
             return self.framework_message("history-actor-via-task", &args);
         }
-        let person = if who.for_reader {
-            Some(self.framework_message("history-actor-for-you", &FluentArgs::new()))
-        } else {
-            who.for_person.map(str::to_owned)
-        };
-        match person {
-            Some(person) => {
-                let mut args = FluentArgs::new();
-                args.set("actor", who.actor.to_owned());
-                args.set("for", person);
-                self.framework_message("history-actor-for", &args)
-            }
-            None => who.actor.to_owned(),
-        }
+        who.actor.to_owned()
     }
 
     /// The sentence for `what` as `app` renders it, with `item` the label of
@@ -468,14 +435,13 @@ impl<'a> Reader<'a> {
             app,
             item: item.filter(|label| !label.trim().is_empty()),
             within: false,
-            who: None,
         };
         let mut by_app = false;
         let sentence = self.did(what, &scope, &mut by_app);
         (sentence, by_app)
     }
 
-    fn did(&self, what: &Did, scope: &Scope<'_, '_>, by_app: &mut bool) -> String {
+    fn did(&self, what: &Did, scope: &Scope<'_>, by_app: &mut bool) -> String {
         match what {
             Did::Edit(edit) => {
                 *by_app |= self.has_app_message(what, scope);
@@ -491,22 +457,17 @@ impl<'a> Reader<'a> {
     }
 
     /// Whether the app's catalogue has the message `what` renders through.
-    fn has_app_message(&self, what: &Did, scope: &Scope<'_, '_>) -> bool {
+    fn has_app_message(&self, what: &Did, scope: &Scope<'_>) -> bool {
         message_key(scope.app, what).is_some_and(|key| self.app.is_some_and(|app| app.has(&key)))
     }
 
-    fn app_message(
-        &self,
-        what: &Did,
-        scope: &Scope<'_, '_>,
-        args: &FluentArgs<'_>,
-    ) -> Option<String> {
+    fn app_message(&self, what: &Did, scope: &Scope<'_>, args: &FluentArgs<'_>) -> Option<String> {
         let app = self.app?;
         let key = message_key(scope.app, what)?;
         app.format(&key, args)
     }
 
-    fn base_args(&self, scope: &Scope<'_, '_>) -> FluentArgs<'static> {
+    fn base_args(&self, scope: &Scope<'_>) -> FluentArgs<'static> {
         let mut args = FluentArgs::new();
         args.set(
             "item",
@@ -514,16 +475,10 @@ impl<'a> Reader<'a> {
                 .item
                 .map_or_else(|| self.item_unnamed(), str::to_owned),
         );
-        if let Some(who) = scope.who {
-            args.set("actor", who.actor.to_owned());
-            if let Some(person) = who.for_person {
-                args.set("for", person.to_owned());
-            }
-        }
         args
     }
 
-    fn edit(&self, edit: &FieldEdit, what: &Did, scope: &Scope<'_, '_>) -> String {
+    fn edit(&self, edit: &FieldEdit, what: &Did, scope: &Scope<'_>) -> String {
         let mut args = self.base_args(scope);
         for (name, value) in &edit.args {
             if !matches!(name.as_str(), "item" | "actor" | "for" | "old" | "new") {
@@ -598,7 +553,7 @@ impl<'a> Reader<'a> {
         self.named_or_not(key, scope, &args)
     }
 
-    fn verb(&self, verb: &VerbCall, what: &Did, scope: &Scope<'_, '_>) -> String {
+    fn verb(&self, verb: &VerbCall, what: &Did, scope: &Scope<'_>) -> String {
         let mut args = self.base_args(scope);
         for (name, value) in &verb.args {
             if !matches!(name.as_str(), "item" | "actor" | "for") {
@@ -622,7 +577,7 @@ impl<'a> Reader<'a> {
         self.named_or_not("history-verb", scope, &args)
     }
 
-    fn group(&self, group: &GroupOf, scope: &Scope<'_, '_>, by_app: &mut bool) -> String {
+    fn group(&self, group: &GroupOf, scope: &Scope<'_>, by_app: &mut bool) -> String {
         let mut args = self.base_args(scope);
         args.set("count", group.count);
         if let Some(shared) = group.shared() {
@@ -640,7 +595,7 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn history(&self, step: &HistoryStep, scope: &Scope<'_, '_>, by_app: &mut bool) -> String {
+    fn history(&self, step: &HistoryStep, scope: &Scope<'_>, by_app: &mut bool) -> String {
         let mut args = self.base_args(scope);
         args.set("count", step.steps);
         // What it took back is named as the step itself was: on its item,
@@ -653,7 +608,6 @@ impl<'a> Reader<'a> {
                     app: scope.app,
                     item: item.or(scope.item),
                     within: item.is_none() && scope.within,
-                    who: None,
                 },
                 by_app,
             )
@@ -687,13 +641,13 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn changed(&self, scope: &Scope<'_, '_>) -> String {
+    fn changed(&self, scope: &Scope<'_>) -> String {
         let args = self.base_args(scope);
         self.named_or_not("history-changed", scope, &args)
     }
 
     /// `key` when the entry names an item, else `key-unnamed`.
-    fn named_or_not(&self, key: &str, scope: &Scope<'_, '_>, args: &FluentArgs<'_>) -> String {
+    fn named_or_not(&self, key: &str, scope: &Scope<'_>, args: &FluentArgs<'_>) -> String {
         if scope.item.is_some() {
             self.framework_message(key, args)
         } else {
@@ -740,14 +694,13 @@ impl<'a> Reader<'a> {
     }
 }
 
-struct Scope<'s, 'w> {
+struct Scope<'s> {
     app: &'s str,
     /// The item's label, else the resource's.
     item: Option<&'s str>,
     /// Whether `item` names the resource the action ran in rather than an
     /// item it acted on.
     within: bool,
-    who: Option<&'s Who<'w>>,
 }
 
 /// A value as an app message receives it: numbers as numbers (for plurals),

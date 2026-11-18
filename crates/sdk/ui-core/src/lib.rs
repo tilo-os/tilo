@@ -542,8 +542,8 @@ pub use widget::name_field::{NameField, NameFieldOutcome};
 // without knowing the module layout.
 pub use history_source::groups as history_groups;
 pub use history_source::sentence::{
-    AuthorParts, acting_line, attribution_hover, author_line, author_parts, author_spoken,
-    wire_author_line, writer_badge,
+    AuthorParts, attribution_hover, author_line, author_parts, author_spoken, wire_author_line,
+    writer_badge,
 };
 pub use history_source::{
     ActivityBrief, ActivityBriefAction, ActivityDigest, ActivityNarrator, AuthorDirectory,

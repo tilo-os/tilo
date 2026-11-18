@@ -23,7 +23,6 @@
 //! environment ended, or its `ush` did) the socket is removed and the agents it
 //! admitted are stopped.
 
-use std::collections::HashMap;
 use std::io::{self, Read as _, Write as _};
 use std::os::fd::AsRawFd as _;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -41,9 +40,6 @@ use super::{ASK_EVERY, PeerRefusal, Serving, WAIT};
 /// Environments with a socket open at once; more are refused one.
 const MAX_ENVIRONMENTS: usize = 64;
 
-/// The longest an environment's part of an agent id is.
-const MAX_PLACE: usize = 40;
-
 /// Where a connection came in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Origin {
@@ -60,33 +56,6 @@ impl Origin {
         match self {
             Self::Host => None,
             Self::Environment(environment) => Some(&environment.id),
-        }
-    }
-
-    /// Where an agent works from, as its id names it: `host`, or the
-    /// environment's record key (its id is `<workspace>/<record>`) in the
-    /// canonical form agent ids are written in. Two environments of one key
-    /// in two workspaces count their agents' instances together, so every id
-    /// stays an agent's own.
-    pub(super) fn place(&self) -> String {
-        match self {
-            Self::Host => "host".to_owned(),
-            Self::Environment(environment) => {
-                let record = environment
-                    .id
-                    .rsplit_once('/')
-                    .map_or(environment.id.as_str(), |(_, record)| record);
-                let place: String = record
-                    .chars()
-                    .flat_map(char::to_lowercase)
-                    .take(MAX_PLACE)
-                    .collect();
-                if place.is_empty() {
-                    "environment".to_owned()
-                } else {
-                    place
-                }
-            }
         }
     }
 
@@ -212,10 +181,6 @@ pub(super) struct Opening {
 pub(super) struct Sockets {
     asked: Receiver<Opening>,
     opener: Opener,
-    /// The last instance number given each agent at each place
-    /// (`claude-code@host`): every connection the person admits is an agent
-    /// of its own.
-    instances: HashMap<String, u64>,
 }
 
 /// What a connection's thread opens an environment's socket with.
@@ -254,7 +219,6 @@ impl Sockets {
                 open: Arc::new(AtomicUsize::new(0)),
                 sockets: Arc::new(AtomicU64::new(0)),
             },
-            instances: HashMap::new(),
         }
     }
 
@@ -270,15 +234,6 @@ impl Sockets {
             let answer = workspace(handle, person, opening.request.workspace.as_deref());
             let _ = opening.decide.send(answer);
         }
-    }
-
-    /// The id of the next connection the person admits as the agent `at`
-    /// (`claude-code@host`), and its instance number: `claude-code@host#2`.
-    pub(super) fn instance(&mut self, at: &str) -> (String, u64) {
-        let next = self.instances.entry(at.to_owned()).or_insert(0);
-        *next = next.saturating_add(1);
-        let instance = *next;
-        (format!("{at}#{instance}"), instance)
     }
 }
 
@@ -658,57 +613,5 @@ mod tests {
             !gone.holds(std::process::id()),
             "a holder whose start differs is another process given the same number"
         );
-    }
-
-    #[test]
-    fn an_environment_is_named_in_an_agent_id_by_its_record() {
-        let inside = |id: &str| {
-            Origin::Environment(Arc::new(Environment {
-                id: id.into(),
-                ..environment(std::process::id())
-            }))
-        };
-        assert_eq!(
-            inside("8b0e8f5e-6c1f-4f4e-9d4a-1f2e3d4c5b6a/Dev").place(),
-            "dev"
-        );
-        assert_eq!(inside("personal/default").place(), "default");
-        assert_eq!(inside("dev").place(), "dev");
-        assert_eq!(
-            inside("personal/default").environment(),
-            Some("personal/default"),
-            "remembered by the whole id"
-        );
-    }
-
-    #[test]
-    fn each_admitted_connection_is_an_agent_of_its_own() {
-        let mut sockets = Sockets::new(PathBuf::from("/nowhere"));
-        let host = Origin::Host;
-        let inside = Origin::Environment(Arc::new(environment(std::process::id())));
-        assert_eq!(
-            sockets.instance(&format!("claude-code@{}", host.place())),
-            ("claude-code@host#1".to_owned(), 1)
-        );
-        assert_eq!(
-            sockets.instance(&format!("claude-code@{}", host.place())),
-            ("claude-code@host#2".to_owned(), 2)
-        );
-        assert_eq!(
-            sockets.instance(&format!("claude-code@{}", inside.place())),
-            ("claude-code@dev.box#1".to_owned(), 1),
-            "each place counts its own"
-        );
-        assert_eq!(
-            sockets.instance(&format!("codex@{}", host.place())),
-            ("codex@host#1".to_owned(), 1)
-        );
-        let id = sockets
-            .instance(&format!("claude-code@{}", inside.place()))
-            .0;
-        tilo_peer_state::workspace_membership::valid_agent_id(&id)
-            .expect("an id a workspace names an agent by");
-        assert_eq!(inside.environment(), Some("Dev.Box"));
-        assert_eq!(host.environment(), None);
     }
 }

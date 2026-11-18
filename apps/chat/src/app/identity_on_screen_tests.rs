@@ -324,15 +324,12 @@ fn an_agents_answer_reads_by_the_name_the_member_list_gives_it() {
 
     let answer = doc.message_row(&replied).expect("the agent's answer");
     assert_eq!(app.display_name(&MemberId::agent("notes")), "Notes");
-    assert_eq!(app.user_name(&MemberId::agent("notes")), "Notes (agent)");
-    assert_eq!(app.message_author_name(&answer), "Notes (agent)");
+    assert_eq!(app.user_name(&MemberId::agent("notes")), "Notes");
+    assert_eq!(app.message_author_name(&answer), "Notes");
     assert!(
         matches!(
-            app.message_author(&answer, "Notes (agent)", "", None),
-            ui::author::Author::Agent {
-                for_person: None,
-                ..
-            }
+            app.message_author(&answer, "Notes", None),
+            ui::author::Author::Agent { .. }
         ),
         "an agent's answer is drawn as an agent, not as a person"
     );

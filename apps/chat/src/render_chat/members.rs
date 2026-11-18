@@ -74,14 +74,7 @@ impl ChatApp {
                 }
                 // Named as the workspace names them, numbered when shared: the
                 // same label as their lines in the timeline.
-                let display = if person.is_agent && !self.is_me(&person.id) {
-                    crate::i18n::t_args(
-                        "chat-agent-author",
-                        &[("name", person.name.clone().into())],
-                    )
-                } else {
-                    self.user_name(&person.id)
-                };
+                let display = self.user_name(&person.id);
                 // A plain "Online" under every name says nothing the section
                 // has not; where someone is, or that they are away, does.
                 let status = match voice {

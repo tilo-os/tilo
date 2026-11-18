@@ -652,7 +652,7 @@ fn an_agents_send_is_the_agents_on_every_member() {
     bob_window.harness().relayout();
     assert_eq!(
         bob_window.with_chat(|chat| chat.message_author_name(&theirs[0])),
-        Some(ui::acting_line("Helper", Some("Ada"), false)),
-        "Bob, who never saw the agent here, reads it by its name and Ada's"
+        Some("Helper".to_owned()),
+        "Bob, who never saw the agent here, reads it by its own name"
     );
 }

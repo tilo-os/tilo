@@ -431,8 +431,8 @@ pub struct PresenceCtx {
     /// (`CollabEvent::Context`). A peer with no entry falls back to its raw
     /// id via [`PresenceCtx::display_name`], so a caret chip is never blank.
     pub names: HashMap<MemberId, String>,
-    /// The person each agent or bot acts for, as the broker admitted it:
-    /// "Claude for Ada".
+    /// The person each agent or bot acts for, as the broker admitted it: a fact a history
+    /// hover names, never part of the agent's name.
     acting_for: HashMap<MemberId, MemberId>,
     /// Short workspace-level intentions, separate from pointer/caret state. The
     /// origin remains visible so inferred prose is never presented as a quote.
@@ -1259,16 +1259,17 @@ impl PresenceCtx {
         }
     }
 
-    /// Re-resolve who needs a number to be told apart, over every person
+    /// Re-resolve who needs a number to be told apart, over every member
     /// the workspace names including this session's own, and relabel the pills
     /// of anyone whose label that changed.
     fn refresh_labels(&mut self) {
         let own = self.self_member.as_ref().map(|(id, name)| (id, name));
-        let next =
-            MemberLabels::by_joining(self.names.iter().chain(own).filter_map(|(id, name)| {
-                let person = id.person_id()?;
-                Some((person, name.as_str(), self.joined.get(id).copied()))
-            }));
+        let next = MemberLabels::by_joining(
+            self.names
+                .iter()
+                .chain(own)
+                .map(|(id, name)| (id.id(), name.as_str(), self.joined.get(id).copied())),
+        );
         if next == self.labels {
             return;
         }
@@ -1284,7 +1285,7 @@ impl PresenceCtx {
         }
     }
 
-    /// The numbers people who share a name are told apart by in this workspace.
+    /// The numbers members who share a name are told apart by in this workspace.
     /// [`Self::display_name`] already applies them; this is for a caller
     /// that holds names of its own for the same members.
     pub fn labels(&self) -> &MemberLabels {
@@ -1292,9 +1293,8 @@ impl PresenceCtx {
     }
 
     /// The friendly name to show for `user`, this session's own member included, falling back
-    /// to the raw id when the roster has not announced one. Never blank. People sharing a name
-    /// carry their number ("Ada (2)", [`MemberLabels`]); software acting for a person is named
-    /// with that person ("Claude for Ada"), else with its kind.
+    /// to the raw id when the roster has not announced one. Never blank. Members sharing a name
+    /// carry their number ("Ada (2)", [`Self::member_label`]).
     pub fn display_name(&self, user: &MemberId) -> String {
         let name = self
             .names
@@ -1312,32 +1312,16 @@ impl PresenceCtx {
             MemberId::Person(_) => guest_label(),
             MemberId::Agent(id) | MemberId::Bot(id) => id.clone(),
         });
-        self.kind_label(user, &name)
+        self.member_label(user, &name)
     }
 
-    fn kind_label(&self, user: &MemberId, name: &str) -> String {
-        if let MemberId::Person(person) = user {
-            return self.labels.label(person.as_str(), name);
-        }
-        // Whom software acts for: "Claude for you", "Claude for Ada". A person the roster has not
-        // named yet is left out rather than shown as their raw key.
-        if let Some(person) = self.acting_for.get(user) {
-            let me = self.self_id();
-            let reader = Some(person) == me;
-            let named = self.names.get(person).and_then(|named| {
-                crate::history_source::human_label(named, person.id())
-                    .map(|named| self.labels.label(person.id(), named))
-            });
-            if reader || named.is_some() {
-                let person = named.unwrap_or_default();
-                return crate::history_source::sentence::acting_line(name, Some(&person), reader);
-            }
-        }
-        if user.is_bot() {
-            crate::i18n::widget_format("member-bot", &[("name", name.into())])
-        } else {
-            crate::history_source::agent_display_label(name)
-        }
+    /// What every surface calls `user`, whose name is `name`: that name, numbered while another
+    /// member here goes by it too ([`MemberLabels`]). The one rule for a member's name, as
+    /// [`crate::tokens::PresenceHue::of_member`] is for their colour: a chip, a caret tag, a
+    /// presence card and a history row say the same name. What a member is shows in the face
+    /// beside it, and whom software acts for in a detail, never in the name.
+    pub(crate) fn member_label(&self, user: &MemberId, name: &str) -> String {
+        self.labels.label(user.id(), name)
     }
 
     /// One row of the roster: who `user` is here, in the colour they wear.
@@ -1586,10 +1570,7 @@ impl PresenceCtx {
         // by, when it is the name the workspace knows them by.
         let label = display_name.map_or_else(
             || self.display_name(&member),
-            |name| match member.person_id() {
-                Some(person) => self.labels.label(person, name),
-                None => name.to_owned(),
-            },
+            |name| self.labels.label(member.id(), name),
         );
         if let Some(existing) = self.remote_cursors.iter_mut().find(|c| c.member == member) {
             existing.position = position;
@@ -2492,10 +2473,10 @@ mod string_id_wrapper_tests {
                 let mut ctx = PresenceCtx::empty();
                 let scribe = MemberId::agent("scribe");
                 ctx.set_display_name(scribe.clone(), "Scribe");
-                assert_eq!(ctx.display_name(&scribe), "Scribe · Agent");
+                assert_eq!(ctx.display_name(&scribe), "Scribe");
                 ctx.set_display_name(scribe.clone(), "Editorial helper");
                 assert!(!ctx.user(&scribe).id.is_person());
-                assert_eq!(ctx.display_name(&scribe), "Editorial helper · Agent");
+                assert_eq!(ctx.display_name(&scribe), "Editorial helper");
             }
             // phase: an_unnamed_peer_is_a_guest_and_never_its_id
             // A person nobody named is a guest on every surface: never blank, and never their key,
@@ -2573,21 +2554,17 @@ mod string_id_wrapper_tests {
             mine.upsert_remote_cursor(MemberId::person("key-b"), [1.0, 1.0], Some("ada"));
             mine.set_self_member(ada.clone(), "Ada");
             mine.set_display_name(other_ada.clone(), "ada");
-            mine.set_display_name(agent.clone(), "Ada");
+            mine.set_display_name(agent.clone(), "Claude");
             // And from the other Ada's, who heard of everyone in another order.
             let mut theirs = PresenceCtx::empty();
-            theirs.set_display_name(agent.clone(), "Ada");
+            theirs.set_display_name(agent.clone(), "Claude");
             theirs.set_display_name(ada.clone(), "Ada");
             theirs.set_self_member(other_ada.clone(), "ada");
 
             for ctx in [&mine, &theirs] {
                 assert_eq!(ctx.display_name(&ada), "Ada (1)");
                 assert_eq!(ctx.display_name(&other_ada), "ada (2)");
-                assert_eq!(
-                    ctx.display_name(&agent),
-                    crate::history_source::agent_display_label("Ada"),
-                    "an agent keeps its kind label and takes no number"
-                );
+                assert_eq!(ctx.display_name(&agent), "Claude", "a name nobody shares");
             }
             assert_eq!(mine.self_label().as_deref(), Some("Ada (1)"));
             assert_eq!(theirs.self_label().as_deref(), Some("ada (2)"));
@@ -2601,7 +2578,7 @@ mod string_id_wrapper_tests {
                 [
                     "Ada (1)".to_owned(),
                     "ada (2)".to_owned(),
-                    crate::history_source::agent_display_label("Ada"),
+                    "Claude".to_owned(),
                 ]
             );
 
@@ -2610,6 +2587,28 @@ mod string_id_wrapper_tests {
             assert_eq!(mine.remote_cursors[0].label, "Bea");
             theirs.unregister_peer(&MemberId::person("key-a"));
             assert_eq!(theirs.self_label().as_deref(), Some("ada"));
+        }
+
+        phase an_agent_is_its_own_name_on_every_surface_and_numbered_only_beside_a_namesake;
+        {
+            // Helper works for Ada, who reads the workspace: its chip, its caret tag and the card
+            // its step shows all say the name it goes by, never whom it works for or what it is.
+            let ada = MemberId::person("key-a");
+            let helper = MemberId::agent("helper");
+            let mut ctx = PresenceCtx::empty();
+            ctx.set_self_member(ada.clone(), "Ada");
+            ctx.set_display_name(helper.clone(), "Helper");
+            ctx.set_acting_for(helper.clone(), Some(ada.clone()));
+            ctx.upsert_remote_cursor(helper.clone(), [1.0, 1.0], None);
+            assert_eq!(ctx.display_name(&helper), "Helper");
+            assert_eq!(ctx.remote_cursors[0].label, "Helper");
+            assert_eq!(ctx.acting_for(&helper), Some(&ada), "whom it works for is kept");
+            // Bea's agent goes by the same name: both are numbered, alike for everyone.
+            let other = MemberId::agent("helper-bea");
+            ctx.set_display_name(other.clone(), "helper");
+            assert_eq!(ctx.display_name(&helper), "Helper (1)");
+            assert_eq!(ctx.display_name(&other), "helper (2)");
+            assert_eq!(ctx.remote_cursors[0].label, "Helper (1)");
         }
 
         phase typing_marks_fade_prune_and_coalesce;
@@ -3179,7 +3178,7 @@ mod own_identity_tests {
                 let agent = MemberId::agent("peer@agent-7");
                 ctx.set_display_name(agent.clone(), "Release assistant");
                 ctx.set_caret(&PresenceKey::Widget { path: vec![] }, agent.clone(), 4);
-                assert_eq!(ctx.display_name(&agent), "Release assistant · Agent");
+                assert_eq!(ctx.display_name(&agent), "Release assistant");
             }
             // phase: a_desktop_pointer_registers_its_peer_and_an_in_app_one_does_not
             // A workspace-scoped pointer registers its peer as present; a

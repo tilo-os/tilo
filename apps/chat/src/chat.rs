@@ -305,8 +305,8 @@ pub struct Message {
     /// posting an outside person's line); the author stays the bot.
     #[model(readonly)]
     pub appearance: Option<ShownAs>,
-    /// The agent or app that wrote it for a person, as its send pinned them: what names it
-    /// "Helper for Ada" after it left too. `None` for a person's own words.
+    /// The agent or app that wrote it for a person, as its send pinned them. `None` for a
+    /// person's own words.
     #[model(readonly)]
     pub acting: Option<ui::tilo_resource::Acting>,
     /// The name the author went by where it wrote, for an author that is not a person: what

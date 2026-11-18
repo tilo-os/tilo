@@ -1571,7 +1571,7 @@ fn labels(section: &UiNode) -> Vec<String> {
 }
 
 #[test]
-fn a_history_row_names_the_person_as_the_avatar_does_and_an_agent_as_its_name_and_kind() {
+fn a_history_row_names_the_person_as_the_avatar_does_and_an_agent_as_its_name() {
     let (mut ada, notes, _) = two_people();
     ada.host.runtime().set_name_host(Named);
     let note = call(&ada, "ada", NOTES_APP, "new_note", vec![notes]);
@@ -1593,11 +1593,11 @@ fn a_history_row_names_the_person_as_the_avatar_does_and_an_agent_as_its_name_an
     ada.commit_in_run(&helper(), RUN, "Tidy the notes");
     let mut editor = ada.host.open_resource(&target(&note), None).unwrap();
     let section = history(&mut editor);
-    // The run's rename, newest, then Ada's own: the agent reads as its name plus that it is
-    // software, the person looking as the platform's word for them, each over what it did.
+    // The agent's rename, newest, then Ada's own: the agent reads as its own name, the person
+    // looking as the platform's word for them, each over what it did.
     assert_eq!(
         labels(&section),
-        ["Helper (agent)", "You", "changed title"],
+        ["Helper", "You", "changed title"],
         "the rows name people as the avatars do, never their ids"
     );
     assert!(

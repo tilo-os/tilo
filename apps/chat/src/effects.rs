@@ -862,10 +862,8 @@ impl ChatApp {
 
     fn message_row(&self, id: &str) -> Option<LiveRow> {
         let message = self.search_messages.iter().find(|item| item.id == id)?;
-        // The badge beside the detail says the author is software, so an agent's own name
-        // leaves that unsaid: "Reading agent", and "Helper for Ada" for one that wrote for a
-        // person.
-        let author = self.message_author_label(message, crate::identity::RoleWord::InBadge);
+        // The badge beside the detail says the author is software; its name is its own.
+        let author = self.message_author_label(message);
         let agent = crate::model_stream::is_provider_output(message) || !message.author.is_person();
         let mut row = LiveRow::new(
             item_row_id("messages", id),
@@ -929,7 +927,7 @@ impl ChatApp {
 
     /// What a message's row is called: who wrote it and how it begins.
     pub(crate) fn message_label(&self, message: &crate::model::Message) -> String {
-        let author = self.message_author_label(message, crate::identity::RoleWord::InName);
+        let author = self.message_author_label(message);
         let said = if message.text.is_empty() {
             message
                 .files()
