@@ -953,6 +953,7 @@ fn app_open(args: &[OsString], spelling: &tilo_control::front::Spelling) -> Resu
 
 /// `tilo do`: in the hosted workspace `-w` names, else on this desktop. A
 /// `-w` or `--json` after the action lands in its options, and is taken out.
+/// `--json` answers the same typed shape here and in a hosted workspace.
 fn run_do(
     reach: api::Reach<'_>,
     mut workspace: Option<String>,
@@ -968,12 +969,15 @@ fn run_do(
         workspace = Some(named);
         args.drain(at..=at.saturating_add(1));
     }
-    let Some(workspace) = workspace else {
-        return desktop::run_action(desktop::ActionCmd::Run { action, args }, spelling);
-    };
     let json = reach.json | args.iter().any(|arg| arg == "--json");
     args.retain(|arg| arg != "--json");
     let reach = api::Reach { json, ..reach };
+    let Some(workspace) = workspace else {
+        if json {
+            return desktop::do_json(&action, &args, spelling);
+        }
+        return desktop::run_action(desktop::ActionCmd::Run { action, args }, spelling);
+    };
     hosted::act(reach, &workspace, &action, &args)
 }
 

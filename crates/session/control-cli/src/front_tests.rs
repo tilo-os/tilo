@@ -70,7 +70,8 @@ fn desktop_answer(request: &serde_json::Value) -> serde_json::Value {
         Some("actions_enumerate") => enumerate(request),
         Some("actions_invoke") => serde_json::json!({"answer": {
             "provider": request["provider"], "id": request["id"],
-            "receipt": {"update": {"state": "succeeded", "output": {"value": "done"}}}
+            "receipt": {"invocation": "invocation-1",
+                "update": {"state": "succeeded", "output": {"value": "done"}}}
         }}),
         _ => serde_json::json!({"err": {"code": "bad_request", "message": "?"}}),
     }
@@ -401,6 +402,29 @@ fn do_validates_then_invokes_through_a_control_socket() {
         shown.out.contains("tilo do rename-note title=…"),
         "{}",
         shown.out
+    );
+}
+
+/// `--json` reads the answer as the typed shape the API answers a hosted
+/// workspace with, from the same one invocation: `status`, `invocation` and
+/// `result`.
+#[test]
+fn do_json_answers_the_typed_shape_the_api_answers() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = FakeSocket::serve(dir.path(), "control.sock", desktop_answer, false);
+    let sockets = [ControlSocket::Named(socket.path.clone())];
+    let spelling = Spelling::tilo();
+
+    let answered = ran(|io| do_json(&sockets, "new terminal", &[], &spelling, io));
+    assert_eq!(answered.code, 0, "{}", answered.err);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&answered.out).expect("one JSON answer"),
+        serde_json::json!({"status": "ok", "invocation": "invocation-1", "result": "done"})
+    );
+    assert_eq!(
+        socket.invocations().len(),
+        1,
+        "the typed answer is the one invocation's, not a second call"
     );
 }
 

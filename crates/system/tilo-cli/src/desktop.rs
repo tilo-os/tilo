@@ -112,6 +112,14 @@ pub fn run_action(cmd: ActionCmd, spelling: &Spelling) -> ExitCode {
     })
 }
 
+/// `tilo do NAME … --json` on this desktop: the action's answer as the typed
+/// JSON the API answers a hosted workspace with, so a script reads one shape
+/// wherever the action ran.
+pub fn do_json(action: &str, args: &[String], spelling: &Spelling) -> ExitCode {
+    let sockets = sockets();
+    with_io(|io| front::do_json(&sockets, action, args, spelling, io))
+}
+
 /// `tilo open APP [file|link…]` and `tilo app open …`.
 pub fn run_open(app: &str, items: &[String], spelling: &Spelling) -> ExitCode {
     let sockets = sockets();
