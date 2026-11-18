@@ -170,7 +170,6 @@ set -- workspace \
   --listing-description "$description" \
   --default-role "${TILO_WORKSPACES_DEFAULT_ROLE:-editor}" \
   --web "${TILO_WORKSPACES_WEB:-127.0.0.1:9781}" \
-  --packet-relay "${TILO_WORKSPACES_LIVE:-0.0.0.0:9782}" \
   --tls "$tls" \
   --web-plain "${TILO_WORKSPACES_SERVER_PLAIN:-0.0.0.0:9780}" \
   --public-origin "$origin" \
@@ -178,6 +177,16 @@ set -- workspace \
   --web-entry "$entry" \
   --allowed-origin "$origin"
 
+# The server has its own packet relay, unless TILO_WORKSPACES_LIVE=none: then
+# it is reached through the one at TILO_WORKSPACES_LIVE_ORIGIN, as a server
+# behind a router nobody can dial into is.
+live=${TILO_WORKSPACES_LIVE:-0.0.0.0:9782}
+if [ "$live" = none ]; then
+  [ -n "${TILO_WORKSPACES_LIVE_ORIGIN:-}" ] \
+    || fail "TILO_WORKSPACES_LIVE=none names the packet relay to be reached through in TILO_WORKSPACES_LIVE_ORIGIN"
+else
+  set -- "$@" --packet-relay "$live"
+fi
 # By default pages dial the packet relay at the address it bound; an ingress
 # that publishes it at another host (its own wss://live.…) names that origin,
 # and the certificate the ingress presents names its host too.

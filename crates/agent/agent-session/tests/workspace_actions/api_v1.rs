@@ -366,6 +366,7 @@ async fn a_backend_key_works_through_the_api_on_a_server_host() {
         &tilo_api::Config {
             issuer: ISSUER.into(),
             web_entry: on_server.web_entry.clone(),
+            invite_entry: None,
             hosts: vec![on_server.server.clone()],
         },
         tilo_api::store::Store::in_memory(),
@@ -822,6 +823,7 @@ async fn a_call_reaches_the_server_that_keeps_the_workspace_when_another_answers
             &tilo_api::Config {
                 issuer: ISSUER.into(),
                 web_entry: hers.web_entry.clone(),
+                invite_entry: None,
                 hosts: vec![near, far],
             },
             tilo_api::store::Store::in_memory(),
@@ -861,6 +863,7 @@ async fn a_key_works_at_every_api_server() {
         &tilo_api::Config {
             issuer: ISSUER.into(),
             web_entry: served.web_entry.clone(),
+            invite_entry: None,
             hosts: vec![served.server.clone()],
         },
         tilo_api::store::Store::in_memory(),
@@ -906,6 +909,7 @@ async fn a_call_is_served_after_the_host_it_used_goes_away() {
             &tilo_api::Config {
                 issuer: ISSUER.into(),
                 web_entry: restarted.web_entry.clone(),
+                invite_entry: None,
                 hosts: vec![used, restarted.server.clone()],
             },
             tilo_api::store::Store::in_memory(),
@@ -934,6 +938,7 @@ async fn no_host_that_can_read_the_workspace_is_a_typed_refusal() {
         &tilo_api::Config {
             issuer: ISSUER.into(),
             web_entry: on_server.web_entry.clone(),
+            invite_entry: None,
             // Nothing serves at this address: no server is online for the key.
             hosts: vec!["http://127.0.0.1:9".into()],
         },

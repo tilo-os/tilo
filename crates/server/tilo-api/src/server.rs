@@ -21,6 +21,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tilo_server_client::CertifyError;
 use tilo_server_client::https::{self, Origin};
+/// Where a server is dialed over iroh, and that with its certificate.
+pub use tilo_server_protocol::web::{HostAddress as ServerAddress, HostInfo as ServerInfo};
 use tilo_server_session::workspaces::{Refusal as WorkspaceRefusal, WorkspaceLabels};
 use tilo_session_client::PeerConfig;
 use tilo_session_client::device::{Device, DeviceRefusal};
@@ -53,7 +55,7 @@ pub struct Workspace {
     /// it.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub unattended: bool,
-    /// Where its host is reached, as the person's list says.
+    /// Where the device keeping it is reached, as the person's list says.
     #[serde(skip)]
     pub address: Option<tilo_server_session::workspaces::KeepingDeviceAddress>,
 }
@@ -72,7 +74,7 @@ pub enum ServerError {
     /// The server refused one of its own workspace operations, saying which
     /// case it was instead of leaving the caller to read it from words.
     RefusedWorkspace(WorkspaceRefusal),
-    /// No host answered with a session, so nothing that can read the
+    /// No server answered with a session, so nothing that can read the
     /// workspace is online.
     NoHolder,
     /// The server is part of a Tilo desktop, which answers its own
@@ -92,7 +94,7 @@ impl std::fmt::Display for ServerError {
                 "No device that can read this workspace is online. Open Tilo on a device that \
                  holds it, then try again.",
             ),
-            // What the host refused is kept for the log: the person (or the
+            // What the server refused is kept for the log: the person (or the
             // agent relaying it) reads what they can do about it.
             Self::Refused(reason) => {
                 tracing::info!(reason, "the server refused a call");
@@ -133,7 +135,7 @@ impl From<CertifyError> for ServerError {
 impl From<DeviceRefusal> for ServerError {
     fn from(refusal: DeviceRefusal) -> Self {
         // A workspace operation of the server's own answers a typed refusal;
-        // the host's other refusals are read as they were.
+        // the server's other refusals are read as they were.
         if let Some(refused) = WorkspaceRefusal::from_reason(&refusal.message) {
             return Self::RefusedWorkspace(refused);
         }
@@ -148,6 +150,9 @@ pub struct Server {
     name: String,
     /// Where it is reached, as it was configured (`https://eu1.tilo.sh`).
     origin: String,
+    /// Its certificate and iroh address, when they are known already: a server reached over
+    /// iroh only (behind a NAT, through a packet relay) has no origin to ask them of.
+    known: std::sync::OnceLock<ServerInfo>,
 }
 
 impl Server {
@@ -163,7 +168,13 @@ impl Server {
             host: Origin::new(client, origin),
             name,
             origin: origin.trim_end_matches('/').to_owned(),
+            known: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Dial the server at `info` rather than asking its origin where it is.
+    pub fn reached_at(&self, info: ServerInfo) {
+        let _ = self.known.set(info);
     }
 
     /// The server's name, as the account lists hosts.
@@ -207,9 +218,12 @@ impl Server {
     /// # Errors
     /// The server was not reached or takes no device sessions.
     pub async fn connect(self: &Arc<Self>, key: &GrantKey) -> Result<Connection, ServerError> {
-        let info = https::host_info(&self.host)
-            .await
-            .map_err(|error| ServerError::Unavailable(error.to_string()))?;
+        let info = match self.known.get() {
+            Some(known) => known.clone(),
+            None => https::host_info(&self.host)
+                .await
+                .map_err(|error| ServerError::Unavailable(error.to_string()))?,
+        };
         let host = info
             .address
             .as_ref()
@@ -646,7 +660,7 @@ impl Connection {
         }
     }
 
-    /// The host this session answers on.
+    /// The server this session answers on.
     #[must_use]
     pub fn server(&self) -> &Arc<Server> {
         &self.server

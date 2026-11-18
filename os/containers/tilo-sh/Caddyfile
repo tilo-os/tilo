@@ -33,7 +33,10 @@ http://127.0.0.1:{$TILO_SH_SERVER_PORT} {
 
 # The relay's live session: its packet relay, which pages reach over
 # websockets (TILO_WORKSPACES_LIVE) and the relay's own endpoint uses as its home.
-http://127.0.0.1:{$TILO_SH_LIVE_PORT} {
+# Named localhost too: another stack reached through this relay
+# (TILO_SH_REACHED_THROUGH) names it so, since an invitation link drops a relay
+# named by a loopback address as no stranger's way in.
+http://127.0.0.1:{$TILO_SH_LIVE_PORT}, http://localhost:{$TILO_SH_LIVE_PORT} {
 	reverse_proxy 127.0.0.1:{$TILO_SH_PACKET_PORT}
 }
 

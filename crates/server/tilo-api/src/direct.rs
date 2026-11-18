@@ -30,7 +30,7 @@ use tilo_user_identity::DeviceCert;
 /// A key as a file holds it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct KeyFile {
-    /// The Tilo host it reaches: an origin (`https://eu1.tilo.sh`).
+    /// The Tilo server it reaches: an origin (`https://eu1.tilo.sh`).
     pub host: String,
     /// The person's Tilo on the web, when the key knows it (`https://tilo.sh`):
     /// the site whose page opens the links the host hands out. A key `tilo
@@ -45,6 +45,10 @@ pub struct KeyFile {
     pub key: String,
     /// Its certificate, canonical bytes as hex.
     pub cert: String,
+    /// The server's certificate and iroh address, when the key reaches it over iroh only: a server
+    /// behind a NAT, reached through a packet relay, has no web origin to ask them of.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reached_at: Option<crate::server::ServerInfo>,
 }
 
 impl KeyFile {
@@ -68,6 +72,7 @@ impl KeyFile {
             cert: hex::encode(
                 tilo_user_identity::canonical::canonical_bytes(cert).unwrap_or_default(),
             ),
+            reached_at: None,
         }
     }
 
@@ -167,11 +172,15 @@ impl Direct {
             &Config {
                 issuer: host.to_owned(),
                 web_entry: site.to_owned(),
+                invite_entry: None,
                 hosts: vec![host.to_owned()],
             },
             Store::in_memory(),
         )
         .map_err(|error| error.to_string())?;
+        if let (Some(info), Some(first)) = (&file.reached_at, server.hosts.first()) {
+            first.reached_at(info.clone());
+        }
         Ok((server, key))
     }
 

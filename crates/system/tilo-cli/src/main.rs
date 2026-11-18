@@ -26,7 +26,7 @@ use std::io::{IsTerminal, Write};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 mod agent;
 mod aliases;
 use tilo_api::client as api;
@@ -330,7 +330,8 @@ enum Cmd {
                       your browser: this computer gets a device key of its own, which that tab certifies. On a \
                       computer already set up, a sign-in code (\"Sign in with your agent\") signs that tab in as you.")]
     Login {
-        /// The code your Tilo tab shows, like K7Q-MX2P. Not needed on a computer that holds your
+        /// The code your Tilo tab shows, like K7Q-MX2P, or an invitation link a member sent you,
+        /// which joins their workspace over iroh. Not needed on a computer that holds your
         /// identity (`--new-identity`): it logs itself in, into -w or your own workspace.
         code: Option<String>,
         /// Instead: make a Tilo identity whose root this computer holds (or
@@ -339,8 +340,9 @@ enum Cmd {
         /// keys here, with no browser.
         #[arg(long, conflicts_with_all = ["code", "agent"])]
         new_identity: bool,
-        /// The new identity's name, as workspaces show it.
-        #[arg(long, requires = "new_identity")]
+        /// The new identity's name, as workspaces show it (with `--new-identity`, or with an
+        /// invitation link on a computer that holds no identity yet).
+        #[arg(long)]
         name: Option<String>,
         /// Print the identity as one line of JSON, `{"user_public_key": …,
         /// "name": …}`, for a script that declares the key and wants the name
@@ -1141,8 +1143,9 @@ fn list_actions(filter: Vec<String>, spelling: &tilo_control::front::Spelling) -
     desktop::run_action(desktop::ActionCmd::List { filter }, spelling)
 }
 
-fn run(cli: Cli) -> Result<ExitCode> {
-    let spelling = tilo_control::front::Spelling::tilo();
+/// `tilo login` where no tab approves this computer: one that holds the person's identity, or one
+/// following an invitation link. `None` for every other command.
+fn login_without_a_tab(cli: &Cli) -> Option<Result<ExitCode>> {
     if let Cmd::Login {
         code: None,
         new_identity: false,
@@ -1151,18 +1154,44 @@ fn run(cli: Cli) -> Result<ExitCode> {
         ..
     } = &cli.cmd
     {
-        let Some(person) = identity::held()? else {
-            bail!(
+        let Some(person) = (match identity::held() {
+            Ok(person) => person,
+            Err(error) => return Some(Err(error)),
+        }) else {
+            return Some(Err(anyhow!(
                 "Give the code your Tilo tab shows, like `tilo login K7Q-MX2P` (in Tilo, choose \"Set \
                  up with your agent\"). Only a computer that holds your identity logs in without one."
-            );
+            )));
         };
-        return login::login_held(
+        return Some(login::login_held(
             &person,
             agent.as_deref(),
             site.as_deref(),
             cli.workspace.as_deref(),
-        );
+        ));
+    }
+    if let Cmd::Login {
+        code: Some(link),
+        new_identity: false,
+        name,
+        agent,
+        ..
+    } = &cli.cmd
+        && link.contains("invite=")
+    {
+        return Some(login::login_invited(
+            link,
+            name.as_deref(),
+            agent.as_deref(),
+        ));
+    }
+    None
+}
+
+fn run(cli: Cli) -> Result<ExitCode> {
+    let spelling = tilo_control::front::Spelling::tilo();
+    if let Some(logged_in) = login_without_a_tab(&cli) {
+        return logged_in;
     }
     let workspace = workspace_or_entered(&cli)?;
     let cmd = match run_hosted(
@@ -1977,6 +2006,7 @@ mod tests {
             label: "Claude Code on build-box".into(),
             cert: "00".into(),
             host_cert: "00".into(),
+            server_address: None,
         };
         crate::login::store(dir.path(), &key, &device).unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();

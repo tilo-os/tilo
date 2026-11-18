@@ -8,6 +8,9 @@
 //! - `TILO_API_ORIGIN`: the server's public origin, as agents reach it.
 //! - `TILO_API_WEB_ENTRY`: the person's Tilo on the web, which signs them in.
 //! - `TILO_API_STATE`: the file the server keeps clients and grants in.
+//! - `TILO_API_INVITE_ENTRY` (optional): the page invitation links point at
+//!   (`https://tilo.sh`) when the workspace's server is reached only over
+//!   iroh: each link carries the signed invitation itself.
 //! - `TILO_API_HOST`: the public origins, comma-separated, of the Tilo hosts
 //!   the person's workspaces may live on. The server forwards each call to
 //!   the host that serves it best and keeps no workspace of its own
@@ -58,6 +61,11 @@ fn main() -> Result<(), String> {
         issuer: origin("TILO_API_ORIGIN")?,
         web_entry: origin("TILO_API_WEB_ENTRY")?,
         hosts: origins("TILO_API_HOST")?,
+        invite_entry: std::env::var("TILO_API_INVITE_ENTRY")
+            .ok()
+            .filter(|entry| !entry.trim().is_empty())
+            .map(|_| origin("TILO_API_INVITE_ENTRY"))
+            .transpose()?,
     };
     let store = Store::open(PathBuf::from(var("TILO_API_STATE")?))
         .map_err(|error| format!("TILO_API_STATE: {error}"))?;

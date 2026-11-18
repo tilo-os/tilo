@@ -142,6 +142,16 @@ What runs, all on 127.0.0.1 (ports from TILO_SH_PORT_BASE, default 24100):
             http://127.0.0.1:BASE+23; stack.sh mail lists what it kept
   discord   with --discord, the fake Discord (crates/dev/fake-discord)
 
+Reached from elsewhere: TILO_SH_REACHED_THROUGH=https://live.eu1.tilo.sh (any
+packet relay's URL) has the server start no packet relay of its own and be
+reached through that one, its iroh endpoint on every address, so people on
+other networks join it with an invitation over iroh while nothing of the
+stack is on the web. Its invitation links then carry the server's signed
+address themselves (under https://tilo.sh, or TILO_SH_INVITE_ENTRY), and
+`tilo login '<link>'` joins with one from anywhere. The state keeps it for
+`restart server` and `restart api`; an empty value goes back to the stack's
+own relay.
+
 A running stack belongs to the checkout that started it: up, down and restart
 from another checkout refuse (TILO_SH_TAKE_OVER=1 takes it over). Give each
 checkout its own TILO_SH_STATE and TILO_SH_PORT_BASE instead.
@@ -496,6 +506,23 @@ wait_server_up() {
 # The server's environment: apps/tilo-sh-server/deployment.yaml, its names
 # turned into this stack's addresses, its secrets into throwaway local ones.
 server_env() {
+  # TILO_SH_REACHED_THROUGH=<packet relay URL>: the server starts no packet relay
+  # of its own and is reached through that one (tilo.sh's is
+  # https://live.eu1.tilo.sh), its iroh endpoint on every address: how a stack
+  # behind a router nobody dials into is reached by people elsewhere, with
+  # nothing of it on the web. The stack's state keeps it, so `restart server`
+  # serves it the same way; an empty value goes back to its own relay.
+  if [[ -n ${TILO_SH_REACHED_THROUGH+set} ]]; then
+    printf '%s' "$TILO_SH_REACHED_THROUGH" > "$state/reached-through"
+  fi
+  local through live_bind=127.0.0.1:$packet_port live_published=$live_origin
+  local iroh_bind=127.0.0.1:$iroh_port
+  through=$(cat "$state/reached-through" 2>/dev/null || true)
+  if [[ -n $through ]]; then
+    live_bind=none
+    live_published=$through
+    iroh_bind=0.0.0.0:$iroh_port
+  fi
   local env=(
     TILO_WORKSPACES_PERSISTENT=lounge
     TILO_WORKSPACES_NAME=Lounge
@@ -503,9 +530,9 @@ server_env() {
     TILO_WORKSPACES_DEFAULT_ROLE=editor
     TILO_WORKSPACES_LAYOUT=shared
     "TILO_WORKSPACES_SERVER_ORIGIN=$server_origin"
-    "TILO_WORKSPACES_LIVE=127.0.0.1:$packet_port"
-    "TILO_WORKSPACES_IROH_LISTEN=127.0.0.1:$iroh_port"
-    "TILO_WORKSPACES_LIVE_ORIGIN=$live_origin"
+    "TILO_WORKSPACES_LIVE=$live_bind"
+    "TILO_WORKSPACES_IROH_LISTEN=$iroh_bind"
+    "TILO_WORKSPACES_LIVE_ORIGIN=$live_published"
     "TILO_WORKSPACES_WEB_ENTRY=$site_origin/"
     "TILO_WORKSPACES_SITE_ORIGINS=$site_origin"
     # The site is plain http on this machine: the server's local mode, in which
@@ -596,6 +623,11 @@ api_env() {
     "TILO_API_WEB_ENTRY=$site_origin" \
     "TILO_API_HOST=$server_origin" \
     "TILO_API_STATE=$api_state/api.json"
+  # A server reached through another packet relay has no page anyone else
+  # opens: its invitations carry themselves, under tilo.sh's page.
+  if [[ -n $(cat "$state/reached-through" 2>/dev/null || true) ]]; then
+    printf '%s\n' "TILO_API_INVITE_ENTRY=${TILO_SH_INVITE_ENTRY:-https://tilo.sh}"
+  fi
 }
 
 # The web entry's environment: apps/tilo-web/deployment.yaml. INFO is what

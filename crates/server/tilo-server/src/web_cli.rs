@@ -93,12 +93,11 @@ pub struct WebArgs {
     pub packet_relay: Option<SocketAddr>,
     /// The `https://` origin an ingress publishes the packet relay at, in front
     /// of `--packet-relay`: the URL the host advertises, which pages dial. By
-    /// default that is the bind address's own `http://`.
-    #[arg(
-        long = "packet-relay-url",
-        value_name = "URL",
-        requires = "packet_relay"
-    )]
+    /// default that is the bind address's own `http://`. Without
+    /// `--packet-relay`, the server is reached through the packet relay at
+    /// this URL and has none of its own: how a server behind a router nobody
+    /// dials into is reached from anywhere.
+    #[arg(long = "packet-relay-url", value_name = "URL")]
     pub packet_relay_url: Option<String>,
     /// The web entry (ending in `/`, e.g. `https://app.example/`) where the
     /// Tilo app opens this host's links: announced in catalogue locators,

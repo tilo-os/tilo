@@ -463,6 +463,17 @@ impl crate::Server {
         invitation: &[u8],
         expires_at_ns: u64,
     ) -> String {
+        // A server reached only over iroh has no site a stranger can fetch
+        // from: the link carries the signed invitation itself, whose
+        // addresses are the server's own, signed by it, and the page or
+        // `tilo login` that follows it dials the server with them.
+        if let Some(entry) = &self.config.invite_entry {
+            let text = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(invitation);
+            return format!(
+                "{}/#/w/{workspace}?invite={text}",
+                entry.trim_end_matches('/')
+            );
+        }
         let entry = self.config.web_entry.trim_end_matches('/');
         // The site's shelf keeps the origin the invitation admits into, never a
         // bare name: a shelf refuses what is not an origin.

@@ -38,6 +38,10 @@ pub struct Device {
     pub label: String,
     pub cert: String,
     pub host_cert: String,
+    /// Where the server is dialed over iroh, as its signed invitation named it: a server reached
+    /// that way only (behind a NAT, through a packet relay) has no web origin to ask.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_address: Option<crate::server::ServerAddress>,
 }
 
 impl Device {

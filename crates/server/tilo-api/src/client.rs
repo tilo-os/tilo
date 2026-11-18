@@ -217,7 +217,7 @@ enum Transport {
         key: String,
         http: tilo_net::Client,
     },
-    /// A Tilo host, reached in process as this computer's own key.
+    /// A Tilo server, reached in process as this computer's own key.
     Direct(crate::direct::Direct),
     /// A Tilo desktop on this computer, at the socket it serves its person's
     /// programs on, as that desktop's own device.
@@ -1016,6 +1016,13 @@ pub fn login_key(name: Option<&str>) -> Result<Option<crate::direct::KeyFile>> {
         name: name.map_or_else(|| device.label.clone(), str::to_owned),
         key: hex::encode(key.to_bytes()),
         cert: hex::encode(canonical),
+        reached_at: match &device.server_address {
+            Some(address) => Some(crate::server::ServerInfo {
+                host_cert: device.certs()?.1,
+                address: Some(address.clone()),
+            }),
+            None => None,
+        },
     }))
 }
 

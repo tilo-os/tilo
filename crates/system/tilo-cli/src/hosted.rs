@@ -2106,6 +2106,7 @@ mod tests {
             label: "Claude Code on build-box".into(),
             cert: hex::encode(postcard::to_allocvec(&cert).unwrap()),
             host_cert: "00".into(),
+            server_address: None,
         };
         crate::login::store(dir.path(), &key, &device).unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
