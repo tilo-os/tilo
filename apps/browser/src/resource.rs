@@ -444,19 +444,27 @@ impl ResourceApp for BrowserShell {
             if let Err(error) = crate::storage::prepare_window(mode.is_private()) {
                 tracing::error!(%error, "Cannot prepare browser storage");
             }
-            BrowserWidget::new_with_mode(mode).with_service_client(
-                if mode.holds_account_credentials()
-                    && cx
-                        .me()
-                        .and_then(ui::tilo_resource::MemberId::person_id)
-                        .and_then(crate::service_sessions::identity)
-                        .is_some()
-                {
-                    ui::collaboration::browser_service_sessions::Client::capture()
-                } else {
+            BrowserWidget::new_with_mode(mode)
+                .with_service_client(
+                    if mode.holds_account_credentials()
+                        && cx
+                            .me()
+                            .and_then(ui::tilo_resource::MemberId::person_id)
+                            .and_then(crate::service_sessions::identity)
+                            .is_some()
+                    {
+                        ui::collaboration::browser_service_sessions::Client::capture()
+                    } else {
+                        None
+                    },
+                )
+                // A client of its own for vault items: whether the session lends any to this
+                // window's pages is the session's to say, once the window is live.
+                .with_item_client(if mode.is_private() {
                     None
-                },
-            )
+                } else {
+                    ui::collaboration::browser_service_sessions::Client::capture()
+                })
         } else {
             BrowserWidget::new_headless_in(mode)
         };
@@ -592,6 +600,9 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
     {
         window.page_mut().attach_service_catalog(cx.waker());
     }
+    // Whether this window's pages are filled from vault items is its session's to say: a
+    // session that holds a workspace's Browser lends them, a person's own does not.
+    window.page_mut().attach_item_lending(cx.waker());
     // Visits and addresses are the person's own: they follow them to their other
     // devices and never reach a member; a private window keeps none. Downloads
     // and side panel widths stay on this device.

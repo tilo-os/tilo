@@ -443,6 +443,10 @@ pub struct Hosted {
     /// well as in this desktop: what their other devices' records reach this
     /// session's apps through. `None` on a session that keeps none.
     pub personal: Option<tilo_peer_state::PersonalSync>,
+    /// What Browser's asks for vault items are answered with: nothing in a person's own
+    /// session, and the workspace's server's word where this session holds a workspace's
+    /// Browser.
+    pub item_lending: std::sync::Arc<crate::item_lending::ItemLending>,
     /// What the broker hands the apps that have a record open: shared with
     /// the person's store, so a write of theirs reaches an app here on the
     /// same route this device's own writes do.
@@ -1102,6 +1106,7 @@ fn broker_services(
         nearby,
         file_clipboard,
         personal,
+        item_lending,
         fanout: _,
     } = hosted;
     let shortcut_library: std::sync::Arc<dyn ShortcutLibraryServices> = shortcuts;
@@ -1147,6 +1152,7 @@ fn broker_services(
         engine.as_ref().map(|engine| {
             std::sync::Arc::new(crate::service_sessions::ServiceSessions::new(
                 std::sync::Arc::clone(engine),
+                std::sync::Arc::clone(&item_lending),
             )) as std::sync::Arc<dyn BrowserServiceSessionServices>
         });
     BrokerServices {
@@ -1477,9 +1483,18 @@ pub(crate) struct AppWire {
     /// The person's own store open to their other devices, held so its links
     /// and the writes it keeps end with the session.
     pub(crate) _personal: Option<tilo_action_broker::personal::Links>,
+    /// What Browser's asks for vault items are answered with, shared with the service that
+    /// answers them.
+    pub(crate) item_lending: std::sync::Arc<crate::item_lending::ItemLending>,
 }
 
 impl AppWire {
+    /// What Browser's asks for vault items are answered with: a session that holds a
+    /// workspace's Browser says so here, and names who asks its server.
+    pub(crate) fn item_lending(&self) -> std::sync::Arc<crate::item_lending::ItemLending> {
+        std::sync::Arc::clone(&self.item_lending)
+    }
+
     /// Say this device's call where everyone in the workspace reads it, and take
     /// in what they say of theirs: the channel a person is in and who is in
     /// each channel's call, which is what this session's apps show of calls.
@@ -1734,6 +1749,7 @@ mod tests {
                 std::sync::Arc::new(|| ()),
             )),
             personal: None,
+            item_lending: std::sync::Arc::default(),
             fanout: std::sync::Arc::new(FanoutState::new()),
             endpoint: None,
         }

@@ -78,6 +78,7 @@ pub mod search_provider;
 pub mod service_destinations;
 pub mod service_profiles;
 pub(crate) mod service_sessions;
+pub(crate) mod session_items;
 pub mod settings;
 pub mod site_controls;
 pub mod site_memory;

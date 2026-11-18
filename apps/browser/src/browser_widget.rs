@@ -630,6 +630,12 @@ pub struct BrowserWidget {
     /// This window's way to its person's vault, where it has one
     /// ([`crate::page_items`]).
     item_source: Option<Rc<dyn crate::page_items::ItemSource>>,
+    /// This window's own client of its session for vault items, until the window is live
+    /// and asks with it ([`crate::session_items`]).
+    item_client: Option<ui::collaboration::browser_service_sessions::Client>,
+    /// The question to this window's session whether it lends vault items to its pages,
+    /// while it is not settled.
+    item_lending: Option<crate::session_items::LendingQuestion>,
     /// Fills by reference whose item was asked for and has not come yet.
     item_fills: Vec<page_items::ItemFill>,
     /// Fills by reference that ended before they took the tab's turn, and
@@ -1508,6 +1514,8 @@ impl BrowserWidget {
             page_resource_answers: Vec::new(),
             page_resource: crate::page_resource::TabRecorder::default(),
             item_source: None,
+            item_client: None,
+            item_lending: None,
             item_fills: Vec::new(),
             item_fill_results: Vec::new(),
             struck: ui::webview::StruckTexts::default(),
@@ -5841,6 +5849,7 @@ impl BrowserWidget {
     fn sync_frame(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
         self.poll_service_admission();
+        self.drive_item_lending();
         if let Some(engine) = self
             .service_view
             .as_mut()
