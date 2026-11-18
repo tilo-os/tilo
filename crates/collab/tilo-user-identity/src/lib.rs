@@ -35,7 +35,7 @@
 //!
 //! - [`DEVCERT_PREIMAGE_TAG`] — `tilo-devcert-v1\0`
 //! - [`REVOCATION_PREIMAGE_TAG`] — `tilo-revocation-v1\0`
-//! - [`ENROLLMENT_PREIMAGE_TAG`] — `tilo-enrollment-v2\0`
+//! - [`ENROLLMENT_PREIMAGE_TAG`] — `tilo-enrollment-v3\0`
 //! - [`APPROVAL_REQUEST_TAG`] — `tilo-device-approval-request-v1\0`
 //! - [`APPROVAL_RESPONSE_TAG`] — `tilo-device-approval-response-v1\0`
 //! - [`CERTIFICATION_REQUEST_TAG`] — `tilo-device-certification-request-v1\0`
@@ -131,9 +131,9 @@ pub use endpoint_delegation::{
     verify_endpoint_delegation,
 };
 pub use enrollment::{
-    ENROLLMENT_PREIMAGE_TAG, EnrollmentError, EnrollmentToken, MAX_ENROLLMENT_TOKEN_LIFETIME_NS,
-    decode_enrollment_token, encode_enrollment_token, mint_enrollment_token,
-    verify_enrollment_token,
+    Dial, ENROLLMENT_PREIMAGE_TAG, EnrollmentError, EnrollmentToken,
+    MAX_ENROLLMENT_TOKEN_LIFETIME_NS, decode_enrollment_token, encode_enrollment_token,
+    mint_enrollment_token, verify_enrollment_token,
 };
 pub use fleet::{CertifiedFleet, DeviceCertification, FleetError};
 pub use image::{
@@ -307,7 +307,7 @@ mod tests {
             assert_eq!(revocation::REVOCATION_PREIMAGE_TAG, b"tilo-revocation-v1\0");
             assert_eq!(revocation::REVOCATION_PREIMAGE_TAG.len(), 19);
 
-            assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG, b"tilo-enrollment-v2\0");
+            assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG, b"tilo-enrollment-v3\0");
             assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG.len(), 19);
 
 

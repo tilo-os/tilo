@@ -97,6 +97,7 @@ fn person() -> Person {
             DeviceCapabilities::member(),
             now,
             now.saturating_add(3_600_000_000_000),
+            &[],
         )
         .expect("this device may enroll another of the person's");
     let phone_key = test_server::signing_key(0x52);

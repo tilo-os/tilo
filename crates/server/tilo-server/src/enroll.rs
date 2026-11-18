@@ -27,6 +27,16 @@ use tilo_user_identity::{
     verify_device_cert_at, verify_enrollment_token,
 };
 
+#[path = "enroll_protocol.rs"]
+mod protocol;
+#[path = "enroll_transport.rs"]
+mod transport;
+
+use protocol::{
+    decrypt_pair_offer, decrypt_request, decrypt_response, encrypt_pair_offer, encrypt_request,
+    encrypt_response, make_ack, make_finalized, verify_ack, verify_finalized,
+};
+
 /// Well-known UDP port every nearby-pairing listener binds and every
 /// soliciting device broadcasts to. Broadcast discovery has no channel to
 /// advertise a port before the first datagram, so the rendezvous must be
@@ -69,6 +79,17 @@ fn ensure_offered(method: tilo_identity::enrollment::Method) -> anyhow::Result<(
         .unwrap_or(tilo_identity::enrollment::Methods::ALL)
         .ensure(method)
         .map_err(anyhow::Error::from)
+}
+
+/// A `--relay` value as the relays an endpoint takes as home.
+fn parse_relay_option(relay: Option<&str>) -> anyhow::Result<Option<iroh::RelayMap>> {
+    relay
+        .map(|url| {
+            url.parse::<iroh::RelayUrl>()
+                .map(iroh::RelayMap::from)
+                .map_err(|error| anyhow::anyhow!("{url:?} is not a packet relay: {error}"))
+        })
+        .transpose()
 }
 
 fn declared_methods() -> tilo_identity::enrollment::Methods {
@@ -134,6 +155,10 @@ enum Command {
         /// and a code otherwise.
         #[arg(long, value_parser = parse_method)]
         method: Option<tilo_identity::enrollment::Method>,
+        /// The packet relay a machine that shows a code is reached through,
+        /// for one behind a network address translation.
+        #[arg(long)]
+        relay: Option<String>,
     },
     /// Join an existing identity as an ordinary personal device.
     PairDevice {
@@ -178,6 +203,18 @@ enum Command {
         expected_device: Option<String>,
         #[arg(long)]
         expected_service: Option<String>,
+        /// Serve enrollments over iroh instead of the local network: the
+        /// machines that dial this device with a token.
+        #[arg(long)]
+        iroh: bool,
+        /// The packet relay this device is reached through, for the token a
+        /// machine behind a network translation is handed.
+        #[arg(long)]
+        relay: Option<String>,
+        /// Dial a machine that shows a code (`tilo://enroll?…` as it prints
+        /// it) instead of listening.
+        #[arg(long)]
+        dial: Option<String>,
     },
     /// Approve one nearby ordinary device and give it the current fleet and
     /// home-peer registry needed to reconnect after this device goes offline.
@@ -1299,243 +1336,6 @@ fn discover(timeout: u64, kind: EnrollmentKind) -> anyhow::Result<()> {
 // X25519-HKDF-SHA256 / ChaCha20-Poly1305), with one tilo-seal label per
 // step so an envelope for one step never opens as another. Bytes without
 // that prefix are refused.
-const ENVELOPE_MAGIC: &[u8; 7] = b"TLOENRL";
-const ENVELOPE_V2: u8 = 2;
-
-fn v2_header() -> [u8; 8] {
-    let [m0, m1, m2, m3, m4, m5, m6] = *ENVELOPE_MAGIC;
-    [m0, m1, m2, m3, m4, m5, m6, ENVELOPE_V2]
-}
-
-/// The sealed box inside `bytes`, or `None` without the envelope prefix.
-fn v2_body(bytes: &[u8]) -> Option<&[u8]> {
-    bytes.strip_prefix(&v2_header()[..])
-}
-
-fn wrap_v2(sealed: &tilo_seal::SealedBox) -> Vec<u8> {
-    let mut out = v2_header().to_vec();
-    out.extend(sealed.to_bytes());
-    out
-}
-
-/// A device's X25519 sealing secret, derived from its Ed25519 key.
-fn device_sealing_secret(device: &ed25519_dalek::SigningKey) -> tilo_seal::SecretKey {
-    tilo_seal::SecretKey::from_bytes(device.to_scalar_bytes())
-}
-
-/// A device's X25519 sealing public key, derived from its Ed25519 key.
-fn device_sealing_public(device_public_key: [u8; 32]) -> anyhow::Result<tilo_seal::PublicKey> {
-    Ok(tilo_seal::PublicKey::from_bytes(
-        VerifyingKey::from_bytes(&device_public_key)?
-            .to_montgomery()
-            .to_bytes(),
-    ))
-}
-
-fn pair_offer_aad(recipient: [u8; 32]) -> Vec<u8> {
-    [PAIR_DOMAIN, &recipient].concat()
-}
-
-/// Seal an enrollment token to the soliciting device.
-fn encrypt_pair_offer(token: &str, recipient: [u8; 32]) -> anyhow::Result<Vec<u8>> {
-    Ok(wrap_v2(&tilo_seal::hpke::seal(
-        &device_sealing_public(recipient)?,
-        tilo_seal::Label::ServerEnrollOffer,
-        &pair_offer_aad(recipient),
-        token.as_bytes(),
-    )?))
-}
-
-fn decrypt_pair_offer(
-    bytes: &[u8],
-    recipient: &ed25519_dalek::SigningKey,
-) -> anyhow::Result<String> {
-    let recipient_public = recipient.verifying_key().to_bytes();
-    let secret = device_sealing_secret(recipient);
-    let aad = pair_offer_aad(recipient_public);
-    let plaintext = v2_body(bytes)
-        .and_then(|body| {
-            tilo_seal::hpke::open_bytes(&secret, tilo_seal::Label::ServerEnrollOffer, &aad, body)
-                .ok()
-        })
-        .ok_or_else(|| anyhow::anyhow!("nearby pairing offer was not encrypted for this server"))?;
-    String::from_utf8(plaintext.to_vec()).context("nearby pairing offer is not text")
-}
-
-fn response_aad(token_nonce: [u8; 16], recipient: [u8; 32]) -> Vec<u8> {
-    let mut aad = RESPONSE_DOMAIN.to_vec();
-    aad.extend(token_nonce);
-    aad.extend(recipient);
-    aad
-}
-
-/// Seal an enrollment request to the issuing device. Returns
-/// the envelope and the secret its response will be sealed to.
-fn encrypt_request(
-    request: &Request,
-    issuer_device_public_key: [u8; 32],
-) -> anyhow::Result<(Vec<u8>, tilo_seal::SecretKey)> {
-    let response_secret = tilo_seal::SecretKey::generate()?;
-    let plaintext = zeroize::Zeroizing::new(postcard::to_stdvec(&RequestV2 {
-        request,
-        response_public_key: response_secret.public_key()?.to_bytes(),
-    })?);
-    let sealed = tilo_seal::hpke::seal(
-        &device_sealing_public(issuer_device_public_key)?,
-        tilo_seal::Label::ServerEnrollRequest,
-        &v2_header(),
-        &plaintext,
-    )?;
-    Ok((wrap_v2(&sealed), response_secret))
-}
-
-/// Open an enrollment request, returning where its response must be sealed
-/// to.
-fn decrypt_request(
-    bytes: &[u8],
-    issuer_device: &ed25519_dalek::SigningKey,
-) -> anyhow::Result<(Request, ResponseRoute)> {
-    let secret = device_sealing_secret(issuer_device);
-    let not_for_us = || anyhow::anyhow!("enrollment request was not encrypted for this issuer");
-    let body = v2_body(bytes).ok_or_else(not_for_us)?;
-    let plaintext = tilo_seal::hpke::open_bytes(
-        &secret,
-        tilo_seal::Label::ServerEnrollRequest,
-        &v2_header(),
-        body,
-    )
-    .map_err(|_| not_for_us())?;
-    let decoded: RequestV2Owned = postcard::from_bytes(&plaintext)?;
-    Ok((
-        decoded.request,
-        ResponseRoute {
-            response_public_key: decoded.response_public_key,
-        },
-    ))
-}
-
-/// Seal the signed response to the requester.
-fn encrypt_response(
-    plaintext: &[u8],
-    token_nonce: [u8; 16],
-    recipient: [u8; 32],
-    route: ResponseRoute,
-) -> anyhow::Result<Vec<u8>> {
-    let aad = response_aad(token_nonce, recipient);
-    Ok(wrap_v2(&tilo_seal::hpke::seal(
-        &tilo_seal::PublicKey::from_bytes(route.response_public_key),
-        tilo_seal::Label::ServerEnrollResponse,
-        &aad,
-        plaintext,
-    )?))
-}
-
-fn decrypt_response(
-    bytes: &[u8],
-    token_nonce: [u8; 16],
-    recipient: [u8; 32],
-    response_secret: &tilo_seal::SecretKey,
-) -> anyhow::Result<zeroize::Zeroizing<Vec<u8>>> {
-    let aad = response_aad(token_nonce, recipient);
-    v2_body(bytes)
-        .and_then(|body| {
-            tilo_seal::hpke::open_bytes(
-                response_secret,
-                tilo_seal::Label::ServerEnrollResponse,
-                &aad,
-                body,
-            )
-            .ok()
-        })
-        .ok_or_else(|| anyhow::anyhow!("enrollment response was not encrypted for this device"))
-}
-
-fn response_digest(bytes: &[u8]) -> [u8; 32] {
-    *blake3::hash(bytes).as_bytes()
-}
-
-fn make_ack(
-    response_bytes: &[u8],
-    nonce: [u8; 16],
-    device: &ed25519_dalek::SigningKey,
-) -> anyhow::Result<Vec<u8>> {
-    let payload = AckPayload {
-        nonce,
-        device_public_key: device.verifying_key().to_bytes(),
-        response_digest: response_digest(response_bytes),
-    };
-    let encoded = postcard::to_stdvec(&payload)?;
-    let ack = Ack {
-        payload,
-        signature: device.sign(&encoded).to_bytes().to_vec(),
-    };
-    Ok(postcard::to_stdvec(&ack)?)
-}
-
-fn verify_ack(
-    bytes: &[u8],
-    response_bytes: &[u8],
-    nonce: [u8; 16],
-    device_public_key: [u8; 32],
-) -> anyhow::Result<()> {
-    let ack: Ack = postcard::from_bytes(bytes)?;
-    if ack.payload.nonce != nonce
-        || ack.payload.device_public_key != device_public_key
-        || ack.payload.response_digest != response_digest(response_bytes)
-    {
-        bail!("enrollment acknowledgement did not match the response");
-    }
-    let signature: [u8; 64] = ack
-        .signature
-        .as_slice()
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("acknowledgement signature has the wrong length"))?;
-    VerifyingKey::from_bytes(&device_public_key)?.verify(
-        &postcard::to_stdvec(&ack.payload)?,
-        &Signature::from_bytes(&signature),
-    )?;
-    Ok(())
-}
-
-fn make_finalized(
-    response_bytes: &[u8],
-    nonce: [u8; 16],
-    device_public_key: [u8; 32],
-    approver: Approver<'_>,
-) -> anyhow::Result<Vec<u8>> {
-    let payload = FinalizedPayload {
-        nonce,
-        device_public_key,
-        response_digest: response_digest(response_bytes),
-    };
-    let encoded = postcard::to_stdvec(&payload)?;
-    Ok(postcard::to_stdvec(&Finalized {
-        payload,
-        signature: approver.sign(&encoded)?,
-    })?)
-}
-
-fn verify_finalized(
-    bytes: &[u8],
-    response_bytes: &[u8],
-    nonce: [u8; 16],
-    device_public_key: [u8; 32],
-    approver_public_key: [u8; 32],
-) -> anyhow::Result<()> {
-    let finalized: Finalized = postcard::from_bytes(bytes)?;
-    if finalized.payload.nonce != nonce
-        || finalized.payload.device_public_key != device_public_key
-        || finalized.payload.response_digest != response_digest(response_bytes)
-    {
-        bail!("enrollment completion did not match this exchange");
-    }
-    verify_signature(
-        approver_public_key,
-        &postcard::to_stdvec(&finalized.payload)?,
-        &finalized.signature,
-    )
-}
-
 fn now_ns() -> anyhow::Result<u64> {
     try_unix_now_ns().context("system clock precedes the Unix epoch")
 }
@@ -1597,6 +1397,7 @@ fn enroll(
     timeout: u64,
     home_peer_output: &std::path::Path,
     method: Option<tilo_identity::enrollment::Method>,
+    relay: Option<&str>,
 ) -> anyhow::Result<()> {
     let token = tilo_identity::enrollment::given_token(token_file)
         .with_context(|| format!("read {}", token_file.display()))?;
@@ -1618,12 +1419,20 @@ fn enroll(
             let token = token
                 .as_deref()
                 .context("this machine was handed no enrollment token")?;
-            join_with_token(token, options)?;
+            // A token that names where the person's devices are is dialed; one
+            // that names none is presented on this network.
+            if decode_enrollment_token(token)?.dial.is_empty() {
+                join_with_token(token, options)?;
+            } else {
+                transport::join(token, options)?;
+            }
             // The token is spent by the certificate it bought.
             tilo_identity::enrollment::spend_token(token_file)
                 .with_context(|| format!("burn {}", token_file.display()))
         }
-        tilo_identity::enrollment::Method::Code => pair(options, None),
+        tilo_identity::enrollment::Method::Code => {
+            transport::wait_for_approval(options, parse_relay_option(relay)?.as_ref(), None)
+        }
         tilo_identity::enrollment::Method::LocalNetwork => bail!(
             "a machine enrolls with a token or a code; local-network pairing is approved from \
              one of the person's devices"
@@ -1631,22 +1440,28 @@ fn enroll(
     }
 }
 
-/// Join with `token_text`; a personal device gets back its joined identity
-/// record.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one ordered join exchange; each step relies on the token and identity checks before it"
-)]
-fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result<Option<PathBuf>> {
+/// What an enrollment request is made of, before any transport carries it:
+/// the token it presents, the device it presents from, and where its answer
+/// must be sealed.
+struct PreparedJoin {
+    token: tilo_user_identity::EnrollmentToken,
+    request: Request,
+    request_bytes: Vec<u8>,
+    response_secret: tilo_seal::SecretKey,
+    device: ed25519_dalek::SigningKey,
+    paths: IdentityPaths,
+}
+
+/// Check the token, make this machine's key, and seal the request that asks
+/// for its certificate. Over the local network and over iroh alike.
+fn prepare_join(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result<PreparedJoin> {
     let JoinOptions {
         identity_root,
         label,
-        timeout,
         kind,
-        home_peer_output,
         identity_dir,
         requester_lease,
-        port,
+        ..
     } = options;
     validate_requester(requester_lease)?;
     let token = decode_enrollment_token(token_text).context("decode enrollment token")?;
@@ -1672,7 +1487,208 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
         label: label.chars().take(80).collect(),
         kind,
     };
-    let (bytes, request_ephemeral) = encrypt_request(&request, token.issuer_device_public_key)?;
+    let (request_bytes, response_secret) =
+        encrypt_request(&request, token.issuer_device_public_key)?;
+    Ok(PreparedJoin {
+        token,
+        request,
+        request_bytes,
+        response_secret,
+        device,
+        paths,
+    })
+}
+
+/// Whether `payload` is this exchange's answer: it names this request, this
+/// device and this token's identity and capabilities, and its certificate is
+/// valid now.
+fn verify_answer(
+    payload: &ResponsePayload,
+    token: &tilo_user_identity::EnrollmentToken,
+    request: &Request,
+) -> anyhow::Result<()> {
+    let this_device = request.device_public_key;
+    let answers_this_request =
+        payload.nonce == token.nonce && payload.server_node_id == request.server_node_id;
+    let addressed_to_this_device = payload.recipient_device_public_key == this_device
+        && payload.cert.device_public_key == this_device;
+    let certifies_the_token = payload.cert.user_public_key == token.user_public_key
+        && payload.cert.capabilities == token.capabilities;
+    if !(answers_this_request && addressed_to_this_device && certifies_the_token) {
+        bail!("enrollment answer does not match this request");
+    }
+    verify_device_cert_at(&payload.cert, now_ns()?)
+        .context("verify enrolled device certificate validity")
+}
+
+/// What this machine installs once its signed answer arrived, whatever carried
+/// it: the home-peer configuration, its staged personal enrollment, and — once
+/// `confirm` has sent the acknowledgement and checked the approver's Finalized —
+/// its certificate. The personal commit point stays the durable marker this
+/// stages; a crash before it publishes nothing.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered install: every step depends on the certificate the answer carried"
+)]
+fn install_answer(
+    prepared: &PreparedJoin,
+    options: JoinOptions<'_>,
+    payload: &ResponsePayload,
+    response_bytes: &[u8],
+    confirm: &mut dyn FnMut(&[u8]) -> anyhow::Result<()>,
+) -> anyhow::Result<Option<PathBuf>> {
+    let PreparedJoin {
+        token,
+        device,
+        paths,
+        ..
+    } = prepared;
+    let JoinOptions {
+        identity_root,
+        kind,
+        home_peer_output,
+        identity_dir,
+        requester_lease,
+        ..
+    } = options;
+    if kind == EnrollmentKind::HomePeer {
+        let home_peer_toml = payload
+            .home_peer_toml
+            .as_ref()
+            .context("approving device omitted home-peer configuration")?;
+        let _: fs::full_replica::HomePeerSet = toml::from_str(home_peer_toml)
+            .context("approving device returned an invalid home-peer configuration")?;
+        tilo_files::native::atomic::write(
+            home_peer_output.context("home-peer output is required")?,
+            home_peer_toml.as_bytes(),
+        )?;
+        // The person's earlier servers, which take this one in among them when
+        // it starts.
+        let earlier = tilo_server::checked_home_peers(
+            payload
+                .home_peers_json
+                .as_deref()
+                .context("approving device omitted the person's servers")?,
+        )
+        .context("the approval's servers are not a registry this build accepts")?;
+        if earlier
+            .iter()
+            .any(|entry| entry.user_public_key != hex::encode(token.user_public_key))
+        {
+            bail!("approval named another person's servers");
+        }
+        tilo_server::write_home_peers(
+            &tilo_server::home_peer_registry_path(identity_root),
+            &earlier,
+        )?;
+    }
+    // Preparing a personal enrollment only touches the private staging area.
+    // In particular, an existing device's global user key and default
+    // certificate remain untouched until Finalized has been authenticated.
+    let staged_personal = if kind == EnrollmentKind::PersonalDevice {
+        Some(stage_personal_enrollment(
+            identity_root,
+            identity_dir.context("identity directory is required")?,
+            paths,
+            payload,
+            requester_lease,
+        )?)
+    } else {
+        None
+    };
+    let ack = make_ack(response_bytes, token.nonce, device)?;
+    confirm(&ack)?;
+    validate_requester(requester_lease)?;
+    let resource_path = if let Some((marker_path, marker)) = staged_personal.as_ref() {
+        // This durable marker is the commit point: both Finalized and the exact
+        // originating compositor lease are valid. A crash before it publishes
+        // nothing; recovery after it may finish this already-authorized
+        // transaction.
+        let marker = authorize_personal_commit(marker_path, marker, requester_lease)?;
+        Some(commit_staged_personal_enrollment(
+            identity_root,
+            paths,
+            marker_path,
+            &marker,
+            |_| validate_requester(requester_lease),
+        )?)
+    } else {
+        // The home-peer path has no multi-file member projection, but still waits
+        // for Finalized before changing its active identity binding.
+        tilo_user_identity::persist::write_public_key(
+            &paths.user_pubkey,
+            &payload.cert.user_public_key,
+        )?;
+        None
+    };
+    // Publish the default cert as the completion marker only after the approver
+    // durably registers us, authenticates Finalized, and the member projection
+    // is fully installed. A crash can therefore only leave a retryable partial
+    // enrollment, never a bootable one.
+    if kind == EnrollmentKind::HomePeer {
+        let per_user_cert = paths.device_cert_for_user(&payload.cert.user_public_key);
+        share_directory_like_parent(
+            per_user_cert
+                .parent()
+                .context("per-user certificate has no directory")?,
+        )?;
+        tilo_user_identity::persist::write_device_cert(&per_user_cert, &payload.cert)?;
+        tilo_user_identity::persist::write_device_cert(&paths.device_cert, &payload.cert)?;
+    }
+    // The identity directories themselves are image layout and keep their owner
+    // and group; only what this enrollment created below them takes its
+    // directory's.
+    let per_user_cert = paths.device_cert_for_user(&payload.cert.user_public_key);
+    for output in [
+        per_user_cert.parent(),
+        Some(per_user_cert.as_path()),
+        Some(paths.user_pubkey.as_path()),
+        Some(paths.device_privkey.as_path()),
+        Some(paths.device_cert.as_path()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        restore_owner_from_parent(output)?;
+    }
+    NonceStore::under(identity_root).record(&token.nonce, device.verifying_key().to_bytes())?;
+    if kind == EnrollmentKind::PersonalDevice {
+        println!(
+            "{}",
+            serde_json::json!({
+                "identity": hex::encode(payload.cert.user_public_key),
+                "resource_path": resource_path.as_ref().context("record path is required")?,
+                "label": payload.cert.device_label,
+            })
+        );
+    } else {
+        println!("enrolled {}", payload.cert.device_label);
+    }
+    Ok(resource_path)
+}
+
+/// Join with `token_text` over the local network; a personal device gets back
+/// the identity it joined.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered join exchange; each step relies on the token and identity checks before it"
+)]
+fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result<Option<PathBuf>> {
+    let JoinOptions {
+        timeout,
+        requester_lease,
+        port,
+        ..
+    } = options;
+    let prepared = prepare_join(token_text, options)?;
+    let PreparedJoin {
+        token,
+        request,
+        request_bytes,
+        response_secret,
+        device,
+        ..
+    } = &prepared;
     let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))?;
     socket.set_broadcast(true)?;
     socket.set_read_timeout(Some(Duration::from_secs(2)))?;
@@ -1681,7 +1697,7 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
     let mut reply = vec![0_u8; MAX_PACKET];
     while std::time::Instant::now() < deadline {
         validate_requester(requester_lease)?;
-        send_solicitation(&socket, &bytes, &mut destination, port)?;
+        send_solicitation(&socket, request_bytes, &mut destination, port)?;
         match socket.recv_from(&mut reply) {
             Ok((len, sender)) => {
                 let response_bytes = received_packet(&reply, len)?.to_vec();
@@ -1690,187 +1706,49 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                     &response_bytes,
                     token.nonce,
                     device.verifying_key().to_bytes(),
-                    &request_ephemeral,
+                    response_secret,
                 )
-                .and_then(|plaintext| verify_response(&plaintext, &token)) else {
+                .and_then(|plaintext| verify_response(&plaintext, token)) else {
                     continue;
                 };
-                let this_device = request.device_public_key;
-                let answers_this_request = payload.nonce == token.nonce
-                    && payload.server_node_id == request.server_node_id;
-                let addressed_to_this_device = payload.recipient_device_public_key == this_device
-                    && payload.cert.device_public_key == this_device;
-                let certifies_the_token = payload.cert.user_public_key == token.user_public_key
-                    && payload.cert.capabilities == token.capabilities;
-                if !(answers_this_request && addressed_to_this_device && certifies_the_token) {
+                if verify_answer(&payload, token, request).is_err() {
                     continue;
                 }
-                verify_device_cert_at(&payload.cert, now_ns()?)
-                    .context("verify enrolled device certificate validity")?;
-                if kind == EnrollmentKind::HomePeer {
-                    let home_peer_toml = payload
-                        .home_peer_toml
-                        .as_ref()
-                        .context("approving device omitted home-peer configuration")?;
-                    let _: fs::full_replica::HomePeerSet = toml::from_str(home_peer_toml)
-                        .context("approving device returned an invalid home-peer configuration")?;
-                    tilo_files::native::atomic::write(
-                        home_peer_output.context("home-peer output is required")?,
-                        home_peer_toml.as_bytes(),
-                    )?;
-                    // The person's earlier servers, which take this one in
-                    // among them when it starts.
-                    let earlier = tilo_server::checked_home_peers(
-                        payload
-                            .home_peers_json
-                            .as_deref()
-                            .context("approving device omitted the person's servers")?,
-                    )
-                    .context("the approval's servers are not a registry this build accepts")?;
-                    if earlier
-                        .iter()
-                        .any(|entry| entry.user_public_key != hex::encode(token.user_public_key))
-                    {
-                        bail!("approval named another person's servers");
-                    }
-                    tilo_server::write_home_peers(
-                        &tilo_server::home_peer_registry_path(identity_root),
-                        &earlier,
-                    )?;
-                }
-                // Preparing a personal enrollment only touches the private
-                // staging area. In particular, an existing device's global
-                // user key and default certificate remain untouched until
-                // Finalized has been authenticated.
-                let staged_personal = if kind == EnrollmentKind::PersonalDevice {
-                    Some(stage_personal_enrollment(
-                        identity_root,
-                        identity_dir.context("identity directory is required")?,
-                        &paths,
-                        &payload,
-                        requester_lease,
-                    )?)
-                } else {
-                    None
-                };
-                let ack = make_ack(&response_bytes, token.nonce, &device)?;
-                socket.set_read_timeout(Some(Duration::from_millis(300)))?;
-                // The approver commits (durable writes) before it sends
-                // Finalized, so its storage latency, not a fixed allowance,
-                // bounds this wait; the enrollment window is the budget.
-                let completion_deadline = deadline_after(socket_timeout(timeout))?;
-                while std::time::Instant::now() < completion_deadline {
-                    validate_requester(requester_lease)?;
-                    socket.send_to(&ack, sender)?;
-                    match socket.recv_from(&mut reply) {
-                        Ok((final_len, final_sender)) if final_sender == sender => {
-                            if verify_finalized(
-                                received_packet(&reply, final_len)?,
-                                &response_bytes,
-                                token.nonce,
-                                device.verifying_key().to_bytes(),
-                                approver_public_key,
-                            )
-                            .is_ok()
-                            {
-                                validate_requester(requester_lease)?;
-                                let resource_path =
-                                    if let Some((marker_path, marker)) = staged_personal.as_ref() {
-                                        // This durable marker is the commit point:
-                                        // both Finalized and the exact originating
-                                        // compositor lease are valid. A crash before
-                                        // it publishes nothing; recovery after it may
-                                        // finish this already-authorized transaction.
-                                        let marker = authorize_personal_commit(
-                                            marker_path,
-                                            marker,
-                                            requester_lease,
-                                        )?;
-                                        Some(commit_staged_personal_enrollment(
-                                            identity_root,
-                                            &paths,
-                                            marker_path,
-                                            &marker,
-                                            |_| validate_requester(requester_lease),
-                                        )?)
-                                    } else {
-                                        // The host path has no multi-file member
-                                        // projection, but still waits for
-                                        // Finalized before changing its active
-                                        // identity binding.
-                                        tilo_user_identity::persist::write_public_key(
-                                            &paths.user_pubkey,
-                                            &payload.cert.user_public_key,
-                                        )?;
-                                        None
-                                    };
-                                // Publish the default cert as the completion
-                                // marker only after the approver durably registers us,
-                                // authenticates Finalized, and the member projection is
-                                // fully installed. A crash can therefore only leave a
-                                // retryable partial enrollment, never a bootable one.
-                                if kind == EnrollmentKind::HomePeer {
-                                    let per_user_cert =
-                                        paths.device_cert_for_user(&payload.cert.user_public_key);
-                                    share_directory_like_parent(
-                                        per_user_cert
-                                            .parent()
-                                            .context("per-user certificate has no directory")?,
-                                    )?;
-                                    tilo_user_identity::persist::write_device_cert(
-                                        &per_user_cert,
-                                        &payload.cert,
-                                    )?;
-                                    tilo_user_identity::persist::write_device_cert(
-                                        &paths.device_cert,
-                                        &payload.cert,
-                                    )?;
-                                }
-                                // The identity directories themselves are
-                                // image layout and keep their owner and group;
-                                // only what this enrollment created below them
-                                // takes its directory's.
-                                let per_user_cert =
-                                    paths.device_cert_for_user(&payload.cert.user_public_key);
-                                for output in [
-                                    per_user_cert.parent(),
-                                    Some(per_user_cert.as_path()),
-                                    Some(paths.user_pubkey.as_path()),
-                                    Some(paths.device_privkey.as_path()),
-                                    Some(paths.device_cert.as_path()),
-                                ]
-                                .into_iter()
-                                .flatten()
+                let mut confirm = |ack: &[u8]| -> anyhow::Result<()> {
+                    socket.set_read_timeout(Some(Duration::from_millis(300)))?;
+                    // The approver commits (durable writes) before it sends
+                    // Finalized, so its storage latency, not a fixed allowance,
+                    // bounds this wait; the enrollment window is the budget.
+                    let completion_deadline = deadline_after(socket_timeout(timeout))?;
+                    while std::time::Instant::now() < completion_deadline {
+                        validate_requester(requester_lease)?;
+                        socket.send_to(ack, sender)?;
+                        match socket.recv_from(&mut reply) {
+                            Ok((final_len, final_sender)) if final_sender == sender => {
+                                if verify_finalized(
+                                    received_packet(&reply, final_len)?,
+                                    &response_bytes,
+                                    token.nonce,
+                                    device.verifying_key().to_bytes(),
+                                    approver_public_key,
+                                )
+                                .is_ok()
                                 {
-                                    restore_owner_from_parent(output)?;
+                                    return Ok(());
                                 }
-                                NonceStore::under(identity_root)
-                                    .record(&token.nonce, device.verifying_key().to_bytes())?;
-                                if kind == EnrollmentKind::PersonalDevice {
-                                    println!(
-                                        "{}",
-                                        serde_json::json!({
-                                            "identity": hex::encode(payload.cert.user_public_key),
-                                            "resource_path": resource_path.as_ref().context("record path is required")?,
-                                            "label": payload.cert.device_label,
-                                        })
-                                    );
-                                } else {
-                                    println!("enrolled {}", payload.cert.device_label);
-                                }
-                                return Ok(resource_path);
                             }
+                            Ok(_) => {}
+                            Err(error)
+                                if matches!(
+                                    error.kind(),
+                                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                                ) => {}
+                            Err(error) => return Err(error.into()),
                         }
-                        Ok(_) => {}
-                        Err(error)
-                            if matches!(
-                                error.kind(),
-                                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                            ) => {}
-                        Err(error) => return Err(error.into()),
                     }
-                }
-                bail!("approving device did not confirm enrollment; retrying is safe");
+                    bail!("approving device did not confirm enrollment; retrying is safe")
+                };
+                return install_answer(&prepared, options, &payload, &response_bytes, &mut confirm);
             }
             Err(error)
                 if matches!(
@@ -2118,7 +1996,8 @@ struct PendingApproval {
     request: Request,
     response_route: ResponseRoute,
     token: tilo_user_identity::EnrollmentToken,
-    sender: std::net::SocketAddr,
+    /// The datagram sender, when the local network carried it.
+    sender: Option<std::net::SocketAddr>,
 }
 
 struct ApprovalProjection {
@@ -2226,6 +2105,7 @@ fn handle_solicitation(
             DeviceCapabilities::member(),
             issued_at_ns,
             expires_at_ns,
+            &[],
             &identity.device,
         )?;
         let code = pairing_code(solicitation.device_public_key, solicitation.server_node_id);
@@ -2310,21 +2190,40 @@ fn receive_approval_request(
             )?;
             continue;
         }
-        let Ok((request, response_route)) = decrypt_request(bytes, &identity.device) else {
-            continue;
-        };
-        let Ok(token) = decode_enrollment_token(request.token.trim()) else {
-            continue;
-        };
-        if valid_pending_request(&request, &token, options.kind, identity, selected.as_ref())? {
-            return Ok(PendingApproval {
+        if let Some(pending) =
+            accept_request(bytes, options, identity, selected.as_ref(), Some(sender))?
+        {
+            return Ok(pending);
+        }
+    }
+}
+
+/// The request a device sent, once its token and selection check out. The
+/// approver answers whatever carried it: a datagram on the local network, or
+/// a stream a machine anywhere dialled.
+fn accept_request(
+    bytes: &[u8],
+    options: &ApprovalOptions<'_>,
+    identity: &ApprovalIdentity,
+    selected: Option<&SelectedNearby>,
+    sender: Option<std::net::SocketAddr>,
+) -> anyhow::Result<Option<PendingApproval>> {
+    let Ok((request, response_route)) = decrypt_request(bytes, &identity.device) else {
+        return Ok(None);
+    };
+    let Ok(token) = decode_enrollment_token(request.token.trim()) else {
+        return Ok(None);
+    };
+    Ok(
+        valid_pending_request(&request, &token, options.kind, identity, selected)?.then_some(
+            PendingApproval {
                 request,
                 response_route,
                 token,
                 sender,
-            });
-        }
-    }
+            },
+        ),
+    )
 }
 
 /// What the approval hands the device besides its certificate. The personal
@@ -2500,12 +2399,15 @@ fn await_approval_ack(
     prepared: &PreparedApproval,
     window: Duration,
 ) -> anyhow::Result<()> {
+    let sender = pending
+        .sender
+        .context("a local-network approval has a sender")?;
     socket.set_read_timeout(Some(Duration::from_secs(1)))?;
     let deadline = deadline_after(window)?;
     while std::time::Instant::now() < deadline {
-        socket.send_to(&prepared.encrypted, pending.sender)?;
+        socket.send_to(&prepared.encrypted, sender)?;
         match socket.recv_from(packet) {
-            Ok((len, sender)) if sender == pending.sender => {
+            Ok((len, ack_sender)) if Some(ack_sender) == pending.sender => {
                 if verify_ack(
                     received_packet(packet, len)?,
                     &prepared.encrypted,
@@ -2530,12 +2432,11 @@ fn await_approval_ack(
 }
 
 fn commit_approval(
-    socket: &UdpSocket,
     options: &ApprovalOptions<'_>,
     identity: &ApprovalIdentity,
     pending: &PendingApproval,
     prepared: &PreparedApproval,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<u8>> {
     match options.kind {
         EnrollmentKind::HomePeer => register_home_peer(
             options.identity_root,
@@ -2558,21 +2459,18 @@ fn commit_approval(
             restore_owner_from_parent(&personal_peers)?;
         }
     }
-    let finalized = make_finalized(
+    println!(
+        "approved device {}",
+        hex::encode(prepared.cert.device_public_key)
+    );
+    // The Finalized the machine waits for, for the caller to carry: eight
+    // datagrams on the local network, one stream over iroh.
+    make_finalized(
         &prepared.encrypted,
         pending.token.nonce,
         pending.request.device_public_key,
         identity.approver(),
-    )?;
-    for _ in 0..8 {
-        socket.send_to(&finalized, pending.sender)?;
-        std::thread::sleep(Duration::from_millis(125));
-    }
-    println!(
-        "approved nearby device {}",
-        hex::encode(prepared.cert.device_public_key)
-    );
-    Ok(())
+    )
 }
 
 fn approve(options: &ApprovalOptions<'_>) -> anyhow::Result<()> {
@@ -2601,7 +2499,15 @@ fn approve(options: &ApprovalOptions<'_>) -> anyhow::Result<()> {
         &prepared,
         socket_timeout(options.timeout),
     )?;
-    commit_approval(&session, options, &identity, &pending, &prepared)
+    let finalized = commit_approval(options, &identity, &pending, &prepared)?;
+    let sender = pending
+        .sender
+        .context("a local-network approval has a sender")?;
+    for _ in 0..8 {
+        session.send_to(&finalized, sender)?;
+        std::thread::sleep(Duration::from_millis(125));
+    }
+    Ok(())
 }
 
 fn device_key(identity_root: &std::path::Path) -> anyhow::Result<()> {
@@ -2882,6 +2788,7 @@ fn run() -> anyhow::Result<()> {
             timeout,
             home_peer_output,
             method,
+            relay,
         } => enroll(
             &token_file,
             &identity_root,
@@ -2889,6 +2796,7 @@ fn run() -> anyhow::Result<()> {
             timeout,
             &home_peer_output,
             method,
+            relay.as_deref(),
         ),
         Command::PairDevice {
             identity_root,
@@ -2900,7 +2808,7 @@ fn run() -> anyhow::Result<()> {
             requester_pid,
             requester_start_time,
         } => {
-            ensure_offered(tilo_identity::enrollment::Method::Code)?;
+            ensure_offered(tilo_identity::enrollment::Method::LocalNetwork)?;
             pair_device_cli(
                 &identity_root,
                 &identity_dir,
@@ -2921,9 +2829,16 @@ fn run() -> anyhow::Result<()> {
             server_workspace_ids,
             expected_device,
             expected_service,
+            iroh,
+            relay,
+            dial,
         } => {
-            ensure_offered(tilo_identity::enrollment::Method::LocalNetwork)?;
-            approve(&ApprovalOptions {
+            ensure_offered(if iroh || dial.is_some() {
+                tilo_identity::enrollment::Method::Token
+            } else {
+                tilo_identity::enrollment::Method::LocalNetwork
+            })?;
+            let options = ApprovalOptions {
                 identity_root: &identity_root,
                 identity_dir: identity_dir.as_deref(),
                 timeout,
@@ -2936,7 +2851,21 @@ fn run() -> anyhow::Result<()> {
                 port: NEARBY_PORT,
                 ready: None,
                 approved: None,
-            })
+            };
+            if iroh || dial.is_some() {
+                let relay = parse_relay_option(relay.as_deref())?;
+                let dialed = match dial.as_deref() {
+                    Some(line) => {
+                        let (machine, code) = transport::scan(line)?;
+                        (Some(machine), code)
+                    }
+                    None => (None, None),
+                };
+                let (machine, code) = dialed;
+                transport::serve(&options, relay.as_ref(), machine.as_ref(), code.as_deref())
+            } else {
+                approve(&options)
+            }
         }
         Command::ApproveDevice {
             identity_root,

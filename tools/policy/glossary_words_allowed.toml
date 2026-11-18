@@ -692,3 +692,24 @@ reason = "The domain bytes a genesis change is hashed under, fixed before the wo
 words = ["record"]
 identifiers = ["record"]
 paths = ["crates/sdk/tilo-resource/src/genesis.rs"]
+
+[[allow]]
+reason = "iroh's NAT and packet relay: a device's address for one of its others to dial is its endpoint id and the packet relay that reaches it."
+words = ["relay"]
+paths = [
+    "crates/collab/tilo-user-identity/src/enrollment.rs",
+    "crates/server/tilo-server/src/enroll.rs",
+    "crates/server/tilo-server/src/enroll_transport.rs",
+    "crates/server/tilo-server/src/enroll_transport_tests.rs",
+    "crates/server/tilo-server/src/enroll_tests.rs",
+]
+
+[[allow]]
+reason = "The nonce store's own record call, which marks a token spent; the name is the store's API."
+words = ["record"]
+paths = ["crates/server/tilo-server/src/enroll.rs"]
+
+[[allow]]
+reason = "A test's readiness handoff between two threads, which is what mpsc's channel is."
+words = ["channel"]
+paths = ["crates/server/tilo-server/src/enroll_transport_tests.rs"]

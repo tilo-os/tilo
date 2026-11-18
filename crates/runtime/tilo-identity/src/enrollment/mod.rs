@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use rand_core::Rng;
 use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, EnrollmentToken, IdentityPaths, encode_enrollment_token,
+    DeviceCapabilities, DeviceCert, Dial, EnrollmentToken, IdentityPaths, encode_enrollment_token,
     mint_enrollment_token, verify_device_cert, verify_device_cert_at, verify_enrollment_token,
 };
 
@@ -79,6 +79,10 @@ pub fn device_for(
 /// `user_public_key`'s identity: a device it is offered to returns its public
 /// key and redeems the token for its certificate ([`redeem`]).
 ///
+/// `dial` is where the person's devices are reachable over the network, which
+/// the token signs so a machine handed it can find them from anywhere; empty
+/// leaves the token to be passed by hand on one network.
+///
 /// The token names this device as its issuer. Whether it may admit a device
 /// on its own authority is decided when the token is redeemed
 /// ([`check_issuer`]): a device that only introduces a certificate the
@@ -92,6 +96,7 @@ pub fn mint_token(
     capabilities: DeviceCapabilities,
     issued_at_ns: u64,
     expires_at_ns: u64,
+    dial: &[Dial],
     issuer: &ed25519_dalek::SigningKey,
 ) -> io::Result<String> {
     let mut nonce = [0_u8; 16];
@@ -102,6 +107,7 @@ pub fn mint_token(
         issued_at_ns,
         expires_at_ns,
         nonce,
+        dial.to_vec(),
         issuer,
     )
     .map_err(|error| io::Error::other(error.to_string()))?;
@@ -405,6 +411,7 @@ mod tests {
                     DeviceCapabilities::member(),
                     self.issued_at_ns,
                     self.issued_at_ns.saturating_add(5_000),
+                    &[],
                 )
                 .expect("token");
             let token = tilo_user_identity::decode_enrollment_token(&encoded).expect("decode");
@@ -712,6 +719,7 @@ mod tests {
                     DeviceCapabilities::administrator(),
                     now,
                     now + 5_000,
+                    &[],
                 )
                 .expect("token");
             let error = store

@@ -43,9 +43,12 @@ through pairing; it comes in through an invitation to a workspace, as that
 person's device.
 
 **One enrollment serves every device.** A machine arrives with a single-use,
-expiring token the person made for it, shows a short code that one of their
-devices approves, or is found and paired by one of their devices on the local
-network. Every image uses the same enrollment; what an image allows is declared
+expiring token the person made for it, shows a short code and its address for
+one of their devices to dial and approve, or is found and paired by one of
+their devices on the local network. The token is signed by the person's device
+and names, under that signature, where their devices are reached over iroh —
+endpoint ids and the packet relay that gets past a network address
+translation — so a machine in a data centre enrolls as one at home does. Every image uses the same enrollment; what an image allows is declared
 once in it, one method per line in `/usr/lib/tilo/enrollment-methods`. Tilo
 Server offers the token and the code, because nobody is at it to confirm a
 device it found; Tilo OS and a board offer all three. A method an image does

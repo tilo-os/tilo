@@ -48,9 +48,27 @@ use crate::cert::DeviceCapabilities;
 
 /// Signing-domain tag for `EnrollmentToken`. Frozen wire ABI:
 /// `tilo-enrollment-v2` + NUL.
-pub const ENROLLMENT_PREIMAGE_TAG: &[u8] = b"tilo-enrollment-v2\0";
+pub const ENROLLMENT_PREIMAGE_TAG: &[u8] = b"tilo-enrollment-v3\0";
 /// Enrollment intent is deliberately short-lived, even when correctly signed.
 pub const MAX_ENROLLMENT_TOKEN_LIFETIME_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
+
+/// How to reach one of the person's devices over iroh, as a signed
+/// invitation names one: its endpoint and the packet relay that reaches it
+/// when it is behind a network address translation.
+///
+/// The same shape an invitation's dial info has (`endpoint_addr` and
+/// `packet_relay_url`), kept without the parts that name a workspace: an
+/// enrollment token admits a device of the person, not a member of a
+/// workspace.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Dial {
+    /// The device's iroh endpoint id: its device key.
+    pub endpoint: [u8; 32],
+    /// The packet relay that reaches it, empty when it is reached on its
+    /// own network only.
+    pub relay_url: String,
+}
 
 /// A signed enrollment intent minted by a trusted device.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,6 +89,10 @@ pub struct EnrollmentToken {
     pub capabilities: DeviceCapabilities,
     /// Device pubkey of the issuer that signed this token.
     pub issuer_device_public_key: [u8; 32],
+    /// The person's devices this token may be presented to over the
+    /// network, in the order to try. Empty when it is passed by hand on one
+    /// network only.
+    pub dial: Vec<Dial>,
     /// Ed25519 signature over
     /// `blake3(ENROLLMENT_PREIMAGE_TAG || postcard(view))`.
     #[serde(with = "serde_bytes")]
@@ -85,6 +107,7 @@ struct TokenView<'a> {
     expires_at_ns: u64,
     capabilities: &'a DeviceCapabilities,
     issuer_device_public_key: &'a [u8; 32],
+    dial: &'a [Dial],
 }
 
 impl EnrollmentToken {
@@ -96,6 +119,7 @@ impl EnrollmentToken {
             expires_at_ns: self.expires_at_ns,
             capabilities: &self.capabilities,
             issuer_device_public_key: &self.issuer_device_public_key,
+            dial: &self.dial,
         }
     }
 
@@ -149,6 +173,7 @@ pub fn mint_enrollment_token(
     issued_at_ns: u64,
     expires_at_ns: u64,
     nonce: [u8; 16],
+    dial: Vec<Dial>,
     issuer_signing_key: &ed25519_dalek::SigningKey,
 ) -> Result<EnrollmentToken, EnrollmentError> {
     expires_at_ns
@@ -163,6 +188,7 @@ pub fn mint_enrollment_token(
         expires_at_ns,
         capabilities,
         issuer_device_public_key,
+        dial,
         signature: [0u8; 64],
     };
     let digest = signing_digest(ENROLLMENT_PREIMAGE_TAG, &token.view())?;
@@ -300,6 +326,7 @@ mod tests {
                 5_000,
                 10_000,
                 [7u8; 16],
+                vec![],
                 &issuer_sk,
             )
             .unwrap();
@@ -316,6 +343,7 @@ mod tests {
                 5_000,
                 10_000,
                 [7u8; 16],
+                vec![],
                 &issuer_sk,
             )
             .unwrap();
@@ -340,6 +368,7 @@ mod tests {
                     10,
                     10 + MAX_ENROLLMENT_TOKEN_LIFETIME_NS + 1,
                     [8; 16],
+                    vec![],
                     &issuer_sk,
                 ),
                 Err(EnrollmentError::InvalidValidity)
@@ -350,6 +379,7 @@ mod tests {
                 10,
                 20,
                 [9; 16],
+                vec![],
                 &issuer_sk,
             )
             .unwrap();
@@ -380,6 +410,7 @@ mod tests {
                 5_000,
                 10_000,
                 [7u8; 16],
+                vec![],
                 &issuer_sk,
             )
             .unwrap();
@@ -401,6 +432,7 @@ mod tests {
                 5_000,
                 10_000,
                 [7u8; 16],
+                vec![],
                 &issuer_sk,
             )
             .unwrap();
@@ -408,6 +440,38 @@ mod tests {
             // the signature was made under the issuer's key so it
             // won't verify under the attacker's.
             token.issuer_device_public_key = attacker.verifying_key().to_bytes();
+            assert_eq!(
+                verify_enrollment_token(&token, 5_000).unwrap_err(),
+                EnrollmentError::BadSignature
+            );
+        }
+
+        phase dial_info_is_signed;
+        // Where a token says the person's devices can be reached is inside the
+        // signature: a token rewritten to dial another endpoint verifies
+        // under nobody.
+        {
+            let (_root, user) = UserIdentity::generate("Alice", 1);
+            let issuer_sk = issuer(user.public_key);
+            let mut token = mint_enrollment_token(
+                user.public_key,
+                DeviceCapabilities::member(),
+                5_000,
+                10_000,
+                [11u8; 16],
+                vec![Dial {
+                    endpoint: [21; 32],
+                    relay_url: "https://relay.example/".into(),
+                }],
+                &issuer_sk,
+            )
+            .unwrap();
+            verify_enrollment_token(&token, 5_000).unwrap();
+            token
+                .dial
+                .first_mut()
+                .expect("the token names one device")
+                .endpoint = [22; 32];
             assert_eq!(
                 verify_enrollment_token(&token, 5_000).unwrap_err(),
                 EnrollmentError::BadSignature
@@ -429,6 +493,7 @@ mod tests {
                 5_000,
                 10_000,
                 [42u8; 16],
+                vec![],
                 &issuer_sk,
             )
             .unwrap();
