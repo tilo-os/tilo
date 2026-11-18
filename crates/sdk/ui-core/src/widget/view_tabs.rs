@@ -219,19 +219,42 @@ mod tests {
             use winit::keyboard::NamedKey;
             let chosen = std::rc::Rc::new(std::cell::Cell::new(None));
             let seen = std::rc::Rc::clone(&chosen);
-            let mut tabs = tabs().on_view("request-tabs", move |index| seen.set(Some(index)));
+            // The page keeps the showing tab in its own state and sets it from the strip's
+            // choice, as a view's `on change` does: the strip follows that state back.
+            let state = crate::LocalState::new(1_usize);
+            let pulled = state.clone();
+            let mut tabs = tabs().bind_selection(&state).on_view("request-tabs", move |index| {
+                seen.set(Some(index));
+                pulled.set(index);
+            });
             tabs.apply_layout_external(vello::kurbo::Rect::new(0.0, 0.0, 400.0, 34.0));
             crate::widget::Widget::set_focus(&mut tabs, true);
-            crate::testing::dispatch(&mut tabs, &named_key(NamedKey::ArrowRight));
-            assert_eq!(tabs.selected(), 2, "the next tab shows");
-            assert_eq!(chosen.get(), Some(2), "and its choice reaches the handler");
-            crate::testing::dispatch(&mut tabs, &named_key(NamedKey::ArrowLeft));
-            crate::testing::dispatch(&mut tabs, &named_key(NamedKey::ArrowLeft));
-            assert_eq!(tabs.selected(), 0, "and back again");
-            crate::testing::dispatch(&mut tabs, &named_key(NamedKey::Home));
-            assert_eq!(tabs.selected(), 0);
-            crate::testing::dispatch(&mut tabs, &named_key(NamedKey::End));
-            assert_eq!(tabs.selected(), 3, "End shows the last");
+            let doc = automerge::AutoCommit::new();
+            for (key, shown) in [
+                ("ArrowRight", 2_usize),
+                ("ArrowLeft", 1),
+                ("End", 3),
+                ("Home", 0),
+            ] {
+                let press = named_key(match key {
+                    "ArrowRight" => NamedKey::ArrowRight,
+                    "ArrowLeft" => NamedKey::ArrowLeft,
+                    "End" => NamedKey::End,
+                    _ => NamedKey::Home,
+                });
+                assert!(
+                    crate::testing::dispatch(&mut tabs, &press),
+                    "{key} is the tab list's"
+                );
+                assert_eq!(
+                    crate::testing::answer_controls(&mut tabs),
+                    1,
+                    "{key} reports one choice"
+                );
+                assert_eq!(chosen.get(), Some(shown), "{key} asks for tab {shown}");
+                crate::widget::Decorator::sync(&mut tabs, &doc, &automerge::ROOT);
+                assert_eq!(tabs.selected(), shown, "{key} shows tab {shown}");
+            }
         }
 
         phase a_hand_placed_strip_names_where_each_tab_stands;
