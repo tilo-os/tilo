@@ -43,6 +43,8 @@ mod names;
 mod record;
 #[path = "mcp_render.rs"]
 mod render;
+#[path = "mcp_agent_start.rs"]
+mod start;
 #[path = "mcp_status.rs"]
 mod status;
 #[path = "mcp_tilo.rs"]

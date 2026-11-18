@@ -1176,3 +1176,7 @@ async fn a_turn_finds_what_was_said_in_its_conversation_by_words_and_by_time() {
 /// How the service decides an agent the workspace's own list does not hold.
 #[path = "hosted_across.rs"]
 mod across;
+
+/// How often a turn asks its model before the work is done.
+#[path = "hosted_first_try.rs"]
+mod first_try;
