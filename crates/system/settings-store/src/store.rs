@@ -481,7 +481,9 @@ impl Store {
         let sections = std::mem::take(&mut docs.unsaved);
         let mut saved = Ok(());
         for (index, holder) in [Holder::Person, Holder::Device].into_iter().enumerate() {
-            let (heads, appended, whole) = docs.saved[index].clone();
+            let Some((heads, appended, whole)) = docs.saved.get(index).cloned() else {
+                continue;
+            };
             let doc = docs.doc(holder);
             let now = doc.get_heads();
             if now == heads {
@@ -497,10 +499,12 @@ impl Store {
                 saved = Err(error);
                 break;
             }
-            docs.saved[index] = match op {
-                WriteOp::Replace(_) => (now, 0, written),
-                WriteOp::Append(_) => (now, appended.saturating_add(written), whole),
-            };
+            if let Some(last) = docs.saved.get_mut(index) {
+                *last = match op {
+                    WriteOp::Replace(_) => (now, 0, written),
+                    WriteOp::Append(_) => (now, appended.saturating_add(written), whole),
+                };
+            }
         }
         drop(docs);
         if let Err(error) = saved {
