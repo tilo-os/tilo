@@ -7,7 +7,7 @@
 //! over MCP, so this is that same path through HTTP and JSON.
 
 use super::api::{ISSUER, Mcp};
-use super::api_on_server::{api_on_server, approved_key, headers, json_of};
+use super::api_on_server::{OnServer, api_on_server, approved_key, headers, json_of};
 use super::hosted_documents::application_pdf;
 use super::*;
 use http_body_util::BodyExt as _;
@@ -107,7 +107,7 @@ async fn receiver() -> (
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_key_works_through_the_api_on_a_server_host() {
-    // The story builds a host, its API and a workspace's sessions; its future goes on the
+    // The story builds a server, its API and a workspace's sessions; its future goes on the
     // heap rather than into the frames of the test thread that polls it.
     Box::pin(a_backend_key_works_through_the_api_on_a_server_host()).await;
 }
@@ -441,7 +441,7 @@ async fn a_backend_key_works_through_the_api_on_a_server_host() {
 }
 
 /// A program holding a key of the person's own (a device of theirs, not a
-/// grant an API server keeps) reaches the host directly: the API served in
+/// grant an API server keeps) reaches the server directly: the API served in
 /// process, the same routes and answers, with no API server between them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_key_its_program_holds_reaches_the_host_directly() {
@@ -503,7 +503,7 @@ async fn a_key_its_program_holds_reaches_the_host_directly() {
     .await;
     assert_eq!(
         status, 200,
-        "the host's app workers answer the key: {opened}"
+        "the server's app workers answer the key: {opened}"
     );
     let (status, apps) = json_of(
         direct
@@ -587,6 +587,88 @@ async fn a_workspaces_listing_reads_the_same_through_mcp_and_the_api() {
     }
 }
 
+/// A workspace `person` made, with a key they approved at their `page`.
+async fn own_workspace(on_server: &OnServer, person: &SigningKey, page: &Device) -> String {
+    let backend = V1 {
+        api: &on_server.api,
+        token: approved_key(on_server, person, page, "Visa backend").await,
+    };
+    let (status, made) = backend
+        .post("/v1/workspaces", &json!({"name": "Ada's notes"}), &[])
+        .await;
+    assert_eq!(status, 201, "{made}");
+    made["id"].as_str().expect("a workspace").to_owned()
+}
+
+/// The process holding the session of `person`'s computer `tilo login` made a
+/// device of: that one session with the server, entered into `workspace` and
+/// the agent `agent`'s session as `tilo login` enters it, and Tilo's API
+/// served over it on a socket of its own, as the computer's commands reach it.
+struct Holder {
+    device: tilo_session_client::device::Device,
+    socket: std::path::PathBuf,
+    /// The API the holder serves, as `tilo mcp` asks it.
+    direct: Arc<tilo_api::direct::Direct>,
+    /// The person's device the computer is.
+    laptop: Device,
+    _sockets: tempfile::TempDir,
+}
+
+impl Holder {
+    async fn start(
+        on_server: &OnServer,
+        person: &SigningKey,
+        workspace: &str,
+        agent: &str,
+    ) -> Self {
+        let laptop = enrol(person, "Ada's laptop", DeviceCapabilities::member());
+        let file = tilo_api::direct::KeyFile::new(
+            &on_server.server,
+            Some(&on_server.web_entry),
+            "Ada's laptop",
+            &laptop.key,
+            &laptop.cert,
+        );
+        let code = format!(
+            "https://tilo.sh/#/@{}/w/{workspace}?pair={}",
+            on_server.server.trim_start_matches("http://"),
+            hex::encode(laptop.cert.user_public_key),
+        );
+        let signed = tilo_server_client::login::SignIn {
+            link: tilo_server_client::login::PairingLink::parse(&code).unwrap(),
+            agent: agent.to_owned(),
+            label: "Ada's laptop".to_owned(),
+            host: on_server.server_host(),
+            cert: laptop.cert.clone(),
+            host_cert: on_server.host.cert.clone(),
+        };
+        let device =
+            tilo_session_client::device::Device::enter(None, &signed, Arc::new(laptop.key.clone()))
+                .await
+                .expect("the laptop enters its workspace");
+        let direct = Arc::new(tilo_api::direct::Direct::over(&file, device.clone()).unwrap());
+        let sockets = tempfile::tempdir().unwrap();
+        let socket = sockets.path().join("api.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let serving = Arc::clone(&direct);
+        tokio::spawn(tilo_api::direct::serve_current(listener, move || {
+            std::future::ready(Ok(Arc::clone(&serving)))
+        }));
+        Self {
+            device,
+            socket,
+            direct,
+            laptop,
+            _sockets: sockets,
+        }
+    }
+
+    /// One command of the computer's, as `tilo` is: a client of the holder's socket.
+    fn command(&self) -> tilo_api::client::Client {
+        tilo_api::client::Client::session(&self.socket)
+    }
+}
+
 /// A computer `tilo login` made a device of holds that device's one session with its server, and
 /// the workspace commands of its login (`tilo do`, `ls`, `read`, `workspace`) are calls to the
 /// API the holder serves over that session: each answered, and the session never cut off by a
@@ -596,45 +678,9 @@ async fn a_logged_in_computers_commands_go_over_its_one_held_session() {
     let on_server = api_on_server(ISSUER).await;
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
-    approved_key(&on_server, &ada, &page, "Visa backend").await;
-    let laptop = enrol(&ada, "Ada's laptop", DeviceCapabilities::member());
-    let file = tilo_api::direct::KeyFile::new(
-        &on_server.server,
-        Some(&on_server.web_entry),
-        "Ada's laptop",
-        &laptop.key,
-        &laptop.cert,
-    );
-    // The holder: the device's one session, and the API served over it on a socket of its own.
-    let held = Arc::new(tilo_api::server::Server::new(
-        &tilo_net::Client::builder().build().unwrap(),
-        &on_server.server,
-    ))
-    .connect(
-        &tilo_api::grant_key::GrantKey::held(
-            laptop.key.clone(),
-            laptop.cert.clone(),
-            tilo_clock::unix_now_ms().saturating_mul(1_000_000),
-        )
-        .unwrap(),
-    )
-    .await
-    .expect("the laptop reaches its server");
-    let direct = Arc::new(tilo_api::direct::Direct::over(&file, held.device.clone()).unwrap());
-    let sockets = tempfile::tempdir().unwrap();
-    let socket = sockets.path().join("api.sock");
-    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-    tokio::spawn(tilo_api::direct::serve_current(listener, move || {
-        std::future::ready(Ok(Arc::clone(&direct)))
-    }));
-
-    // Each command is its own program, as `tilo` is: a client of the holder's socket.
-    let command = || tilo_api::client::Client::session(&socket);
-    let made = command()
-        .post("/v1/workspaces", &json!({"name": "Ada's notes"}))
-        .await
-        .unwrap();
-    let workspace = made["id"].as_str().expect("a workspace").to_owned();
+    let workspace = own_workspace(&on_server, &ada, &page).await;
+    let holder = Holder::start(&on_server, &ada, &workspace, "Claude Code").await;
+    let command = || holder.command();
     let mut took = Vec::new();
     for _ in 0..10 {
         let started = std::time::Instant::now();
@@ -658,9 +704,133 @@ async fn a_logged_in_computers_commands_go_over_its_one_held_session() {
     }
     eprintln!("an action over the held session took {took:?}");
     assert!(
-        held.device.is_live(),
+        holder.device.is_live(),
         "the device's one session served every command, and no second one cut it off"
     );
+}
+
+/// The person at their approving devices, answering every question the server puts to them
+/// with what they last chose, and what they were asked.
+struct Approver {
+    allows: std::sync::atomic::AtomicBool,
+    asked: std::sync::Mutex<Vec<tilo_server_protocol::certify::PendingConfirmation>>,
+}
+
+impl tilo_server::workspaces::AsksPeople for Approver {
+    fn ask(
+        &self,
+        _person: [u8; 32],
+        question: tilo_server_protocol::certify::PendingConfirmation,
+    ) -> tilo_server::workspaces::PersonAnswer {
+        use tilo_server_protocol::certify::ConfirmationAnswer;
+        self.asked.lock().unwrap().push(question);
+        let answer = if self.allows.load(std::sync::atomic::Ordering::SeqCst) {
+            ConfirmationAnswer::AllowOnce
+        } else {
+            ConfirmationAnswer::Deny
+        };
+        Box::pin(async move { Ok(answer) })
+    }
+}
+
+/// The computer's agent, over the session its holder keeps, reads a workspace's people as any
+/// key of its person's does, and what it changes there is decided by the grants naming it: its
+/// person is asked first, and their answer stands, until they allow it outright.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_logged_in_computers_agent_reads_and_invites_people_as_its_grants_let_it() {
+    use tilo_action_policy::agent_answers::{self, AnswerScope};
+    use tilo_actions::remote::{WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER};
+    let on_server = api_on_server(ISSUER).await;
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    let workspace = own_workspace(&on_server, &ada, &page).await;
+    let holder = Holder::start(&on_server, &ada, &workspace, "Claude Code").await;
+    let person = Arc::new(Approver {
+        allows: std::sync::atomic::AtomicBool::new(true),
+        asked: std::sync::Mutex::default(),
+    });
+    let workspaces = on_server.hosted.server.workspaces().unwrap();
+    workspaces.ask_people(person.clone());
+    let questions = || person.asked.lock().unwrap().len();
+
+    // `tilo workspace people ls`: reading who is in asks nobody.
+    let listed = holder
+        .command()
+        .get(&format!("/v1/workspaces/{workspace}/members"))
+        .await
+        .expect("the agent lists the workspace's people");
+    let ada_key = hex::encode(holder.laptop.cert.user_public_key);
+    assert!(listed.to_string().contains(&ada_key), "{listed}");
+    // `tilo mcp`'s agent reads them the same.
+    let read = holder
+        .direct
+        .mcp(
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+                "name": "tilo_read",
+                "arguments": {"path": "workspace/members", "workspace": workspace},
+            }}),
+        )
+        .await
+        .expect("the agent's MCP call is answered");
+    assert!(
+        read.get("error").is_none() && read.to_string().contains(&ada_key),
+        "{read}"
+    );
+    assert_eq!(questions(), 0, "reading asks nobody");
+
+    // Inviting someone asks Ada first: allowed, the link comes back.
+    let invitations = format!("/v1/workspaces/{workspace}/members/invitations");
+    let invite = json!({"role": "editor"});
+    let invited = holder
+        .command()
+        .post(&invitations, &invite)
+        .await
+        .expect("allowed, the agent invites");
+    assert!(invited.to_string().contains("http"), "{invited}");
+    assert_eq!(questions(), 1, "Ada is asked once");
+    let question = person.asked.lock().unwrap()[0].clone();
+    assert_eq!(question.agent_label, "Claude Code", "{question:?}");
+    assert_eq!(question.workspace, workspace, "{question:?}");
+    // Her no stands.
+    person
+        .allows
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let refused = holder.command().post(&invitations, &invite).await;
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|error| format!("{error:#}").contains("did not allow")),
+        "{refused:?}"
+    );
+    assert_eq!(questions(), 2);
+
+    // Allowed in the workspace's settings, under Agents, it goes unasked: the answer Ada gave,
+    // kept by her workspace's server.
+    let scope = AnswerScope::action(
+        WORKSPACE_GOVERNANCE_PROVIDER,
+        WORKSPACE_GOVERNANCE_KIND,
+        "invite",
+    );
+    let agent =
+        tilo_actions::remote::device_agent_id(&holder.laptop.cert.user_public_key, "Claude Code");
+    let grant = agent_answers::grant(
+        &workspace,
+        &agent,
+        (&scope, tilo_action_policy::roles::GOVERNANCE_KIND),
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Grantee::person(ada_key.clone()),
+    );
+    workspaces
+        .put_workspace_grants(&workspace, &on_server.host.cert, [7; 32], vec![grant])
+        .await
+        .unwrap();
+    holder
+        .command()
+        .post(&invitations, &invite)
+        .await
+        .expect("allowed outright, the agent invites");
+    assert_eq!(questions(), 2, "allowed outright, nobody is asked");
+    assert!(holder.device.is_live());
 }
 
 /// What a hosted workspace answers a key besides actions: what changed in it,
@@ -1026,8 +1196,8 @@ async fn a_key_works_at_every_api_server() {
     assert_eq!(status, 200, "{listed}");
 }
 
-/// The host a call used goes away; another host of the person's serves the
-/// same key, because the key is the grant and every host admits it.
+/// The server a call used goes away; another server of the person's serves the
+/// same key, because the key is the grant and every server admits it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_call_is_served_after_the_host_it_used_goes_away() {
     Box::pin(async {
