@@ -40,7 +40,6 @@ use tilo_lock::MutexRecover as _;
 /// changes its write watch hears.
 const PENDING_TICK: std::time::Duration = std::time::Duration::from_secs(2);
 
-
 /// Where a server writes what its entry asks of the machine, for the root
 /// helpers to apply.
 #[derive(Clone, Debug, PartialEq, Eq)]

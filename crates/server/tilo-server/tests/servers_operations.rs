@@ -41,7 +41,7 @@ fn operations_helper(state_root: &Path) -> Guard {
             if let Ok(text) = std::fs::read_to_string(&request)
                 && text != seen
             {
-                seen = text.clone();
+                seen.clone_from(&text);
                 let id = text
                     .lines()
                     .find_map(|line| line.strip_prefix("id="))
@@ -207,7 +207,7 @@ async fn person_with_a_server() -> Fixture {
         server.host.workspaces(),
         applied::Requests::at(policy.path().join("nas.request")),
         None,
-        state.path().join("nas-state"),
+        state.path().to_path_buf(),
     )];
     servers::found(server.host.workspaces(), &server.host.node_addr())
         .await

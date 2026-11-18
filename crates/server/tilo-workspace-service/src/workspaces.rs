@@ -1713,7 +1713,7 @@ impl Workspaces {
             app: app.to_owned(),
             record: record.to_owned(),
             #[cfg(feature = "agents")]
-            carried: Default::default(),
+            carried: repaired_documents::Carried::default(),
         });
     }
 

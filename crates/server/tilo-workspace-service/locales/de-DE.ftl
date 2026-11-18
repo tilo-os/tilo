@@ -17,6 +17,12 @@ tilo-servers-set-appetite = Angebot festlegen
 tilo-servers-set-updates = Die Updates festlegen, denen ein Server folgt
 tilo-servers-set-maintenance-window = Wartungsfenster festlegen
 tilo-servers-set-unlock-policy = Entsperrung festlegen
+tilo-servers-set-hostname = Hostnamen festlegen
+tilo-servers-use-disk = Eine Festplatte verwenden
+tilo-servers-release-disk = Eine Festplatte freigeben
+tilo-servers-set-interface = Eine Netzwerkschnittstelle einrichten
+tilo-servers-release-interface = Eine Netzwerkschnittstelle nicht mehr einrichten
+tilo-servers-report-device-config = Festhalten, was sein Rechner angewendet hat
 tilo-servers-retire-server = Server stilllegen
 # The name a person's own workspace gets when they do not name it, read in
 # their language when they found it.

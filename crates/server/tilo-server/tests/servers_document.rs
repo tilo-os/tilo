@@ -339,6 +339,10 @@ async fn a_servers_machine_configuration_is_written_and_its_report_read() {
 /// it, and all three then hold the one workspace. What is set at one of them
 /// is applied at the others.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario: the three servers, their hand-overs and the shared document stay together"
+)]
 async fn servers_enrolled_one_after_another_share_one_admin_workspace() {
     let alice = TestUser::fresh("Alice");
     let devices =
