@@ -48,8 +48,7 @@ use tilo_agent_session::{ModelChoice, record_provider};
 use tilo_lock::MutexRecover as _;
 use tilo_mcp::McpServer;
 use tilo_model_gateway::host_backend::protocol::{
-    Content, Message, ModelError, ModelRequest, ModelResponse, Role, ToolChoice, ToolDefinition,
-    ToolResult,
+    ModelError, ModelRequest, ModelResponse, ToolCall, ToolDefinition,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_resource::Resource as _;
@@ -88,9 +87,6 @@ pub use sub_agents::Line;
 
 /// What a turn's reply says when the turn goes on with what its person wrote next.
 const WENT_ON: &str = "I am going on with what you wrote next, and answer below.";
-/// What a turn is told before what its person wrote while it worked.
-const CAME_SINCE: &str = "While you were working, your person wrote again. Take it into your work \
-                          and answer it too:";
 /// What the reply says of a turn that a server which stopped left begun.
 const LEFT_BEGUN: &str = "I was interrupted while I worked on this: the server restarted after I \
                           had started. I did not start over, so that nothing is done twice. Ask \
@@ -109,10 +105,6 @@ const MOST_TURNS: usize = 24;
 const TURN_TIME: Duration = Duration::from_secs(180);
 /// The most tokens one model answer may take.
 const ANSWER_TOKENS: u32 = 4096;
-/// The longest a tool's answer the model is shown, in bytes.
-const MOST_RESULT_BYTES: usize = 24 * 1024;
-/// How long one of the agent's tools may take before the model is told it did not answer.
-const TOOL_TIME: Duration = Duration::from_secs(120);
 /// How long the host waits for one of its own record writes (the reply, the comment) to be taken.
 const WRITE_WAIT: Duration = Duration::from_secs(30);
 /// The tool a turn in a conversation answers with a view through: Chat's own
@@ -1520,18 +1512,7 @@ impl PlanTurns for KeeperTurns {
     }
 }
 
-/// How a turn ended.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Outcome {
-    /// The model answered: its words.
-    Answered(String),
-    /// It stopped at the keeper's limit, or at the most turns an ask takes.
-    Stopped(String),
-    /// It could not work: why, in words the person reads.
-    Failed(String),
-    /// The person it works for stopped it.
-    Cancelled,
-}
+pub use tilo_agent_turn::Outcome;
 
 /// Whom a turn's agent acts for in a workspace, and through what: the same for every ask the
 /// turn goes on with.
@@ -1939,9 +1920,10 @@ async fn invoke_at(
 }
 
 /// Work on `turn` with the host's model through the agent's tools until the model answers, the
-/// budget is spent, the turns run out or its person stops it: how it ended, and what it cost.
-/// What its person wrote since reaches it at each step ([`going::Going::take`]): `turn` and
-/// `reply` are then the newest of it, where the answer goes.
+/// budget is spent, the turns run out or its person stops it: how it ended, and what it cost. The
+/// turn is the one every agent works in ([`tilo_agent_turn::work`]). What its person wrote since
+/// reaches it at each step ([`going::Going::take`]): `turn` and `reply` are then the newest of
+/// it, where the answer goes.
 async fn work(
     model: Model,
     scope: &TurnScope,
@@ -1964,270 +1946,135 @@ async fn work(
             0,
         );
     };
-    let turns = Arc::new(Mutex::new(turns));
-    let mut server = match McpServer::for_turn(scope.provider.clone(), reply.caller.clone()) {
+    let server = match McpServer::for_turn(scope.provider.clone(), reply.caller.clone()) {
         Ok(server) => server,
         Err(error) => return (Outcome::Failed(error.to_string()), 0),
     };
-    let mut tools = match tool_definitions(&server).await {
-        Ok(tools) => learned::with_tools(tools, keeping),
-        Err(error) => return (Outcome::Failed(error), 0),
+    // What the turn keeps about its keeper, and in a conversation the view it may answer with,
+    // are its own tools beside the agent tools.
+    let mut own_tools = learned::with_tools(Vec::new(), keeping);
+    own_tools.extend(view_tool(turn));
+    let asked = tilo_agent_turn::Asked {
+        own_tools,
+        sees: turns.sees(),
+        budget,
+        most_rounds: MOST_TURNS,
+        output_tokens: ANSWER_TOKENS,
+        round_time: TURN_TIME,
+        key: format!("{}:{}", turn.agent.id.0, turn.cause),
+        ..tilo_agent_turn::Asked::new(instructions(turn, &scope.workspace), turn.request.clone())
     };
-    // A turn in a conversation may answer with a view it writes.
-    tools.extend(view_tool(turn));
-    let mut messages = vec![
-        Message::text(Role::System, instructions(turn, &scope.workspace)),
-        Message::text(Role::User, turn.request.clone()),
-    ];
-    let mut cost = 0u64;
-    let key = format!("{}:{}", turn.agent.id.0, turn.cause);
-    let mut asked_for_words = false;
-    for round in 0..MOST_TURNS {
-        if going.stopped() {
-            return (Outcome::Cancelled, cost);
-        }
-        match go_on(scope, going, &mut messages, turn, reply).await {
-            Ok(Some(tools_of_next)) => server = tools_of_next,
-            Ok(None) => {}
-            Err(why) => return (Outcome::Failed(why), cost),
-        }
-        if budget.is_some_and(|budget| cost >= budget) {
-            return (
-                Outcome::Stopped(
-                    "I stopped: today's spending limit for me is reached. Raise it in the \
-                     workspace's settings to let me go on."
-                        .to_owned(),
-                ),
-                cost,
-            );
-        }
-        let request = ModelRequest {
-            messages: messages.clone(),
-            tools: tools.clone(),
-            tool_choice: ToolChoice::Auto,
-            max_output_tokens: ANSWER_TOKENS,
-        };
-        let response = match ask_model(&turns, request, format!("{key}:{round}")).await {
-            Ok(response) => response,
-            Err(_) if going.stopped() => return (Outcome::Cancelled, cost),
-            Err(why) => return (Outcome::Failed(why), cost),
-        };
-        cost = cost.saturating_add(response.cost_micros);
-        let calls = match calls_of(&response) {
-            Ok(calls) => calls,
-            Err(why) => return (Outcome::Failed(why), cost),
-        };
-        messages.push(response.message.clone());
-        if calls.is_empty() {
-            if going.stopped() {
-                return (Outcome::Cancelled, cost);
-            }
-            if going.waiting() {
-                // Its person wrote while it answered: it goes on with that, not past it.
-                continue;
-            }
-            let words = words_of(&response);
-            if words.is_empty() && !asked_for_words {
-                // An answer with no words tells the person nothing: it is asked once what it did.
-                asked_for_words = true;
-                messages.push(Message::text(Role::User, SAY_WHAT_YOU_DID.to_owned()));
-                continue;
-            }
-            tracing::info!(agent = %turn.agent.id.0, round, cost, said = words.len(), "an agent on the workspace's server answered");
-            return (Outcome::Answered(words), cost);
-        }
-        let Some(results) = run_calls(&server, calls, reply, going, keeping).await else {
-            return (Outcome::Cancelled, cost);
-        };
-        messages.push(results);
-    }
-    ask_what_it_did(&turns, going, turn, messages, tools, &key, cost).await
-}
-
-/// Out of steps, it may well have finished: it is asked once more, with no tools, to say what
-/// it did, rather than the person being told only that it stopped.
-async fn ask_what_it_did(
-    turns: &Arc<Mutex<Box<dyn PlanTurns>>>,
-    going: &going::Going,
-    turn: &Turn,
-    mut messages: Vec<Message>,
-    tools: Vec<ToolDefinition>,
-    key: &str,
-    mut cost: u64,
-) -> (Outcome, u64) {
-    if going.stopped() {
-        return (Outcome::Cancelled, cost);
-    }
-    messages.push(Message::text(Role::User, OUT_OF_STEPS.to_owned()));
-    let request = ModelRequest {
-        messages,
-        tools,
-        tool_choice: ToolChoice::None,
-        max_output_tokens: ANSWER_TOKENS,
+    let agent = turn.agent.id.0.clone();
+    let model = Arc::new(Mutex::new(Asking(turns)));
+    let answering = Answering {
+        scope,
+        going,
+        keeping,
+        at: tokio::sync::Mutex::new((turn, reply)),
     };
-    let said = match ask_model(turns, request, format!("{key}:last")).await {
-        Ok(response) => {
-            cost = cost.saturating_add(response.cost_micros);
-            words_of(&response)
-        }
-        Err(_) if going.stopped() => return (Outcome::Cancelled, cost),
-        Err(_) => String::new(),
-    };
-    let said = if said.trim().is_empty() {
-        "I stopped after many steps without finishing. Tell me how to go on.".to_owned()
-    } else {
-        said
-    };
-    tracing::info!(agent = %turn.agent.id.0, cost, said = said.len(), "an agent on the workspace's server ran out of steps and said where it got to");
-    (Outcome::Stopped(said), cost)
+    let (outcome, cost) = tilo_agent_turn::work(&server, model, &asked, &answering).await;
+    if let Outcome::Answered(words) = &outcome {
+        tracing::info!(%agent, cost, said = words.len(), "an agent on the workspace's server answered");
+    }
+    (outcome, cost)
 }
 
-const OUT_OF_STEPS: &str = "You have no steps left in this turn. Answer the person now in a few \
-     plain sentences: what you did, what is still open, and how they can let you go on.";
+/// The host's model as a turn asks it.
+struct Asking(Box<dyn PlanTurns>);
 
-/// Take into the turn what its person wrote since its last step: the model is told it, the
-/// replies the turn leaves say the answer follows below, and `turn` and `reply` become the
-/// newest of it, where the answer then stands. `Some` with the agent's tools inside that ask;
-/// `None` when nothing came.
-///
-/// # Errors
-/// The agent's tools could not be had for the ask it goes on with.
-async fn go_on(
-    scope: &TurnScope,
-    going: &going::Going,
-    messages: &mut Vec<Message>,
-    turn: &mut Turn,
-    reply: &mut Reply,
-) -> Result<Option<McpServer<WorkspaceActionProvider>>, String> {
-    let came = going.take();
-    let Some((newest, passed)) = came.split_last() else {
-        return Ok(None);
-    };
-    reply.went_on().await;
-    for between in passed {
-        scope.reply(between).went_on().await;
-    }
-    let mut told = String::from(CAME_SINCE);
-    for next in &came {
-        told.push_str("\n\n");
-        told.push_str(&next.request);
-    }
-    match messages.last_mut() {
-        Some(last) if matches!(last.role, Role::User) => {
-            last.content.push(Content::Text { text: told });
-        }
-        _ => messages.push(Message::text(Role::User, told)),
-    }
-    *turn = newest.clone();
-    *reply = scope.reply(turn);
-    reply.taken().await;
-    McpServer::for_turn(scope.provider.clone(), reply.caller.clone())
-        .map(Some)
-        .map_err(|error| error.to_string())
-}
-
-/// Ask the turn's model once, on a thread of its own: its answer, or why none came, in words
-/// its person reads.
-async fn ask_model(
-    turns: &Arc<Mutex<Box<dyn PlanTurns>>>,
-    request: ModelRequest,
-    key: String,
-) -> Result<ModelResponse, String> {
-    let carrier = Arc::clone(turns);
-    let answer = tokio::task::spawn_blocking(move || {
-        carrier
-            .lock_recover()
-            .turn(&request, &key, later(TURN_TIME), false)
-    })
-    .await;
-    match answer {
-        Ok(Ok(response)) => Ok(response),
-        Ok(Err(error)) => Err(format!("My model did not answer: {}", error.message)),
-        Err(error) => Err(error.to_string()),
+impl tilo_agent_turn::Model for Asking {
+    fn turn(
+        &mut self,
+        request: &ModelRequest,
+        key: &str,
+        deadline: Instant,
+    ) -> Result<ModelResponse, String> {
+        self.0
+            .turn(request, key, deadline, false)
+            .map_err(|error| format!("My model did not answer: {}", error.message))
     }
 }
 
-/// The tools a model's answer calls, or why its answer cannot be used.
-fn calls_of(
-    response: &ModelResponse,
-) -> Result<Vec<tilo_model_gateway::host_backend::protocol::ToolCall>, String> {
-    response
-        .tool_calls()
-        .map(|calls| calls.into_iter().cloned().collect())
-        .map_err(|error| format!("My model's answer was not usable: {}", error.message))
+/// How a turn on the workspace's server tells its person what it does: on the reply to their
+/// ask, which moves to the newest of what they wrote as the turn goes on with it.
+struct Answering<'a> {
+    scope: &'a TurnScope,
+    going: &'a going::Going,
+    /// What a turn that is its keeper's own keeps of what it learns ([`learned`]).
+    keeping: Option<&'a learned::Keeping>,
+    /// The ask the turn answers now, and where its answer is written.
+    at: tokio::sync::Mutex<(&'a mut Turn, &'a mut Reply)>,
 }
 
-/// The words of a model's answer.
-fn words_of(response: &ModelResponse) -> String {
-    response
-        .message
-        .content
-        .iter()
-        .filter_map(|content| match content {
-            Content::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-        .trim()
-        .to_owned()
-}
+impl tilo_agent_turn::Doing<WorkspaceActionProvider> for Answering<'_> {
+    fn stopped(&self) -> bool {
+        self.going.stopped()
+    }
 
-/// Run the tools a model turn called, telling the person what the agent does: the message that
-/// answers the model with what each did. `None` when its person stopped the turn: no tool is
-/// begun after a stop.
-/// `keeping` is what a turn that is its keeper's own keeps of what it learns ([`learned`]).
-async fn run_calls(
-    server: &McpServer<WorkspaceActionProvider>,
-    calls: Vec<tilo_model_gateway::host_backend::protocol::ToolCall>,
-    reply: &Reply,
-    going: &going::Going,
-    keeping: Option<&learned::Keeping>,
-) -> Option<Message> {
-    let mut results = Vec::new();
-    for call in calls {
-        if going.stopped() {
-            return None;
-        }
-        reply.doing(&call.name).await;
-        // What the turn keeps about its keeper is carried out here; every other
-        // tool is the agent tools'.
-        let (content, is_error) = if call.name == ANSWER_WITH_VIEW {
-            Box::pin(reply.view(&call.input)).await
-        } else {
-            match learned::call(keeping, &call.name, &call.input).await {
-                Some(answered) => answered,
-                None => call_tool(server, &call.name, call.input.clone()).await,
-            }
-        };
-        // What it asked is logged with a refusal, so the call can be made again by hand; every
-        // call's whole answer only at debug, where what a tool showed it can be looked up.
-        let asked: String = call.input.to_string().chars().take(LOGGED_CHARS).collect();
-        if is_error {
-            let said: String = content.chars().take(LOGGED_CHARS).collect();
-            tracing::info!(tool = %call.name, %asked, %said, "a tool of an agent on the workspace's server was refused or failed");
-        } else {
+    async fn calling(&self, call: &ToolCall) {
+        self.at.lock().await.1.doing(&call.name).await;
+    }
+
+    /// Each call is logged as used; its whole answer only at debug, where what a tool showed it
+    /// can be looked up. The turn itself logs a refusal with what it asked.
+    fn called(&self, call: &ToolCall, answer: &tilo_agent_turn::Answer) {
+        if !answer.is_error {
             tracing::info!(tool = %call.name, "an agent on the workspace's server used a tool");
         }
-        tracing::debug!(tool = %call.name, %asked, answered = %content, "what a tool of an agent on the workspace's server answered");
-        results.push(Content::ToolResult(ToolResult {
-            call_id: call.id.clone(),
-            content,
-            is_error,
-        }));
+        tracing::debug!(tool = %call.name, asked = %call.input, answered = %answer.text, "what a tool of an agent on the workspace's server answered");
     }
-    Some(Message {
-        role: Role::Tool,
-        content: results,
-    })
+
+    async fn own(&self, call: &ToolCall) -> Option<tilo_agent_turn::Answer> {
+        let (text, is_error) = if call.name == ANSWER_WITH_VIEW {
+            let at = self.at.lock().await;
+            Box::pin(at.1.view(&call.input)).await
+        } else {
+            learned::call(self.keeping, &call.name, &call.input).await?
+        };
+        Some(tilo_agent_turn::Answer {
+            text,
+            pictures: Vec::new(),
+            is_error,
+        })
+    }
+
+    /// Take into the turn what its person wrote since its last step: the replies the turn leaves
+    /// say the answer follows below, and the turn goes on as the newest of it, inside that ask.
+    async fn went_on(
+        &self,
+    ) -> Result<Option<tilo_agent_turn::WentOn<WorkspaceActionProvider>>, String> {
+        let came = self.going.take();
+        let Some((newest, passed)) = came.split_last() else {
+            return Ok(None);
+        };
+        let mut at = self.at.lock().await;
+        let (turn, reply) = &mut *at;
+        reply.went_on().await;
+        for between in passed {
+            self.scope.reply(between).went_on().await;
+        }
+        **turn = newest.clone();
+        **reply = self.scope.reply(turn);
+        reply.taken().await;
+        let server = McpServer::for_turn(self.scope.provider.clone(), reply.caller.clone())
+            .map_err(|error| error.to_string());
+        drop(at);
+        let server = server?;
+        let told = came
+            .iter()
+            .map(|next| next.request.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        Ok(Some(tilo_agent_turn::WentOn {
+            told,
+            server: Some(server),
+        }))
+    }
+
+    fn waiting(&self) -> bool {
+        self.going.waiting()
+    }
 }
-
-/// What an agent that answered without words is asked, once.
-const SAY_WHAT_YOU_DID: &str =
-    "Answer the person now in a few plain sentences: what you did, and what you could not do.";
-
-/// How much of a refused tool's words the server's log keeps.
-const LOGGED_CHARS: usize = 300;
 
 /// `wait` from now, or now when that is past what a clock reads.
 fn later(wait: Duration) -> Instant {
@@ -2277,40 +2124,6 @@ fn instructions(turn: &Turn, workspace: &str) -> String {
     )
 }
 
-/// The tools the turn's server offers, as the model is told them.
-async fn tool_definitions(
-    server: &McpServer<WorkspaceActionProvider>,
-) -> Result<Vec<ToolDefinition>, String> {
-    let listed = tokio::time::timeout(
-        TOOL_TIME,
-        server.handle(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})),
-    )
-    .await
-    .map_err(|_| "the agent's tools did not say what they are in time".to_owned())?
-    .ok_or("the agent's tools did not answer")?;
-    let tools = listed
-        .pointer("/result/tools")
-        .and_then(Value::as_array)
-        .ok_or_else(|| format!("the agent's tools answered {listed}"))?;
-    Ok(tools
-        .iter()
-        .filter_map(|tool| {
-            Some(ToolDefinition {
-                name: tool.get("name")?.as_str()?.to_owned(),
-                description: tool
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-                input_schema: tool
-                    .get("inputSchema")
-                    .cloned()
-                    .unwrap_or_else(|| json!({"type": "object"})),
-            })
-        })
-        .collect())
-}
-
 /// The tool a turn in a conversation answers with a view through, as the model is told it: when
 /// a view is the right answer and how one is written ([`chat::message_view::GUIDE`]). None for
 /// an issue's turn, whose answer is a comment.
@@ -2328,62 +2141,6 @@ fn view_tool(turn: &Turn) -> Option<ToolDefinition> {
             "additionalProperties": false,
         }),
     })
-}
-
-/// Run tool `name` with `arguments` on the turn's server: what it answered, as the model reads it,
-/// and whether it failed.
-async fn call_tool(
-    server: &McpServer<WorkspaceActionProvider>,
-    name: &str,
-    arguments: Value,
-) -> (String, bool) {
-    let answer = tokio::time::timeout(
-        TOOL_TIME,
-        server.handle(json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/call",
-            "params": {"name": name, "arguments": arguments},
-        })),
-    )
-    .await;
-    let Ok(answer) = answer else {
-        return (format!("{name} did not answer in time"), true);
-    };
-    let Some(answer) = answer else {
-        return ("the tool did not answer".to_owned(), true);
-    };
-    if let Some(error) = answer.get("error") {
-        return (error.to_string(), true);
-    }
-    let result = answer.get("result").cloned().unwrap_or(Value::Null);
-    let is_error = result
-        .get("isError")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let mut text = result
-        .get("content")
-        .and_then(Value::as_array)
-        .map(|content| {
-            content
-                .iter()
-                .filter_map(|item| item.get("text").and_then(Value::as_str))
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .unwrap_or_default();
-    if text.is_empty() {
-        text = result.to_string();
-    }
-    if text.len() > MOST_RESULT_BYTES {
-        let mut end = MOST_RESULT_BYTES;
-        while !text.is_char_boundary(end) {
-            end = end.saturating_sub(1);
-        }
-        text.truncate(end);
-        text.push_str("\n…(cut: ask for less)");
-    }
-    (text, is_error)
 }
 
 /// Today, `YYYY-MM-DD`, as an agent's keeper counts the days its spending is charged to.

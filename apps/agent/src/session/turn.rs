@@ -15,7 +15,7 @@ use agent_provider_config::protocol::ToolCall;
 use anyhow::Result;
 use serde_json::Value;
 use tilo_actions::task_step::TaskStep;
-use tilo_agent_turn::{Answer, Asked as TurnAsked, Doing, McpServer, Outcome};
+use tilo_agent_turn::{Answer, Asked as TurnAsked, Doing, McpServer, Outcome, SessionActions};
 use tilo_agent_web_tools as web;
 use ui::lock::MutexRecover as _;
 
@@ -67,12 +67,12 @@ impl Telling {
     }
 }
 
-impl Doing for Telling {
+impl Doing<SessionActions> for Telling {
     fn stopped(&self) -> bool {
         self.stop.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    fn calling(&self, call: &ToolCall) {
+    async fn calling(&self, call: &ToolCall) {
         self.tell(Told::Calling(call.clone()));
     }
 
@@ -87,16 +87,22 @@ impl Doing for Telling {
         self.tell(Told::Spent(total));
     }
 
-    fn own(&self, call: &ToolCall) -> Option<Answer> {
+    /// The web's tools are the agent's own; every other call is the workspace's.
+    async fn own(&self, call: &ToolCall) -> Option<Answer> {
+        if ![web::SEARCH_WEB, web::READ_PAGE].contains(&call.name.as_str()) {
+            return None;
+        }
         let asked = match web::Call::read(&call.name, &call.input) {
             Ok(asked) => asked,
             Err(why) => return Some(Answer::failed(why)),
         };
-        let ran = self
-            .web
-            .lock_recover()
-            .get_or_insert_with(|| web::Web::new(self.content.clone()))
-            .run(&asked);
+        // Searching and reading the web blocks: it runs where a worker may.
+        let ran = tokio::task::block_in_place(|| {
+            self.web
+                .lock_recover()
+                .get_or_insert_with(|| web::Web::new(self.content.clone()))
+                .run(&asked)
+        });
         Some(match ran {
             Ok(value) => Answer {
                 text: value.to_string(),

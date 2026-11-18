@@ -487,7 +487,7 @@ struct Steering {
     leaving: Arc<AtomicBool>,
 }
 
-impl Doing for Steering {
+impl Doing<SessionActions> for Steering {
     /// A paused agent holds here until its person resumes or stops it.
     fn stopped(&self) -> bool {
         if self.control.paused_on(&self.task) {
@@ -496,7 +496,7 @@ impl Doing for Steering {
         self.leaving.load(Ordering::Acquire) || !self.control.is_running(&self.task)
     }
 
-    fn calling(&self, call: &ToolCall) {
+    async fn calling(&self, call: &ToolCall) {
         let activity = step_of(call).map_or_else(
             || call.name.clone(),
             |(_, resource, action)| format!("{action} {resource}"),

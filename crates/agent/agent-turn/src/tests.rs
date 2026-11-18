@@ -59,19 +59,37 @@ struct Told {
     stop: AtomicBool,
     calls: Mutex<Vec<String>>,
     spent: Mutex<u64>,
+    /// Whether its person wrote while the model answered: what they wrote comes at the next step.
+    waiting: AtomicBool,
+    /// Whether the turn took its first step, before which nothing came.
+    stepped: AtomicBool,
 }
 
-impl Doing for Told {
+impl Doing<tilo_session_client::remote::SessionActions> for Told {
     fn stopped(&self) -> bool {
         self.stop.load(Ordering::SeqCst)
     }
-    fn calling(&self, call: &ToolCall) {
+    async fn calling(&self, call: &ToolCall) {
         self.calls.lock_recover().push(call.name.clone());
     }
     fn spent(&self, total: u64) {
         *self.spent.lock_recover() = total;
     }
-    fn own(&self, call: &ToolCall) -> Option<Answer> {
+    fn waiting(&self) -> bool {
+        self.waiting.load(Ordering::SeqCst)
+    }
+    async fn went_on(
+        &self,
+    ) -> Result<Option<WentOn<tilo_session_client::remote::SessionActions>>, String> {
+        if !self.stepped.swap(true, Ordering::SeqCst) {
+            return Ok(None);
+        }
+        Ok(self.waiting.swap(false, Ordering::SeqCst).then(|| WentOn {
+            told: "And the weather?".to_owned(),
+            server: None,
+        }))
+    }
+    async fn own(&self, call: &ToolCall) -> Option<Answer> {
         (call.name == "search_web").then(|| Answer {
             text: "three pages".into(),
             ..Answer::default()
@@ -210,17 +228,22 @@ async fn a_turn_stops_at_its_budget_and_asks_nothing_more() {
 }
 
 /// A model that only ever calls tools ends the turn at its round bound rather than looping for
-/// ever, and its person is told how to let it go on.
+/// ever: it is then asked once more, with no tools, to say where it got to, and its person reads
+/// that.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_turn_of_endless_tool_calls_stops_at_its_round_bound() {
+async fn a_turn_of_endless_tool_calls_stops_at_its_round_bound_and_says_where_it_got() {
     let provider = Arc::new(TestProvider::new());
     let server = served(provider);
     let asked = Arc::new(Mutex::new(Vec::new()));
     let model = Arc::new(Mutex::new(Script {
-        // One round's answer for each round the bound lets it take.
+        // One round's answer for each round the bound lets it take, then where it got to.
         answers: VecDeque::from([
             calling("1", "tilo_ls", json!({})),
             calling("2", "tilo_ls", json!({})),
+            Message::text(
+                Role::Assistant,
+                "I listed the apps; the notes are still open.",
+            ),
         ]),
         asked: Arc::clone(&asked),
     }));
@@ -230,14 +253,66 @@ async fn a_turn_of_endless_tool_calls_stops_at_its_round_bound() {
         ..Asked::new("s", "r")
     };
     let (outcome, _) = work(&server, model, &turn, &told).await;
+    assert_eq!(
+        outcome,
+        Outcome::Stopped("I listed the apps; the notes are still open.".into())
+    );
+    let asked = asked.lock_recover().clone();
+    assert_eq!(asked.len(), 3, "no round of tools past the bound is asked");
+    assert_eq!(
+        asked.last().map(|last| last.tool_choice),
+        Some(ToolChoice::None),
+        "the last ask calls no tool"
+    );
+}
+
+/// A turn whose model says nothing once out of rounds tells its person how to let it go on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_turn_out_of_rounds_that_says_nothing_tells_how_to_go_on() {
+    let provider = Arc::new(TestProvider::new());
+    let server = served(provider);
+    let model = Arc::new(Mutex::new(Script {
+        answers: VecDeque::from([calling("1", "tilo_ls", json!({}))]),
+        asked: Arc::default(),
+    }));
+    let turn = Asked {
+        most_rounds: 1,
+        ..Asked::new("s", "r")
+    };
+    let (outcome, _) = work(&server, model, &turn, &Told::default()).await;
     assert!(
         matches!(&outcome, Outcome::Stopped(why) if why.contains("many steps")),
         "{outcome:?}"
     );
+}
+
+/// What its person writes while the agent works reaches the model at its next step, and an
+/// answer given while more waits is not the turn's answer: the turn goes on with what came.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn what_its_person_wrote_meanwhile_reaches_the_next_step() {
+    let provider = Arc::new(TestProvider::new());
+    let server = served(provider);
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let model = Arc::new(Mutex::new(Script {
+        answers: VecDeque::from([
+            Message::text(Role::Assistant, "Here are the apps."),
+            Message::text(Role::Assistant, "Here is the weather too."),
+        ]),
+        asked: Arc::clone(&asked),
+    }));
+    let told = Told::default();
+    told.waiting.store(true, Ordering::SeqCst);
+    let (outcome, _) = work(&server, model, &Asked::new("s", "r"), &told).await;
     assert_eq!(
-        asked.lock_recover().len(),
-        2,
-        "no round past the bound is asked"
+        outcome,
+        Outcome::Answered("Here is the weather too.".into())
+    );
+    let asked = asked.lock_recover().clone();
+    assert_eq!(asked.len(), 2);
+    let second = format!("{:?}", asked[1].messages);
+    assert!(
+        second.contains(CAME_SINCE) && second.contains("And the weather?"),
+        "{second}"
     );
 }
 
