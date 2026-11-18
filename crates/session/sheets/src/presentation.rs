@@ -64,6 +64,9 @@ struct Inner {
     /// card that took its motion with the tree would replay its arrival on
     /// every rebuild, and drop out of sight on the rebuild that closed it.
     appear: Rc<Cell<ui::motion::Appearing>>,
+    /// How far the card's body is scrolled, kept here for the same reason: a choice made far
+    /// down a long sheet builds a new tree, which would otherwise start at the top again.
+    scroll: Rc<Cell<f64>>,
 }
 
 impl Default for Inner {
@@ -78,6 +81,7 @@ impl Default for Inner {
             wake: RefCell::default(),
             motion: Cell::new(ui::tokens::EffectiveMotion::default()),
             appear: Rc::new(Cell::new(ui::motion::Appearing::closed())),
+            scroll: Rc::new(Cell::new(0.0)),
         }
     }
 }
@@ -88,6 +92,18 @@ impl Presentation {
     #[must_use]
     pub fn appearance(&self) -> Appearance {
         Appearance::Shared(Rc::clone(&self.0.appear))
+    }
+
+    /// How far the card's body is scrolled, which the sheet's dialog keeps there
+    /// ([`presented`]): one offset for every tree the sheet's app builds.
+    #[must_use]
+    pub fn scroll(&self) -> Rc<Cell<f64>> {
+        Rc::clone(&self.0.scroll)
+    }
+
+    /// Start the card's body at its top again: the sheet shows another page in the same card.
+    pub fn scroll_to_top(&self) {
+        self.0.scroll.set(0.0);
     }
 
     /// Move the card towards `open` as `source` asked, on the motion the
@@ -109,6 +125,8 @@ impl Presentation {
         self.0.phase.set(Phase::Open);
         self.0.opened_at.set(Some(ui::time::now()));
         self.0.openings.set(self.0.openings.get().wrapping_add(1));
+        // Each opening shows the sheet afresh, from its top.
+        self.0.scroll.set(0.0);
         self.0.by_keyboard.set(by_keyboard);
         let source = if by_keyboard {
             MotionSource::Keyboard
@@ -250,7 +268,9 @@ pub fn presented<C: Widget + 'static>(
     // Its card is up while the presentation says so, wherever it is in its
     // arrival or leaving: the handle carries that across every tree the
     // app builds, so a rebuild never closes or replays it.
-    dialog.appearing(presentation.appearance())
+    dialog
+        .appearing(presentation.appearance())
+        .keeping_scroll(presentation.scroll())
 }
 
 #[cfg(test)]
