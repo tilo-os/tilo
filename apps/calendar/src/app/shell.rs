@@ -10,6 +10,7 @@ use ui::widget::{
 use vello::kurbo::Rect;
 
 use super::{Action, CalendarApp};
+use crate::colours::Themed;
 use crate::model::{Id, ListSel, Priority, View};
 
 const SMART_LISTS: [(&str, ListSel, Icon); 4] = [

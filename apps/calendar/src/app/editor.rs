@@ -20,6 +20,7 @@ use ui::widget::{
 };
 
 use super::{Action, CalTarget, CalendarApp, FormField, Sel, TaskPopover};
+use crate::colours::Themed;
 use crate::date;
 use crate::draw_util::text_in_band;
 use crate::event_popovers::{PopoverAnchors, PopoverKind as FormPopover};

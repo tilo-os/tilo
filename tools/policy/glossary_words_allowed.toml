@@ -221,9 +221,9 @@ paths = ["crates/collab/threshold-identity/*"]
 reason = "An iCalendar or WhatsApp group participant."
 words = ["participant"]
 paths = [
-    "apps/calendar/src/ics.rs",
-    "apps/calendar/src/ics/tests.rs",
-    "apps/calendar/src/model.rs",
+    "apps/calendar-model/src/ics.rs",
+    "apps/calendar-model/src/ics/tests.rs",
+    "apps/calendar-model/src/model.rs",
     "apps/calendar/src/app.rs",
     "crates/system/messaging-protocol/src/supervisor/whatsapp/*",
 ]
@@ -727,6 +727,12 @@ identifiers = ["record"]
 paths = ["crates/collab/tilo-peer-state/src/owner/refused_change_tests.rs"]
 
 [[allow]]
+reason = "The stored key a document keeps its identity under (`tilo:record`), which tilo-peer-state reads a document's surface from: this test seeds a document that carries it, and renaming a stored key is a change of its own."
+words = ["record"]
+identifiers = ["record"]
+paths = ["crates/collab/tilo-peer-state/src/withdrawal_base_tests.rs"]
+
+[[allow]]
 reason = "The keys a mail account's settings keep its two servers' names under, as mail programs call them."
 words = ["host"]
 identifiers = ["imap_host", "smtp_host"]
@@ -1003,18 +1009,28 @@ paths = ["crates/system/tilo-auth/tests/peer_enrol.rs"]
 reason = "The LUKS2 keyslot an enrolment adds, which cryptsetup and the header's own format name."
 words = ["slot"]
 paths = [
+    "crates/platform/imager-backend/src/destination/install.rs",
+    "crates/server/tilo-server/src/operations.rs",
+    "crates/server/tilo-server/src/operations/tests.rs",
     "crates/session/session/src/network.rs",
     "crates/session/session/src/network/unlock.rs",
     "crates/session/session/tests/network_unlock_enrolment.rs",
     "crates/system/tilo-auth/src/sibling/enrol.rs",
     "crates/system/tilo-auth/tests/peer_enrol.rs",
+    "docs/security/boot-chain.md",
+    "os/dev/nearby-unlock-phase.sh",
+    "os/tests/disk_encrypt_finish_sibling.sh",
+    "os/tests/server_firstboot_sibling.sh",
 ]
 
 [[allow]]
 reason = "A call's failure names the host's own error beside its text (`Failure::host`): this file tells a policy refusal from a call the app cannot answer."
 words = ["host"]
 identifiers = ["host"]
-paths = ["crates/runtime/tilo-mcp/src/mcp_agent.rs"]
+paths = [
+    "crates/runtime/tilo-mcp/src/mcp_agent.rs",
+    "crates/runtime/tilo-mcp/src/mcp_agent_unoffered.rs",
+]
 
 [[allow]]
 reason = "The API server's configuration names the servers it forwards to by its field `hosts`; a test that starts another API server sets it."
@@ -1156,3 +1172,8 @@ paths = [
     "apps/remote-model/locales/en-US.ftl",
     "apps/remote-model/locales/de-DE.ftl",
 ]
+
+[[allow]]
+reason = "The model gateway's module of its wire types, named by the program it backs, not a Tilo concept."
+words = ["host"]
+identifiers = ["host_backend"]

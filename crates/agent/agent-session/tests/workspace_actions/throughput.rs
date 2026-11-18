@@ -39,6 +39,13 @@ const SINGLE_CEILING_MS: f64 = if cfg!(debug_assertions) {
     300.0
 };
 
+/// The most the slowest of a row's actions may take, at the smallest size
+/// measured: a row's first action may merge what the rows before it wrote
+/// (a few hundred milliseconds for their bulk writes), so its tail is
+/// allowed three times what the median is; one that waits on a view, a
+/// timeout or a whole document opened again takes longer than that.
+const SINGLE_P99_CEILING_MS: f64 = SINGLE_CEILING_MS * 3.0;
+
 /// A key's calls of the API.
 struct Agent<'a> {
     api: &'a Arc<Server>,
@@ -803,17 +810,19 @@ async fn a_workspace_takes_records_and_files_at_the_same_speed_however_full() {
     let slow: Vec<String> = table
         .iter()
         .filter(|row| !row.kind.starts_with("upload") && row.size == smallest)
-        .filter(|row| row.single_p50_ms > SINGLE_CEILING_MS)
+        .filter(|row| {
+            row.single_p50_ms > SINGLE_CEILING_MS || row.single_p99_ms > SINGLE_P99_CEILING_MS
+        })
         .map(|row| {
             format!(
-                "{} at {}: single p50 {:.1} ms",
-                row.kind, row.size, row.single_p50_ms
+                "{} at {}: single p50 {:.1} ms p99 {:.1} ms",
+                row.kind, row.size, row.single_p50_ms, row.single_p99_ms
             )
         })
         .collect();
     assert!(
         slow.is_empty(),
-        "one action takes over {SINGLE_CEILING_MS} ms:\n{}",
+        "one action takes over {SINGLE_CEILING_MS} ms at the median, or {SINGLE_P99_CEILING_MS} ms at p99:\n{}",
         slow.join("\n")
     );
     if std::env::var("TILO_THROUGHPUT_ASSERT").is_ok_and(|value| value == "1") {

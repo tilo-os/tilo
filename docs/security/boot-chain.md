@@ -763,6 +763,38 @@ unlock, so a machine whose Secure Boot policy changed — a `db` that gained a
 third-party CA, say — asks for the typed secret instead of opening on a boot it no
 longer recognises, rather than opening anyway or leaving an unbootable disk.
 
+### A server's first boot enrols the unlock another of your devices releases
+
+A server is installed before it is one of the person's devices, and the
+sibling unlock (`91tilo-rollback`, `92tilo-sibling-unlock`) can only be
+enrolled once the machine has enrolled and keeps the person's device store.
+At install time the only secret that can authorise a new key slot is the
+installer's throwaway key; `enrol --sibling` accepts any existing passphrase,
+and that key is one.
+
+So an install whose plan names `owner-device`, or names (or leaves open) `tpm`
+on a machine with no usable TPM, keeps the throwaway key instead of dropping
+it in `tilo-disk-encrypt finish`. The key is written root-only (0600, in a
+0700 directory) inside the encrypted root at
+`/var/lib/tilo/sibling-enrol/luks.key`, with the volume's LUKS UUID beside it
+in `enrol.conf`; the file and its value never appear in the installer's log
+or on an unencrypted partition. Its LUKS2 slot stays in the header, so at this
+point the volume has one more way in than the table above lists.
+
+`tilo-server-firstboot` spends it after its own enrolment has produced the
+device certificate, the home-peer file and the person's device store: it calls
+`tilo-disk-encrypt enrol --sibling --key-file …`, then removes the install
+key's slot with
+`cryptsetup luksRemoveKey` and shreds both files. Until that succeeds —
+for example because none of the person's other devices answered within the
+per-boot bound — both stay in place and the next boot tries again. The
+installed system's status says `sibling unlock pending` while it waits
+(`ServerStatus.unlock`, shown by `tilo server status`).
+
+A `passphrase` plan keeps a person at the keyboard and drops the key as before,
+and Tilo OS installs keep nothing: only the server image has a first boot that
+can spend it.
+
 The privileged installer enforces the same startup-secret policy shown by the
 graphical installer. It requires at least fifteen characters (the NIST
 single-factor minimum), rejects leading or trailing whitespace, common

@@ -179,9 +179,9 @@ fn held_issues(page: &tilo_agent_session::Replica) -> Vec<String> {
     held
 }
 
-/// The times `observed` built the whole tree a view publishes, and laid the
-/// view out.
-fn built(observed: &[ui::tilo_resource::profiling::Sample]) -> (usize, usize) {
+/// The times `observed` built the whole tree a view publishes, laid the view
+/// out, and read a whole part to apply one action to it.
+fn built(observed: &[ui::tilo_resource::profiling::Sample]) -> (usize, usize, usize) {
     let calls = |name: &str| {
         observed
             .iter()
@@ -189,7 +189,11 @@ fn built(observed: &[ui::tilo_resource::profiling::Sample]) -> (usize, usize) {
             .map(|phase| phase.calls)
             .sum::<usize>()
     };
-    (calls("framework.published_tree"), calls("ui.layout"))
+    (
+        calls("framework.published_tree"),
+        calls("ui.layout"),
+        calls("resource.apply_whole_read"),
+    )
 }
 
 /// An issue named by its id, as an agent's path names one and acts on it:
@@ -304,8 +308,8 @@ fn an_issue_named_by_its_id_is_acted_on_without_building_the_tree() {
             assert!(!rows.is_empty());
             assert_eq!(
                 built(&observed),
-                (0, 0),
-                "{target} of {size} issues was acted on by building the tree or laying it out"
+                (0, 0, 0),
+                "{target} of {size} issues was acted on by building the tree, laying it out or reading its whole part"
             );
             assert!(
                 !held_issues(&fresh).contains(&target),

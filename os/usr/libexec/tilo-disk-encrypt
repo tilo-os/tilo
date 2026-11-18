@@ -15,6 +15,7 @@
 #                              [--session-uid UID] [--unattended] [--relay URL]
 #   tilo-disk-encrypt enrol    <luks-part> --sibling --replace-networks [--network NAME]...
 #   tilo-disk-encrypt finish   <luks-part> [--key-file F] [--mnt DIR]
+#                              [--unlock owner-device|tpm|passphrase] [--var DIR]
 #   tilo-disk-encrypt teardown <disk> [--mnt DIR]
 #
 # `prepare` writes a GPT with ESP + /boot + a LUKS2 root, opens the mapping with
@@ -37,6 +38,20 @@
 # to find and open the volume. `enrol` adds the real unlock factors, `finish`
 # drops the throwaway key slot and tears the tree down, and `teardown` is the
 # same tear-down without touching key slots — what an aborted install wants.
+#
+# One planned unlock has no secret its owner can type at this machine's
+# console: `owner-device`, where another of their devices approves the boot.
+# The machine can only enrol that factor once it is enrolled itself and holds
+# the person's device store, which is at its first boot. So for a server whose
+# plan says `owner-device`, or one whose plan says (or leaves open) `tpm` on a
+# machine with no usable TPM, `finish --unlock … --var <installed /var>` keeps
+# the throwaway install key: it writes it root-only into the encrypted root at
+# <var>/lib/tilo/sibling-enrol/luks.key, with the volume's LUKS UUID beside it
+# in enrol.conf, and leaves its key slot in the header. `tilo-server-firstboot`
+# spends that key on `enrol --sibling`, removes the slot and shreds the file.
+# Both files are inside the encrypted root and neither value is ever logged.
+# A passphrase plan, or a machine that has a TPM to seal the unattended factor
+# to, keeps the old behaviour and drops the key here.
 #
 # `enrol --sibling` adds the factor that unlocks the root at boot with the
 # consent of another of the owner's devices (docs/device-reach.md, "Unlocking
@@ -705,18 +720,78 @@ mark_account_password() {
   fi
 }
 
+# Does this machine have a TPM a keyslot can be sealed to? A no-TPM server has
+# no unattended factor of its own, so its planned `tpm` unlock falls back to
+# another of the owner's devices approving the boot.
+tpm_usable() {
+  if [ -n "${TILO_TPM_DEVICE:-}" ]; then [ -c "$TILO_TPM_DEVICE" ]; return; fi
+  [ -c /dev/tpmrm0 ] || [ -c /dev/tpm0 ]
+}
+
+# Label a file or directory the way the installed system's policy labels its
+# final path. A path created from the installer's /run carries var_run_t,
+# which the units that read it at boot are not allowed to use.
+label_like() {
+  local path="$1" final="$2" context
+  command -v matchpathcon >/dev/null 2>&1 && command -v chcon >/dev/null 2>&1 || return 0
+  context="$(matchpathcon -n "$final" 2>/dev/null)" || return 0
+  [ -n "$context" ] || return 0
+  chcon "$context" "$path" 2>/dev/null || true
+}
+
+# Copy the throwaway key, and the volume it opens, into the installed system's
+# encrypted root for `tilo-server-firstboot` to spend on the sibling slot.
+stage_sibling_enrol() {
+  local var="$1" dev="$2" key="$3" dir uuid tmp
+  [ "$(stat -c %s "$key")" -ge 32 ] || die "finish: the install key at $key is too short to keep"
+  uuid="$(cryptsetup luksUUID "$dev")"
+  [ -n "$uuid" ] || die "finish: could not read the LUKS UUID to record"
+  dir="$var/lib/tilo/sibling-enrol"
+  install -d -m 0755 "$(dirname "$dir")"
+  install -d -m 0700 "$dir"
+  label_like "$dir" /var/lib/tilo/sibling-enrol
+  # Written private from the first byte, then renamed into place.
+  ( umask 0077; cat "$key" > "$dir/.luks.key.new" )
+  chmod 0600 "$dir/.luks.key.new"
+  mv -f "$dir/.luks.key.new" "$dir/luks.key"
+  label_like "$dir/luks.key" /var/lib/tilo/sibling-enrol/luks.key
+  tmp="$dir/.enrol.conf.new"
+  ( umask 0077; printf 'luks_uuid=%s\nkey_file=%s\n' "$uuid" "$dir/luks.key" > "$tmp" )
+  chmod 0600 "$tmp"
+  mv -f "$tmp" "$dir/enrol.conf"
+  label_like "$dir/enrol.conf" /var/lib/tilo/sibling-enrol/enrol.conf
+  # The status the server reports reads this marker, and spends it only after
+  # the slot is enrolled and the key is gone.
+  install -d -m 0700 "$var/lib/tilo-server"
+  # The server account owns its state root (tmpfiles.d/tilo-server.conf). The
+  # check runs where that account does not exist; an install always has it.
+  if getent passwd tilo-server >/dev/null 2>&1; then
+    chown tilo-server:tilo-server "$var/lib/tilo-server" \
+      || die "finish: could not give the server account its state root"
+  fi
+  ( umask 0022; : > "$var/lib/tilo-server/sibling-unlock-pending" )
+  label_like "$var/lib/tilo-server/sibling-unlock-pending" /var/lib/tilo-server/sibling-unlock-pending
+  log "  kept the install key inside the encrypted root until the server enrols its sibling unlock"
+}
+
 cmd_finish() {
-  local dev="" key="" mnt=/run/tilo-install/target
+  local dev="" key="" mnt=/run/tilo-install/target unlock="" var=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --key-file) key="${2:-}"; shift 2 ;;
       --mnt) mnt="${2:-}"; shift 2 ;;
+      --unlock) unlock="${2:-}"; shift 2 ;;
+      --var) var="${2:-}"; shift 2 ;;
       -*) die "finish: unknown option $1" ;;
       *) [ -z "$dev" ] || die "finish: unexpected argument $1"; dev="$1"; shift ;;
     esac
   done
   [ -n "$dev" ] || die "finish: missing <luks-part>"
   [ -n "$key" ] || key="$(default_key_file)"
+  case "$unlock" in
+    ''|owner-device|tpm|passphrase) ;;
+    *) die "finish: --unlock must be owner-device, tpm or passphrase" ;;
+  esac
 
   # Refuse to drop the throwaway slot unless a real factor took its place —
   # otherwise this step is what destroys the data.
@@ -725,7 +800,29 @@ cmd_finish() {
   [ "${slots:-0}" -ge 2 ] \
     || die "finish: $dev has $slots key slot(s); refusing to remove the install key before another factor is enrolled"
 
-  if [ -f "$key" ]; then
+  # The plan's unlock decides whether this machine can open without a person
+  # at its console: an owner-device plan always needs its sibling slot, and a
+  # tpm plan (or one left open) on a machine with no usable TPM has nothing
+  # else. A passphrase plan keeps the person at the keyboard it promised. A
+  # caller that names no --var (a desktop, which has no first boot to enrol a
+  # sibling) never keeps the key.
+  local keep=0
+  if [ -n "$var" ]; then
+    [ -d "$var" ] || die "finish: --var $var is not a directory"
+    case "$(readlink -f "$var")/" in
+      "$(readlink -f "$mnt")"/*) ;;
+      *) die "finish: --var $var is not inside the encrypted root $mnt" ;;
+    esac
+    case "$unlock" in
+      owner-device) keep=1 ;;
+      ''|tpm) tpm_usable || keep=1 ;;
+    esac
+  fi
+
+  if [ "$keep" -eq 1 ] && [ -f "$key" ]; then
+    stage_sibling_enrol "$var" "$dev" "$key"
+    shred -u "$key" 2>/dev/null || rm -f "$key"
+  elif [ -f "$key" ]; then
     log "  removing the throwaway install key slot"
     cryptsetup luksRemoveKey "$dev" --key-file "$key" \
       || die "finish: could not remove the install key slot"
@@ -770,6 +867,6 @@ case "$sub" in
   enrol|enroll) cmd_enrol "$@" ;;
   finish) cmd_finish "$@" ;;
   teardown) cmd_teardown "$@" ;;
-  -h|--help|"") sed -n '2,61p' "$0" ;;
+  -h|--help|"") sed -n '2,95p' "$0" ;;
   *) die "unknown subcommand: $sub (try --help)" ;;
 esac

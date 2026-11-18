@@ -2071,123 +2071,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         Ok(if outside { reply.labelled() } else { reply })
     }
 
-    /// The answer a caller whose rules keep a read off their directory is given: the app's
-    /// refusal as not permitted, when it publishes a read of the target to others.
-    async fn refused_read_answer(&self, resolved: &Resolved) -> Result<Option<Reply>, String> {
-        let Some(node) = resolved.node.as_ref() else {
-            return Ok(None);
-        };
-        Ok(self
-            .refused_read(&resolved.provider, &node.id)
-            .await?
-            .map(|why| Reply::failed(format!("not_permitted: {why}"))))
-    }
-
-    /// Why the app's own read of the resource `resource` at `provider` is not this caller's,
-    /// when the caller's rules keep it off their directory and the host refuses it as not
-    /// permitted; `None` when the app offers no read there either.
-    async fn refused_read(&self, provider: &str, resource: &str) -> Result<Option<String>, String> {
-        self.refused_when_asked(provider, resource, "read").await
-    }
-
-    /// How a call of `action`, which `resolved`'s directory does not offer this caller, ends
-    /// (`error`, why it was not found there). Only an action nothing here offers by that name
-    /// goes to the host, by its address and with exactly the arguments the caller sent, and the
-    /// host decides it as it decides every call: refused for the caller's role, refused for
-    /// what the caller sent, or done as asked, never with arguments nobody gave. One the host
-    /// knows nowhere, offered twice, or whose name only begins another is the caller's to name
-    /// better, and told where actions are listed.
-    async fn unoffered(
-        &self,
-        resolved: &Resolved,
-        action: &str,
-        error: &str,
-        asked: (serde_json::Map<String, Value>, Option<String>, Option<u64>),
-    ) -> Result<Resolution, Failure> {
-        let offered_nowhere = error.contains(&format!("has no action {action}"))
-            && !error.contains("is another action");
-        let not_listed = || Failure::from(format!("{error}; tilo_ls {} lists them", resolved.path));
-        if !offered_nowhere {
-            return Err(not_listed());
-        }
-        let (arguments, invocation, wait_ms) = asked;
-        let resources = if let Some(node) = resolved.node.as_ref() {
-            vec![node.id.clone()]
-        } else {
-            let mut levels = Levels::default();
-            self.level(&resolved.provider, "", &mut levels)
-                .await?
-                .children
-                .iter()
-                .map(|node| node.id.clone())
-                .collect()
-        };
-        // The first resource the workspace knows the action on decides the call: it is done
-        // there at most once, and nowhere else is asked after it.
-        for resource in resources {
-            let call = OneCall {
-                provider: Addressed {
-                    provider: resolved.provider.clone(),
-                    app_id: Some(resolved.app_id.clone()),
-                },
-                workspace: false,
-                revision: None,
-                resource,
-                action: action.to_owned(),
-                arguments: arguments.clone(),
-                invocation_id: invocation.clone(),
-                wait_ms,
-            };
-            match Box::pin(self.invoke_one(call)).await {
-                Ok(value) => {
-                    let reply = outcome(&value);
-                    return Ok(Resolution::Done(Box::new(Done::Launched {
-                        value,
-                        reply,
-                        not_shown: None,
-                    })));
-                }
-                Err(why) if not_permitted(&why) => {
-                    return Err(format!("not_permitted: {why}").into());
-                }
-                Err(why)
-                    if matches!(
-                        why.host,
-                        Some(tilo_actions::remote::ActionCallError::UnknownAction)
-                    ) => {}
-                Err(why) => return Err(why),
-            }
-        }
-        Err(not_listed())
-    }
-
-    /// Why the host refuses `action` on `resource` at `provider` as not permitted, asked with no
-    /// arguments; `None` for any other answer.
-    async fn refused_when_asked(
-        &self,
-        provider: &str,
-        resource: &str,
-        action: &str,
-    ) -> Result<Option<String>, String> {
-        let call = OneCall {
-            provider: Addressed {
-                provider: provider.to_owned(),
-                app_id: None,
-            },
-            workspace: false,
-            revision: None,
-            resource: resource.to_owned(),
-            action: action.to_owned(),
-            arguments: serde_json::Map::new(),
-            invocation_id: None,
-            wait_ms: Some(DEFAULT_WAIT_MS),
-        };
-        match Box::pin(self.invoke_one(call)).await {
-            Err(why) if not_permitted(&why) => Ok(Some(why.to_string())),
-            _ => Ok(None),
-        }
-    }
-
     /// The action that reads `resolved`, and the id of the resource that
     /// offers it: the target's own, or its nearest ancestor's, which takes
     /// the target as its `item`.
@@ -2937,6 +2820,8 @@ mod level;
 
 #[path = "mcp_agent_resolved.rs"]
 pub(super) mod resolved;
+#[path = "mcp_agent_unoffered.rs"]
+mod unoffered;
 use resolved::{Resolution, ResolvedAction};
 
 /// The answer to a read of `resolved` when it publishes no read action: the actions it has, and
@@ -2990,14 +2875,3 @@ mod publisher_tests;
 #[cfg(test)]
 #[path = "mcp_lost_answer_tests.rs"]
 mod lost_answer_tests;
-
-/// Whether the host refused a call as not the caller's: their role or grants keep it from them.
-fn not_permitted(failure: &Failure) -> bool {
-    matches!(
-        failure.host,
-        Some(
-            tilo_actions::remote::ActionCallError::NotPermitted
-                | tilo_actions::remote::ActionCallError::Refused { .. }
-        )
-    )
-}

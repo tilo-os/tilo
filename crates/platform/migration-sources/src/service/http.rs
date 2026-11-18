@@ -1,12 +1,20 @@
 //! The bounded HTTP calls the service sources make. Keys go in a header, never a URL, and no
 //! refusal carries a response body.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use super::ServiceError;
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_ANSWER_BYTES: u64 = 64 * 1024 * 1024;
+/// The most requests in flight at once: a service's rate limit, not its latency times its
+/// items, sets the pace of a fetch.
+pub const IN_FLIGHT: usize = 8;
+/// How often a request a service asked to wait for is sent again.
+const RETRIES: usize = 4;
+/// How long a service's request to wait is honoured at most.
+const MAX_RETRY_WAIT: Duration = Duration::from_secs(30);
 /// The largest picture a page keeps: what a Notes page keeps beside it.
 pub const MAX_PICTURE_BYTES: u64 = 1024 * 1024;
 
@@ -37,11 +45,52 @@ pub fn base(server: &str) -> Result<String, ServiceError> {
     Ok(trimmed.trim_end_matches('/').to_owned())
 }
 
+/// The one client every request goes through: its pool keeps the connections a source's many
+/// requests reuse, instead of a handshake per request.
 fn client() -> Result<reqwest::blocking::Client, ServiceError> {
-    tilo_net::http::blocking_client()
+    static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
+    if let Some(client) = CLIENT.get() {
+        return Ok(client.clone());
+    }
+    let client = tilo_net::http::blocking_client()
         .timeout(TIMEOUT)
         .build()
-        .map_err(|error| ServiceError::Unavailable(error.to_string()))
+        .map_err(|error| ServiceError::Unavailable(error.to_string()))?;
+    Ok(CLIENT.get_or_init(|| client).clone())
+}
+
+/// `build`ed and authorized, sent; a service asking to wait (`429`, `503` with `Retry-After`)
+/// is waited for and asked again, up to [`RETRIES`] times.
+fn send(
+    build: &dyn Fn() -> Result<reqwest::blocking::RequestBuilder, ServiceError>,
+    key: &str,
+    how: Key,
+) -> Result<reqwest::blocking::Response, ServiceError> {
+    for attempt in 0..=RETRIES {
+        let response = authorized(build()?, key, how)
+            .send()
+            .map_err(|error| ServiceError::Unavailable(without_url(&error)))?;
+        if attempt == RETRIES {
+            return Ok(response);
+        }
+        match response.status().as_u16() {
+            429 | 503 => std::thread::sleep(retry_wait(&response)),
+            _ => return Ok(response),
+        }
+    }
+    Err(ServiceError::Unavailable("it kept asking to wait".into()))
+}
+
+/// How long a service asked to wait, by its `Retry-After`; a second when it names none.
+fn retry_wait(response: &reqwest::blocking::Response) -> Duration {
+    response
+        .headers()
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map_or(Duration::from_secs(1), |seconds| {
+            Duration::from_secs(seconds).min(MAX_RETRY_WAIT)
+        })
 }
 
 fn authorized(
@@ -58,10 +107,11 @@ fn authorized(
 
 /// `GET url`, the answer as JSON; `None` when the service has no such thing (404).
 pub fn get_json(url: &str, key: &str, how: Key) -> Result<Option<serde_json::Value>, ServiceError> {
-    let request = client()?.get(url).header("accept", "application/json");
-    let response = authorized(request, key, how)
-        .send()
-        .map_err(|error| ServiceError::Unavailable(without_url(&error)))?;
+    let response = send(
+        &|| Ok(client()?.get(url).header("accept", "application/json")),
+        key,
+        how,
+    )?;
     let status = response.status().as_u16();
     if matches!(status, 401 | 403) {
         return Err(ServiceError::Refused);
@@ -92,13 +142,16 @@ pub fn post_json(
     key: &str,
     how: Key,
 ) -> Result<serde_json::Value, ServiceError> {
-    let request = client()?
-        .post(url)
-        .header("content-type", "application/json")
-        .body(body.to_string());
-    let response = authorized(request, key, how)
-        .send()
-        .map_err(|error| ServiceError::Unavailable(without_url(&error)))?;
+    let response = send(
+        &|| {
+            Ok(client()?
+                .post(url)
+                .header("content-type", "application/json")
+                .body(body.to_string()))
+        },
+        key,
+        how,
+    )?;
     let status = response.status().as_u16();
     if matches!(status, 401 | 403) {
         return Err(ServiceError::Refused);
@@ -166,4 +219,44 @@ fn without_url(error: &reqwest::Error) -> String {
     } else {
         "the connection failed".to_owned()
     }
+}
+
+/// `work` of every item, at most [`IN_FLIGHT`] at a time, the answers in `items`' order.
+pub fn each<T, R>(items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<R>
+where
+    T: Sync,
+    R: Send,
+{
+    let mut answers: Vec<Option<R>> = (0..items.len()).map(|_| None).collect();
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..IN_FLIGHT.min(items.len()))
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut mine = Vec::new();
+                    loop {
+                        let at = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(item) = items.get(at) else {
+                            break;
+                        };
+                        mine.push((at, work(item)));
+                    }
+                    mine
+                })
+            })
+            .collect();
+        for worker in workers {
+            match worker.join() {
+                Ok(mine) => {
+                    for (at, answer) in mine {
+                        if let Some(answer_at) = answers.get_mut(at) {
+                            *answer_at = Some(answer);
+                        }
+                    }
+                }
+                Err(panicked) => std::panic::resume_unwind(panicked),
+            }
+        }
+    });
+    answers.into_iter().flatten().collect()
 }

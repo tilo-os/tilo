@@ -70,13 +70,14 @@ fn get(server: &str, key: &str, path: &str) -> Result<Option<Value>, ServiceErro
     http::get_json(&format!("{server}/api/v1/{path}"), key, Key::Token)
 }
 
-/// Every entry of a paged list at `path` (which already has a query).
-fn listed(
+/// Every entry of a paged list at `path` (which already has a query), or `None` when the forge
+/// has no such endpoint (its first page is a 404).
+fn listed_optional(
     server: &str,
     key: &str,
     path: &str,
     cancel: Option<&AtomicBool>,
-) -> Result<Vec<Value>, ServiceError> {
+) -> Result<Option<Vec<Value>>, ServiceError> {
     let mut all: Vec<Value> = Vec::new();
     let mut seen = BTreeSet::new();
     for page in 1.. {
@@ -84,7 +85,8 @@ fn listed(
             return Err(ServiceError::Cancelled);
         }
         let Some(answer) = get(server, key, &format!("{path}&limit={PAGE}&page={page}"))? else {
-            return Ok(all);
+            // A missing first page: the forge does not offer this endpoint at all.
+            return Ok((page > 1).then_some(all));
         };
         let entries = answer.as_array().cloned().unwrap_or_default();
         let count = entries.len();
@@ -103,7 +105,17 @@ fn listed(
             break;
         }
     }
-    Ok(all)
+    Ok(Some(all))
+}
+
+/// Every entry of a paged list at `path`, none when the forge has no such endpoint.
+fn listed(
+    server: &str,
+    key: &str,
+    path: &str,
+    cancel: Option<&AtomicBool>,
+) -> Result<Vec<Value>, ServiceError> {
+    Ok(listed_optional(server, key, path, cancel)?.unwrap_or_default())
 }
 
 /// Who the token belongs to and what the address names, as the source's title.
@@ -211,6 +223,11 @@ pub struct Issues {
     pub gone: Vec<String>,
 }
 
+/// An issue's blocks and its dependencies, in that order.
+type Relations = (Vec<Value>, Vec<Value>);
+/// The blocks and dependencies of chosen issues, by repository and issue number.
+type Related = BTreeMap<(String, u64), Relations>;
+
 /// The reviewed, chosen issues as the forge holds them now.
 ///
 /// # Errors
@@ -221,6 +238,40 @@ pub fn issues(
     chosen: &BTreeSet<String>,
     cancel: &AtomicBool,
 ) -> Result<Issues, ServiceError> {
+    let (source, not_reviewed) = chosen_issues(scope, key, chosen, cancel)?;
+    // The page of every chosen issue, by its repository and number.
+    let pages: BTreeMap<(String, u64), String> = source
+        .iter()
+        .map(|(repository, issue)| {
+            (
+                (text(repository, "full_name").to_owned(), number(issue)),
+                text(issue, "html_url").to_owned(),
+            )
+        })
+        .collect();
+    let comments = comments_of(scope, key, &source, cancel)?;
+    let related = relations_of(scope, key, &source, cancel)?;
+    let issues = assembled(&source, &pages, &comments, &related, cancel)?;
+    let found: BTreeSet<&str> = issues.iter().map(|issue| issue.key.as_str()).collect();
+    let gone = chosen
+        .iter()
+        .filter(|key| !found.contains(key.as_str()))
+        .cloned()
+        .collect();
+    Ok(Issues {
+        issues,
+        not_reviewed,
+        gone,
+    })
+}
+
+/// The chosen issues, each with its repository, and how many reviewed ones were left out.
+fn chosen_issues(
+    scope: &Scope,
+    key: &str,
+    chosen: &BTreeSet<String>,
+    cancel: &AtomicBool,
+) -> Result<(Vec<(Value, Value)>, usize), ServiceError> {
     let mut source: Vec<(Value, Value)> = Vec::new();
     let mut not_reviewed = 0;
     for repository in repositories(scope, key)? {
@@ -235,43 +286,149 @@ pub fn issues(
             }
         }
     }
-    // The page of every chosen issue, by its repository and number.
-    let pages: BTreeMap<(String, u64), String> = source
+    Ok((source, not_reviewed))
+}
+
+/// Every chosen issue's comments, by repository and issue number: one paged listing per
+/// repository, keyed back to its issue, rather than a round trip per issue.
+fn comments_of(
+    scope: &Scope,
+    key: &str,
+    source: &[(Value, Value)],
+    cancel: &AtomicBool,
+) -> Result<BTreeMap<(String, u64), Vec<Value>>, ServiceError> {
+    let commented: Vec<String> = source
         .iter()
-        .map(|(repository, issue)| {
-            (
-                (text(repository, "full_name").to_owned(), number(issue)),
-                text(issue, "html_url").to_owned(),
-            )
+        .filter(|(_, issue)| issue.get("comments").and_then(Value::as_u64).unwrap_or(0) > 0)
+        .map(|(repository, _)| text(repository, "full_name").to_owned())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let listed = http::each(&commented, |name| {
+        listed_optional(
+            &scope.server,
+            key,
+            &format!("repos/{name}/issues/comments?"),
+            Some(cancel),
+        )
+    });
+    let mut comments: BTreeMap<(String, u64), Vec<Value>> = BTreeMap::new();
+    for (name, answer) in commented.iter().zip(listed) {
+        for comment in answer?.unwrap_or_default() {
+            let issue = text(&comment, "issue_url")
+                .rsplit_once('/')
+                .and_then(|(_, number)| number.parse::<u64>().ok());
+            if let Some(issue) = issue {
+                comments
+                    .entry((name.clone(), issue))
+                    .or_default()
+                    .push(comment);
+            }
+        }
+    }
+    Ok(comments)
+}
+
+/// Every chosen issue's blocks and dependencies, by repository and issue number, asked together.
+///
+/// Blocks and dependencies are a request per issue for each. Asking one issue of a repository
+/// says whether the forge keeps them at all (it answers 404 when they are turned off), and those
+/// answers are that issue's own, so nothing is asked twice.
+fn relations_of(
+    scope: &Scope,
+    key: &str,
+    source: &[(Value, Value)],
+    cancel: &AtomicBool,
+) -> Result<Related, ServiceError> {
+    let first: Vec<(&str, u64)> = source
+        .iter()
+        .map(|(repository, issue)| (text(repository, "full_name"), number(issue)))
+        .collect::<BTreeMap<_, _>>()
+        .into_iter()
+        .collect();
+    let asked = http::each(&first, |(name, issue)| {
+        let blocks = listed_optional(
+            &scope.server,
+            key,
+            &format!("repos/{name}/issues/{issue}/blocks?"),
+            Some(cancel),
+        )?;
+        let dependencies = listed_optional(
+            &scope.server,
+            key,
+            &format!("repos/{name}/issues/{issue}/dependencies?"),
+            Some(cancel),
+        )?;
+        Ok::<_, ServiceError>((blocks, dependencies))
+    });
+    let mut related: Related = BTreeMap::new();
+    let mut keeps_relations: BTreeSet<&str> = BTreeSet::new();
+    for ((name, issue), answer) in first.iter().zip(asked) {
+        let (blocks, dependencies) = answer?;
+        if blocks.is_some() || dependencies.is_some() {
+            keeps_relations.insert(name);
+            related.insert(
+                ((*name).to_owned(), *issue),
+                (blocks.unwrap_or_default(), dependencies.unwrap_or_default()),
+            );
+        }
+    }
+    let rest: Vec<(&str, u64, &str)> = source
+        .iter()
+        .filter(|(repository, issue)| {
+            let name = text(repository, "full_name");
+            keeps_relations.contains(name)
+                && !related.contains_key(&(name.to_owned(), number(issue)))
+        })
+        .flat_map(|(repository, issue)| {
+            [("blocks", "blocks"), ("dependencies", "blocked-by")]
+                .map(|(path, _)| (text(repository, "full_name"), number(issue), path))
         })
         .collect();
+    let listed = http::each(&rest, |(name, issue, path)| {
+        listed_optional(
+            &scope.server,
+            key,
+            &format!("repos/{name}/issues/{issue}/{path}?"),
+            Some(cancel),
+        )
+    });
+    for ((name, issue, path), answer) in rest.iter().zip(listed) {
+        let found = answer?.unwrap_or_default();
+        let (blocks, dependencies) = related.entry(((*name).to_owned(), *issue)).or_default();
+        if *path == "blocks" {
+            blocks.extend(found);
+        } else {
+            dependencies.extend(found);
+        }
+    }
+    Ok(related)
+}
+
+/// The chosen issues as items, their relations by page and their comments, in the order gathered.
+fn assembled(
+    source: &[(Value, Value)],
+    pages: &BTreeMap<(String, u64), String>,
+    comments: &BTreeMap<(String, u64), Vec<Value>>,
+    related: &Related,
+    cancel: &AtomicBool,
+) -> Result<Vec<IncomingIssue>, ServiceError> {
     let mut issues = Vec::with_capacity(source.len());
-    for (repository, issue) in &source {
+    for (repository, issue) in source {
         if cancel.load(Ordering::Relaxed) {
             return Err(ServiceError::Cancelled);
         }
         let name = text(repository, "full_name");
-        let comments = if issue.get("comments").and_then(Value::as_u64).unwrap_or(0) > 0 {
-            listed(
-                &scope.server,
-                key,
-                &format!("repos/{name}/issues/{}/comments?", number(issue)),
-                Some(cancel),
-            )?
-        } else {
-            Vec::new()
-        };
-        let mut relations = Vec::new();
-        for (path, kind) in [("blocks", "blocks"), ("dependencies", "blocked-by")] {
-            // A forge with dependencies turned off answers 404: the issue has none.
-            let related = listed(
-                &scope.server,
-                key,
-                &format!("repos/{name}/issues/{}/{path}?", number(issue)),
-                Some(cancel),
-            )
+        let comments = comments
+            .get(&(name.to_owned(), number(issue)))
+            .map_or(&[][..], Vec::as_slice);
+        let (blocks, dependencies) = related
+            .get(&(name.to_owned(), number(issue)))
+            .cloned()
             .unwrap_or_default();
-            for other in related {
+        let mut relations = Vec::new();
+        for (kind, found) in [("blocks", blocks), ("blocked-by", dependencies)] {
+            for other in found {
                 let repo = other
                     .pointer("/repository/full_name")
                     .and_then(Value::as_str)
@@ -297,19 +454,9 @@ pub fn issues(
                 });
             }
         }
-        issues.push(incoming(repository, issue, &comments, relations));
+        issues.push(incoming(repository, issue, comments, relations));
     }
-    let found: BTreeSet<&str> = issues.iter().map(|issue| issue.key.as_str()).collect();
-    let gone = chosen
-        .iter()
-        .filter(|key| !found.contains(key.as_str()))
-        .cloned()
-        .collect();
-    Ok(Issues {
-        issues,
-        not_reviewed,
-        gone,
-    })
+    Ok(issues)
 }
 
 /// The issue numbers `body` names as `#12`.

@@ -1100,7 +1100,24 @@ impl StatePeer {
 
     /// Whether `envelope` names governance heads this peer does not hold yet.
     fn lacks_governance_of(&self, envelope: &SignedOp) -> bool {
-        !self.governance().held_heads().holds_named(&envelope.governance)
+        !self
+            .governance()
+            .held_heads()
+            .holds_named(&envelope.governance)
+    }
+
+    /// Whether this copy refused a base of its governor that is newer than
+    /// the workspace document it holds: its governor then governs by roles
+    /// and grants the copy does not hold, and what the copy holds says of no
+    /// write that it is its author's to make.
+    pub(super) fn behind_its_governor(&self) -> bool {
+        self.refused_base.is_some_and(|refused| {
+            self.core
+                .workspace_doc
+                .as_deref()
+                .map_or(0, workspace::base::generation)
+                < refused
+        })
     }
 
     /// The authority of `source` for the change `envelope` makes on `record`
@@ -1210,6 +1227,12 @@ impl StatePeer {
             &allows,
         );
         match decided {
+            // A copy behind its governor's base takes nothing in on the
+            // roles and grants it holds: the write waits, and the base the
+            // copy takes decides it. What those roles refuse stays refused.
+            Ok(collab_types::Receipt::Admit) if self.behind_its_governor() => {
+                Ok(Authorized::Hold(crate::MissingPrerequisite::Governance))
+            }
             Ok(collab_types::Receipt::Admit) => Ok(Authorized::Admit { member, history }),
             Ok(collab_types::Receipt::Hold) => {
                 Ok(Authorized::Hold(crate::MissingPrerequisite::AppSurface))

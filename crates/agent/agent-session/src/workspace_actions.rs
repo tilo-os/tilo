@@ -120,7 +120,8 @@ use jobs::Jobs;
 use keys::{Keys, catalogue_keys};
 use naming::{is_part, named, named_document};
 use outcome::{
-    confirms, exact_view_query, log_outcome, opens_as_its_own, rejected, speaks_for_a_member,
+    commit_failed, confirms, exact_view_query, log_outcome, opens_as_its_own, rejected, settles,
+    speaks_for_a_member,
 };
 use part_wait::Invoked;
 use publish::Unsaved;
@@ -1285,24 +1286,6 @@ fn live_actions(app: &ConfinedReplica) -> Vec<tilo_actions::ActionDescriptor> {
     app.survey()
 }
 
-/// Whether a failure is this invocation's answer. One the caller may ask
-/// again is not: the same request under the same id runs it again rather
-/// than being handed the failure it already has, which is what a change the
-/// workspace took none of because the session it rode was replaced needs.
-fn settles(error: &ActionFailure) -> bool {
-    !error.retryable
-}
-
-/// The outcome of an action whose change could not be committed.
-pub(super) fn commit_failed(message: String, retryable: bool) -> Outcome {
-    Outcome::Failed(ActionFailure {
-        code: "commit_failed".into(),
-        message,
-        details: None,
-        retryable,
-    })
-}
-
 /// Everything `app` changed since the last take, each with the route it
 /// belongs to: the held record's own is `holder`'s, then each record held
 /// beside it on the route of the same app and workspace its id names. All
@@ -1670,6 +1653,7 @@ impl Worker {
     fn timed(&mut self, queued: Instant, job: Job) {
         let started = Instant::now();
         let kind = job.kind();
+        let workspace = job.workspace().map(|id| id.to_string()).unwrap_or_default();
         let (parent, named) = match &job {
             Job::Catalogue { query, .. } => (
                 query.parent_resource.clone().unwrap_or_default(),
@@ -1684,6 +1668,7 @@ impl Worker {
         let (waited, ran) = (started.duration_since(queued), started.elapsed());
         tracing::debug!(
             kind,
+            workspace,
             parent,
             named,
             waited_ms = waited.as_millis(),
@@ -1693,6 +1678,7 @@ impl Worker {
         if waited.max(ran) >= SLOW_JOB {
             tracing::warn!(
                 kind,
+                workspace,
                 parent,
                 named,
                 step = step.unwrap_or("-"),
@@ -2533,10 +2519,23 @@ impl Worker {
         // that source, which reads the record and opens a worker for it: an
         // action the record publishes never pays for that.
         let holder = self.holder_of(&route);
-        // What the record publishes now, with what was written since it was
-        // last used taken up: an item made since is one of its resources.
-        self.brought_up_to_date(&holder, &state);
-        let published_here = self.publishes(&holder, &target.address);
+        // A caller served within bounds acts through a replica of their own:
+        // what the document publishes is asked of it, and this device's own
+        // mount is neither brought up to date nor opened for them. Catching that up
+        // on every write since it was last used cost a member's first call
+        // after another app's writes most of a second.
+        let bounded_caller = (!owner).then(|| self.bounded(caller)).flatten();
+        let published_here = if let Some(who) = &bounded_caller {
+            self.bounded_descriptor(workspace_id, who, (&route, &state), &target.address)
+                .map_err(Outcome::Rejected)?
+                .is_some()
+        } else {
+            // What the document publishes now, with what was written since it
+            // was last used taken up: an item made since is one of its
+            // resources.
+            self.brought_up_to_date(&holder, &state);
+            self.publishes(&holder, &target.address)
+        };
         if let Some(output) = self.source_read(workspace_id, caller, request, published_here)? {
             self.note_reads(request);
             return Ok((withheld.shown(output), None));
@@ -2544,11 +2543,27 @@ impl Worker {
         if stale_revision(request.revision.as_deref(), &state.revision.to_string()) {
             return Err(Outcome::Rejected(ActionCallError::StaleRevision));
         }
+        withheld.refuses(&target.address.resource)?;
+        let share_link = target.address.action == ui::tilo_resource::share::SHARE_LINK;
+        if !owner && !share_link {
+            let who = bounded_caller.ok_or_else(unknown_action)?;
+            if appearance.is_some() {
+                return Err(unknown_action());
+            }
+            return self
+                .perform_bounded(
+                    workspace_id,
+                    caller,
+                    &who,
+                    (request, &route, &state),
+                    (target, arguments, &withheld),
+                )
+                .map(|(output, left_at)| (withheld.shown(output), left_at));
+        }
         let mounting = timing_start();
         let mounted = self.mount(&route, &state).map_err(|_| unknown_action())?;
-        withheld.refuses(&target.address.resource)?;
         timing_done("action.mount", mounting);
-        if target.address.action == ui::tilo_resource::share::SHARE_LINK {
+        if share_link {
             // Sharing asks the record for everything it lists, which is what
             // the link is chosen from.
             // The kind of the resource the link names, from the action
@@ -2564,21 +2579,6 @@ impl Worker {
             return self
                 .share_link(workspace_id, caller, at, target, arguments)
                 .map(|output| (output, None));
-        }
-        if !owner {
-            let who = self.bounded(caller).ok_or_else(unknown_action)?;
-            if appearance.is_some() {
-                return Err(unknown_action());
-            }
-            return self
-                .perform_bounded(
-                    workspace_id,
-                    caller,
-                    &who,
-                    (request, &route, &state),
-                    (target, arguments, &withheld),
-                )
-                .map(|(output, left_at)| (withheld.shown(output), left_at));
         }
         // The one action asked for, not the whole listing: a record of ten
         // thousand items costs this what a record of ten does.

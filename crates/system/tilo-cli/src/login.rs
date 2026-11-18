@@ -448,7 +448,7 @@ fn signed_over_iroh(device: &Device, address: &ServerAddress) -> Result<SignIn> 
         label: device.label.clone(),
         server: tilo_server_client::ServerAddress::published(address),
         cert,
-        server_cert: server_cert,
+        server_cert,
     })
 }
 

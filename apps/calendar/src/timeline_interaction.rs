@@ -9,6 +9,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::dnd::DRAG_START_THRESHOLD_PX;
 use ui::paint::PaintCtx;
 
+use crate::colours::Themed;
 use crate::date;
 use crate::draw_util::{
     disc, hairline, line_height, stroke_line, text_centered, text_in_band, wrap_lines,

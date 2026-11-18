@@ -18,8 +18,8 @@
 //! account is a copy of what the server holds, entry by entry as the server
 //! wrote it, with where each calendar's last pull ended. So the holder knows
 //! every entry's time with every device off, and an entry is read, expanded
-//! and filed by the Calendar app's own code ([`calendar::ics`],
-//! [`calendar::spans`]): a device and its holder agree about time zones,
+//! and filed by the Calendar app's own code ([`calendar_model::ics`],
+//! [`calendar_model::spans`]): a device and its holder agree about time zones,
 //! repeats and all-day entries because they are the same reader.
 //!
 //! Nothing here sends anything to anybody, and nothing here starts a
@@ -30,7 +30,7 @@
 //! nothing. What a server already does is not undone either: a line it
 //! writes for, in an entry another client stored, goes up as the server
 //! holds it, because marking it then would have the server tell that person
-//! the event is off (RFC 6638, 3.2.1.2; [`calendar::ics::kept_beside`]).
+//! the event is off (RFC 6638, 3.2.1.2; [`calendar_model::ics::kept_beside`]).
 //!
 //! The person changes their calendar by asking. An agent they named for the
 //! account hands over text of its own writing, so what it may do with it is
@@ -52,9 +52,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use calendar::account::{CalDavConfig, CalendarAccount, RemoteCalendar, TYPE_ID};
-use calendar::model::Event;
-use calendar::spans::{FreeAsked, SpanAsked};
+use calendar_model::account::{CalDavConfig, CalendarAccount, RemoteCalendar, TYPE_ID};
+use calendar_model::model::Event;
+use calendar_model::spans::{FreeAsked, SpanAsked};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tilo_account_probe::{AccountTester as _, LiveAccountTester, local_http_allowed};
@@ -575,7 +575,7 @@ fn held(root: &Path, accounts: &[Account]) -> Vec<Held> {
     for account in accounts {
         for (calendar, state) in read_kept(root, &account.id).calendars {
             for (url, entry) in state.entries {
-                for mut event in calendar::ics::parse(&entry.ics).0 {
+                for mut event in calendar_model::ics::parse(&entry.ics).0 {
                     event.calendar_id = Some(calendar.clone());
                     all.push(Held {
                         account: account.id.clone(),
@@ -634,7 +634,7 @@ fn add(root: &Path, adding: Add) -> Result<AccountView, String> {
             read_only: calendar.read_only || read_only,
         })
         .collect();
-    let mut store = calendar::AccountStore::new();
+    let mut store = calendar_model::AccountStore::new();
     store.upsert(CalendarAccount {
         id: id.clone(),
         config: CalDavConfig {
@@ -752,7 +752,7 @@ fn entries(
             .iter()
             .find(|held| held.event.id.to_string() == occurrence.entry)
         {
-            occurrence.notes = bounded_notes(&calendar::ics::notes(&of.ics));
+            occurrence.notes = bounded_notes(&calendar_model::ics::notes(&of.ics));
         }
     }
     let mut value = serde_json::to_value(&answered).map_err(|error| error.to_string())?;
@@ -861,7 +861,7 @@ struct Found {
     url: String,
     etag: Option<String>,
     /// Whom it names, as its server holds it.
-    named: calendar::ics::Named,
+    named: calendar_model::ics::Named,
     /// The agent that put it in, where one did.
     put_in: Option<PutIn>,
 }
@@ -871,7 +871,7 @@ impl Found {
         Self {
             url: held.url.clone(),
             etag: held.etag.clone(),
-            named: calendar::ics::named(&held.ics),
+            named: calendar_model::ics::named(&held.ics),
             put_in: held.put_in.clone(),
         }
     }
@@ -904,7 +904,7 @@ struct Planned {
     /// The text as the calendar would keep it.
     text: String,
     /// Whom that text names.
-    named: calendar::ics::Named,
+    named: calendar_model::ics::Named,
     change: Change,
 }
 
@@ -912,7 +912,8 @@ struct Planned {
 /// created under the invitation's own identity, so the same invitation
 /// again finds it. Nothing is written yet.
 fn planned(root: &Path, accounts: &[Account], invitation: &Invitation) -> Result<Planned, String> {
-    let calendar::ics::Invitation { event, cancels } = calendar::ics::invitation(&invitation.ics)?;
+    let calendar_model::ics::Invitation { event, cancels } =
+        calendar_model::ics::invitation(&invitation.ics)?;
     let (account, calendar) = writable(accounts, invitation.calendar.as_deref())?;
     let _ = sync(root, account);
     let existing = held(root, std::slice::from_ref(account))
@@ -921,7 +922,7 @@ fn planned(root: &Path, accounts: &[Account], invitation: &Invitation) -> Result
     // What a line says of who writes to the person it names is settled
     // against what the server holds of them (RFC 6638, 3.2.1.2), as just
     // read, and is written over that version only ([`carry_out`]).
-    let text = calendar::ics::kept_beside(
+    let text = calendar_model::ics::kept_beside(
         &invitation.ics,
         existing.as_ref().map(|held| held.ics.as_str()),
     );
@@ -929,7 +930,7 @@ fn planned(root: &Path, accounts: &[Account], invitation: &Invitation) -> Result
         (None, true) => (Change::Nothing, text),
         (Some(held), true) => (Change::Remove(Found::of(&held)), text),
         (Some(held), false) => {
-            let same = calendar::ics::parse(&text)
+            let same = calendar_model::ics::parse(&text)
                 .0
                 .into_iter()
                 .next()
@@ -943,7 +944,7 @@ fn planned(root: &Path, accounts: &[Account], invitation: &Invitation) -> Result
                 // What its person filed it under on the server stays.
                 let kept: Vec<String> = held.event.categories.iter().cloned().collect();
                 let text = if event.categories.is_empty() && !kept.is_empty() {
-                    calendar::ics::with_categories(&text, &kept).unwrap_or(text)
+                    calendar_model::ics::with_categories(&text, &kept).unwrap_or(text)
                 } else {
                     text
                 };
@@ -965,7 +966,7 @@ fn planned(root: &Path, accounts: &[Account], invitation: &Invitation) -> Result
             event.timezone
         ),
         title: event.title,
-        named: calendar::ics::named(&text),
+        named: calendar_model::ics::named(&text),
         text,
         change,
     })
@@ -1106,7 +1107,7 @@ fn own_addresses(root: &Path, account: &Account) -> BTreeSet<String> {
 /// written to at `own`: one organiser, who is somebody else, and an address
 /// of the person's among those it invites. Where this holder knows no
 /// address of the person's, nothing is.
-fn invites(named: &calendar::ics::Named, own: &BTreeSet<String>) -> bool {
+fn invites(named: &calendar_model::ics::Named, own: &BTreeSet<String>) -> bool {
     match named.organizers.as_slice() {
         [organizer] => {
             !own.contains(organizer) && named.attendees.iter().any(|invited| own.contains(invited))
@@ -1292,13 +1293,13 @@ struct Filing {
 /// the text its server holds: every other line of the entry stays as the
 /// server has it. Nothing is written yet.
 fn filing(root: &Path, accounts: &[Account], asked: &Categories) -> Result<Filing, String> {
-    if asked.categories.len() > calendar::model::MAX_CATEGORIES {
+    if asked.categories.len() > calendar_model::model::MAX_CATEGORIES {
         return Err("an entry has at most 32 categories".into());
     }
     let categories = asked
         .categories
         .iter()
-        .map(|named| calendar::model::category(named))
+        .map(|named| calendar_model::model::category(named))
         .collect::<Option<Vec<String>>>()
         .ok_or("a category is a few words of at most 64 characters")?;
     freshen(root, accounts, FRESH_MS);
@@ -1315,7 +1316,7 @@ fn filing(root: &Path, accounts: &[Account], asked: &Categories) -> Result<Filin
     if account.read_only {
         return Err(READ_ONLY.into());
     }
-    let text = calendar::ics::with_categories(&held.ics, &categories)
+    let text = calendar_model::ics::with_categories(&held.ics, &categories)
         .ok_or("the entry as its server holds it does not read")?;
     let calendar = account
         .calendars
@@ -1332,7 +1333,7 @@ fn filing(root: &Path, accounts: &[Account], asked: &Categories) -> Result<Filin
             held.event.timezone
         ),
         filed: held.event.categories.iter().cloned().collect(),
-        leaves_writing: calendar::ics::leaves_writing_to_its_server(&held.ics),
+        leaves_writing: calendar_model::ics::leaves_writing_to_its_server(&held.ics),
         title: held.event.title,
         categories,
         url: held.url,
@@ -1815,7 +1816,7 @@ impl Workspaces {
         const CALENDAR: &str = "https://calendar.example.test/dav/calendars/ada/work/";
         let root = self.person_settings_root(person);
         let id = account_id("ada", &server_of(SERVER)?);
-        let mut store = calendar::AccountStore::new();
+        let mut store = calendar_model::AccountStore::new();
         store.upsert(CalendarAccount {
             id: id.clone(),
             config: CalDavConfig {

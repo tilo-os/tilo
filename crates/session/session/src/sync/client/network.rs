@@ -14,14 +14,15 @@ use tilo_session_client::network::Event;
 
 use super::adopt::{Carrier, enter, redeem};
 use super::{
-    DeviceActions, Engine, Enrolled, HostCmd, HostEvent, KeyLink, PeerDocuments, endpoint_for,
+    DesktopEvent, DeviceActions, Engine, Enrolled, HostCmd, KeyLink, PeerDocuments, endpoint_for,
 };
 use tilo_network_actor::WorkspaceId;
 
 /// What the peer actor heard, as the client's own vocabulary says it: the transport keeps the
 /// differences an endpoint's, and the client hears one kind of word from every host. What only this
-/// desktop keeps — the person's fabric, how far a transfer got — is the host's own beside it.
-pub(super) fn event_of(event: NetEvent) -> Option<Result<Event, HostEvent>> {
+/// desktop keeps — which of the person's devices proved itself and what it sends, how far a transfer
+/// got — is this desktop's own beside it, on the one path and in the order the actor said them.
+pub(super) fn event_of(event: NetEvent) -> Option<Result<Event, DesktopEvent>> {
     Some(Ok(match event {
         NetEvent::Msg { ws, peer, msg, .. } => Event::Msg {
             ws,
@@ -59,20 +60,27 @@ pub(super) fn event_of(event: NetEvent) -> Option<Result<Event, HostEvent>> {
             device,
             active,
         },
+        // A device that proved itself and what it sends travel the one queue, so the session hears
+        // of the device before anything it said: a frame is bound to the certificate it proved
+        // there, never to what the frame claims.
         NetEvent::Sibling {
             peer,
             certs,
             revocations,
             ..
-        } => Event::Sibling {
-            peer,
-            certs,
-            revocations,
-        },
-        NetEvent::WorkspaceDeleted { ws } => {
-            return Some(Err(HostEvent::WorkspaceDeleted { ws }));
+        } => {
+            return Some(Err(DesktopEvent::Sibling {
+                peer,
+                certs,
+                revocations,
+            }));
         }
-        NetEvent::SiblingLeft { peer, .. } => Event::SiblingLeft { peer },
+        NetEvent::WorkspaceDeleted { ws } => {
+            return Some(Err(DesktopEvent::WorkspaceDeleted { ws }));
+        }
+        NetEvent::SiblingLeft { peer, .. } => {
+            return Some(Err(DesktopEvent::SiblingLeft { peer }));
+        }
         NetEvent::SiblingMsg { peer, msg, .. } => Event::SiblingMsg {
             peer,
             msg: Box::new(msg),
@@ -83,7 +91,7 @@ pub(super) fn event_of(event: NetEvent) -> Option<Result<Event, HostEvent>> {
             received,
             ..
         } => {
-            return Some(Err(HostEvent::PersonalFabric {
+            return Some(Err(DesktopEvent::PersonalFabric {
                 peer,
                 payload,
                 received,
@@ -96,7 +104,7 @@ pub(super) fn event_of(event: NetEvent) -> Option<Result<Event, HostEvent>> {
             status,
             ..
         } => {
-            return Some(Err(HostEvent::NearbyTransferProgress {
+            return Some(Err(DesktopEvent::NearbyTransferProgress {
                 transfer_id,
                 sent_bytes,
                 total_bytes,
@@ -265,7 +273,7 @@ struct Listening {
 /// what became of an enrollment, and where the bound endpoint is said.
 pub(super) struct Wire {
     pub(super) arrivals: std::sync::mpsc::Sender<Event>,
-    pub(super) host_events: std::sync::mpsc::Sender<HostEvent>,
+    pub(super) desktop_events: std::sync::mpsc::Sender<DesktopEvent>,
     pub(super) enrollments: std::sync::mpsc::Sender<Enrolled>,
     pub(super) ready:
         std::sync::mpsc::Sender<Result<(EndpointId, EndpointAddr, Reachability), String>>,
@@ -283,7 +291,7 @@ pub(super) fn run(
 ) {
     let Wire {
         arrivals,
-        host_events,
+        desktop_events,
         enrollments,
         ready,
     } = wire;
@@ -305,7 +313,7 @@ pub(super) fn run(
             identity.as_ref(),
             engine.as_ref(),
             arrivals,
-            host_events,
+            desktop_events,
             wake,
             &ready,
             beside,
@@ -543,7 +551,7 @@ async fn listening(
     identity: Option<&DeviceIdentity>,
     engine: Option<&Arc<Engine>>,
     arrivals: std::sync::mpsc::Sender<Event>,
-    host_events: std::sync::mpsc::Sender<HostEvent>,
+    desktop_events: std::sync::mpsc::Sender<DesktopEvent>,
     wake: Arc<dyn Fn() + Send + Sync>,
     ready: &std::sync::mpsc::Sender<Result<(EndpointId, EndpointAddr, Reachability), String>>,
     Beside {
@@ -635,7 +643,7 @@ async fn listening(
     let (events, carrying, attending) = heard(
         identity.is_some(),
         arrivals,
-        host_events,
+        desktop_events,
         wake,
         link,
         documents,
@@ -675,7 +683,7 @@ async fn listening(
 fn heard(
     holds_ownership: bool,
     arrivals: std::sync::mpsc::Sender<Event>,
-    host_events: std::sync::mpsc::Sender<HostEvent>,
+    desktop_events: std::sync::mpsc::Sender<DesktopEvent>,
     wake: Arc<dyn Fn() + Send + Sync>,
     link: Option<Arc<KeyLink>>,
     documents: Option<PeerDocuments>,
@@ -731,7 +739,7 @@ fn heard(
                     }
                 }
                 Some(Err(event)) => {
-                    if host_events.send(event).is_err() {
+                    if desktop_events.send(event).is_err() {
                         break;
                     }
                 }

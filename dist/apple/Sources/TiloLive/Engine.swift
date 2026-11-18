@@ -163,6 +163,22 @@ public final class TiloEngine: NSObject {
     /// page that never said where it stands.
     private var stoppedOnItsPage = false
     private var endListeners: [UUID: AsyncStream<Void>.Continuation] = [:]
+    /// Which look a page draws in: the theme its person has in Tilo is a light one or a dark one.
+    public enum Look: Equatable, Sendable {
+        case light
+        case dark
+    }
+
+    /// The look the page said last that it draws in (`data-look` on its root element): the
+    /// theme its person has in Tilo, which a frame around the page follows. Nil until a page
+    /// has said one, and again once the page is left.
+    public private(set) var look: Look? {
+        didSet {
+            guard look != oldValue else { return }
+            for listener in lookListeners.values { listener.yield(look) }
+        }
+    }
+    private var lookListeners: [UUID: AsyncStream<Look?>.Continuation] = [:]
     /// The address asked for last, which a retry loads again.
     private var wanted: URL?
     /// The workspace asked for last. A page that got in elsewhere is opened there.
@@ -268,6 +284,8 @@ public final class TiloEngine: NSObject {
         var isIn = false
         if case .open = state { isIn = true }
         state = .away
+        // Whoever comes to this device next has a look of their own.
+        look = nil
         guard let last, isIn else {
             view.loadHTMLString("", baseURL: nil)
             return
@@ -303,6 +321,16 @@ public final class TiloEngine: NSObject {
         stateListeners[id] = continuation
         continuation.yield(state)
         continuation.onTermination = { [weak self] _ in Task { @MainActor in self?.stateListeners[id] = nil } }
+        return stream
+    }
+
+    /// The look the page draws in, from now on. The first value is what is known now.
+    public func looks() -> AsyncStream<Look?> {
+        let (stream, continuation) = AsyncStream.makeStream(of: Look?.self, bufferingPolicy: .bufferingNewest(32))
+        let id = UUID()
+        lookListeners[id] = continuation
+        continuation.yield(look)
+        continuation.onTermination = { [weak self] _ in Task { @MainActor in self?.lookListeners[id] = nil } }
         return stream
     }
 
@@ -629,6 +657,10 @@ public final class TiloEngine: NSObject {
             // A page may say its sentence first and show the details under it a moment later:
             // whoever was told how the try ended hears that there is more to it.
             if came { for listener in endListeners.values { listener.yield() } }
+        case "look":
+            // Light or dark, as the page says it of itself: one of two cases, and nothing else is taken.
+            guard let dark = said["dark"] as? Bool else { return }
+            look = dark ? .dark : .light
         default:
             break
         }

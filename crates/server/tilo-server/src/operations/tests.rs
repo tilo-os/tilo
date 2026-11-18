@@ -208,6 +208,27 @@ fn journal_lines_are_capped() {
 }
 
 #[test]
+fn the_status_names_a_sibling_unlock_that_is_still_pending() {
+    let temp = tempfile::tempdir().unwrap();
+    let state_root = temp.path();
+    assert_eq!(
+        super::unlock_with_pending("owner-device".into(), state_root),
+        "owner-device",
+        "without the installer's marker there is nothing pending"
+    );
+    std::fs::write(state_root.join("sibling-unlock-pending"), "").unwrap();
+    assert_eq!(
+        super::unlock_with_pending("owner-device".into(), state_root),
+        "owner-device (sibling unlock pending)"
+    );
+    assert_eq!(
+        super::unlock_with_pending(String::new(), state_root),
+        "owner-device (sibling unlock pending)",
+        "an image-default plan still names what the pending unlock will be"
+    );
+}
+
+#[test]
 fn the_status_says_which_way_this_boots_volume_opened() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("tilo-unlock.json");

@@ -38,6 +38,8 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         public var sinceLeft: SinceLeft?
         /// Whether the person's Tilo answers and does not let this device in.
         public var joinStops = false
+        /// Which look the person's Tilo draws in, where it has said one.
+        public var look: Look?
 
         public init() {}
     }
@@ -61,6 +63,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
     private let setupNow: Broadcast<Setup>
     private let sinceNow: Broadcast<SinceLeft?>
     private let joinStopsNow: Broadcast<Bool>
+    private let lookNow: Broadcast<Look?>
     private var presses: [Press] = []
     private let offered: [ModelChoice]
     private let providerChoices: [ProviderChoice]
@@ -89,6 +92,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         setupNow = Broadcast(content.setup)
         sinceNow = Broadcast(content.sinceLeft)
         joinStopsNow = Broadcast(content.joinStops)
+        lookNow = Broadcast(content.look)
         offered = content.offered
         providerChoices = content.providers
         var feeds: [Chat: Feed] = [.main: Feed(content.main)]
@@ -162,6 +166,11 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         joinStopsNow.set(joinStops)
     }
 
+    /// As if the person's Tilo said that it draws in this look now, or said none any more.
+    public func set(look: Look?) {
+        lookNow.set(look)
+    }
+
     /// Everything a conversation holds now.
     public func items(in chat: Chat = .main) -> [Item] {
         feed(chat)?.all ?? []
@@ -215,6 +224,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
 
     public func setup() -> AsyncStream<Setup> { setupNow.stream() }
     public func joinStops() -> AsyncStream<Bool> { joinStopsNow.stream() }
+    public func pageLook() -> AsyncStream<Look?> { lookNow.stream() }
 
     // MARK: Being told
 

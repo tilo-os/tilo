@@ -112,6 +112,8 @@ public final class TiloSource: AssistantSource {
     /// The join that was approved and has not made this device its person's yet.
     private var approved: (route: String, at: Date)?
     private let approvals = Told<Date?>(nil)
+    /// Which look the page draws in, as the page itself says it (`pageLook()`).
+    private let pageLooks = Told<Look?>(nil)
     /// Whether the person's Tilo answers and does not let this device in (`joinStops()`).
     private let joins = Told<Bool>(false)
 
@@ -254,6 +256,14 @@ public final class TiloSource: AssistantSource {
                 for await state in engine.states() { await self?.stood(state) }
             },
             Task { [weak self] in
+                // Light or dark as the page draws: the frame around it draws in the same.
+                for await look in engine.looks() {
+                    var said: Look?
+                    if let look { said = look == .dark ? .dark : .light }
+                    self?.pageLooks.set(said)
+                }
+            },
+            Task { [weak self] in
                 // A try that ends in the sentence of the one before changes no state.
                 for await _ in engine.triesEnded() { self?.sayReach(); self?.sayEndingDetails() }
             },
@@ -290,6 +300,7 @@ public final class TiloSource: AssistantSource {
     public nonisolated func pairingEnded() -> AsyncStream<String?> { endings.stream() }
     public nonisolated func pairingEndedDetails() -> AsyncStream<String?> { endingDetails.stream() }
     public nonisolated func joinApproved() -> AsyncStream<Date?> { approvals.stream() }
+    public nonisolated func pageLook() -> AsyncStream<Look?> { pageLooks.stream() }
 
     /// Go on as the device that was approved: its workspace's page is asked for again, as the
     /// device the store holds. Nothing is paired a second time, and what the try before ended
@@ -648,22 +659,28 @@ public final class TiloSource: AssistantSource {
     /// asked, and a busy server takes minutes over it. The page has said whose device this is,
     /// so she is signed in from here on. The window goes on saying that it waits for Tilo, and
     /// once the ask has been out for `makingAfter` the main chat says that her server is making
-    /// her workspace. Her name and the rest come as the way in goes on.
+    /// her workspace: the first time only, at the start of a device that keeps no person yet.
+    /// At a later start nothing is made, however long her server takes over its answer, and
+    /// nothing is said of a making. Her name and the rest come as the way in goes on.
     private func ownAsked(of root: String) async -> String? {
+        let first = person == nil
         if person == nil {
             person = Person(id: .init(root), name: "", workspace: "")
             tell()
         }
         guard mainChat == .assistant, assistant == nil else { return (try? await engine.ownWorkspace())?.route }
         setups.set(.findingAssistant)
-        let patience = makingAfter
-        let slow = Task { [weak self] in
-            try? await Task.sleep(for: patience)
-            guard !Task.isCancelled, let self, self.setups.now == .findingAssistant else { return }
-            self.setups.set(.makingWorkspace)
+        var slow: Task<Void, Never>?
+        if first {
+            let patience = makingAfter
+            slow = Task { [weak self] in
+                try? await Task.sleep(for: patience)
+                guard !Task.isCancelled, let self, self.setups.now == .findingAssistant else { return }
+                self.setups.set(.makingWorkspace)
+            }
         }
         let own = (try? await engine.ownWorkspace())?.route
-        slow.cancel()
+        slow?.cancel()
         if setups.now == .makingWorkspace { setups.set(.findingAssistant) }
         return own
     }

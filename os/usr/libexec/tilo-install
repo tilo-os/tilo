@@ -38,6 +38,15 @@
 #                                     boot TPM2 policy. An explicit unattended
 #                                     choice must not silently become a TPM
 #                                     keyslot instead.
+#     --unlock <choice>               how the machine is planned to unlock after
+#                                     a boot: owner-device, tpm or passphrase
+#                                     (empty = the image's own default). A
+#                                     server planned for owner-device, or for
+#                                     tpm on a machine with no usable TPM,
+#                                     keeps its install key inside the
+#                                     encrypted root so its first boot can
+#                                     enrol the sibling unlock. See
+#                                     tilo-disk-encrypt finish.
 #     --fido2                         also enrol a FIDO2 token (requires --encrypt)
 #     --extension ID                  the owner turned on the Tilo extension ID
 #                                     (e.g. media-codecs; repeatable): record it
@@ -369,6 +378,7 @@ ENCRYPT=1            # Native Tilo is always installed into a LUKS2 root.
 WANT_PIN=0           # --pin is mandatory; secret arrives on stdin line 2.
 PASSWORD_IS_HASH=0   # --password-hash: stdin line 1 is already a SHA-512 crypt hash.
 FORCE_PASSPHRASE=0   # --startup-passphrase-only: never enrol the TPM2 PIN policy.
+UNLOCK_MODE=""       # --unlock: the plan's owner-device | tpm | passphrase, empty for the image's default.
 WANT_FIDO2=0         # --fido2 → also enroll a FIDO2 security key if present
 EXTENSIONS=""        # --extension ID → seed that extension's opt-in for first boot
 ALONGSIDE=0
@@ -429,6 +439,7 @@ while [ $# -gt 0 ]; do
     --pin) WANT_PIN=1; shift ;;
     --password-hash) PASSWORD_IS_HASH=1; shift ;;
     --startup-passphrase-only) FORCE_PASSPHRASE=1; shift ;;
+    --unlock) UNLOCK_MODE="${2:-}"; shift 2 ;;
     --fido2) WANT_FIDO2=1; shift ;;
     --extension)
       case "${2:-}" in
@@ -479,7 +490,7 @@ while [ $# -gt 0 ]; do
     --prepared-setup-receipt) PREPARED_SETUP_RECEIPT="${2:-}"; shift 2 ;;
     --prepared-tpm-handoff) PREPARED_TPM_HANDOFF="${2:-}"; shift 2 ;;
     --account-operation) ACCOUNT_OPERATION="${2:-}"; shift 2 ;;
-    -h|--help) sed -n '2,73p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,117p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -494,6 +505,11 @@ fi
 # must create that ext4 partition before promotion; reject any future caller
 # that tries to revive a direct, unencrypted bootc path without its mount.
 [ "$ENCRYPT" -eq 1 ] || die "the signed target UKI requires encrypted TILO_BOOT layout"
+
+case "$UNLOCK_MODE" in
+  ''|owner-device|tpm|passphrase) ;;
+  *) die "--unlock must be owner-device, tpm or passphrase, not '$UNLOCK_MODE'" ;;
+esac
 
 [ -n "$DISK" ] || die "missing --disk <device>"
 case "$EXPECT_DISK_SIZE_BYTES" in
@@ -2315,9 +2331,20 @@ fi
 sync
 if [ "$ENCRYPT" -eq 1 ]; then
   # Drops the throwaway install key slot (only once another factor exists),
-  # unmounts the tree and closes the mapping.
+  # unmounts the tree and closes the mapping. A server planned for
+  # owner-device unlock, or for tpm on a machine without one, hands its
+  # installed /var so the helper can keep the key there for the sibling
+  # enrolment at first boot; a desktop install has no first boot to spend it.
+  FINISH_ARGS=(--key-file "$ENC_KEYFILE" --mnt "$ENC_MNT")
+  if [ "$SERVER_DESTINATION" -eq 1 ]; then
+    mapfile -t SIBLING_VARS < <(find "$ENC_MNT/state/os" "$ENC_MNT/ostree/deploy" \
+      -mindepth 2 -maxdepth 2 -type d -name var 2>/dev/null)
+    [ "${#SIBLING_VARS[@]}" -eq 1 ] \
+      || die "could not locate the installed system's /var for the sibling unlock"
+    FINISH_ARGS+=(--var "${SIBLING_VARS[0]}" --unlock "$UNLOCK_MODE")
+  fi
   step "Closing the encrypted root"
-  "$DISK_ENCRYPT" finish "$ENC_LUKS" --key-file "$ENC_KEYFILE" --mnt "$ENC_MNT" 2>&1
+  "$DISK_ENCRYPT" finish "$ENC_LUKS" "${FINISH_ARGS[@]}" 2>&1
 elif [ "$ALONGSIDE" -eq 1 ]; then
   cleanup_alongside
   trap - EXIT

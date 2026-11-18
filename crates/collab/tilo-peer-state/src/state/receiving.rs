@@ -48,9 +48,9 @@ impl StatePeer {
         let (source, retained_replay) = self.resolve_origin(origin, &message, now)?;
         let written = written_route(&message);
         let mut candidate = self.clone();
-        let mut report = candidate
-            .receive_with_context(source, message, now, retained_replay, true)
-            .inspect_err(|_| self.forget_refused(source, written.as_ref()))?;
+        let received = candidate.receive_with_context(source, message, now, retained_replay, true);
+        self.remember_refused_base(&candidate);
+        let mut report = received.inspect_err(|_| self.forget_refused(source, written.as_ref()))?;
         let landed = report.summary.changed || report.summary.metadata_changed;
         report.summary.replay_wanted |= candidate.missed_landed(landed);
         *self = candidate;
@@ -287,19 +287,57 @@ impl StatePeer {
         let (source, retained_replay) = self.resolve_origin(origin, &message, now)?;
         let written = written_route(&message);
         let mut candidate = self.clone();
-        let mut outcome = candidate
-            .receive_with_context(source, message, now, retained_replay, false)
-            .inspect_err(|error| {
-                // A device that could not decide the frame has not refused it:
-                // what waited for the writer stays waiting for it.
-                if !error.is_device_failure() {
-                    self.forget_refused(source, written.as_ref());
-                }
-            })?;
+        let received = candidate.receive_with_context(source, message, now, retained_replay, false);
+        self.remember_refused_base(&candidate);
+        let mut outcome = received.inspect_err(|error| {
+            // A device that could not decide the frame has not refused it:
+            // what waited for the writer stays waiting for it.
+            if !error.is_device_failure() {
+                self.forget_refused(source, written.as_ref());
+            }
+        })?;
         let landed = outcome.summary.changed || outcome.summary.metadata_changed;
         outcome.summary.replay_wanted |= candidate.missed_landed(landed);
         *self = candidate;
         Ok(outcome.summary)
+    }
+    /// Keep what `candidate`, this copy's own clone, learnt while it decided
+    /// a message: the base of its governor it refused. A refused message
+    /// leaves nothing else of itself here.
+    fn remember_refused_base(&mut self, candidate: &Self) {
+        self.refused_base = self.refused_base.max(candidate.refused_base);
+    }
+    /// Admit changes to the workspace's document
+    /// ([`Self::receive_workspace_changes`]), and note a newer base of its
+    /// governor that this copy refuses: governance the copy then knows of
+    /// and does not hold. Until it holds a base that new, it takes in no
+    /// write on the roles and grants it holds
+    /// ([`Self::behind_its_governor`]). A device that could not decide the
+    /// batch has not refused it.
+    fn receive_workspace_batch(
+        &mut self,
+        source: [u8; 32],
+        received: &str,
+        workspace_changes: &[Vec<u8>],
+        now: SystemTime,
+        strict_report: bool,
+    ) -> Result<AdmissionReport, AdmissionError> {
+        let decided =
+            self.receive_workspace_changes(source, received, workspace_changes, now, strict_report);
+        if decided
+            .as_ref()
+            .is_err_and(|error| !error.is_device_failure())
+            && self
+                .certificate(&source, now)
+                .is_ok_and(|cert| cert.user_public_key == self.core.owner)
+            && let workspace::base::Lineage::Newer { base, .. } =
+                workspace::base::lineage(self.core.workspace_doc.as_deref(), workspace_changes)
+        {
+            self.refused_base = self
+                .refused_base
+                .max(Some(workspace::base::generation(&base)));
+        }
+        decided
     }
     pub(crate) fn receive(
         &mut self,
@@ -342,7 +380,7 @@ impl StatePeer {
             NeighbourMsg::SyncResp {
                 changes,
                 workspace: received,
-            } => self.receive_workspace_changes(source, &received, &changes, now, strict_report),
+            } => self.receive_workspace_batch(source, &received, &changes, now, strict_report),
             message @ NeighbourMsg::AppDocument { .. } => {
                 if self.core.workspace_doc.is_none() {
                     return self.defer(
