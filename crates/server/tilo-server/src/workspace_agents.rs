@@ -74,6 +74,7 @@ mod across;
 mod answers;
 mod asks;
 mod calendars;
+mod carried;
 mod coding;
 mod going;
 mod issue_work;
@@ -911,7 +912,7 @@ impl HostAgents {
                 let Some(message) = part.messages.get(&summons.message) else {
                     continue;
                 };
-                let (request, _) = chat::summons::request(message);
+                let request = carried::request(message);
                 // What came before it in the conversation, as every turn is told it: the
                 // same on a host as on the device that would answer it.
                 // What was learned about the person on their devices is their own record,
