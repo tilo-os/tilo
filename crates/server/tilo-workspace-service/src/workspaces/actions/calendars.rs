@@ -148,7 +148,8 @@ fn invitation_params() -> Vec<ActionParam> {
              invitation again changes nothing. Only an entry this agent put in itself is \
              changed or removed by it: one its person entered themselves, or that reached \
              the calendar another way, is not. Text that names people without inviting its \
-             person is put only once the person allowed it.",
+             person is put only once the person allowed it. An account connected for reading \
+             only takes none: nothing is written to its calendar server.",
         ),
         text(
             "calendar",
@@ -164,7 +165,8 @@ fn categories_params() -> Vec<ActionParam> {
             ParamType::Text,
             "The entry, by its id as a read answers it. An entry this agent did not put in \
              itself is filed only once its person allowed it, and one whose lines leave \
-             writing to the people it names to its calendar server is its person's to file.",
+             writing to the people it names to its calendar server is its person's to file. \
+             An entry of an account connected for reading only is filed by nobody.",
         ),
         ActionParam::required(
             "categories",

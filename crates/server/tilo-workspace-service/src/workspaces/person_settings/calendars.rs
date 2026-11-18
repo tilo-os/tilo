@@ -6,6 +6,14 @@
 //! sits beside the mail accounts in the person's own store, its password in
 //! their vault, in the shape a device's Calendar keeps one.
 //!
+//! An account may be connected for reading only ([`Add`]). Its settings say
+//! so in that same store, where a device's Calendar reads it too, and every
+//! calendar of it is kept as one that cannot be written. Nothing is ever
+//! written to such an account's server from here: not for its person, not
+//! for an agent they named. Each asking is refused in words that say so
+//! ([`READ_ONLY`]), before anybody is asked anything. It stays so until its
+//! person removes the account.
+//!
 //! The account's server stays the store. What the holder keeps beside the
 //! account is a copy of what the server holds, entry by entry as the server
 //! wrote it, with where each calendar's last pull ended. So the holder knows
@@ -133,6 +141,11 @@ const SERVER_WRITES: &str = "This entry names people, and its lines leave writin
                              rewritten. Filing it is its person's to do where they keep their \
                              calendar: tell them what you would file it under.";
 
+/// What every writing to the calendar server of an account connected for
+/// reading only is refused with.
+const READ_ONLY: &str = "This calendar account is connected for reading only, so nothing is \
+                         written to its calendar server.";
+
 /// One calendar of an account, as [`LIST`] answers it.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -152,6 +165,10 @@ struct AccountView {
     username: String,
     has_secret: bool,
     calendars: Vec<CalendarView>,
+    /// Whether the account is connected for reading only: nothing is ever
+    /// written to its calendar server.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    read_only: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     synced_at_ms: Option<i64>,
     /// Why the last pull did not end, in the server's or the network's words.
@@ -172,6 +189,9 @@ struct Add {
     password: String,
     #[serde(default)]
     name: Option<String>,
+    /// Connect it for reading only: nothing is ever written to its server.
+    #[serde(default)]
+    read_only: bool,
 }
 
 impl std::fmt::Debug for Add {
@@ -189,6 +209,9 @@ struct AddWithItem {
     password: ItemRef,
     #[serde(default)]
     name: Option<String>,
+    /// Connect it for reading only: nothing is ever written to its server.
+    #[serde(default)]
+    read_only: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -223,6 +246,8 @@ struct Account {
     server_url: String,
     username: String,
     calendars: Vec<RemoteCalendar>,
+    /// Whether it is connected for reading only.
+    read_only: bool,
 }
 
 #[derive(Deserialize)]
@@ -233,6 +258,8 @@ struct Stored {
     username: String,
     #[serde(default)]
     calendars: Vec<RemoteCalendar>,
+    #[serde(default)]
+    read_only: bool,
 }
 
 /// What the holder keeps of an account's server.
@@ -338,13 +365,20 @@ fn accounts_at(root: &Path) -> Vec<Account> {
         .list(&accounts::AccountTypeId::from(TYPE_ID))
         .into_iter()
         .filter_map(|stored| {
-            let config = stored.config_as::<Stored>()?;
+            let mut config = stored.config_as::<Stored>()?;
+            // The account's word decides: every calendar of an account
+            // connected for reading only is one that cannot be written,
+            // whatever was kept of what its server lets the person do.
+            for calendar in &mut config.calendars {
+                calendar.read_only |= config.read_only;
+            }
             Some(Account {
                 id: stored.id.to_string(),
                 name: stored.display_name.clone(),
                 server_url: config.server_url,
                 username: config.username,
                 calendars: config.calendars,
+                read_only: config.read_only,
             })
         })
         .collect()
@@ -375,6 +409,7 @@ fn view(root: &Path, account: &Account) -> AccountView {
                 read_only: calendar.read_only,
             })
             .collect(),
+        read_only: account.read_only,
         synced_at_ms: (kept.synced_at_ms > 0).then_some(kept.synced_at_ms),
         problem: kept.problem,
     }
@@ -567,6 +602,12 @@ fn add(root: &Path, adding: Add) -> Result<AccountView, String> {
     }
     let server = server_of(&adding.server_url)?;
     let id = account_id(&username, &server);
+    // An account connected for reading only stays so when it is added
+    // again, whoever adds it: only its person's removing it ends that.
+    let read_only = adding.read_only
+        || accounts_at(root)
+            .iter()
+            .any(|kept| kept.id == id && kept.read_only);
     let mut asked = accounts::Account::new(accounts::AccountId::from(id.clone()), TYPE_ID);
     asked.config = serde_json::json!({ "server_url": server.as_str(), "username": username });
     let found = LiveAccountTester
@@ -579,7 +620,10 @@ fn add(root: &Path, adding: Add) -> Result<AccountView, String> {
             name: calendar.name,
             color: u8::try_from(place % 7).unwrap_or_default(),
             visible: true,
-            read_only: calendar.read_only,
+            // Every calendar of an account connected for reading only is
+            // kept as one that cannot be written, whatever its server lets
+            // the person do: whoever reads the account finds it so.
+            read_only: calendar.read_only || read_only,
         })
         .collect();
     let mut store = calendar::AccountStore::new();
@@ -598,6 +642,7 @@ fn add(root: &Path, adding: Add) -> Result<AccountView, String> {
         },
         calendars,
         collapsed: false,
+        read_only,
     });
     store.persist_in(root).map_err(|error| error.to_string())?;
     let account = accounts_at(root)
@@ -634,6 +679,7 @@ fn add_with_item(root: &Path, adding: AddWithItem, by: &str) -> Result<AccountVi
             username,
             password: sign_in.secret.to_string(),
             name: adding.name,
+            read_only: adding.read_only,
         },
     )
 }
@@ -710,6 +756,11 @@ fn write(
     ics: String,
     precondition: Precondition<'_>,
 ) -> Result<bool, String> {
+    // Nothing is written to the server of an account connected for reading
+    // only, whoever asks and whatever was settled before this.
+    if account.read_only {
+        return Err(READ_ONLY.into());
+    }
     let (client, server) = client(account, &password_of(root, &account.id)?)?;
     let response = client
         .put(
@@ -731,7 +782,8 @@ fn write(
 }
 
 /// The calendar an invitation goes into: the one named, else the first
-/// the person may write.
+/// the person may write. Never one of an account connected for reading
+/// only.
 fn writable<'a>(
     accounts: &'a [Account],
     named: Option<&str>,
@@ -745,8 +797,14 @@ fn writable<'a>(
     }
     .ok_or_else(|| match named {
         Some(_) => "That calendar is not one of the person's".to_owned(),
+        // Nothing can be written, and an account connected for reading
+        // only is why: say that.
+        None if accounts.iter().any(|account| account.read_only) => READ_ONLY.to_owned(),
         None => "The person keeps no calendar that can be written".to_owned(),
     })?;
+    if found.0.read_only {
+        return Err(READ_ONLY.into());
+    }
     if found.1.read_only {
         return Err("That calendar is read-only".into());
     }
@@ -901,6 +959,9 @@ fn carry_out(root: &Path, planned: Planned) -> Result<Value, String> {
     let made = match change {
         Change::Nothing => "unchanged",
         Change::Remove(found) => {
+            if account.read_only {
+                return Err(READ_ONLY.into());
+            }
             let (client, server) = client(&account, &password_of(root, &account.id)?)?;
             let matching = found.etag.as_deref().unwrap_or("*");
             // The server answers nobody for its person: where they were
@@ -1222,6 +1283,11 @@ fn filing(root: &Path, accounts: &[Account], asked: &Categories) -> Result<Filin
         .iter()
         .find(|account| account.id == held.account)
         .ok_or("That entry is in none of the person's calendars")?;
+    // Filing rewrites the entry on its server: not for an account connected
+    // for reading only, and nobody is asked about it.
+    if account.read_only {
+        return Err(READ_ONLY.into());
+    }
     let text = calendar::ics::with_categories(&held.ics, &categories)
         .ok_or("the entry as its server holds it does not read")?;
     let calendar = account
@@ -1740,6 +1806,7 @@ impl Workspaces {
                 read_only: false,
             }],
             collapsed: false,
+            read_only: false,
         });
         store.persist_in(&root).map_err(|error| error.to_string())?;
         if let Some((workspace, agent)) = named {

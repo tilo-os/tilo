@@ -49,6 +49,10 @@ use crate::workspaces::{AsksPeople, PersonAnswer, Workspaces};
 #[path = "calendar_turn_tests.rs"]
 mod turn;
 
+/// An account connected for reading only is read, and never written to.
+#[path = "calendar_read_only_tests.rs"]
+mod read_only;
+
 /// The sign-in no answer, file or request may show.
 const PASSWORD: &str = "marker-7f3a-calendar-password";
 
