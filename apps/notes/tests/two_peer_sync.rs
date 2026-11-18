@@ -132,13 +132,16 @@ fn an_agents_paragraphs_land_in_a_note_a_following_window_shows() {
             .collect()
     };
     // The window wrote nothing back over them: every change the part took
-    // since the agent started is the agent's.
-    let agent_actor = agent.get_actor().clone();
+    // since the agent started was written where the agent wrote it, never
+    // by the window's own replica.
+    let window_actor = app
+        .read_document_of(&part, |doc| doc.get_actor().to_hex_string())
+        .expect("the part is held");
     assert!(
         agent
             .get_changes(&forked)
             .iter()
-            .all(|change| change.actor_id() == &agent_actor),
+            .all(|change| change.actor_id().to_hex_string() != window_actor),
         "following the agent made the window write"
     );
     assert_eq!(texts(&agent), lines, "the agent's replica");

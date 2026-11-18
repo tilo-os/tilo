@@ -1076,6 +1076,11 @@ mod component_adapter {
             let ((), reads) = crate::component_inputs::reading(&binding.lifetime, || {
                 self.settle_root(edits);
             });
+            // What the settle wrote into a document the window keeps beside
+            // its own (a chain's part) is sampled here: the frame that wrote
+            // it shows its save, and a save it still owes is registered with
+            // its owner, so landing it wakes the window.
+            let _ = self.component.project_resource_save_status();
             if owed {
                 self.observation_pass(edits.document_mut(), reads);
             }

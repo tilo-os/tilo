@@ -360,9 +360,17 @@ type PermissionStates = Rc<RefCell<Vec<(Asked, LocalState<bool>)>>>;
 /// An immediate action and the serial it was applied at.
 type Serialed<R> = (u64, <R as Resource>::Action);
 
-/// The gesture last written to a record, the step it joined, the input event
-/// it was written in, and whether that step was opened by typing.
-type Stepped = (tilo_actions::ActionId, tilo_actions::ActionId, u64, bool);
+/// The step the last gesture written to a record joined: the gesture, the
+/// step, the input event it was written in, and how that step was opened.
+#[derive(Clone, Copy)]
+struct Stepped {
+    gesture: tilo_actions::ActionId,
+    step: tilo_actions::ActionId,
+    event: u64,
+    opened_by_typing: bool,
+    /// Opened while the person's input was handled, not by a settle after it.
+    opened_by_input: bool,
+}
 
 /// Run `write` with `step` open as the thread's undo step (else the one
 /// open now), the one before it open again after.
@@ -1920,19 +1928,32 @@ impl<R: Resource> Dispatcher<R> {
                 // Typing is a run of its own: a correction made as a word
                 // ends is a step apart from the word.
                 let typing = C::continuable(action);
+                let input = ui_core::local_document_action::input_is_active();
                 let step = context.gesture.map(|gesture| match stepped.get() {
-                    Some((last, step, _, _)) if last == gesture => step,
+                    Some(last) if last.gesture == gesture => last.step,
                     // Within one event the edits after the first join its
                     // step (Markdown typed and turned into formatting), but
-                    // a word's correction is a step apart from the typing.
-                    Some((_, step, at, opened_typing))
-                        if at == event && !(typing && opened_typing) =>
+                    // a word's correction is a step apart from the typing
+                    // that ended the word under the person's keys.
+                    Some(last)
+                        if last.event == event
+                            && !(typing && last.opened_by_typing && last.opened_by_input) =>
                     {
-                        stepped.set(Some((gesture, step, event, opened_typing)));
-                        step
+                        stepped.set(Some(Stepped {
+                            gesture,
+                            step: last.step,
+                            ..last
+                        }));
+                        last.step
                     }
                     _ => {
-                        stepped.set(Some((gesture, gesture, event, typing)));
+                        stepped.set(Some(Stepped {
+                            gesture,
+                            step: gesture,
+                            event,
+                            opened_by_typing: typing,
+                            opened_by_input: input,
+                        }));
                         gesture
                     }
                 });

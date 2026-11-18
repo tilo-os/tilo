@@ -204,8 +204,8 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
         live.key("Enter");
         assert_eq!(
             revision(&f, &checkout),
-            before_commit + 2,
-            "the typed command closes, then the conversion"
+            before_commit + 1,
+            "the conversion is a step of its own after the typed command"
         );
         let page = f.child;
         let verify = |doc: &automerge::AutoCommit| {

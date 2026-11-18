@@ -442,11 +442,12 @@ fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action
     close_driver(&mut a);
     assert_eq!(revision(&f, &checkout), before.3 + 1);
     f.store
-        .read_history(&checkout.id, |doc, history| {
+        .read_history(&f.part(), |doc, history| {
             assert_eq!(read::page_block_snapshots(doc, f.child)[3].1, "Q current");
+            // The step is the person's; which window took it is the chain's,
+            // not the note's document.
             let last = history.next_undo_in(doc, &f.author, 11).unwrap();
             assert_eq!(last.author.as_ref(), Some(&f.author));
-            assert_eq!(last.instance_id, Some(11));
             notes::read::validate(doc).unwrap();
             let mut snapshot = doc.clone();
             let changes = snapshot.get_changes(&before.0);
@@ -461,12 +462,21 @@ fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action
                     let context =
                         tilo_actions::ActionContext::from_change_message(change.message().unwrap())
                             .unwrap();
-                    assert_eq!(
-                        context.resource.unwrap().id,
-                        actions::page_resource_id(f.child)
-                    );
+                    // The edit was invoked on the notes' chain and names
+                    // the note it wrote in its path.
+                    assert_eq!(context.resource.unwrap().id, notes::part::chain_resource());
                     match context.what {
-                        Some(tilo_actions::Did::Edit(edit)) => edit.field,
+                        Some(tilo_actions::Did::Edit(edit)) => {
+                            assert!(
+                                edit.path.iter().any(|step| matches!(
+                                    step,
+                                    tilo_actions::PathStep::Item(id)
+                                        if *id == notes::notebook::page_id(f.child).as_str()
+                                )),
+                                "the edit names the note: {edit:?}"
+                            );
+                            edit.field
+                        }
                         other => panic!("a field edit: {other:?}"),
                     }
                 })
