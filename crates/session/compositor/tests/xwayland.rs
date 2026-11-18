@@ -917,7 +917,9 @@ fn a_workspace_keeps_the_server_of_a_client_with_no_window_while_it_lives() {
         "the windowless app's connection starts its workspace's server"
     );
     let holding = Instant::now();
-    while holding.elapsed() < Duration::from_secs(6) {
+    // Past the windowless grace (two seconds), so the server would have stopped had no client
+    // held it.
+    while holding.elapsed() < Duration::from_secs(3) {
         compositor
             .dispatch(Duration::from_millis(2))
             .expect("dispatch");
