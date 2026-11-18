@@ -53,16 +53,19 @@ type Change {
     at: Time
 }
 
-default view data for Data
-
-/// The data window: each data view as an app places it, over the window's collection.
+/// The data page: each data view as an app places it, over the page's collection.
 view data(d: Data) {
     state last: Text = ""
-    std.page(d) {
-        part(
-            "Data table",
-            "A collection's rows in columns: sort by a column, select a row, open it.",
-        ) {
+    ui.Text(
+        "Tables, trees, conversations, cards and history, each reading a collection of the app's own.",
+        role: .caption,
+        secondary: true,
+    )
+    if last != "" {
+        ui.Text(last, role: .caption, secondary: true)
+    }
+    stack(max: 72rem, gap: .section) {
+        part("Data table", "A collection's rows in columns: sort by a column, select a row.") {
             ui.DataTable(name: "Files") {
                 columns: {
                     ui.DataTableColumn("Name", sortable: true, width: .flex)
@@ -78,8 +81,8 @@ view data(d: Data) {
                         }
                     }
                 }
-                on select(x: Row): open(x, front: false)
-                on activate(x: Row): open(x)
+                on select(x: Row): picked(last, x)
+                on activate(x: Row): opened(last, x)
             }
         }
         part(
@@ -100,8 +103,8 @@ view data(d: Data) {
                                 }
                             }
                         }
-                        on select(x: Node): open(x, front: false)
-                        on activate(x: Node): open(x)
+                        on select(x: Node): picked_node(last, x)
+                        on activate(x: Node): opened_node(last, x)
                     }
                 }
             }
@@ -124,8 +127,12 @@ view data(d: Data) {
             ui.CardGrid(name: "Collections") {
                 for c in d.cards {
                     ui.CardGridCard(c, title: c.title, count: c.count) {
-                        on activate: open(c)
-                        ui.Text("Open it to see what it holds.", role: .caption, secondary: true)
+                        on activate: opened_card(last, c)
+                        ui.Text(
+                            "A collection's cards, as an app its own.",
+                            role: .caption,
+                            secondary: true,
+                        )
                     }
                 }
             }
@@ -138,8 +145,8 @@ view data(d: Data) {
                 for c in d.changes {
                     ui.ActivityEntry(c, c.summary, time: c.at, kind: .details)
                 }
-                on revert(x: Change): open(x)
-                on open(x: Change): open(x)
+                on revert(x: Change): reverted(last, x)
+                on open(x: Change): opened_change(last, x)
             }
         }
     }
@@ -206,4 +213,39 @@ scenario "data" {
     d.changes.insert(
         Change(title: "b", who: "Sam", summary: "Moved to Done", at: 2026-06-30T09:10Z),
     )
+}
+
+/// Note the row the table picked, in the page's answer.
+action picked(last: Text, row: Row) {
+    last = "Selected {row.title}"
+}
+
+/// Note the row the table opened, in the page's answer.
+action opened(last: Text, row: Row) {
+    last = "Opened {row.title}"
+}
+
+/// Note the file the tree picked, in the page's answer.
+action picked_node(last: Text, node: Node) {
+    last = "Selected {node.title}"
+}
+
+/// Note the file the tree opened, in the page's answer.
+action opened_node(last: Text, node: Node) {
+    last = "Opened {node.title}"
+}
+
+/// Note the card the grid opened, in the page's answer.
+action opened_card(last: Text, card: Card) {
+    last = "Opened {card.title}"
+}
+
+/// Note the change the history took back, in the page's answer.
+action reverted(last: Text, change: Change) {
+    last = "Reverted {change.summary}"
+}
+
+/// Note the change the history opened, in the page's answer.
+action opened_change(last: Text, change: Change) {
+    last = "Opened {change.summary}"
 }

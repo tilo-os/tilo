@@ -439,6 +439,21 @@ d-256inp7w-last = Zuletzt
 d-256inp7w-target = Ziel
 
 d-wjo4okew = Galerie
+    .w-more = Mehr
+    .w-gallery = Galerie
+    .w-basics = Grundlagen
+    .w-controls = Bedienelemente
+    .w-feedback = Feedback
+    .w-backlog = Backlog
+    .w-release-board = Release-Board
+    .w-data = Daten
+    .w-media = Medien
+    .w-places = Orte
+    .w-shell-parts = Rahmenteile
+    .w-charts-and-views = Diagramme und Ansichten
+    .w-the-examples-are-not-loaded = Die Beispiele sind noch nicht geladen
+    .w-every-group-is-here-fill-them = Jede Gruppe ist hier; füll sie mit den Werten, die eine App ihren Komponenten gibt.
+    .w-show-the-examples = Beispiele anzeigen
     .w-everyday-parts = Alltägliche Teile
     .w-collections = Sammlungen
     .w-media-and-places = Medien und Orte
@@ -446,14 +461,11 @@ d-wjo4okew = Galerie
     .w-your-own = Eigene
 
 d-7chkyi44 = Grundlagen
-    .w-basics = Grundlagen
-    .w-gallery = Galerie
-    .w-parts = Teile
-    .w-collections = Sammlungen
-    .w-list = Liste
-    .w-board = Board
-    .w-more = Mehr
-    .w-rename = Umbenennen
+    .w-rich-text-and-a-quote = Formatierter Text und ein Zitat
+    .w-a-message-s-own-text-and = Der eigene Text einer Nachricht, und darüber die Nachricht, auf die sie antwortet.
+    .w-can-we-ship-the-screenshots-with = Können wir die Screenshots mit den Notizen ausliefern?
+    .w-replying-to = Antwort auf
+    .w-text-buttons-chips-a-card-of = Text, Buttons, Chips, eine Karte mit Fakten, ein Leerzustand und eine Seite eines Stapels.
     .w-delete = Löschen
     .w-text = Text
     .w-the-type-scale-a-title-body = Die Schriftskala: ein Titel, Fließtext in Lesebreite, eine Bildunterschrift.
@@ -491,23 +503,22 @@ d-7chkyi44 = Grundlagen
     .w-opened-from-the-panel-with-the = Aus dem Panel geöffnet, mit dem Weg zurück darüber.
 
 d-vvxmf5ve = Backlogliste
-    .w-backlog = Backlog
     .w-message-the-team = Nachricht ans Team
     .w-send = Senden
 
 d-7ptc3r7a = Eintragszeile
-    .w-can-we-ship-the-screenshots-with = Können die Screenshots mit den Notizen rausgehen?
-    .w-replying-to = Antwort an
     .w-copy-link = Link kopieren
     .w-delete = Löschen
     .w-reply = Antworten
 
 d-qczmqkvq = Release-Board
+    .w-a-board-a-list-per-stage = Ein Board, eine Liste je Phase, mit Karten, die eine App zwischen ihnen zieht.
     .w-release = Release
 
 d-glo4d4xp = Board-Eintragszeile
 
 d-z5ai6zk5 = Bedienelemente
+    .w-fields-switches-sliders-pickers-dates-and = Felder, Schalter, Regler, Auswahlen, Daten und Farben, jedes an das Feld des Dokuments gebunden.
     .w-boxes-and-switches = Kästchen und Schalter
     .w-send-by-email = Per E-Mail senden
     .w-repeat-weekly = Wöchentlich wiederholen
@@ -565,6 +576,7 @@ d-z5ai6zk5 = Bedienelemente
     .w-large = Groß
 
 d-wxq3apea = Daten
+    .w-tables-trees-conversations-cards-and-history = Tabellen, Bäume, Gespräche, Karten und Verlauf, jede aus einer Sammlung der App gelesen.
     .w-data-table = Datentabelle
     .w-a-collection-s-rows-in-columns = Die Zeilen einer Sammlung in Spalten: nach einer Spalte sortieren, eine Zeile wählen, sie öffnen.
     .w-files = Dateien
@@ -584,6 +596,8 @@ d-wxq3apea = Daten
     .w-what-happened-to-a-document-newest = Was mit einem Dokument geschah, das Neueste zuerst, jede Änderung zum Zurücknehmen.
 
 d-5cczuoub = Feedback
+    .w-banners-badges-progress-and-numbers-the = Banner, Badges, Fortschritt und Zahlen, die Fakten einer Sache und was noch lädt.
+    .w-shapes-and-lines-drawn-from-values = Formen und Linien aus Werten, in den Tinten des Themes.
     .w-toolbar = Werkzeugleiste
     .w-a-run-of-tools-one-on = Eine Reihe Werkzeuge: eins an, eins mit Neuigkeiten, ein Trenner und am Ende Teilen.
     .w-bold = Fett
@@ -659,6 +673,7 @@ d-5cczuoub = Feedback
     .w-the-shape-of-what-is-still = Die Form dessen, was noch lädt, damit nichts springt, wenn es ankommt.
 
 d-irl4ws35 = Orte
+    .w-a-canvas-that-pans-and-zooms = Eine Fläche, die sich schwenken und zoomen lässt, mit einem Ort an jedem Punkt und einem Fenster darauf.
     .w-notes = Notizen
     .w-a-place-on-the-canvas = Ein Ort auf der Fläche.
     .w-tasks = Aufgaben
@@ -671,6 +686,7 @@ d-irl4ws35 = Orte
     .w-a-window-on-the-shell-its = Ein Fenster auf dem Schreibtisch: seine Leiste, seine Bedienelemente, was es zeigt.
 
 d-tsxcwdoy = Medien
+    .w-pictures-players-a-library-codes-and = Bilder, Player, eine Bibliothek, Codes und Flächen, jede so, wie eine App sie platziert.
     .w-image = Bild
     .w-a-picture-at-its-own-shape = Ein Bild in seiner eigenen Form, so breit, wie die Spalte es lässt.
     .w-hills-at-dawn-the-sun-low = Hügel im Morgengrauen, die Sonne tief über dem letzten Kamm
@@ -731,6 +747,7 @@ d-tsxcwdoy = Medien
     .w-a-page = Eine Seite
 
 d-rygoropv = Rahmenteile
+    .w-the-parts-a-bar-or-a = Die Teile, aus denen eine Leiste oder ein Dock besteht: ihr Grund, ihre Tabs, ihre Chips und was sie zieht.
     .w-chrome = Rahmen
     .w-the-ground-a-bar-or-a = Der Grund, auf dem eine Leiste oder ein Dock steht, im Finish des Themes.
     .w-a-bar = Eine Leiste
@@ -769,6 +786,7 @@ d-cdq37gtx = Eigenes
 d-qfb7dxgw = Titel
 
 d-juvyfisd = Eigenes
+    .w-views-an-app-fills-like-components = Ansichten, die eine App wie Komponenten füllt, Formen in den Tinten des Themes und lebendige Diagramme.
     .w-a-view-of-its-own = Eine eigene Ansicht
     .w-a-view-the-caller-fills-like = Eine Ansicht, die der Aufrufer wie eine Komponente füllt: benannte Optionen mit Vorgaben, ein Platz für eigenen Inhalt und ein Ereignis, auf das er antwortet.
     .w-ada-lovelace = Ada Lovelace
@@ -811,3 +829,89 @@ d-juvyfisd = Eigenes
     .w-waiting = Wartet
 
 d-xnmgxmkk = Speicherring
+
+d-5l4lnfd6 = Seitentitel
+    .w-basics = Grundlagen
+    .w-controls = Bedienelemente
+    .w-feedback = Feedback
+    .w-backlog = Backlog
+    .w-release-board = Release-Board
+    .w-data = Daten
+    .w-media = Medien
+    .w-places = Orte
+    .w-shell-parts = Rahmenteile
+    .w-your-own = Eigenes
+    .w-gallery = Galerie
+
+d-yy2pow4p = Eintrag notiert
+    .doc = Notiert das Element, das eine Zeile geöffnet hat, in der Antwort der Seite.
+
+d-o4oyc5hc = Gewählt
+    .doc = Notiert die Zeile, die die Tabelle gewählt hat, in der Antwort der Seite.
+
+d-5lkhzt52 = Geöffnet
+    .doc = Notiert die Zeile, die die Tabelle geöffnet hat, in der Antwort der Seite.
+
+d-rrw2whdg = Datei gewählt
+    .doc = Notiert die Datei, die der Baum gewählt hat, in der Antwort der Seite.
+
+d-zjikqce6 = Datei geöffnet
+    .doc = Notiert die Datei, die der Baum geöffnet hat, in der Antwort der Seite.
+
+d-bnhh2xt6 = Karte geöffnet
+    .doc = Notiert die Karte, die das Raster geöffnet hat, in der Antwort der Seite.
+
+d-6iv3za2p = Zurückgenommen
+    .doc = Notiert die Änderung, die der Verlauf zurückgenommen hat, in der Antwort der Seite.
+
+d-czoytffw = Änderung geöffnet
+    .doc = Notiert die Änderung, die der Verlauf geöffnet hat, in der Antwort der Seite.
+
+d-dfbggpjv = Beispiele zeigen
+    .doc = Was die Galerie am Tag ihres Öffnens ohne Inhalt zeigt: ein Dokument jeder Gruppe, dieselbe Form, die die Szenarien für eine Prüfung aufbauen, damit ein Mensch die Komponenten trifft statt ein leeres Fenster.
+
+d-avk7hywt = Bild notiert
+    .doc = Notiert das Bild, das eine Karte geöffnet hat, in der Antwort der Seite.
+
+d-bpfjiepq = Sammlung notiert
+    .doc = Notiert die Sammlung, die eine Karte geöffnet hat, in der Antwort der Seite.
+
+d-yy2pow4p-last = Letzte
+
+d-yy2pow4p-x = X
+
+d-o4oyc5hc-last = Letzte
+
+d-o4oyc5hc-row = Zeile
+
+d-5lkhzt52-last = Letzte
+
+d-5lkhzt52-row = Zeile
+
+d-rrw2whdg-last = Letzte
+
+d-rrw2whdg-node = Knoten
+
+d-zjikqce6-last = Letzte
+
+d-zjikqce6-node = Knoten
+
+d-bnhh2xt6-last = Letzte
+
+d-bnhh2xt6-card = Karte
+
+d-6iv3za2p-last = Letzte
+
+d-6iv3za2p-change = Änderung
+
+d-czoytffw-last = Letzte
+
+d-czoytffw-change = Änderung
+
+d-avk7hywt-last = Letzte
+
+d-avk7hywt-p = P
+
+d-bpfjiepq-last = Letzte
+
+d-bpfjiepq-m = M

@@ -64,7 +64,7 @@ d-uhteb2qc = Title
 d-x6hy4icv = Items
 
 d-x3epwv5u = Gallery
-    .doc = The gallery: a window of each group.
+    .doc = The gallery: a window of every group.
     .noun = { $count ->
         [one] gallery
        *[other] galleries
@@ -402,6 +402,65 @@ d-jrcgjyzr = Medium
 
 d-fglwr2mx = High
 
+d-yy2pow4p = Note item
+    .doc = Note the item a row opened, in the page's answer.
+
+d-yy2pow4p-last = Last
+
+d-yy2pow4p-x = X
+
+d-o4oyc5hc = Picked
+    .doc = Note the row the table picked, in the page's answer.
+
+d-o4oyc5hc-last = Last
+
+d-o4oyc5hc-row = Row
+
+d-5lkhzt52 = Opened
+    .doc = Note the row the table opened, in the page's answer.
+
+d-5lkhzt52-last = Last
+
+d-5lkhzt52-row = Row
+
+d-rrw2whdg = Picked node
+    .doc = Note the file the tree picked, in the page's answer.
+
+d-rrw2whdg-last = Last
+
+d-rrw2whdg-node = Node
+
+d-zjikqce6 = Opened node
+    .doc = Note the file the tree opened, in the page's answer.
+
+d-zjikqce6-last = Last
+
+d-zjikqce6-node = Node
+
+d-bnhh2xt6 = Opened card
+    .doc = Note the card the grid opened, in the page's answer.
+
+d-bnhh2xt6-last = Last
+
+d-bnhh2xt6-card = Card
+
+d-6iv3za2p = Reverted
+    .doc = Note the change the history took back, in the page's answer.
+
+d-6iv3za2p-last = Last
+
+d-6iv3za2p-change = Change
+
+d-czoytffw = Opened change
+    .doc = Note the change the history opened, in the page's answer.
+
+d-czoytffw-last = Last
+
+d-czoytffw-change = Change
+
+d-dfbggpjv = Show examples
+    .doc = What the gallery shows the day it is opened with nothing in it: one document of every group, the same shape the scenarios stage for a check, so a person meets the components rather than an empty window.
+
 d-eqcr4df3 = Picture from
     .doc = A page shown in a picture, from the first to the last.
 
@@ -435,6 +494,20 @@ d-k6l4ki75 = Seek to
 
 d-k6l4ki75-place = Place
 
+d-avk7hywt = Note photo
+    .doc = Note the picture a card opened, in the page's answer.
+
+d-avk7hywt-last = Last
+
+d-avk7hywt-p = P
+
+d-bpfjiepq = Note media
+    .doc = Note the collection a card opened, in the page's answer.
+
+d-bpfjiepq-last = Last
+
+d-bpfjiepq-m = M
+
 d-gv3ymzbk = Mark moved
     .doc = Note the item moved, in the window's last answer.
 
@@ -451,23 +524,43 @@ d-256inp7w-last = Last
 
 d-256inp7w-target = Target
 
-d-wjo4okew = Gallery
-    .w-everyday-parts = Everyday parts
-    .w-collections = Collections
-    .w-media-and-places = Media and places
-    .w-the-shell = The shell
+d-5l4lnfd6 = Page title
+    .w-basics = Basics
+    .w-controls = Controls
+    .w-feedback = Feedback
+    .w-backlog = Backlog
+    .w-release-board = Release board
+    .w-data = Data
+    .w-media = Media
+    .w-places = Places
+    .w-shell-parts = Shell parts
     .w-your-own = Your own
+    .w-gallery = Gallery
+
+d-wjo4okew = Gallery
+    .w-gallery = Gallery
+    .w-more = More
+    .w-show-the-examples = Show the examples
+    .w-everyday-parts = Everyday parts
+    .w-basics = Basics
+    .w-controls = Controls
+    .w-feedback = Feedback
+    .w-collections = Collections
+    .w-backlog = Backlog
+    .w-release-board = Release board
+    .w-data = Data
+    .w-media-and-places = Media and places
+    .w-media = Media
+    .w-places = Places
+    .w-the-shell = The shell
+    .w-shell-parts = Shell parts
+    .w-your-own = Your own
+    .w-charts-and-views = Charts and views
+    .w-the-examples-are-not-loaded = The examples are not loaded
+    .w-every-group-is-here-fill-them = Every group is here; fill them with the values an app gives its components.
 
 d-7chkyi44 = Basics
-    .w-basics = Basics
-    .w-gallery = Gallery
-    .w-parts = Parts
-    .w-collections = Collections
-    .w-list = List
-    .w-board = Board
-    .w-more = More
-    .w-rename = Rename
-    .w-delete = Delete
+    .w-text-buttons-chips-a-card-of = Text, buttons, chips, a card of facts, an empty state and a page of a stack.
     .w-text = Text
     .w-the-type-scale-a-title-body = The type scale: a title, body text at the reading measure, a caption.
     .w-release-planning = Release planning
@@ -476,7 +569,12 @@ d-7chkyi44 = Basics
     .w-what-a-press-does-by-its = What a press does, by its role: the one primary, the usual, the destructive.
     .w-save = Save
     .w-upload = Upload
+    .w-delete = Delete
     .w-archived = Archived
+    .w-rich-text-and-a-quote = Rich text and a quote
+    .w-a-message-s-own-text-and = A message's own text, and the message it answers above it.
+    .w-can-we-ship-the-screenshots-with = Can we ship the screenshots with the notes?
+    .w-replying-to = Replying to
     .w-chip-and-avatar = Chip and avatar
     .w-a-tag-a-thing-carries-and = A tag a thing carries, and who looks after it.
     .w-design = Design
@@ -504,23 +602,22 @@ d-7chkyi44 = Basics
     .w-opened-from-the-panel-with-the = Opened from the panel, with the way back above it.
 
 d-vvxmf5ve = Backlog list
-    .w-backlog = Backlog
     .w-message-the-team = Message the team
     .w-send = Send
 
 d-7ptc3r7a = Item row
-    .w-can-we-ship-the-screenshots-with = Can we ship the screenshots with the notes?
-    .w-replying-to = Replying to
     .w-copy-link = Copy link
     .w-delete = Delete
     .w-reply = Reply
 
 d-qczmqkvq = Release board
+    .w-a-board-a-list-per-stage = A board, a list per stage, with cards an app drags between them.
     .w-release = Release
 
 d-glo4d4xp = Board item row
 
 d-z5ai6zk5 = Controls
+    .w-fields-switches-sliders-pickers-dates-and = Fields, switches, sliders, pickers, dates and colours, each bound to the document's own.
     .w-boxes-and-switches = Boxes and switches
     .w-send-by-email = Send by email
     .w-keep-a-copy-as-the-workspace = Keep a copy, as the workspace asks
@@ -578,6 +675,7 @@ d-z5ai6zk5 = Controls
     .w-large = Large
 
 d-juvyfisd = Custom
+    .w-views-an-app-fills-like-components = Views an app fills like components, shapes drawn with the theme's inks, and live charts.
     .w-a-view-of-its-own = A view of its own
     .w-a-view-the-caller-fills-like = A view the caller fills like a component: named options with defaults, a slot of its own content, and an event it answers.
     .w-ada-lovelace = Ada Lovelace
@@ -622,8 +720,9 @@ d-juvyfisd = Custom
 d-xnmgxmkk = Usage ring
 
 d-wxq3apea = Data
+    .w-tables-trees-conversations-cards-and-history = Tables, trees, conversations, cards and history, each reading a collection of the app's own.
     .w-data-table = Data table
-    .w-a-collection-s-rows-in-columns = A collection's rows in columns: sort by a column, select a row, open it.
+    .w-a-collection-s-rows-in-columns = A collection's rows in columns: sort by a column, select a row.
     .w-files = Files
     .w-name = Name
     .w-state = State
@@ -641,6 +740,7 @@ d-wxq3apea = Data
     .w-what-happened-to-a-document-newest = What happened to a document, newest first, each change open to revert.
 
 d-5cczuoub = Feedback
+    .w-banners-badges-progress-and-numbers-the = Banners, badges, progress and numbers, the facts of a thing, and what is still loading.
     .w-toolbar = Toolbar
     .w-a-run-of-tools-one-on = A run of tools: one on, one with news, a separator and a share at the end.
     .w-bold = Bold
@@ -697,6 +797,7 @@ d-5cczuoub = Feedback
     .w-requests-per-second = Requests per second
     .w-errors-per-minute = Errors per minute
     .w-drawing = Drawing
+    .w-shapes-and-lines-drawn-from-values = Shapes and lines drawn from values, in the theme's inks.
     .w-visitors-this-week-above-the-target = Visitors this week, above the target since Thursday
     .w-disclosure = Disclosure
     .w-rows-that-open-in-place-to = Rows that open in place to show what is under them.
@@ -716,6 +817,7 @@ d-5cczuoub = Feedback
     .w-the-shape-of-what-is-still = The shape of what is still loading, so nothing jumps when it arrives.
 
 d-irl4ws35 = Places
+    .w-a-canvas-that-pans-and-zooms = A canvas that pans and zooms, with a place at each point and a window on it.
     .w-notes = Notes
     .w-a-place-on-the-canvas = A place on the canvas.
     .w-tasks = Tasks
@@ -728,6 +830,7 @@ d-irl4ws35 = Places
     .w-a-window-on-the-shell-its = A window on the shell: its bar, its controls, what it shows.
 
 d-tsxcwdoy = Media
+    .w-pictures-players-a-library-codes-and = Pictures, players, a library, codes and surfaces, each as an app places it.
     .w-image = Image
     .w-a-picture-at-its-own-shape = A picture at its own shape, as wide as the column lets it be.
     .w-hills-at-dawn-the-sun-low = Hills at dawn, the sun low over the last ridge
@@ -788,6 +891,7 @@ d-tsxcwdoy = Media
     .w-a-page = A page
 
 d-rygoropv = Shell parts
+    .w-the-parts-a-bar-or-a = The parts a bar or a dock is made of: its ground, its tabs, its chips and what it drags.
     .w-chrome = Chrome
     .w-the-ground-a-bar-or-a = The ground a bar or a dock stands on, in the theme's finish.
     .w-a-bar = A bar

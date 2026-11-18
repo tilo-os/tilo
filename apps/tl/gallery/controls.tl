@@ -52,10 +52,8 @@ type Controls {
     lettering: Bool = true
 }
 
-default view controls for Controls
-
-/// The controls window: each kind in a section of its own page, each in the states a person meets
-/// it in. Every value is the document's or the window's own, so each control can be played with.
+/// The controls' page: each kind in a section of its own, each in the states a person meets it
+/// in. Every value is the document's or the page's own, so each control can be played with.
 view controls(c: Controls) {
     state cadence: Int = 1
     state showing: Int = 0
@@ -63,7 +61,12 @@ view controls(c: Controls) {
     state layer: Int = 0
     state swatch: Int = 0
     state text_size: Int = 1
-    std.page(c) {
+    ui.Text(
+        "Fields, switches, sliders, pickers, dates and colours, each bound to the document's own.",
+        role: .caption,
+        secondary: true,
+    )
+    stack(max: 44rem, gap: .section) {
         ui.Section("Boxes and switches") {
             ui.Checkbox(bind: c.by_email, label: "Send by email")
             ui.Checkbox(bind: c.locked, label: "Keep a copy, as the workspace asks", enabled: false)
@@ -215,10 +218,10 @@ view controls(c: Controls) {
     }
 }
 
-/// The controls group, with a report a week from starting.
+/// The controls' group, with a report a week from starting.
 scenario "controls" {
-    let mia = person("Mia")
     let g = root Gallery
+    let mia = person("Mia")
     g.controls.insert(
         Controls(title: "Controls", starts: 2026-11-03, clock: 2026-11-03T09:30Z, owner: mia),
     )

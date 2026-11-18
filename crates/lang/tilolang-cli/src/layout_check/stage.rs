@@ -2572,4 +2572,111 @@ mod tests {
             }
         }
     }
+
+    /// The gallery is one window: each group stands in its sidebar, choosing one shows that
+    /// group's page in the content beside it, and the window opens on a page rather than on
+    /// nothing.
+    #[test]
+    fn the_gallery_shows_each_group_from_its_sidebar() {
+        use tilo_render_protocol::patch::Level;
+        use tilolang_tilo::runtime::{UiNode, Value};
+
+        fn find_key(node: &UiNode, place: &str) -> Option<String> {
+            if node.kind == "ui.NavItem" && node.props.get("label") == Some(&Value::text(place)) {
+                return Some(node.key.clone());
+            }
+            node.children
+                .iter()
+                .find_map(|child| find_key(child, place))
+        }
+
+        fn shows(node: &UiNode, kind: &str) -> bool {
+            node.kind == kind || node.children.iter().any(|child| shows(child, kind))
+        }
+
+        tilo_app_window::i18n::ensure();
+        ui::clock::freeze_for_capture();
+        let packages = app_packages("gallery");
+        let (width, height) = (1280, 800);
+        let mut staged = Staged::over(
+            "so.tilo.lang.gallery",
+            &packages,
+            "every family",
+            (width, height),
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the gallery stages");
+        staged
+            .lay_out(
+                (width, height),
+                ui::Theme::light(),
+                ui::interaction::InteractionEnvironment::POINTER,
+                1.0,
+            )
+            .expect("the gallery lays out");
+        // It opens on a page with content: the first group, Basics, rather than an empty one.
+        let tree = staged
+            .instance
+            .view(Level::Root)
+            .expect("the gallery's root view");
+        assert!(
+            shows(tree.borrow().tree(), "ui.Card"),
+            "the window opens on a page: {:#?}",
+            tree.borrow().tree()
+        );
+        for (place, marker) in [
+            ("Basics", "ui.Card"),
+            ("Controls", "ui.NumberInput"),
+            ("Feedback", "ui.Banner"),
+            ("Backlog", "ui.Docked"),
+            ("Release board", "ui.Board"),
+            ("Data", "ui.DataTable"),
+            ("Media", "ui.MediaGrid"),
+            ("Places", "ui.Map"),
+            ("Shell parts", "ui.TabStrip"),
+            ("Charts and views", "ui.Chart"),
+        ] {
+            let key = {
+                let tree = staged
+                    .instance
+                    .view(Level::Root)
+                    .expect("the gallery's root view");
+                let tree = tree.borrow();
+                find_key(tree.tree(), place)
+                    .unwrap_or_else(|| panic!("the sidebar names {place}: {:#?}", tree.tree()))
+            };
+            let view = staged
+                .instance
+                .view(Level::Root)
+                .expect("the gallery's root view");
+            view.borrow()
+                .fire(&key, "select")
+                .unwrap_or_else(|error| panic!("choosing {place}: {error}"));
+            view.borrow_mut()
+                .poll_patches()
+                .expect("chosen place answers");
+            drop(view);
+            staged.exchange();
+            staged
+                .lay_out(
+                    (width, height),
+                    ui::Theme::light(),
+                    ui::interaction::InteractionEnvironment::POINTER,
+                    1.0,
+                )
+                .expect("the chosen page lays out");
+            let tree = staged
+                .instance
+                .view(Level::Root)
+                .expect("the gallery's root view");
+            let tree = tree.borrow();
+            assert!(
+                shows(tree.tree(), marker),
+                "choosing {place} shows its page, with a {marker} on it: {:#?}",
+                tree.tree()
+            );
+        }
+    }
 }

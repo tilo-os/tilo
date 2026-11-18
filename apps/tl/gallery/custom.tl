@@ -5,15 +5,18 @@ type Custom {
     title: Text
 }
 
-default view custom for Custom
-
-/// The custom window: a component built at each step, each live.
+/// The custom page: a component built at each step, each live.
 view custom(c: Custom) {
     state used: Float = 0.62
     state requests: List<Float> = [12.0, 18.0, 15.0, 22.0, 19.0, 27.0, 24.0, 31.0, 28.0, 36.0]
     state hovered: Option<Int> = .none
     state last: Text = "Nobody messaged yet"
-    std.page(c) {
+    ui.Text(
+        "Views an app fills like components, shapes drawn with the theme's inks, and live charts.",
+        role: .caption,
+        secondary: true,
+    )
+    stack(max: 64rem, gap: .section) {
         ui.Section("A view of its own") {
             ui.Text(
                 "A view the caller fills like a component: named options with defaults, a slot of its own content, and an event it answers.",

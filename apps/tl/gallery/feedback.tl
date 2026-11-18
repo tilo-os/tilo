@@ -6,12 +6,15 @@ type Feedback {
     owner: Option<Actor>
 }
 
-default view feedback for Feedback
-
-/// The feedback window: each kind in a section of its own page.
+/// The feedback page: each kind in a section of its own.
 view feedback(f: Feedback) {
     state last: Text = ""
-    std.page(f) {
+    ui.Text(
+        "Banners, badges, progress and numbers, the facts of a thing, and what is still loading.",
+        role: .caption,
+        secondary: true,
+    )
+    stack(max: 48rem, gap: .section) {
         part(
             "Toolbar",
             "A run of tools: one on, one with news, a separator and a share at the end.",
@@ -140,7 +143,7 @@ view feedback(f: Feedback) {
                 )
             }
         }
-        ui.Section("Drawing") {
+        part("Drawing", "Shapes and lines drawn from values, in the theme's inks.") {
             ui.Drawing(
                 [
                     .rect(x: 0.0, y: 0.0, w: 1.0, h: 1.0, round: 0.1, fill: .track),

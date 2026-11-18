@@ -15,12 +15,15 @@ type Pinned {
     title: Text
 }
 
-default view shell_parts for ShellParts
-
-/// The shell window: each kind in a section of its own page.
+/// The shell's page: each kind in a section of its own.
 view shell_parts(x: ShellParts) {
     state last: Text = ""
-    std.page(x) {
+    ui.Text(
+        "The parts a bar or a dock is made of: its ground, its tabs, its chips and what it drags.",
+        role: .caption,
+        secondary: true,
+    )
+    stack(max: 48rem, gap: .section) {
         part("Chrome", "The ground a bar or a dock stands on, in the theme's finish.") {
             ui.Chrome(name: "A bar", shape: .square, edge: .top) {
                 row(gap: .related, align: .center, padding: .related) {
@@ -72,7 +75,7 @@ view shell_parts(x: ShellParts) {
                 for pinned in x.apps {
                     ui.DragItem(pinned, title: pinned.title) {
                         on activate: set(last, pinned.title)
-                        ui.Button(pinned.title, icon: .folder, role: .plain, icon_only: true) {
+                        ui.Button(pinned.title, icon: .folder, icon_only: true) {
                             on press: set(last, pinned.title)
                         }
                     }

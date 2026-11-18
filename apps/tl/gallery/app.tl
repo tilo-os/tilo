@@ -1,9 +1,10 @@
 app so.tilo.lang.gallery "Gallery" (icon: .layout_grid, category: .system)
 
 /// The toolkit's components as an app written in tilolang places them: each component of the
-/// toolkit, in the groups people meet them in, with the values an app would give it. Each group is a
-/// file of its own (`controls.tl`, `charts.tl`, ...) with its own window and scenario, and a
-/// test fails while a component of the toolkit is shown in none of them.
+/// toolkit, in the groups people meet them in, with the values an app would give it. One window
+/// holds every group: the sidebar names them, the content shows the one chosen, and a group's
+/// file (`controls.tl`, `media.tl`, ...) adds its type here, a page to the window and a scenario
+/// that fills it. A test fails while a component of the toolkit is shown in none of them.
 /// A piece of work on the team's board, in its list, and talked about.
 type Item {
     title: Text
@@ -36,8 +37,8 @@ type Release {
     items: Collection<Item>
 }
 
-/// The gallery: a window of each group. A group's file adds its type here and a row to the
-/// gallery's list.
+/// The gallery: a window of every group. A group's file adds its type here and a page to the
+/// gallery's sidebar.
 type Gallery {
     basics: Collection<Basics>
     backlogs: Collection<Backlog>
@@ -55,104 +56,189 @@ root Gallery
 
 default view gallery for Gallery
 
-default view basics for Basics
+/// The group the window opens on: the first one holding anything, so a window staged from a
+/// scenario opens on what that scenario filled, and one with nothing in it still opens on a page.
+fn first_page(g: Gallery) -> Text {
+    if not g.basics.is_empty() {
+        "basics"
+    } else if not g.controls.is_empty() {
+        "controls"
+    } else if not g.feedback.is_empty() {
+        "feedback"
+    } else if not g.backlogs.is_empty() {
+        "backlogs"
+    } else if not g.releases.is_empty() {
+        "releases"
+    } else if not g.data.is_empty() {
+        "data"
+    } else if not g.media.is_empty() {
+        "media"
+    } else if not g.places.is_empty() {
+        "places"
+    } else if not g.chrome.is_empty() {
+        "chrome"
+    } else if not g.customs.is_empty() { "customs" } else { "basics" }
+}
 
-default view backlog_list for Backlog
+/// What the chosen group is called, over its page.
+fn page_title(page: Text) -> Text {
+    if page == "basics" {
+        std.say("Basics")
+    } else if page == "controls" {
+        std.say("Controls")
+    } else if page == "feedback" {
+        std.say("Feedback")
+    } else if page == "backlogs" {
+        std.say("Backlog")
+    } else if page == "releases" {
+        std.say("Release board")
+    } else if page == "data" {
+        std.say("Data")
+    } else if page == "media" {
+        std.say("Media")
+    } else if page == "places" {
+        std.say("Places")
+    } else if page == "chrome" {
+        std.say("Shell parts")
+    } else if page == "customs" { std.say("Your own") } else { std.say("Gallery") }
+}
 
-default view release_board for Release
+/// Whether the chosen group holds a document its page is drawn from.
+fn page_filled(g: Gallery, page: Text) -> Bool {
+    if page == "basics" {
+        not g.basics.is_empty()
+    } else if page == "controls" {
+        not g.controls.is_empty()
+    } else if page == "feedback" {
+        not g.feedback.is_empty()
+    } else if page == "backlogs" {
+        not g.backlogs.is_empty()
+    } else if page == "releases" {
+        not g.releases.is_empty()
+    } else if page == "data" {
+        not g.data.is_empty()
+    } else if page == "media" {
+        not g.media.is_empty()
+    } else if page == "places" {
+        not g.places.is_empty()
+    } else if page == "chrome" { not g.chrome.is_empty() } else { not g.customs.is_empty() }
+}
 
-/// The gallery's window: the toolkit's families, each opening in a window of its own, with what
-/// it holds under its name.
+/// The gallery's window: each group in the sidebar under what it is for, the one chosen shown
+/// beside it, so every component the toolkit describes is a place away rather than a window of
+/// its own. A window with no documents yet offers to fill them, because a gallery with nothing in
+/// it says nothing.
 view gallery(g: Gallery) {
-    std.page(g) {
-        ui.Section("Everyday parts") {
-            for x in g.basics {
-                ui.ListRow(
-                    x.title,
-                    secondary: "Type, buttons, chips, cards and empty states",
-                    item: x,
-                    icon: .layout_grid,
-                )
-            }
-            for x in g.controls {
-                ui.ListRow(
-                    x.title,
-                    secondary: "Fields, toggles, sliders and pickers",
-                    item: x,
-                    icon: .settings,
-                )
-            }
-            for x in g.feedback {
-                ui.ListRow(
-                    x.title,
-                    secondary: "Banners, badges, progress and numbers",
-                    item: x,
-                    icon: .eye,
-                )
+    state showing: Text = first_page(g)
+    ui.NavShell(content_kind: .page, title: page_title(showing), sidebar_title: "Gallery") {
+        actions: {
+            ui.SearchButton()
+            ui.MenuButton("More", icon: .more_horizontal, icon_only: true) {
+                ui.MenuItem("Show the examples", icon: .layout_grid) {
+                    on choose: show_examples(g)
+                }
             }
         }
-        ui.Section("Collections") {
-            for x in g.backlogs {
-                ui.ListRow(
-                    x.title,
-                    secondary: "Rows with menus, swipes and reactions",
-                    item: x,
-                    icon: .list,
-                )
-            }
-            for x in g.releases {
-                ui.ListRow(
-                    x.title,
-                    secondary: "A board, a list per stage",
-                    item: x,
-                    icon: .layout_grid,
-                )
-            }
-            for x in g.data {
-                ui.ListRow(
-                    x.title,
-                    secondary: "Tables, trees, conversations and history",
-                    item: x,
-                    icon: .table,
-                )
-            }
-        }
-        ui.Section("Media and places") {
-            for x in g.media {
-                ui.ListRow(
-                    x.title,
-                    secondary: "Photos, players, codes and surfaces",
-                    item: x,
-                    icon: .image,
-                )
-            }
-            for x in g.places {
-                ui.ListRow(
-                    x.title,
-                    secondary: "A canvas that pans and zooms",
-                    item: x,
-                    icon: .map_pin,
-                )
-            }
-        }
-        ui.Section("The shell") {
-            for x in g.chrome {
-                ui.ListRow(
-                    x.title,
-                    secondary: "Bars, docks, tabs and dragging",
-                    item: x,
-                    icon: .monitor,
-                )
+        sidebar: {
+            ui.NavList(selected: showing) {
+                ui.NavSection("Everyday parts") {
+                    ui.NavItem("basics", "Basics", icon: .layout_grid) {
+                        on select: set(showing, "basics")
+                    }
+                    ui.NavItem("controls", "Controls", icon: .settings) {
+                        on select: set(showing, "controls")
+                    }
+                    ui.NavItem("feedback", "Feedback", icon: .circle_check) {
+                        on select: set(showing, "feedback")
+                    }
+                }
+                ui.NavSection("Collections") {
+                    ui.NavItem("backlogs", "Backlog", icon: .list) {
+                        on select: set(showing, "backlogs")
+                    }
+                    ui.NavItem("releases", "Release board", icon: .layout_grid) {
+                        on select: set(showing, "releases")
+                    }
+                    ui.NavItem("data", "Data", icon: .table) {
+                        on select: set(showing, "data")
+                    }
+                }
+                ui.NavSection("Media and places") {
+                    ui.NavItem("media", "Media", icon: .image) {
+                        on select: set(showing, "media")
+                    }
+                    ui.NavItem("places", "Places", icon: .map_pin) {
+                        on select: set(showing, "places")
+                    }
+                }
+                ui.NavSection("The shell") {
+                    ui.NavItem("chrome", "Shell parts", icon: .monitor) {
+                        on select: set(showing, "chrome")
+                    }
+                }
+                ui.NavSection("Your own") {
+                    ui.NavItem("customs", "Charts and views", icon: .pencil) {
+                        on select: set(showing, "customs")
+                    }
+                }
             }
         }
-        ui.Section("Your own") {
-            for x in g.customs {
-                ui.ListRow(
-                    x.title,
-                    secondary: "Views, drawings, charts and graphs an app makes",
-                    item: x,
-                    icon: .pencil,
-                )
+        content: {
+            // A list, a board and a canvas fill the content where they stand; a page of parts
+            // scrolls down it.
+            if page_filled(g, showing) and showing == "backlogs" {
+                if let b = g.backlogs.first() {
+                    backlog_list(b)
+                }
+            } else if page_filled(g, showing) and showing == "releases" {
+                if let r = g.releases.first() {
+                    release_board(r)
+                }
+            } else if page_filled(g, showing) and showing == "places" {
+                if let p = g.places.first() {
+                    places(p)
+                }
+            } else {
+                ui.Scroll {
+                    stack(padding: .group, max: 72rem) {
+                        if not page_filled(g, showing) {
+                            ui.EmptyState(
+                                "The examples are not loaded",
+                                message: "Every group is here; fill them with the values an app gives its components.",
+                                icon: .layout_grid,
+                                action: "Show the examples",
+                            ) {
+                                on act: show_examples(g)
+                            }
+                        } else if showing == "basics" {
+                            if let b = g.basics.first() {
+                                basics(b)
+                            }
+                        } else if showing == "controls" {
+                            if let c = g.controls.first() {
+                                controls(c)
+                            }
+                        } else if showing == "feedback" {
+                            if let f = g.feedback.first() {
+                                feedback(f)
+                            }
+                        } else if showing == "data" {
+                            if let d = g.data.first() {
+                                data(d)
+                            }
+                        } else if showing == "media" {
+                            if let m = g.media.first() {
+                                media(m)
+                            }
+                        } else if showing == "chrome" {
+                            if let x = g.chrome.first() {
+                                shell_parts(x)
+                            }
+                        } else if let c = g.customs.first() {
+                            custom(c)
+                        }
+                    }
+                }
             }
         }
     }
@@ -167,46 +253,16 @@ template view part(name: Text, about: Text, content: View) {
     }
 }
 
-/// The basics' window: places in the sidebar, the parts in the content.
+/// The basics' page: the parts a window is built from, in sections of their own.
 view basics(b: Basics) {
-    state place: Text = "parts"
     state last: Text = ""
-    ui.NavShell(content_kind: .page, title: "Basics", sidebar_title: "Gallery") {
-        sidebar: {
-            ui.NavList(selected: place) {
-                ui.NavItem("parts", "Parts", icon: .layout_grid) {
-                    on select: set(place, "parts")
-                }
-                ui.NavSection("Collections") {
-                    ui.NavItem("list", "List", icon: .list, count: 3) {
-                        on select: set(place, "list")
-                    }
-                    ui.NavItem("board", "Board", icon: .layout_grid) {
-                        on select: set(place, "board")
-                    }
-                }
-            }
-        }
-        actions: {
-            ui.SearchButton()
-            ui.MenuButton("More", icon: .more_horizontal, icon_only: true) {
-                ui.MenuItem("Rename", icon: .pencil) {
-                    on choose: set(last, "Rename")
-                }
-                ui.MenuItem("Delete", icon: .trash, destructive: true) {
-                    on choose: set(last, "Delete")
-                }
-            }
-        }
-        content: {
-            ui.Scroll {
-                page {
-                    stack(gap: .section) {
-                        parts(b, last)
-                    }
-                }
-            }
-        }
+    ui.Text(
+        "Text, buttons, chips, a card of facts, an empty state and a page of a stack.",
+        role: .caption,
+        secondary: true,
+    )
+    stack(max: 44rem, gap: .section) {
+        parts(b, last)
     }
 }
 
@@ -230,6 +286,10 @@ view parts(b: Basics, last: State<Text>) {
             }
             ui.Button("Archived", icon: .archive, enabled: false)
         }
+    }
+    part("Rich text and a quote", "A message's own text, and the message it answers above it.") {
+        ui.BlockEditor(RichText("Lead with the sync fix, then the new board."))
+        ui.Quote("Can we ship the screenshots with the notes?", caption: "Replying to")
     }
     part("Chip and avatar", "A tag a thing carries, and who looks after it.") {
         row(gap: .related, wrap: true, align: .center) {
@@ -267,36 +327,38 @@ view parts(b: Basics, last: State<Text>) {
     }
 }
 
-/// The backlog's window: its items as rows, each with a menu, a swipe and a hover toolbar,
+/// The backlog's page: its items as rows, each with a menu, a swipe and a hover toolbar,
 /// over a composer.
 view backlog_list(b: Backlog) {
-    ui.NavShell(content_kind: .list, title: "Backlog", count: b.items.len()) {
-        content: {
-            ui.Docked {
-                foot: {
-                    row(gap: .related) {
-                        ui.RichInput(bind: b.draft, placeholder: "Message the team", fill)
-                        ui.Button("Send", icon: .send, icon_only: true)
-                    }
+    state last: Text = ""
+    ui.Docked {
+        foot: {
+            stack(gap: .related) {
+                if last != "" {
+                    ui.Text(last, role: .caption, secondary: true)
                 }
-                ui.VirtualList(selection_follows_focus: true, in_column: true) {
-                    for x in b.items {
-                        ui.ListItem(item: x) {
-                            menu: {
-                                ui.EmojiBar(["👍", "🎉", "👀"])
-                                ui.MenuItem("Open", icon: .arrow_right)
-                                ui.MenuSeparator()
-                                ui.MenuItem("Delete", icon: .trash, destructive: true)
-                            }
-                            swipe: {
-                                ui.SwipeAction("Archive", icon: .archive)
-                            }
-                            change: {
-                                ui.ChangeMark(x)
-                            }
-                            item_row(x)
-                        }
+                row(gap: .related) {
+                    ui.RichInput(bind: b.draft, placeholder: "Message the team", fill)
+                    ui.Button("Send", icon: .send, icon_only: true)
+                }
+            }
+        }
+        ui.VirtualList(selection_follows_focus: true, in_column: true) {
+            for x in b.items {
+                ui.ListItem(item: x) {
+                    menu: {
+                        ui.EmojiBar(["👍", "🎉", "👀"])
+                        ui.MenuItem("Open", icon: .arrow_right)
+                        ui.MenuSeparator()
+                        ui.MenuItem("Delete", icon: .trash, destructive: true)
                     }
+                    swipe: {
+                        ui.SwipeAction("Archive", icon: .archive)
+                    }
+                    change: {
+                        ui.ChangeMark(x)
+                    }
+                    item_row(x)
                 }
             }
         }
@@ -308,13 +370,7 @@ view backlog_list(b: Backlog) {
 view item_row(x: Item) {
     stack(gap: .tight) {
         ui.ListRow(x.title, secondary: x.stage)
-        if not x.notes.is_empty() {
-            ui.BlockEditor(x.notes)
-        }
         ui.Reactions(reactions: x.reactions)
-        if x.stage == "Doing" {
-            ui.Quote("Can we ship the screenshots with the notes?", caption: "Replying to")
-        }
     }
     ui.ContextMenu {
         ui.MenuItem("Copy link", icon: .link)
@@ -330,9 +386,15 @@ view item_row(x: Item) {
     }
 }
 
-/// The release's window: a list per stage, each card an item.
+/// The release's page: a list per stage, each card an item.
 view release_board(r: Release) {
-    std.page(r, canvas: true) {
+    state last: Text = ""
+    stack(gap: .section, fill) {
+        ui.Text(
+            "A board, a list per stage, with cards an app drags between them.",
+            role: .caption,
+            secondary: true,
+        )
         ui.Scroll(across: true) {
             ui.Board(name: "Release") {
                 for stage in ["To do", "Doing", "Done"] {
@@ -340,6 +402,7 @@ view release_board(r: Release) {
                     ui.BoardList(title: stage, count: cards.len(), action: "New item") {
                         for x in cards {
                             ui.BoardCard(x) {
+                                on activate: note_item(last, x)
                                 board_item_row(x)
                             }
                         }
@@ -348,6 +411,11 @@ view release_board(r: Release) {
             }
         }
     }
+}
+
+/// Note the item a row opened, in the page's answer.
+action note_item(last: Text, x: Item) {
+    last = "Opened {x.title}"
 }
 
 /// An item on the release's board as its row: its title; the list it stands in says its stage.
@@ -384,4 +452,9 @@ scenario "a release board" {
     r.items.insert(Item(title: "Translate the onboarding", notes: RichText(""), stage: "To do"))
     r.items.insert(Item(title: "Screenshots for the docs", notes: RichText(""), stage: "Doing"))
     r.items.insert(Item(title: "Bump the version", notes: RichText(""), stage: "Done"))
+}
+
+/// Every group at once: the window a person opens the gallery to see.
+scenario "every family" {
+    invoke(show_examples(root Gallery))
 }

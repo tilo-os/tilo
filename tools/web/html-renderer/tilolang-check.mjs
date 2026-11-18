@@ -7,8 +7,9 @@
 //                                                       [--scenario all|NAME,...] [--open ROW]
 //                                                       [--width N] [--height N]
 //                                                       [--pages ROW,ROW,...]
-// With --pages, each named row is opened in a page of its own, in both themes and both
-// renderers, and shot as `<render>-<theme>-<row>.png`, before the interaction checks.
+// With --pages, each named place in the window's sidebar is chosen, and its page shot in both
+// themes and both renderers as `<render>-<theme>-<place>.png`, before the interaction checks.
+// The gallery's pages are its sidebar's places, so by default every one of them is walked.
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join, resolve} from 'node:path';
 import {serve} from '../chrome.mjs';
@@ -18,12 +19,17 @@ const bundle = resolve(process.argv[2]);
 const out = resolve(process.argv[3]);
 const option = name => { const at = process.argv.indexOf(name); return at < 0 ? null : process.argv[at + 1]; };
 const pkg = option('--package') ?? 'tl/so.tilo.lang.gallery/';
+// The gallery is one window whose sidebar names every group: its places are its pages.
+const GALLERY = 'tl/so.tilo.lang.gallery/';
+const GALLERY_PLACES = ['Basics', 'Controls', 'Feedback', 'Backlog', 'Release board', 'Data',
+  'Media', 'Places', 'Shell parts', 'Charts and views'];
 const scenario = option('--scenario') ?? 'all';
 // The row opened before typing: the gallery's controls.
 const opens = option('--open') ?? 'Controls';
 const width = Number(option('--width')) || 1280;
 const height = Number(option('--height')) || 800;
-const pages = (option('--pages') ?? '').split(',').filter(Boolean);
+const pages = (option('--pages') ?? (pkg === GALLERY ? GALLERY_PLACES.join(',') : ''))
+  .split(',').filter(Boolean);
 const TEXT = 'Hello web';
 mkdirSync(out, {recursive: true});
 
@@ -96,7 +102,7 @@ try {
           await tab.navigate(`${server.url}/app.html?package=${encodeURIComponent(pkg)}&scenario=${scenario}&render=${render}&theme=${theme}`);
           await tab.waitFor('window.renderMarks.presented.length > 0', {timeout: 120000});
           await settle(tab);
-          // The row is pressed until its page shows: a press that lands
+          // The place is pressed until its page shows: a press that lands
           // while the window is still settling can go unanswered.
           for (let tries = 0; tries < 3; tries++) {
             const at = JSON.parse(await tab.evaluate(`${NAMED}(${JSON.stringify(page)})`));
@@ -107,6 +113,10 @@ try {
             await press(tab, at);
             await settle(tab);
           }
+          // Choosing a place in the gallery never reports a page it could not open.
+          result.error_taught = await tab.evaluate(
+            `document.body.innerText.includes('This app could not be opened')`,
+          );
           writeFileSync(join(out, `${render}-${theme}-${page.toLowerCase()}.png`), await tab.screenshot());
           if (render === 'dom' && theme === 'light') writeFileSync(join(out, `dom-${page.toLowerCase()}.html`), await tab.evaluate(`document.getElementById('app').outerHTML`));
           // Words typed into the page's first field for them reach it, on both renders.

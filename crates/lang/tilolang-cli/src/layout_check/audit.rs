@@ -606,6 +606,9 @@ struct Walk<'a> {
     /// Inside a box already found off the device pixels: what it holds moves with it.
     off_pixel: bool,
     page: Option<Rect>,
+    /// Inside content a scroll view holds down: where the node stands up and down is where the
+    /// scroll put it, not a gutter it stands against.
+    in_scroll: bool,
     /// The column of the window's shell the node stands in:
     /// the box a shell gives one of its parts, beside the
     /// others.
@@ -676,6 +679,7 @@ pub fn inspect(
         display_scale,
         off_pixel: false,
         page: None,
+        in_scroll: false,
         column: None,
         header_counts: Vec::new(),
         place_counts: Vec::new(),
@@ -1005,6 +1009,8 @@ impl Walk<'_> {
         // A page scrolls the window's content under its heading;
         // a list inside it scrolls rows the page already scrolls.
         let under_page = self.page;
+        let was_in_scroll = self.in_scroll;
+        self.in_scroll = self.in_scroll || scroller.down;
         if node.widget == "Page" {
             self.page = Some(own);
         }
@@ -1101,6 +1107,7 @@ impl Walk<'_> {
         self.across = was_across;
         self.off_pixel = was_off_pixel;
         self.page = under_page;
+        self.in_scroll = was_in_scroll;
         self.heading = was_heading;
     }
 
@@ -1567,7 +1574,7 @@ impl Walk<'_> {
             return;
         }
         let inside = self.column.unwrap_or(self.viewport);
-        let scrolls = self.page.is_some();
+        let scrolls = self.page.is_some() || self.in_scroll;
         let edges = [
             ("left", own.x0 - inside.x0, false),
             ("right", own.x1 - inside.x1, false),
