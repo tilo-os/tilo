@@ -1121,12 +1121,19 @@ impl Held {
     }
 
     /// What `app`'s document at `route` in `workspace` holds since `heads`: all of it without
-    /// heads. Nothing while its keys are not here yet.
+    /// heads. Nothing while its keys are not here yet, and nothing of a workspace the engine does
+    /// not hold: this device's own, where an app launched outside every workspace keeps what it
+    /// writes, stays with that app.
     fn read(
         &self,
         (app, workspace, route): (&str, &str, &str),
         heads: Option<&[automerge::ChangeHash]>,
     ) -> Option<crate::engine::ResourceReading> {
+        if !tilo_desktop_model::WorkspaceId::parse(workspace)
+            .is_some_and(|id| self.engine.holds(id))
+        {
+            return None;
+        }
         let heads: Option<Vec<[u8; 32]>> =
             heads.map(|heads| heads.iter().map(|head| head.0).collect());
         self.engine

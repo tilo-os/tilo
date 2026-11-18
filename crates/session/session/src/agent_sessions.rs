@@ -231,8 +231,8 @@ impl AgentSessions {
 
     /// The admitted sessions, each once.
     pub(crate) fn here(&self) -> Vec<Present> {
-        self.inner
-            .lock_recover()
+        let inner = self.inner.lock_recover();
+        let admitted = inner
             .sessions
             .iter()
             .filter(|(_, connection)| !connection.agent.is_empty())
@@ -245,8 +245,19 @@ impl AgentSessions {
                 doing: connection.doing.clone(),
                 origin: connection.origin.clone(),
                 environment: connection.environment.clone(),
-            })
-            .collect()
+            });
+        // A workspace's agent answering a turn is there too, for as long as the turn goes.
+        let answering = inner.answering.iter().map(|(session, answering)| Present {
+            session: AgentSessionId::new(session.clone()),
+            agent: answering.agent.clone(),
+            name: answering.name.clone(),
+            workspace: answering.workspace.clone(),
+            workspace_name: String::new(),
+            doing: None,
+            origin: None,
+            environment: None,
+        });
+        admitted.chain(answering).collect()
     }
 
     /// The session that `speaker` (this device) speaks for on the presence board as `member`, by
@@ -857,8 +868,8 @@ mod tests {
         }
     }
 
-    /// A turn's session goes while the turn does, in the workspace it was asked in, and keeps
-    /// what the person allowed it until its turns end.
+    /// A turn's session goes while the turn does, in the workspace it was asked in, where its
+    /// agent is here as long, and keeps what the person allowed it until its turns end.
     #[test]
     fn a_turns_session_goes_while_its_turn_does() {
         use tilo_broker_core::services::AgentSessions as _;
@@ -878,6 +889,14 @@ mod tests {
         assert!(sessions.going("w1", "scribe", "agent-session:t1").is_some());
         assert!(sessions.going("w1", "other", "agent-session:t1").is_none());
         assert!(sessions.going("w2", "scribe", "agent-session:t1").is_none());
+        let here = sessions.here();
+        assert_eq!(
+            here.iter()
+                .map(|present| (present.workspace.as_str(), present.agent.as_str()))
+                .collect::<Vec<_>>(),
+            [("w1", "scribe")],
+            "the agent answering is here in its workspace"
+        );
         assert_eq!(
             sessions
                 .name(&AgentSessionId::new("agent-session:t1"))
@@ -903,6 +922,7 @@ mod tests {
         );
         assert!(sessions.asked(vec![("w1".to_owned(), Vec::new())]));
         assert!(sessions.going("w1", "scribe", "agent-session:t1").is_none());
+        assert!(sessions.here().is_empty(), "its turn over, it left");
     }
 
     /// What a turn reports it spent is charged to its agent for what each report added.
