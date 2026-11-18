@@ -1,10 +1,10 @@
 //! The shell's search in a session: the shared desktop search ([`tilo_desktop_search`]) the shell
 //! opens, over what is published and what the session's services answer, each row run by its
-//! address. A native desktop and the page both host this one role.
+//! address. A native desktop and the page both serve this one role.
 //! The shell lists the windows, the people and its own commands. The search adds what a
-//! session offers beyond the shell: Settings' pages, the apps this host lists and the machine's own
+//! session offers beyond the shell: Settings' pages, the apps this session lists and the machine's own
 //! (with the person's switch), the store's catalogue, what apps hold (the content index), the
-//! person's files, where their windows were, the actions open apps publish through the action host
+//! person's files, where their windows were, the actions open apps publish through the action service
 //! and the jobs it runs, and the session's own published actions. A chosen row the session carries
 //! out: its own action through its own published surface, an app's through the action host by
 //! address (the app started first when it is closed), an app's start, an address.
@@ -671,6 +671,11 @@ impl SessionSearch {
             .into_iter()
             .filter(|published| app.app.as_deref() == Some(published.app.as_str()))
             .collect();
+        // What the workspace itself holds, as the workspace answers it: a page that keeps no
+        // document contents of its own (its workspace stays on the device that serves it)
+        // finds a note or an issue by its words from the window's search too, not only from the
+        // search over the whole workspace.
+        sources.extend(self.host_search.clone());
         (sources, published)
     }
 
@@ -2615,6 +2620,99 @@ mod tests {
             at: 1,
             device: None,
         }
+    }
+
+    /// A window's search asks the workspace's own search too: a page whose workspace stays on
+    /// the device that serves it keeps only names of its documents, and a note or an issue is
+    /// found by its words from the window's box as from the search over the whole workspace.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_windows_search_finds_what_the_workspace_holds() {
+        use std::sync::Arc;
+        use tilo_actions::remote::{
+            ActionCallError, Caller, Found, Pending, ResourceSearch, pending,
+        };
+
+        type Answer = tilo_actions::remote::Completer<Result<Vec<Found>, ActionCallError>>;
+
+        #[derive(Default)]
+        struct Answers {
+            asked: std::sync::Mutex<Vec<(String, Answer)>>,
+        }
+
+        impl ResourceSearch for Answers {
+            fn find(
+                &self,
+                _: &Caller,
+                needle: &str,
+            ) -> Pending<Result<Vec<Found>, ActionCallError>> {
+                let (done, answer) = pending();
+                self.asked
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((needle.to_owned(), done));
+                answer
+            }
+        }
+
+        let answers = Arc::new(Answers::default());
+        let search = SessionSearch::new(
+            SearchOptions {
+                host_search: Some(Held::new(
+                    tilo_desktop_search::providers::hosted::HostSearch::new(
+                        Arc::clone(&answers) as Arc<dyn ResourceSearch>,
+                        Caller::local_person("ada"),
+                        "workspace",
+                        Arc::new(|| {}),
+                    ),
+                )),
+                ..SearchOptions::default()
+            },
+            None,
+            "ada",
+            None,
+            None,
+            None,
+        );
+        let (in_window, _) = search.sources(
+            "workspace",
+            &Scope::InApp(ui::search::AppScope::of("so.tilo.tasks")),
+        );
+        let titles = || -> Vec<String> {
+            in_window
+                .iter()
+                .flat_map(|source| source.query("Write a launch"))
+                .map(|hit| hit.title)
+                .collect()
+        };
+        assert!(titles().is_empty(), "asked, not answered yet");
+        let done = {
+            let mut asked = answers
+                .asked
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let at = asked
+                .iter()
+                .position(|(asked, _)| asked == "Write a launch")
+                .expect("the window asked the workspace's search");
+            asked.remove(at).1
+        };
+        done.complete(Ok(vec![Found {
+            resource: "tasks/Issues/1".into(),
+            kind: "tasks.issues.issues".into(),
+            label: "Write a launch checklist note".into(),
+            open: Some("open".into()),
+            arguments: serde_json::Map::new(),
+            app: Some("so.tilo.tasks".into()),
+            provider: Some("provider:so.tilo.tasks:issues".into()),
+            when: None,
+        }]));
+        assert!(
+            titles()
+                .iter()
+                .any(|title| title.contains("Write a launch")),
+            "the workspace's answer is the window's too"
+        );
     }
 
     /// A window's search reads what its app published into this session's index, and none of
