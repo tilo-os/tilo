@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
-description = "The Chat model as the WebAssembly module its package carries: the chat resource's and each person's drafts' verbs, applied by any device holding the workspace's keys."
+description = "The Chat model as the WebAssembly module its package carries: the chat resource's verbs, applied by any device holding the workspace's keys."
 
 [lib]
 crate-type = ["cdylib", "rlib"]

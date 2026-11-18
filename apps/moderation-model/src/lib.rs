@@ -9,6 +9,6 @@ pub const KIND: &str = "tilo.moderation";
 
 /// The workspace host's moderation agent.
 #[must_use]
-pub fn agent() -> ui::tilo_resource::MemberId {
-    ui::tilo_resource::MemberId::agent("moderation")
+pub fn agent() -> tilo_resource::MemberId {
+    tilo_resource::MemberId::agent("moderation")
 }

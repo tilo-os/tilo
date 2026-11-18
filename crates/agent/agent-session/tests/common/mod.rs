@@ -8,10 +8,15 @@
     reason = "each test binary uses part of this; a fixture failure is the assertion"
 )]
 
-use tilo_actions::api::{ActionAddress, ActionDescriptor, InputSpec};
+use chat::projection::ChatProjection as _;
+use serde_json::json;
+use tilo_actions::api::{ActionDescriptor, InputSpec};
 use tilo_actions::{Availability, ConfirmationPolicy, OperationKind, PROMPTED_PARAM, ParamType};
+use tilo_agent::surface::Catalogue;
+use tilo_agent::tools::{self, Answer, Revealed};
 use tilo_agent_session::{
-    AppCatalogue, AppError, ConfinedReplica, Replica, ReplicaActor, Seed, component_apps,
+    AppCatalogue, AppError, ConfinedReplica, PlanModel, Replica, ReplicaActor, Seed, StepAction,
+    component_apps,
 };
 
 /// Apps whose state is device-local by design, so no operation changes the
@@ -151,12 +156,7 @@ pub trait Driveable {
     fn survey(&mut self) -> Vec<ActionDescriptor>;
     /// The record's document, for noticing that it changed.
     fn body(&mut self) -> String;
-    /// Run the operation at `address` with `arguments`.
-    fn run(
-        &mut self,
-        address: &ActionAddress,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<(), String>;
+    fn run(&mut self, action: &StepAction) -> Result<(), String>;
 }
 
 /// How an edit was made.
@@ -164,9 +164,8 @@ pub trait Driveable {
 pub struct Edit {
     /// The operation, as the step log names it.
     pub label: String,
-    /// The operation, replayable with its arguments.
-    pub address: ActionAddress,
-    pub arguments: serde_json::Map<String, serde_json::Value>,
+    /// The step, replayable.
+    pub action: StepAction,
 }
 
 /// Arguments a caller with no knowledge of the app would try: a value of
@@ -229,8 +228,10 @@ pub fn candidates(app: &mut impl Driveable) -> Vec<Edit> {
                     "{}#{}",
                     descriptor.address.resource, descriptor.address.action
                 ),
-                address: descriptor.address.clone(),
-                arguments,
+                action: StepAction::Invoke {
+                    address: descriptor.address.clone(),
+                    arguments,
+                },
             })
         })
         .collect()
@@ -251,7 +252,7 @@ pub fn find_edit(app: &mut impl Driveable, limit: usize) -> (Option<Edit>, Vec<S
         };
         tried.insert(edit.label.clone());
         let before = app.body();
-        match app.run(&edit.address, &edit.arguments) {
+        match app.run(&edit.action) {
             Ok(()) if app.body() != before => return (Some(edit), refused),
             Ok(()) => refused.push(format!("{}: no change", edit.label)),
             Err(error) => refused.push(format!("{}: {error}", edit.label)),
@@ -259,6 +260,12 @@ pub fn find_edit(app: &mut impl Driveable, limit: usize) -> (Option<Edit>, Vec<S
     }
     (None, refused)
 }
+
+/// Chooses the offer sharing the most words with the task (its app,
+/// resource and action) and fills its text parameters with the task's
+/// quoted phrase. Deterministic, and bound by the same rule as a model: it
+/// reveals before it plans.
+pub struct KeywordModel;
 
 /// Scratchpad's note field edit: the body replaced by `text`, as the action API
 /// takes it (`field-edit` with the edit as JSON).
@@ -278,6 +285,59 @@ pub fn scratchpad_body(
         tilo_actions::api::ActionAddress::new("scratchpad.note", ui::tilo_resource::FIELD_EDIT),
         arguments,
     )
+}
+
+impl PlanModel for KeywordModel {
+    fn choose(
+        &mut self,
+        task: &str,
+        catalogue: &Catalogue,
+        most_steps: usize,
+    ) -> Result<Answer, String> {
+        let task = task.to_lowercase();
+        let words: Vec<&str> = task
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|word| word.len() > 2)
+            .collect();
+        let quoted = task.split('"').nth(1).unwrap_or_default().to_owned();
+        let score = |offer: &&tilo_agent::surface::Offer| {
+            let d = &offer.descriptor;
+            let text = format!(
+                "{} {} {} {} {}",
+                offer.app, d.resource_label, d.address.resource, d.action_label, d.address.action
+            )
+            .to_lowercase();
+            let own: Vec<&str> = text.split(|c: char| !c.is_alphanumeric()).collect();
+            let verb = usize::from(words.contains(&d.address.action.to_lowercase().as_str()));
+            words
+                .iter()
+                .filter(|word| own.contains(word))
+                .count()
+                .saturating_add(verb.saturating_mul(2))
+        };
+        let offer = catalogue
+            .offers
+            .iter()
+            .filter(|offer| score(offer) > 0)
+            .min_by_key(|offer| std::cmp::Reverse(score(offer)))
+            .ok_or("nothing offered fits")?;
+        let mut revealed = Revealed::new();
+        tools::answer(
+            tools::LIST_OPERATIONS,
+            &json!({ "resource": offer.address().resource }),
+            catalogue,
+            &mut revealed,
+        );
+        let mut arguments = serde_json::Map::new();
+        for param in offer.descriptor.params.iter().filter(|p| p.required) {
+            arguments.insert(param.name.to_string(), quoted.clone().into());
+        }
+        tools::read_plan(
+            &json!({"steps": [{"operation": offer.id(), "arguments": arguments}], "why": "keyword"}),
+            &revealed,
+            most_steps,
+        )
+    }
 }
 
 /// The document bodies among what a host retains, as `(readable, sealed)`:

@@ -8,6 +8,7 @@
     reason = "each voice test binary uses a different subset of these fixtures"
 )]
 
+use chat::projection::ChatProjection as _;
 use std::time::SystemTime;
 
 use automerge::AutoCommit;

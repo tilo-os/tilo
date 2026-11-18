@@ -1,5 +1,5 @@
 use super::*;
-use collaboration::permissions::{Acting, KindSet, MemberId, Role, policy};
+use chat::projection::ChatProjection as _;
 use ed25519_dalek::{Signer, SigningKey};
 use std::{cell::RefCell, path::Path, process::Command};
 use tilo_feedback::{Composer, Consent, DeliveryState, MemoryStore, Outbox};
@@ -9,6 +9,7 @@ use ui::application::{
 };
 use ui::application_view::InstanceViewStore;
 use ui::headless::FrameHarness;
+use ui::permissions::{Acting, KindSet, MemberId, Role, policy};
 use ui::resource::{DocumentCheckout, ResourceOwners};
 
 const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
@@ -29,7 +30,7 @@ fn enrollment() -> Enrollment {
             .in_workspace(WORKSPACE),
         permissions: PermissionContext::member_of(
             WORKSPACE,
-            &collaboration::permissions::MemberId::person(hex::encode([12; 32])),
+            &ui::permissions::MemberId::person(hex::encode([12; 32])),
             Role::Owner,
         )
         .at_unix_time(0),
@@ -41,7 +42,7 @@ fn no_member(person: &str) -> PermissionContext {
     PermissionContext::new(
         Acting::person(person),
         vec![],
-        collaboration::permissions::MemberAccess::person(
+        ui::permissions::MemberAccess::person(
             policy::WorkspacePolicy::unowned(WORKSPACE, &policy::Grantee::role(Role::Owner)),
             person,
         ),
@@ -147,7 +148,7 @@ fn canonical(profile: &Path) -> (ResourceStore, FrameHarness) {
     let checkout = DocumentCheckout::package_primary(chat::definition().resource_type.clone());
     let missing = match records.try_open_resource(&checkout) {
         Ok(_) => false,
-        Err(collaboration::resource::ResourceOpenError::MissingResource) => true,
+        Err(ui::resource::ResourceOpenError::MissingResource) => true,
         Err(error) => panic!("canonical existing record could not open: {error}"),
     };
     if missing {
@@ -156,7 +157,7 @@ fn canonical(profile: &Path) -> (ResourceStore, FrameHarness) {
             .unwrap()
             .initialize(|doc| {
                 let reporter = hex::encode([12; 32]);
-                let failed = |error: tilo_actions::ApiError| error.to_string();
+                let failed = |error: ui::tilo_actions::ApiError| error.to_string();
                 chat::demo::start(doc, &reporter).map_err(failed)?;
                 chat::demo::insert_category(doc, "category", "Feedback").map_err(failed)?;
                 chat::demo::insert_channel(
@@ -183,7 +184,7 @@ fn canonical(profile: &Path) -> (ResourceStore, FrameHarness) {
             views,
             device_id: "device".into(),
             instance_id: 7,
-            permissions: collaboration::permissions::SharedPermissions::new(admitted.permissions),
+            permissions: ui::permissions::SharedPermissions::new(admitted.permissions),
             author: MemberId::person(hex::encode([12; 32])),
             action_context: tilo_actions::ActionContext::default(),
         },
@@ -388,7 +389,7 @@ fn reviewed_retry_and_canonical_receipt_survive_both_process_restarts() {
 
 #[test]
 fn canonical_owner_refuses_pending_edits_wrong_owner_and_wrong_reporter() {
-    use automerge::{ROOT, transaction::Transactable};
+    use ui::automerge::{ROOT, transaction::Transactable};
     let root = tempfile::tempdir().unwrap();
     let (records, mut frame) = canonical(root.path());
     let report = submission();
@@ -414,7 +415,7 @@ fn canonical_owner_refuses_pending_edits_wrong_owner_and_wrong_reporter() {
     .in_workspace(WORKSPACE);
     wrong_reporter.permissions = PermissionContext::member_of(
         WORKSPACE,
-        &collaboration::permissions::MemberId::person(hex::encode([15; 32])),
+        &ui::permissions::MemberId::person(hex::encode([15; 32])),
         Role::Owner,
     )
     .at_unix_time(0);
@@ -513,8 +514,8 @@ fn canonical_owner_acknowledges_a_screenshot_only_once_it_keeps_the_bytes() {
         endpoint(records.clone()).receipt(&report, &enrollment()),
         Err(Error::NotDurable)
     ));
-    let content = tilo_content::ContentStore::memory();
-    let with_content = |content: &tilo_content::ContentStore| {
+    let content = ui::content::ContentStore::memory();
+    let with_content = |content: &ui::content::ContentStore| {
         CanonicalDestination::new(
             enrollment().owner,
             enrollment().destination,
@@ -565,7 +566,7 @@ fn canonical_owner_acknowledges_a_recording_only_once_it_keeps_the_bytes() {
     });
     submit(&mut frame, &report);
     records.try_flush().unwrap();
-    let content = tilo_content::ContentStore::memory();
+    let content = ui::content::ContentStore::memory();
     let owner = || {
         CanonicalDestination::new(
             enrollment().owner,
@@ -611,7 +612,7 @@ fn a_picture_report_ends_sent_once_the_owner_keeps_its_picture() {
     let root = tempfile::tempdir().unwrap();
     let (records, frame) = canonical(root.path());
     let frame = Rc::new(RefCell::new(frame));
-    let content = tilo_content::ContentStore::memory();
+    let content = ui::content::ContentStore::memory();
     let picture = b"masked report picture".to_vec();
     let mut report = submission();
     report.feedback.screenshot = Some(tilo_feedback::ScreenshotRef {
@@ -718,7 +719,7 @@ fn unsigned_wrong_owner_and_wrong_destination_acknowledgments_are_refused() {
     host.receipt(&report).unwrap().unwrap();
     current.borrow_mut().permissions = PermissionContext::member_of(
         WORKSPACE,
-        &collaboration::permissions::MemberId::person(hex::encode([12; 32])),
+        &ui::permissions::MemberId::person(hex::encode([12; 32])),
         Role::Viewer,
     )
     .at_unix_time(0);
@@ -761,12 +762,12 @@ tilo_test_env::scenario! {
         // Filing feedback is commenting: a commenter files, a viewer cannot.
         let mut commenter = enrollment();
         commenter.permissions =
-            PermissionContext::member_of(WORKSPACE, &collaboration::permissions::MemberId::person(hex::encode([12; 32])), Role::Commenter)
+            PermissionContext::member_of(WORKSPACE, &ui::permissions::MemberId::person(hex::encode([12; 32])), Role::Commenter)
                 .at_unix_time(0);
         assert!(commenter.authorize().is_ok());
         let mut viewer = enrollment();
         viewer.permissions =
-            PermissionContext::member_of(WORKSPACE, &collaboration::permissions::MemberId::person(hex::encode([12; 32])), Role::Viewer)
+            PermissionContext::member_of(WORKSPACE, &ui::permissions::MemberId::person(hex::encode([12; 32])), Role::Viewer)
                 .at_unix_time(0);
         assert!(viewer.authorize().is_err());
         let mut other = enrollment();
@@ -775,12 +776,12 @@ tilo_test_env::scenario! {
         // A workspace's owner holds everything; a member's grants can be refused.
         let mut blocked = enrollment();
         blocked.permissions =
-            PermissionContext::member_of(WORKSPACE, &collaboration::permissions::MemberId::person(hex::encode([12; 32])), Role::Editor)
+            PermissionContext::member_of(WORKSPACE, &ui::permissions::MemberId::person(hex::encode([12; 32])), Role::Editor)
                 .with_grant(submit_grant(KindSet::ALL, Answer::Deny))
                 .at_unix_time(0);
         let mut editor = blocked.clone();
         editor.permissions =
-            PermissionContext::member_of(WORKSPACE, &collaboration::permissions::MemberId::person(hex::encode([12; 32])), Role::Editor)
+            PermissionContext::member_of(WORKSPACE, &ui::permissions::MemberId::person(hex::encode([12; 32])), Role::Editor)
                 .at_unix_time(0);
         assert!(editor.authorize().is_ok());
         assert!(blocked.authorize().is_err());
@@ -807,7 +808,7 @@ tilo_test_env::scenario! {
         )
         .in_workspace(WORKSPACE);
         current.borrow_mut().permissions =
-            PermissionContext::member_of(WORKSPACE, &collaboration::permissions::MemberId::person(hex::encode([15; 32])), Role::Owner);
+            PermissionContext::member_of(WORKSPACE, &ui::permissions::MemberId::person(hex::encode([15; 32])), Role::Owner);
         assert!(matches!(
             transport.enqueue(&submission()),
             Err(Error::ReceiptMismatch)
@@ -836,7 +837,7 @@ tilo_test_env::scenario! {
         assert!(now > 0, "execution clock must be observable");
         let mut expired = enrollment();
         expired.permissions =
-            PermissionContext::member_of(WORKSPACE, &collaboration::permissions::MemberId::person(hex::encode([12; 32])), Role::Viewer)
+            PermissionContext::member_of(WORKSPACE, &ui::permissions::MemberId::person(hex::encode([12; 32])), Role::Viewer)
                 .with_grant(
                     submit_grant(KindSet::of(ActionKind::Undoable), Answer::Allow)
                         .with_lifetime(policy::Lifetime::Until(now.saturating_mul(1000))),
@@ -870,7 +871,7 @@ tilo_test_env::scenario! {
         .unwrap();
         let mut host = Host::open(store.clone(), setup).unwrap();
         current.borrow_mut().permissions =
-            PermissionContext::member_of(WORKSPACE, &collaboration::permissions::MemberId::person(hex::encode([12; 32])), Role::Viewer);
+            PermissionContext::member_of(WORKSPACE, &ui::permissions::MemberId::person(hex::encode([12; 32])), Role::Viewer);
         assert!(host.send(&submission()).is_err());
         drop(host);
         let mut changed = enrollment();

@@ -4,9 +4,9 @@
 //! preset) decide and overturn, because both verbs are `#[action(moderation)]` and the
 //! ordinary grant check places them there.
 
+use automerge::ObjId;
 use serde::{Deserialize, Serialize};
-use ui::automerge::ObjId;
-use ui::tilo_resource::{
+use tilo_resource::{
     self, ActionCx, Id, Identified, JsonSchema, Keyed, MemberId, Model, ModelError, NonBlank,
     Refusal, resource,
 };
@@ -146,7 +146,7 @@ fn reporter(cx: &ActionCx) -> Result<MemberId, Refusal> {
     let invoked_by = cx.invoked_by();
     let by_person = invoked_by
         .as_ref()
-        .is_none_or(ui::tilo_actions::Acting::is_person);
+        .is_none_or(tilo_actions::Acting::is_person);
     let by_software = invoked_by.is_some_and(|by| by.is_agent() || by.is_bot());
     match cx.author() {
         Some(author) if by_person => Ok(author.clone()),
@@ -217,7 +217,7 @@ impl Moderation {
                 "no moderation migration from {from}"
             )));
         }
-        upgrade_decisions(doc, &ui::automerge::ROOT)
+        upgrade_decisions(doc, &automerge::ROOT)
     }
 
     /// Report someone.

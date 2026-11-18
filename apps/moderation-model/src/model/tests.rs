@@ -1,4 +1,4 @@
-use ui::tilo_resource::{NonBlank, Replica};
+use tilo_resource::{NonBlank, Replica};
 
 use super::*;
 
@@ -65,8 +65,8 @@ fn reports_are_bounded() {
         "nobody reports themselves"
     );
     assert!(
-        ui::serde_json::from_value::<moderation::Report>(
-            ui::serde_json::json!({"person": {"person": MALLORY}, "reason": "   "})
+        serde_json::from_value::<moderation::Report>(
+            serde_json::json!({"person": {"person": MALLORY}, "reason": "   "})
         )
         .is_err(),
         "a reason is needed, where the arguments are read"
@@ -164,12 +164,12 @@ fn deciding_and_overturning_sit_under_the_moderation_node() {
 /// each was one JSON string.
 #[test]
 fn a_decision_kept_as_json_strings_migrates_to_lists() {
-    use ui::tilo_resource::evolution;
-    let mut doc = ui::tilo_resource::Doc::new();
+    use tilo_resource::evolution;
+    let mut doc = tilo_resource::Doc::new();
     evolution::fixture(
         &mut doc,
-        &ui::automerge::ROOT,
-        &ui::serde_json::json!({
+        &automerge::ROOT,
+        &serde_json::json!({
             "reports": {},
             "decisions": {
                 "d1": {
