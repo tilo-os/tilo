@@ -703,6 +703,14 @@ struct MarkdownField: UIViewRepresentable {
         view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         view.text = text
         view.send = { [weak coordinator = context.coordinator] in coordinator?.parent.onSend() }
+        view.steps = { [weak coordinator = context.coordinator, weak view] in
+            guard let coordinator, let view else { return false }
+            return coordinator.steps(in: view)
+        }
+        view.step = { [weak coordinator = context.coordinator, weak view] key in
+            guard let coordinator, let view else { return }
+            coordinator.step(view, key)
+        }
         context.coordinator.focus = focus
         context.coordinator.style(view, scheme)
         return view
@@ -730,6 +738,10 @@ struct MarkdownField: UIViewRepresentable {
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: MarkdownField
         var focus = 0
+        /// Which sent message stands in the field, while the person steps through them.
+        private var stepping = Stepping()
+        /// While a step puts its words in the field: the changes it makes are not the person's.
+        private var puts = false
 
         init(_ parent: MarkdownField) {
             self.parent = parent
@@ -737,11 +749,54 @@ struct MarkdownField: UIViewRepresentable {
 
         func textViewDidChange(_ textView: UITextView) {
             parent.text = textView.text
+            leaveSteppingIfTheirs(textView)
             style(textView, parent.scheme)
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
+            leaveSteppingIfTheirs(textView)
             style(textView, parent.scheme)
+        }
+
+        /// Whether Up, Down and Escape on a keyboard are the stepping's now: the field is empty, or
+        /// a sent message stands in it as it was brought back. Everywhere else they are the text field's.
+        func steps(in view: UITextView) -> Bool {
+            view.text.isEmpty || stepping.stands(view.text, caret: view.selectedRange)
+        }
+
+        /// One key of a keyboard, as on a Mac: Up brings back what the person sent before, Down what
+        /// they sent after, Escape lets it go.
+        func step(_ view: UITextView, _ key: FieldView.Key) {
+            let stands = stepping.stands(view.text, caret: view.selectedRange)
+            if !stands { stepping = Stepping() }
+            switch key {
+            case .up:
+                guard stands || view.text.isEmpty else { return }
+                if let words = stepping.older(in: parent.sent()) { put(words, in: view) }
+            case .down:
+                if stands { put(stepping.newer(in: parent.sent()), in: view) }
+            case .escape:
+                guard stands else { return }
+                stepping = Stepping()
+                put("", in: view)
+            }
+        }
+
+        /// Put words in the field as an edit of the person's own: the draft follows, and Undo takes it back.
+        private func put(_ words: String, in view: UITextView) {
+            puts = true
+            if let whole = view.textRange(from: view.beginningOfDocument, to: view.endOfDocument) {
+                view.replace(whole, withText: words)
+            }
+            view.selectedRange = NSRange(location: (words as NSString).length, length: 0)
+            puts = false
+            parent.text = view.text
+            style(view, parent.scheme)
+        }
+
+        /// The person typed or moved the caret: what stands in the field is theirs.
+        private func leaveSteppingIfTheirs(_ view: UITextView) {
+            if !puts, stepping.isOn, !stepping.stands(view.text, caret: view.selectedRange) { stepping = Stepping() }
         }
 
         func textViewDidEndEditing(_ textView: UITextView) {
@@ -760,20 +815,51 @@ struct MarkdownField: UIViewRepresentable {
 }
 
 /// The field on an iPhone. On the glass keyboard Return makes a line and the arrow sends; with a
-/// keyboard attached Return sends and Shift Return makes a line, as on a Mac.
+/// keyboard attached Return sends and Shift Return makes a line, and Up in an empty field steps
+/// through what the person sent, as on a Mac.
 final class FieldView: UITextView {
     var send: (() -> Void)?
+    /// Whether Up, Down and Escape step through what the person sent now, and one such step.
+    var steps: (() -> Bool)?
+    var step: ((Key) -> Void)?
     /// The words the view lays out: a text view made over a layout of its own does not keep them itself.
     var kept: NSTextStorage?
 
+    /// The keys of a keyboard the field takes while the person steps through what they sent.
+    enum Key {
+        case up, down, escape
+    }
+
     override var keyCommands: [UIKeyCommand]? {
-        let command = UIKeyCommand(input: "\r", modifierFlags: [], action: #selector(sendPressed))
-        command.wantsPriorityOverSystemBehavior = true
-        return [command]
+        // While a letter is being put together, every key is the input method's and the system's.
+        guard markedTextRange == nil else { return nil }
+        var keys: [(String, Selector)] = [("\r", #selector(sendPressed))]
+        // The arrows are the field's own only where they step: everywhere else they move the caret.
+        if steps?() == true {
+            keys += [(UIKeyCommand.inputUpArrow, #selector(upPressed)), (UIKeyCommand.inputDownArrow, #selector(downPressed)),
+                     (UIKeyCommand.inputEscape, #selector(escapePressed))]
+        }
+        return keys.map { input, action in
+            let command = UIKeyCommand(input: input, modifierFlags: [], action: action)
+            command.wantsPriorityOverSystemBehavior = true
+            return command
+        }
     }
 
     @objc private func sendPressed() {
         send?()
+    }
+
+    @objc private func upPressed() {
+        step?(.up)
+    }
+
+    @objc private func downPressed() {
+        step?(.down)
+    }
+
+    @objc private func escapePressed() {
+        step?(.escape)
     }
 }
 #endif

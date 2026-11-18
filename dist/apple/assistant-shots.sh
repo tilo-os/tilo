@@ -15,8 +15,9 @@
 #   dist/apple/assistant-shots.sh OUT typing   the main chat with the keyboard up, as the whole screen shows it
 #   dist/apple/assistant-shots.sh OUT keyboard the main chat with the keyboard up, put away and up again, light
 #                                              and dark: what a drag on the conversation does to the keyboard,
-#                                              what the window draws behind the keyboard's upper corners
-#                                              and what is kept (OUT/phone/keyboard-*.txt; a line FAULT fails
+#                                              what the window draws behind the keyboard's upper corners,
+#                                              what Up, Down and Escape of an attached keyboard do in the
+#                                              field and what is kept (OUT/phone/keyboard-*.txt; a line FAULT fails
 #                                              it), and the whole screen with the keyboard up and with it away
 #
 # The simulator is one of its own, made when it is missing and shut down again after.
