@@ -180,11 +180,17 @@ pub struct CatalogueResource {
 }
 
 impl CatalogueResource {
-    /// Whether `name` names this resource: its kind, or its label ignoring
-    /// ASCII case.
+    /// Whether `name` names this resource: its id, the item part of its id
+    /// (an item's id is `<kind>/<field>/<item>`, and `<item>` names it as
+    /// its own id does), its kind, or its label ignoring ASCII case. An id
+    /// is matched exactly, where a label is matched in any case.
     #[must_use]
     pub fn is_named(&self, name: &str) -> bool {
-        self.kind == name || self.label.eq_ignore_ascii_case(name)
+        let item_of_id = self.id.rsplit_once('/').map(|(_, item)| item);
+        self.id == name
+            || item_of_id == Some(name)
+            || self.kind == name
+            || self.label.eq_ignore_ascii_case(name)
     }
 }
 
@@ -628,6 +634,29 @@ mod tests {
             let page =
                 CataloguePage::from_rows("r1".into(), rows, &CatalogueQuery::resolve(&target, "r1"));
             assert_eq!(page.rows.len(), 1);
+        }
+
+        phase an_id_names_its_resource_and_an_items_id_part_names_the_item;
+        {
+            let mut item = row("tasks.issues/issues/7", Some("delete"), "");
+            item.resource.label = "Fix the roof".into();
+            let rows = vec![row("tracker", None, ""), item];
+            let named = |name: &str| {
+                CataloguePage::from_rows(
+                    "r1".into(),
+                    rows.clone(),
+                    &CatalogueQuery {
+                        resource_name: Some(name.into()),
+                        ..CatalogueQuery::default()
+                    },
+                )
+            };
+            let whole = named("tasks.issues/issues/7");
+            assert_eq!(whole.rows.len(), 1, "the id names the item");
+            let part = named("7");
+            assert_eq!(part.rows.len(), 1, "the item part of the id names it");
+            assert_eq!(part.rows[0].resource.id, "tasks.issues/issues/7");
+            assert!(named("issue").rows.is_empty(), "not the id's middle");
         }
 
         phase an_app_filter_narrows_before_the_page_bound;

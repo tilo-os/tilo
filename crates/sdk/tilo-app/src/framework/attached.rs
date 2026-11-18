@@ -618,7 +618,7 @@ impl AttachedView {
     }
 
     /// The items the view's tree leaves out past each collection's published
-    /// page whose label is `name`, built alone and only if the member
+    /// page whose id or label is `name`, built alone and only if the member
     /// may reach them: what a path naming one of them costs, however many
     /// items the record holds.
     #[must_use]
@@ -626,16 +626,73 @@ impl AttachedView {
         // Named alone from the view as it stands; laid out only when that
         // names none.
         self.found(|frame| {
-            let named: Vec<_> = frame
-                .past_page_labels()
+            let past = frame.past_page_labels();
+            // An id names the item itself, before any label does: its
+            // resource id, or the item part of it (`<kind>/<field>/<item>`,
+            // the id a path and an answer write).
+            let by_id = |(id, _): &(String, String)| {
+                id == name || id.rsplit_once('/').is_some_and(|(_, item)| item == name)
+            };
+            let listed: Vec<(String, String)> = {
+                let ids: Vec<_> = past.iter().filter(|entry| by_id(entry)).cloned().collect();
+                if ids.is_empty() {
+                    past.iter()
+                        .filter(|(_, label)| label.eq_ignore_ascii_case(name))
+                        .cloned()
+                        .collect()
+                } else {
+                    ids
+                }
+            };
+            let named: Vec<_> = listed
                 .into_iter()
-                .filter(|(_, label)| label.eq_ignore_ascii_case(name))
                 .filter_map(|(id, _)| frame.resource(&id))
                 .filter_map(|resource| self.permitted(resource))
                 .collect();
             (!named.is_empty()).then_some(named)
         })
         .unwrap_or_default()
+    }
+
+    /// The items `name` names among what the chain `parent` holds — by its
+    /// id, whole or the item part of it, first, then by its label — each
+    /// built alone from the part keeping it, and only those the member may
+    /// reach: what a path naming one costs, however many items the chain
+    /// holds, and whether or not the page it publishes carries them.
+    #[must_use]
+    pub fn chain_items_named(&self, parent: &str, name: &str) -> Vec<tilo_actions::ResourceSpec> {
+        let lookup = |frame: &mut FrameHarness| {
+            frame
+                .with_widget_mut(|root: &mut super::root::ResourceRoot| {
+                    root.storage.chain_items_named(parent, name)
+                })
+                .unwrap_or_default()
+        };
+        let mut found = lookup(&mut self.frame.borrow_mut());
+        if found.is_empty() && self.unsettled.get() {
+            // Something only a frame shows may name it: lay the view out once.
+            let _ = self.frame();
+            found = lookup(&mut self.frame.borrow_mut());
+        }
+        if found.is_empty() {
+            return found;
+        }
+        // The item as the view publishes it carries what the view adds to
+        // its row; one past the page is the model's own build.
+        let ids: Vec<String> = found
+            .iter()
+            .map(|child| child.id.as_str().to_owned())
+            .collect();
+        let published: Vec<Option<tilo_actions::ResourceSpec>> = {
+            let frame = self.frame.borrow();
+            ids.iter().map(|id| frame.resource(id)).collect()
+        };
+        found
+            .into_iter()
+            .zip(published)
+            .map(|(child, published)| published.unwrap_or(child))
+            .filter_map(|resource| self.permitted(resource))
+            .collect()
     }
 
     /// The items the view's tree leaves out past each collection's published

@@ -56,8 +56,7 @@ impl Node {
         if same(&self.label) {
             return Some(0);
         }
-        let key_tail = self.key.rsplit('/').next().unwrap_or_default();
-        if same(&self.key) || same(&self.id) || same(key_tail) || same(self.token()) {
+        if self.names_id(name) {
             return Some(1);
         }
         if same(&self.kind) || tail(&self.kind) {
@@ -68,6 +67,15 @@ impl Node {
         (lower.chars().count() >= 3
             && (starts(&self.label) || (lower.len() >= 6 && starts(self.token()))))
         .then_some(3)
+    }
+
+    /// Whether `name` is this resource's own id, or the item part of it
+    /// (`<kind>/<field>/<item>`): an id names the resource before any label
+    /// does, whatever the label says.
+    pub(super) fn names_id(&self, name: &str) -> bool {
+        let same = |text: &str| text.trim().eq_ignore_ascii_case(name);
+        let key_tail = self.key.rsplit('/').next().unwrap_or_default();
+        same(&self.key) || same(&self.id) || same(key_tail) || same(self.token())
     }
 
     /// The name that goes in a path: its label when it tells it apart from

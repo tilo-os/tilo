@@ -713,6 +713,42 @@ impl Replica {
         self.survey_page_of(&self.view.published(), false, query, window)
     }
 
+    /// The rows the chain item `child` offers under `parent`: its actions as
+    /// [`Self::offered`] offers them, and a row of its own where it holds
+    /// what offers actions, as a listing under the chain shows it.
+    fn rows_of_item(
+        &self,
+        child: &tilo_actions::ResourceSpec,
+        parent: &str,
+    ) -> Vec<tilo_actions::remote::CatalogueRow> {
+        let in_chains = chain_resources(std::slice::from_ref(child));
+        let mut rows = Vec::new();
+        let mut offering = std::collections::HashSet::new();
+        tilo_actions::api::survey_placed_under(child, parent, &mut |placed| {
+            let tilo_actions::api::PlacedAction {
+                parent,
+                has_children,
+                action,
+            } = placed;
+            let Some(action) = self.offered(action, &in_chains) else {
+                return true;
+            };
+            offering.insert(action.address.resource.clone());
+            rows.push(tilo_actions::remote::CatalogueRow::for_placed_action(
+                "",
+                self.app_id(),
+                tilo_actions::api::PlacedAction {
+                    parent,
+                    has_children,
+                    action,
+                },
+            ));
+            true
+        });
+        containers_into(child, parent, &offering, self.app_id(), &mut rows);
+        rows
+    }
+
     /// [`Self::survey_page`] of `resources`, the tree the view publishes:
     /// `without_layout` when the view has not laid out what changed, which then
     /// reads past the published pages only the items a name finds.
@@ -728,6 +764,24 @@ impl Replica {
         query: &tilo_actions::remote::CatalogueQuery,
         (can_render, (offset, take)): (bool, (usize, usize)),
     ) -> (usize, Vec<tilo_actions::remote::CatalogueRow>) {
+        // A chain's item named by its id is built alone from the part
+        // keeping it, past whatever page the chain publishes: the page
+        // answers the name at the items' cost, however many items the chain
+        // holds, and never walks the tree for it.
+        if let (Some(name), Some(parent)) = (
+            query.resource_name.as_deref(),
+            query.parent_resource.as_deref(),
+        ) && ui::resource::chain_of_resource_id(parent).is_some()
+        {
+            let named = self.view.chain_items_named(parent, name);
+            if !named.is_empty() {
+                let mut surveyed = Vec::new();
+                for child in &named {
+                    surveyed.extend(self.rows_of_item(child, parent));
+                }
+                return Self::page_of(&surveyed, query, (can_render, (offset, take)));
+            }
+        }
         // The tree the view publishes, and only the items past its pages the
         // page reaches: a record holding thousands of notes costs a page its
         // rows, not its notes.

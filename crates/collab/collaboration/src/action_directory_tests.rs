@@ -152,6 +152,23 @@ tilo_test_env::scenario! {
         });
         assert_eq!(items.rows.len(), 3);
         assert!(items.rows.iter().all(|row| row.parent_resource == "done"));
+
+        // An id names the resource whole, and an item's id part names the
+        // item, as a path or an answer writes it.
+        let whole = directory.page(&ActionDirectoryQuery {
+            resource_name: "todos/1".into(),
+            parent_resource: "todos".into(),
+            ..query()
+        });
+        assert_eq!(whole.rows.len(), 1);
+        assert_eq!(whole.rows[0].resource, "todos/1");
+        let item = directory.page(&ActionDirectoryQuery {
+            resource_name: "2".into(),
+            parent_resource: "todos".into(),
+            ..query()
+        });
+        assert_eq!(item.rows.len(), 1);
+        assert_eq!(item.rows[0].resource, "todos/2");
     }
 
     phase a_search_finds_actions_in_tree_order_and_resolves_them;
