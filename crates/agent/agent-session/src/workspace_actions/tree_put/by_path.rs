@@ -134,7 +134,7 @@ fn undo_call(
     if changes.is_empty() {
         return Err("the workspace's folder holds no change of that call".to_owned());
     }
-    let mut taken = 0;
+    let mut taken: usize = 0;
     let mut why = None;
     for (chunk, hash) in changes.into_iter().rev() {
         let edit = HistoryEdit::Undo {
@@ -150,7 +150,7 @@ fn undo_call(
         };
         let action = ResourceHistoryEdit::<fs_protocol::FilesTree>::new(edit);
         match tree.apply_history(chunk, (&action, encoded), context.clone()) {
-            Ok(()) => taken += 1,
+            Ok(()) => taken = taken.saturating_add(1),
             Err(error) => why = Some(error.to_string()),
         }
     }
