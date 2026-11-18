@@ -283,6 +283,28 @@ final class ModelTests: XCTestCase {
         XCTAssertEqual(model.session, .signedOut)
     }
 
+    /// A pairing that ends before the device is anybody's leaves it at its way in, and the way
+    /// in says Tilo's own sentence for why, until another link is taken.
+    func testAPairingThatEndsSaysTilosOwnSentenceAtTheWayInUntilAnotherLinkIsTaken() async throws {
+        var content = MemorySource.Content()
+        content.pairsAs = Drawing.person
+        content.pairingAsk = PairingAsk(heading: "Add this device?", said: ["Whose devices this one joins.", "Which server adds it."],
+                                        go: "Add this device", stop: "Stop", site: "https://tilo.example")
+        let source = MemorySource(content)
+        let model = AssistantModel(source: source)
+        model.start()
+        try await until { model.session == .signedOut }
+        XCTAssertNil(model.problem)
+        let why = "Lounge no longer exists. It was reset since this browser last opened it."
+        source.endPairing(saying: why)
+        try await until { model.problem == why }
+        XCTAssertEqual(model.session, .signedOut, "a pairing that ended leaves the device at its way in")
+        // Another link is taken: what the last pairing ended with is said no more.
+        model.pair(with: "https://tilo.example/pair#abc")
+        try await until { if case .asked = model.session { true } else { false } }
+        try await until { model.problem == nil }
+    }
+
     func testThePanelStandsBesideTheMainChatAndComesElsewhereWhenAskedFor() {
         let model = AssistantModel(source: Drawing.source())
         XCTAssertTrue(model.showsPanel)
