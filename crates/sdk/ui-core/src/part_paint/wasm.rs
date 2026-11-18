@@ -4,7 +4,7 @@
 //! and imports nothing; loading refuses one that imports anything, so a
 //! painter has no clock, no I/O, no files and nothing to ask.
 //!
-//! The interpreter ([`tilo_theme_painter_wasm`]) is not in the shared runtime
+//! The interpreter (`tilo-theme-painter-wasm`) is not in the shared runtime
 //! every app maps: `lazy-painter` opens it from
 //! `libtilo_theme_painter_engine.so` the first time a theme names a set,
 //! and every other build links it here.
