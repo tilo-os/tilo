@@ -514,7 +514,7 @@ mod tests {
         }
 
         // What someone is, a chip says with their face or an agent's own mark, never by joining
-        // the kind into the name. A line of text with no face keeps the kind in its words.
+        // the kind into the name. A reader hears the kind in words.
         phase an_agents_chip_reads_its_name_and_its_mark_says_agent;
         {
             let me = MemberId::person("me-id");
@@ -532,8 +532,13 @@ mod tests {
             assert!(people.actor_of(&agent).agent(), "the chip carries the mark");
             assert_eq!(
                 presence.display_name(&agent),
-                "Planner · Agent",
-                "a line of text with no face beside it still names the kind"
+                "Planner",
+                "no surface joins what a member is into their name"
+            );
+            assert_eq!(
+                ui_core::history_source::agent_spoken_label("Planner"),
+                "Planner, agent",
+                "a reader hears the kind the mark shows"
             );
         }
     }
