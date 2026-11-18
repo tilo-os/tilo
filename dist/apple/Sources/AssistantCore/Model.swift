@@ -217,14 +217,18 @@ public struct Message: Equatable, Sendable {
     /// the cause is one the person mends themselves: the key, the key's account, or no provider.
     /// Nil for every other message, and for a failure whose cause their server does not say.
     public var keyFault: KeyFault?
+    /// What the turn that writes this reply does, where the person's Tilo says so with the
+    /// reply. Nil for a reply no turn works on, and for every other message.
+    public var turn: Turn?
 
     public init(_ author: Author, _ text: String, attachments: [Attachment] = [], live: [LiveThing] = [],
-                keyFault: KeyFault? = nil) {
+                keyFault: KeyFault? = nil, turn: Turn? = nil) {
         self.author = author
         self.text = text
         self.attachments = attachments
         self.live = live
         self.keyFault = keyFault
+        self.turn = turn
     }
 
     public enum Author: Equatable, Sendable {
@@ -238,6 +242,57 @@ public struct Message: Equatable, Sendable {
     public enum MainAgentWord: Equatable, Sendable {
         case job
         case instruction
+    }
+
+    /// What a turn does while it writes a reply: what it does now, since when, and the steps
+    /// it has taken. The words of a step are the system's own, never the app's.
+    public struct Turn: Equatable, Sendable {
+        public var now: Now
+        /// When it took the message up.
+        public var began: Date
+        /// The steps it has taken so far, oldest first.
+        public var steps: [Step]
+
+        public init(now: Now, began: Date, steps: [Step] = []) {
+            self.now = now
+            self.began = began
+            self.steps = steps
+        }
+
+        public enum Now: Equatable, Sendable {
+            /// Its model thinks. The newest words it gave of its thinking; empty where it gave none.
+            case thinking(String)
+            /// It takes a step, in the step's own words as the person's Tilo says them; nil
+            /// where their Tilo says only a tool's bare name.
+            case step(String?)
+            /// It writes the reply's words.
+            case writing
+        }
+
+        /// One step of a turn, as one line says it.
+        public struct Step: Identifiable, Equatable, Sendable {
+            public var id: String
+            /// The step in the system's own words: the action's label, and what it is about.
+            public var words: String
+            /// How long it took, where the device saw it begin and end.
+            public var took: TimeInterval?
+            public var outcome: Outcome
+
+            public init(id: String, words: String, took: TimeInterval? = nil, outcome: Outcome = .done) {
+                self.id = id
+                self.words = words
+                self.took = took
+                self.outcome = outcome
+            }
+
+            public enum Outcome: Equatable, Sendable {
+                /// It was begun and has not ended.
+                case going
+                case done
+                /// It was refused or failed.
+                case failed
+            }
+        }
     }
 
     /// A cause of a reply without an answer that another key or another provider mends.

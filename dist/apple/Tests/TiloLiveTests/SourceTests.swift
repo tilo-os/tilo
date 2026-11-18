@@ -366,6 +366,27 @@ final class TiloSourceTests: XCTestCase {
         XCTAssertEqual(ChatConversation.direct([ChatMember(nil, id: "b"), ChatMember(nil, id: "a")]), #"direct:["a","b"]"#)
     }
 
+    func testAReplyAtWorkCarriesWhatItsTurnDoesAsChatKeepsItWithTheReply() async throws {
+        try await start(.agent(id: "assistant", name: "Assistant"))
+        try await enter("""
+            window.byKind = true;
+            direct({id: 'm1', author: {person: ADA}, text: 'Add my mail account'});
+            direct({id: 'm2', author: {agent: 'assistant'}, text: '',
+              work: {stream: {sequence: 2, reasoning: 'Which servers does the address use?', progress: '', finish: null, detail: ''},
+                     state: {state: {$variant: 'doing', did: 'Look up', about: 'Mail servers'}, since: 1794900002},
+                     trace: [{id: 's1', sequence: 1, resource: 'Mail settings', label: 'Read', outcome: {$variant: 'applied'}},
+                             {id: 's2', sequence: 2, resource: 'Mail servers', label: 'Look up', outcome: {$variant: 'refused', why: 'not_found'}}],
+                     failure_detail: null}, stopped: null})
+            """)
+        try await until("the reply is held") { self.held.count == 2 }
+        guard case .message(let asked) = held[0].content, case .message(let reply) = held[1].content else { return XCTFail("two messages") }
+        XCTAssertNil(asked.turn, "a person's own message carries a turn")
+        let turn = try XCTUnwrap(reply.turn, "the reply at work says nothing of what its turn does")
+        XCTAssertEqual(turn.now, .step("Look up: Mail servers"))
+        XCTAssertEqual(turn.steps.map(\.words), ["Read: Mail settings", "Look up: Mail servers"])
+        XCTAssertEqual(turn.steps.map(\.outcome), [.done, .failed])
+    }
+
     func testOnAPageThatNamesMembersByKindTheConversationWithTheAgentFillsInOneReadAndItsAnswerIsStopped() async throws {
         try await start(.agent(id: "assistant", name: "Assistant"))
         try await enter("""

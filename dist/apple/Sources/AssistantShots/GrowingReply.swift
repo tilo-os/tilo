@@ -5,7 +5,9 @@ import SwiftUI
 
 /// A reply at five moments of its writing, as the main chat shows them: taken up with no word
 /// yet; its first words, with strong words still open; a list whose next entry has only its
-/// dash; a fence of code that is being written; and written to its end.
+/// dash; a fence of code that is being written; and written to its end. And the line that says
+/// what its turn does, before any word of the reply: at the turn's first step, its tenth and
+/// its thirtieth, and while its model thinks.
 @MainActor
 enum GrowingReply {
     private static let asked = Item(id: "growing-asked", at: Drawing.now,
@@ -38,6 +40,21 @@ enum GrowingReply {
         return model
     }
 
+    /// A turn of thirty steps at four moments. The steps' words are made up for the picture:
+    /// in the app they are the system's own.
+    private static func turns() -> [(name: String, turn: Message.Turn)] {
+        let said = ["List: Notes", "Read: Notes", "Search: Files", "Read: Tasks", "Add a task: Tasks"]
+        func steps(_ count: Int) -> [Message.Turn.Step] {
+            (0..<count).map { .init(id: "step-\($0)", words: said[$0 % said.count], took: 2 + Double($0 % 4), outcome: $0 % 9 == 6 ? .failed : .done) }
+        }
+        func at(_ count: Int, after seconds: TimeInterval) -> Message.Turn {
+            Message.Turn(now: .step(said[(count - 1) % said.count]), began: Date().addingTimeInterval(-seconds), steps: steps(count))
+        }
+        let thinks = Message.Turn(now: .thinking("the notes of last week name three open tasks, so each of them needs its own entry"),
+                                  began: Date().addingTimeInterval(-95), steps: steps(12))
+        return [("1-step-1", at(1, after: 6)), ("2-step-10", at(10, after: 74)), ("3-step-30", at(30, after: 251)), ("4-thinking", thinks)]
+    }
+
     /// The five moments, each at the width of the drawing's piece and at an iPhone's.
     static func screens(_ scheme: ColorScheme) async -> [Screen] {
         var screens: [Screen] = []
@@ -46,6 +63,16 @@ enum GrowingReply {
             let held = await model([asked, reply], isWritten: moment.isWritten)
             for (suffix, width) in [("", CGFloat(429)), ("-phone", CGFloat(393))] {
                 screens.append(Screen(name: "growing-reply-\(moment.name)\(suffix)", size: CGSize(width: width, height: 380),
+                                      view: Screens.rooted(held, scheme) {
+                                          ConversationView(chat: .main, picturedSecret: "").background(Token.content)
+                                      }))
+            }
+        }
+        for moment in turns() {
+            let reply = Item(id: "growing", at: Drawing.now, .message(Message(.assistant, "", turn: moment.turn)))
+            let held = await model([asked, reply], isWritten: true)
+            for (suffix, width) in [("", CGFloat(429)), ("-phone", CGFloat(393))] {
+                screens.append(Screen(name: "turn-line-\(moment.name)\(suffix)", size: CGSize(width: width, height: 380),
                                       view: Screens.rooted(held, scheme) {
                                           ConversationView(chat: .main, picturedSecret: "").background(Token.content)
                                       }))
