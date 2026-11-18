@@ -28,25 +28,24 @@ struct Reply {
     lines: Vec<String>,
 }
 
-/// Sign in to the SMTP server at `host:port` as `user`, and leave. Each step
-/// of it may take `step`.
+/// The secured connection to the SMTP server called `named` at `port`,
+/// greeted, and what the server offers once the connection is secure. Each
+/// step of it may take `step`.
 ///
 /// # Errors
 /// The server could not be reached, did not answer as an SMTP server, would
-/// not upgrade a connection that has to, presented a certificate `tls` does
-/// not trust, offers no password sign-in, or rejected the credential.
-pub(crate) async fn sign_in(
-    host: &str,
+/// not upgrade a connection that has to, or presented a certificate `tls`
+/// does not trust.
+async fn secured_to(
+    named: &str,
     port: u16,
-    user: &str,
-    password: &str,
     tls: Arc<rustls::ClientConfig>,
     step: Duration,
-) -> Result<(), String> {
-    let server_name = rustls::pki_types::ServerName::try_from(host.to_owned())
+) -> Result<(BufReader<crate::imap::SecureStream>, Vec<String>), String> {
+    let server_name = rustls::pki_types::ServerName::try_from(named.to_owned())
         .map_err(|_| "invalid SMTP server name".to_string())?;
     let connector = tokio_rustls::TlsConnector::from(tls);
-    let tcp = crate::imap::reach(host, port, step).await?;
+    let tcp = crate::imap::reach(named, port, step).await?;
     let secured = |tcp| async {
         timeout(step, connector.connect(server_name.clone(), tcp))
             .await
@@ -74,6 +73,42 @@ pub(crate) async fn sign_in(
     // What a server offers is asked again once the connection is secure:
     // nothing it said in the clear is believed.
     let offered = hello(&mut server, step).await?;
+    Ok((server, offered))
+}
+
+/// Whether an SMTP server greets at `port` of the server called `named`, over
+/// a connection secured with a certificate `tls` trusts for that name.
+/// Nothing signs in.
+///
+/// # Errors
+/// As [`secured_to`].
+pub(crate) async fn greets(
+    named: &str,
+    port: u16,
+    tls: Arc<rustls::ClientConfig>,
+    step: Duration,
+) -> Result<(), String> {
+    let (mut server, _) = secured_to(named, port, tls, step).await?;
+    let _ = ask(&mut server, "QUIT", step).await;
+    Ok(())
+}
+
+/// Sign in as `user` to the SMTP server called `named` at `port`, and leave.
+/// Each step of it may take `step`.
+///
+/// # Errors
+/// The server could not be reached, did not answer as an SMTP server, would
+/// not upgrade a connection that has to, presented a certificate `tls` does
+/// not trust, offers no password sign-in, or rejected the credential.
+pub(crate) async fn sign_in(
+    named: &str,
+    port: u16,
+    user: &str,
+    password: &str,
+    tls: Arc<rustls::ClientConfig>,
+    step: Duration,
+) -> Result<(), String> {
+    let (mut server, offered) = secured_to(named, port, tls, step).await?;
     let offers = |mechanism: &str| {
         offered.iter().any(|line| {
             let mut words = line.split([' ', '=']);
