@@ -74,7 +74,11 @@ impl ChatApp {
                     Some(&message.id) == self.thread_open.as_ref()
                         || message.parent.as_ref() == self.thread_open.as_ref()
                 } else {
-                    message.parent.is_none() || message.parent.as_ref() == self.thread_open.as_ref()
+                    // A conversation that keeps no threads shows its replies among its
+                    // messages: they are told there, where they stand.
+                    message.parent.is_none()
+                        || !self.keeps_threads()
+                        || message.parent.as_ref() == self.thread_open.as_ref()
                 }
             })
             .map(|message| {
