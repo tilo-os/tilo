@@ -32,18 +32,19 @@ mod people_pane;
 
 pub use people_pane::member_row_offers;
 
-/// The host's application catalogue, as workspace settings name apps and offer them as default
-/// openers.
+/// The device's application catalogue, as workspace settings name apps, their actions and the
+/// resources they open, and offer them as default openers.
 pub trait AppDirectory {
     /// The name a person knows `app_id` by, when the host knows the app.
     fn app_display_name(&self, app_id: &str) -> Option<String>;
+    /// The name the app's own catalogue publishes for its action `action` ("Post a message"), when
+    /// the device knows it: the name the sheet asking a person to allow that action shows.
+    fn action_display_name(&self, _app_id: &str, _action: &str) -> Option<String> {
+        None
+    }
     /// The apps installed for the workspace, by id: each one an agent may be given answers for
     /// before it ever touches the app, whether or not a window of it is open.
     fn installed_apps(&self) -> Vec<String> {
-        Vec::new()
-    }
-    /// Applications that can open a kind of resource, for the Apps tab.
-    fn default_app_candidates(&self) -> Vec<desktop_policy::AppCandidate> {
         Vec::new()
     }
     /// The name a person knows the resource at `address` by, as the resource itself publishes it (a
@@ -51,28 +52,6 @@ pub trait AppDirectory {
     fn resource_label(&self, _address: &str) -> Option<String> {
         None
     }
-    /// The workspace's resources the host knows, each with the app that publishes it: what a grant
-    /// may name.
-    fn resources(&self) -> Vec<(String, String)> {
-        Vec::new()
-    }
-    /// The workspace's resources the host knows, each by the title its app publishes for it: what a
-    /// person picks an existing resource from.
-    fn titled_resources(&self) -> Vec<TitledResource> {
-        Vec::new()
-    }
-}
-
-/// A resource of the workspace by the title its app publishes for it, as a search finds it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TitledResource {
-    /// The app that keeps it.
-    pub app: String,
-    /// Its kind: an item's (`notes.notebook.pages`), else the resource's own.
-    pub kind: String,
-    /// Its id in that app.
-    pub resource: String,
-    pub title: String,
 }
 
 /// A host with no application catalogue: an app is named by its id written as words, never shown as
@@ -88,6 +67,13 @@ impl AppDirectory for NoAppDirectory {
 fn app_display_name(apps: &dyn AppDirectory, app_id: &str) -> String {
     apps.app_display_name(app_id)
         .unwrap_or_else(|| tilo_desktop_search::names::app_name(app_id))
+}
+
+/// What one action of an app is called to the person: the name the app's own catalogue gives it, as
+/// the sheet asking to allow it shows ("Post a message"), else its id in words.
+fn action_name(apps: &dyn AppDirectory, app_id: &str, action: &str) -> String {
+    apps.action_display_name(app_id, action)
+        .unwrap_or_else(|| tilo_actions::action_label(action))
 }
 
 pub use tilo_desktop_model::{APP_ACTION_GRANT_ACTION_ID, APP_ACTION_REVOKE_ACTION_ID};
@@ -220,7 +206,7 @@ pub fn capability_allows(cap: &CapOverride, apps: &dyn AppDirectory) -> String {
 
 /// What one grant means, said as a person reads it: "Notes: reading and undoable changes allowed,
 /// outside effects ask first". Where it says "everything", the grant covers every kind. An app's
-/// answer to use another app says which: "Use “post” in Chat".
+/// answer to use another app says which: "Use “Post a message” in Chat".
 pub fn grant_allows(grant: &tilo_action_policy::Grant, apps: &dyn AppDirectory) -> String {
     use tilo_action_policy::agent_answers::AnswerScope;
     let used = AnswerScope::of_node(&grant.node).filter(|_| {
@@ -235,7 +221,7 @@ pub fn grant_allows(grant: &tilo_action_policy::Grant, apps: &dyn AppDirectory) 
             t_args(
                 "workspace-settings-allows-action",
                 &[
-                    ("action", action.into()),
+                    ("action", action_name(apps, &app, &action).into()),
                     ("app", app_display_name(apps, &app).into()),
                 ],
             )
@@ -244,46 +230,34 @@ pub fn grant_allows(grant: &tilo_action_policy::Grant, apps: &dyn AppDirectory) 
     }
 }
 
+/// The app names and resource titles a grant's path reads through, in the sheet's sentences.
+struct Named<'a>(&'a dyn AppDirectory);
+
+impl tilo_action_policy::Labels for Named<'_> {
+    fn label(&self, level: tilo_action_policy::Level, id: &str) -> Option<String> {
+        use tilo_action_policy::Level;
+        match level {
+            Level::App => Some(app_display_name(self.0, id)),
+            Level::Resource | Level::Item => self.0.resource_label(id),
+            _ => None,
+        }
+    }
+
+    fn everything(&self) -> String {
+        t("workspace-settings-scope-everything")
+    }
+}
+
 /// A grant set as people and agents talk about it: one sentence per grant — where it applies, then
 /// what it answers for each kind of action it covers — from the most specific node to the least. An
 /// empty set grants nothing.
 pub fn grant_set_sentence(grants: &[tilo_action_policy::Grant], apps: &dyn AppDirectory) -> String {
-    struct Named<'a>(&'a dyn AppDirectory);
-    impl tilo_action_policy::Labels for Named<'_> {
-        fn label(&self, level: tilo_action_policy::Level, id: &str) -> Option<String> {
-            use tilo_action_policy::Level;
-            match level {
-                Level::App => Some(app_display_name(self.0, id)),
-                Level::Resource | Level::Item => self.0.resource_label(id),
-                _ => None,
-            }
-        }
-
-        fn everything(&self) -> String {
-            t("workspace-settings-scope-everything")
-        }
-    }
     tilo_action_policy::sentences(grants, &Named(apps))
 }
 
 /// Where a grant applies, named the way people know the workspace's parts: the app by its name, a
 /// resource or item by its own, then the rest of the path.
 pub fn node_phrase(node: &tilo_action_policy::TreePath, apps: &dyn AppDirectory) -> String {
-    struct Named<'a>(&'a dyn AppDirectory);
-    impl tilo_action_policy::Labels for Named<'_> {
-        fn label(&self, level: tilo_action_policy::Level, id: &str) -> Option<String> {
-            use tilo_action_policy::Level;
-            match level {
-                Level::App => Some(app_display_name(self.0, id)),
-                Level::Resource | Level::Item => self.0.resource_label(id),
-                _ => None,
-            }
-        }
-
-        fn everything(&self) -> String {
-            t("workspace-settings-scope-everything")
-        }
-    }
     let below_workspace = node.within_workspace();
     if below_workspace.is_root() {
         return t("workspace-settings-scope-workspace");
@@ -300,24 +274,20 @@ pub fn expiry_label(expiry: Expiry) -> String {
     })
 }
 
-/// Who granted a capability, as a user-facing phrase, or `None` for a capability with no recorded
-/// grantor. People and agents are named as the People pane names them; the viewer is "you".
-pub fn granted_by_label(cap: &CapOverride, ws: &Workspace, local_user: &str) -> Option<String> {
-    cap.granted_by.as_ref().map(|who| match who {
-        MemberId::Person(id) if id == local_user => t("workspace-settings-granted-by-you"),
-        MemberId::Agent(id) if id == local_user => t("workspace-settings-granted-by-you"),
-        MemberId::Person(_) => t_args(
-            "workspace-settings-granted-by-person",
-            &[("id", member_name_or_short_id(ws, who).into())],
-        ),
-        MemberId::Agent(_) => t_args(
-            "workspace-settings-granted-by-agent",
-            &[("id", member_name_or_short_id(ws, who).into())],
-        ),
-        MemberId::Bot(_) => t_args(
-            "workspace-settings-granted-by-bot",
-            &[("id", member_name_or_short_id(ws, who).into())],
-        ),
+/// Who gave a grant, as a user-facing phrase: people and agents are named as the People pane names
+/// them, and the viewer is "you".
+fn grantor_label(who: &Grantee, ws: &Workspace, local_user: &str) -> Option<String> {
+    if who.person_id() == Some(local_user) || who.agent_id() == Some(local_user) {
+        return Some(t("workspace-settings-granted-by-you"));
+    }
+    let Grantee::Member(member) = who else {
+        return None;
+    };
+    let id = member_name_or_short_id(ws, member);
+    Some(match member {
+        MemberId::Person(_) => t_args("workspace-settings-granted-by-person", &[("id", id.into())]),
+        MemberId::Agent(_) => t_args("workspace-settings-granted-by-agent", &[("id", id.into())]),
+        MemberId::Bot(_) => t_args("workspace-settings-granted-by-bot", &[("id", id.into())]),
     })
 }
 
@@ -329,33 +299,6 @@ pub fn lifetime_label(lifetime: &tilo_action_policy::Lifetime) -> String {
         Lifetime::Session(_) => "workspace-settings-expiry-session",
         Lifetime::Until(_) => "workspace-settings-expiry-until",
         Lifetime::UntilRevoked => "workspace-settings-expiry-always",
-    })
-}
-
-/// Who gave a grant, as a user-facing phrase; the viewer is "you".
-pub fn grant_given_by_label(
-    grant: &tilo_action_policy::Grant,
-    ws: &Workspace,
-    local_user: &str,
-) -> Option<String> {
-    let who = &grant.granted_by;
-    if who.person_id() == Some(local_user) || who.agent_id() == Some(local_user) {
-        return Some(t("workspace-settings-granted-by-you"));
-    }
-    let tilo_action_policy::Grantee::Member(member) = who else {
-        return None;
-    };
-    if member.is_person() {
-        return Some(t_args(
-            "workspace-settings-granted-by-person",
-            &[("id", member_name_or_short_id(ws, member).into())],
-        ));
-    }
-    member.is_agent().then(|| {
-        t_args(
-            "workspace-settings-granted-by-agent",
-            &[("id", member_name_or_short_id(ws, member).into())],
-        )
     })
 }
 
@@ -1018,12 +961,16 @@ pub fn listed_permissions(
                 Listed::Sandbox(cap) => (
                     capability_allows(cap, apps),
                     expiry_label(cap.expiry),
-                    granted_by_label(cap, ws, local_user),
+                    cap.granted_by
+                        .clone()
+                        .map(Grantee::Member)
+                        .as_ref()
+                        .and_then(|who| grantor_label(who, ws, local_user)),
                 ),
                 Listed::Grant(grant) => (
                     grant_allows(grant, apps),
                     lifetime_label(&grant.lifetime),
-                    grant_given_by_label(grant, ws, local_user),
+                    grantor_label(&grant.granted_by, ws, local_user),
                 ),
             };
             ListedPermission {
@@ -1935,35 +1882,6 @@ mod permissions_tests {
     tilo_test_env::scenario! {
         fn a_grant_names_its_resource_and_reads_back_as_the_workspace_holds_it;
 
-        phase a_resource_is_picked_by_the_title_its_app_publishes;
-        {
-            struct Titles;
-            impl AppDirectory for Titles {
-                fn app_display_name(&self, _app_id: &str) -> Option<String> {
-                    None
-                }
-                fn titled_resources(&self) -> Vec<TitledResource> {
-                    vec![TitledResource {
-                        app: "so.tilo.notes".into(),
-                        kind: "notes.notebook.pages".into(),
-                        resource: "q3".into(),
-                        title: "Q3 plan".into(),
-                    }]
-                }
-            }
-
-            let mut ws = ws_with_grants();
-            let draft = draft_for(&ws, "app:firefox", "microphone", "never").expect("a draft");
-            let mut ws2 = ws.clone();
-            apply_grant_draft(&mut ws2, &OWNER.to_string(), &draft).expect("owner grants");
-            ws = ws2;
-            let rows = listed_permissions(&ws, &Titles, VIEWER);
-            assert!(
-                rows.iter().all(|row| !row.allows.contains("q3")),
-                "a printed permission names what it opens, never a bare id"
-            );
-        }
-
         phase a_grant_set_reads_back_as_the_grants_the_workspace_holds;
         {
             let mut ws = ws_with_grants();
@@ -1983,6 +1901,57 @@ mod permissions_tests {
                 assert!(ws.sandbox.iter().any(|cap| cap.id == row.id));
             }
         }
+    }
+
+    /// Chat's catalogue as a device knows it: its conversation resource names "post".
+    struct ChatCatalogue;
+
+    impl AppDirectory for ChatCatalogue {
+        fn app_display_name(&self, _app_id: &str) -> Option<String> {
+            None
+        }
+
+        fn action_display_name(&self, app_id: &str, action: &str) -> Option<String> {
+            (app_id == "so.tilo.chat" && action == "post").then(|| "Post a message".to_owned())
+        }
+    }
+
+    /// An app's grant to use another app's action reads as the action's own catalogue names it,
+    /// the name the sheet asking for it shows; an action the catalogue does not name keeps its
+    /// id in words.
+    #[test]
+    fn an_action_grant_reads_as_the_apps_catalogue_names_the_action() {
+        use tilo_action_policy::agent_answers::{AnswerScope, answer_grant};
+        use tilo_action_policy::{ActionKind, Answer, Grantee};
+
+        let mut ws = Workspace::new(WorkspaceId::from_u128(6), "action-names");
+        ws.set_owner(OWNER);
+        let front = ws.id().to_string();
+        let grant = |action: &str| {
+            answer_grant(
+                &front,
+                Grantee::app("so.tilo.notes"),
+                (
+                    &AnswerScope::action("so.tilo.chat", "chat.conversation", action),
+                    ActionKind::Undoable,
+                ),
+                Answer::Allow,
+                Grantee::person(OWNER),
+            )
+        };
+        ws.grant(grant("post"));
+        let named = listed_permissions(&ws, &ChatCatalogue, VIEWER);
+        assert_eq!(
+            named[0].allows,
+            "Use \u{201c}Post a message\u{201d} in Chat"
+        );
+
+        ws.grant(grant("post-view"));
+        let unnamed = listed_permissions(&ws, &ChatCatalogue, VIEWER)
+            .into_iter()
+            .find(|row| row.allows.contains("Post view"))
+            .expect("the catalogue names no post-view");
+        assert_eq!(unnamed.allows, "Use \u{201c}Post view\u{201d} in Chat");
     }
 }
 

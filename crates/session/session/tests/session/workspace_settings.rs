@@ -397,14 +397,62 @@ fn workspace_settings_gives_and_revokes_a_permission() {
 /// What a grant's raw path starts with, which a row a person reads never shows.
 const WORKSPACE_WORD: &str = "workspace ";
 
+/// An action catalogue whose apps publish what it keeps: what the sheet reads an app's action's own
+/// name from, as the sheet asking to allow that action does.
+#[derive(Default)]
+struct Publishing(std::cell::RefCell<Vec<tilo_desktop_search::providers::PublishedActions>>);
+
+impl tilo_session::AppActions for Publishing {
+    fn published(&self, workspace: &str) -> Vec<tilo_desktop_search::providers::PublishedActions> {
+        self.0
+            .borrow()
+            .iter()
+            .filter(|published| workspace.is_empty() || published.workspace == workspace)
+            .cloned()
+            .collect()
+    }
+
+    fn invoke(
+        &self,
+        _target: tilo_actions::remote::RemoteActionTarget,
+        _arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), tilo_actions::ApiError> {
+        Ok(())
+    }
+}
+
+/// What Chat publishes for the action `post`, named as its own catalogue names it.
+fn chat_posts(workspace: &str) -> tilo_desktop_search::providers::PublishedActions {
+    use tilo_actions::{ActionParam, ActionSpec, EncodedAction, ExecutionLocus, ParamType};
+    let post = ActionSpec::prompted_param(
+        "post",
+        "Post a message",
+        ActionParam::required("text", ParamType::Text, "Message"),
+        "",
+        ExecutionLocus::ClientLocal,
+        |text| EncodedAction {
+            type_id: "so.tilo.chat.post".into(),
+            payload: text.as_bytes().to_vec(),
+        },
+    );
+    let chat = ResourceSpec::new("chat.workspace", "chat.workspace", "Chat").with_action(post);
+    tilo_desktop_search::providers::PublishedActions::of("so.tilo.chat", workspace, &[chat])
+}
+
 /// An app's grant to take another app's action, given on the sheet that asked: the Permissions tab
-/// lists it under Apps, named as the person knows the app, and its Revoke takes it back.
+/// lists it under Apps, named as the person knows the app and the action, and its Revoke takes it
+/// back.
 #[test]
 fn workspace_settings_lists_an_apps_grant_under_apps_and_revokes_it() {
     use tilo_action_policy::agent_answers::{AnswerScope, answer_grant};
     use tilo_action_policy::{ActionKind, Answer, Grantee};
     let _settled = ui::motion::testing::settled();
-    let mut session = session();
+    let actions = Rc::new(Publishing::default());
+    let mut session = crate::common::headless(Options {
+        apps: Some(actions.clone()),
+        collab: false,
+        ..Options::default()
+    });
     session.step(Duration::from_millis(1)).unwrap();
     own_workspace(&session, &[]);
     let notes = Grantee::app("so.tilo.notes");
@@ -421,7 +469,9 @@ fn workspace_settings_lists_an_apps_grant_under_apps_and_revokes_it() {
         Grantee::person(PERSON),
     );
     workspace.grant(grant);
+    let published = workspace.id().to_string();
     session.handle().replace_tree(tree);
+    actions.0.borrow_mut().push(chat_posts(&published));
     invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
     session.step(Duration::from_millis(1)).unwrap();
     let mut app = sheet(&session);
@@ -451,8 +501,10 @@ fn workspace_settings_lists_an_apps_grant_under_apps_and_revokes_it() {
         given.holder
     );
     assert!(
-        given.detail.contains("“post”") && !given.detail.contains(WORKSPACE_WORD),
-        "the row says which action of which app, not the grant's path: {}",
+        given.detail.contains("Use “Post a message” in Chat")
+            && !given.detail.contains("“post”")
+            && !given.detail.contains(WORKSPACE_WORD),
+        "the row names the action as the app's catalogue does, not its id or the grant's path: {}",
         given.detail
     );
     capture(&mut app, "workspace-settings-app-grant");

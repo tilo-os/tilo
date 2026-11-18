@@ -158,10 +158,17 @@ fn show(
     tab: sheet::Tab,
     review: Option<&str>,
 ) {
+    let tree = fed.handle.read(Clone::clone);
+    let apps = Directory {
+        actions: fed.search.apps(),
+        workspace: tree
+            .active_workspace()
+            .map_or_else(String::new, |ws| ws.id().to_string()),
+    };
     let mut shown = settings(
-        &fed.handle.read(Clone::clone),
+        &tree,
         fed.person,
-        &crate::app_icons::app_lists().unwrap_or_default(),
+        &apps,
         tab,
         review,
         fed.personal,
@@ -691,7 +698,7 @@ fn move_workspace(handle: &DesktopHandle, step: i32) {
 fn settings(
     tree: &Layout,
     person: &UserId,
-    lists: &AppLists,
+    apps: &dyn domain::AppDirectory,
     tab: sheet::Tab,
     review: Option<&str>,
     personal: Option<&RefCell<Personal>>,
@@ -701,7 +708,6 @@ fn settings(
     let (agents, emoji) = (&records.agents, &records.emoji);
     let workspace = tree.active_workspace();
     let names = PeopleNames::of(tree, person, own_name().as_deref());
-    let apps = Directory;
     sheet::Settings {
         title: t("workspace-settings-title"),
         name: workspace.map_or_else(
@@ -715,15 +721,18 @@ fn settings(
         general: general(tree, person, personal, engine),
         people: workspace.map_or_else(sheet::People::default, |ws| people(ws, &names, person)),
         permissions: workspace.map_or_else(sheet::Permissions::default, |ws| {
-            permissions(ws, person, &apps)
+            permissions(ws, person, apps)
         }),
         // The workspace's agents are Chat's record, opened when the tab is first shown.
         agents: if tab == sheet::Tab::Agents {
-            agents.pane(tree, person, &names, &apps, review)
+            agents.pane(tree, person, &names, apps, review)
         } else {
             sheet::Agents::default()
         },
-        apps: workspace.map_or_else(sheet::Apps::default, |ws| apps_pane(ws, person, lists)),
+        apps: workspace.map_or_else(sheet::Apps::default, |ws| {
+            let lists = crate::app_icons::app_lists().unwrap_or_default();
+            apps_pane(ws, person, &lists)
+        }),
         // The workspace's emoji are Chat's record, opened when the tab is first shown and nowhere
         // else: no other tab reads it.
         emoji: if tab == sheet::Tab::Emoji {

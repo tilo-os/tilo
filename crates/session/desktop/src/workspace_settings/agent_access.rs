@@ -13,7 +13,7 @@ use tilo_action_policy::{ActionKind, Answer, Grantee, KindSet, decide};
 use tilo_desktop_model::Workspace;
 use tilo_sort::CompactSort as _;
 
-use super::{AppDirectory, app_display_name, grant_subjects};
+use super::{AppDirectory, action_name, app_display_name, grant_subjects};
 use crate::i18n::{t, t_args};
 
 /// The three kinds of action, in column order.
@@ -223,7 +223,7 @@ pub fn agent_exceptions(bound: &[Rule], apps: &dyn AppDirectory) -> Vec<AgentExc
                     "workspace-settings-agent-exception",
                     &[
                         ("app", app_display_name(apps, app).into()),
-                        ("action", tilo_actions::action_label(action).into()),
+                        ("action", action_name(apps, app, action).into()),
                     ],
                 );
                 Some(AgentException { scope, kind, label })
