@@ -10370,6 +10370,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "monitor-model-wasm"
+version = "0.1.0"
+dependencies = [
+ "monitor-model",
+ "tilo-model-guest",
+]
+
+[[package]]
 name = "moq-net"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12298,6 +12306,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "passwords-model-wasm"
+version = "0.1.0"
+dependencies = [
+ "passwords-model",
+ "tilo-model-guest",
+]
+
+[[package]]
 name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12948,6 +12964,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "poker-model-wasm"
+version = "0.1.0"
+dependencies = [
+ "poker-model",
+ "tilo-model-guest",
+]
+
+[[package]]
 name = "polling"
 version = "3.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13321,6 +13345,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "print-centre-model-wasm"
+version = "0.1.0"
+dependencies = [
+ "print-centre-model",
+ "tilo-model-guest",
+]
+
+[[package]]
 name = "priority-queue"
 version = "2.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13564,6 +13596,14 @@ dependencies = [
  "tilo-resource",
  "url",
  "workspace-hack",
+]
+
+[[package]]
+name = "publisher-model-wasm"
+version = "0.1.0"
+dependencies = [
+ "publisher-model",
+ "tilo-model-guest",
 ]
 
 [[package]]
@@ -14283,6 +14323,14 @@ dependencies = [
  "tilo-test-env",
  "uuid",
  "workspace-hack",
+]
+
+[[package]]
+name = "remote-model-wasm"
+version = "0.1.0"
+dependencies = [
+ "remote-model",
+ "tilo-model-guest",
 ]
 
 [[package]]
@@ -15321,6 +15369,14 @@ dependencies = [
  "serde_json",
  "tilo-resource",
  "workspace-hack",
+]
+
+[[package]]
+name = "scratchpad-model-wasm"
+version = "0.1.0"
+dependencies = [
+ "scratchpad-model",
+ "tilo-model-guest",
 ]
 
 [[package]]

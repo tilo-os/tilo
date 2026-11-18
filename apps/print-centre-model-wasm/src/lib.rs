@@ -7,5 +7,7 @@
 /// Apply one request from the device that holds the workspace's keys.
 #[unsafe(no_mangle)]
 pub extern "C" fn tilo_model_apply() -> i32 {
-    tilo_model_guest::serve::<print_centre_model::PrintDefaults>()
+    tilo_model_guest::serve(&[tilo_model_guest::Served::of::<
+        print_centre_model::PrintDefaults,
+    >()])
 }
