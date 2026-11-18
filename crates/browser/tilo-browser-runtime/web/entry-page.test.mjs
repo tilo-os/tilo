@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {chooseWorkspace, chosenWorkspace, enteredWorkspaces, joinViaHost} from './workspaces.mjs';
 import {AdmissionError} from './admission.mjs';
-import {PAIRING_CLOCK, PAIRING_DECLINED, PAIRING_SAME_PERSON} from './pairing.mjs';
+import {assistantAddress, PAIRING_CLOCK, PAIRING_DECLINED, PAIRING_SAME_PERSON} from './pairing.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 
 const USER = 'aa'.repeat(32);
@@ -1123,5 +1123,31 @@ test('a tab its person signed in with their agent pairs without asking whose dev
       JSON.stringify(session));
     assert.deepEqual(paired, [], 'nobody is asked before the person goes on');
     assert.equal(handed.screen['arrival-failure-body'].textContent, words.PAIRING_STOPPED);
+  }
+});
+
+test('the pairing sheet hands its link to Tilo Assistant by an address of the app, on the devices that app is for', () => {
+  const link = `https://web.example/#/@server.example:8443/w/1f0e?pair=${USER}${'0f'.repeat(16)}`;
+  const mac = {userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15'};
+  const address = assistantAddress(link, mac);
+  assert.equal(address, `tilo-assistant://pair?link=${encodeURIComponent(link)}`);
+  // The address is one word: nothing of the link ends it or reads as a part of its own.
+  assert.doesNotMatch(address.slice('tilo-assistant://pair?link='.length), /[#?&=\/:@ ]/);
+  const read = new URL(address);
+  assert.equal(read.protocol, 'tilo-assistant:');
+  assert.equal(read.searchParams.get('link'), link);
+  assert.deepEqual([...read.searchParams.keys()], ['link']);
+  const phone = {userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1'};
+  assert.equal(assistantAddress(link, phone), address);
+  assert.equal(assistantAddress(link, {userAgentData: {platform: 'macOS', brands: []}}), address);
+  // There is no Tilo Assistant for these, so nothing is offered that would lead nowhere.
+  for (const agent of ['Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0',
+    'Mozilla/5.0 (Linux; Android 16; Pixel 9) AppleWebKit/537.36 Chrome/140.0 Mobile Safari/537.36', '']) {
+    assert.equal(assistantAddress(link, {userAgent: agent}), null, agent);
+  }
+  // Only a web address is handed over: the app pairs with a link, and takes nothing else.
+  for (const other of [undefined, null, '', 'javascript:alert(1)', 'tilo-assistant://pair?link=x', 'file:///tmp/a-link', ' https://web.example/']) {
+    assert.equal(assistantAddress(other, mac), null, String(other));
   }
 });

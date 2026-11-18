@@ -31,7 +31,7 @@ import {idbStorage, openDeviceKey} from './device-key.mjs';
 import {createIdentityActions, setupOrigin, syncProfile} from './identity-actions.mjs';
 import {firstRun, MCP_URL, openFirstRun, openSignIn, readSetup, setupDone, setupLater} from './first-run.mjs';
 import {fetchPersonProfile, pickImageFile, squarePhoto} from './profile-photos.mjs';
-import {askOwnPairing, deviceLabel, ofThisSite, ownPairing, PAIRING_SIGNING_IN, PAIRING_WAIT, PAIRING_WHOSE, pairingFailure, pairingStatus, pairingWhere, pairingWhose, pairSecret, whenRequested} from './pairing.mjs';
+import {askOwnPairing, assistantAddress, deviceLabel, ofThisSite, ownPairing, PAIRING_SIGNING_IN, PAIRING_WAIT, PAIRING_WHOSE, pairingFailure, pairingStatus, pairingWhere, pairingWhose, pairSecret, whenRequested} from './pairing.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
 import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, keptIdentity, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './identity.mjs';
 import {createReconnect, describeError, domReconnectView} from './reconnect.mjs';
@@ -348,7 +348,17 @@ function pairLinkSheet({link, copy}) {
   const done = () => card.remove();
   close.addEventListener('click', done);
   card.addEventListener('keydown', event => { if (event.key === 'Escape') done(); });
-  actions.append(copyButton, close);
+  // On a Mac, an iPhone or an iPad the link can go straight to Tilo Assistant on this same
+  // device, with nothing copied or pasted. Only this press sends it. The app asks its person
+  // whose devices it would join, and this page still asks before anything is let in.
+  const handOver = assistantAddress(link);
+  const open = handOver ? document.createElement('button') : null;
+  if (open) {
+    open.type = 'button';
+    open.textContent = 'Open in Tilo Assistant';
+    open.addEventListener('click', () => { globalThis.location.href = handOver; });
+  }
+  actions.append(copyButton, ...(open ? [open] : []), close);
   card.append(code,
     paragraph('On a phone, scan this code with the camera. In a browser, open the link. On another Tilo computer, paste the link into Join a workspace…'),
     input,
