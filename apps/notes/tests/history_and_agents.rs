@@ -209,22 +209,8 @@ fn history_shows_an_older_typing_step_of_a_note_and_restores_it() {
     );
 
     let changes = part_changes(&app, page);
-    let restore = app
-        .harness()
-        .a11y_node_named("Restore…")
-        .expect("History offers to restore the version");
-    app.harness()
-        .perform_a11y_action(restore, &ui::a11y::Action::Activate)
-        .unwrap();
-    app.harness().relayout();
-    let confirm = app
-        .harness()
-        .a11y_node_named("Restore version")
-        .expect("the review offers Restore version");
-    app.harness()
-        .perform_a11y_action(confirm, &ui::a11y::Action::Activate)
-        .unwrap();
-    app.harness().relayout();
+    press_named(&mut app, "Restore…");
+    press_named(&mut app, "Restore version");
     assert_eq!(
         crate::framework_support::body(&app, page).join("\n"),
         "First draft"
@@ -242,6 +228,47 @@ fn history_shows_an_older_typing_step_of_a_note_and_restores_it() {
         changes + 1,
         "the restore is one new change"
     );
+}
+
+/// A press on History's Restore… opens its review of a change of the notebook's own document, as it
+/// does of a part's.
+#[test]
+fn a_click_on_restore_opens_the_review_of_a_notebook_change() {
+    let (mut app, _) = crate::framework_support::with_note("Plan", "");
+    app.call("new-tag", serde_json::json!({ "name": "Release" }))
+        .expect("the notebook takes the tag");
+    let own = app
+        .versions()
+        .last()
+        .expect("the tag is one change of the notebook")
+        .hash;
+    select_version(&mut app, &[own]);
+    press_named(&mut app, "Restore…");
+    assert!(
+        app.harness().a11y_node_named("Restore version").is_some(),
+        "the press on Restore… opens the review"
+    );
+}
+
+/// Press the control History draws with `name`: a move onto it, then a press and a release, as a
+/// person's pointer delivers them.
+fn press_named(app: &mut TestApp<NotesShell>, name: &str) {
+    let bounds = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find_map(|(_, node)| {
+            (node.label() == Some(name))
+                .then(|| node.bounds())
+                .flatten()
+        })
+        .unwrap_or_else(|| panic!("a control named {name} is drawn"));
+    let (x, y) = (
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    );
+    app.harness().click_at(x, y);
+    app.harness().relayout();
 }
 
 fn type_into_note(app: &mut TestApp<NotesShell>, text: &str) {

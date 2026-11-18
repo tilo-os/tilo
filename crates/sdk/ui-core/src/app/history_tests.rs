@@ -5871,3 +5871,43 @@ fn host_chrome_lists_framework_history_changes_and_opens_at_the_chosen_one() {
 
 #[cfg(unix)]
 include!("initial_history_action_tests.rs");
+
+/// A press on the side panel's Restore… opens the restore review: the move from the row a person
+/// chose to the panel's foot leaves the timeline's hovered row behind, and that must not keep the
+/// footer's controls from learning the pointer is over them.
+#[test]
+fn a_pointer_press_on_restore_opens_the_review() {
+    let mut app = app();
+    layout(&mut app);
+    let target = named(&mut app, "History");
+    app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
+    layout(&mut app);
+    let row = app
+        .build_a11y_tree_update(1.0)
+        .nodes
+        .into_iter()
+        .find(|(_, node)| node.role() == accesskit::Role::ListItem)
+        .and_then(|(_, node)| node.bounds())
+        .expect("History lists the changes");
+    app.dispatch_semantic_click(f64::midpoint(row.x0, row.x1), f64::midpoint(row.y0, row.y1));
+    layout(&mut app);
+    let restore = app
+        .build_a11y_tree_update(1.0)
+        .nodes
+        .into_iter()
+        .find(|(_, node)| node.label() == Some("Restore…"))
+        .and_then(|(_, node)| node.bounds())
+        .expect("the panel's foot offers to restore the chosen version");
+    app.dispatch_semantic_click(
+        f64::midpoint(restore.x0, restore.x1),
+        f64::midpoint(restore.y0, restore.y1),
+    );
+    layout(&mut app);
+    assert!(
+        app.build_a11y_tree_update(1.0)
+            .nodes
+            .iter()
+            .any(|(_, node)| node.label() == Some("Restore version")),
+        "the press on Restore… opens the review"
+    );
+}

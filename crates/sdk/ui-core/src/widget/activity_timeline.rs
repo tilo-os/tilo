@@ -4233,6 +4233,11 @@ impl ActivityTimeline {
     }
 
     fn handle_mouse_wheel(&mut self, delta: &MouseScrollDelta, handled: &mut bool) {
+        // A wheel belongs to what the pointer is over: History shows the list beside the version it
+        // reads, and a turn over that version must not move the list.
+        if !self.rect.contains(self.last_cursor) {
+            return;
+        }
         let dy = match delta {
             MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * super::wheel::line_of_wheel(),
             MouseScrollDelta::PixelDelta(pp) => -pp.y,
