@@ -152,6 +152,9 @@ mod public_documents;
 #[cfg(test)]
 #[path = "workspace_actions/put_files.rs"]
 mod put_files;
+#[cfg(test)]
+#[path = "workspace_actions/refresh_reads.rs"]
+mod refresh_reads;
 #[path = "workspace_actions/resource_support.rs"]
 mod resource_support;
 #[cfg(test)]

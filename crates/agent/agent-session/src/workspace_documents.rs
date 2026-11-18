@@ -92,7 +92,20 @@ pub(crate) struct WorkspaceDocuments {
     opened: HashSet<DocumentRoute>,
     /// When each record last changed, as a count of landings seen.
     arrived: HashMap<DocumentRoute, u64>,
+    /// The documents a write landed in since the last refresh took them: what
+    /// a refresh merges into what it holds mounted, and nothing else.
+    changed_since: HashSet<DocumentRoute>,
+    /// The documents search has no entries for, as of the last listing and
+    /// every write since: what an index pass asks for.
+    unindexed: HashSet<DocumentRoute>,
+    /// Whether [`Self::unindexed`] has been filled from the replica: what it
+    /// already held, whose entries no pass read yet.
+    listed: bool,
     landings: u64,
+    /// The documents of the workspace not held open, as last listed, with the
+    /// same set for asking whether one is in it. Thrown away when a document
+    /// that was not here lands, or an open replica takes one.
+    known: Option<(Arc<[DocumentRoute]>, HashSet<DocumentRoute>)>,
     titles: Read<Option<String>>,
     /// What search finds in each record, as its app reads it: the entries it
     /// publishes to the search index, one per resource of the record.
@@ -119,7 +132,11 @@ impl WorkspaceDocuments {
             workspace: workspace.to_owned(),
             opened: HashSet::new(),
             arrived: HashMap::new(),
+            changed_since: HashSet::new(),
+            unindexed: HashSet::new(),
+            listed: false,
             landings: 0,
+            known: None,
             titles: HashMap::new(),
             entries: HashMap::new(),
             unreadable: HashMap::new(),
@@ -135,6 +152,18 @@ impl WorkspaceDocuments {
     pub(crate) fn landed(&mut self, route: &DocumentRoute) {
         self.landings = self.landings.wrapping_add(1);
         self.arrived.insert(route.clone(), self.landings);
+        self.changed_since.insert(route.clone());
+        if !self.opened.contains(route) {
+            self.unindexed.insert(route.clone());
+        }
+        // A document that was not here is one the listing has to name too.
+        if self
+            .known
+            .as_ref()
+            .is_some_and(|(_, set)| !set.contains(route))
+        {
+            self.known = None;
+        }
         // What search answers with is read again from the document as it stands now: the write
         // landed, so the entries kept at the old revision describe a document that is gone.
         self.entries.remove(route);
@@ -148,6 +177,7 @@ impl WorkspaceDocuments {
     /// lands in it, never in a pass that would ask the same thing for ever.
     pub(crate) fn unreadable(&mut self, route: &DocumentRoute) {
         self.unreadable.insert(route.clone(), self.landings);
+        self.unindexed.remove(route);
     }
 
     /// What search finds in the document at `route`, read off the serving thread by the
@@ -160,6 +190,7 @@ impl WorkspaceDocuments {
         entries: Arc<[IndexEntry]>,
     ) {
         self.entries.insert(route.clone(), (revision, entries));
+        self.unindexed.remove(route);
     }
 
     /// How many writes have landed in the document at `route`: the index reads it again when
@@ -198,17 +229,36 @@ impl WorkspaceDocuments {
 
     /// Up to `limit` of the workspace's documents search keeps no entries for: the warm thread
     /// reads them, so a query never has to.
-    pub(crate) fn unindexed(&self, limit: usize) -> Vec<DocumentRoute> {
-        self.routes()
-            .into_iter()
-            .filter(|route| self.indexes(route))
-            .take(limit)
-            .collect()
+    pub(crate) fn unindexed(&mut self, limit: usize) -> Vec<DocumentRoute> {
+        self.list_unindexed();
+        self.unindexed.iter().take(limit).cloned().collect()
     }
 
     /// Whether any of the workspace's documents waits to be read for the index.
-    pub(crate) fn has_unindexed(&self) -> bool {
-        self.routes().into_iter().any(|route| self.indexes(&route))
+    pub(crate) fn has_unindexed(&mut self) -> bool {
+        self.list_unindexed();
+        !self.unindexed.is_empty()
+    }
+
+    /// Fill [`Self::unindexed`] with what the replica already held when this
+    /// was made, once: from then on the writes keep it current, and a document
+    /// the index gave up on stays out until a write lands in it.
+    fn list_unindexed(&mut self) {
+        if self.listed {
+            return;
+        }
+        self.listed = true;
+        for route in self.routes() {
+            if self.indexes(&route) {
+                self.unindexed.insert(route);
+            }
+        }
+    }
+
+    /// The documents a write landed in since this was last taken: what a
+    /// refresh merges into what it holds mounted, and nothing else.
+    pub(crate) fn take_changed(&mut self) -> HashSet<DocumentRoute> {
+        std::mem::take(&mut self.changed_since)
     }
 
     /// Whether the document at `route` still wants entries: it has none, and the index has not
@@ -244,8 +294,27 @@ impl WorkspaceDocuments {
     /// most recently changed.
     pub(crate) fn people_first(&mut self) -> Vec<DocumentRoute> {
         let known = self.routes();
+        self.people_first_of(known)
+    }
+
+    /// `routes` as [`Self::people_first`] orders them.
+    pub(crate) fn people_first_of(&mut self, routes: Vec<DocumentRoute>) -> Vec<DocumentRoute> {
         let tabs = self.desktop_tabs();
-        people_first(known, &tabs, &self.arrived)
+        people_first(routes, &tabs, &self.arrived)
+    }
+
+    /// The documents of the workspace not held open, as last listed: what a
+    /// request reads the workspace's documents from without listing them again.
+    /// Listed once, and again only once a document that was not here lands or
+    /// an open replica takes one.
+    pub(crate) fn known(&mut self) -> Arc<[DocumentRoute]> {
+        if let Some((known, _)) = &self.known {
+            return Arc::clone(known);
+        }
+        let known: Arc<[DocumentRoute]> = self.routes().into();
+        let set: HashSet<DocumentRoute> = known.iter().cloned().collect();
+        self.known = Some((Arc::clone(&known), set));
+        known
     }
 
     /// The records bound to the shared desktop's tabs.
@@ -375,19 +444,24 @@ impl WorkspaceDocuments {
         route: &DocumentRoute,
         read: impl FnOnce(Vec<u8>) -> Result<Vec<IndexEntry>, String>,
     ) -> (Option<Arc<[IndexEntry]>>, bool) {
-        self.cached_telling(
-            route,
-            |records| &mut records.entries,
-            |bytes| {
-                read(bytes)
-                    .unwrap_or_else(|reason| {
-                        tracing::warn!(%reason, "agent: a record is not read for search");
-                        Vec::new()
-                    })
-                    .into()
-            },
-        )
-        .map_or((None, false), |(entries, read)| (Some(entries), read))
+        let answer = self
+            .cached_telling(
+                route,
+                |records| &mut records.entries,
+                |bytes| {
+                    read(bytes)
+                        .unwrap_or_else(|reason| {
+                            tracing::warn!(%reason, "agent: a record is not read for search");
+                            Vec::new()
+                        })
+                        .into()
+                },
+            )
+            .map_or((None, false), |(entries, read)| (Some(entries), read));
+        if answer.0.is_some() {
+            self.unindexed.remove(route);
+        }
+        answer
     }
 
     fn read_texts(&mut self, reading: Reading) -> &mut HashMap<DocumentRoute, (Stamp, Arc<str>)> {
@@ -511,7 +585,9 @@ impl WorkspaceDocuments {
         self.titles.remove(route);
         self.entries.remove(route);
         self.counts.remove(route);
+        self.unindexed.remove(route);
         self.opened.insert(route.clone());
+        self.known = None;
     }
 }
 

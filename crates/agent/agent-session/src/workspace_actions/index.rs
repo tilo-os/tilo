@@ -244,10 +244,10 @@ impl Worker {
 
     /// Whether any workspace holds a document search keeps no entries for: what a pass of
     /// [`Self::warm_entries`] reads next.
-    pub(super) fn unindexed_any(&self) -> bool {
+    pub(super) fn unindexed_any(&mut self) -> bool {
         self.workspaces
-            .values()
-            .filter_map(|workspace| workspace.documents.as_ref())
+            .values_mut()
+            .filter_map(|workspace| workspace.documents.as_mut())
             .any(WorkspaceDocuments::has_unindexed)
     }
 

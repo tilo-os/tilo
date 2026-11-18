@@ -781,17 +781,29 @@ type Update = (DocumentMutation, Vec<[u8; 32]>);
 /// A workspace as the session's replica holds it when a request is served.
 struct WorkspaceState {
     workspace: Option<String>,
-    /// Its records, those open on its shared desktop first, then the most
-    /// recently changed.
-    records: Vec<DocumentRoute>,
+    /// Its documents not held open, as the replica last listed them: read
+    /// from whenever a request needs them, never listed again per request.
+    documents: Arc<[DocumentRoute]>,
     engine: Arc<tilo_session_client::engine::Engine>,
     /// How many writes landed in it.
     revision: u64,
 }
 
+/// How many reads of what the replica holds a document of the worker made
+/// since the process started ([`WorkspaceState::update`]): the work a refresh
+/// does to keep what it holds mounted current. A test reads it to prove that
+/// work follows what a write changed, not what the workspace holds.
+static REPLICA_READS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// [`REPLICA_READS`]: how many reads a refresh did so far in this process.
+#[must_use]
+pub fn replica_reads() -> u64 {
+    REPLICA_READS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 impl WorkspaceState {
     fn holds(&self, route: &DocumentRoute) -> bool {
-        self.records.contains(route)
+        self.documents.iter().any(|held| held == route)
     }
 
     /// What changed of the record at `route` since `held`, the heads a
@@ -804,6 +816,7 @@ impl WorkspaceState {
         route: &DocumentRoute,
         held: Option<&[[u8; 32]]>,
     ) -> Result<Option<Update>, String> {
+        REPLICA_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(
             match self.engine.record_update(
                 &route.cluster_id,
@@ -1011,17 +1024,26 @@ impl Workspace {
         match &mut self.documents {
             Some(kept) => WorkspaceState {
                 workspace: Some(kept.workspace().to_owned()),
-                records: kept.people_first(),
+                documents: kept.known(),
                 engine,
                 revision: kept.landings(),
             },
             None => WorkspaceState {
                 workspace: None,
-                records: Vec::new(),
+                documents: Vec::new().into(),
                 engine,
                 revision: 0,
             },
         }
+    }
+
+    /// The documents a write landed in since the last refresh took them: the
+    /// only ones a refresh has to merge into what it holds mounted.
+    fn take_changed(&mut self) -> HashSet<DocumentRoute> {
+        self.documents
+            .as_mut()
+            .map(WorkspaceDocuments::take_changed)
+            .unwrap_or_default()
     }
 
     /// The records of the workspace that `needs` reads and that hold
@@ -1874,24 +1896,36 @@ impl Worker {
                 .ok_or_else(|| ActionCallError::Unavailable {
                     reason: "the workspace was not joined".into(),
                 })?;
+        let waited = timing_start();
         workspace.wait_for(
             workspace_id,
             needs,
             self.shared.link.get().map(|link| &**link),
         )?;
+        timing_done("refresh.wait", waited);
+        let stating = timing_start();
         let state = workspace.state();
+        timing_done("refresh.state", stating);
+        // Only what a write landed in since the last refresh is merged: what
+        // is held mounted is kept current by its changes, never by reading
+        // every part the app keeps again.
+        let changed = workspace.take_changed();
+        let catching = timing_start();
         for (route, mounted) in &mut self.mounted {
-            catch_up(route, mounted, &state);
+            catch_up(route, mounted, &state, Some(&changed));
         }
         for ((route, _, _), held) in &mut self.bounded {
-            catch_up(route, &mut held.held, &state);
+            catch_up(route, &mut held.held, &state, Some(&changed));
         }
+        timing_done("refresh.catch", catching);
         // A write that landed since the last pass is read for the index as soon as this
         // request is answered, so the next find answers from it.
+        let indexing = timing_start();
         let files_waiting = self.files_unwarmed_any();
         if !self.warming && (self.unindexed_any() || files_waiting) {
             self.warming = true;
         }
+        timing_done("refresh.index", indexing);
         Ok(state)
     }
 
@@ -1935,7 +1969,7 @@ impl Worker {
         let (bytes, heads) = state.document(route)?;
         let record = reads::document_id(&route.document)?;
         let holders: Vec<DocumentRoute> = state
-            .records
+            .documents
             .iter()
             .filter(|held| {
                 held.app_id == route.app_id
@@ -2058,8 +2092,8 @@ impl Worker {
     /// app there is installed and none running, and what a member's agent
     /// names is not found. A record listed here that the replica has not been
     /// sent is asked for when a request names it.
-    fn documents(&self, state: &WorkspaceState, cluster_id: &str) -> Vec<DocumentRoute> {
-        let mut routes: Vec<DocumentRoute> = state.records.clone();
+    fn documents(&mut self, state: &WorkspaceState, cluster_id: &str) -> Vec<DocumentRoute> {
+        let mut routes: Vec<DocumentRoute> = state.documents.to_vec();
         if let Some(held) = self
             .shared
             .link
@@ -2077,6 +2111,21 @@ impl Worker {
                 }
             }
         }
+        // What people have open on the shared desktop first, then the most
+        // recently changed: read here, where a listing is answered, and not
+        // by every request that refreshes the workspace.
+        let routes = match WorkspaceId::parse(cluster_id) {
+            Some(id) => match self.workspaces.get_mut(&id).and_then(|workspace| {
+                workspace
+                    .documents
+                    .as_mut()
+                    .map(|kept| kept.people_first_of(routes.clone()))
+            }) {
+                Some(ordered) => ordered,
+                None => routes,
+            },
+            None => routes,
+        };
         routes
             .into_iter()
             .filter(|route| {
