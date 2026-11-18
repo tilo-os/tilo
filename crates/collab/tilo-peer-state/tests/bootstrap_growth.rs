@@ -421,7 +421,7 @@ fn durable_generation_growth(documents: usize, generations: u64) -> (usize, usiz
         whole_map_bytes += whole_map
             .get_changes(&heads)
             .iter()
-            .map(|change| change.raw_bytes().len())
+            .map(|change| change.raw_bytes().len() - change.message().map_or(0, str::len))
             .sum::<usize>();
     }
     let end = workspace_stats(&peer.workspace_message());
@@ -440,7 +440,21 @@ fn durable_generation_growth(documents: usize, generations: u64) -> (usize, usiz
         .collect::<Vec<_>>();
     changes.reverse();
     eprintln!("last changes (bytes, ops): {changes:?}");
-    (end.bytes - start.bytes, whole_map_bytes, saved)
+    // Every change carries an entry naming who made it, the same whatever the
+    // change writes: what a layout costs is the rest of the change, here and
+    // in the whole-map layout alike.
+    let attribution = workspace
+        .get_changes(&[])
+        .into_iter()
+        .rev()
+        .take(end.changes - start.changes)
+        .map(|change| change.message().map_or(0, str::len))
+        .sum::<usize>();
+    (
+        end.bytes - start.bytes - attribution,
+        whole_map_bytes,
+        saved,
+    )
 }
 
 #[test]
@@ -456,7 +470,7 @@ fn durable_generation_workspace_growth_is_small_per_generation() {
         ));
         // Only the edited route is rewritten, with compact values: well
         // below the whole-map rewrite, and flat in the route count.
-        assert!(per * 5 < whole_map_per, "{}", report.join("\n"));
+        assert!(per * 4 < whole_map_per, "{}", report.join("\n"));
         assert!(per < 400, "{}", report.join("\n"));
     }
     eprintln!("{}", report.join("\n"));

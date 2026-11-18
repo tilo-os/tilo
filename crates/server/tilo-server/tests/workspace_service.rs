@@ -306,7 +306,7 @@ async fn an_in_process_member_shares_deltas_with_a_remote_one() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(
     clippy::significant_drop_tightening,
-    reason = "the service is moved into the router right after its one use; nothing holds it to the end"
+    reason = "the service moves into the router once it holds its workspace; nothing of it is left to drop"
 )]
 async fn a_router_built_before_any_workspace_refuses_until_its_host_is_installed() {
     let alice = TestUser::fresh("Alice");

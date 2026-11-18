@@ -487,7 +487,7 @@ fn switch_edges_of(rows: Vec<Element>) -> Vec<f64> {
 }
 
 fn switch(id: &str) -> Element {
-    Box::new(crate::widget::Toggle::new(id, id))
+    Box::new(crate::widget::Toggle::bound(id, id))
 }
 
 #[test]

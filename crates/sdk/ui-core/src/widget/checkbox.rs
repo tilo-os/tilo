@@ -288,8 +288,17 @@ impl Checkbox {
         Box::new(self)
     }
 
-    pub fn new(_id: &str, on_toggle_path: &str) -> Self {
-        Self::with_control(BoolControl::new(on_toggle_path, None))
+    /// A box bound two-way to the boolean under `document_key` in the app document. The key
+    /// names a real path: a box whose value comes from elsewhere is built with [`Self::given`]
+    /// or [`Self::from_state`], never an empty path here.
+    pub fn bound(_id: &str, document_key: &str) -> Self {
+        Self::with_control(BoolControl::document(document_key, None))
+    }
+
+    /// A box showing `checked` and answering through its action, view or callback: it reads no
+    /// document path, so a sync never overwrites the value it was built with.
+    pub fn given(checked: bool) -> Self {
+        Self::with_control(BoolControl::given(checked, None))
     }
 
     /// Create a true two-way binding to typed process-local boolean state.
@@ -902,7 +911,7 @@ mod tests {
         // A box that took a click's press takes the release that completes it: a list row it
         // stands in decides a click on its release, and a release left to the row would act on
         // the row as well as the box.
-        let mut checkbox = Checkbox::new("ack", "acknowledged").with_label("I understand.");
+        let mut checkbox = Checkbox::bound("ack", "acknowledged").with_label("I understand.");
         let mut tree = TaffyTree::<()>::new();
         let mut node_map = std::collections::HashMap::new();
         let node = checkbox.build_layout(&mut tree, &Theme::dark(), &mut node_map);
@@ -1150,12 +1159,12 @@ mod tests {
     #[test]
     fn checkbox_identity_face_and_scaled_label_geometry() {
         fn checkbox_test_id_default_is_checkbox() {
-            let c = Checkbox::new("any", "path");
+            let c = Checkbox::bound("any", "path");
             assert_eq!(Widget::test_id(&c), Some("checkbox"));
         }
 
         fn checkbox_test_id_can_be_overridden() {
-            let c = Checkbox::new("any", "path").with_id("remember_me");
+            let c = Checkbox::bound("any", "path").with_id("remember_me");
             assert_eq!(Widget::test_id(&c), Some("remember_me"));
         }
 
@@ -1173,7 +1182,7 @@ mod tests {
         }
 
         fn visible_label_is_part_of_the_checkbox_click_target() {
-            let mut checkbox = Checkbox::new("ack", "acknowledged")
+            let mut checkbox = Checkbox::bound("ack", "acknowledged")
                 .with_id("acknowledgement")
                 .with_label("I understand the consequence.");
             let mut tree = TaffyTree::<()>::new();
@@ -1226,7 +1235,7 @@ mod tests {
         }
 
         fn labelled_checkbox_applies_theme_text_scale_once_in_measure_and_draw() {
-            let mut checkbox = Checkbox::new("updates", "updates").with_label("Updates");
+            let mut checkbox = Checkbox::bound("updates", "updates").with_label("Updates");
             for (theme_scale, renderer_scale) in [(2.0, 1.0), (2.0, 2.0), (1.0, 2.0), (2.0, 1.0)] {
                 let theme = Theme::dark().with_text_scale(theme_scale);
                 let mut tree = TaffyTree::new();
@@ -1284,17 +1293,17 @@ mod tests {
     #[test]
     fn checkbox_accessibility_and_actions_respect_enabled_state() {
         fn with_enabled_false_is_reported_by_is_enabled() {
-            let c = Checkbox::new("any", "path").with_enabled(false);
+            let c = Checkbox::bound("any", "path").with_enabled(false);
             assert!(!Widget::is_enabled(&c));
             assert!(
-                Widget::is_enabled(&Checkbox::new("any", "path")),
+                Widget::is_enabled(&Checkbox::bound("any", "path")),
                 "default is enabled"
             );
         }
 
         fn accessibility_unchecked_default() {
             use crate::a11y::Role;
-            let c = Checkbox::new("any", "path");
+            let c = Checkbox::bound("any", "path");
             let node = Widget::accessibility(&c).unwrap();
             assert_eq!(node.role, Role::Checkbox);
             assert_eq!(node.state.checked, Some(false));
@@ -1305,10 +1314,10 @@ mod tests {
         fn accessibility_uses_accessible_name_when_set() {
             // No name by default (the label is usually a sibling); the explicit
             // accessible name names a checkbox that stands alone.
-            let plain = Checkbox::new("any", "path");
+            let plain = Checkbox::bound("any", "path");
             assert_eq!(Widget::accessibility(&plain).unwrap().name, None);
 
-            let named = Checkbox::new("any", "path").with_accessible_name("Remember me");
+            let named = Checkbox::bound("any", "path").with_accessible_name("Remember me");
             assert_eq!(
                 Widget::accessibility(&named).unwrap().name.as_deref(),
                 Some("Remember me"),
@@ -1317,7 +1326,7 @@ mod tests {
 
         fn accessibility_disabled_checked_reports_checked_and_disabled() {
             use crate::a11y::Role;
-            let mut c = Checkbox::new("any", "path").with_enabled(false);
+            let mut c = Checkbox::bound("any", "path").with_enabled(false);
             c.control.is_checked = true; // same module → can set the synced state directly
             let node = Widget::accessibility(&c).unwrap();
             assert_eq!(node.role, Role::Checkbox);
@@ -1329,7 +1338,7 @@ mod tests {
             use crate::a11y::Action;
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            let mut c = Checkbox::new("any", "checked");
+            let mut c = Checkbox::bound("any", "checked");
             assert!(!c.control.is_checked);
             assert!(Widget::perform_action(
                 &mut c,
@@ -1353,7 +1362,7 @@ mod tests {
             use crate::a11y::Action;
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            let mut c = Checkbox::new("any", "checked").with_enabled(false);
+            let mut c = Checkbox::bound("any", "checked").with_enabled(false);
             assert!(!Widget::perform_action(
                 &mut c,
                 &Action::ToggleCheck,
@@ -1365,7 +1374,7 @@ mod tests {
         }
 
         fn disabled_checkbox_does_not_toggle() {
-            let mut c = Checkbox::new("id", "checked").with_enabled(false);
+            let mut c = Checkbox::bound("id", "checked").with_enabled(false);
 
             let mut tree = TaffyTree::<()>::new();
             let mut node_map = std::collections::HashMap::new();
@@ -1412,7 +1421,7 @@ mod tests {
         }
 
         fn action_binding_owns_accessibility_activation() {
-            let mut checkbox = Checkbox::new("native", "legacy")
+            let mut checkbox = Checkbox::bound("native", "legacy")
                 .on_view("checkbox", |_| panic!("legacy callback must be suppressed"))
                 .on_action(crate::widget::test_bool_action_binding());
             let mut doc = AutoCommit::new();
@@ -1473,7 +1482,7 @@ mod tests {
         fn document_binding_resets_after_the_boolean_path_disappears() {
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            let mut checkbox = Checkbox::new("any", "checked");
+            let mut checkbox = Checkbox::bound("any", "checked");
             doc.put(&root, "checked", true).unwrap();
             Widget::sync(&mut checkbox, &doc, &root);
             assert!(checkbox.is_checked());
@@ -1543,7 +1552,7 @@ mod tests {
             assert!(ratio >= 3.0 - 1e-6, "edge contrast {ratio}");
         }
         let row = crate::widget::Row::new().push(Box::new(
-            Checkbox::new("c", "c")
+            Checkbox::bound("c", "c")
                 .with_id("hug")
                 .with_label("Remember me")
                 .intrinsic_width(),

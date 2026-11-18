@@ -93,10 +93,13 @@ mod tests {
         doc.put(ROOT, "choice", "first").unwrap();
         let mut controls: Vec<(Box<dyn Widget>, Action)> = vec![
             (
-                Box::new(Checkbox::new("check", "checked")),
+                Box::new(Checkbox::bound("check", "checked")),
                 Action::Activate,
             ),
-            (Box::new(Toggle::new("toggle", "checked")), Action::Activate),
+            (
+                Box::new(Toggle::bound("toggle", "checked")),
+                Action::Activate,
+            ),
             (
                 Box::new(Slider::new("slider", "number")),
                 Action::SetValue("0.75".into()),

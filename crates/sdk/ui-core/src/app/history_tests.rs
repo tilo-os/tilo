@@ -4931,12 +4931,12 @@ fn ownership_matrix_app_with_confirmation(
     let control: Box<dyn Widget> = match kind {
         "Button" => Box::new(Button::new("control", "Control").on_action(unit())),
         "Checkbox" => Box::new(
-            Checkbox::new("control", "unused")
+            Checkbox::bound("control", "unused")
                 .with_id("control")
                 .on_action(ownership_matrix_binding(&resource)),
         ),
         "Toggle" => Box::new(
-            Toggle::new("control", "unused")
+            Toggle::bound("control", "unused")
                 .with_id("control")
                 .on_action(ownership_matrix_binding(&resource)),
         ),

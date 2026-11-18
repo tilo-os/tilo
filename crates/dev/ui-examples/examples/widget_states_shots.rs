@@ -2106,7 +2106,7 @@ fn list_blocks() -> Vec<Block> {
                     ListRow::new("wifi", "Wi-Fi")
                         .secondary("Home network")
                         .icon(Icon::Wifi)
-                        .trailing(Box::new(Toggle::new("wifi-on", "wifi"))),
+                        .trailing(Box::new(Toggle::bound("wifi-on", "wifi"))),
                 ),
                 Box::new(
                     ListRow::new("tokyo", "Tokyo")

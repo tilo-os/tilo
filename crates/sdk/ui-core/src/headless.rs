@@ -9275,8 +9275,8 @@ mod tests {
                 crate::widget::Column::new()
                     .push(Box::new(
                         crate::widget::Column::new()
-                            .push(Box::new(crate::widget::Checkbox::new("a", "a")))
-                            .push(Box::new(crate::widget::Checkbox::new("b", "b"))),
+                            .push(Box::new(crate::widget::Checkbox::bound("a", "a")))
+                            .push(Box::new(crate::widget::Checkbox::bound("b", "b"))),
                     ))
                     .push(Box::new(crate::widget::ProgressBar::new(0.4))),
             )
@@ -9852,7 +9852,7 @@ mod tests {
             })
             .unwrap();
             Self {
-                content: crate::widget::Checkbox::new("remember", "remember")
+                content: crate::widget::Checkbox::bound("remember", "remember")
                     .with_id("remember")
                     .on_action(binding),
                 resource,

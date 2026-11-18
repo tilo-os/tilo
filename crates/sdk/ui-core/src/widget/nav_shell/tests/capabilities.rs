@@ -383,7 +383,7 @@ tilo_test_env::scenario! {
     // stands at that size, beside a labelled button.
     phase a_switch_in_the_header_keeps_its_own_width;
     {
-        let switch = crate::widget::Toggle::new("power", "Power");
+        let switch = crate::widget::Toggle::bound("power", "Power");
         let intrinsic = crate::widget::ToggleFace::size(&Theme::dark()).0;
         let shell = titled_content(vec![
             Box::new(switch),

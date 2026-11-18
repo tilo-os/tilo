@@ -88,10 +88,29 @@ impl KnobHold {
 }
 
 impl Toggle {
-    pub fn new(id: &str, on_toggle_path: &str) -> Self {
+    /// A switch bound two-way to the boolean under `document_key` in the app document. The key
+    /// names a real path: a switch whose value comes from elsewhere is built with
+    /// [`Self::given`] or [`Self::from_state`], never an empty path here.
+    pub fn bound(id: &str, document_key: &str) -> Self {
+        Self::with_control(
+            id,
+            BoolControl::document(document_key, Some(crate::widget::humanize_control_id(id))),
+        )
+    }
+
+    /// A switch showing `on` and answering through its action, view or callback: it reads no
+    /// document path, so a sync never overwrites the value it was built with.
+    pub fn given(id: &str, on: bool) -> Self {
+        Self::with_control(
+            id,
+            BoolControl::given(on, Some(crate::widget::humanize_control_id(id))),
+        )
+    }
+
+    fn with_control(id: &str, control: BoolControl) -> Self {
         Self {
             semantic_id: id.to_string(),
-            control: BoolControl::new(on_toggle_path, Some(crate::widget::humanize_control_id(id))),
+            control,
             switch: SwitchMotion::default(),
             hold: None,
             pointer_x: 0.0,
@@ -209,9 +228,7 @@ impl Toggle {
     /// synchronization pass. Use [`Self::on_change`] only to observe user
     /// changes, not to keep the model in sync.
     pub fn from_state(state: &crate::LocalState<bool>) -> Self {
-        let mut toggle = Self::new("toggle", "");
-        toggle.control = BoolControl::local(state, None);
-        toggle
+        Self::with_control("toggle", BoolControl::local(state, None))
     }
 
     /// Name the setting beside the switch: its words at the row's leading edge, the switch at the
@@ -986,27 +1003,27 @@ mod tests {
         phase toggle_identity_enabled_state_and_accessibility_are_reported;
         {
             {
-                let t = Toggle::new("any", "path");
+                let t = Toggle::bound("any", "path");
                 assert_eq!(Widget::test_id(&t), Some("toggle"));
             }
 
             {
-                let t = Toggle::new("any", "path").with_id("airplane_mode");
+                let t = Toggle::bound("any", "path").with_id("airplane_mode");
                 assert_eq!(Widget::test_id(&t), Some("airplane_mode"));
             }
 
             {
-                let t = Toggle::new("any", "path").with_enabled(false);
+                let t = Toggle::bound("any", "path").with_enabled(false);
                 assert!(!Widget::is_enabled(&t));
                 assert!(
-                    Widget::is_enabled(&Toggle::new("any", "path")),
+                    Widget::is_enabled(&Toggle::bound("any", "path")),
                     "default is enabled"
                 );
             }
 
             {
                 use crate::a11y::Role;
-                let mut t = Toggle::new("any", "path");
+                let mut t = Toggle::bound("any", "path");
                 let off = Widget::accessibility(&t).unwrap();
                 assert_eq!(off.role, Role::Switch);
                 assert_eq!(off.state.checked, Some(false));
@@ -1017,13 +1034,13 @@ mod tests {
             }
 
             {
-                let plain = Toggle::new("any", "path");
+                let plain = Toggle::bound("any", "path");
                 assert_eq!(
                     Widget::accessibility(&plain).unwrap().name.as_deref(),
                     Some("Any")
                 );
 
-                let named = Toggle::new("any", "path").with_accessible_name("Airplane mode");
+                let named = Toggle::bound("any", "path").with_accessible_name("Airplane mode");
                 assert_eq!(
                     Widget::accessibility(&named).unwrap().name.as_deref(),
                     Some("Airplane mode"),
@@ -1033,12 +1050,12 @@ mod tests {
                 // the toolkit's own key says the caption, while the message-id
                 // setter resolves it in the catalogue.
                 let caption =
-                    Toggle::new("any", "path").with_resolved_accessible_name("window-root-name");
+                    Toggle::bound("any", "path").with_resolved_accessible_name("window-root-name");
                 assert_eq!(
                     Widget::accessibility(&caption).unwrap().name.as_deref(),
                     Some("window-root-name"),
                 );
-                let key = Toggle::new("any", "path").with_accessible_name("window-root-name");
+                let key = Toggle::bound("any", "path").with_accessible_name("window-root-name");
                 assert_eq!(
                     Widget::accessibility(&key).unwrap().name.as_deref(),
                     Some("Tilo application window"),
@@ -1072,7 +1089,7 @@ mod tests {
                     (true, false, true, true),
                     (false, false, false, false),
                 ] {
-                    let mut toggle = Toggle::new("wifi", "wifi");
+                    let mut toggle = Toggle::bound("wifi", "wifi");
                     toggle.control.is_checked = on;
                     toggle.control.is_hovered = hovered;
                     toggle.control.is_focused = focused;
@@ -1319,7 +1336,7 @@ mod tests {
         phase a_switch_repaints_only_when_what_it_paints_changes;
         {
             let theme = Theme::dark();
-            let mut t = Toggle::new("wifi", "wifi");
+            let mut t = Toggle::bound("wifi", "wifi");
             let frame = |t: &mut Toggle| {
                 t.draw(
                     &mut Scene::new(),
@@ -1451,7 +1468,7 @@ mod tests {
         {
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            let mut toggle = Toggle::new("any", "enabled");
+            let mut toggle = Toggle::bound("any", "enabled");
             doc.put(&root, "enabled", true).unwrap();
             Widget::sync(&mut toggle, &doc, &root);
             assert!(toggle.is_checked());
@@ -1466,7 +1483,7 @@ mod tests {
         }
 
         {
-            let mut t = Toggle::new("id", "on").with_enabled(false);
+            let mut t = Toggle::bound("id", "on").with_enabled(false);
 
             let mut tree = TaffyTree::<()>::new();
             let mut node_map = std::collections::HashMap::new();
@@ -1513,7 +1530,7 @@ mod tests {
         }
 
         {
-            let mut toggle = Toggle::new("native", "legacy")
+            let mut toggle = Toggle::bound("native", "legacy")
                 .on_view("toggle", |_| panic!("legacy callback must be suppressed"))
                 .on_action(crate::widget::test_bool_action_binding());
             let mut doc = AutoCommit::new();
@@ -1551,13 +1568,56 @@ mod tests {
             );
         }
     }
+
+    /// A switch whose value comes from an action rather than a document
+    /// path keeps the value it was built with: syncing never finds an empty
+    /// key to read and turn it off.
+    #[test]
+    fn a_switch_given_its_state_reads_it_and_an_empty_document_path_is_rejected() {
+        let mut doc = AutoCommit::new();
+        doc.put(&automerge::ROOT, "wifi", false).unwrap();
+        let mut toggle = Toggle::given("wifi", true);
+        Widget::sync(&mut toggle, &doc, &automerge::ROOT);
+        assert!(
+            toggle.is_checked(),
+            "a given switch keeps the value it was built with"
+        );
+
+        let mut action_switch =
+            Toggle::given("wifi", false).on_action(crate::widget::test_bool_action_binding());
+        crate::widget::controls::refresh_control_action_availability(
+            &mut action_switch,
+            &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
+                "test:control",
+                "set",
+            )]),
+        );
+        assert!(Widget::perform_action(
+            &mut action_switch,
+            &crate::a11y::Action::Activate,
+            &[],
+            &mut crate::widget::Edits::lend(&mut doc),
+            &automerge::ROOT
+        ));
+        assert!(
+            action_switch.is_checked(),
+            "an action-owned switch shows the flip it asked for"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "a bound control needs a document key")]
+    fn binding_a_switch_to_an_empty_document_path_is_rejected() {
+        let _ = Toggle::bound("wifi", "");
+    }
+
     #[test]
     fn the_switch_size_follows_the_ui_scale_and_layout_settles() {
         let (w, h) = ToggleFace::size(&Theme::dark());
         assert_eq!((w, h), (44.0, 24.0));
         let (w2, _) = ToggleFace::size(&Theme::dark().with_ui_scale(1.5));
         assert!((w2 - 66.0).abs() < 1e-9);
-        let mut toggle = Toggle::new("t", "t");
+        let mut toggle = Toggle::bound("t", "t");
         assert!(Widget::is_layout_dirty(&toggle));
         let mut tree = TaffyTree::new();
         let node = toggle.build_layout(
@@ -1575,7 +1635,7 @@ mod tests {
     /// its neighbour must still reach the neighbour.
     #[test]
     fn a_hover_change_leaves_the_move_for_the_next_control() {
-        let mut t = Toggle::new("id", "on");
+        let mut t = Toggle::bound("id", "on");
         let mut tree = TaffyTree::<()>::new();
         let mut node_map = std::collections::HashMap::new();
         let node = t.build_layout(&mut tree, &Theme::dark(), &mut node_map);
