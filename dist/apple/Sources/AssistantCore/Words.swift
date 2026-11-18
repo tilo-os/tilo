@@ -24,7 +24,8 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     case nothingYet = "nothing-yet", nothingYetBody = "nothing-yet-body"
     case liveThing = "live-thing", attachment
     // The first run, in the main chat.
-    case findingAssistant = "finding-assistant", needsProvider = "needs-provider", providerKey = "provider-key"
+    case findingAssistant = "finding-assistant", makingWorkspace = "making-workspace"
+    case needsProvider = "needs-provider", providerKey = "provider-key"
     case linkProvider = "link-provider", needsModel = "needs-model", chooseModel = "choose-model", answersOn = "answers-on"
     // A sub-agent's window.
     case startedByMain = "started-by-main", startedByYou = "started-by-you", cannotReadMain = "cannot-read-main"
@@ -126,6 +127,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .liveThing: "Live view"
         case .attachment: "Attachment"
         case .findingAssistant: "Setting up your assistant"
+        case .makingWorkspace: "Tilo is making your workspace. The first time, this can take a few minutes."
         case .needsProvider: "No model provider is linked yet, so your assistant cannot answer. Choose a provider and type your own key for it below."
         case .providerKey: "Your key for {name}"
         case .linkProvider: "Link {name}"

@@ -75,6 +75,9 @@ public final class TiloSource: AssistantSource {
     /// How often one ask of her server on the way to her assistant is made in all, where it
     /// goes unanswered or is answered with nothing in it, before the main chat says so.
     var setupAsks = 5
+    /// How long the ask for which workspace is her own is out before the main chat says that
+    /// her server is making that workspace.
+    var makingAfter: Duration = .seconds(10)
     /// How long after the main chat said that her server left the finding of her assistant
     /// unanswered it is begun again by itself, the first time. The wait doubles each time, up
     /// to a minute.
@@ -341,7 +344,7 @@ public final class TiloSource: AssistantSource {
             // link leads, so it goes to the person's own once, where the page says which it is.
             if livesInOwn {
                 // An ask that went unanswered is made again the next time the page is in.
-                if ownRoute == nil { ownRoute = (try? await engine.ownWorkspace())?.route }
+                if ownRoute == nil { ownRoute = await ownAsked(of: whose.person) }
                 if !soughtOwn, let ownRoute {
                     soughtOwn = true
                     if EngineAddress.isElsewhere(route, than: ownRoute) {
@@ -387,6 +390,30 @@ public final class TiloSource: AssistantSource {
         toldWanted = true
         followTold()
         await handAddress()
+    }
+
+    /// Ask her server which workspace is her own. It makes that workspace the first time it is
+    /// asked, and a busy server takes minutes over it. The page has said whose device this is,
+    /// so she is signed in from here on, and the main chat says what is waited for: that her
+    /// assistant is being set up, and once the ask has been out for `makingAfter`, that her
+    /// server is making her workspace. Her name and the rest come as the way in goes on.
+    private func ownAsked(of root: String) async -> String? {
+        if person == nil {
+            person = Person(id: .init(root), name: "", workspace: "")
+            tell()
+        }
+        guard mainChat == .assistant, assistant == nil else { return (try? await engine.ownWorkspace())?.route }
+        setups.set(.findingAssistant)
+        let patience = makingAfter
+        let slow = Task { [weak self] in
+            try? await Task.sleep(for: patience)
+            guard !Task.isCancelled, let self, self.setups.now == .findingAssistant else { return }
+            self.setups.set(.makingWorkspace)
+        }
+        let own = (try? await engine.ownWorkspace())?.route
+        slow.cancel()
+        if setups.now == .makingWorkspace { setups.set(.findingAssistant) }
+        return own
     }
 
     /// What the page keeps of its own membership, for a page that hands a native app nothing:

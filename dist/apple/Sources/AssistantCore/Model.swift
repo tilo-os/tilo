@@ -73,6 +73,9 @@ public enum Setup: Equatable, Sendable {
     case unknown
     /// The person's assistant is being found, or made where they keep none.
     case findingAssistant
+    /// As `findingAssistant`, where their server has been making their own workspace for a
+    /// while: the first time it is asked for, that can take minutes, and the main chat says so.
+    case makingWorkspace
     /// It could not be found or made. The sentence says why, in Tilo's own words where it has any.
     case noAssistant(String)
     /// No provider is linked. These can be, each with a key of the person's own.

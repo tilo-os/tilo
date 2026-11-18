@@ -155,13 +155,18 @@ struct SetupStep: View {
     var body: some View {
         Group {
             switch model.setup {
-            case .findingAssistant:
+            case .findingAssistant, .makingWorkspace:
                 HStack(spacing: 10) {
                     ProgressView().controlSize(.small)
                     Text(AssistantWords.findingAssistant.said).font(.body14).foregroundStyle(Token.ink2)
                 }
                 .padding(.leading, 14)
                 .accessibilityElement(children: .combine)
+                // Their server has been making their own workspace for a while: said under the
+                // line, so that nobody takes the wait for a window that stopped.
+                if model.setup == .makingWorkspace {
+                    Fine(words: AssistantWords.makingWorkspace.said).padding(.leading, 14)
+                }
             case .noAssistant(let why):
                 Bubble { MarkdownText(text: why) }
                 Button(AssistantWords.tryAgain.said) { model.makeAssistant() }.buttonStyle(BoxButtonStyle(isMain: true))

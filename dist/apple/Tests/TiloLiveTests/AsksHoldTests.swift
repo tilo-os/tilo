@@ -933,5 +933,44 @@ final class AsksHoldTests: XCTestCase {
         let asks = try await asked("chat read")
         XCTAssertEqual(asks, 1)
     }
+
+    // MARK: While her server makes her own workspace
+
+    /// As a first start on a busy server: it makes her own workspace the first time it is asked
+    /// which one that is, and takes its time. She is in for all of that time, and reads what is
+    /// waited for.
+    func testWhileHerServerMakesHerOwnWorkspaceSheIsSignedInAndTheMainChatSaysWhatItWaitsFor() async throws {
+        try await start(livesInOwn: true)
+        source.makingAfter = .milliseconds(300)
+        try await enter("window.agents = []; window.plan = {own: ['never']}", own: true)
+        try await signedIn()
+        try await until("the main chat says that her server is making her workspace") { self.setups.last == .makingWorkspace }
+        XCTAssertEqual(setups.filter { $0 != .unknown }, [.findingAssistant, .makingWorkspace],
+                       "the line of the setting up stands first, and the sentence comes under it after a while")
+        let out = try await asked("own")
+        XCTAssertEqual(out, 1)
+        // Her server is done and says which workspace is hers: the way in goes on from there.
+        try await inPage("window.owed.shift()({id: 'own-7', name: 'Mine', origin: 'https://tilo.example:8443'})")
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        XCTAssertFalse(saidNoAssistant, "a sentence was said on the way")
+        XCTAssertEqual(setups.filter { $0 == .makingWorkspace }.count, 1, "the sentence came back after her server had answered")
+        let asks = try await asked("own")
+        XCTAssertEqual(asks, 1, "her server was asked a second time for what it was already making")
+        let kept = try await agentsKept()
+        XCTAssertEqual(kept, #"[["assistant",true]]"#)
+        try await until("her name is known") {
+            if case .signedIn(let person) = self.sessions.last { person.name == "Ada Lovelace" } else { false }
+        }
+    }
+
+    /// A server that says at once which workspace is hers was not making it: nothing is said of that.
+    func testWhereHerServerSaysAtOnceWhichWorkspaceIsHerOwnNothingIsSaidOfItsMaking() async throws {
+        try await start(livesInOwn: true)
+        try await enter("window.agents = []", own: true)
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        XCTAssertFalse(setups.contains(.makingWorkspace), "the sentence was said though her server answered at once")
+        let asks = try await asked("own")
+        XCTAssertEqual(asks, 1)
+    }
 }
 #endif

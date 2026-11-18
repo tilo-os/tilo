@@ -614,6 +614,10 @@ final class TiloSourceTests: XCTestCase {
         // There it stays: the page's own word of where it is, and no second move.
         try await run("location.hash = '#/@host.example:8443/w/own-7/so.tilo.chat'")
         try await until("the app is signed in") { if case .signedIn = self.sessions.last { true } else { false } }
+        // She is signed in from the moment the page says whose device this is, before it went there.
+        try await until("the app no longer keeps the workspace it was let in at") {
+            self.defaults.string(forKey: "TiloLiveRoute") != "/w/ws-1"
+        }
         XCTAssertEqual(asked.count, 1)
         XCTAssertEqual(defaults.string(forKey: "TiloLiveRoute"), "/@host.example:8443/w/own-7")
     }
