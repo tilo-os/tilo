@@ -48,13 +48,14 @@ impl<'a> Durable<'a> {
             return Err(if version < DURABLE_VERSION {
                 format!(
                     "this state is from an older format (version {version}, and this build \
-                     reads version {DURABLE_VERSION}): start fresh with a new state directory"
+                     reads version {DURABLE_VERSION}): move the state directory aside, or start \
+                     with an empty one"
                 )
             } else {
                 format!(
                     "this state is from a newer format (version {version}, and this build \
-                     reads version {DURABLE_VERSION}): run a newer build, or start fresh with a \
-                     new state directory"
+                     reads version {DURABLE_VERSION}): run a newer build, or move the state \
+                     directory aside and start with an empty one"
                 )
             });
         }
@@ -64,7 +65,7 @@ impl<'a> Durable<'a> {
         let (durable, tail): (Self, _) = postcard::take_from_bytes(bytes).map_err(|error| {
             format!(
                 "this state cannot be read by this build (it may be from another format): \
-                 {error}. Start fresh with a new state directory"
+                 {error}. Move the state directory aside, or start with an empty one"
             )
         })?;
         if !tail.is_empty() {

@@ -1300,7 +1300,7 @@ impl Workspaces {
                 continue;
             }
             let workspace = GovernedWorkspace::open(path.clone(), device.as_ref())
-                .map_err(|error| format!("{}: record: {error}", path.display()))?;
+                .map_err(|error| document_format::unopened(&path, &dir, &error))?;
             this.serve_direct(&workspace)?;
             workspaces.insert(
                 workspace.workspace().to_owned(),
