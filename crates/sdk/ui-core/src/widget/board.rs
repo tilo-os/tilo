@@ -408,11 +408,28 @@ impl Board {
     /// gutters narrows it, and then to the pane, so a narrow board shows one whole list per
     /// page rather than one list and a sliver of the next.
     pub(crate) fn list_width(theme: &Theme, width: f64) -> f32 {
+        Self::lists_width(theme, width, 1)
+    }
+
+    /// The width each of `lists` lists takes on a board `width` wide: [`Self::list_width`], except
+    /// that lists which fall a little short of fitting side by side narrow, never below the
+    /// measure a card needs, so every list stands whole in the pane rather than the last one cut
+    /// off at its edge. Lists that do not fit even then keep their comfortable measure and scroll.
+    pub(crate) fn lists_width(theme: &Theme, width: f64, lists: usize) -> f32 {
         let gutter = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Group));
+        let gap = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Sibling));
         let least = f64::from(CardWidth::Regular.min_width(theme));
         let comfortable = Self::comfortable_list(theme);
         let spare = (width - 2.0 * gutter).max(0.0);
-        let list = if spare >= comfortable {
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a board holds a handful of lists"
+        )]
+        let count = lists.max(1) as f64;
+        let fitted = (spare - gap * (count - 1.0)) / count;
+        let list = if lists > 1 && fitted < comfortable && fitted >= least {
+            fitted
+        } else if spare >= comfortable {
             comfortable
         } else {
             spare.max(least)
@@ -441,7 +458,7 @@ impl Board {
         theme: &Theme,
         width: f64,
     ) -> bool {
-        let width = Self::list_width(theme, width);
+        let width = Self::lists_width(theme, width, Widget::children(&self.row).len());
         if self.sized.is_some_and(|sized| (sized - width).abs() < 0.05) {
             return false;
         }

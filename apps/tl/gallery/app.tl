@@ -215,13 +215,12 @@ fn page_title(page: Text) -> Text {
         std.say("Places")
     } else if page == "chrome" {
         std.say("Shell parts")
-    } else if page == "customs" { std.say("Your own") } else { std.say("Gallery") }
+    } else if page == "customs" { std.say("Charts and views") } else { std.say("Gallery") }
 }
 
 /// The gallery's window: each group in the sidebar under what it is for, the one chosen shown
 /// beside it, so every component the toolkit describes is a place away rather than a window of
-/// its own. A window with no documents yet offers to fill them, because a gallery with nothing in
-/// it says nothing.
+/// its own.
 view gallery(g: Gallery) {
     state showing: Text = "basics"
     ui.NavShell(content_kind: .page, title: page_title(showing), sidebar_title: "Gallery") {
@@ -396,68 +395,122 @@ view parts(g: Gallery, last: State<Text>) {
 }
 
 /// The backlog's page: its items as rows, each with a menu, a swipe and a hover toolbar,
-/// over a composer.
+/// over the line that adds the next one.
 view backlog_list(g: Gallery) {
-    state last: Text = ""
     ui.Docked {
         foot: {
-            stack(gap: .related) {
-                if last != "" {
-                    ui.Text(last, role: .caption, secondary: true)
+            row(gap: .related) {
+                ui.RichInput(
+                    bind: g.backlog_draft,
+                    placeholder: "Add an item to the backlog",
+                    fill,
+                ) {
+                    on submit: add_item(g)
                 }
-                row(gap: .related) {
-                    ui.RichInput(bind: g.backlog_draft, placeholder: "Message the team", fill)
-                    ui.Button("Send", icon: .send, icon_only: true)
+                ui.Button("Add", icon: .plus, icon_only: true) {
+                    on press: add_item(g)
                 }
             }
         }
-        ui.VirtualList(selection_follows_focus: true, in_column: true) {
-            for x in g.backlog_items {
-                ui.ListItem(item: x) {
-                    menu: {
-                        ui.EmojiBar(["👍", "🎉", "👀"])
-                        ui.MenuItem("Open", icon: .arrow_right)
-                        ui.MenuSeparator()
-                        ui.MenuItem("Delete", icon: .trash, destructive: true)
+        stack(padding: .group, gap: .related, fill) {
+            ui.Text(
+                "Rows of a collection: each with a menu, a swipe, a toolbar on hover and its reactions.",
+                role: .caption,
+                secondary: true,
+            )
+            ui.VirtualList(selection_follows_focus: true, in_column: true, fill) {
+                for x in g.backlog_items {
+                    ui.ListItem(item: x, done: x.stage == "Done") {
+                        menu: {
+                            ui.EmojiBar(["👍", "🎉", "👀"]) {
+                                on pick(e): react(x, e)
+                            }
+                            ui.MenuItem("Mark done", icon: .check) {
+                                on choose: finish(x)
+                            }
+                            ui.MenuSeparator()
+                            ui.MenuItem("Delete", icon: .trash, destructive: true) {
+                                on choose: remove_item(g, x)
+                            }
+                        }
+                        swipe: {
+                            ui.SwipeAction("Done", icon: .check) {
+                                on swipe: finish(x)
+                            }
+                        }
+                        change: {
+                            ui.ChangeMark(x)
+                        }
+                        item_row(g, x)
                     }
-                    swipe: {
-                        ui.SwipeAction("Archive", icon: .archive)
-                    }
-                    change: {
-                        ui.ChangeMark(x)
-                    }
-                    item_row(x)
                 }
             }
         }
     }
 }
 
-/// One item in the list: its row, what it says, its reactions and the message it answers, with
-/// a menu, a swipe and a hover toolbar of its own.
-view item_row(x: Item) {
+/// One item in the list: its row, what it says and its reactions, with a menu, a swipe and a
+/// hover toolbar of its own.
+view item_row(g: Gallery, x: Item) {
     stack(gap: .tight) {
         ui.ListRow(x.title, secondary: x.stage)
-        ui.Reactions(reactions: x.reactions)
+        if not x.reactions.keys().is_empty() {
+            ui.Reactions(reactions: x.reactions) {
+                on toggle(e): react(x, e)
+            }
+        }
     }
     ui.ContextMenu {
-        ui.MenuItem("Copy link", icon: .link)
+        ui.MenuItem("Mark done", icon: .check) {
+            on choose: finish(x)
+        }
     }
     ui.Swipe {
         trailing: {
-            ui.SwipeAction("Delete", icon: .trash, destructive: true)
+            ui.SwipeAction("Delete", icon: .trash, destructive: true) {
+                on swipe: remove_item(g, x)
+            }
         }
     }
     ui.HoverToolbar {
-        ui.Button("Reply", icon: .reply, icon_only: true)
-        ui.EmojiPicker()
+        ui.Button("Mark done", icon: .check, icon_only: true) {
+            on press: finish(x)
+        }
+        ui.EmojiPicker() {
+            on pick(e): react(x, e)
+        }
     }
+}
+
+/// Adds what the backlog's line says as an item to do, and clears the line.
+action add_item(g: Gallery) {
+    require not g.backlog_draft.is_empty() "Write the item first"
+    g.backlog_items.insert(
+        Item(title: g.backlog_draft.excerpt, notes: g.backlog_draft, stage: "To do"),
+    )
+    g.backlog_draft = RichText("")
+}
+
+/// Marks an item done.
+action finish(x: Item) {
+    x.stage = "Done"
+}
+
+/// Takes an item off the backlog.
+destructive action remove_item(g: Gallery, x: Item) {
+    g.backlog_items.remove(x)
+}
+
+/// Reacts to an item with an emoji, or takes the person's reaction back.
+action react(x: Item, emoji: Text) {
+    let mine = if let who = x.reactions.get(emoji) { who.any(p -> p == invoker) } else { false }
+    if mine { x.reactions.remove(emoji, invoker) } else { x.reactions.add(emoji, invoker) }
 }
 
 /// The release's page: a list per stage, each card an item.
 view release_board(g: Gallery) {
     state last: Text = ""
-    stack(gap: .section, fill) {
+    stack(gap: .section, padding: .group, fill) {
         ui.Text(
             "A board, a list per stage, with cards an app drags between them.",
             role: .caption,

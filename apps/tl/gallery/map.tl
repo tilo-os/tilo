@@ -19,7 +19,6 @@ view places(g: Gallery) {
                 }
                 body: {
                     stack(gap: .related, padding: .section) {
-                        ui.Text("Groceries", role: .heading)
                         ui.Text(
                             "A resource's view on the canvas: no frame, its handle on hover.",
                             role: .caption,

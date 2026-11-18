@@ -417,6 +417,7 @@ mod tests {
     use crate::Intents;
     use crate::component::{Fired, Intent};
     use crate::theme::Theme;
+    use crate::tokens::Rhythm;
     use crate::widget::Text;
 
     fn card_props(queue: &Intents<Fired>, key: &str) -> BoardCardProps {
@@ -702,6 +703,19 @@ mod tests {
             assert!((f64::from(Board::list_width(&theme, narrow)) - (narrow - 48.0)).abs() < 0.5);
             let least = f64::from(crate::widget::CardWidth::Regular.min_width(&theme));
             assert!(f64::from(Board::list_width(&theme, least)) >= least);
+            // Three lists a little short of fitting a pane narrow so all three stand whole, the
+            // last not cut off at the pane's edge; three that cannot fit at a card's measure keep
+            // their comfortable one and scroll.
+            let gutter = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Group));
+            let gap = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Sibling));
+            let pane = 2.0 * gutter + 3.0 * list + 2.0 * gap - 40.0;
+            let fitted = f64::from(Board::lists_width(&theme, pane, 3));
+            assert!(fitted < list && fitted >= least, "three lists read {fitted} wide in {pane}");
+            assert!(
+                (2.0 * gutter + 3.0 * fitted + 2.0 * gap - pane).abs() < 0.5,
+                "three lists fill the pane exactly"
+            );
+            assert_eq!(f64::from(Board::lists_width(&theme, 2.0 * least, 3)), list);
         }
 
         phase a_board_in_a_sideways_pane_keeps_its_lists_a_comfortable_measure;
