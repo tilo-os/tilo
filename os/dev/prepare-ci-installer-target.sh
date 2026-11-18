@@ -149,7 +149,7 @@ origin = ("code.tilo.so/tilo/tilo:lenovo-83ed-" + revision if profile == "lenovo
           else "registry.tilo.so/tilo/tilo:gen" + generation)
 Path(target).write_text(json.dumps({
     "schema": "tilo.installer-offline-target.v1",
-    "target_ref": image,
+    "repository": image.split("@", 1)[0],
     "target_digest": image.split("@", 1)[1],
     "architecture": "aarch64",
     "hardware_profile": profile,

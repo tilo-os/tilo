@@ -40,7 +40,7 @@
 #      built apart (os/image/compile.sh), every layer of os/image/layers.toml and the composed
 #      image, through os/image/build-layer.sh's actions.
 #   4. tilo-vm (cargo, in the project's builder image).
-#   5. The installer medium: tools/ci/publish/dev-installer-medium.sh from the image, in a worker
+#   5. The installer medium: tools/ci/publish/installer-medium.sh from the image, in a worker
 #      VM (tools/ci/medium-in-worker-vm.sh), because the disk install it does needs EROFS, btrfs
 #      and loop devices that this machine's kernel may not have. A medium of this commit and
 #      image already in DIR is kept.

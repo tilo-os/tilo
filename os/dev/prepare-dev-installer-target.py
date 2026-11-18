@@ -15,13 +15,17 @@ import subprocess
 
 
 def prepare(args):
-    match = re.fullmatch(r"registry\.tilo\.so/tilo/tilo-vm@(sha256:[0-9a-f]{64})", args.image)
+    match = re.fullmatch(
+        r"((?:registry|code)\.tilo\.so/tilo/[a-z0-9]+(?:[._-][a-z0-9]+)*)@(sha256:[0-9a-f]{64})",
+        args.image)
     if (match is None or re.fullmatch(r"[0-9a-f]{40}", args.source_revision) is None
             or re.fullmatch(r"[1-9][0-9]*", args.ci_run_id) is None
             or args.hardware_profile not in ("generic", "lenovo-83ed")
-            or re.fullmatch(r"registry\.tilo\.so/tilo/tilo-vm:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}",
-                            args.update_origin) is None):
-        raise ValueError("development target requires an immutable ARM image and explicit source, run, profile and origin")
+            or args.architecture not in ("x86_64", "aarch64")
+            or not args.update_origin.startswith(match[1] + ":")
+            or re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}",
+                            args.update_origin.removeprefix(match[1] + ":")) is None):
+        raise ValueError("development target requires an immutable image and explicit source, build, architecture, profile and origin")
     output = args.output
     if output.exists() or output.is_symlink() or not output.parent.is_dir() or output.parent.is_symlink():
         raise ValueError("target output must be new under a regular existing directory")
@@ -31,8 +35,8 @@ def prepare(args):
     builder = load(Path(__file__).with_name("dev-target-uki.py"), "dev_target_uki")
     builder.build(args.image, args.rpms_ref, output / builder.OUTPUT_NAME,
                   Path(__file__).resolve().parents[2])
-    metadata = {"schema": "tilo.installer-dev-target.v1", "architecture": "aarch64",
-                "target_ref": args.image, "target_digest": match[1],
+    metadata = {"schema": "tilo.installer-dev-target.v1", "architecture": args.architecture,
+                "repository": match[1], "target_digest": match[2],
                 "hardware_profile": args.hardware_profile, "update_origin": args.update_origin,
                 "source_revision": args.source_revision, "ci_run_id": args.ci_run_id}
     (output / "target.json").write_text(json.dumps(metadata, sort_keys=True) + "\n")
@@ -51,6 +55,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("image", "source-revision", "ci-run-id", "hardware-profile", "update-origin"):
         parser.add_argument("--" + name, required=True)
+    parser.add_argument("--architecture", choices=("x86_64", "aarch64"), default="aarch64")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--rpms-ref", help="digest-pinned RPM snapshot for a split-kernel target's UKI tools")
     try:

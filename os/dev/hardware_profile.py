@@ -128,7 +128,7 @@ def validate_target_imgref(value, *, root=None):
     # repository; every other image follows the public one. Both require
     # the release signature.
     if not isinstance(value, str) or not re.fullmatch(
-        r"(?:registry\.tilo\.so|code\.tilo\.so)/tilo/tilo(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})", value
+        r"(?:registry\.tilo\.so|code\.tilo\.so)/tilo/tilo(?:-host)?(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})", value
     ):
         raise ValueError("TILO_TARGET_IMGREF must explicitly name a valid tag or sha256 digest in a signature-required Tilo repository (registry.tilo.so/tilo/tilo, or code.tilo.so/tilo/tilo for board images)")
     return value

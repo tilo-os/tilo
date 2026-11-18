@@ -168,7 +168,7 @@ fn fixture(dir: &Path) -> Target {
     )
     .unwrap();
     let metadata = json!({"schema": "tilo.installer-offline-target.v1",
-        "target_ref": format!("code.tilo.so/tilo/tilo@{digest}"),
+        "repository": "code.tilo.so/tilo/tilo",
         "target_digest": digest, "architecture": "aarch64",
         "hardware_profile": "lenovo-83ed", "update_origin": update()});
     let metadata = metadata.as_object().unwrap().clone();
@@ -228,10 +228,7 @@ fn development_transport(dir: &Path, target: &mut Target) {
     let metadata = &mut target.metadata;
     metadata.insert("schema".into(), json!("tilo.installer-dev-target.v1"));
     metadata.insert("target_digest".into(), json!(digest));
-    metadata.insert(
-        "target_ref".into(),
-        json!(format!("registry.tilo.so/tilo/tilo-vm@{digest}")),
-    );
+    metadata.insert("repository".into(), json!("registry.tilo.so/tilo/tilo-vm"));
     metadata.insert(
         "update_origin".into(),
         json!("registry.tilo.so/tilo/tilo-vm:fixture-lenovo-83ed-ci"),
@@ -277,10 +274,9 @@ tilo_test_env::scenario! {
         target
             .metadata
             .insert("hardware_profile".into(), json!("generic"));
-        target.metadata.insert(
-            "target_ref".into(),
-            json!(format!("registry.tilo.so/tilo/tilo@{digest}")),
-        );
+        target
+            .metadata
+            .insert("repository".into(), json!("registry.tilo.so/tilo/tilo"));
         target.metadata.insert(
             "update_origin".into(),
             json!("registry.tilo.so/tilo/tilo:gen2"),

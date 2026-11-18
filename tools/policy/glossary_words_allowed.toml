@@ -683,12 +683,25 @@ paths = [
     "os/Containerfile.host-base",
     "os/build-host.sh",
     "os/dev/derive-rpm-package-set.py",
+    "os/dev/hardware_profile.py",
+    "os/dev/README.md",
     "os/tests/containerfile_sources.sh",
     "os/tests/no_openssl_runtime.sh",
     "os/tests/rpm_snapshot_invariants.sh",
+    "crates/system/board-successor/src/profile.rs",
     "tools/ci/publish/host-base.sh",
     "tools/ci/publish/host-build.sh",
     "tools/signing/release_trust.py",
+]
+
+[[allow]]
+reason = "The installer-medium builder and its boot smoke keep the tools' own names: podman and qemu run commands, the scripts' TILO_RUN directory and build directories, the source file they record, tr's [:space:] class, the buildah network name host, and the image-host digest the medium preloads."
+words = ["host", "run", "record", "channel", "space"]
+paths = [
+    "tools/ci/build-os.sh",
+    "tools/ci/medium-in-worker-vm.sh",
+    "tools/ci/publish/installer-medium.sh",
+    "tools/ci/server-installer-smoke.sh",
 ]
 
 [[allow]]

@@ -225,16 +225,6 @@ fn present(path: &Path) -> bool {
     path.exists() || path.is_symlink()
 }
 
-/// The repository a signed offline target of `profile` comes from.
-fn offline_repository(profile: &Value) -> &'static str {
-    match profile.as_str() {
-        Some("generic") => "registry.tilo.so/tilo/tilo",
-        // Board images stay on the forge's private registry.
-        Some("lenovo-83ed") => "code.tilo.so/tilo/tilo",
-        _ => "",
-    }
-}
-
 /// The selected target's receipt, checked against the installed deployment.
 fn selected_target(
     host: &dyn Host,
@@ -244,25 +234,19 @@ fn selected_target(
 ) -> Result<(Map<String, Value>, bool)> {
     let schema = get(selected, "schema");
     let development = schema.as_str() == Some(DEV_SCHEMA);
-    let repository = if development {
-        "registry.tilo.so/tilo/tilo-vm"
-    } else {
-        offline_repository(get(selected, "hardware_profile"))
+    let origin = match selected.get("update_origin") {
+        None => "",
+        Some(Value::String(origin)) => origin.as_str(),
+        Some(_) => return Err(Error::new("can only concatenate str (not \"dict\") to str")),
     };
-    let same_origin = || -> Result<bool> {
-        let origin = match selected.get("update_origin") {
-            None => "",
-            Some(Value::String(origin)) => origin.as_str(),
-            Some(_) => return Err(Error::new("can only concatenate str (not \"dict\") to str")),
-        };
-        Ok(installed_origin == format!("ostree-unverified-image:docker://{origin}"))
-    };
+    let repository = get(selected, "repository").as_str().unwrap_or_default();
     require(
         matches!(schema.as_str(), Some(OFFLINE_SCHEMA | DEV_SCHEMA))
             && get(selected, "target_digest").as_str() == Some(installed_digest)
-            && get(selected, "target_ref").as_str()
-                == Some(format!("{repository}@{installed_digest}").as_str())
-            && same_origin()?,
+            // The update origin the machine follows names the target's own
+            // repository, and the installed deployment follows that origin.
+            && crate::target_transport::is_update_origin(repository, origin)
+            && installed_origin == format!("ostree-unverified-image:docker://{origin}"),
         "installed deployment differs from the independently signed offline target",
     )?;
     if !development {
