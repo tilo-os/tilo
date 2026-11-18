@@ -1,4 +1,6 @@
-use super::{HistoryEntryId, listed, wire};
+use super::wire;
+#[cfg(test)]
+use super::{HistoryEntryId, listed};
 use tilo_lock::MutexRecover as _;
 
 use crate::tilo_actions::remote::{
