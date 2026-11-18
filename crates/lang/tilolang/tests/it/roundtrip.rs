@@ -273,6 +273,8 @@ root Notebook
 
 default view notebook for Notebook
 
+default view note for Note
+
 row view note_row for Note
 
 /// Start a note.

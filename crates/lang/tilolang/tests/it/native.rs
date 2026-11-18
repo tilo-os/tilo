@@ -43,6 +43,8 @@ root Notebook
 
 default view notebook for Notebook
 
+default view note_page for Note
+
 row view note_row for Note
 
 /// Start a new note in the notebook.
@@ -72,6 +74,12 @@ action more(n: Note) (icon: .more_horizontal) {
 
 view note_row(n: Note) {
     row(n.title, secondary: n.body, mark: if n.pinned { .pin })
+}
+
+view note_page(n: Note) {
+    ui.ListRow(title: n.title) {
+        text(n.body)
+    }
 }
 
 view notebook(nb: Notebook) {
@@ -539,6 +547,12 @@ type Notebook {
 }
 
 default view note_cards for Notebook
+
+default view note for Note
+
+view note(n: Note) {
+    ui.ListRow(title: n.title)
+}
 
 view note_cards(nb: Notebook) {
     std.list(nb.notes) { (n, at) ->
@@ -1150,6 +1164,10 @@ type Threads {{
 }}
 root threads: Threads
 default view thread_list for Threads
+default view thread_page for Thread
+view thread_page(t: Thread) {{
+    ui.ListRow(title: t.title)
+}}
 row view thread_row for Thread
 view thread_row(t: Thread) {{
     row(t.subject)
@@ -1172,6 +1190,10 @@ type Threads {{
 }}
 root threads: Threads
 default view thread_list for Threads
+default view thread_page for Thread
+view thread_page(t: Thread) {{
+    ui.ListRow(title: t.title)
+}}
 row view thread_row for Thread
 view thread_row(t: Thread) {{
     row(t.subject)

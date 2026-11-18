@@ -30,6 +30,14 @@ root board: Board
 
 default view board for Board
 
+default view task_page for Task
+
+view task_page(t: Task) {
+    ui.ListRow(title: t.title) {
+        text(t.done)
+    }
+}
+
 action check(t: Task, done: Bool = not t.done) { t.done = done }
 
 action schedule(t: Task, at: Time) { }

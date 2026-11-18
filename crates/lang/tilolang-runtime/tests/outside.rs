@@ -229,6 +229,8 @@ root Letters
 
 default view letters for Letters
 
+default view draft_line for Draft
+
 view letters(letters: Letters) {
     std.list(letters.drafts) { (d, at) ->
         ui.ListItem(item: d, presence: at) {
