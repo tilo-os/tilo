@@ -8,5 +8,5 @@
 /// Apply one request from the device that holds the workspace's keys.
 #[unsafe(no_mangle)]
 pub extern "C" fn tilo_model_apply() -> i32 {
-    tilo_model_guest::serve::<db_client_model::Workspace>()
+    tilo_model_guest::serve(&[tilo_model_guest::Served::of::<db_client_model::Workspace>()])
 }

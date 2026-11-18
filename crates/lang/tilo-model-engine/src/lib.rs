@@ -5,9 +5,10 @@
 //! the calls [`ABI`] names and exports [`EXPORT`]. This crate compiles the
 //! bytes on the engine the rest of the system executes WebAssembly on
 //! ([`tilolang_runtime::engine`]) and calls it with one JSON request: the
-//! genesis of a new resource, or one action with its arguments. What comes
-//! back is the invocation the action API recorded, which a peer replays, and
-//! the Automerge changes it wrote.
+//! genesis of a new resource, or one action with its arguments, naming the
+//! resource kind it is for so one module serves every resource its app
+//! declares. What comes back is the invocation the action API recorded, which
+//! a peer replays, and the Automerge changes it wrote.
 //!
 //! The engine links only [`ABI`]: a module importing anything else fails to
 //! link, which is how "no imports beyond the device's" is enforced rather
@@ -71,6 +72,10 @@ pub enum Op {
 pub struct Request<'a> {
     /// What the model is asked to do.
     pub op: Op,
+    /// The resource kind the request is for: an app's module serves every
+    /// resource the app declares, and routes the request by this
+    /// ([`tilo_resource::Resource::KIND`]).
+    pub kind: &'a str,
     /// The resource's document id: the empty string for what an app keeps per
     /// workspace, or a named document's id. The module reads it as
     /// [`Op::Initialize`]'s identity.
@@ -161,6 +166,7 @@ fn encode(request: &Request<'_>) -> Result<Vec<u8>, ModelError> {
             Op::Initialize => "initialize",
             Op::Apply => "apply",
         },
+        "kind": request.kind,
         "id": document_id(request.id),
         "home": request.home,
         "document": base64::Engine::encode(&base, request.bytes),

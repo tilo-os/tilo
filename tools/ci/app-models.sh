@@ -3,9 +3,10 @@
 # device holding a workspace's keys applies the app's actions with no build of
 # its own (crates/sdk/tilo-model-guest). One mechanism for every app: an app
 # keeps its model as a guest crate beside it (`apps/tasks` →
-# `apps/tasks-model-wasm`), and `tilo-app model` builds that crate for wasm32
-# and writes the module under the target directory. An app without a guest
-# crate answers none, so this needs no list of apps.
+# `apps/tasks-model-wasm`), a workspace member, and `tilo-app model` builds it
+# in the release profile with a module's size settings, optimizes it with wasm-opt and
+# writes the module under the target directory. An app without a guest crate
+# answers none, so this needs no list of apps.
 #
 #   t test app-models
 set -euo pipefail

@@ -5,10 +5,16 @@
 //! `crates/sdk/tilo-model-guest`). One mechanism builds it for every app: the
 //! app keeps its model as a guest crate beside it, `apps/tasks` →
 //! `apps/tasks-model-wasm`, which exports the model ABI over the app's
-//! resource, and [`build`] builds that crate for `wasm32-unknown-unknown`.
+//! resources, and [`build`] builds that crate for `wasm32-unknown-unknown` in
+//! the release profile the guest crate sizes for the wire, then optimizes the
+//! module with `wasm-opt`.
 //! Packaging writes the result into the payload as [`MODEL_MODULE`]; a tree
 //! keeps no built module, so `t`'s `app-models` check builds them for the checks
 //! that read one.
+//!
+//! The guest crates are workspace members, so every app's module shares one
+//! lockfile and one wasm32 target directory: a dependency compiles once for
+//! every app's module, not once per app.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -20,10 +26,28 @@ pub use tilo_app_package::MODEL_MODULE;
 /// The directory under the target directory a built module is kept in, per app.
 const MODULES: &str = "app-models";
 
-/// Where each guest crate's own cargo target directory lives under the target
-/// directory, per app: the module is the only thing built for wasm32, and its
-/// build never shares a lock with the app's native builds.
+/// Where the modules' cargo target directory lives under the target
+/// directory, shared by every app: the module is the only thing built for
+/// wasm32, and its build never shares a lock with the native builds.
 const BUILDS: &str = "app-model-build";
+
+/// The `wasm-opt` arguments every module this repository ships is optimized
+/// with, embedded when this tool compiles (tools/web/wasm-opt-flags): the
+/// module a size check measures is the module a package carries.
+const WASM_OPT_FLAGS: &str = include_str!("../../../../tools/web/wasm-opt-flags");
+
+/// What the module's release build sets beyond the workspace's release
+/// profile: the same bytes reach every key-holding device, so the build is
+/// sized for the wire rather than for the machine that packages it. Fat LTO,
+/// one codegen unit and no overflow checks come from `release`; these are
+/// what a module that is never a process skips (unwinding, symbols, debug
+/// info) and the size its own crates are compiled for.
+const PROFILE: [(&str, &str); 4] = [
+    ("CARGO_PROFILE_RELEASE_OPT_LEVEL", "z"),
+    ("CARGO_PROFILE_RELEASE_DEBUG", "false"),
+    ("CARGO_PROFILE_RELEASE_PANIC", "abort"),
+    ("CARGO_PROFILE_RELEASE_STRIP", "symbols"),
+];
 
 /// The suffix of the guest crate that sits beside its app.
 const GUEST: &str = "-model-wasm";
@@ -50,13 +74,13 @@ pub fn build(app_dir: &Path) -> Result<Option<PathBuf>> {
         return Ok(None);
     };
     let manifest = guest.join("Cargo.toml");
-    let lib = lib_name(&manifest)?;
+    let (package, lib) = names(&manifest)?;
     let app = app_dir
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| anyhow::anyhow!("app directory {} has no name", app_dir.display()))?;
     let target = target_dir(app_dir);
-    let build = target.join(BUILDS).join(app);
+    let build = target.join(BUILDS);
     eprintln!("[tilo-app] building {app}'s model module");
     // The guest crate's own `.cargo/config.toml` carries what makes a module a
     // module rather than a page (no JavaScript glue, no browser clocks), so
@@ -78,10 +102,11 @@ pub fn build(app_dir: &Path) -> Result<Option<PathBuf>> {
         .arg("--release")
         .arg("--target")
         .arg("wasm32-unknown-unknown")
-        .arg("--manifest-path")
-        .arg(&manifest)
+        .arg("-p")
+        .arg(&package)
         .arg("--target-dir")
         .arg(&build)
+        .envs(PROFILE)
         .current_dir(&guest)
         .status()
         .with_context(|| format!("building {}", manifest.display()))?;
@@ -97,6 +122,7 @@ pub fn build(app_dir: &Path) -> Result<Option<PathBuf>> {
     if !module.is_file() {
         bail!("the model build reported no module at {}", module.display());
     }
+    optimize(&module)?;
     let output = target.join(MODULES).join(app).join(MODEL_MODULE);
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent)
@@ -118,27 +144,51 @@ pub fn guest_crate(app_dir: &Path) -> Option<PathBuf> {
     guest.join("Cargo.toml").is_file().then_some(guest)
 }
 
-/// The crate's `[lib].name`, or its package name with the dashes of a crate
-/// name: what the module it builds is called on disk.
-fn lib_name(manifest: &Path) -> Result<String> {
+/// The crate's `[package].name`, which `cargo build -p` selects, and its
+/// `[lib].name`, or the package name with the dashes of a crate name: what the
+/// module it builds is called on disk.
+fn names(manifest: &Path) -> Result<(String, String)> {
     let source = std::fs::read_to_string(manifest)
         .with_context(|| format!("reading {}", manifest.display()))?;
     let table: toml::Table = source
         .parse()
         .with_context(|| format!("parsing {}", manifest.display()))?;
-    if let Some(lib) = table
-        .get("lib")
-        .and_then(|lib| lib.get("name"))
-        .and_then(toml::Value::as_str)
-    {
-        return Ok(lib.to_owned());
-    }
-    table
+    let package = table
         .get("package")
         .and_then(|package| package.get("name"))
         .and_then(toml::Value::as_str)
-        .map(|name| name.replace('-', "_"))
-        .ok_or_else(|| anyhow::anyhow!("{} has no [package].name", manifest.display()))
+        .ok_or_else(|| anyhow::anyhow!("{} has no [package].name", manifest.display()))?
+        .to_owned();
+    let lib = table
+        .get("lib")
+        .and_then(|lib| lib.get("name"))
+        .and_then(toml::Value::as_str)
+        .map_or_else(|| package.replace('-', "_"), str::to_owned);
+    Ok((package, lib))
+}
+
+/// Optimize the built module in place with `wasm-opt`, the same arguments the
+/// page's modules are built with (tools/web/wasm-opt-flags).
+fn optimize(module: &Path) -> Result<()> {
+    let flags: Vec<&str> = WASM_OPT_FLAGS
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .flat_map(str::split_whitespace)
+        .collect();
+    let optimized = module.with_extension("optimized.wasm");
+    let status = Command::new("wasm-opt")
+        .args(&flags)
+        .arg(module)
+        .arg("-o")
+        .arg(&optimized)
+        .status()
+        .with_context(
+            || "running wasm-opt (binaryen); it builds every module this repository ships",
+        )?;
+    if !status.success() {
+        bail!("wasm-opt failed with {status} on {}", module.display());
+    }
+    std::fs::rename(&optimized, module).with_context(|| format!("writing {}", module.display()))
 }
 
 /// The cargo target directory `app_dir` builds into: the one the environment
