@@ -16,7 +16,7 @@ pub fn each_item(
     found: &mut dyn FnMut(Id, &dyn Any, &'static ModelTable),
 ) {
     each_entry(table, value, &mut |_, id, item, table| {
-        found(id, item, table)
+        found(id, item, table);
     });
 }
 
