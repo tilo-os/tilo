@@ -2348,7 +2348,13 @@ impl RootPublishes for ResourceRoot {
         }
         // A change from another window or member may not have reached
         // this view yet: an item it removed is gone, one it made is there.
-        if let Some(published) = find(&[self.current_publication(doc)], id) {
+        if let Some(mut published) = find(&[self.current_publication(doc)], id) {
+            // The publication's items are listed with the read each answers;
+            // this one is built alone, so it carries the same
+            // ([`Self::resources_for`]).
+            if let Some(table) = self.resource.resource_table {
+                offer_item_reads(&mut published, table, self.resource.kind);
+            }
             return Some(published);
         }
         let current = if self.follow_document(doc) {
@@ -2358,10 +2364,16 @@ impl RootPublishes for ResourceRoot {
         };
         let state = current.unwrap_or_else(|| self.typed.state());
         let mut child = self.typed.child(&*state, doc, id);
-        if self.resource.readable
-            && let Some(child) = &mut child
-        {
-            offer_document_reads(child, &|id| self.typed.document_child(&*state, id));
+        if let Some(child) = &mut child {
+            if self.resource.readable {
+                offer_document_reads(child, &|id| self.typed.document_child(&*state, id));
+            }
+            // The published tree offers each item of the app's collections a
+            // read of its own ([`Self::resources_for`]); one built alone carries
+            // the same, so an item's address answers the read it lists.
+            if let Some(table) = self.resource.resource_table {
+                offer_item_reads(child, table, self.resource.kind);
+            }
         }
         let mut row = None;
         self.surfaces(&mut |surface| {
