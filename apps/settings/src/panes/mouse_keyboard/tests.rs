@@ -40,7 +40,7 @@ fn mounted_dictionary_actions_add_edit_remove_reset_and_survive_restart() {
     );
     let reader = Reader::bind(Arc::clone(&source));
     let mut app = TestApp::<SettingsShell>::for_person(&"01".repeat(32)).unwrap();
-    let mut host = ui::personal_dictionary::TestHost::new(source.clone(), "so.tilo.settings");
+    let mut host = ui::personal_dictionary::TestSettings::new(source.clone(), "so.tilo.settings");
     app.harness().resize((1200, 2200)).unwrap();
     crate::effects::show_pane(&mut app, crate::categories::Category::Spelling);
     app.settle();
@@ -131,7 +131,7 @@ fn personal_dictionary_editor_renders_preserved_words_and_clear_controls() {
         .unwrap();
     }
     let mut app = TestApp::<SettingsShell>::for_person(&"01".repeat(32)).unwrap();
-    let _host = ui::personal_dictionary::TestHost::new(source.clone(), "so.tilo.settings");
+    let _host = ui::personal_dictionary::TestSettings::new(source.clone(), "so.tilo.settings");
     app.harness().resize((1100, 1400)).unwrap();
     crate::effects::show_pane(&mut app, crate::categories::Category::Spelling);
     app.settle();
