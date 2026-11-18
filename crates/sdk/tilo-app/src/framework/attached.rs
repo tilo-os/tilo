@@ -745,9 +745,12 @@ impl AttachedView {
     /// The contract of the action `address` names, as the view publishes it
     /// now: `None` when the view publishes no such action. Answered from the
     /// one resource it names, built alone. An item's address
-    /// (`<kind>/<field>/<item>`) is answered there and only there, from the
-    /// model as it stands: it costs the item however many there are, and an
-    /// item that is not there costs neither a layout nor the tree.
+    /// (`<kind>/<field>/<item>`) is answered from that item alone: it costs
+    /// the item however many there are; a frame the item only publishes once
+    /// it is laid out lays that out; one a collection keeps past its page's
+    /// items is built from that collection's labels; and one the view
+    /// publishes in its tree is found there, as a listing finds it. None of
+    /// them costs the tree while the item answers by itself.
     #[must_use]
     pub fn descriptor(&self, address: &ActionAddress) -> Option<ActionDescriptor> {
         // The one resource's own actions, never its children's: an action
@@ -765,14 +768,45 @@ impl AttachedView {
                 .into_iter()
                 .find(|descriptor| descriptor.address == *address)
         };
-        if tilo_resource::items::item_kind(address.resource.as_str()).is_some() {
-            return own(&self.frame_as_is());
-        }
         let in_tree = |resources: &[tilo_actions::ResourceSpec]| {
             tilo_actions::api::survey(resources)
                 .into_iter()
                 .find(|descriptor| descriptor.address == *address)
         };
+        if tilo_resource::items::item_kind(address.resource.as_str()).is_some() {
+            // An item a listing has just offered must be runnable: the frame
+            // as it stands answers while it holds the item, and one a change
+            // made since is published by a layout, as any other resource a
+            // frame publishes only when it is laid out.
+            if let Some(found) = self.found(own) {
+                return Some(found);
+            }
+            // An item a collection keeps past the page its frame shows is
+            // built alone, as the listing that named it built it.
+            let frame = self.frame();
+            let labels = frame.past_page_labels();
+            if let Some(at) = labels.iter().position(|(id, _)| id == &address.resource)
+                && let Some(mut child) = frame.past_page_range(at, 1).into_iter().next()
+            {
+                child.children.clear();
+                if let Some(alone) = self.permitted(child)
+                    && alone
+                        .actions
+                        .iter()
+                        .any(|action| action.id == address.action)
+                    && let Some(found) = tilo_actions::api::survey(&[alone])
+                        .into_iter()
+                        .find(|descriptor| descriptor.address == *address)
+                {
+                    return Some(found);
+                }
+            }
+            drop(frame);
+            // The view publishes the item in its tree although no one widget
+            // hands it out by itself: the tree it publishes has it.
+            let resources = self.published_without_layout();
+            return in_tree(resources.as_ref());
+        }
         // As the view stands: naming one operation costs the tree, not a frame of everything the
         // document shows. A resource only a frame publishes yet is found by laying it out, as
         // before: something a change just made, named before anyone looked.
