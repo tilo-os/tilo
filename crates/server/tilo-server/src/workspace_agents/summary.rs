@@ -3,8 +3,10 @@
 //! A turn whose conversation outgrew what it is told as written carries a fold ([`Fold`], asked
 //! for by [`chat::recall::told`]): the summary so far and the oldest messages outside it. The host
 //! asks a model once for what those messages add and keeps the summary through Chat's own
-//! `keep-summary`, as the agent on its turn. It does so once the reply has its words, so the
-//! person never waits for it.
+//! `keep-summary`, as the agent on its turn. It does so once the answer is finished for its
+//! person and the turn gave its place back ([`Owed`]): the person never waits for it, and what
+//! they write meanwhile gets a turn of its own. One summary of a conversation is written at a
+//! time, and a turn that began before one was kept asks for none of what that one holds.
 //!
 //! The question is one short answer, so it goes to the model the agent's keeper chose for such
 //! work ([`Interaction::OneShot`]), with their own key and counted on the agent's day like every
@@ -32,21 +34,61 @@ const KEEP_SUMMARY: &str = "keep-summary";
 /// How long the one question may take.
 const ASK_TIME: Duration = Duration::from_secs(60);
 
-impl HostAgents {
-    /// Take what `turn` asks into its conversation's summary: `words`, the turn's answer, are
-    /// given to the person first, then one question goes to a model and one `keep-summary` keeps
-    /// what is kept of its answer. A turn that asks for nothing changes nothing.
-    pub(super) async fn keep_summary(
-        &self,
+/// The summary a turn that answered still owes its conversation. Its answer is finished for
+/// its person already; this is kept once the turn gave its place back.
+pub(super) struct Owed {
+    workspace: String,
+    workspace_id: WorkspaceId,
+    turn: Turn,
+    reply: Reply,
+    day: String,
+}
+
+impl Owed {
+    /// What `turn`, answered through `reply` on `day`, asks into its conversation's summary:
+    /// none for a turn that asks for nothing.
+    pub(super) fn of(
         (workspace, workspace_id): (&str, WorkspaceId),
-        turn: &Turn,
-        (reply, words): (&Reply, &str),
-        day: &str,
-    ) {
+        turn: Turn,
+        reply: Reply,
+        day: String,
+    ) -> Option<Self> {
+        turn.fold.is_some().then(|| Self {
+            workspace: workspace.to_owned(),
+            workspace_id,
+            turn,
+            reply,
+            day,
+        })
+    }
+}
+
+impl HostAgents {
+    /// Take what a turn that answered asks into its conversation's summary: one question goes
+    /// to a model and one `keep-summary` keeps what is kept of its answer. Nothing waits for
+    /// it: the turn's answer is finished and its place given back before this is called.
+    ///
+    /// One summary of a conversation is written at a time: a turn that ends while one is
+    /// being written asks for none. And a turn that began before a summary was kept still
+    /// carries the messages that summary holds: it asks for none either.
+    pub(super) async fn keep_summary(&self, owed: Owed) {
+        let Owed {
+            workspace,
+            workspace_id,
+            turn,
+            reply,
+            day,
+        } = owed;
+        let (workspace, turn, day) = (workspace.as_str(), &turn, day.as_str());
         let Some(fold) = turn.fold.as_ref() else {
             return;
         };
-        reply.work(json!({"state": "doing"}), Some(words)).await;
+        let Some(_written) = self.going.summarise(workspace, &fold.conversation) else {
+            return;
+        };
+        if !self.still_asked(workspace, turn, fold).await {
+            return;
+        }
         let Some((said, cost)) = self
             .ask_once((workspace, workspace_id), turn, fold, day)
             .await
@@ -90,6 +132,33 @@ impl HostAgents {
                 "a conversation did not keep its summary"
             ),
         }
+    }
+
+    /// Whether `fold` is still what `turn`'s conversation asks its agent to take in, as the
+    /// workspace gives the turn now. A summary kept since the turn began took those messages
+    /// in, and the conversation asks for something else or for nothing. Where it cannot be
+    /// read the summary stays as it stands.
+    async fn still_asked(&self, workspace: &str, turn: &Turn, fold: &Fold) -> bool {
+        let super::Ask::Message { part, message, .. } = &turn.ask else {
+            return false;
+        };
+        let (Ok(Some(chat)), Ok(Some(held))) = (
+            self.read::<chat::chat::Chat>(workspace, CHAT, "").await,
+            self.read::<chat::parts::ChatPart>(workspace, CHAT, part)
+                .await,
+        ) else {
+            return false;
+        };
+        let now = chat::recall::told(
+            &chat,
+            &held,
+            None,
+            &tilo_resource::Id::from_raw(fold.conversation.clone()),
+            &tilo_resource::Id::from_raw(message.clone()),
+            &ui::permissions::MemberId::agent(&turn.agent.id.0),
+            String::new(),
+        );
+        now.fold.as_ref() == Some(fold)
     }
 
     /// The one answer to what `fold` asks and what it cost, or none where no answer came.

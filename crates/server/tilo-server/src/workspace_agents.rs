@@ -749,13 +749,22 @@ impl HostAgents {
                         let agent = turn.agent.id.0.clone();
                         // Boxed, as in `answer`: the task holds a pointer to the turn and
                         // carries none of it in a future of its own.
-                        let (ended_on, ended) =
+                        let (ended_on, ended, summary) =
                             Box::pin(agents.answer_going(&workspace, &turn, &held)).await;
                         if let Err(error) = ended {
                             tracing::warn!(%workspace, %agent, %error, "a host agent's turn did not finish");
                         }
                         drop(held);
-                        agents.look_after(workspace, (agent, ended_on)).await;
+                        match summary {
+                            // The summary is written with the place given back: what waited
+                            // for the place begins beside it, not after it.
+                            Some(summary) => {
+                                let after = agents.clone().look_after(workspace, (agent, ended_on));
+                                tokio::spawn(after);
+                                Box::pin(agents.keep_summary(summary)).await;
+                            }
+                            None => agents.look_after(workspace, (agent, ended_on)).await,
+                        }
                     });
                 }
             }
@@ -1042,7 +1051,13 @@ impl HostAgents {
     pub async fn answer(&self, workspace: &str, turn: &Turn) -> Result<(), String> {
         match self.going.enter(workspace, turn) {
             going::Entered::Began(held) => {
-                Box::pin(self.answer_going(workspace, turn, &held)).await.1
+                let (_, ended, summary) = Box::pin(self.answer_going(workspace, turn, &held)).await;
+                // The summary it still owes is written with the place given back.
+                drop(held);
+                if let Some(summary) = summary {
+                    Box::pin(self.keep_summary(summary)).await;
+                }
+                ended
             }
             going::Entered::Goes(_) => Ok(()),
         }
@@ -1151,23 +1166,25 @@ impl HostAgents {
 
     /// [`Self::answer`], for the turn that holds its place as `going`: the ask it ended on,
     /// which is a later one when its person wrote again while it worked, and how it ended.
+    /// With them the summary it still owes its conversation, which whoever holds the place
+    /// writes once the place is given back ([`summary::Owed`]).
     async fn answer_going(
         &self,
         workspace: &str,
         turn: &Turn,
         going: &going::Going,
-    ) -> (Ask, Result<(), String>) {
+    ) -> (Ask, Result<(), String>, Option<summary::Owed>) {
         // The place is this turn's own from here on, and nothing else answers in it: what the
         // workspace owes now is what begins.
         let turn = match self.owed_now(workspace, turn).await {
             Ok(Some(owed)) => owed,
-            Ok(None) => return (turn.ask.clone(), Ok(())),
-            Err(error) => return (turn.ask.clone(), Err(error)),
+            Ok(None) => return (turn.ask.clone(), Ok(()), None),
+            Err(error) => return (turn.ask.clone(), Err(error), None),
         };
         let turn = &turn;
         let scope = match self.scope(workspace, turn).await {
             Ok(scope) => scope,
-            Err(error) => return (turn.ask.clone(), Err(error)),
+            Err(error) => return (turn.ask.clone(), Err(error), None),
         };
         let began = turn.ask.clone();
         let turn = skills::told_turn(&self.workspaces, workspace, turn).await;
@@ -1187,12 +1204,14 @@ impl HostAgents {
             )
             .await;
             self.sub_ended(&scope, &turn, &left, false).await;
-            return (turn.ask, ended);
+            return (turn.ask, ended, None);
         }
         if self.codes(&turn.agent) {
             // Its harness in the workspace's machine does the work, not the model's loop: its
             // turn leaves here, before anything is begun that only that loop ends.
-            return Box::pin(self.answer_coding(&scope, (turn, reply), going)).await;
+            let (ended_on, ended) =
+                Box::pin(self.answer_coding(&scope, (turn, reply), going)).await;
+            return (ended_on, ended, None);
         }
         Box::pin(self.answer_by_model(workspace, (scope, turn, reply, began), going)).await
     }
@@ -1204,7 +1223,7 @@ impl HostAgents {
         workspace: &str,
         (scope, mut turn, mut reply, began): (TurnScope, Turn, Reply, Ask),
         going: &going::Going,
-    ) -> (Ask, Result<(), String>) {
+    ) -> (Ask, Result<(), String>, Option<summary::Owed>) {
         // An issue is worked on over many agent sessions: its place is made and the session
         // counted before the model is asked, and one that may not begin ends here with its
         // plain line.
@@ -1212,7 +1231,7 @@ impl HostAgents {
             Ok(task) => task,
             Err(words) => {
                 let ended = reply.finished(&Outcome::Stopped(words)).await;
-                return (turn.ask, ended);
+                return (turn.ask, ended, None);
             }
         };
         let clock = Instant::now();
@@ -1261,15 +1280,6 @@ impl HostAgents {
             self.charge(workspace, sub_agents::payer(&turn), &day, cost)
                 .await;
         }
-        if let Outcome::Answered(words) = &outcome {
-            self.keep_summary(
-                (workspace, scope.workspace_id),
-                &turn,
-                (&reply, words),
-                &day,
-            )
-            .await;
-        }
         let ended = reply.finished(&outcome).await;
         crate::workspace_telling::turn_ended(
             &self.workspaces,
@@ -1285,7 +1295,14 @@ impl HostAgents {
             self.take_back_asked(workspace, &turn, &began).await;
         }
         self.sub_ended(&scope, &turn, &outcome, from_starter).await;
-        (turn.ask, ended)
+        // The answer is finished for its person, its words being whole. What it asks into its
+        // conversation's summary takes a model's time: it is written once this turn's place
+        // is given back, so nothing its person writes meanwhile waits for it.
+        let ended_on = turn.ask.clone();
+        let summary = matches!(outcome, Outcome::Answered(_))
+            .then(|| summary::Owed::of((workspace, scope.workspace_id), turn, reply, day))
+            .flatten();
+        (ended_on, ended, summary)
     }
 
     /// Begin an agent session on the issue `turn` asks about: its place is made when it has
