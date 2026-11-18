@@ -1173,6 +1173,10 @@ fn model_requests(provider: &str) -> Vec<(&'static str, Value)> {
             person_models::SET_ASSIGNMENTS,
             json!({"kinds": ["request", "task"], "provider": provider, "model": "typed"}),
         ),
+        (
+            person_models::SET_REASONING,
+            json!({"provider": provider, "effort": "low"}),
+        ),
     ]
 }
 
@@ -1354,6 +1358,218 @@ async fn no_agent_reaches_a_persons_model_providers() {
     server.shutdown().await;
 }
 
+/// `person` asks their own model once, and it answers.
+async fn asks_their_model(workspaces: &Workspaces, person: &DeviceCert) {
+    use agent_provider_config::Interaction;
+    use agent_provider_config::protocol::{Message, ModelRequest, Role, ToolChoice};
+
+    let request = ModelRequest {
+        messages: vec![
+            Message::text(Role::System, "You work for Ada."),
+            Message::text(Role::User, "Is it time?"),
+        ],
+        tools: Vec::new(),
+        tool_choice: ToolChoice::Auto,
+        max_output_tokens: 256,
+    };
+    let deadline = tilo_clock::now()
+        .checked_add(tilo_test_env::hang_bound())
+        .unwrap();
+    workspaces
+        .person_model(person.user_public_key, Interaction::Request)
+        .answer(&request, deadline, &mut |_| {})
+        .await
+        .expect("the person's model answers");
+}
+
+/// What `at` was sent by the ask before.
+fn sent(at: &test_http::Responder) -> Value {
+    serde_json::from_slice(&at.next_request().body).unwrap()
+}
+
+/// One answer, as an OpenAI-compatible provider streams it.
+const A_STREAMED_ANSWER: &str = concat!(
+    "data: {\"id\":\"reply\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"large\",",
+    "\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Yes.\"},\"finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"reply\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"large\",",
+    "\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+    "data: {\"id\":\"reply\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"large\",",
+    "\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"total_tokens\":12}}\n\n",
+    "data: [DONE]\n\n",
+);
+
+/// `person` asks for `effort` as the thinking level of their `provider`, or
+/// with none takes their choice back.
+async fn asks_for_level(
+    actions: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    person: &DeviceCert,
+    provider: &str,
+    effort: Option<&str>,
+) -> Result<Value, ActionCallError> {
+    let mut setting = json!({"provider": provider});
+    if let Some(effort) = effort {
+        setting["effort"] = json!(effort);
+    }
+    ask_own(
+        actions,
+        workspace_id,
+        person,
+        tilo_actions::remote::person_models::SET_REASONING,
+        setting,
+    )
+    .await
+}
+
+/// The level `person`'s settings keep for `provider`, with the field the
+/// provider is told it in.
+fn kept_level(
+    workspaces: &Workspaces,
+    person: &DeviceCert,
+    provider: &str,
+) -> Option<agent_provider_config::ReasoningSetting> {
+    let root = workspaces.person_settings_root(&person.user_public_key);
+    crate::workspaces::person_settings::provider_config(&root)
+        .profiles
+        .into_iter()
+        .find(|profile| profile.id == provider)
+        .and_then(|profile| profile.reasoning)
+}
+
+/// The ready-made provider `name`, added for `person`: its id.
+async fn ready_made(
+    actions: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    person: &DeviceCert,
+    name: &str,
+) -> String {
+    ask_own(
+        actions,
+        workspace_id,
+        person,
+        tilo_actions::remote::person_models::ADD_PRESET,
+        json!({"preset": name}),
+    )
+    .await
+    .expect("a ready-made provider is added")["id"]
+        .as_str()
+        .expect("the provider's id")
+        .to_owned()
+}
+
+/// How hard a person's provider thinks is theirs to choose, in one request:
+/// the next ask of their model carries the level to the provider, a word
+/// that is no level changes nothing, and with the level taken back the
+/// provider is told nothing again, as before anybody chose. Each provider is
+/// told in the field it takes a level in, and one that is asked for none
+/// says so and keeps nothing.
+#[tokio::test]
+async fn a_persons_thinking_level_reaches_their_provider_with_the_next_ask() {
+    use agent_provider_config::{ReasoningParam, ReasoningSetting};
+    use test_http::{Reply, Responder};
+    use tilo_actions::remote::person_models;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    // The provider is on this machine, which a server calls only with its
+    // operator's leave.
+    workspaces.call_private_model_addresses(true);
+    let provider_at = Responder::handle(|request| {
+        Some(if request.method == "GET" {
+            Reply::status(200).body(r#"{"data":[{"id":"large"}]}"#)
+        } else {
+            Reply::status(200)
+                .header("Content-Type", "text/event-stream")
+                .body(A_STREAMED_ANSWER)
+        })
+    });
+    let adding = json!({
+        "name": "A provider",
+        "protocol": "open-ai-compatible",
+        "endpoint": format!("{}/v1", provider_at.url()),
+    });
+    let provider = links_a_provider(&actions, workspace_id, &ada, &adding, "sk-ada").await;
+    let choosing = json!({"provider": provider, "model": "large"});
+    ask_own(
+        &actions,
+        workspace_id,
+        &ada,
+        person_models::SET_DEFAULT,
+        choosing,
+    )
+    .await
+    .expect("Ada chooses her model");
+    provider_at.drain_requests();
+
+    asks_their_model(workspaces, &ada).await;
+    let before = sent(&provider_at);
+    assert!(
+        before.get("reasoning_effort").is_none() && before.get("reasoning").is_none(),
+        "nothing is sent before anybody chose: {before}"
+    );
+
+    let chosen = asks_for_level(&actions, workspace_id, &ada, &provider, Some("low")).await;
+    assert!(chosen.is_ok(), "Ada's own choice is taken: {chosen:?}");
+    assert_eq!(chosen.unwrap()["reasoning"], json!("low"));
+    let listed = ask_own(&actions, workspace_id, &ada, person_models::LIST, json!({}))
+        .await
+        .unwrap();
+    assert_eq!(
+        listed["providers"][0]["reasoning"],
+        json!("low"),
+        "{listed}"
+    );
+    asks_their_model(workspaces, &ada).await;
+    let low = sent(&provider_at);
+    assert_eq!(low["reasoning_effort"], json!("low"), "{low}");
+
+    // A word that is no level is refused and changes nothing.
+    let refused = asks_for_level(&actions, workspace_id, &ada, &provider, Some("lowest")).await;
+    assert!(
+        matches!(refused, Err(ActionCallError::Refused { .. })),
+        "{refused:?}"
+    );
+    asks_their_model(workspaces, &ada).await;
+    let still = sent(&provider_at);
+    assert_eq!(still["reasoning_effort"], json!("low"), "{still}");
+
+    // Taken back: the provider is told nothing again.
+    let cleared = asks_for_level(&actions, workspace_id, &ada, &provider, None).await;
+    assert!(cleared.is_ok(), "Ada takes her choice back: {cleared:?}");
+    assert!(cleared.unwrap().get("reasoning").is_none());
+    asks_their_model(workspaces, &ada).await;
+    let after = sent(&provider_at);
+    assert!(
+        after.get("reasoning_effort").is_none() && after.get("reasoning").is_none(),
+        "{after}"
+    );
+    assert_eq!(kept_level(workspaces, &ada, &provider), None);
+
+    // Each provider is told in the field it takes a level in.
+    let router = ready_made(&actions, workspace_id, &ada, "openrouter").await;
+    let taken = asks_for_level(&actions, workspace_id, &ada, &router, Some("high")).await;
+    assert!(taken.is_ok(), "{taken:?}");
+    assert_eq!(
+        kept_level(workspaces, &ada, &router),
+        Some(ReasoningSetting {
+            param: ReasoningParam::ReasoningObject,
+            effort: "high".into(),
+        })
+    );
+    let anthropic = ready_made(&actions, workspace_id, &ada, "anthropic").await;
+    let turned_away = asks_for_level(&actions, workspace_id, &ada, &anthropic, Some("high")).await;
+    assert!(
+        matches!(turned_away, Err(ActionCallError::Refused { .. })),
+        "{turned_away:?}"
+    );
+    assert_eq!(kept_level(workspaces, &ada, &anthropic), None);
+    server.shutdown().await;
+}
+
 /// A provider `person` links as `adding` says, its `key` kept and its models
 /// asked for: the provider's id.
 async fn links_a_provider(
@@ -1442,7 +1658,7 @@ async fn each_person_links_a_provider_and_chooses_their_own_models() {
     let (workspace, workspace_id, host) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
-    // The provider is on this machine, which a host calls only with its
+    // The provider is on this machine, which a server calls only with its
     // operator's leave.
     workspaces.call_private_model_addresses(true);
     let (_fake, adding) = provider_of_two_keys();
