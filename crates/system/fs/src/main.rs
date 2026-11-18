@@ -901,9 +901,7 @@ fn export_home_peer(
     }
     let capability_json = std::fs::read_to_string(acl)
         .with_context(|| format!("read capability list {}", acl.display()))?;
-    let _: serde_json::Value =
-        serde_json::from_str(&capability_json).context("capability list is not valid JSON")?;
-    let capabilities: collab_types::FsAuthority = serde_json::from_str(&capability_json)?;
+    let capabilities = fs::caps_file::authority(capability_json.as_bytes(), acl)?;
     let paths = identity_paths();
     let governor = tilo_device_identity::persist::read_owned_signing_key(&paths.user_privkey)
         .context("read workspace governor key")?;
@@ -1333,9 +1331,9 @@ async fn serve(
                 .filter(|_| remote_ticket.is_none())
                 .zip(share_issuer.as_ref())
                 .map(|(path, signer)| -> Result<_> {
-                    let authority: collab_types::FsAuthority =
-                        serde_json::from_slice(&std::fs::read(path)?)
-                            .context("parse workspace authority bootstrap capabilities")?;
+                    let bytes = std::fs::read(path)?;
+                    let authority = fs::caps_file::authority(&bytes, path)
+                        .context("parse workspace authority bootstrap capabilities")?;
                     Ok((authority.capabilities, signer))
                 })
                 .transpose()?;
@@ -2524,10 +2522,11 @@ mod tests {
             }
         }
 
-        phase every_capability_list_an_image_ever_seeded_still_mounts_with_its_grant;
+        phase a_capability_list_an_older_image_seeded_is_refused_until_the_machine_reseeds_it;
         // tmpfiles' `C` never overwrites, so a machine keeps the capability list of the image it was
-        // installed with across every update. Each version the image ever seeded must still mount with
-        // the grant it gave, through the same loader fs.service uses.
+        // installed with across every update. The shipped version must mount with its grant through
+        // the same loader fs.service uses; a version in a schema the code no longer reads must be
+        // refused with what the machine has to do about it.
         {
             use fs::Access;
 
@@ -2546,18 +2545,29 @@ mod tests {
                 "the history must hold the list the image ships today: {versions:?}"
             );
             let identity: IdentityKey = [0x5A; 32];
+            let local = vec![parse_member("person:local").unwrap()];
             for path in &versions {
-                let local = vec![parse_member("person:local").unwrap()];
-                let file = CapabilityFile::load(path, identity, local).unwrap_or_else(|error| {
-                    panic!(
-                        "{} must still load on an upgraded machine: {error}",
-                        path.display()
-                    )
-                });
+                let is_shipped = std::fs::read(path).is_ok_and(|bytes| bytes == shipped);
+                let file = match CapabilityFile::load(path, identity, local.clone()) {
+                    Ok(file) => file,
+                    Err(error) => {
+                        assert!(
+                            !is_shipped,
+                            "the list the image ships today must load on an upgraded machine: \
+                             {error}"
+                        );
+                        assert!(
+                            error.to_string().contains("remove it"),
+                            "{} is refused without saying how a machine re-seeds it: {error}",
+                            path.display()
+                        );
+                        continue;
+                    }
+                };
                 let handle = file.handle();
                 assert!(
                     handle.permits(&identity, "/notes/today.md", Access::Write),
-                    "{} must still let the local session write its workspace",
+                    "{} must let the local session write its workspace",
                     path.display()
                 );
                 let outsider = CapabilityFile::load(path, identity, Vec::new())

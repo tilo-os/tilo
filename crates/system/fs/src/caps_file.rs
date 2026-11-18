@@ -20,6 +20,7 @@
 //!
 //! None of these can widen access beyond what some successfully-parsed file said.
 
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -81,8 +82,10 @@ impl CapabilityFile {
     ///
     /// # Errors
     ///
-    /// Returns [`CapsError::Read`] when `path` cannot be opened or stat'd, or
-    /// [`CapsError::Parse`] when its contents are not an [`collab_types::FsAuthority`].
+    /// Returns [`CapsError::Read`] when `path` cannot be opened or stat'd,
+    /// [`CapsError::Parse`] when its contents are not an [`collab_types::FsAuthority`],
+    /// and [`CapsError::Superseded`] when they were seeded by an image whose
+    /// schema named a capability's lifetime an `expiry`.
     pub fn load(
         path: impl Into<PathBuf>,
         identity: IdentityKey,
@@ -199,7 +202,7 @@ fn build(identity: IdentityKey, caps: &[CapOverride], members: &[MemberId]) -> W
 }
 
 fn read_capabilities(path: &Path) -> Result<(Vec<CapOverride>, Stamp), CapsError> {
-    let file = std::fs::File::open(path).map_err(|source| CapsError::Read {
+    let mut file = std::fs::File::open(path).map_err(|source| CapsError::Read {
         path: path.to_path_buf(),
         source,
     })?;
@@ -208,52 +211,52 @@ fn read_capabilities(path: &Path) -> Result<(Vec<CapOverride>, Stamp), CapsError
         path: path.to_path_buf(),
         source,
     })?);
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|source| CapsError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let authority = authority(&bytes, path)?;
+    Ok((authority.capabilities, stamp))
+}
+
+/// The file authority `bytes` hold, or why they are not the one this build
+/// reads.
+///
+/// # Errors
+///
+/// [`CapsError::Parse`] when the bytes are not the governor's file authority,
+/// and [`CapsError::Superseded`] when they name a capability's lifetime an
+/// `expiry` as an older image's list did.
+pub fn authority(bytes: &[u8], path: &Path) -> Result<collab_types::FsAuthority, CapsError> {
     let parse = |source| CapsError::Parse {
         path: path.to_path_buf(),
         source,
     };
-    let mut authority: serde_json::Value =
-        serde_json::from_reader(std::io::BufReader::new(file)).map_err(parse)?;
-    lifetime_of_a_seeded_expiry(&mut authority);
-    let authority: collab_types::FsAuthority = serde_json::from_value(authority).map_err(parse)?;
-    Ok((authority.capabilities, stamp))
+    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(parse)?;
+    if names_a_superseded_expiry(&value) {
+        return Err(CapsError::Superseded {
+            path: path.to_path_buf(),
+        });
+    }
+    serde_json::from_value(value).map_err(parse)
 }
 
 /// tmpfiles seeds `/var/lib/tilo/fs-capabilities.json` with `C`, which never
-/// overwrites, so a machine keeps the list in the shape it was installed with.
-/// Lists seeded before capabilities said how long they stand as a `lifetime`
-/// name it an `expiry`: `"Never"` or `{"AtUnix": seconds}`, the two that were
-/// ever written to disk. Each reads as the lifetime it meant; any other
-/// `expiry` is left for the parse to refuse.
-fn lifetime_of_a_seeded_expiry(authority: &mut serde_json::Value) {
-    let Some(capabilities) = authority
-        .get_mut("capabilities")
-        .and_then(serde_json::Value::as_array_mut)
-    else {
-        return;
-    };
-    for capability in capabilities
-        .iter_mut()
-        .filter_map(serde_json::Value::as_object_mut)
-    {
-        if capability.contains_key("lifetime") {
-            continue;
-        }
-        let lifetime = match capability.get("expiry") {
-            Some(serde_json::Value::String(never)) if never == "Never" => {
-                serde_json::json!("until_revoked")
-            }
-            Some(serde_json::Value::Object(at)) => {
-                match at.get("AtUnix").and_then(serde_json::Value::as_u64) {
-                    Some(seconds) => serde_json::json!({ "until": seconds.saturating_mul(1000) }),
-                    None => continue,
-                }
-            }
-            _ => continue,
-        };
-        capability.remove("expiry");
-        capability.insert("lifetime".into(), lifetime);
-    }
+/// overwrites, so a machine installed from an image whose list said how long a
+/// capability stands as an `expiry` keeps that file. The schema no longer
+/// reads it, and the file is an administrator's to remove: naming the cause
+/// says what to do, where the parse error alone would not.
+fn names_a_superseded_expiry(authority: &serde_json::Value) -> bool {
+    authority
+        .get("capabilities")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|capabilities| {
+            capabilities.iter().any(|capability| {
+                capability.get("expiry").is_some() && capability.get("lifetime").is_none()
+            })
+        })
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -270,6 +273,12 @@ pub enum CapsError {
         #[source]
         source: serde_json::Error,
     },
+    #[error(
+        "capability list {path} was seeded by an older image and names `expiry` where it now \
+         says `lifetime`; remove it so the image seeds its default again, or write the list in \
+         the current schema"
+    )]
+    Superseded { path: PathBuf },
 }
 
 #[cfg(test)]
@@ -448,6 +457,30 @@ mod tests {
                 let file =
                     CapabilityFile::load(&path, ALICE, Vec::new()).expect("an empty list is valid");
                 assert!(!file.handle().permits(&ALICE, "/", Access::Read));
+            }
+            {
+                // What tmpfiles' `C` leaves on a machine installed before a
+                // capability said how long it stands as a `lifetime`.
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("caps.json");
+                std::fs::write(
+                    &path,
+                    br#"{"capabilities":[{"grantee":{"member":{"person":"local"}},
+                        "scope":{"FsPath":"/"},"effect":"Grant","access":"Write",
+                        "id":"seeded","expiry":"Never"}]}"#,
+                )
+                .unwrap();
+                let error = CapabilityFile::load(&path, ALICE, Vec::new())
+                    .expect_err("a superseded schema must be refused, not read");
+                assert!(
+                    matches!(error, CapsError::Superseded { .. }),
+                    "got {error:?}"
+                );
+                let message = error.to_string();
+                assert!(
+                    message.contains("older image") && message.contains("remove it"),
+                    "the refusal must say how a machine re-seeds the list: {message}"
+                );
             }
         }
     }
