@@ -556,11 +556,13 @@ mod owner_commit_tests {
         native: bool,
         enrolled: bool,
     ) -> OwnerFixture {
-        let mut owner = crate::apps::test_owner::SessionOwner::initialize(&root.join("owner")).unwrap();
+        let mut owner =
+            crate::apps::test_owner::SessionOwner::initialize(&root.join("owner")).unwrap();
         // The workspace's own person has a second device, so a test can present
         // the same root from another device and only the device differs.
         owner.admit_second_device().unwrap();
-        let (handle, mailbox) = crate::apps::test_owner::owner_commit::OwnerCommitMailbox::bounded(2);
+        let (handle, mailbox) =
+            crate::apps::test_owner::owner_commit::OwnerCommitMailbox::bounded(2);
         let route = CrdtRoute::record(
             "so.tilo.word-processor",
             owner.peer().workspace_id(),
@@ -684,7 +686,8 @@ mod owner_commit_tests {
                 let after = f.owner.status();
                 drop(f);
                 let restored =
-                    crate::apps::test_owner::SessionOwner::open(&root.path().join("owner")).unwrap();
+                    crate::apps::test_owner::SessionOwner::open(&root.path().join("owner"))
+                        .unwrap();
                 assert_eq!(restored.status(), after);
             })
             .await;
@@ -727,7 +730,8 @@ mod owner_commit_tests {
             crate::apps::test_owner::SessionOwner::initialize(&root.path().join("owner")).unwrap();
         let membership = owner_tree(&owner);
         let config = owner_config(root.path(), &owner);
-        let (handle, mut mailbox) = crate::apps::test_owner::owner_commit::OwnerCommitMailbox::bounded(2);
+        let (handle, mut mailbox) =
+            crate::apps::test_owner::owner_commit::OwnerCommitMailbox::bounded(2);
         let owner_task = tokio::spawn(async move {
             while let Some(pending) = mailbox.recv().await {
                 pending.apply(&mut owner).unwrap();
@@ -1049,7 +1053,8 @@ mod owner_commit_tests {
             .unwrap();
         let committed = Arc::new(Mutex::new(Some(owner.peer().clone())));
         let authority = Arc::new(CurrentOwner(committed.clone()));
-        let (handle, mut mailbox) = crate::apps::test_owner::owner_commit::OwnerCommitMailbox::bounded(8);
+        let (handle, mut mailbox) =
+            crate::apps::test_owner::owner_commit::OwnerCommitMailbox::bounded(8);
         let published = Arc::new(AtomicUsize::new(0));
         let broker = crate::apps::collab_broker::spawn_native_peer(
             root.path().join("worker.sock"),
@@ -1352,7 +1357,8 @@ mod owner_commit_tests {
         );
         let expected = owner.status();
         drop(owner);
-        let restored = crate::apps::test_owner::SessionOwner::open(&root.path().join("owner")).unwrap();
+        let restored =
+            crate::apps::test_owner::SessionOwner::open(&root.path().join("owner")).unwrap();
         assert_eq!(restored.status(), expected);
     }
 

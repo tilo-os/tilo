@@ -80,13 +80,13 @@ async fn canonical_route_rechecks_registration_certificate_and_stream_after_reso
                 let release = Rc::new(tokio::sync::Notify::new());
                 worker
                     .handle
-                    .publish_action_directory(crate::apps::collab_app_broker::wire_answerer(Rc::new(
-                        signed_worker::HeldHostDirectory {
+                    .publish_action_directory(crate::apps::collab_app_broker::wire_answerer(
+                        Rc::new(signed_worker::HeldHostDirectory {
                             entered,
                             release: release.clone(),
                             row: directory.borrow().row(),
-                        },
-                    )))
+                        }),
+                    ))
                     .await
                     .unwrap();
                 let (caller, host) = canonical_host(&workspace);

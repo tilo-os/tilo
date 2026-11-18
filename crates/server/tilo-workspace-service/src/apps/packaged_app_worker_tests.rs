@@ -298,14 +298,14 @@ async fn a_session_with_many_windows_and_records_keeps_every_worker() {
                     );
                 }
                 channels[RECORDS - 1]
-                    .publish_action_directory(crate::apps::collab_app_broker::wire_answerer(Rc::new(
-                        LocalDocumentDirectory {
+                    .publish_action_directory(crate::apps::collab_app_broker::wire_answerer(
+                        Rc::new(LocalDocumentDirectory {
                             kind: tilo_actions::OperationKind::Document,
                             read: false,
                             pin_dropped: Rc::new(std::cell::Cell::new(false)),
                             resolutions: Rc::new(std::cell::Cell::new(0)),
-                        },
-                    )))
+                        }),
+                    ))
                     .await
                     .unwrap();
                 windows.push((peer, app, server, client, channels));

@@ -41,7 +41,10 @@ mod durable_local_matrix {
             Self::with_owner_initializer(crate::apps::test_owner::SessionOwner::initialize)
         }
         fn with_owner_initializer(
-            initialize: impl FnOnce(&std::path::Path) -> Result<crate::apps::test_owner::SessionOwner, String>,
+            initialize: impl FnOnce(
+                &std::path::Path,
+            )
+                -> Result<crate::apps::test_owner::SessionOwner, String>,
         ) -> ProvisionedEnvironment {
             let root = tempfile::tempdir().unwrap();
             let mut identity_env = tilo_test_env::ScopedEnv::new();

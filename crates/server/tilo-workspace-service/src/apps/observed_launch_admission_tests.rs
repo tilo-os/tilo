@@ -151,7 +151,8 @@ async fn installed_launch_requires_signed_admission_and_durable_terminal() {
                 match scenario {
                     "timeout" | "timeout_terminal" => {
                         tokio::time::pause();
-                        tokio::time::advance(crate::apps::services::APPLICATION_STARTUP_TIMEOUT).await;
+                        tokio::time::advance(crate::apps::services::APPLICATION_STARTUP_TIMEOUT)
+                            .await;
                     }
                     "observer_lost" => drop(adopt),
                     "spawn_failed" => {

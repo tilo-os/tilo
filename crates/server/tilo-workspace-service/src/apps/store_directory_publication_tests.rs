@@ -295,9 +295,10 @@ async fn store_native_certified_directory_discloses_children_after_actual_histor
     tokio::task::LocalSet::new()
         .run_until(async {
             let env = Environment::with_owner_initializer(|path| {
-                crate::apps::test_owner::SessionOwner::initialize_with_documents(path, |workspace| {
-                    Ok(store_genesis(workspace))
-                })
+                crate::apps::test_owner::SessionOwner::initialize_with_documents(
+                    path,
+                    |workspace| Ok(store_genesis(workspace)),
+                )
             });
             let ProvisionedEnvironment {
                 environment: env,

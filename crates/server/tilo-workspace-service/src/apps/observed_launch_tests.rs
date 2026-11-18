@@ -229,21 +229,22 @@ async fn installed_launch_rpc_waits_for_adoption_preserves_signed_root_and_reval
                     scenario,
                     "adopted" | "foreign_workspace" | "foreign_package" | "zero_surface"
                 ) {
-                    *launcher.adoption.lock().unwrap() = Some(crate::apps::services::LaunchAdoption {
-                        adoption_id: uuid::Uuid::new_v4(),
-                        surface_id: if scenario == "zero_surface" { 0 } else { 73 },
-                        package_id: if scenario == "foreign_package" {
-                            "so.tilo.foreign"
-                        } else {
-                            "so.tilo.word-processor"
-                        }
-                        .into(),
-                        workspace: if scenario == "foreign_workspace" {
-                            "foreign-workspace".into()
-                        } else {
-                            env.route.cluster_id.clone()
-                        },
-                    });
+                    *launcher.adoption.lock().unwrap() =
+                        Some(crate::apps::services::LaunchAdoption {
+                            adoption_id: uuid::Uuid::new_v4(),
+                            surface_id: if scenario == "zero_surface" { 0 } else { 73 },
+                            package_id: if scenario == "foreign_package" {
+                                "so.tilo.foreign"
+                            } else {
+                                "so.tilo.word-processor"
+                            }
+                            .into(),
+                            workspace: if scenario == "foreign_workspace" {
+                                "foreign-workspace".into()
+                            } else {
+                                env.route.cluster_id.clone()
+                            },
+                        });
                 }
                 let rig = Rig::with_services(
                     &env,
@@ -565,7 +566,9 @@ async fn native_person_installed_launch_keeps_host_origin_until_real_adoption() 
 async fn an_apps_open_for_an_agents_invocation_is_admitted_as_its_child() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            use crate::apps::collab_app_broker::invocation_journal::{InvocationKey, InvocationOwner};
+            use crate::apps::collab_app_broker::invocation_journal::{
+                InvocationKey, InvocationOwner,
+            };
             use crate::apps::test_support::{Grantee, Grants as _, KindSet};
             let env = Environment::new();
             let rig = Rig::new(&env).await;
@@ -671,7 +674,10 @@ async fn an_apps_open_for_its_own_invocation_is_not_admitted() {
                 rig.state
                     .admit_app_open(&env.route.app_id, &workspace, own, "so.tilo.contacts");
 
-            assert_eq!(opened, Ok(crate::apps::collab_app_broker::AppOpen::NeedsPress));
+            assert_eq!(
+                opened,
+                Ok(crate::apps::collab_app_broker::AppOpen::NeedsPress)
+            );
             rig.stop().await;
         })
         .await;

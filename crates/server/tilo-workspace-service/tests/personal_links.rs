@@ -22,13 +22,13 @@ use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
 use runtime_collab::event::CollabEvent;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
-use tilo_workspace_service::apps::collab_broker::{BrokerChannels, FanoutState};
-use tilo_workspace_service::apps::personal::{Links, Person};
 use tilo_peer_state::{PERSONAL_ALPN, PersonalStore, PersonalSync};
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
     sign_revocation_entry,
 };
+use tilo_workspace_service::apps::collab_broker::{BrokerChannels, FanoutState};
+use tilo_workspace_service::apps::personal::{Links, Person};
 
 /// The app whose own record the devices carry, and the record of it: a
 /// contact the person added, as Contacts keeps it.
@@ -146,7 +146,10 @@ async fn a_record_written_on_one_device_reaches_the_app_on_another() {
                     heard.send((route.clone(), (**envelope).clone())).ok();
                 }
             },
-        ) as Box<dyn Fn(&CollabEvent, &tilo_workspace_service::apps::route::CrdtRoute) + Send + Sync>,
+        )
+            as Box<
+                dyn Fn(&CollabEvent, &tilo_workspace_service::apps::route::CrdtRoute) + Send + Sync,
+            >,
     );
 
     // This device serves the person's store: its own router answers the
