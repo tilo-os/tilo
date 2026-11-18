@@ -35,6 +35,9 @@ mod agent_member;
 #[path = "workspace_actions/api.rs"]
 mod api;
 #[cfg(test)]
+#[path = "workspace_actions/api_apps.rs"]
+mod api_apps;
+#[cfg(test)]
 #[path = "workspace_actions/api_invites.rs"]
 mod api_invites;
 #[cfg(test)]
