@@ -180,7 +180,6 @@ impl StatePeer {
             .map_err(err)?;
         doc.put(&names, &id, identity.device_cert.device_label.as_str())
             .map_err(err)?;
-        doc.commit();
         self.write_governance(doc, &before, key, now)
     }
 

@@ -411,7 +411,7 @@ impl GovernedWorkspace {
             now,
         )?;
         select_exact_admission(&mut peer)?;
-        let mut seed = tilo_peer_state::workspace_seed(&workspace, authority, &roster, name)?;
+        let mut seed = tilo_peer_state::workspace_seed(&workspace, authority, &roster, name, now)?;
         if device.is_some() {
             // The workspace's records are sealed channels this node opens on
             // first use: a seed record would go out in the clear before its

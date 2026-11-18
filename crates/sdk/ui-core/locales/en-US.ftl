@@ -142,6 +142,8 @@ history-group-deletions = { $count ->
 }
 history-group-over = { $count } over { $span }
 history-group-chars = +{ $inserted } -{ $deleted } chars
+history-group-chars-added = +{ $count } chars
+history-group-chars-removed = -{ $count } chars
 history-group-from = from “{ $summary }”
 history-group-targets = { $action } { $things }
 history-group-targets-mixed = Changed { $things }

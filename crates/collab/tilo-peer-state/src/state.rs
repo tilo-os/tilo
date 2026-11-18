@@ -41,6 +41,7 @@ pub use facades::{
     PeerGovernance, PeerGovernanceMut, PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox,
     PeerOutboxMut, PeerPublication, PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut,
 };
+pub(crate) use governance_writes::{commit_governance, wall_secs};
 mod app_versions;
 pub use app_versions::InstalledApp;
 mod bot_members;
@@ -136,6 +137,14 @@ pub(crate) fn now_ns(now: SystemTime) -> u64 {
         .as_nanos()
         .try_into()
         .unwrap_or(u64::MAX)
+}
+/// The time automerge stamps a change with: seconds since the Unix epoch.
+pub(crate) fn now_secs(now: SystemTime) -> i64 {
+    now.duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .try_into()
+        .unwrap_or(i64::MAX)
 }
 
 /// Whether `agent` is admitted to the workspace: it holds a live grant on the workspace
@@ -530,6 +539,9 @@ mod compaction_behind_tests;
 #[cfg(test)]
 #[path = "state/durable_tests.rs"]
 mod durable_tests;
+#[cfg(test)]
+#[path = "state/governance_attribution_tests.rs"]
+mod governance_attribution_tests;
 #[cfg(test)]
 #[path = "state/governance_cache_tests.rs"]
 mod governance_cache_tests;

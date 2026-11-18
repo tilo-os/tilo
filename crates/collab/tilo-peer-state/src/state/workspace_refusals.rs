@@ -165,7 +165,11 @@ impl PeerWorkspaceMut<'_> {
                     .map_err(|e| e.to_string())?;
             }
         }
-        candidate.commit();
+        super::commit_governance(
+            &mut candidate,
+            Some(&caller.user_public_key),
+            super::now_secs(now),
+        );
         self.peer.core.workspace_doc = Some(candidate.into());
         Ok(true)
     }
@@ -219,7 +223,11 @@ impl PeerWorkspaceMut<'_> {
         candidate
             .delete(&entries, &entry)
             .map_err(|e| e.to_string())?;
-        candidate.commit();
+        super::commit_governance(
+            &mut candidate,
+            Some(&caller.user_public_key),
+            super::now_secs(now),
+        );
         self.peer.core.workspace_doc = Some(candidate.into());
         Ok(true)
     }

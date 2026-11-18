@@ -226,7 +226,6 @@ pub fn refresh_authorization(
         after
             .put(ROOT, FIELD, ScalarValue::Bytes(encode(&current)?))
             .map_err(|_| MediaPolicyError::Malformed)?;
-        after.commit();
     }
     validate_transition(Some(before), after, TransitionMode::Authoring)?;
     Ok(())

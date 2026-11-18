@@ -2,7 +2,7 @@
 //! installs, and the shared desktop every member's layout lands in.
 use super::GovernedIdentity;
 use super::err;
-use super::{SeedDocument, SeedState};
+use super::{SeedDocument, SeedState, SystemTime};
 use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable};
 use tilo_user_identity::DeviceCert;
 
@@ -22,12 +22,13 @@ pub fn workspace_seed(
     authority: &DeviceCert,
     roster: &[DeviceCert],
     name: &str,
+    now: SystemTime,
 ) -> Result<SeedState, String> {
     use tilo_automerge::ApplyIncoming as _;
     let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(
         authority.device_public_key.to_vec(),
     ));
-    let changes = seed_workspace(workspace, authority, roster)?
+    let changes = seed_workspace_at(workspace, authority, roster, super::now_secs(now))?
         .into_iter()
         .map(automerge::Change::from_bytes)
         .collect::<Result<Vec<_>, _>>()
@@ -35,7 +36,11 @@ pub fn workspace_seed(
     doc.apply_incoming(changes).map_err(err)?;
     doc.put(ROOT, "name", name).map_err(err)?;
     doc.put(ROOT, "desktop_counter_v1", 1_u64).map_err(err)?;
-    doc.commit();
+    super::commit_governance(
+        &mut doc,
+        Some(&authority.user_public_key),
+        super::now_secs(now),
+    );
     Ok(SeedState {
         workspace_changes: doc
             .get_changes(&[])
@@ -61,6 +66,20 @@ pub fn seed_workspace(
     workspace: &str,
     authority: &DeviceCert,
     roster: &[DeviceCert],
+) -> Result<Vec<Vec<u8>>, String> {
+    seed_workspace_at(workspace, authority, roster, super::wall_secs())
+}
+
+/// [`seed_workspace`] at `unix_secs`, the time the workspace is made.
+///
+/// # Errors
+///
+/// Returns an error if `workspace` is not a UUID or the document cannot be built.
+pub fn seed_workspace_at(
+    workspace: &str,
+    authority: &DeviceCert,
+    roster: &[DeviceCert],
+    unix_secs: i64,
 ) -> Result<Vec<Vec<u8>>, String> {
     uuid::Uuid::parse_str(workspace).map_err(err)?;
     let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(
@@ -102,7 +121,7 @@ pub fn seed_workspace(
         )
         .map_err(err)?;
     }
-    doc.commit();
+    super::commit_governance(&mut doc, Some(&authority.user_public_key), unix_secs);
     Ok(doc
         .get_changes(&[])
         .into_iter()

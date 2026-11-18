@@ -4,9 +4,70 @@ use super::{
     AutoCommit, CachedDocument, NeighbourMsg, StatePeer, SystemTime, TransportOrigin, backend, err,
     now_ns, workspace,
 };
+use automerge::transaction::Transactable as _;
 use collab_types::signer::DeviceSigner;
 
+/// Commit what `doc` holds as one governance change, stamped with `unix_secs` and naming `person`
+/// — the member whose device wrote it — as an action's own change names its invoker. A change
+/// nobody stamps carries automerge's zero time, and the document's actor is a device's key, or the
+/// one a server writes a workspace it keeps with: neither names a member, and the workspace's
+/// history would read neither who nor when.
+pub(crate) fn commit_governance(doc: &mut AutoCommit, person: Option<&[u8; 32]>, unix_secs: i64) {
+    if doc.pending_ops() == 0 {
+        // Commit would make a change of nobody's: roll the empty transaction back instead.
+        doc.rollback();
+        return;
+    }
+    let mut options = automerge::transaction::CommitOptions::default().with_time(unix_secs);
+    if let Some(person) = person {
+        let entry = tilo_actions::ActionContext::default()
+            .with_invoker(tilo_actions::ActionInvoker::person(hex::encode(person)));
+        if let Some(message) = entry.change_message() {
+            options = options.with_message(message);
+        }
+    }
+    doc.commit_with(options);
+}
+
+/// The wall clock in the unit automerge stamps a change's time with, for a governance change whose
+/// writer has no `now` handed to it.
+pub(crate) fn wall_secs() -> i64 {
+    i64::try_from(tilo_clock::try_unix_now().unwrap_or_default()).unwrap_or(i64::MAX)
+}
+
 impl StatePeer {
+    /// The member `key`'s device writes governance for, as this workspace's certificates name
+    /// them: the person of its device certificate, or of the holder entry a server that is no
+    /// member signs as.
+    pub(super) fn governance_author(
+        &self,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Option<[u8; 32]> {
+        let device = key.device_public_key();
+        self.certificate(&device, now)
+            .ok()
+            .map(|cert| cert.user_public_key)
+            .or_else(|| {
+                self.holder_certificate(&device)
+                    .map(|cert| cert.user_public_key)
+            })
+    }
+
+    /// Commit the governance change `doc` holds as `key`'s device ([`commit_governance`]).
+    pub(super) fn commit_governance(
+        &self,
+        doc: &mut AutoCommit,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) {
+        commit_governance(
+            doc,
+            self.governance_author(key, now).as_ref(),
+            super::now_secs(now),
+        );
+    }
+
     /// Write the governance change `doc` holds as `key`'s device, and take it in
     /// as every member will ([`Self::write_membership`] with no membership
     /// change).
@@ -45,6 +106,9 @@ impl StatePeer {
         now: SystemTime,
         membership: Option<crate::members::MembershipOpCommand>,
     ) -> Result<bool, String> {
+        // What the caller wrote lands as one governance change by this device, stamped with its
+        // time and its author: the operation recording it is the next one.
+        self.commit_governance(&mut doc, key, now);
         // A change that writes no operation leaves the membership as it was.
         let written = doc.get_changes(before);
         crate::members::replay::carry(before, &doc, &written, &self.core.workspace);
@@ -89,6 +153,9 @@ impl StatePeer {
             rows.retain(|row| *row != crate::workspace::GovernanceRow::Identities);
         }
         self.record_governance(&mut doc, rows, key, now)?;
+        // The operations, and the policy bound to what they leave, are one change of this
+        // device's, stamped like the one that moved the rows.
+        self.commit_governance(&mut doc, key, now);
         // The operations are written on top of every head the state held.
         let recorded = doc.get_changes(&unrecorded);
         crate::members::replay::carry(&unrecorded, &doc, &recorded, &self.core.workspace);

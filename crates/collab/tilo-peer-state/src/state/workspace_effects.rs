@@ -140,7 +140,11 @@ impl PeerWorkspaceMut<'_> {
         {
             return Err("workspace effect receipt write did not materialize".into());
         }
-        candidate.commit();
+        super::commit_governance(
+            &mut candidate,
+            Some(&caller.user_public_key),
+            super::now_secs(now),
+        );
         self.peer.core.workspace_doc = Some(candidate.into());
         Ok(true)
     }
@@ -213,7 +217,11 @@ impl PeerWorkspaceMut<'_> {
                 ScalarValue::Bytes(root.to_vec()),
             )
             .map_err(|e| e.to_string())?;
-        candidate.commit();
+        super::commit_governance(
+            &mut candidate,
+            Some(&caller.user_public_key),
+            super::now_secs(now),
+        );
         self.peer.core.workspace_doc = Some(candidate.into());
         Ok(())
     }

@@ -53,6 +53,7 @@ pub(crate) fn admit_invited_member(
     held: &crate::cached_document::CachedDocument,
     redemption: &crate::join::VerifiedRedemption,
     name: Option<&str>,
+    author: Option<&[u8; 32]>,
     now: SystemTime,
 ) -> Result<AdmissionOutcome, String> {
     let now_ns: u64 = now
@@ -232,9 +233,11 @@ pub(crate) fn admit_invited_member(
             }
         }
     }
-    candidate.commit();
+    crate::state::commit_governance(&mut candidate, author, crate::state::now_secs(now));
     crate::workspace::media::refresh_authorization(document, &mut candidate)
         .map_err(|error| error.to_string())?;
+    // The policy bound to the membership this admission leaves is this admission's own change.
+    crate::state::commit_governance(&mut candidate, author, crate::state::now_secs(now));
     let changes = candidate
         .get_changes(&before)
         .into_iter()

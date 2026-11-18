@@ -185,7 +185,11 @@ impl PeerWorkspaceMut<'_> {
         candidate
             .put(&devices, row.as_str(), json.as_str())
             .map_err(error_text)?;
-        candidate.commit();
+        super::commit_governance(
+            &mut candidate,
+            Some(&device.user_public_key),
+            super::now_secs(now),
+        );
         self.peer.core.workspace_doc = Some(candidate.into());
         Ok(true)
     }

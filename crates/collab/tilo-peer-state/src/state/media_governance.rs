@@ -158,7 +158,6 @@ impl PeerMediaGovernanceMut<'_> {
         }
         doc.set_actor(self.peer.workspace_actor_of(key));
         super::governed_rows::put_identity_rows(&mut doc, &rows).map_err(err)?;
-        doc.commit();
         // write_governance stages its receive; failed refresh cannot mutate self.
         let mut candidate = self.peer.clone();
         candidate.write_governance(doc, &before, key, now)?;
@@ -196,7 +195,6 @@ impl PeerMediaGovernanceMut<'_> {
             automerge::ScalarValue::Bytes(media::encode(policy).map_err(err)?),
         )
         .map_err(err)?;
-        doc.commit();
         media::validate_transition(
             self.peer.core.workspace_doc.as_deref(),
             &doc,

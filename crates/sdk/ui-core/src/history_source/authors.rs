@@ -1195,6 +1195,24 @@ mod tests {
         assert!(hover.contains("Workspace folder"), "{hover}");
     }
 
+    /// A workspace's governance is written under a device's key, which names no person. The entry
+    /// the change carries names the person whose device wrote it, so the history reads them, not
+    /// an unknown member.
+    #[test]
+    fn a_change_under_a_device_key_reads_as_the_person_its_entry_names() {
+        let person = "ada";
+        let mut authors = AuthorDirectory::new();
+        authors.register_member(
+            &tilo_actions::MemberId::person(person),
+            HistoryAuthor::new("Ada", 0.0, "ada00000"),
+        );
+        let entry = tilo_actions::ActionContext::default()
+            .with_invoker(tilo_actions::ActionInvoker::person(person));
+        let author = authors.resolve_entry(&hex::encode([7_u8; 32]), Some(&entry));
+        assert_eq!(author.name, "Ada");
+        assert_ne!(author.name, UNKNOWN_AUTHOR_NAME);
+    }
+
     /// An agent that acted for its person outside a recorded session (a change written before
     /// sessions were recorded, or by a host that names none) still reads as the person with the
     /// agent beside them: the name its connection gave it, here its session's title, is never

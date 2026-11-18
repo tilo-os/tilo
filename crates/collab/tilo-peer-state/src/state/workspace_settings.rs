@@ -240,7 +240,7 @@ impl PeerGovernanceMut<'_> {
         let before = doc.get_heads();
         doc.set_actor(self.peer.workspace_actor_of(key));
         edit(&mut doc).map_err(err)?;
-        doc.commit();
+        self.peer.commit_governance(&mut doc, key, now);
         if doc.get_heads() == before {
             return Ok(false);
         }
@@ -290,7 +290,7 @@ mod tests {
         )
         .unwrap();
         peer.install_seed(
-            super::super::workspace_seed(WORKSPACE, &cert, &roster, "Workspace").unwrap(),
+            super::super::workspace_seed(WORKSPACE, &cert, &roster, "Workspace", now).unwrap(),
             &device,
             now,
         )

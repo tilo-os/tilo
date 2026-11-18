@@ -56,10 +56,10 @@ pub(crate) fn identity(doc: &AutoCommit, layout: Layout) -> Option<Vec<u8>> {
     postcard::to_allocvec(&routes).ok()
 }
 
-/// Write raw per-route values in one change: each `(layout, next)` pair
-/// replaces that layout's complete route set with `next`, touching only
-/// routes whose bytes differ and deleting routes absent from `next`. Commits
-/// only when something changed; returns whether it did.
+/// Write raw per-route values leaving them pending, for the writer to commit as one governance
+/// change: each `(layout, next)` pair replaces that layout's complete route set with `next`,
+/// touching only routes whose bytes differ and deleting routes absent from `next`. Returns whether
+/// something changed.
 pub(crate) fn write_raw(
     doc: &mut AutoCommit,
     sets: &[(Layout, &BTreeMap<String, Vec<u8>>)],
@@ -87,9 +87,6 @@ pub(crate) fn write_raw(
                 .map_err(|e| e.to_string())?;
         }
         changed = true;
-    }
-    if changed {
-        doc.commit();
     }
     Ok(changed)
 }
