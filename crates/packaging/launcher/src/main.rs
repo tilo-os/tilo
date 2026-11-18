@@ -218,6 +218,18 @@ enum Cmd {
         #[arg(last = true, required = true)]
         command: Vec<std::ffi::OsString>,
     },
+    /// Start the private audio graph the compatibility service prepared for a Windows program,
+    /// then become the program's sandbox: the graph's daemons end with the sandbox's process, so
+    /// they live exactly as long as the program, in its launch's group (`launcher::audio_graph`).
+    #[command(name = "windows-audio", hide = true)]
+    WindowsAudio {
+        /// The directory the graph was prepared in.
+        #[arg(long)]
+        graph: PathBuf,
+        /// The sandbox's command line.
+        #[arg(last = true, required = true)]
+        command: Vec<std::ffi::OsString>,
+    },
     /// Build or retire the pre-built read-only system view every sandbox mounts
     /// (`launcher::sandbox_view`).
     #[command(subcommand)]
@@ -521,6 +533,15 @@ fn dispatch_command(
         Cmd::MachineApp(args) => machine_app(args),
         Cmd::WindowsProgram(args) => windows_program(&args),
         Cmd::WindowsX11Sandbox { command } => windows_x11_sandbox(command),
+        Cmd::WindowsAudio { graph, command } => {
+            let Err(error) = launcher::audio_graph::exec_with(
+                graph,
+                &launcher::audio_graph::Daemons::installed(),
+                &command,
+            );
+            eprintln!("tilo-launcher: {error}");
+            ExitCode::FAILURE
+        }
         Cmd::SandboxView(command) => sandbox_view(command),
         Cmd::Apps { json } => list_apps(json),
         Cmd::RuntimeResident { user: true, .. } => runtime_resident_user(),

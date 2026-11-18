@@ -148,6 +148,10 @@ struct Probe {
     dir: PathBuf,
     tell_display: bool,
     planned: Arc<Mutex<Option<PathBuf>>>,
+    /// Where each launch's private audio graph is prepared, when the program has sound: the
+    /// sandbox then starts as the compatibility service starts one with sound, after its graph
+    /// ([`audio_step`]).
+    sound: Option<PathBuf>,
 }
 
 /// What the probe finds at the descriptor it is handed.
@@ -166,13 +170,20 @@ impl SandboxExecutor for Probe {
         if self.tell_display {
             args.push(format!("WAYLAND_DISPLAY={}", display.display()));
         }
+        let mut step = "windows_compat::probe_program";
+        if let Some(sound) = &self.sound {
+            let graph = sound.join(fs::read_dir(sound).map_or(0, Iterator::count).to_string());
+            fs::create_dir_all(graph.join("audio/pulse"))?;
+            args.push(format!("{AUDIO_GRAPH}={}", graph.display()));
+            step = "windows_compat::audio_step";
+        }
         args.extend([
             std::env::current_exe()
                 .expect("this test binary")
                 .to_string_lossy()
                 .into_owned(),
             "--exact".to_owned(),
-            "windows_compat::probe_program".to_owned(),
+            step.to_owned(),
             "--nocapture".to_owned(),
         ]);
         let memfd = rustix::fs::memfd_create("probe", rustix::fs::MemfdFlags::CLOEXEC)
@@ -190,6 +201,80 @@ impl SandboxExecutor for Probe {
 
 /// What makes this test binary the stand-in for a Windows program: the directory it reports in.
 const PROBE_DIR: &str = "TILO_TEST_WINDOWS_PROBE";
+/// The directory of the private audio graph a program with sound starts after ([`audio_step`]).
+const AUDIO_GRAPH: &str = "TILO_TEST_WINDOWS_AUDIO_GRAPH";
+
+/// Not a test: the launcher's `windows-audio` as a sandbox with sound starts behind it, through
+/// the same call, with [`audio_daemon`] for both daemons: it starts the graph, then becomes the
+/// program.
+#[test]
+fn audio_step() {
+    let Ok(graph) = std::env::var(AUDIO_GRAPH) else {
+        return;
+    };
+    let exe = std::env::current_exe().expect("this test binary");
+    let daemon = PathBuf::from(&graph).join("daemon");
+    fs::write(
+        &daemon,
+        format!(
+            "#!/bin/sh\nexec '{}' --exact windows_compat::audio_daemon --nocapture\n",
+            exe.display()
+        ),
+    )
+    .expect("the stand-in daemon");
+    fs::set_permissions(
+        &daemon,
+        <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
+    )
+    .expect("the stand-in daemon is executable");
+    let daemons = launcher::audio_graph::Daemons {
+        pipewire: daemon.clone(),
+        pulse: daemon,
+    };
+    let program = [
+        exe.into_os_string(),
+        "--exact".into(),
+        "windows_compat::probe_program".into(),
+        "--nocapture".into(),
+    ];
+    // The keeper started this process to die with it, but this test is on a thread of the test
+    // harness's, which a new thread never inherits that from: the launcher's own step is on its
+    // main thread, so the program it becomes keeps it.
+    // SAFETY: prctl with integer arguments only.
+    assert_eq!(
+        unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) },
+        0,
+        "the program dies with its keeper"
+    );
+    let Err(error) = launcher::audio_graph::exec_with(graph.into(), &daemons, &program);
+    panic!("the program did not start: {error}");
+}
+
+/// Not a test: `PipeWire` or its Pulse server, as a graph starts them: it listens where the real
+/// one would and adds its pid to the graph's `audio/daemons`, until it is ended.
+#[test]
+fn audio_daemon() {
+    let Some(runtime) = std::env::var_os("PIPEWIRE_RUNTIME_DIR").map(PathBuf::from) else {
+        return;
+    };
+    let socket = if std::env::var_os("PIPEWIRE_DAEMON").is_some() {
+        runtime.join("pipewire-0")
+    } else {
+        PathBuf::from(std::env::var_os("PULSE_RUNTIME_PATH").expect("the Pulse directory"))
+            .join("native")
+    };
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("the daemon's socket");
+    let mut daemons = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(runtime.join("daemons"))
+        .expect("the daemons");
+    std::io::Write::write_all(&mut daemons, format!("{}\n", std::process::id()).as_bytes())
+        .expect("the daemon written down");
+    for client in listener.incoming() {
+        drop(client);
+    }
+}
 
 /// Not a test: a Windows program, as the stand-in for Bubblewrap starts it. It writes what it
 /// finds at the descriptor Bubblewrap reads its filter from to `handed`, its pid to `started`, and
@@ -381,6 +466,7 @@ fn the_windows_apps_manager_starts_a_program_on_the_session_display() {
                     dir,
                     tell_display: true,
                     planned,
+                    sound: None,
                 },
                 LazyVmDelegate::new(|| Err("no appliance is set up here".to_owned())),
             )
@@ -547,6 +633,8 @@ struct KeptRig {
     probe: PathBuf,
     keeper: PathBuf,
     root: PathBuf,
+    /// Where the programs' private audio graphs are, when they have sound.
+    sound: Option<PathBuf>,
 }
 
 /// One desktop, until it ends.
@@ -623,13 +711,48 @@ impl KeptRig {
             probe,
             keeper,
             root,
+            sound: None,
         }
+    }
+
+    /// A rig whose programs have sound: each starts after a private audio graph of its own.
+    fn with_sound() -> Self {
+        let mut rig = Self::new();
+        let sound = rig.home.runtime().join("sound");
+        fs::create_dir_all(&sound).unwrap();
+        rig.sound = Some(sound);
+        rig
+    }
+
+    /// The daemons of the newest program's audio graph, once both are there.
+    fn daemons(&self, desktop: &mut KeptDesktop) -> [u32; 2] {
+        let sound = self.sound.as_ref().expect("a rig with sound");
+        let newest = fs::read_dir(sound)
+            .map_or(0, Iterator::count)
+            .saturating_sub(1);
+        let daemons = sound.join(newest.to_string()).join("audio/daemons");
+        crate::common::wait_for(&mut desktop.session, "the audio daemons", |_| {
+            let pids: Vec<u32> = fs::read_to_string(&daemons)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| line.parse().ok())
+                .collect();
+            <[u32; 2]>::try_from(pids).ok()
+        })
+    }
+
+    /// Wait until each of `daemons` ended.
+    fn ended(desktop: &mut KeptDesktop, daemons: [u32; 2], why: &str) {
+        crate::common::wait_for(&mut desktop.session, why, |_| {
+            daemons.iter().all(|pid| !alive(*pid)).then_some(())
+        });
     }
 
     /// A desktop, taking up what the keepers hold `following` an in-place restart.
     fn start(&self, following: bool) -> KeptDesktop {
         let catalogue = self.catalogue.clone();
         let dir = self.probe.clone();
+        let sound = self.sound.clone();
         let assembly = Assembly::with(move |mut side| {
             // The manager is this test binary, not the stand-in launcher the programs start
             // through.
@@ -643,6 +766,7 @@ impl KeptRig {
                     dir,
                     tell_display: false,
                     planned: Arc::default(),
+                    sound,
                 },
                 LazyVmDelegate::new(|| Err("no appliance is set up here".to_owned())),
             )
@@ -815,6 +939,88 @@ fn a_windows_program_stays_open_through_an_in_place_restart() {
         tilo_app_launch::kept::testing::described(&rig.root).is_empty(),
         "no keeper is left"
     );
+}
+
+/// The parent of process `pid`.
+fn parent(pid: u32) -> Option<u32> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    stat.rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
+}
+
+/// A program's private audio graph lives exactly as long as the program: its daemons are the
+/// sandbox's own children (so in its launch's group), stay through an in-place restart, and end
+/// when the program is quit (one a later desktop took back), ends, or the person logs out.
+#[test]
+fn a_windows_programs_sound_lives_as_long_as_the_program() {
+    let rig = KeptRig::with_sound();
+    let mut first = rig.start(false);
+    let answers = first.manage(&rig, "first", &["launch"]);
+    assert_eq!(answers[0]["result"], "launched", "{answers:?}");
+    first.shown();
+    let [pid] = rig.starts()[..] else {
+        panic!("one start: {:?}", rig.starts());
+    };
+    let daemons = rig.daemons(&mut first);
+    for daemon in daemons {
+        assert_eq!(
+            parent(daemon),
+            Some(pid),
+            "the audio daemons are the program's sandbox's children"
+        );
+    }
+    assert_eq!(
+        fs::read(rig.probe.join("handed")).unwrap(),
+        HANDED_DOWN,
+        "the sandbox still gets what it is handed"
+    );
+
+    first.end(tilo_app_launch::Teardown::InPlaceRestart);
+    assert!(
+        daemons.iter().all(|daemon| alive(*daemon)),
+        "the sound outlives the desktop that started the program"
+    );
+    let mut second = rig.start(true);
+    second.shown();
+    assert!(daemons.iter().all(|daemon| alive(*daemon)));
+    let answers = second.manage(&rig, "second", &["stop"]);
+    assert_eq!(answers[0]["result"], "stopped", "{answers:?}");
+    KeptRig::ended(
+        &mut second,
+        daemons,
+        "quitting a program taken back ends its sound",
+    );
+
+    let answers = second.manage(&rig, "third", &["launch"]);
+    assert_eq!(answers[0]["result"], "launched", "{answers:?}");
+    second.shown();
+    let daemons = rig.daemons(&mut second);
+    rig.exit(0);
+    KeptRig::ended(
+        &mut second,
+        daemons,
+        "a program that ends takes its sound along",
+    );
+
+    let answers = second.manage(&rig, "fourth", &["launch"]);
+    assert_eq!(answers[0]["result"], "launched", "{answers:?}");
+    second.shown();
+    let daemons = rig.daemons(&mut second);
+    let pid = *rig.starts().last().unwrap();
+    second.end(tilo_app_launch::Teardown::Logout);
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while daemons.iter().any(|daemon| alive(*daemon)) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a logout leaves the sound playing (the program alive: {})",
+            alive(pid)
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 /// Whether the X server a keeper serves an X11 display with is installed here.

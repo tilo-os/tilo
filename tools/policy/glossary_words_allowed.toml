@@ -377,6 +377,11 @@ words = ["run"]
 paths = ["tools/integrate.sh", "tools/ci/pre_push_lint.py", "tools/ci/check-changed-rustfmt.sh", "tools/tests/test_pre_push_lint.py", "tools/tests/test_changed_rustfmt.py"]
 
 [[allow]]
+reason = "The system's directory /run/user/<uid>, where the session's Pulse server listens: the private audio graph of a Windows program tunnels to it."
+words = ["run"]
+paths = ["crates/packaging/launcher/src/audio_graph.rs"]
+
+[[allow]]
 reason = "The cargo nextest command the wrapper starts, and nextest's own `run` subcommand."
 words = ["run"]
 paths = ["tools/tests/test_nextest_policy.py"]

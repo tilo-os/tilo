@@ -16,11 +16,13 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use launcher::audio_graph::{AudioGraph, Daemons};
+
 use crate::{
-    AudioProxyLease, LaunchDisplay, LaunchDisplays, VmAvailability, VmDelegate, VmInstallCandidate,
-    VmInstallation, VmInstallationPhase, VmInstallerInput, VmInstallerKind, VmInventory,
-    VmPresentation, VmPublishedApplication, VmRouteRequest, VmSharedSessionContributor,
-    VmSharedSessionGrantKind, VmSharedSessionLeaseSummary,
+    LaunchDisplay, LaunchDisplays, VmAvailability, VmDelegate, VmInstallCandidate, VmInstallation,
+    VmInstallationPhase, VmInstallerInput, VmInstallerKind, VmInventory, VmPresentation,
+    VmPublishedApplication, VmRouteRequest, VmSharedSessionContributor, VmSharedSessionGrantKind,
+    VmSharedSessionLeaseSummary,
 };
 
 /// Authoritative host-side view of the one shared Windows user/session.
@@ -357,7 +359,7 @@ impl<R: windows_vm::CommandRunner> Presenter<R> {
             .display_for(workspace_id)
             .map_err(|error| failed(None, error))?;
         let sequence = self.next.fetch_add(1, Ordering::Relaxed);
-        let lease = AudioProxyLease::start(
+        let graph = AudioGraph::prepare(
             display.runtime_dir.join("tilo-windows-vm").join(format!(
                 "{}-{}-{sequence}",
                 self.kind,
@@ -367,14 +369,30 @@ impl<R: windows_vm::CommandRunner> Presenter<R> {
             microphone,
         )
         .map_err(|error| failed(None, format!("private audio setup failed: {error}")))?;
-        let native = lease.pipewire_socket();
+        let started = graph.start(&Daemons::installed());
+        let output = started
+            .map_err(|error| failed(None, format!("private audio setup failed: {error}")))
+            .and_then(|_started| self.present_with(&graph, &display, command, failed));
+        graph.remove();
+        output
+    }
+
+    /// Present `command` on `display`, heard through the started `graph`.
+    fn present_with(
+        &self,
+        graph: &AudioGraph,
+        display: &LaunchDisplay,
+        command: windows_vm::CommandRequest,
+        failed: fn(Option<i32>, String) -> windows_vm::RemoteAppError,
+    ) -> Result<windows_vm::RemoteAppProcess, windows_vm::RemoteAppError> {
+        let native = graph.pipewire_socket();
         let audio_runtime = native.parent().ok_or_else(|| {
             failed(
                 None,
                 "private audio endpoint has no runtime directory".into(),
             )
         })?;
-        let command = on_display(command, &display, audio_runtime, &lease.pulse_socket());
+        let command = on_display(command, display, audio_runtime, &graph.pulse_socket());
         let output = self.runner.run(&command)?;
         if !output.success {
             return Err(failed(

@@ -15,7 +15,7 @@ use crate::store::{
 const PREFIX_MOUNT: &str = "/run/tilo/capsule/prefix";
 pub(crate) const HOME_MOUNT: &str = "/run/tilo/capsule/home";
 const FILES_MOUNT: &str = "/run/tilo/files";
-const SHIM_HOST: &str = "/usr/libexec/tilo/tilo-launcher";
+pub(crate) const SHIM_HOST: &str = "/usr/libexec/tilo/tilo-launcher";
 const SHIM_MOUNT: &str = "/tilo-launcher";
 const LEASE_ROOT: &str = "/run/tilo/windows-compat/leases";
 const PINNED_PROTON: &str = "UMU-Proton-10.0-4";
@@ -477,6 +477,9 @@ pub struct ResourceRequest<'a> {
 pub struct LaunchLease {
     pub id: String,
     pub audio: Vec<AudioBinding>,
+    /// The private audio graph prepared for the launch (`launcher::audio_graph`), which the
+    /// launch starts right before its sandbox: the directory the lease names.
+    pub audio_graph: Option<PathBuf>,
     pub egress_proxy: Option<EgressProxyBind>,
 }
 
@@ -486,6 +489,7 @@ impl LaunchLease {
         Self {
             id: id.into(),
             audio: Vec::new(),
+            audio_graph: None,
             egress_proxy: None,
         }
     }
@@ -500,6 +504,13 @@ impl LaunchLease {
         let microphone = capabilities
             .devices
             .contains(&collab_types::caps::DeviceCap::Microphone);
+        if self
+            .audio_graph
+            .as_ref()
+            .is_some_and(|graph| *graph != root)
+        {
+            return Err(PlanError::ResourceEscalation("audio graph"));
+        }
         let mut protocols = HashSet::new();
         for audio in &self.audio {
             if !audio.host_socket.starts_with(&root) {
@@ -556,6 +567,8 @@ pub struct CapsuleCommandPlan {
     /// Tilo-owned game classification, never a package-manifest request.
     pub latency_sensitive: bool,
     pub lease_id: String,
+    /// The private audio graph to start right before the sandbox, whose sockets it binds.
+    pub audio_graph: Option<PathBuf>,
     // Open directory descriptors backing the prefix/home bind sources. Kept
     // private so a plan cannot be copied after its authority-bearing handles.
     launch_paths: LaunchPaths,
@@ -801,6 +814,7 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
             audio_output: !lease.audio.is_empty(),
             latency_sensitive: route.runtime.layer == Layer::Proton,
             lease_id: lease.id.clone(),
+            audio_graph: lease.audio_graph.clone(),
             launch_paths,
             runtime_lock_required: runtime.runtime_lock_mount.is_some(),
             identity_uid: self.display.uid,
@@ -2037,6 +2051,7 @@ mod tests {
                         input_enabled: true,
                     },
                 ],
+                audio_graph: Some(PathBuf::from(LEASE_ROOT).join("audio-lease")),
                 egress_proxy: None,
             };
             let command = planner
