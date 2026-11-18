@@ -28,7 +28,7 @@ impl Selection {
             Service::Discord => "Discord",
         }
     }
-    pub fn resource(&self) -> ui::tilo_actions::ResourceSpec {
+    pub fn resource(&self) -> ui::framework::LiveRow {
         let mut forget = crate::effects::BrowserEffect::ForgetServiceSession {
             session_id: self.id.clone(),
         }
@@ -47,14 +47,14 @@ impl Selection {
             "browser-service-open",
             &[("name", ui::i18n::ArgValue::Text(self.label().to_owned()))],
         );
-        ui::tilo_actions::ResourceSpec::new(
+        ui::framework::LiveRow::new(
             format!("browser.service.{}", self.id),
             "browser.service",
             self.label(),
         )
-        .with_action(open)
-        .with_action(forget)
-        .with_action(retry)
+        .operation(open)
+        .operation(forget)
+        .operation(retry)
     }
 }
 
@@ -647,8 +647,8 @@ pub fn service_session_capability() -> Result<serde_json::Value, String> {
 
 fn probe_consumer_session(selection: &Selection) -> Result<(), String> {
     let failure = || "Selected account consumer contract failed".to_owned();
-    let resource = selection.resource();
-    let action = resource.actions.first().ok_or_else(failure)?;
+    let row = selection.resource();
+    let action = row.operations().first().ok_or_else(failure)?;
     let encoded = action
         .build_json(&serde_json::Map::new())
         .map_err(|_| failure())?;
@@ -693,7 +693,7 @@ mod lifecycle_tests {
                 service: Service::Slack,
                 binding: "private-setup-binding".into(),
             };
-            let resource = selected.resource();
+            let resource = selected.resource().into_resource();
             assert_eq!(resource.id.0, "browser.service.selected-account");
             let action = resource
                 .actions
@@ -727,7 +727,7 @@ mod lifecycle_tests {
                 service: Service::Slack,
                 binding: "private-setup-binding".into(),
             };
-            let resource = selected.resource();
+            let resource = selected.resource().into_resource();
             let action = resource
                 .actions
                 .iter()

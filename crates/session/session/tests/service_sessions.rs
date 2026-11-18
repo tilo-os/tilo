@@ -294,7 +294,7 @@ fn session(socket: &Path, fixture: &Fixture, app: &str) -> Session {
 
 /// The channel key of `app` 's record in the workspace.
 fn channel(app: &str) -> String {
-    tilo_action_broker::route::CrdtRoute::record(app, WORKSPACE, RECORD).channel_key()
+    tilo_workspace_service::apps::route::CrdtRoute::record(app, WORKSPACE, RECORD).channel_key()
 }
 
 /// A connection to the session's app wire as `app` in the workspace, as the launcher hands an app one.

@@ -65,11 +65,10 @@ The sync client has the same surface without `await`: `from tilo import Tilo`.
   they
   decide; a key the API turns away raises `KeyRevoked`, `KeyExpired` or
   `KeyRefused`.
-- **A busy host is waited for.** A call the host refuses because the person
-  sends changes faster than it takes them ran nothing, so the client asks
-  again after the wait the host says (`retry_after_ms`), with jitter, and with
-  the same `Idempotency-Key`, for up to `retry_deadline` seconds
-  (`AsyncTilo(retry_deadline=60)`); past it, `RateLimited`, a `Refused`, says
+- **A transient refusal is waited for.** A call the server says it cannot
+  take just now ran nothing, so the client asks again with jitter and the
+  same `Idempotency-Key`, for up to `retry_deadline` seconds
+  (`AsyncTilo(retry_deadline=60)`); past it, the refusal the server gave says
   when to try again.
 - **Invocations group calls.** `async with ws.invocation("Fill Jane's application")
   as invocation:` puts every call inside into one group (`Tilo-Invocation`,

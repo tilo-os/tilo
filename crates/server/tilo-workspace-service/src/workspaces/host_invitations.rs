@@ -210,12 +210,14 @@ fn decision(kind: &[u8], key: &[u8; 32], now_ns: u64) -> [u8; 32] {
 mod tests {
     use super::*;
     use crate::workspaces::listing::entry_tests::walk_in_as;
-    use crate::workspaces::tests::{governor, guest_device, test_host};
+    use crate::workspaces::tests::{governor, governor_with, guest_device, test_host};
+    use ed25519_dalek::SigningKey;
     use tilo_peer_state::join::Role;
     use tilo_server_protocol::directory::{EntryJoin, Listing};
     use tilo_server_protocol::workspaces::{
         JoinReply, Workspace, WorkspacesReply, WorkspacesRequest,
     };
+    use tilo_user_identity::{DeviceCapabilities, RevocationList, sign_device_cert};
 
     const DAY_NS: u64 = 24 * 3600 * 1_000_000_000;
 
@@ -330,7 +332,7 @@ mod tests {
             policy.keepers().collect::<Vec<_>>(),
             vec![hex::encode(owner)]
         );
-        // Who the workspace lists as its owner (`tilo members ls`): the
+        // Who the workspace lists as its owner (`tilo workspace people ls`): the
         // person the link made one.
         let members = workspaces.members(&workspace).await.unwrap();
         let row = members
@@ -343,6 +345,203 @@ mod tests {
         assert!(
             matches!(again, JoinReply::Refused(_)),
             "one owner link, one owner: {again:?}"
+        );
+        server.shutdown().await;
+    }
+
+    /// An owner invitation a person's key asks for names that person on the
+    /// card that opens it, as the workspace shows them, even when it was
+    /// signed before the workspace knew a name for them: the card reads a
+    /// person, never "someone".
+    #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one invitation followed from the key that asks for it to the card that opens it"
+    )]
+    async fn an_owner_invitation_a_persons_key_asks_for_names_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let holder = governor();
+        let server = site(dir.path(), &holder).await;
+        let workspaces = server.workspaces();
+        let workspace = workspaces.create("Tilo").await.unwrap().workspace;
+
+        // The person the workspace is kept for, under a root of their own,
+        // before any device of theirs joined: no name known yet.
+        let root = SigningKey::from_bytes(&[7; 32]);
+        let person = root.verifying_key().to_bytes();
+        workspaces
+            .declare_owner(&workspace, person, None)
+            .await
+            .unwrap();
+
+        // A key of theirs asks for an owner link, as the command line does.
+        // It enters the workspace first, as a key of theirs does.
+        let key = SigningKey::from_bytes(&rand::random());
+        let mut backend = DeviceCert {
+            user_public_key: person,
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "Quinten's key".into(),
+            capabilities: DeviceCapabilities::server_key_grant(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut backend, &root).unwrap();
+        let entering = workspaces
+            .issue(
+                &workspace,
+                workspaces.serving_certificate(),
+                IssueInvitationRequest {
+                    request_id: [2; 32],
+                    role: Role::Editor,
+                    recipient_user_public_key: Some(person),
+                    invitee_name: None,
+                    expires_at_ns: tilo_clock::unix_now_ns().saturating_add(DAY_NS),
+                    inviter_name: None,
+                },
+            )
+            .await
+            .unwrap();
+        let admitted = workspaces
+            .admit_proven(
+                entering.signed_invitation,
+                backend.clone(),
+                rand::random(),
+                "Quinten's key",
+                None,
+            )
+            .await;
+        assert!(
+            matches!(admitted, JoinReply::Admitted { .. }),
+            "{admitted:?}"
+        );
+
+        let issued = workspaces
+            .issue_as(
+                &workspace,
+                &backend,
+                IssueInvitationRequest {
+                    request_id: [3; 32],
+                    role: Role::Editor,
+                    recipient_user_public_key: None,
+                    invitee_name: None,
+                    expires_at_ns: tilo_clock::unix_now_ns().saturating_add(DAY_NS),
+                    inviter_name: None,
+                },
+                true,
+            )
+            .await
+            .unwrap();
+        let join = tilo_peer_state::join::decode_and_verify_invitation(
+            &issued.signed_invitation,
+            None,
+            &RevocationList::new(),
+            tilo_clock::unix_now_ns(),
+        )
+        .unwrap();
+        assert!(join.administrator(), "an owner link makes an owner");
+        let from = join.inviter().expect("the invitation says who asked");
+        assert_eq!(from.user_public_key, person);
+        assert_eq!(from.name, "", "the workspace knew no name for them yet");
+
+        // A device of theirs joins, as their page does, going by their name.
+        let page_key = SigningKey::from_bytes(&rand::random());
+        let mut page = DeviceCert {
+            user_public_key: person,
+            device_public_key: page_key.verifying_key().to_bytes(),
+            device_label: "Quinten".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut page, &root).unwrap();
+        let seating = workspaces
+            .issue(
+                &workspace,
+                workspaces.serving_certificate(),
+                IssueInvitationRequest {
+                    request_id: [6; 32],
+                    role: Role::Editor,
+                    recipient_user_public_key: Some(person),
+                    invitee_name: None,
+                    expires_at_ns: tilo_clock::unix_now_ns().saturating_add(DAY_NS),
+                    inviter_name: None,
+                },
+            )
+            .await
+            .unwrap();
+        let admitted = workspaces
+            .admit_proven(
+                seating.signed_invitation,
+                page,
+                rand::random(),
+                "Quinten",
+                None,
+            )
+            .await;
+        assert!(
+            matches!(admitted, JoinReply::Admitted { .. }),
+            "{admitted:?}"
+        );
+
+        // The card that opens the link names them: the workspace's name for
+        // them now, not the empty one the invitation was signed with.
+        let JoinReply::Invitation { inviter, .. } = workspaces
+            .inspect_invitation(&issued.signed_invitation)
+            .await
+        else {
+            panic!("the invitation is still honoured");
+        };
+        let from = inviter.expect("the card says who asked");
+        assert_eq!(from.user_public_key, person);
+        assert_eq!(from.name, "Quinten", "the name the workspace shows them by");
+        server.shutdown().await;
+    }
+
+    /// A workspace kept under a person's own root, as one a site keeps for
+    /// them is: another device of that same person asking for an invitation
+    /// still asks as a person, so the card says who asked. Only the device
+    /// that issues it for the workspace itself asks for nobody.
+    #[tokio::test]
+    async fn an_invitation_a_second_device_of_the_workspaces_person_asks_for_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let holder = governor();
+        let server = site(dir.path(), &holder).await;
+        let workspaces = server.workspaces();
+        let workspace = workspaces.create("Tilo").await.unwrap().workspace;
+        let (_, sibling) = governor_with(DeviceCapabilities::server_key_grant());
+        assert_eq!(sibling.user_public_key, holder.1.user_public_key);
+        assert_ne!(sibling.device_public_key, holder.1.device_public_key);
+
+        let issued = workspaces
+            .issue_as(
+                &workspace,
+                &sibling,
+                IssueInvitationRequest {
+                    request_id: [4; 32],
+                    role: Role::Editor,
+                    recipient_user_public_key: None,
+                    invitee_name: None,
+                    expires_at_ns: tilo_clock::unix_now_ns().saturating_add(DAY_NS),
+                    inviter_name: None,
+                },
+                true,
+            )
+            .await
+            .unwrap();
+        let join = tilo_peer_state::join::decode_and_verify_invitation(
+            &issued.signed_invitation,
+            None,
+            &RevocationList::new(),
+            tilo_clock::unix_now_ns(),
+        )
+        .unwrap();
+        assert!(
+            join.inviter().is_some(),
+            "a device of the person still asks as a person"
         );
         server.shutdown().await;
     }

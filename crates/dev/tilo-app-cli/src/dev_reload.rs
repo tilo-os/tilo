@@ -211,9 +211,7 @@ impl RustcCommand {
             "env": self.env,
             "cwd": self.cwd,
         });
-        let partial = path.with_extension("partial");
-        std::fs::write(&partial, serde_json::to_vec(&document)?)?;
-        std::fs::rename(&partial, path)?;
+        tilo_files::native::atomic::write_creating_parent(path, &serde_json::to_vec(&document)?)?;
         Ok(())
     }
 

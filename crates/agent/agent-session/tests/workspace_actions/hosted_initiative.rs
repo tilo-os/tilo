@@ -8,7 +8,7 @@
 
 use super::HostAgents as ServerAgents;
 use super::*;
-use crate::harness::hosted::serving_records_with_actions as serving_with_actions;
+use crate::harness::hosted::serving_documents_with_actions as serving_with_actions;
 use tilo_actions::remote::person_initiative::{
     self, LookEnded, LookRound, Proposal, Proposals, State,
 };

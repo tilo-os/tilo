@@ -16,7 +16,6 @@
 //! the end, or a larger `set_len`) marks the new bytes valid, and the backing
 //! reads zeros there.
 
-use std::borrow::Cow;
 use std::io;
 use std::ops::Range;
 use std::os::unix::fs::FileExt as _;
@@ -167,7 +166,8 @@ impl WriteStage {
         }
     }
 
-    /// A stage holding all of `bytes` (a document's export, a new file).
+    /// A stage holding all of `bytes`: what a test starts a stage from.
+    #[cfg(test)]
     pub(super) fn complete(
         bytes: &[u8],
         base: Option<Hash>,
@@ -440,15 +440,16 @@ impl WriteStage {
         }
     }
 
-    /// The complete content in one buffer (documents are imported whole).
+    /// The complete content in one buffer: what a test reads a stage back as.
     ///
     /// # Errors
     ///
     /// As [`Self::source`], or when the file cannot be read.
-    pub(super) fn contiguous(&mut self) -> io::Result<Cow<'_, [u8]>> {
+    #[cfg(test)]
+    pub(super) fn contiguous(&mut self) -> io::Result<std::borrow::Cow<'_, [u8]>> {
         match self.source()? {
-            VersionSource::Bytes(bytes) => Ok(Cow::Borrowed(bytes)),
-            VersionSource::File { path, .. } => std::fs::read(path).map(Cow::Owned),
+            VersionSource::Bytes(bytes) => Ok(std::borrow::Cow::Borrowed(bytes)),
+            VersionSource::File { path, .. } => std::fs::read(path).map(std::borrow::Cow::Owned),
         }
     }
 

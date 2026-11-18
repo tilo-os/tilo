@@ -15,9 +15,6 @@
 
 use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET};
 
-/// Where the profile keeps the person's camera and microphone decisions.
-#[cfg(target_os = "macos")]
-const DEVICE_GRANTS: &str = "state/device-grants";
 use app_catalogue::apps::InstalledApp;
 use std::{
     collections::HashMap,
@@ -27,14 +24,14 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
 };
-use tilo_action_broker::{
+use tilo_lock::MutexRecover as _;
+use tilo_workspace_service::apps::{
     app_actions::{AppActionAccess, AppActionAccessResolver, AppResourceKindsResolver},
     services::{
         AuthenticatedApplicationLaunch, LaunchContent, LaunchPlace, LaunchableApplication,
         Launched as LaunchOutcome, LauncherServices,
     },
 };
-use tilo_lock::MutexRecover as _;
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -60,10 +57,9 @@ pub struct Apps {
     /// The apps this runtime's own process is the windowless endpoint of,
     /// by app and workspace.
     own: Mutex<std::collections::BTreeSet<(String, String)>>,
-    /// Who may capture from which device, in `state/device-grants` of the
-    /// profile; opened on the first macOS launch.
-    #[cfg(target_os = "macos")]
-    device_grants: std::sync::OnceLock<Arc<tilo_capture::grants::DeviceGrants>>,
+    /// The person's answers about this device's camera and microphone, kept in their own store
+    /// once the runtime opened it.
+    device_grants: tilo_peer_state::DeviceGrants,
 }
 
 impl Apps {
@@ -107,8 +103,7 @@ impl Apps {
             launcher_candidates,
             launched: Arc::default(),
             own: Mutex::default(),
-            #[cfg(target_os = "macos")]
-            device_grants: std::sync::OnceLock::new(),
+            device_grants: tilo_peer_state::DeviceGrants::unkept(),
         }
     }
 
@@ -137,20 +132,9 @@ impl Apps {
                 .contains(&(app.to_owned(), workspace.to_owned()))
     }
 
-    /// This profile's device grants.
-    ///
-    /// # Errors
-    ///
-    /// The grants file cannot be read; no capture is brokered then.
-    #[cfg(target_os = "macos")]
-    pub(crate) fn device_grants(&self) -> std::io::Result<Arc<tilo_capture::grants::DeviceGrants>> {
-        if let Some(grants) = self.device_grants.get() {
-            return Ok(Arc::clone(grants));
-        }
-        let grants = Arc::new(tilo_capture::grants::DeviceGrants::open(
-            &self.root.join(DEVICE_GRANTS),
-        )?);
-        Ok(Arc::clone(self.device_grants.get_or_init(|| grants)))
+    /// The person's device answers: what the capture this runtime brokers asks.
+    pub(crate) const fn device_grants(&self) -> &tilo_peer_state::DeviceGrants {
+        &self.device_grants
     }
 
     /// Every installed package, GUI or not; empty without an app store or
@@ -245,7 +229,7 @@ impl Apps {
             .into_iter()
             .find(|app| app.app_id == app_id)?;
         let bytes = self.signed_surface_of(&app)?;
-        tilo_action_broker::register_package_surface(app_id, &bytes);
+        tilo_workspace_service::apps::register_package_surface(app_id, &bytes);
         Some(bytes)
     }
 
@@ -264,7 +248,7 @@ impl Apps {
     /// signature declares none.
     fn run_with_signed_surface(&self, app: &InstalledApp) {
         if let Some(surface) = self.signed_surface_of(app) {
-            tilo_action_broker::register_package_surface(&app.app_id, &surface);
+            tilo_workspace_service::apps::register_package_surface(&app.app_id, &surface);
         }
     }
 
@@ -360,6 +344,9 @@ impl LauncherServices for Apps {
         apps.sort_by(|a, b| a.display_name.cmp(&b.display_name));
         apps.into_iter()
             .map(|app| LaunchableApplication {
+                surface: self
+                    .installed_surface(&app.app_id)
+                    .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
                 capabilities: Vec::new(),
                 package_id: app.app_id.to_string(),
                 display_name: app.display_name,
@@ -644,3 +631,12 @@ fn launcher_candidates() -> Vec<PathBuf> {
 #[cfg(test)]
 #[path = "apps_tests.rs"]
 mod tests;
+
+/// The device of the machine a capture device is.
+#[cfg(target_os = "macos")]
+pub(crate) const fn device_cap(device: tilo_capture::DeviceKind) -> collab_types::caps::DeviceCap {
+    match device {
+        tilo_capture::DeviceKind::Camera => collab_types::caps::DeviceCap::Camera,
+        tilo_capture::DeviceKind::Microphone => collab_types::caps::DeviceCap::Microphone,
+    }
+}

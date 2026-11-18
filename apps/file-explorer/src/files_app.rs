@@ -22,11 +22,11 @@ use std::rc::Rc;
 use std::sync::Arc;
 use thumbnail::{ThumbKey, ThumbnailService};
 use ui::SelectionModel;
-use ui::lock::MutexRecover as _;
+use ui::framework::LiveRow;
 #[cfg(test)]
 use ui::tilo_actions::{ActionKind, ConfirmationPolicy, ExecutionMode, OperationKind, ResultSpec};
-use ui::tilo_actions::{Availability, ResourceSpec};
-use ui::time::{Duration, Instant, UNIX_EPOCH};
+use ui::tilo_actions::{Availability, Exports as _};
+use ui::time::{Duration, Instant};
 use ui::widget::DrawChild;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{AppModel, ModelPath};
@@ -195,15 +195,6 @@ pub(crate) enum Ran {
     Pending,
 }
 
-type MergePreflightResult = Arc<
-    std::sync::Mutex<
-        Option<(
-            uuid::Uuid,
-            fs_protocol::FileVersionId,
-            Result<fs_protocol::MergePreflightProjectionV1, String>,
-        )>,
-    >,
->;
 fn entry_answer(entry: &Entry) -> serde_json::Value {
     serde_json::json!({
         "name": entry.name,
@@ -217,7 +208,6 @@ fn entry_answer(entry: &Entry) -> serde_json::Value {
         }),
         "app": entry.app.as_ref().map(|app| crate::applications::kind_label(app.kind)),
         "content_here": entry.content_is_local(),
-        "conflict": entry.is_conflict(),
     })
 }
 
@@ -272,10 +262,6 @@ enum CollabPanelAction {
     DestructiveEviction(Vec<PathBuf>),
     PermanentDelete(Vec<PathBuf>),
     EmptyTrash,
-    ApplySafeMerge {
-        conflict_id: uuid::Uuid,
-        version_id: fs_protocol::FileVersionId,
-    },
     ChooseNearbyDestination {
         handle: ui::collaboration::NearbyTransferHandle,
     },
@@ -305,23 +291,23 @@ pub(crate) fn template_resource_id(path: &str) -> String {
 
 const RETRY_ROW: &str = "files.retry";
 
-fn retry_row(may_pass: bool) -> ResourceSpec {
+fn retry_row(may_pass: bool) -> LiveRow {
     let (effect, label) = if may_pass {
         (crate::effects::FilesEffect::Refresh, t("files-try-again"))
     } else {
         (crate::effects::FilesEffect::Up, t("files-open-enclosing"))
     };
-    ResourceSpec::new(RETRY_ROW, RETRY_ROW, label.clone())
-        .with_action(crate::effects::row_action(&effect, "invoke", label))
+    LiveRow::new(RETRY_ROW, RETRY_ROW, label.clone())
+        .operation(crate::effects::row_action(&effect, "invoke", label))
 }
 
 fn failure_state(title: String, detail: String, may_pass: bool) -> EmptyState {
     let row = retry_row(may_pass);
     let state = EmptyState::error(title, detail)
         .with_icon(ui::icons::Icon::FolderOpen)
-        .with_action(row.label.clone())
+        .with_action(row.exported().label.clone())
         .with_action_id(RETRY_ROW);
-    match row.actions.first().and_then(|action| {
+    match row.operations().first().and_then(|action| {
         ui::tilo_actions::ActionBinding::static_json(&row, action, serde_json::Map::new()).ok()
     }) {
         Some(binding) => state.on_action(binding),
@@ -329,7 +315,7 @@ fn failure_state(title: String, detail: String, may_pass: bool) -> EmptyState {
     }
 }
 
-pub(crate) fn published_place_resources(favorites: &[favorites::Favorite]) -> Vec<ResourceSpec> {
+pub(crate) fn published_place_resources(favorites: &[favorites::Favorite]) -> Vec<LiveRow> {
     favorites
         .iter()
         .map(|favorite| {
@@ -341,12 +327,12 @@ pub(crate) fn published_place_resources(favorites: &[favorites::Favorite]) -> Ve
                 crate::search_provider::OPEN_ACTION,
                 crate::i18n::CATALOG.t("files-shortcuts-open"),
             );
-            ResourceSpec::new(resource_id, "files.place", favorite.label.clone()).with_action(open)
+            LiveRow::new(resource_id, "files.place", favorite.label.clone()).operation(open)
         })
         .collect()
 }
 
-pub(crate) fn published_template_resources(templates: Vec<PathBuf>) -> Vec<ResourceSpec> {
+pub(crate) fn published_template_resources(templates: Vec<PathBuf>) -> Vec<LiveRow> {
     templates
         .into_iter()
         .map(|template| {
@@ -359,12 +345,12 @@ pub(crate) fn published_template_resources(templates: Vec<PathBuf>) -> Vec<Resou
                 "create",
                 templates::menu_label(&template),
             );
-            ResourceSpec::new(
+            LiveRow::new(
                 template_id,
                 "files.template",
                 templates::menu_label(&template),
             )
-            .with_action(create)
+            .operation(create)
         })
         .collect()
 }
@@ -381,15 +367,6 @@ pub(crate) fn resolve_places(
         .collect()
 }
 
-fn short_fingerprint(key: &[u8; 32]) -> String {
-    hex_prefix(key, 6)
-}
-
-fn short_uuid(id: uuid::Uuid) -> String {
-    let simple = id.simple().to_string();
-    simple.get(..8).unwrap_or(&simple).to_string()
-}
-
 fn transfer_phase_label(phase: fs_protocol::TransferPhase) -> String {
     t(match phase {
         fs_protocol::TransferPhase::Idle => "files-transfer-idle",
@@ -397,15 +374,6 @@ fn transfer_phase_label(phase: fs_protocol::TransferPhase) -> String {
         fs_protocol::TransferPhase::Downloading => "files-transfer-downloading",
         fs_protocol::TransferPhase::Uploading => "files-transfer-uploading",
         fs_protocol::TransferPhase::Verifying => "files-transfer-verifying",
-    })
-}
-
-fn conflict_strategy_label(strategy: fs_protocol::ConflictStrategy) -> String {
-    t(match strategy {
-        fs_protocol::ConflictStrategy::KeepCurrent => "files-strategy-keep-current",
-        fs_protocol::ConflictStrategy::UseOther => "files-strategy-use-other",
-        fs_protocol::ConflictStrategy::KeepBoth => "files-strategy-keep-both",
-        fs_protocol::ConflictStrategy::Merge => "files-strategy-merge",
     })
 }
 
@@ -435,8 +403,8 @@ enum FileServices {
     reason = "each boolean is independent named UI state for loading, clipboard, rename, layout, or visibility"
 )]
 pub struct FilesState {
-    framework_history: ui::history_mode::checked_files::FileHistorySource,
-    framework_history_binding: Option<(PathBuf, fs_protocol::FileDocumentId)>,
+    /// The workspace's folder History lists, narrowed to the selected file.
+    framework_history: ui::history_mode::folder::FolderHistorySource,
     services: FileServices,
     startup_accounts: Option<Vec<crate::remote_accounts::RemoteAccount>>,
     current_path: PathBuf,
@@ -550,12 +518,6 @@ pub struct FilesState {
     collab_layout: Option<ui::widget::ModalLayout>,
     share_invite: crate::share_invite::ShareInvite,
     trusted_humans: crate::identity_directory::TrustedHumanDirectory,
-    history_result: Arc<std::sync::Mutex<Option<Result<(), String>>>>,
-    history_pending_path: Option<PathBuf>,
-    history_pending_success: Option<String>,
-
-    merge_preflight_result: MergePreflightResult,
-    merge_preflight_pending: Option<(uuid::Uuid, fs_protocol::FileVersionId)>,
     effect_reply: Option<ui::framework::EffectReply>,
     accounts_root: Option<PathBuf>,
     accounts_cache: Vec<crate::remote_accounts::RemoteAccount>,
@@ -896,14 +858,8 @@ impl FileExplorerWidget {
             collab_layout: None,
             share_invite: crate::share_invite::ShareInvite::default(),
             trusted_humans,
-            framework_history: ui::history_mode::checked_files::FileHistorySource::default(),
-            framework_history_binding: None,
-            history_result: Arc::new(std::sync::Mutex::new(None)),
-            history_pending_path: None,
-            history_pending_success: None,
+            framework_history: ui::history_mode::folder::FolderHistorySource::default(),
 
-            merge_preflight_result: Arc::new(std::sync::Mutex::new(None)),
-            merge_preflight_pending: None,
             effect_reply: None,
             local_clipboard: clipboard_client::Client::new(),
             accounts_root: None,
@@ -1220,13 +1176,6 @@ impl FilesState {
                     self.selection.select_only(i);
                     self.retain_shown_selection();
                     self.open_app_chooser();
-                }
-            }
-            NoticeAction::OpenHistory(path) => {
-                if let Some(i) = self.displayed_entries().iter().position(|e| e.path == path) {
-                    self.selection.select_only(i);
-                    self.retain_shown_selection();
-                    self.apply_command(FileCommand::ShowHistory);
                 }
             }
         }
@@ -2781,13 +2730,11 @@ impl FilesState {
     }
 
     fn show_collab_panel(&mut self, panel: CollabPanel) {
-        self.merge_preflight_pending = None;
         self.collab_panel = Some(panel);
         self.collab_panel_focused = true;
     }
 
     fn close_collab_panel(&mut self) {
-        self.merge_preflight_pending = None;
         self.collab_panel = None;
         self.collab_panel_focused = false;
     }
@@ -2872,14 +2819,6 @@ impl FilesState {
             CollabPanelAction::RecheckAccount(id) => {
                 Some(FileCommand::RecheckRemoteAccount(id.clone()))
             }
-            CollabPanelAction::ApplySafeMerge {
-                conflict_id,
-                version_id,
-            } => Some(FileCommand::ResolveConflict {
-                conflict_id: *conflict_id,
-                strategy: fs_protocol::ConflictStrategy::Merge,
-                version_id: *version_id,
-            }),
             CollabPanelAction::ChooseNearbyDestination { handle } => {
                 Some(FileCommand::ChooseNearbyDestination { handle: *handle })
             }
@@ -2897,7 +2836,6 @@ impl FilesState {
             CollabPanelAction::PermanentDelete(_) => Some(t("files-permanent-delete-confirm")),
             CollabPanelAction::EmptyTrash => Some(t("files-empty-trash-confirm")),
             CollabPanelAction::RecheckAccount(_) => Some(t("files-account-check-again")),
-            CollabPanelAction::ApplySafeMerge { .. } => Some(t("files-merge-apply-safe")),
             CollabPanelAction::ChooseNearbyDestination { .. } => {
                 Some(t("files-nearby-choose-destination"))
             }
@@ -2912,7 +2850,6 @@ impl FilesState {
                 Some(t("files-permanent-delete-loss"))
             }
             CollabPanelAction::RecheckAccount(_) => Some(t("files-account-check-again-detail")),
-            CollabPanelAction::ApplySafeMerge { .. } => Some(t("files-merge-apply-safe-detail")),
             CollabPanelAction::ChooseNearbyDestination { .. } => {
                 Some(t("files-nearby-consent-detail"))
             }
@@ -3178,7 +3115,6 @@ impl FilesState {
         }
         self.trusted_humans = next;
         self.structure_dirty = true;
-        self.framework_history_binding = None;
         true
     }
 
@@ -3724,18 +3660,6 @@ impl FilesState {
                             &[arg("state", residency)],
                         ));
                     }
-                    if let Some(history) = &entry.history {
-                        lines.push(t_args(
-                            "files-property-history",
-                            &[
-                                arg(
-                                    "versions",
-                                    i64::try_from(history.total_versions).unwrap_or(i64::MAX),
-                                ),
-                                arg("conflicts", i64_of_usize(history.open_conflicts().count())),
-                            ],
-                        ));
-                    }
                     self.show_collab_panel(CollabPanel {
                         title: t_args("files-properties-title", &[arg("name", entry.name)]),
                         summary: if entry.document_id.is_some() {
@@ -3839,172 +3763,10 @@ impl FilesState {
                 }
                 true
             }
-            FileCommand::ShowHistory | FileCommand::ToggleHistoryCompare => {
+            FileCommand::ShowHistory => {
                 self.refresh_framework_history_target();
                 self.close_collab_panel();
-                self.framework_history.open(None);
-                true
-            }
-            FileCommand::SelectHistoryVersion { version_id } => {
-                self.refresh_framework_history_target();
-                self.close_collab_panel();
-                self.framework_history.open(Some(version_id));
-                true
-            }
-            FileCommand::ShowInWorkspaceActivity {
-                document_id,
-                version_id,
-            } => {
-                let selected = self.displayed_entries().iter().find_map(|entry| {
-                    let history = entry.history.as_ref()?;
-                    if history.document_id.0.to_string() != document_id {
-                        return None;
-                    }
-                    history
-                        .versions
-                        .iter()
-                        .find(|version| version.id == version_id)
-                        .cloned()
-                        .map(|version| (version, entry.path.clone()))
-                });
-                let authors = self.trusted_humans.history_authors();
-                let entry = selected.map(|(version, path)| {
-                    let person = version.actor.person;
-                    let identity = short_fingerprint(&version.actor.person.0);
-                    let attribution =
-                        crate::framework_history::version_attribution(&path, version.id);
-                    let author = authors
-                        .resolve_attributed_file_actor(
-                            &version.actor.person.0,
-                            &version.actor.device.0,
-                            attribution.as_ref(),
-                        )
-                        .unwrap_or_else(|| {
-                            ui::history_source::author_coloured(
-                                self.trusted_humans.display_name_or_fingerprint(&person),
-                                identity.clone(),
-                                ui::presence::member_color(&ui::permissions::MemberId::person(
-                                    hex::encode(person.0),
-                                )),
-                            )
-                        });
-                    let action = t(crate::model::provenance_key(&version.provenance));
-                    let resource_label = path
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("File")
-                        .to_string();
-                    let context = ui::tilo_actions::ActionContext::for_resource(
-                        document_id.clone(),
-                        "files.entry",
-                        resource_label.clone(),
-                    )
-                    .with_app("so.tilo.file-explorer", "Files")
-                    .with_facet(ui::tilo_actions::ActionFacet::new(
-                        "version",
-                        version.id.0.to_string(),
-                    ));
-                    ui::widget::HistoryEntry {
-                        id: ui::widget::HistoryEntryId(*version_id.0.as_bytes()),
-                        author,
-                        // This is a signed immutable checkpoint, not a shell
-                        // CRDT operation the generic Revert affordance can undo.
-                        entry_kind: ui::widget::EntryKind::Compaction,
-                        artifact_kind: ui::widget::ArtifactKind::File,
-                        timestamp: UNIX_EPOCH
-                            .checked_add(Duration::from_millis(version.timestamp_ms))
-                            .unwrap_or(UNIX_EPOCH),
-                        summary: format!("{action}: {resource_label}"),
-                        text_delta: None,
-                        diff_payload: None,
-                        redaction: None,
-                        context: Some(context),
-                        target: None,
-                    }
-                });
-                self.process_intent = Some(ui::widget::AppProcessIntent::ShowWorkspaceActivity {
-                    resource_id: document_id,
-                    version_id: Some(*version_id.0.as_bytes()),
-                    entry,
-                });
-                self.close_collab_panel();
-                true
-            }
-            FileCommand::RestoreVersion { version_id } => {
-                // This intent only selects the version; the reviewed confirmation writes.
-                self.refresh_framework_history_target();
-                self.close_collab_panel();
-                self.framework_history.open(Some(version_id));
-                true
-            }
-            FileCommand::ReviewConflictMerge {
-                conflict_id,
-                version_id,
-                other_device,
-            } => {
-                let entry = self
-                    .selection
-                    .primary()
-                    .and_then(|index| self.displayed_entries().get(index).cloned());
-                let Some(entry) = entry.filter(|entry| entry.history.is_some()) else {
-                    self.status = Some(t("files-select-file-with-history"));
-                    return true;
-                };
-                self.show_collab_panel(CollabPanel {
-                    title: t_args("files-merge-review-title", &[arg("name", entry.name)]),
-                    summary: t("files-merge-review-checking"),
-                    lines: vec![
-                        t_args(
-                            "files-merge-review-incoming",
-                            &[arg("device", short_fingerprint(&other_device))],
-                        ),
-                        t("files-merge-review-checking-detail"),
-                    ],
-                    action: None,
-                });
-                self.request_merge_preflight(entry.path, conflict_id, version_id);
-                true
-            }
-            FileCommand::ResolveConflict {
-                conflict_id,
-                strategy,
-                version_id,
-            } => {
-                if self.history_pending_path.is_some() {
-                    self.status = Some(t("files-history-change-pending"));
-                    return true;
-                }
-                let entry = self
-                    .selection
-                    .primary()
-                    .and_then(|index| self.displayed_entries().get(index).cloned());
-                let Some(entry) = entry.filter(|entry| entry.history.is_some()) else {
-                    self.status = Some(t("files-select-file-with-history"));
-                    return true;
-                };
-                let verb = match strategy {
-                    fs_protocol::ConflictStrategy::KeepCurrent => t("files-keeping-current"),
-                    fs_protocol::ConflictStrategy::UseOther => t("files-applying-other"),
-                    fs_protocol::ConflictStrategy::KeepBoth => {
-                        conflict_strategy_label(fs_protocol::ConflictStrategy::KeepBoth)
-                    }
-                    fs_protocol::ConflictStrategy::Merge => t("files-merging-versions"),
-                };
-                self.history_pending_path = Some(entry.path.clone());
-                self.history_pending_success = Some(t("files-conflict-resolved-signed"));
-                self.status = Some(verb);
-                let result = Arc::clone(&self.history_result);
-                std::thread::spawn(move || {
-                    let outcome = crate::history_control::resolve_conflict(
-                        &entry.path,
-                        conflict_id,
-                        strategy,
-                        version_id,
-                    );
-                    if let Ok(mut slot) = result.lock() {
-                        *slot = Some(outcome);
-                    }
-                });
+                self.framework_history.open();
                 true
             }
             FileCommand::CloseCollabPanel => {
@@ -4743,15 +4505,15 @@ impl FilesState {
     #[doc(hidden)]
     pub fn debug_open_history_demo(&mut self) {
         self.refresh_framework_history_target();
-        self.framework_history.open(None);
+        self.framework_history.open();
     }
 
+    /// List `source` in History: the workspace's folder, narrowed to the selected file.
     pub(crate) fn show_file_history_in(
         &mut self,
-        source: ui::history_mode::checked_files::FileHistorySource,
+        source: ui::history_mode::folder::FolderHistorySource,
     ) {
         self.framework_history = source;
-        self.framework_history_binding = None;
         self.refresh_framework_history_target();
     }
 
@@ -5082,33 +4844,18 @@ impl FilesState {
         }
     }
 
-    fn refresh_framework_history_target(&mut self) {
-        let entry = self
+    /// Narrow History to the selected file of the workspace: its node's changes, found by the
+    /// document id the mount gives the file. Nothing selected, or a file of no workspace,
+    /// lists the folder's.
+    fn refresh_framework_history_target(&self) {
+        let displayed = self.displayed_entries();
+        let document = self
             .selection
             .primary()
-            .and_then(|index| self.displayed_entries().get(index).cloned());
-        let selected = entry.and_then(|entry| {
-            let id = entry.history.as_ref()?.document_id;
-            Some((entry.path, id, entry.name))
-        });
-        let identity = selected
-            .as_ref()
-            .map(|(path, record, _)| (path.clone(), *record));
-        if identity == self.framework_history_binding {
-            return;
-        }
-        let target = selected.and_then(|(path, record, label)| {
-            crate::framework_history::target(
-                &path,
-                &self.workspace_roots,
-                record,
-                label,
-                self.trusted_humans.history_authors(),
-            )
-            .ok()
-        });
-        self.framework_history_binding = if target.is_some() { identity } else { None };
-        self.framework_history.set_target(target);
+            .and_then(|index| displayed.get(index))
+            .and_then(|entry| entry.document_id)
+            .map(|id| fs_protocol::FileDocumentId(uuid::Uuid::from_bytes(id)));
+        self.framework_history.focus(document);
     }
 
     fn primary_path(&self) -> Option<PathBuf> {
@@ -5946,8 +5693,7 @@ impl FilesState {
         let emphasis_safe = matches!(
             panel.action.as_ref(),
             Some(
-                CollabPanelAction::ApplySafeMerge { .. }
-                    | CollabPanelAction::ChooseNearbyDestination { .. }
+                CollabPanelAction::ChooseNearbyDestination { .. }
                     | CollabPanelAction::RecheckAccount(_)
                     | CollabPanelAction::RetryNearby { .. }
             )
@@ -6165,17 +5911,6 @@ fn layout_menu_widget(menu: &mut ContextMenu) {
         menu.set_text_scale(ui::Theme::dark().text_scale);
         menu.layout_at_position();
     }
-}
-
-fn merge_supported_path(path: &std::path::Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            matches!(
-                extension.to_ascii_lowercase().as_str(),
-                "txt" | "qdoc" | "tilo-doc"
-            )
-        })
 }
 
 impl FilesState {
@@ -6760,105 +6495,6 @@ impl FilesState {
         dirty
     }
 
-    fn request_merge_preflight(
-        &mut self,
-        path: PathBuf,
-        conflict_id: uuid::Uuid,
-        version_id: fs_protocol::FileVersionId,
-    ) {
-        self.merge_preflight_pending = Some((conflict_id, version_id));
-        let result = Arc::clone(&self.merge_preflight_result);
-        std::thread::spawn(move || {
-            let outcome = crate::model::read_merge_preflight(&path, conflict_id)
-                .ok_or_else(|| t("files-merge-review-unavailable"));
-            *result.lock_recover() = Some((conflict_id, version_id, outcome));
-        });
-    }
-
-    fn poll_merge_preflight(&mut self) -> bool {
-        let result = self
-            .merge_preflight_result
-            .lock()
-            .ok()
-            .and_then(|mut result| result.take());
-        let Some((conflict_id, version_id, result)) = result else {
-            return false;
-        };
-        if self.merge_preflight_pending != Some((conflict_id, version_id)) {
-            return false;
-        }
-        self.merge_preflight_pending = None;
-        let Some(panel) = self.collab_panel.as_mut() else {
-            return false;
-        };
-        match result {
-            Ok(preflight) if preflight.safe => {
-                panel.summary = t("files-merge-review-safe");
-                panel.lines = vec![
-                    preflight.explanation,
-                    preflight.diff_summary,
-                    t("files-merge-review-undo"),
-                ];
-                panel.action = Some(CollabPanelAction::ApplySafeMerge {
-                    conflict_id,
-                    version_id,
-                });
-            }
-            Ok(preflight) => {
-                panel.summary = t("files-merge-review-needs-review");
-                panel.lines = vec![
-                    preflight.explanation,
-                    preflight.diff_summary,
-                    t("files-merge-review-no-apply"),
-                ];
-                panel.action = None;
-            }
-            Err(error) => {
-                panel.summary = t("files-merge-review-needs-review");
-                panel.lines = vec![error, t("files-merge-review-no-apply")];
-                panel.action = None;
-            }
-        }
-        self.structure_dirty = true;
-        true
-    }
-
-    fn poll_history_result(&mut self) -> bool {
-        let preview_changed = self.poll_merge_preflight();
-        let result = self
-            .history_result
-            .lock()
-            .ok()
-            .and_then(|mut result| result.take());
-        let Some(result) = result else {
-            return preview_changed;
-        };
-        let path = self.history_pending_path.take();
-        match result {
-            Ok(()) => {
-                self.status = self
-                    .history_pending_success
-                    .take()
-                    .or_else(|| Some(t("files-history-change-saved")));
-                if let Some(path) = path {
-                    let history = crate::model::read_history(&path);
-                    if let Some(entry) = self.entries.iter_mut().find(|entry| entry.path == path) {
-                        entry.history = history;
-                    }
-                }
-            }
-            Err(error) => {
-                self.history_pending_success = None;
-                self.status = None;
-                let action = path.map(NoticeAction::OpenHistory);
-                self.notice.show(error, "", action);
-            }
-        }
-        self.close_collab_panel();
-        self.structure_dirty = true;
-        true
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "the complete keyboard command map stays auditable in one match so every shortcut has a single routing point"
@@ -7310,21 +6946,18 @@ impl FilesState {
         answer
     }
 
-    fn append_nearby_receiver_resources(&self, folder: &mut ResourceSpec) {
-        for transfer in self.nearby_send.transfers() {
-            folder
-                .children
-                .push(self.nearby_receiver_resource(transfer));
-        }
+    fn nearby_receiver_rows(&self) -> Vec<LiveRow> {
+        self.nearby_send
+            .transfers()
+            .iter()
+            .map(|transfer| self.nearby_receiver_row(transfer))
+            .collect()
     }
 
-    fn nearby_receiver_resource(
-        &self,
-        transfer: &ui::collaboration::NearbyTransferStatus,
-    ) -> ResourceSpec {
+    fn nearby_receiver_row(&self, transfer: &ui::collaboration::NearbyTransferStatus) -> LiveRow {
         use ui::collaboration::NearbyTransferPhase;
 
-        let mut resource = ResourceSpec::new(
+        let mut resource = LiveRow::new(
             format!(
                 "nearby-transfer:{}",
                 nearby_action_locator("transfer", transfer.handle.as_bytes())
@@ -7340,10 +6973,12 @@ impl FilesState {
             t("files-nearby-status"),
         );
         inspect.type_mut().description = Some(t("files-nearby-status-detail"));
-        resource.actions.push(inspect);
-        self.append_nearby_decision_actions(&mut resource, transfer);
+        resource = resource.operation(inspect);
+        for action in self.nearby_decision_actions(transfer) {
+            resource = resource.operation(action);
+        }
         if transfer.phase == NearbyTransferPhase::Failed {
-            resource.actions.push(crate::effects::row_action(
+            resource = resource.operation(crate::effects::row_action(
                 &crate::effects::FilesEffect::RetryNearby {
                     transfer: transfer.handle,
                 },
@@ -7355,7 +6990,7 @@ impl FilesState {
             transfer.phase,
             NearbyTransferPhase::Queued | NearbyTransferPhase::Transferring
         ) {
-            resource.actions.push(crate::effects::row_action(
+            resource = resource.operation(crate::effects::row_action(
                 &crate::effects::FilesEffect::CancelNearby {
                     transfer: transfer.handle,
                 },
@@ -7366,11 +7001,10 @@ impl FilesState {
         resource
     }
 
-    fn append_nearby_decision_actions(
+    fn nearby_decision_actions(
         &self,
-        resource: &mut ResourceSpec,
         transfer: &ui::collaboration::NearbyTransferStatus,
-    ) {
+    ) -> Vec<ui::tilo_actions::ActionSpec> {
         use ui::collaboration::{NearbyTransferDirection, NearbyTransferPhase};
 
         if transfer.direction != NearbyTransferDirection::Receiving
@@ -7379,10 +7013,11 @@ impl FilesState {
                 NearbyTransferPhase::AwaitingConsent | NearbyTransferPhase::AwaitingDestination
             )
         {
-            return;
+            return Vec::new();
         }
+        let mut actions = Vec::new();
         for destination in self.nearby_send.destinations() {
-            resource.actions.push(crate::effects::row_action(
+            actions.push(crate::effects::row_action(
                 &crate::effects::FilesEffect::AcceptNearby {
                     transfer: transfer.handle,
                     destination: destination.handle,
@@ -7397,58 +7032,38 @@ impl FilesState {
                 ),
             ));
         }
-        resource.actions.push(crate::effects::row_action(
+        actions.push(crate::effects::row_action(
             &crate::effects::FilesEffect::DeclineNearby {
                 transfer: transfer.handle,
             },
             "decline",
             t("files-nearby-declined"),
         ));
-    }
-
-    fn live_filesystem_extras(&self) -> Vec<ResourceSpec> {
-        self.published_live_rows()
-            .into_iter()
-            .map(ui::framework::LiveRow::into_resource)
-            .collect()
+        actions
     }
 
     pub(crate) fn published_live_rows(&self) -> Vec<ui::framework::LiveRow> {
-        use ui::framework::LiveRow;
-        let mut rows: Vec<LiveRow> = published_place_resources(&self.favorites())
-            .into_iter()
-            .chain(published_template_resources(self.available_templates()))
-            .map(LiveRow::from_resource)
-            .collect();
+        let mut rows: Vec<LiveRow> = published_place_resources(&self.favorites());
+        rows.extend(published_template_resources(self.available_templates()));
         rows.extend(self.live_entry_rows());
-        rows.extend(
-            self.live_other_resources()
-                .into_iter()
-                .map(LiveRow::from_resource),
-        );
+        rows.extend(self.live_other_resources());
         rows
     }
 
-    fn live_other_resources(&self) -> Vec<ResourceSpec> {
+    fn live_other_resources(&self) -> Vec<LiveRow> {
         let mut extras = self.live_remote_account_resources();
         extras.extend(self.live_drive_resources());
         if ui::bound_dispatch::local_person_invocation_permitted() {
             extras.extend(self.cloud_resources());
         }
-        let mut nearby_root = ResourceSpec::new(
-            "files.nearby",
-            "files.nearby",
-            crate::i18n::CATALOG.t("files-resource-nearby"),
-        );
-        self.append_nearby_receiver_resources(&mut nearby_root);
-        extras.extend(nearby_root.children);
+        extras.extend(self.nearby_receiver_rows());
         if let Some((failure, _)) = self.folder_failure() {
             extras.push(retry_row(failure.may_pass()));
         }
         extras
     }
 
-    fn live_remote_account_resources(&self) -> Vec<ResourceSpec> {
+    fn live_remote_account_resources(&self) -> Vec<LiveRow> {
         // Account discovery belongs to the host person, not to whoever owns
         // the workspace. Checked resource reads install this trusted scope too.
         if !ui::bound_dispatch::local_person_invocation_permitted() {
@@ -7459,13 +7074,6 @@ impl FilesState {
             .map(|account| {
                 let resource_id = crate::remote_accounts::resource_id(&account.id);
                 let availability = remote_folder_availability(&account);
-                let mut resource =
-                    ResourceSpec::new(resource_id, "files.remote-account", account.label.clone());
-                resource.presentation = Some(tilo_actions::ResourcePresentation {
-                    detail: Some(format!("{} at {}", account.kind.label(), account.host)),
-                    badge: account.badge(),
-                    preview: None,
-                });
                 let account_id = account.id.to_string();
                 let mut open = crate::effects::row_action(
                     &crate::effects::FilesEffect::OpenAccount {
@@ -7475,22 +7083,27 @@ impl FilesState {
                     crate::i18n::CATALOG.t("files-shortcuts-open"),
                 );
                 open.type_mut().contract.availability = availability;
-                resource.actions.push(open);
-                resource.actions.push(crate::effects::row_action(
-                    &crate::effects::FilesEffect::AccountDetails {
-                        account: account_id.clone(),
-                    },
-                    "details",
-                    crate::i18n::CATALOG.t("files-account-status"),
-                ));
-                resource.actions.push(crate::effects::row_action(
-                    &crate::effects::FilesEffect::Reauthenticate {
-                        account: account_id,
-                    },
-                    "reauthenticate",
-                    crate::i18n::CATALOG.t("files-account-reauthenticate"),
-                ));
-                resource
+                LiveRow::new(resource_id, "files.remote-account", account.label.clone())
+                    .presentation(tilo_actions::ResourcePresentation {
+                        detail: Some(format!("{} at {}", account.kind.label(), account.host)),
+                        badge: account.badge(),
+                        preview: None,
+                    })
+                    .operation(open)
+                    .operation(crate::effects::row_action(
+                        &crate::effects::FilesEffect::AccountDetails {
+                            account: account_id.clone(),
+                        },
+                        "details",
+                        crate::i18n::CATALOG.t("files-account-status"),
+                    ))
+                    .operation(crate::effects::row_action(
+                        &crate::effects::FilesEffect::Reauthenticate {
+                            account: account_id,
+                        },
+                        "reauthenticate",
+                        crate::i18n::CATALOG.t("files-account-reauthenticate"),
+                    ))
             })
             .collect()
     }
@@ -7779,7 +7392,6 @@ impl FilesState {
             | self.open_read_members();
         self.structure_dirty |= counted;
         self.take_open_replies()
-            | self.poll_history_result()
             | restored
             | transfers
             | previewed
@@ -7902,7 +7514,6 @@ impl FilesState {
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
         use winit::event::{ElementState, MouseButton, WindowEvent};
-        self.poll_history_result();
         let panel_was_open = self.collab_panel.is_some();
         if matches!(
             event,
@@ -8118,20 +7729,6 @@ impl FilesState {
             }
             return choice.is_some();
         }
-        if let Some(version) = target.strip_prefix("files-history-version:") {
-            let Ok(version) = uuid::Uuid::parse_str(version) else {
-                return false;
-            };
-            if matches!(
-                action,
-                Action::Focus | Action::Activate | Action::ScrollIntoView
-            ) {
-                return self.apply_command(FileCommand::SelectHistoryVersion {
-                    version_id: fs_protocol::FileVersionId(version),
-                });
-            }
-            return false;
-        }
         if !matches!(action, Action::Activate) {
             return false;
         }
@@ -8152,21 +7749,27 @@ impl FilesState {
 
 impl FilesState {
     #[cfg(test)]
-    pub(crate) fn published_rows(&self) -> Vec<ResourceSpec> {
-        self.live_filesystem_extras()
+    pub(crate) fn published_rows(&self) -> Vec<ui::tilo_actions::ResourceSpec> {
+        self.published_live_rows()
+            .into_iter()
+            .map(ui::framework::LiveRow::into_resource)
+            .collect()
     }
 
-    pub(crate) fn published_row(&self, id: &str) -> Option<ResourceSpec> {
-        fn find(resource: &ResourceSpec, id: &str) -> Option<ResourceSpec> {
-            if resource.id.as_str() == id {
-                return Some(resource.clone());
+    pub(crate) fn published_row(&self, id: &str) -> Option<LiveRow> {
+        fn find(row: &LiveRow, id: &str) -> Option<LiveRow> {
+            if row.id() == id {
+                return Some(row.clone());
             }
-            resource.children.iter().find_map(|child| find(child, id))
+            row.exported()
+                .children
+                .iter()
+                .find_map(|child| find(&LiveRow::from_resource(child.clone()), id))
         }
         if let Some(found) = self
-            .live_filesystem_extras()
+            .published_live_rows()
             .iter()
-            .find_map(|resource| find(resource, id))
+            .find_map(|row| find(row, id))
         {
             return Some(found);
         }
@@ -8199,13 +7802,45 @@ impl FilesState {
 #[path = "files_app/open_with_recent.rs"]
 mod open_with_recent;
 
+impl FilesState {
+    pub(crate) fn debug_begin_favorite_drag(
+        &self,
+        chrome: &mut Chrome,
+        from: usize,
+        to: usize,
+    ) -> bool {
+        let (source, before) = {
+            let favs = self.favs.borrow();
+            let Some(source) = favs.favorites.get(from) else {
+                return false;
+            };
+            let Some(before) = favs.favorites.get(to) else {
+                return false;
+            };
+            if source.is_home || before.is_home {
+                return false;
+            }
+            (
+                format!("fav:{}", source.path.display()),
+                format!("fav:{}", before.path.display()),
+            )
+        };
+        let Some(list) = chrome.nav.sidebar_mut::<ui::widget::NavList>() else {
+            return false;
+        };
+        list.stage_drag(&source, &before);
+        true
+    }
+
+    pub fn arm_status_for_shots(&mut self) {
+        let label = self.footer_label();
+        self.status_notice.show(label);
+    }
+}
+
 #[cfg(test)]
 #[path = "files_app/tests.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "files_app/notice_action_tests.rs"]
-mod notice_action_tests;
 
 #[cfg(test)]
 #[path = "files_app/launch_argument_tests.rs"]
@@ -8293,46 +7928,5 @@ pub(crate) mod published {
             ));
         }
         files.start_encoded(kind, type_id, payload, doc, path)
-    }
-}
-
-#[cfg(test)]
-#[cfg(unix)]
-#[path = "framework_history_tests.rs"]
-mod framework_history_tests;
-
-impl FilesState {
-    pub(crate) fn debug_begin_favorite_drag(
-        &self,
-        chrome: &mut Chrome,
-        from: usize,
-        to: usize,
-    ) -> bool {
-        let (source, before) = {
-            let favs = self.favs.borrow();
-            let Some(source) = favs.favorites.get(from) else {
-                return false;
-            };
-            let Some(before) = favs.favorites.get(to) else {
-                return false;
-            };
-            if source.is_home || before.is_home {
-                return false;
-            }
-            (
-                format!("fav:{}", source.path.display()),
-                format!("fav:{}", before.path.display()),
-            )
-        };
-        let Some(list) = chrome.nav.sidebar_mut::<ui::widget::NavList>() else {
-            return false;
-        };
-        list.stage_drag(&source, &before);
-        true
-    }
-
-    pub fn arm_status_for_shots(&mut self) {
-        let label = self.footer_label();
-        self.status_notice.show(label);
     }
 }

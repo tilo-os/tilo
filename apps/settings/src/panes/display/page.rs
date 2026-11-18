@@ -655,7 +655,7 @@ impl DisplayModel {
                     .button(&t("display-tools-forget"), |button| {
                         crate::on_row::bind_invocation(
                             dispatcher,
-                            &DisplayModel::tool_row(&tool).into_resource(),
+                            &DisplayModel::tool_row(&tool),
                             button,
                             DisplayEffect::ForgetDisplayTool {
                                 tool: tool.executable.clone(),

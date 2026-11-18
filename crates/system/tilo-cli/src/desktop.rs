@@ -50,58 +50,24 @@ pub enum ActionCmd {
     },
 }
 
-/// `tilo workspace …`: the person's workspaces on this desktop.
-#[derive(Debug, Subcommand)]
-pub enum WorkspaceCmd {
-    /// Make a workspace that starts with everything another holds and then goes its own way:
-    /// its records, shell, files and Terminal environments, with you as its only member. Its
-    /// chat and its other people stay behind. Prints the new workspace's id.
-    #[command(
-        after_help = "Examples:\n  tilo workspace branch Research \"Question 2\"\n  tilo workspace branch 3f2b1c00-0000-4000-8000-00000000000a \"Customer A\""
-    )]
-    Branch {
-        /// The workspace to branch: its name, or its id.
-        source: String,
-        /// What to call the new workspace.
-        name: String,
-    },
-    /// The hosts holding a workspace (-w), and having another hold it as well:
-    /// both keep it, a change on either reaches the other, and its people
-    /// reach it at either.
-    #[command(after_help = "Examples:\n  tilo workspace hosts ls -w Tilo\n  \
-                      tilo workspace hosts add https://tilo.sh -w Tilo\n  \
-                      tilo workspace hosts remove https://tilo.sh -w Tilo")]
-    Hosts {
-        #[command(subcommand)]
-        cmd: crate::hosted::HostsCmd,
-    },
-}
-
-/// Run one `workspace` subcommand.
-pub fn run_workspace(cmd: WorkspaceCmd, spelling: &Spelling) -> ExitCode {
+/// `tilo workspace branch SOURCE NAME` on a Tilo desktop: the shell's own
+/// verb, as the workspace menu and an agent invoke it.
+pub fn branch_workspace(source: &str, name: &str, spelling: &Spelling) -> ExitCode {
     let sockets = sockets();
-    with_io(|io| match cmd {
-        WorkspaceCmd::Branch { source, name } => {
-            // The shell's own verb, as the workspace menu and an agent invoke it.
-            let address =
-                tilo_actions::ActionAddress::new("desktop:chrome", "branch-workspace").encode();
-            front::run_address(
-                &sockets,
-                (
-                    tilo_actions::remote::SESSION_ACTIONS_PROVIDER,
-                    &address,
-                    "Branch a workspace",
-                ),
-                &serde_json::json!({ "source": source, "name": name }),
-                spelling,
-                io,
-            )
-        }
-        // A hosted workspace's hosts, which `tilo`'s hosted commands answer.
-        WorkspaceCmd::Hosts { .. } => {
-            let _ = writeln!(io.err, "name the workspace: -w <name or id>");
-            2
-        }
+    with_io(|io| {
+        let address =
+            tilo_actions::ActionAddress::new("desktop:chrome", "branch-workspace").encode();
+        front::run_address(
+            &sockets,
+            (
+                tilo_actions::remote::SESSION_ACTIONS_PROVIDER,
+                &address,
+                "Branch a workspace",
+            ),
+            &serde_json::json!({ "source": source, "name": name }),
+            spelling,
+            io,
+        )
     })
 }
 

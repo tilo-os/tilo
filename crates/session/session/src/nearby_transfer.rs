@@ -37,9 +37,6 @@ use runtime_collab::{
     NearbyTransferDirection, NearbyTransferHandle, NearbyTransferPhase, NearbyTransferReply,
     NearbyTransferSnapshot, NearbyTransferStatus, NearbyTransferTarget,
 };
-use tilo_action_broker::services::{
-    NearbyTransferChange, NearbyTransferRequestContext, NearbyTransferServices,
-};
 use tilo_broker_core::services::WorkspaceAuthority;
 use tilo_capture_studio::{Refusal, Sent};
 use tilo_lock::MutexRecover as _;
@@ -52,6 +49,9 @@ use tilo_network_actor::{
     PersonalTransferStatus,
 };
 use tilo_service::Wake;
+use tilo_workspace_service::apps::services::{
+    NearbyTransferChange, NearbyTransferRequestContext, NearbyTransferServices,
+};
 use ui::widget::ScreenshotSendDevice;
 
 use crate::platform::fabric::Continuity;
@@ -2228,10 +2228,12 @@ mod transfers_between_devices {
         NearbyTransferCommand, NearbyTransferDestination, NearbyTransferPhase, NearbyTransferReply,
         NearbyTransferSnapshot, NearbyTransferStatus,
     };
-    use tilo_action_broker::services::{NearbyTransferRequestContext, NearbyTransferServices as _};
     use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
     use tilo_network_actor::DeviceIdentity;
     use tilo_user_identity::DeviceCapabilities;
+    use tilo_workspace_service::apps::services::{
+        NearbyTransferRequestContext, NearbyTransferServices as _,
+    };
 
     use super::{FILES_APP_ID, NearbyTransfer};
     use crate::platform::fabric::Continuity;

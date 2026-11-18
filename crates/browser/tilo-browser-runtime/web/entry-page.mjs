@@ -24,7 +24,7 @@ import {servedVersion, watchForUpdate} from './bundle-update.mjs';
 import {mountWaitList} from './wait-list.mjs';
 import {handToNativeHost} from './native-host.mjs';
 import {boot, grammar} from './entry.mjs';
-import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetchDesktop, prefetchOfferedApplications, prepareGpu, reportPageErrors} from './host.mjs';
+import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetchApplications, prefetchDesktop, prepareGpu, reportPageErrors} from './host.mjs';
 import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, openInvitation, profileDevice, withDeviceKey} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceKey} from './device-key.mjs';
@@ -972,11 +972,11 @@ export async function startEntryPage({mode}) {
       if ('gpuStalled' in state || state.phase !== 'gpu-pending') document.documentElement.toggleAttribute('data-gpu-stalled', state.gpuStalled === true);
       if (state.phase === 'presented') {
         arrive('done');
-        // The page has drawn: the apps it offers can now fetch their modules
-        // in its idle time, a bounded few at a time, so an app the person
-        // opens later instantiates from what is already in instead of
-        // fetching and compiling it while its window waits to fill in.
-        prefetchOfferedApplications();
+        // The page has drawn: the apps the workspace's windows show can now
+        // fetch their modules in its idle time, a bounded few at a time, so a
+        // window opened on one later instantiates from what is already in.
+        // Everything else fetches when the person opens it.
+        prefetchApplications(state.openApps);
       }
       else if (state.phase === 'gpu-pending') arrive('draw');
       else if (['failed', 'crashed'].includes(state.phase)) arrive('stopped');
@@ -2456,8 +2456,8 @@ const OPEN_OWN_TRIES = 6;
  * Open the person's own workspace in a tab an agent just signed in: it
  * paired through the home workspace (`page`), so the host makes or finds the
  * person's own and this device enters it, then the page loads it. A host
- * that did not answer or asks to wait is asked again; a refusal is the
- * host's answer, and the tab stays where it is.
+ * that did not answer is asked again; a refusal is the host's answer, and
+ * the tab stays where it is.
  */
 async function openOwnAfterSignIn({page, status}) {
   for (let attempt = 1; ; attempt++) {
@@ -2466,10 +2466,8 @@ async function openOwnAfterSignIn({page, status}) {
       own = await ensureOwnWorkspace(page.peer);
     } catch (error) {
       console.warn('signed in: opening your workspace', error);
-      const transient = error?.code === 'unanswered' || error?.code === 'rate_limited';
-      if (!transient || attempt >= OPEN_OWN_TRIES) { openOwnDone(); return; }
-      const asked = Number.isFinite(error?.retryAfter) ? error.retryAfter * 1000 : 0;
-      await new Promise(resolve => setTimeout(resolve, Math.max(1000 * 2 ** (attempt - 1), asked)));
+      if (error?.code !== 'unanswered' || attempt >= OPEN_OWN_TRIES) { openOwnDone(); return; }
+      await new Promise(resolve => setTimeout(resolve, 1000 * 2 ** (attempt - 1)));
       continue;
     }
     // The load that opened it: the person's own workspace is in front.

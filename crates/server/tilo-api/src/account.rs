@@ -5,7 +5,8 @@
 //! It is addressed like any resource, by path, through the same tools:
 //!
 //! - `account/workspaces#list {labels?}`, `#create {name, labels?, host?}`,
-//!   `#branch {workspace, name, labels?, id?}`, `#delete {workspace}`;
+//!   `#branch {workspace, name, labels?, id?}`, `#rename {workspace, name}`,
+//!   `#delete {workspace}`;
 //! - `account/keys#list`, `#create {name, workspace?, expires_in?}`,
 //!   `#mint {workspace, name?, expires_in?}`, `#revoke {grant}`.
 //!
@@ -114,14 +115,8 @@ pub(crate) enum Outcome {
         code: &'static str,
         message: String,
         next: String,
-        /// How long to wait before the same call works, when the host said.
-        retry_after_ms: Option<u64>,
     },
 }
-
-/// The code of an answer that ran nothing because the host is busy with the
-/// person's changes: the same call works after its `retry_after_ms`.
-pub(crate) const RATE_LIMITED: &str = "rate_limited";
 
 pub(crate) fn failed(
     code: &'static str,
@@ -132,7 +127,6 @@ pub(crate) fn failed(
         code,
         message: message.into(),
         next: next.into(),
-        retry_after_ms: None,
     }
 }
 
@@ -171,12 +165,6 @@ pub(crate) fn refused(error: &ServerError) -> Outcome {
             error.to_string(),
             "open Tilo on a device that holds the workspace, then try again",
         ),
-        ServerError::RateLimited { retry_after_ms } => Outcome::Failed {
-            code: RATE_LIMITED,
-            message: error.to_string(),
-            next: format!("wait {retry_after_ms} ms and retry the same call"),
-            retry_after_ms: Some(*retry_after_ms),
-        },
     }
 }
 
@@ -238,12 +226,8 @@ pub(crate) fn answer(structured: bool, path: &str, outcome: Outcome) -> Value {
             code,
             message,
             next,
-            retry_after_ms,
         } => {
-            let mut error = json!({"code": code, "message": message, "next_steps": [next]});
-            if let (Some(fields), Some(wait)) = (error.as_object_mut(), retry_after_ms) {
-                fields.insert("retry_after_ms".into(), json!(wait));
-            }
+            let error = json!({"code": code, "message": message, "next_steps": [next]});
             tool_result(
                 structured,
                 &format!("failed: {code}: {message}. Next: {next}"),
@@ -266,7 +250,7 @@ const fn param(name: &'static str, required: bool, ty: &'static str) -> Param {
 }
 
 /// The account's actions: (resource, action, label, kind, parameters).
-const ACTIONS: [(&str, &str, &str, &str, &[Param]); 8] = [
+const ACTIONS: [(&str, &str, &str, &str, &[Param]); 9] = [
     (
         "workspaces",
         "list",
@@ -295,6 +279,16 @@ const ACTIONS: [(&str, &str, &str, &str, &[Param]); 8] = [
             param("name", true, "Text"),
             param("labels", false, "Object"),
             param("id", false, "Text"),
+        ],
+    ),
+    (
+        "workspaces",
+        "rename",
+        "Name a workspace, for every list and device of it; its owners and moderators may",
+        "outside",
+        &[
+            param("workspace", true, "Text"),
+            param("name", true, "Text"),
         ],
     ),
     (
@@ -631,6 +625,7 @@ impl Server {
             },
             "account/workspaces#create" => self.create_workspace(key, args).await,
             "account/workspaces#branch" => self.branch_workspace(grant, key, args).await,
+            "account/workspaces#rename" => rename_workspace(key, args).await,
             "account/workspaces#delete" => self.delete_workspace(grant, key, args).await,
             "account/keys#list" => self.account_keys(grant, key).await,
             "account/keys#create" => self.create_key(args),
@@ -1040,6 +1035,29 @@ fn field<'a>(args: &'a Value, name: &str) -> Option<&'a str> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
+}
+
+/// Name the workspace `args` names (`workspace`) `name`, as `key`: the
+/// server decides by the workspace's governance, as for the person's own page.
+async fn rename_workspace(key: &Connection, args: &Value) -> Outcome {
+    let (Some(workspace), Some(name)) = (field(args, "workspace"), field(args, "name")) else {
+        return failed(
+            "invalid_arguments",
+            "`workspace` and `name` are required",
+            "pass args {workspace: \"<id>\", name: \"Acme\"}; account/workspaces#list names them",
+        );
+    };
+    match key.server().rename(key, workspace, name).await {
+        Ok(workspace) => Outcome::Ok(json!({"workspace": workspace})),
+        Err(crate::server::Administration::Refused(why)) => failed(
+            "not_permitted",
+            format!("the workspace refused: {why}"),
+            "its owners and moderators name it",
+        ),
+        Err(crate::server::Administration::Unanswered(why)) => {
+            failed("unavailable", why, "try again shortly")
+        }
+    }
 }
 
 /// The labels `args` names (`labels`, names to text values): none when it

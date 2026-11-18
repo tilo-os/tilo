@@ -80,7 +80,9 @@ pub fn frame(narrated: &Narrated<'_>, seq: u64, sent_at_ms: u64) -> Option<Seman
 
 /// The semantic work `event` carries, as `from` did it, on a shell that has `here` as its members:
 /// `None` unless `from` is one of them as an agent and the work is well formed and names the
-/// execution its frame does. Its actor is that member, whatever the work claims: a device says only
+/// execution its frame does. Its actor is that member, by the id the board names it by
+/// ([`Shown::member_id`]: an agent a host speaks for is the workspace's agent, which every surface
+/// names and colours it by), whatever the work claims: a device says only
 /// what its own agent does. Who the agent acts for is the board's to say, not the work's: the person
 /// the member names ([`Shown::user`]), which is what a shell shows the work to.
 ///
@@ -104,7 +106,11 @@ pub fn admit(here: &[Shown], from: [u8; 32], event: &SemanticFrame) -> Option<Se
     if interaction.invocation.0 != event.execution {
         return None;
     }
-    interaction.actor = Acting::agent(publisher);
+    interaction.actor = Acting::member(
+        member
+            .member_id()
+            .unwrap_or_else(|| tilo_action_policy::MemberId::agent(publisher)),
+    );
     if let Some(person) = &member.user {
         interaction.actor = interaction.actor.acting_for(Acting::person(person.clone()));
     }
@@ -293,6 +299,11 @@ mod tests {
             .unwrap();
             let admitted = admit(&present, host, &event).expect("the host's word for its run");
             assert_eq!(admitted.actor, Acting::agent(hex::encode(stand_in)));
+            // The run of a workspace's agent is that agent: named and coloured as its face is.
+            let mut named = present.clone();
+            named[0].member = Some(tilo_action_policy::MemberId::agent("claude-code-0a1b2c3d4e"));
+            let admitted = admit(&named, host, &event).expect("the host's word for its run");
+            assert_eq!(admitted.actor, Acting::agent("claude-code-0a1b2c3d4e"));
             assert!(
                 admit(&present, other, &event).is_none(),
                 "another device does not speak for the host's run"

@@ -40,7 +40,6 @@ use std::time::Duration;
 use tilo_action_policy::Lifetime;
 
 use serde::{Deserialize, Serialize};
-use tilo_action_broker::collab_app_broker::{AgentConnection, AppBrokerState};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
     ContentPuts, InvocationReceipt, InvocationState, InvokeRequest, Pending,
@@ -51,6 +50,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_mcp::session_api::{Consent, Hello};
 use tilo_service::{Answer, Asked, Question, Questions, Wake};
 use tilo_sheets::{word, words};
+use tilo_workspace_service::apps::collab_app_broker::{AgentConnection, AppBrokerState};
 
 use crate::Shared;
 use crate::agent_sessions::{AgentSessions, Doing};
@@ -1285,7 +1285,7 @@ enum ApiAsk {
     /// The packages the session runs itself, which a task's host loads to run programs against:
     /// each one's compiled module, its description embedded, the packages it uses first
     /// ([`task_hosts`] adds every installed app).
-    Apps(tilo_actions::remote::Completer<Vec<runtime_portal::tilolang_process::App>>),
+    Apps(tilo_actions::remote::Completer<Vec<runtime_portal::process_link::App>>),
     /// The newest reading of the resource `resource` of the app `app`, one the session's own
     /// services publish (the device's sound, the session's windows, Settings' sections): what a
     /// task's program reads within the program it runs, answered on the loop's pass, where the
@@ -2261,7 +2261,7 @@ impl ActionProvider for Host {
     fn content_puts(&self) -> Option<Arc<dyn ContentPuts>> {
         self.state
             .as_ref()
-            .and_then(tilo_action_broker::collab_app_broker::AppBrokerState::content_puts)
+            .and_then(tilo_workspace_service::apps::collab_app_broker::AppBrokerState::content_puts)
     }
 
     /// The session's one search, the one the palette and text typed on the canvas run: what an
@@ -2410,8 +2410,8 @@ fn published_kind(services: &tilo_service::Services, resource: &str) -> Option<S
 /// programs read those records by, answered on the loop's pass, where the services are.
 fn session_packages(
     services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
-) -> Vec<runtime_portal::tilolang_process::App> {
-    use runtime_portal::tilolang_process::{App, Module};
+) -> Vec<runtime_portal::process_link::App> {
+    use runtime_portal::process_link::{App, Module};
     services
         .borrow()
         .documents()

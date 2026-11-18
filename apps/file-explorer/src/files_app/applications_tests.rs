@@ -145,6 +145,7 @@ tilo_test_env::scenario! {
             files
                 .state()
                 .entry_resource(&entry)
+                .into_resource()
                 .actions
                 .iter()
                 .map(|action| action.id.clone())

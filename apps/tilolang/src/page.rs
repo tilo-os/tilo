@@ -170,6 +170,10 @@ impl Platform for PagePlatform {
         tilo_app_window::date::shown_text(kind, value)
     }
 
+    fn sentence(&self, kind: &str, value: &str) -> String {
+        tilo_app_window::date::sentence_text(kind, value)
+    }
+
     fn clock(&self, hour: u32, minute: u32) -> String {
         ui::clock::hour_minute(hour, minute)
     }

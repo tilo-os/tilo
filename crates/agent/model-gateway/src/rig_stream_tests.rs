@@ -740,3 +740,54 @@ fn provider_diagnostics_use_fixed_advice_not_untrusted_identifiers() {
             .contains("credits")
     );
 }
+
+/// A call's timing line says the model's name whole, what its provider
+/// counted in all, and whose figure the cost is.
+#[test]
+fn the_timing_line_names_the_model_whole_and_says_whose_the_cost_is() {
+    let mut timing = PlanTiming::start();
+    timing.observe_usage(Some(
+        &json!({"prompt_tokens": 25300, "completion_tokens": 12, "total_tokens": 25824}),
+    ));
+    let line = |model_id: &str| {
+        let call = PlanCall {
+            profile_id: "theirs",
+            model_id,
+            timeout: tilo_test_env::hang_bound(),
+            stream: true,
+            deltas: true,
+            trace: None,
+        };
+        timing.line(&call, Ok(()))
+    };
+    // A name as its provider lists it, whole: a slash is no secret.
+    let named = line("models/frontier-model");
+    assert!(named.contains(" model=models/frontier-model "), "{named}");
+    // What the provider counted in all: thought it counts nowhere else is
+    // the difference to the two counts before it.
+    assert!(
+        named.contains(" prompt_tokens=25300 completion_tokens=12 total_tokens=25824 "),
+        "{named}"
+    );
+    // No row of the price table names this model: nobody here knows its cost.
+    assert!(
+        named.contains(" cost_micros=- cost_source=unknown "),
+        "{named}"
+    );
+    // A family's newer model is not priced by the family's row.
+    let newer = line("models/gemini-9-ultra");
+    assert!(
+        newer.contains(" cost_micros=- cost_source=unknown "),
+        "{newer}"
+    );
+    // A model the table lists is priced by it, and the line says whose
+    // figure that is: 25,300 tokens in at 1.25 a million, 12 out at 10.
+    let listed = line("gemini-2.5-pro");
+    assert!(
+        listed.contains(" cost_micros=31745 cost_source=table "),
+        "{listed}"
+    );
+    // What is no name stays out of the line.
+    let unnamed = line("two words");
+    assert!(unnamed.contains(" model=? "), "{unnamed}");
+}

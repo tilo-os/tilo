@@ -702,17 +702,12 @@ pub enum NeighbourMsg {
         /// ignore it.
         delivery: u64,
     },
-    /// The person's workspace directory as one of their devices holds it:
-    /// a device-signed Automerge snapshot of which workspaces the person
-    /// has and which workspace carries each. Travels only on the session between
-    /// two of the person's devices; the receiver merges it only when the
-    /// certificate that session proved and the update's author are devices
-    /// of `user_public_key`. Appended to preserve every existing Postcard
-    /// discriminant.
-    PersonalWorkspaces {
-        user_public_key: [u8; 32],
-        update: Box<tilo_user_identity::DirectoryUpdate>,
-    },
+    /// Retired: the person's list of workspaces as one of their devices held
+    /// it. The list is a resource of the person's own store now, which
+    /// carries it as it carries every other resource of theirs; no build
+    /// produces this, and it stays only so every later Postcard discriminant
+    /// keeps its value.
+    RetiredPersonalWorkspaces,
     /// A device asking the workspace for one piece of content a record of
     /// `app_id` in workspace `cluster_id` refers to, by its BLAKE3 `hash`. Rides
     /// the workspace's topic, so only peers admitted to read the workspace see it;
@@ -798,17 +793,11 @@ pub enum NeighbourMsg {
     /// workspace's. Appended to preserve every existing Postcard
     /// discriminant.
     WriteRefusals { refusals: Vec<WriteRefusal> },
-    /// Where the workspaces one of the person's devices holds are hosted:
-    /// each workspace by id, with its host's own signed
-    /// hint (`tilo_workspace_join::TransportHint`, postcard) as the device
-    /// reaching it dials it. Travels only on the session between two of the
-    /// person's devices, so a device that holds none of the person's
-    /// workspaces yet learns where each lives. Appended to preserve every
-    /// existing Postcard discriminant.
-    PersonalHosts {
-        user_public_key: [u8; 32],
-        hosts: Vec<PersonalHost>,
-    },
+    /// Retired: where the workspaces one of the person's devices holds are
+    /// hosted. The person's list of workspaces carries that now; no build
+    /// produces this, and it stays only so every later Postcard discriminant
+    /// keeps its value.
+    RetiredPersonalHosts,
     /// One of the person's devices holds a write of `workspace` sealed under
     /// a key it lacks: it asks the others for the frames of the workspace's
     /// group from `from_epoch`, the epoch it holds, on. A device that is in
@@ -817,17 +806,6 @@ pub enum NeighbourMsg {
     /// the person's devices, which proves who asks. Appended to preserve every
     /// existing Postcard discriminant.
     MlsGovernanceWanted { workspace: String, from_epoch: u64 },
-}
-
-/// Where one of the person's workspaces is hosted, as their other devices
-/// dial it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PersonalHost {
-    /// The workspace's id, a canonical lowercase UUID.
-    pub workspace: String,
-    /// The host's signed hint, postcard encoded.
-    #[serde(with = "serde_bytes")]
-    pub hint: Vec<u8>,
 }
 
 impl NeighbourMsg {
@@ -886,7 +864,10 @@ impl NeighbourMsg {
             // Presence is a frame on the workspace's live session.
             | Self::RetiredPresenceMoved { .. }
             | Self::RetiredPresenceCleared { .. }
-            | Self::RetiredAppPresenceV2 { .. } => true,
+            | Self::RetiredAppPresenceV2 { .. }
+            // The person's list of workspaces is a resource of their own store.
+            | Self::RetiredPersonalWorkspaces
+            | Self::RetiredPersonalHosts => true,
             Self::SyncReq { .. }
             | Self::SyncResp { .. }
             | Self::SurfaceFrame { .. }
@@ -904,7 +885,6 @@ impl NeighbourMsg {
             | Self::MediaCapabilities { .. }
             | Self::MlsGovernance { .. }
             | Self::MlsAccessRequest { .. }
-            | Self::PersonalWorkspaces { .. }
             | Self::DocumentContentWant { .. }
             | Self::DocumentContentPiece { .. }
             | Self::DocumentContentLacks { .. }
@@ -912,7 +892,6 @@ impl NeighbourMsg {
             | Self::LivePresence { .. }
             | Self::SurfaceViewRequest { .. }
             | Self::WriteRefusals { .. }
-            | Self::PersonalHosts { .. }
             | Self::MlsGovernanceWanted { .. } => false,
         }
     }
@@ -955,7 +934,7 @@ impl NeighbourMsg {
             Self::MediaCapabilities { .. } => "MediaCapabilities",
             Self::MlsGovernance { .. } => "MlsGovernance",
             Self::MlsAccessRequest { .. } => "MlsAccessRequest",
-            Self::PersonalWorkspaces { .. } => "PersonalWorkspaces",
+            Self::RetiredPersonalWorkspaces => "RetiredPersonalWorkspaces",
             Self::DocumentContentWant { .. } => "DocumentContentWant",
             Self::DocumentContentPiece { .. } => "DocumentContentPiece",
             Self::SurfaceKeyframeRequest { .. } => "SurfaceKeyframeRequest",
@@ -963,7 +942,7 @@ impl NeighbourMsg {
             Self::SurfaceViewRequest { .. } => "SurfaceViewRequest",
             Self::DocumentContentLacks { .. } => "DocumentContentLacks",
             Self::WriteRefusals { .. } => "WriteRefusals",
-            Self::PersonalHosts { .. } => "PersonalHosts",
+            Self::RetiredPersonalHosts => "RetiredPersonalHosts",
             Self::MlsGovernanceWanted { .. } => "MlsGovernanceWanted",
         }
     }
@@ -1349,15 +1328,7 @@ mod tests {
             ),
             (
                 "personal workspaces",
-                NeighbourMsg::PersonalWorkspaces {
-                    user_public_key: [7; 32],
-                    update: Box::new(tilo_user_identity::DirectoryUpdate {
-                        author_device_public_key: [2; 32],
-                        authored_at_ns: 10,
-                        delta: vec![1, 2, 3],
-                        signature: [3; 64],
-                    }),
-                },
+                NeighbourMsg::RetiredPersonalWorkspaces,
             ),
             (
                 "remote action",
@@ -1522,8 +1493,8 @@ mod tests {
     }
 
     /// Only generations no build produces any more are retired: the two
-    /// identity predecessors and the presence messages that live-live session frames
-    /// replaced. Every other variant, including both identity successors,
+    /// identity predecessors, the presence messages that live-live session frames
+    /// replaced, and the person's list of workspaces their own store carries now. Every other variant, including both identity successors,
     /// stays live.
     #[test]
     fn only_the_unproduced_generations_are_retired() {
@@ -1539,6 +1510,7 @@ mod tests {
                 "IdentityAnnouncement",
                 "PermissionRequest",
                 "RetiredAppPresenceV2",
+                "RetiredPersonalWorkspaces",
                 "RetiredPresenceCleared",
                 "RetiredPresenceMoved",
             ]
@@ -1612,7 +1584,7 @@ mod tests {
             "identity hello",
             concat!(
                 // The variant index and the sender's peer protocol version.
-                "0b34",
+                "0b36",
                 "01010101010101010101010101010101010101010101010101010101010101",
                 "0102020202020202020202020202020202020202020202020202020202020202",
                 "02064c6170746f70010000000a00400303030303030303030303030303030303",
@@ -1643,16 +1615,7 @@ mod tests {
                 "030303030303030303030303030303030303030300",
             ),
         ),
-        (
-            "personal workspaces",
-            concat!(
-                "1607070707070707070707070707070707070707070707070707070707070707",
-                "0702020202020202020202020202020202020202020202020202020202020202",
-                "020a030102034003030303030303030303030303030303030303030303030303",
-                "0303030303030303030303030303030303030303030303030303030303030303",
-                "03030303030303",
-            ),
-        ),
+        ("personal workspaces", "16"),
         ("remote action", "12027b7d"),
         (
             "media capabilities",

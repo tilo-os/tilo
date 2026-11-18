@@ -1343,7 +1343,7 @@ impl Removal {
     fn new(
         cx: &ViewCx<Settings>,
         id: &str,
-        live: &ui::tilo_actions::ResourceSpec,
+        live: &(impl ui::tilo_actions::Exports + ?Sized),
         effect: DevicesAccessEffect,
         consequence: String,
     ) -> Self {
@@ -1439,7 +1439,7 @@ fn rename_control(
     state: &PageState,
     id: &str,
     device: &DeviceView,
-    live: &ui::tilo_actions::ResourceSpec,
+    live: &(impl ui::tilo_actions::Exports + ?Sized),
 ) -> Element {
     let key = hex::encode(device.key);
     if !state.naming(&key) {
@@ -1499,7 +1499,7 @@ fn device_item(
     } else {
         device.label.clone()
     };
-    let live = device_row(device, &state.name_draft.get()).into_resource();
+    let live = device_row(device, &state.name_draft.get());
     let removal = (!device.current && !leaving).then(|| {
         Removal::new(
             cx,
@@ -1558,7 +1558,7 @@ fn browser_item(
         Removal::new(
             cx,
             &id,
-            &browser_row(browser).into_resource(),
+            &browser_row(browser),
             DevicesAccessEffect::RevokeBrowser {
                 browser: browser.id.to_owned(),
                 reason: REMOVED.to_owned(),
@@ -1637,7 +1637,7 @@ fn agent_item(
 ) -> Element {
     let key = agent.id();
     let id = format!("agent.{key}");
-    let live = agent_row(agent, &state.name_draft.get()).into_resource();
+    let live = agent_row(agent, &state.name_draft.get());
     let dispatcher = cx.dispatcher();
     let removal = (!leaving).then(|| {
         Removal::new(
@@ -1732,7 +1732,7 @@ fn asking_lines(asking: &Asking) -> Vec<String> {
 }
 
 fn asking_item(cx: &ViewCx<Settings>, asking: &Asking) -> Item {
-    let live = asking_row(asking).into_resource();
+    let live = asking_row(asking);
     let dispatcher = cx.dispatcher();
     let answer = |approve: bool| DevicesAccessEffect::AnswerDevice {
         ask: asking.ask.clone(),

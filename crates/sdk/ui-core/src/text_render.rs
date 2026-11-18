@@ -173,7 +173,9 @@ pub fn without_words<R>(paint: impl FnOnce() -> R) -> R {
     out
 }
 
-fn words_left_out() -> bool {
+/// Whether glyphs are left out of the paint now ([`without_words`]): a widget that keeps its
+/// words as a cached scene leaves that scene out too.
+pub(crate) fn words_left_out() -> bool {
     WORDS_LEFT_OUT.with(std::cell::Cell::get)
 }
 

@@ -25,7 +25,9 @@ Three things serve it:
   this way.
 
 MCP is the same calls for agents (`/mcp` on the API server, `tilo mcp` on a computer): its tools
-answer the bodies below as `structuredContent` (see [MCP's typed answers](sdk-wire.md)).
+answer the bodies below as `structuredContent` (see [MCP's typed answers](sdk-wire.md)). One tool
+set serves every key: a key for all the person's workspaces names the workspace each call acts in
+(`workspace`, an id or its name), and a path under `account` needs none.
 
 The OpenAPI 3.1 description is generated from the same catalogue and types the calls use:
 [`docs/api/openapi.json`](../api/openapi.json) (`tilo-api openapi --check` fails when it drifts).
@@ -47,8 +49,7 @@ Every refusal has one shape, whatever route it came from:
 
 ```json
 {"error": {"code": "invalid_arguments", "message": "…",
-           "next_steps": ["GET /v1/workspaces/…/resources?path=notes/Todo lists its actions"],
-           "retry_after_ms": 2000}}
+           "next_steps": ["GET /v1/workspaces/…/resources?path=notes/Todo lists its actions"]}}
 ```
 
 `code` is stable and typed; `message` is for people; `next_steps` and `retry_after_ms` appear
@@ -62,7 +63,6 @@ when there are any. The HTTP status follows the code:
 | 404 | `not_found`, `unknown_action`, `unknown_resource` |
 | 409 | `idempotency_conflict`, `surface_changed` |
 | 422 | `failed`, `refused`, `branch_incomplete`, `action_confirmation_required` and every other code an app gives |
-| 429 | `rate_limited` |
 | 503 | `unavailable` |
 
 ## Idempotency
@@ -97,6 +97,7 @@ an invocation of its own, named for the key ("Visa backend #3").
 | `POST /v1/workspaces/{workspace}/branches` `{name, labels?}` | `201` a branch of a workspace of the person's own, as a workspace made: a new one of theirs holding every resource of it with its history and the files they name, without its conversations, people's drafts and places, or anyone but the person (MCP: `account/workspaces#branch {workspace, name, labels?, id?}`). Answered once it holds everything; one that could not take a part is deleted again and the call answers `422 branch_incomplete` naming the part. The same `Idempotency-Key` answers the branch it made. A key for one workspace makes none |
 | `PUT /v1/workspaces/{workspace}/unattended` `{on}` | lets the keys made for this workspace alone run commands in its Linux machine (`terminal#run`) without asking the person each time, here and in branches made from it (MCP: `workspace/unattended#set {on}`; `tilo_read workspace/unattended` reads it). `on: true` asks the person on their approving device: `202` pending with an `ask`, the run answering `{"workspace", "unattended": true}` once they allow it and failing if they do not. `on: false` answers `200` at once and asks again from the next command. Only the workspace's owner has it; a key reaching all their workspaces is still asked. Listings say `"unattended": true` while it is on |
 | `GET /v1/workspaces/{workspace}/export` | `{"workspace", "exported_at_ms", "resources": [...], "unread": [...]}`: every resource of every app, read whole and streamed as it reads |
+| `PUT /v1/workspaces/{workspace}/name` `{name}` | the workspace, called that by every list and device of it; its owners and moderators name it |
 | `DELETE /v1/workspaces/{workspace}` | `{"deleted": "…", "revoked_keys": [...]}`: final, with everything in it and every key minted for it |
 | `GET /v1/keys` | `{"keys": [{"grant", "name", "scope", "expires_at_ms", "last_used_at_ms", "created_by"}]}`: this key and the keys it minted, read from the workspace's own document when the key reaches one |
 | `POST /v1/keys` `{workspace, name?, expires_in?}` | `201` a key for one workspace, minted from this one: `{"grant", "token", "mcp_url", "expires_at_ms"}`; the person is not asked |
@@ -206,6 +207,8 @@ does not open the file's type refuses it and makes no resource.
 | | |
 |---|---|
 | `POST /v1/workspaces/{workspace}/uploads` (the file's bytes, its `Content-Type`) | `201` `{"content": "tilo.content:<hash>", "size"}`: what an action takes |
+| `PUT /v1/workspaces/{workspace}/contents` `{"files": [base64…]}` | `200` `{"contents": ["tilo.content:<hash>"…]}`: several small files whole in one request, each reference in order |
+| `POST /v1/workspaces/{workspace}/contents/have` `{"hashes": [hex…]}` | `200` `{"have": [bool…]}`: which of these the workspace already holds, so a folder's unchanged files need no upload |
 | `POST /v1/workspaces/{workspace}/uploads/{upload}` `{size}` | `201` `{"upload", "size", "offset": 0}`: opens an upload under an id you choose, for a file too large for one request. Opening it again answers where it stands (`200`) |
 | `PUT /v1/workspaces/{workspace}/uploads/{upload}?offset={offset}` (the next bytes) | `200` `{"upload", "size", "offset"}` where the next piece goes, or `201` `{"content", "size"}` when this piece completes the file |
 | `GET /v1/workspaces/{workspace}/uploads/{upload}` | `200` `{"upload", "size", "offset"}`: where it stands, to continue it |
@@ -218,12 +221,23 @@ One request carries at most 64 MiB. A piece sent from an offset the upload is no
 after six hours. `tilo files put` sends a large file this way, and resumes it after a
 connection that failed.
 
+A folder goes into the workspace's own folder in one action: `POST …/resources/files/actions/open`
+with `files`, a list of `content`, `name` and `dir`, each file's bytes uploaded first. A large
+list goes up as content of its own and the action names its `tilo.content:` reference instead,
+so the action stays one bounded request however many files the folder holds (up to 10,000).
+They are written as one change of the workspace's tree, so the folder costs its chunks rather
+than its files, and History has one entry to take back whole. `tilo files put` does this for a
+folder; a folder past 10,000 goes in as several lists.
+
 ## People and programs
 
 | | |
 |---|---|
 | `GET /v1/workspaces/{workspace}/members` | the people in it, their roles, and the invitations still open |
 | `POST /v1/workspaces/{workspace}/members/invitations` `{role, email?}` | `201` `{"link"}` that signs them in and lands them there |
+| `POST /v1/workspaces/{workspace}/members` `{person, role, name?}` | holds the person whose user public key is `person` in it at `role` at once |
+| `PUT /v1/workspaces/{workspace}/members/{person}/role` `{role}` | moves a member to another role, as far as yours allows |
+| `DELETE /v1/workspaces/{workspace}/members/{person}` | removes a member and every device of theirs, as the workspace's governance lets you |
 | `POST /v1/workspaces/{workspace}/programs` `{program, confirm?, session?}` | runs a tilolang program as one step: `{"status": "ok"|"preview"|"failed", "output", "changed", "steps", "text", "session"}` |
 
 A program runs in a program session: the `let`s its programs bound, the references its answers

@@ -5,7 +5,7 @@
 //! These are ordinary grants on the workspace, named so that setting an answer
 //! again replaces it instead of adding a second one. Without one, a run a
 //! person started takes the agent delegation's answer
-//! ([`crate::roles::agent_grants`]), which is [`default_answer`], the
+//! ([`crate::Acting::handed_preset`]), which is [`default_answer`], the
 //! default a person sees before choosing; an agent acting inside a turn is
 //! decided the same way, bounded by the cap its resource narrows.
 //!
@@ -209,6 +209,15 @@ pub const fn default_answer(kind: ActionKind, consequential: bool) -> Answer {
         ActionKind::Read | ActionKind::Undoable => Answer::Allow,
         ActionKind::Outside => Answer::Ask,
     }
+}
+
+/// Whether an agent may be given `answer` for actions of `kind`: an outside
+/// effect is never carried out unasked, so for one an agent asks first or is
+/// denied. What every list of an agent's answers offers, and what its keeper's
+/// bound is held to.
+#[must_use]
+pub const fn may_give(kind: ActionKind, answer: Answer) -> bool {
+    !matches!((kind, answer), (ActionKind::Outside, Answer::Allow))
 }
 
 /// The answer a delegate's `decision` gives an action, held to the action's

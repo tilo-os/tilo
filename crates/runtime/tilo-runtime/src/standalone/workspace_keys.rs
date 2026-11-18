@@ -20,14 +20,14 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tilo_action_broker::{
+use tilo_desktop_model::WorkspaceId;
+use tilo_identity::provisioning::IdentityStorage;
+use tilo_workspace_service::apps::{
     collab_core::{BrokerChannels, BrokerSealChecks},
     workspace_keys::{
         GovernancePump, KeyDir, KeyDirectory, KeyProvider, KeysConfig, SharedKeys, WorkspaceKeys,
     },
 };
-use tilo_desktop_model::WorkspaceId;
-use tilo_identity::provisioning::IdentityStorage;
 
 /// Sealed group state, and where a Linux profile keeps the key that seals
 /// it (owner-only).
@@ -36,14 +36,15 @@ const GROUP_STATE_KEY: &str = "group-state.key";
 /// How long a first write to a route's group waits for its group to be
 /// created and admit this device: far more than the wait before this device
 /// creates the group itself
-/// (`tilo_action_broker::workspace_keys::founding_wait`) and the work a
+/// (`tilo_workspace_service::apps::workspace_keys::founding_wait`) and the work a
 /// first write does beside it, so a fresh workspace's first write is not
 /// refused for keys that are about to arrive; keys that have not arrived in
 /// half a minute are not about to.
 const OPEN_WAIT: Duration = Duration::from_secs(30);
 /// A first write must outlast the wait before the group is created here.
-const _: () =
-    assert!(OPEN_WAIT.as_secs() > tilo_action_broker::workspace_keys::founding_wait().as_secs());
+const _: () = assert!(
+    OPEN_WAIT.as_secs() > tilo_workspace_service::apps::workspace_keys::founding_wait().as_secs()
+);
 
 /// The running key service; stops when dropped.
 pub(super) struct KeyService {
@@ -67,7 +68,7 @@ pub(super) fn open(
             state: Arc::new(KeyDir::new(profile.join(GROUP_STATE))),
             vault: vault_key(profile, profile_workspace, storage)?,
             signer: Arc::new(device_key),
-            role: tilo_action_broker::workspace_keys::KeyRole::Committer,
+            role: tilo_workspace_service::apps::workspace_keys::KeyRole::Committer,
         },
         Box::new(Directory {
             joined: Arc::clone(&joined),

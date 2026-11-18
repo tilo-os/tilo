@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use tilo_actions::ResourceSpec;
+use ui::framework::LiveRow;
 use ui::icons::Icon;
 use ui::search::SearchResult;
 use ui::tilo_resource::{Derived, SearchBody, SearchPiece, SearchText, SearchWeight};
@@ -545,7 +546,7 @@ impl BookSearch {
     /// Resolve a full-text location resource exactly. This performs a bounded
     /// metadata lookup plus one block bounds check; it does not construct a
     /// prose index or hydrate unrelated chapters.
-    fn location_resource_for(&self, id: &str) -> Option<ResourceSpec> {
+    fn location_resource_for(&self, id: &str) -> Option<LiveRow> {
         let suffix = id.strip_prefix("ebook.location:")?;
         let (book, location) = self.books.iter().find_map(|book| {
             let prefix = format!("{}:", book.id);
@@ -564,12 +565,12 @@ impl BookSearch {
         chapter_data.blocks.get(block)?;
         let chapter_title = chapter_label(chapter_data, chapter);
         Some(
-            ResourceSpec::new(
+            LiveRow::new(
                 id,
                 "ebook.location",
                 format!("{chapter_title} in {}", Self::book_title(book)),
             )
-            .with_action(crate::actions::open_at(
+            .operation(crate::actions::open_at(
                 &book.id,
                 chapter,
                 Some(block),
@@ -580,15 +581,15 @@ impl BookSearch {
 
     /// The resource a hit names: a chapter opened, or the place the library
     /// publishes for a book or an annotation, with what acts on it.
-    fn resource_for(&self, entry: &SearchEntry, id: &str) -> Option<ResourceSpec> {
+    fn resource_for(&self, entry: &SearchEntry, id: &str) -> Option<Found> {
         let book = match entry.target {
             SearchTarget::Chapter { book, chapter } => {
                 let book = self.books.get(book)?;
                 book.chapters.get(chapter)?;
-                return Some(
-                    ResourceSpec::new(id, "ebook.chapter", &entry.result.title)
-                        .with_action(crate::actions::open_at(&book.id, chapter, None, "Open")),
-                );
+                return Some(Found::Row(
+                    LiveRow::new(id, "ebook.chapter", &entry.result.title)
+                        .operation(crate::actions::open_at(&book.id, chapter, None, "Open")),
+                ));
             }
             SearchTarget::Book(index) => self.books.get(index)?.id.clone(),
             SearchTarget::RemoteBook(index) => self.registry.get(index)?.id.clone(),
@@ -627,19 +628,43 @@ impl BookSearch {
         let place = Ebook::book_place(&row, &marks);
         let mut resource = Derived::find(std::slice::from_ref(&place), id)?;
         resource.children.clear();
-        Some(resource)
+        Some(Found::Place(Box::new(resource)))
     }
+}
+
+/// What a hit names: a row the search makes (a chapter, a reading location), or the place the
+/// library publishes for a book or an annotation, document edits and all.
+enum Found {
+    Row(LiveRow),
+    Place(Box<ResourceSpec>),
 }
 
 impl BookSearch {
     /// The exact resource a hit is anchored at: a book, a chapter, an
     /// annotation, a remote book or a reading location.
-    pub(crate) fn resolve(&self, id: &str) -> Option<ResourceSpec> {
+    pub(crate) fn resolve(&self, id: &str) -> Option<LiveRow> {
+        self.found(id).map(|found| match found {
+            Found::Row(row) => row,
+            Found::Place(place) => LiveRow::from_resource(*place),
+        })
+    }
+
+    /// [`Self::resolve`] as the library publishes it, its document's edits included: what the
+    /// palette reads of a hit.
+    #[cfg(test)]
+    pub(crate) fn resolve_published(&self, id: &str) -> Option<ResourceSpec> {
+        self.found(id).map(|found| match found {
+            Found::Row(row) => row.into_resource(),
+            Found::Place(place) => *place,
+        })
+    }
+
+    fn found(&self, id: &str) -> Option<Found> {
         if !self.available {
             return None;
         }
         if let Some(resource) = self.location_resource_for(id) {
-            return Some(resource);
+            return Some(Found::Row(resource));
         }
         let row = *self.resource_rows.get(id)?;
         let entry = self.entries.get(row)?;
@@ -659,12 +684,12 @@ impl BookSearch {
         use ui::tilo_resource::Effect as _;
         let resource = self.resolve(id)?;
         let action = resource
-            .actions
+            .operations()
             .iter()
             .find(|action| action.id == "open")
             .or_else(|| {
                 resource
-                    .actions
+                    .operations()
                     .iter()
                     .find(|action| action.id == "download")
             })?;
@@ -746,10 +771,10 @@ impl BookSearchProvider {
         self.books.shares_prose_index_with(&other.books)
     }
 
-    /// The exact resource the hit anchored at `id` resolves to, as the
-    /// palette resolves a hit's address.
-    pub(crate) fn resolve(&self, id: &str) -> Option<ResourceSpec> {
-        self.books.resolve(id)
+    /// [`BookSearch::resolve_published`] for the hit anchored at `id`.
+    #[cfg(test)]
+    pub(crate) fn resolve_published(&self, id: &str) -> Option<ResourceSpec> {
+        self.books.resolve_published(id)
     }
 }
 
@@ -790,7 +815,7 @@ impl ui::search::SearchProvider for BookSearchProvider {
         &self,
         address: &tilo_actions::ActionAddress,
     ) -> Option<ResourceSpec> {
-        self.books.resolve(&address.resource)
+        self.books.resolve_published(&address.resource)
     }
 }
 
@@ -854,7 +879,7 @@ mod tests {
                 let address = hit.action_id;
                 let resource = provider
                     .books
-                    .resolve(&address)
+                    .resolve_published(&address)
                     .expect("exact local resource");
                 assert_eq!(resource.id.as_str(), address);
                 assert!(resource.children.is_empty());
@@ -917,7 +942,7 @@ mod tests {
                 assert_eq!(address, "ebook.location:stable-book:0:1");
                 let resource = provider
                     .books
-                    .resolve(&address)
+                    .resolve_published(&address)
                     .expect("exact lazy location resource");
                 let open = resource
                     .actions
@@ -986,7 +1011,7 @@ mod tests {
                 let hit = provider.search("mira").pop().expect("metadata");
                 let resource = provider
                     .books
-                    .resolve(&hit.action_id)
+                    .resolve_published(&hit.action_id)
                     .expect("actionable remote resource");
                 let open = resource
                     .actions
@@ -1327,7 +1352,7 @@ mod tests {
                 let hit = provider.search("keep").pop().expect("annotation row");
                 let resource = provider
                     .books
-                    .resolve(&hit.action_id)
+                    .resolve_published(&hit.action_id)
                     .expect("exact annotation resource");
                 let delete = resource
                     .actions
@@ -1373,7 +1398,7 @@ mod tests {
 
                 let book_resource = provider
                     .books
-                    .resolve(
+                    .resolve_published(
                         &provider
                             .search("contract book")
                             .into_iter()
@@ -1406,7 +1431,7 @@ mod tests {
 
                 let highlight_resource = provider
                     .books
-                    .resolve(
+                    .resolve_published(
                         &provider
                             .search("amber")
                             .pop()
@@ -1443,7 +1468,7 @@ mod tests {
                 ] {
                     let resource = provider
                         .books
-                        .resolve(
+                        .resolve_published(
                             &provider
                                 .search(query)
                                 .pop()

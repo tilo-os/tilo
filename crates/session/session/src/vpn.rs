@@ -104,7 +104,7 @@ impl Vpn {
     /// once it binds, so the session hands these over before it binds
     /// ([`crate::sync::Client::start`]).
     #[must_use]
-    pub fn served(&self) -> tilo_network_actor::local_host::Protocols {
+    pub fn served(&self) -> tilo_network_actor::own_service::Protocols {
         vec![(
             ALPN.to_vec(),
             Box::<dyn iroh::protocol::DynProtocolHandler>::from(self.exit.clone()),

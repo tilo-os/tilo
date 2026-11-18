@@ -147,8 +147,7 @@ impl ResourceStore {
     /// # Errors
     /// The record's owner or bytes cannot be had.
     pub fn begin_opening(&self, want: &DocumentCheckout) -> Result<bool, ResourceOpenError> {
-        self.0
-            .try_borrow_mut()
+        self.try_set_mut()
             .map_err(|_| ResourceOpenError::Busy)?
             .begin_opening(want)
     }

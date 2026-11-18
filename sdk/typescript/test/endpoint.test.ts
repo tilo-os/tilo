@@ -7,7 +7,6 @@ import {
   HttpTransport,
   NATIVE_PACKAGE,
   ProtocolError,
-  RateLimited,
   Refused,
   Tilo,
 } from "../src/index.ts";
@@ -63,13 +62,12 @@ describe("a request", () => {
     expect(api.last()?.headers["idempotency-key"]).toBeUndefined();
   });
 
-  it("asks again while the host is busy, then throws RateLimited past the deadline", async () => {
+  it("asks again while the server is unavailable, then throws its refusal past the deadline", async () => {
     const api = new FakeApi();
     api.busy = 50;
-    api.busyWaitMs = 20;
 
     const failure = open(api, 100).answer("POST", "/v1/workspaces", { json: { name: "w" } });
-    await expect(failure).rejects.toBeInstanceOf(RateLimited);
+    await expect(failure).rejects.toMatchObject({ code: "unavailable" });
     expect(api.asked("POST", "/v1/workspaces").length).toBeGreaterThan(1);
   });
 

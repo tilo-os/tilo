@@ -331,8 +331,12 @@ fn a_keystroke_draws_one_frame_and_services_its_owner_once() {
                 let _ = f.store.try_flush();
             }
             assert_eq!(frames, 1, "typing {key:?} drew {frames} frames");
-            assert_eq!(
-                services, 1,
+            // The note is one part of the notes, saved as the key's event
+            // ends: a save the store lands before the frame has no status to
+            // change, and nothing to service. One that lands after it wakes
+            // its owner once, which shows nothing and asks no frame.
+            assert!(
+                services <= 1,
                 "typing {key:?} serviced its owner {services} times"
             );
         }

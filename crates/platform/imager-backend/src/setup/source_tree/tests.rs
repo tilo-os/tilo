@@ -553,8 +553,8 @@ tilo_test_env::scenario! {
         // file and the socket it keeps while it runs.
         let records =
             tilo_settings_records::Records::of(&tilo_settings_records::profile_root().unwrap());
-        fs::create_dir_all(records.dir()).unwrap();
         let [lock, socket] = records.runtime_files();
+        fs::create_dir_all(lock.parent().unwrap()).unwrap();
         fs::write(&lock, b"").unwrap();
         let _socket = std::os::unix::net::UnixListener::bind(&socket).unwrap();
         let tree = discover_home(&home, &SteamCatalog::builtin()).unwrap();

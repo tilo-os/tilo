@@ -492,11 +492,28 @@ impl Checker<'_> {
         acc.unwrap_or_else(|| Ex::str(""))
     }
 
+    /// `v` (a `Date` or `Time`) as a sentence that names it reads it, in the person's formats: a
+    /// runtime call, because the formats and the zone are the platform's. `kind` is 0 for a day,
+    /// 1 for a moment.
+    ///
+    /// Naming a stored day or moment in text reads no clock of its own, as a view showing one
+    /// reads none: the platform names it in the person's formats, so a program holding a moment
+    /// can print it and an action need not declare `uses time`.
+    fn shown_in_sentence(v: Ex, kind: i32) -> Ex {
+        let kind = Ex::new(Ek::I32(kind), Ty::Bool);
+        let reads = Ek::Host(Imp::DateShow, vec![v, kind]);
+        Ex::new(reads, Ty::Text)
+    }
+
     pub(super) fn text_of(&mut self, v: Ex, span: Span) -> Ex {
         match &v.ty {
             Ty::Text | Ty::Error => v,
-            // Its ISO text, or its URI.
-            Ty::Date | Ty::Time | Ty::Identifier => v.typed(Ty::Text),
+            // Its URI.
+            Ty::Identifier => v.typed(Ty::Text),
+            // A day or a moment as a sentence names it (`Jun 29`, `Jun 29, 2025`, `Jun 29, 6:00
+            // PM`), in the person's formats; `.iso()` is the stored text a machine reads.
+            Ty::Date => Self::shown_in_sentence(v, 0),
+            Ty::Time => Self::shown_in_sentence(v, 1),
             Ty::Int => Ex::host(Imp::IntToStr, vec![v], Ty::Text),
             Ty::Float => Ex::host(Imp::FloatToStr, vec![v], Ty::Text),
             // Its length in the largest unit that divides it: `2h`, `90m`.

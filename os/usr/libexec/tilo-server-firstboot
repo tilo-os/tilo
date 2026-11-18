@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Complete host enrollment and provisioning with the trusted nearby Tilo device.
+# Complete this machine's enrollment with one of the person's devices, and its
+# provisioning.
 set -euo pipefail
 
 token=/etc/tilo/enrollment-token.txt
@@ -52,31 +53,21 @@ fi
 label="$(hostnamectl --static 2>/dev/null || true)"
 [[ -n "$label" ]] || label="$(hostname 2>/dev/null || true)"
 [[ -n "$label" ]] || label='Home server'
+
+# What this machine was handed is root's to read: a token another account
+# could have swapped in is not one.
 if [[ -e "$token" || -L "$token" ]]; then
-    token_metadata="$(stat -c '%u:%a:%h:%s' -- "$token" 2>/dev/null || true)"
-    if [[ ! -f "$token" || -L "$token" || ! "$token_metadata" =~ ^0:(600|644):1:([0-9]+)$ \
-        || "${BASH_REMATCH[2]:-4097}" -gt 4096 ]]; then
-        echo "tilo-server-firstboot: refusing unsafe enrollment-token inode" >&2
-        rm -f -- "$token"
-        exit 1
-    fi
+    [[ "$(stat -c '%u' -- "$token" 2>/dev/null || echo unknown)" = 0 ]] \
+        || { echo "tilo-server-firstboot: refusing an enrollment token not owned by root" >&2; exit 1; }
 fi
 
-if [[ -s "$token" ]] && ! grep -q '^# Replace' "$token"; then
-    # A real bearer token must not be readable by local users. Mode 0644 is
-    # accepted only for the non-secret image placeholder handled by the pair
-    # branch below.
-    if [[ "$(stat -c '%a' -- "$token")" != 600 ]]; then
-        echo "tilo-server-firstboot: enrollment token must be mode 0600" >&2
-        exit 1
-    fi
-    /usr/libexec/tilo/tilo-enroll join --token-file "$token" --identity-root /var/lib/tilo \
-        --home-peer-output /etc/tilo/home-peer.toml --label "$label" --timeout 270
-    shred -u -- "$token" 2>/dev/null || rm -f -- "$token"
-else
-    /usr/libexec/tilo/tilo-enroll pair --identity-root /var/lib/tilo \
-        --home-peer-output /etc/tilo/home-peer.toml --label "$label" --timeout 270
-fi
+# The one enrollment every Tilo image uses. It takes the token in
+# /etc/tilo/enrollment-token.txt when the deployment put a real one there,
+# and otherwise shows a code a device of the person's approves; the methods it
+# may use are the ones this image declares in
+# /usr/lib/tilo/enrollment-methods. It burns the token it spends.
+/usr/libexec/tilo/tilo-enroll enroll --identity-root /var/lib/tilo \
+    --home-peer-output /etc/tilo/home-peer.toml --label "$label" --timeout 270
 valid_device_certificate \
     || { echo "tilo-server-firstboot: enrollment produced an unsafe device certificate" >&2; exit 1; }
 handoff_home_peer

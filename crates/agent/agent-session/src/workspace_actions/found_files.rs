@@ -1,40 +1,31 @@
 //! A workspace's files, found by words: the files of its tree ([`fs_protocol::tree`]), by their
-//! names and paths and by what a text file or a text document says.
+//! names and paths and by what a text file says.
 //!
 //! A workspace has one folder, its Files record, and a search of the workspace finds what is in
 //! it as it finds what its apps hold. A file is not a resource of an app: it is answered by its
 //! path in the folder (`legal/contract.txt`), which a computer that logged in has at
-//! `~/<workspace>/legal/contract.txt` and a page shows in Files. Its words come from the content
-//! this host keeps of the tree ([`super::content`]), put together from the chunks its manifest
-//! lists ([`fs_content::whole`]), or, for a text document, from the tree itself
-//! ([`fs_protocol::tree::document_file`]).
+//! `~/<workspace>/legal/contract.txt` and a page shows in Files. Its words are indexed as the
+//! tree's chunks land ([`super::files_index`]), so a find ranks them without opening the tree's
+//! documents or reading a file.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
-use fs_protocol::files::{FileNodeKind, TreeChunk};
+use fs_protocol::files::TreeChunk;
 use fs_protocol::tree::{FILES_APP, TREE_KIND, Tree, TreeChunks};
 use tilo_actions::remote::Found;
 use tilo_server_protocol::WorkspaceId;
 
-use super::Worker;
+use super::files_index::File;
+use super::{Ordering, Worker};
 
 use tilo_actions::remote::FOUND_FILE as FILE_KIND;
-
-/// The most of one file read for its words: a larger one is still found by its name.
-const MOST_READ_BYTES: u64 = 1024 * 1024;
-
-/// One file of the tree, as a search ranks it.
-struct File {
-    path: String,
-    name: String,
-    words: Option<String>,
-}
 
 impl Worker {
     /// The files of `workspace_id`'s tree that `needle` finds, those it names first, then those
     /// whose words hold it, at most `most`.
     pub(super) fn found_files(
-        &self,
+        &mut self,
         workspace_id: WorkspaceId,
         cluster_id: &str,
         needle: &str,
@@ -44,33 +35,54 @@ impl Worker {
         if needle.is_empty() || most == 0 {
             return Vec::new();
         }
-        let Some(workspace) = self.workspaces.get(&workspace_id) else {
+        let Some(engine) = self
+            .workspaces
+            .get(&workspace_id)
+            .map(|workspace| Arc::clone(workspace.peer.engine()))
+        else {
             return Vec::new();
         };
-        let engine = workspace.peer.engine();
-        let Some(records) = tree_records(engine, cluster_id) else {
+        let content = self.workspace_content(workspace_id);
+        let counted = &self.shared.search;
+        let Some(workspace) = self.workspaces.get_mut(&workspace_id) else {
             return Vec::new();
         };
-        let (tree, documents) = records.split();
-        let store = self.workspace_content(workspace_id);
-        let files = files_of(&tree, |id, node| {
-            if node.codec.is_some() {
-                let chunk = node.document_id.map_or(1, |record| record.chunk());
-                let doc = documents.get(&chunk)?;
-                let file = fs_protocol::tree::document_file(doc, id, &tilo_content::NoContent)?;
-                return String::from_utf8(file).ok();
+        // What the index has not read yet: the documents whose write landed since the last pass
+        // between requests. A document this replica cannot answer for yet is answered next time.
+        while let Some(chunk) = workspace.files.next() {
+            let known = workspace.files.known(chunk);
+            let chunk_id = fs_protocol::tree::chunk_document_id(chunk);
+            match engine.record_since(cluster_id, FILES_APP, &chunk_id, known) {
+                Ok(Some((bytes, revision))) => {
+                    counted.files_chunks.fetch_add(1, Ordering::Relaxed);
+                    let files = workspace
+                        .files
+                        .read(chunk, &bytes, revision, content.as_ref());
+                    counted
+                        .files_read
+                        .fetch_add(files as u64, Ordering::Relaxed);
+                }
+                Ok(None) if known.is_some() => workspace.files.unchanged(chunk),
+                Ok(None) | Err(_) => {
+                    workspace.files.pending(chunk);
+                    break;
+                }
             }
-            let store = store.as_ref()?;
-            let hash = node.hash.as_deref()?;
-            if node.size > MOST_READ_BYTES {
-                return None;
-            }
-            let file = fs_content::whole(store.read(hash)?, MOST_READ_BYTES, |chunk| {
-                store.read(&hex::encode(chunk))
-            })?;
-            String::from_utf8(file).ok()
-        });
-        ranked(files, &needle, most)
+        }
+        ranked(workspace.files.files(), &needle, most)
+    }
+}
+
+impl Worker {
+    /// The tree of `workspace_id`'s folder (the session `cluster_id`) as this replica holds
+    /// it: the tree's own record and each chunk of it held here. `None` while it holds none.
+    pub(super) fn workspace_tree(
+        &self,
+        workspace_id: WorkspaceId,
+        cluster_id: &str,
+    ) -> Option<Tree> {
+        let workspace = self.workspaces.get(&workspace_id)?;
+        Some(tree_records(workspace.peer.engine(), cluster_id)?.tree())
     }
 }
 
@@ -93,14 +105,14 @@ impl TreeRecords {
         Some(Self { index, chunks })
     }
 
-    /// The tree every record read holds, with the documents by chunk.
-    fn split(self) -> (Tree, BTreeMap<TreeChunk, automerge::AutoCommit>) {
+    /// The tree every record read holds.
+    fn tree(self) -> Tree {
         let mut tree = TreeChunks::default();
         tree.read_index(&self.index);
         for (chunk, doc) in &self.chunks {
             tree.read_chunk(*chunk, doc);
         }
-        (tree.tree(), self.chunks)
+        tree.tree()
     }
 }
 
@@ -127,22 +139,6 @@ fn tree_records(
             .ok()
             .flatten()
     })
-}
-
-/// Each live file of `tree` with its path, and its words as `words` reads them.
-fn files_of(
-    tree: &Tree,
-    mut words: impl FnMut(&str, &fs_protocol::tree::TreeEntry) -> Option<String>,
-) -> Vec<File> {
-    fs_protocol::tree::live_files(tree)
-        .into_iter()
-        .filter(|file| file.node.kind == FileNodeKind::File)
-        .map(|file| File {
-            path: file.path,
-            name: file.name,
-            words: words(file.id, file.node),
-        })
-        .collect()
 }
 
 /// The files `needle` (folded) finds: those whose name or path says it, then those whose words
@@ -175,14 +171,12 @@ fn ranked(files: Vec<File>, needle: &str, most: usize) -> Vec<Found> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::transaction::Transactable as _;
-    use automerge::{ObjType, ROOT};
 
     fn file(path: &str, words: Option<&str>) -> File {
         File {
             path: path.to_owned(),
             name: path.rsplit('/').next().unwrap_or(path).to_owned(),
-            words: words.map(str::to_owned),
+            words: words.map(Arc::from),
         }
     }
 
@@ -219,65 +213,5 @@ mod tests {
             (found.kind.as_str(), found.app.as_deref()),
             (FILE_KIND, Some(FILES_APP))
         );
-    }
-    /// The records of a workspace's folder, as a member reads them: the tree's own
-    /// record names the chunks, and each chunk is read for the files it holds.
-    #[test]
-    fn a_folder_reads_from_the_chunks_its_own_record_lists() {
-        let names = |tree: &Tree| -> Vec<String> {
-            tree.children(fs_protocol::tree::ROOT_ID)
-                .into_iter()
-                .map(|(_, node)| String::from_utf8_lossy(node.name.as_bytes()).into_owned())
-                .collect()
-        };
-        let records = TreeRecords::read(&index_of(&[1, 2]), |chunk| {
-            Some(chunk_of(&format!("f{chunk}.txt")))
-        })
-        .expect("the tree's own record reads");
-        let (tree, documents) = records.split();
-        assert_eq!(names(&tree), ["f1.txt", "f2.txt"]);
-        assert_eq!(
-            documents.len(),
-            2,
-            "each chunk is kept, for the words of a text document in it"
-        );
-
-        // A chunk this member holds none of is no part of the folder: what it finds
-        // is what it can read.
-        let records = TreeRecords::read(&index_of(&[1, 2]), |chunk| {
-            (chunk == 1).then(|| chunk_of("here.txt"))
-        })
-        .expect("the tree's own record reads");
-        let (tree, _) = records.split();
-        assert_eq!(names(&tree), ["here.txt"]);
-    }
-
-    /// A chunk record holding the file `name` under the workspace's root.
-    fn chunk_of(name: &str) -> Vec<u8> {
-        let mut doc = automerge::AutoCommit::new();
-        let nodes = doc
-            .put_object(ROOT, fs_protocol::tree::NODES_KEY, ObjType::Map)
-            .unwrap();
-        // A node's id is its record's, which no other chunk holds.
-        let node = doc
-            .put_object(&nodes, format!("device/{name}"), ObjType::Map)
-            .unwrap();
-        for (key, value) in [
-            (fs_protocol::tree::PARENT_KEY, fs_protocol::tree::ROOT_ID),
-            (fs_protocol::tree::NAME_KEY, name),
-            (fs_protocol::tree::KIND_KEY, "file"),
-        ] {
-            doc.put(&node, key, value).unwrap();
-        }
-        doc.save()
-    }
-
-    /// The tree's own record, listing the chunks `chunks`.
-    fn index_of(chunks: &[u32]) -> Vec<u8> {
-        let mut doc = automerge::AutoCommit::new();
-        for chunk in chunks {
-            fs_protocol::tree::list_chunk(&mut doc, *chunk).unwrap();
-        }
-        doc.save()
     }
 }

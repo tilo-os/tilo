@@ -78,6 +78,7 @@ fn claim(byte: u8, action: ClaimedAction, units: Vec<UnitPath>) -> ChangeClaim {
         change: [byte; 32],
         action,
         units,
+        invoker: None,
     }
 }
 
@@ -107,7 +108,7 @@ fn grants() -> Vec<Grant> {
 fn decide(person: &str, claims: &[ChangeClaim]) -> Result<Receipt, ReceiptRefusal> {
     let grants = grants();
     let party = Party::new(vec![Grantee::person(person)], grants.iter());
-    let allows = |node: &TreePath, kind: ActionKind| {
+    let allows = |_: Option<&tilo_action_policy::Acting>, node: &TreePath, kind: ActionKind| {
         party.decide(node, kind, &Context::at(0)).answer == Answer::Allow
     };
     check_claims(claims, &document(), None, None, Some(&Page), &allows)
@@ -191,7 +192,7 @@ tilo_test_env::scenario! {
     {
         let grants = grants();
         let party = Party::new(vec![Grantee::person("ada")], grants.iter());
-        let allows = |node: &TreePath, kind: ActionKind| {
+        let allows = |_: Option<&tilo_action_policy::Acting>, node: &TreePath, kind: ActionKind| {
             party.decide(node, kind, &Context::at(0)).answer == Answer::Allow
         };
         let claims = [claim(1, edit("body"), vec![Vec::new()])];
@@ -289,7 +290,7 @@ tilo_test_env::scenario! {
         let grants = grants();
         for (person, expected) in [("ada", true), ("cleo", false)] {
             let party = Party::new(vec![Grantee::person(person)], grants.iter());
-            let allows = |node: &TreePath, kind: ActionKind| {
+            let allows = |_: Option<&tilo_action_policy::Acting>, node: &TreePath, kind: ActionKind| {
                 party.decide(node, kind, &Context::at(0)).answer == Answer::Allow
             };
             let receipt = check_claims(
@@ -339,7 +340,7 @@ tilo_test_env::scenario! {
         .with_surface(Some([1; 32]));
         let surfaces = Surfaces::from_source(std::sync::Arc::new(Channels));
         assert_eq!(
-            decide_op(&op, &document(), None, None, &surfaces, &|_, _| true),
+            decide_op(&op, &document(), None, None, &surfaces, &|_, _, _| true),
             Ok(Receipt::Admit)
         );
         // A claim to a verb its kind does not publish is still refused.
@@ -357,7 +358,7 @@ tilo_test_env::scenario! {
             claims_of(&parse_changes(&doc.save()).unwrap(), |_| vec![Vec::new()]).unwrap();
         let surface_for = |kind: Option<&str>| Channels.surface(&document(), kind, None);
         assert!(matches!(
-            check_claims_by_kind(&sealed_claims, &document(), None, &surface_for, &|_, _| true),
+            check_claims_by_kind(&sealed_claims, &document(), None, &surface_for, &|_, _, _| true),
             Err(ReceiptRefusal::NotPublished(_))
         ));
     }
@@ -477,7 +478,7 @@ fn calendar_read(
 ) -> Result<Receipt, ReceiptRefusal> {
     let grants = grants();
     let party = Party::new(vec![Grantee::person("ada")], grants.iter());
-    let allows = |node: &TreePath, kind: ActionKind| {
+    let allows = |_: Option<&tilo_action_policy::Acting>, node: &TreePath, kind: ActionKind| {
         party.decide(node, kind, &Context::at(0)).answer == Answer::Allow
     };
     let units = |hash: &[u8; 32]| {
@@ -614,3 +615,6 @@ impl SurfaceSource for Channels {
         }
     }
 }
+
+#[path = "invoker_tests.rs"]
+mod invoker_tests;

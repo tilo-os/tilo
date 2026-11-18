@@ -84,6 +84,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         invocation: Option<String>,
         wait_ms: Option<u64>,
     ) -> Result<Value, Failure> {
+        // What a caller wrote is answered as the forms the app takes: an
+        // address where it picks a resource, a label where it chooses one.
+        let arguments = self
+            .bind_resource_arguments(&known.descriptor, arguments)
+            .await?;
         self.acted_in(&known.provider, &known.app_id);
         Box::pin(self.invoke_one(OneCall {
             provider: Addressed {

@@ -36,9 +36,9 @@ fn session_log(rust_log: &str) -> Vec<String> {
     let home = tempfile::tempdir().expect("a home for the session");
     // Settings this session cannot read: it says so on its log and goes on with what it has.
     let settings = home.path().join(".config/tilo/records");
-    std::fs::create_dir_all(&settings).expect("the settings directory");
+    std::fs::create_dir_all(settings.join("person")).expect("the settings directory");
     std::fs::write(
-        settings.join("person.automerge"),
+        settings.join("person/state.automerge"),
         b"a settings document no reader takes",
     )
     .expect("a settings document no reader takes");

@@ -169,8 +169,9 @@ impl HostedBrowsers {
         {
             let mut fills = self.turn_fills.0.lock_recover();
             if fills.len() >= MAX_FILLS {
-                return Err(ActionCallError::Busy {
-                    retry_after_ms: 1_000,
+                return Err(ActionCallError::Unavailable {
+                    reason: "too many page fills are waiting for their window; ask again shortly"
+                        .into(),
                 });
             }
             fills.insert(

@@ -2,7 +2,7 @@
 //! the process it started for the first.
 //!
 //! When the session starts a Tilo app in a workspace it keeps one end of a window
-//! link (`runtime_portal::windows`) and hands the other to the launch with
+//! link (`runtime_portal::process_link`) and hands the other to the launch with
 //! its release ([`launcher::launch_hold`]). Every later window of that
 //! app in that workspace is then a request on the link instead of a second
 //! process, which could never hold the app's records: one process owns them.
@@ -16,7 +16,7 @@
 //!
 //! The session and the apps are updated apart, so a window goes through the
 //! link only once the app has said it reads it
-//! (`runtime_portal::windows::SERVES_VERB`), which it does before it maps its
+//! (`runtime_portal::process_link::FromProcess::Serves`), which it does before it maps its
 //! first window. Until the app has said it or mapped a window, windows asked
 //! for wait at the link; an app that maps a window without having said it was
 //! built before the link, and each of its windows starts a process of its own,
@@ -27,6 +27,8 @@ use std::os::fd::OwnedFd;
 use std::rc::Rc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use runtime_portal::process_link::{Packet as _, ToProcess, WindowRequest};
 
 /// An app and a workspace: one process serves one of each.
 type Key = (String, String);
@@ -191,7 +193,7 @@ impl Links {
         if links.contains_key(&key) {
             return None;
         }
-        let (ours, theirs) = runtime_portal::windows::pair()
+        let (ours, theirs) = runtime_portal::process_link::pair()
             .map_err(|error| tracing::warn!(%error, app, "no window link for the launch"))
             .ok()?;
         let generation = self.generations.fetch_add(1, Ordering::Relaxed);
@@ -254,7 +256,7 @@ impl Links {
         };
         let mut late = Vec::new();
         if link.serves == Serves::Unknown
-            && runtime_portal::windows::take_serves(&link.ours).unwrap_or(false)
+            && runtime_portal::process_link::take_serves(&link.ours).unwrap_or(false)
         {
             link.serves = Serves::Yes;
             late = std::mem::take(&mut link.queued);
@@ -322,7 +324,8 @@ impl Links {
             }) else {
                 return;
             };
-            link.serves = if runtime_portal::windows::take_serves(&link.ours).unwrap_or(false) {
+            link.serves = if runtime_portal::process_link::take_serves(&link.ours).unwrap_or(false)
+            {
                 Serves::Yes
             } else {
                 Serves::No
@@ -560,8 +563,12 @@ fn hosted_window(
         .connections
         .collaboration(app, workspace, instance, Some(launcher_pid))
         .ok_or_else(|| std::io::Error::other("the instance has no collaboration connection"))?;
-    let (window, host) = runtime_portal::tilolang_process::pair()?;
-    runtime_portal::windows::send_patch(&entry.ours, instance, &window)?;
+    let (window, host) = runtime_portal::process_link::pair()?;
+    ToProcess::Patch {
+        instance,
+        patch: window,
+    }
+    .send(&entry.ours)?;
     Ok(HostedWindow {
         app: app.to_owned(),
         workspace: workspace.to_owned(),
@@ -598,19 +605,16 @@ fn send_window(
             .collaboration(app, workspace, instance, entry.launcher_pid)
     };
     let shell_ui = link.connections.shell_ui(app, instance, entry.launcher_pid);
-    let request = ui::window_link::WindowRequest {
-        instance,
-        collaboration: collaboration.is_some(),
-        shell_ui: shell_ui.is_some(),
-        reveal: opens.reveal.clone(),
-        open: opens.open.clone(),
-    };
-    ui::window_link::send(
-        &entry.ours,
-        &request,
-        collaboration.as_ref(),
-        shell_ui.as_ref(),
-    )?;
+    ToProcess::Window {
+        request: WindowRequest {
+            instance,
+            reveal: opens.reveal.clone(),
+            open: opens.open.clone(),
+        },
+        collaboration,
+        shell_ui,
+    }
+    .send(&entry.ours)?;
     tracing::info!(app, instance, "window opened in the running app");
     if let Some(hosted) = hosted {
         link.hand_over(hosted);
@@ -652,6 +656,28 @@ mod tests {
     use std::cell::RefCell;
 
     use super::*;
+
+    /// A window request as the app reads it off its link.
+    struct Opening {
+        request: WindowRequest,
+        collaboration: Option<OwnedFd>,
+    }
+
+    /// The next window request on `end`; `None` once the session closed it.
+    fn receive_window(end: &OwnedFd) -> Option<Opening> {
+        match ToProcess::receive(end).expect("a message") {
+            Some(ToProcess::Window {
+                request,
+                collaboration,
+                ..
+            }) => Some(Opening {
+                request,
+                collaboration,
+            }),
+            Some(other) => panic!("a window request: {other:?}"),
+            None => None,
+        }
+    }
 
     /// The connections a test's windows are given: pairs whose far ends the
     /// test reads the request from.
@@ -807,24 +833,20 @@ mod tests {
             links.reserve_for_test(APP, WORKSPACE);
             let mut held = links.hold(APP, WORKSPACE).expect("held");
             let launcher_end = held.serve(4_100_001).expect("the launcher's end");
-            runtime_portal::windows::send_serves(&launcher_end).unwrap();
+            runtime_portal::process_link::FromProcess::Serves.send(&launcher_end).unwrap();
 
             assert_eq!(
                 links.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
                 Routed::Opened
             );
-            let opening = ui::window_link::receive(&launcher_end)
-                .expect("a request")
-                .expect("open");
+            let opening = receive_window(&launcher_end).expect("open");
             let first = opening.request.instance;
-            assert!(opening.request.collaboration, "the window's own connection");
+            assert!(opening.collaboration.is_some(), "the window's own connection");
             assert_eq!(
                 links.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
                 Routed::Opened
             );
-            let plain = ui::window_link::receive(&launcher_end)
-                .expect("a request")
-                .expect("open")
+            let plain = receive_window(&launcher_end).expect("open")
                 .request;
             assert_eq!(
                 plain.reveal, None,
@@ -848,9 +870,7 @@ mod tests {
                 ),
                 Routed::Opened
             );
-            let told = ui::window_link::receive(&launcher_end)
-                .expect("a request")
-                .expect("open")
+            let told = receive_window(&launcher_end).expect("open")
                 .request;
             assert_eq!(
                 told.reveal.as_deref(),
@@ -870,9 +890,7 @@ mod tests {
                 links.open_in_running(APP, WORKSPACE, &budget, &never_alone, None),
                 Routed::Opened
             );
-            let opened = ui::window_link::receive(&launcher_end)
-                .expect("a request")
-                .expect("open")
+            let opened = receive_window(&launcher_end).expect("open")
                 .request;
             assert_eq!(
                 opened.open.as_deref(),
@@ -907,15 +925,13 @@ mod tests {
             links.reserve_for_test(APP, WORKSPACE);
             let mut held = links.hold(APP, WORKSPACE).expect("held");
             let launcher_end = held.serve(4_100_002).expect("the launcher's end");
-            runtime_portal::windows::send_serves(&launcher_end).unwrap();
+            runtime_portal::process_link::FromProcess::Serves.send(&launcher_end).unwrap();
 
             assert_eq!(
                 links.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, Some(77)),
                 Routed::Opened
             );
-            let request = ui::window_link::receive(&launcher_end)
-                .expect("a request")
-                .expect("open")
+            let request = receive_window(&launcher_end).expect("open")
                 .request;
             assert_eq!(
                 request.instance, 77,
@@ -976,12 +992,10 @@ mod tests {
                 links.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
                 Routed::Opened
             );
-            runtime_portal::windows::send_serves(&launcher_end).unwrap();
+            runtime_portal::process_link::FromProcess::Serves.send(&launcher_end).unwrap();
             links.window_mapped(std::process::id());
             assert!(
-                ui::window_link::receive(&launcher_end)
-                    .expect("a request")
-                    .is_some(),
+                receive_window(&launcher_end).is_some(),
                 "the window that waited opens in the app"
             );
         }
@@ -1003,7 +1017,7 @@ mod tests {
             assert!(links.host_instances(APP, WORKSPACE));
             let mut held = links.hold(APP, WORKSPACE).expect("held");
             let launcher_end = held.serve(4_100_008).expect("the launcher's end");
-            runtime_portal::windows::send_serves(&launcher_end).unwrap();
+            runtime_portal::process_link::FromProcess::Serves.send(&launcher_end).unwrap();
 
             let first_opens = Opens {
                 record: Some("uuid:7a110d00-0000-4000-8000-000000000009".to_owned()),
@@ -1012,8 +1026,10 @@ mod tests {
             links
                 .first_hosted_window(APP, WORKSPACE, 5, &first_opens)
                 .unwrap();
-            let Some(runtime_portal::windows::Message::Patch(first, first_patch)) =
-                runtime_portal::windows::receive_message(&launcher_end).unwrap()
+            let Some(ToProcess::Patch {
+                instance: first,
+                patch: first_patch,
+            }) = ToProcess::receive(&launcher_end).unwrap()
             else {
                 panic!("the first window's patch connection");
             };
@@ -1032,21 +1048,20 @@ mod tests {
                 ),
                 Routed::Opened
             );
-            let Some(runtime_portal::windows::Message::Patch(patched, _)) =
-                runtime_portal::windows::receive_message(&launcher_end).unwrap()
+            let Some(ToProcess::Patch {
+                instance: patched, ..
+            }) = ToProcess::receive(&launcher_end).unwrap()
             else {
                 panic!("the window's patch connection comes first");
             };
-            let opening = ui::window_link::receive(&launcher_end)
-                .expect("a request")
-                .expect("open");
+            let opening = receive_window(&launcher_end).expect("open");
             assert_eq!(
                 opening.request.instance, patched,
                 "for the window asked for"
             );
             assert_eq!(patched, 6);
             assert!(
-                !opening.request.collaboration && opening.collaboration.is_none(),
+                opening.collaboration.is_none(),
                 "the window holds none of the app's data"
             );
 

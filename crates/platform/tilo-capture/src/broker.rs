@@ -220,6 +220,61 @@ pub trait Policy: Send + Sync {
     fn allows(&self, device: DeviceKind) -> bool;
 }
 
+/// Where the person's answers about one app's devices are kept.
+pub trait Answers: Send + Sync {
+    /// The person's answer for `device`, `None` when they gave none.
+    fn answer(&self, device: DeviceKind) -> Option<bool>;
+    /// Keep the person's answer for `device`.
+    ///
+    /// # Errors
+    /// The answer could not be kept.
+    fn keep(&self, device: DeviceKind, allowed: bool) -> Result<(), String>;
+}
+
+impl<T: Answers + ?Sized> Answers for std::sync::Arc<T> {
+    fn answer(&self, device: DeviceKind) -> Option<bool> {
+        (**self).answer(device)
+    }
+
+    fn keep(&self, device: DeviceKind, allowed: bool) -> Result<(), String> {
+        (**self).keep(device, allowed)
+    }
+}
+
+/// The policy of a broker that asks: a device the app declares is allowed or
+/// refused as the person answered, and `consent` asks them once when they
+/// never did.
+pub struct Asking<A, C> {
+    pub declared: Vec<DeviceKind>,
+    pub answers: A,
+    pub consent: C,
+}
+
+impl<A: Answers, C> Policy for Asking<A, C>
+where
+    C: Fn(DeviceKind) -> Result<bool, String> + Send + Sync,
+{
+    fn admit(&self, device: DeviceKind) -> Result<(), String> {
+        if !self.declared.contains(&device) {
+            return Err(format!("the app does not declare the {device:?}"));
+        }
+        let allowed = if let Some(allowed) = self.answers.answer(device) {
+            allowed
+        } else {
+            let allowed = (self.consent)(device)?;
+            self.answers.keep(device, allowed)?;
+            allowed
+        };
+        allowed
+            .then_some(())
+            .ok_or_else(|| format!("the {device:?} is not allowed"))
+    }
+
+    fn allows(&self, device: DeviceKind) -> bool {
+        self.declared.contains(&device) && self.answers.answer(device) == Some(true)
+    }
+}
+
 pub trait Sources: Send + Sync {
     fn camera(&self, request: &CameraRequest) -> Result<VideoCapture, CaptureError>;
     fn microphone(&self, request: &MicrophoneRequest) -> Result<AudioCapture, CaptureError>;
@@ -526,6 +581,38 @@ pub mod synthetic {
         MicrophoneRequest, Sources, VideoCapture, VideoSource,
     };
 
+    /// The person's answers, kept in memory rather than in their store.
+    #[derive(Default)]
+    pub struct Kept(std::sync::Mutex<Vec<(crate::DeviceKind, bool)>>);
+
+    impl Kept {
+        /// Take back what the person answered for `device`; `false` when nothing.
+        pub fn revoke(&self, device: crate::DeviceKind) -> bool {
+            use tilo_lock::MutexRecover as _;
+            let mut kept = self.0.lock_recover();
+            let before = kept.len();
+            kept.retain(|(asked, _)| *asked != device);
+            kept.len() != before
+        }
+    }
+
+    impl super::Answers for Kept {
+        fn answer(&self, device: crate::DeviceKind) -> Option<bool> {
+            use tilo_lock::MutexRecover as _;
+            self.0
+                .lock_recover()
+                .iter()
+                .find(|(asked, _)| *asked == device)
+                .map(|(_, allowed)| *allowed)
+        }
+
+        fn keep(&self, device: crate::DeviceKind, allowed: bool) -> Result<(), String> {
+            use tilo_lock::MutexRecover as _;
+            self.0.lock_recover().push((device, allowed));
+            Ok(())
+        }
+    }
+
     struct Pattern {
         frame: u8,
     }
@@ -579,7 +666,7 @@ pub mod synthetic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::grants::{Decision, DeviceGrants, GrantPolicy};
+    use synthetic::Kept;
 
     #[track_caller]
     fn until<T>(probe: impl FnMut() -> Option<T>) -> T {
@@ -588,8 +675,7 @@ mod tests {
 
     struct Host {
         client: Client,
-        grants: Arc<DeviceGrants>,
-        _dir: tempfile::TempDir,
+        kept: Arc<Kept>,
     }
 
     fn host(declared: Vec<DeviceKind>, consent: bool) -> Host {
@@ -597,21 +683,17 @@ mod tests {
     }
 
     fn host_of(declared: Vec<DeviceKind>, consent: bool, sources: Arc<dyn Sources>) -> Host {
-        let dir = tempfile::tempdir().unwrap();
-        let grants = Arc::new(DeviceGrants::open(&dir.path().join("grants")).unwrap());
         let (app, runtime) = UnixDatagram::pair().unwrap();
-        let policy: Arc<dyn Policy> = Arc::new(GrantPolicy {
-            grants: Arc::clone(&grants),
-            workspace: "r".into(),
-            app: "so.tilo.video".into(),
+        let kept = Arc::new(Kept::default());
+        let policy: Arc<dyn Policy> = Arc::new(Asking {
             declared,
+            answers: Arc::clone(&kept),
             consent: move |_| Ok(consent),
         });
         std::thread::spawn(move || serve(&runtime, &policy, &sources));
         Host {
             client: Client::new(app),
-            grants,
-            _dir: dir,
+            kept,
         }
     }
 
@@ -686,11 +768,7 @@ mod tests {
         let samples = until(|| Some(microphone.read()).filter(|s| !s.is_empty()));
         assert!(samples.iter().all(|s| (*s - 0.25).abs() < f32::EPSILON));
         assert_eq!(microphone.sample_rate(), 48_000);
-        assert_eq!(
-            host.grants
-                .decision("r", "so.tilo.video", DeviceKind::Camera),
-            Some(Decision::Allow)
-        );
+        assert_eq!(host.kept.answer(DeviceKind::Camera), Some(true));
     }
 
     tilo_test_env::scenario! {
@@ -707,9 +785,7 @@ mod tests {
             );
             assert!(camera.take_latest().is_none());
             assert_eq!(
-                undeclared
-                    .grants
-                    .decision("r", "so.tilo.video", DeviceKind::Camera),
+                undeclared.kept.answer(DeviceKind::Camera),
                 None,
                 "an undeclared device was recorded"
             );
@@ -722,27 +798,21 @@ mod tests {
                 CaptureState::Failed(CaptureError::PermissionDenied)
             );
             assert_eq!(
-                denied
-                    .grants
-                    .decision("r", "so.tilo.video", DeviceKind::Camera),
-                Some(Decision::Deny)
+                denied.kept.answer(DeviceKind::Camera),
+                Some(false)
             );
         }
 
         phase the_persons_answer_wakes_an_app_that_sleeps_until_then;
         {
             for allow in [true, false] {
-                let dir = tempfile::tempdir().unwrap();
-                let grants = Arc::new(DeviceGrants::open(&dir.path().join("grants")).unwrap());
                 let (asked_tx, asked_rx) = std::sync::mpsc::channel::<()>();
                 let (answer_tx, answer_rx) = std::sync::mpsc::channel::<bool>();
                 let prompt = Mutex::new((asked_tx, answer_rx));
                 let (app, runtime) = UnixDatagram::pair().unwrap();
-                let policy: Arc<dyn Policy> = Arc::new(GrantPolicy {
-                    grants,
-                    workspace: "r".into(),
-                    app: "so.tilo.camera".into(),
+                let policy: Arc<dyn Policy> = Arc::new(Asking {
                     declared: vec![DeviceKind::Camera],
+                    answers: Kept::default(),
                     consent: move |_| {
                         let prompt = prompt.lock_recover();
                         let _ = prompt.0.send(());
@@ -786,11 +856,7 @@ mod tests {
             let host = host(vec![DeviceKind::Camera], true);
             let mut camera = host.client.camera(&CAMERA).unwrap();
             until(|| camera.take_latest());
-            assert!(
-                host.grants
-                    .revoke("r", "so.tilo.video", DeviceKind::Camera)
-                    .unwrap()
-            );
+            assert!(host.kept.revoke(DeviceKind::Camera));
             until(|| Some(camera.state()).filter(|s| *s == CaptureState::Ended));
         }
     }

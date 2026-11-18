@@ -220,6 +220,7 @@ impl App {
         self.actions.action_directory_stamp = None;
         self.actions.action_directory_cursors.clear();
         self.actions.action_directory_retired = None;
+        self.actions.action_directory_borrowed = None;
         self.actions.local_resource_cache.get_mut().take();
         self.actions.open_resource_search_cache.get_mut().take();
         self.actions.last_control_availability = None;

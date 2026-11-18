@@ -102,3 +102,5 @@ provenance-written-there = Geschrieben von { $name } in { $source } am { $date }
 provenance-written-there-named = Geschrieben von { $name } in { $source } ({ $reference }) am { $date }
 # Das Werkzeug, aus dem ein Element kommt, mit dem Namen, den es dort hatte.
 provenance-source-named = { $source } ({ $reference })
+# Der Tag, an dem ein verschobenes Element dort geschrieben wurde.
+provenance-written-on = Geschrieben am { $date }

@@ -275,9 +275,9 @@ impl<R: Resource> ResourceEnv<R> {
         // member's own record (Mail's) is theirs to write, so its window's
         // dispatcher is not read-only.
         let read_only = self.dispatch.read_only() || self.dispatch.is_past();
-        let dispatch = super::chain::dispatching(&state, &me, |apply| {
+        let dispatch = super::chain::dispatching(&state, &me, |apply, group| {
             self.dispatch
-                .for_workspace_resource::<P>(state.id(), read_only, apply)
+                .for_workspace_resource::<P>(state.id(), read_only, apply, group)
         });
         Some(super::Chain::new(state, dispatch))
     }
@@ -399,14 +399,13 @@ impl<R: Resource> ResourceEnv<R> {
         }
     }
 
-    /// The file whose history History shows beside the resource's, for an
-    /// app that declares [`ResourceApp::FILE_HISTORY`](super::ResourceApp::FILE_HISTORY):
-    /// set its target to the file the window shows (the selected one) and
-    /// open it from the window's own History command. `None` for any other
-    /// app, and in a past version.
-    pub fn file_history(&self) -> Option<ui_core::history_mode::checked_files::FileHistorySource> {
+    /// The folder History lists, for an app that declares
+    /// [`ResourceApp::FOLDER_HISTORY`](super::ResourceApp::FOLDER_HISTORY): narrow it to the
+    /// file the window shows (the selected one) and open it from the window's own History
+    /// command. `None` for any other app, and in a past version.
+    pub fn folder_history(&self) -> Option<ui_core::history_mode::folder::FolderHistorySource> {
         self.run
-            .file_history
+            .folder_history
             .as_ref()
             .map(|(source, _)| source.clone())
     }

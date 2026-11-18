@@ -1288,7 +1288,7 @@ fn the_list_scrolls_and_keeps_the_open_article_in_view() {
             );
             chain
                 .stage_as(
-                    &ArticlePart::RECEIVE.with(crate::part::article_part::Receive {
+                    &ArticleList::RECEIVE.with(crate::article_list::article_list::Receive {
                         feed: feed.clone(),
                         articles: vec![archived],
                     }),

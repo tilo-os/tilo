@@ -22,7 +22,7 @@ fn a_visitor_launch_hands_the_app_its_visitor_switch() {
         gui_open_args(&opts),
         [
             "https://example.com/",
-            runtime_portal::windows::VISITOR_WINDOW_FLAG
+            runtime_portal::process_link::VISITOR_WINDOW_FLAG
         ]
     );
 }

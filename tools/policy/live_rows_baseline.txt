@@ -7,7 +7,7 @@ untyped-live-row 3 apps/calendar/src/app/contact_attendees.rs
 untyped-live-row 1 apps/calendar/src/app/store.rs
 untyped-live-row 5 apps/camera/src/actions.rs
 untyped-live-row 1 apps/chat/src/direct.rs
-untyped-live-row 6 apps/chat/src/effects.rs
+untyped-live-row 5 apps/chat/src/effects.rs
 untyped-live-row 4 apps/clocks/src/resource.rs
 untyped-live-row 3 apps/code-editor/src/app/surface.rs
 untyped-live-row 1 apps/contacts/src/account_editor.rs

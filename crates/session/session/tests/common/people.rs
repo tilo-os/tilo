@@ -1257,9 +1257,10 @@ impl Device {
             .collect::<Vec<_>>()
             .join("\n");
         format!(
-            "windows: {}\nwhat its session warned:\n{}\nlast lines of its log:\n{tail}\n\
-             what its apps said:\n{apps}",
+            "windows: {}\nwhat it told: {}\nwhat its session warned:\n{}\n\
+             last lines of its log:\n{tail}\nwhat its apps said:\n{apps}",
             self.ask(&json!({"op": "windows"})),
+            self.state()["state"]["notifications"],
             self.warnings(),
         )
     }
@@ -1284,10 +1285,6 @@ impl Device {
             .args([
                 "--backend",
                 "headless",
-                // The person's shell, with the shell that shows it: what a device's session mounts
-                // and what [`Device::open`] opens into.
-                "--shell",
-                "screen",
                 "--no-x11",
                 "--session-bus",
                 "none",
@@ -1882,39 +1879,6 @@ pub struct Chat<'a> {
 }
 
 impl Chat<'_> {
-    /// The provider and id the session publishes for the app's `operation`,
-    /// once the running app published it: the app names its own actions, so a
-    /// caller asks rather than writing them down.
-    fn action(&self, operation: &str) -> (String, String) {
-        let mut named = None;
-        tilo_test_env::wait_until(
-            format!("{} publishes Chat's {operation}", self.device.label),
-            || {
-                let answer = self.device.actions();
-                named = answer["answer"]["actions"].as_array().and_then(|rows| {
-                    rows.iter()
-                        // The running app's own: a provider the session names by the app's
-                        // live connection, not the launcher that would start it again.
-                        .find(|row| {
-                            row["application"] == "so.tilo.chat"
-                                && row["operation"] == operation
-                                && row["provider"]
-                                    .as_str()
-                                    .is_some_and(|provider| provider.parse::<u64>().is_ok())
-                        })
-                        .map(|row| {
-                            (
-                                row["provider"].as_str().expect("a provider").to_owned(),
-                                row["id"].as_str().expect("an action's id").to_owned(),
-                            )
-                        })
-                });
-                named.is_some()
-            },
-        );
-        named.expect("the action the session published")
-    }
-
     /// Invoke the app's `operation` with `args` and wait for what it answered: the value it
     /// returned, or the refusal it gave. An action the workspace asks the person about first is
     /// answered, as the person at the device answers its prompt.
@@ -1940,12 +1904,7 @@ impl Chat<'_> {
     /// The app's answer to `operation` with `args` once it settled: the person's confirmation given
     /// where the action asked for it.
     pub fn settled(&self, operation: &str, args: &Value) -> Value {
-        let (provider, id) = self.action(operation);
-        let answer = self.device.act_wait(&provider, &id, args);
-        if answer["err"]["code"].as_str() == Some("needs_confirmation") {
-            return self.device.act_confirming(&provider, &id, args);
-        }
-        answer
+        self.device.app_act("so.tilo.chat", operation, args)
     }
 
     /// The person a conversation with `peer` is with, as the app's direct actions take it: their

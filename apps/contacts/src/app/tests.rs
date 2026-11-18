@@ -1,10 +1,10 @@
 use super::files::ImportSummary;
 use super::*;
+use crate::contact_cards::{Book, ContactCards};
 use crate::form::{Slot, TYPE_OPTIONS, TypeTarget};
 use crate::model::normalize_text;
 use crate::model::sample_contacts;
 use crate::model::{Address, Birthday};
-use crate::part::{Book, ContactPart};
 use crate::vcard;
 use crate::view::DialogChoice;
 use automerge::AutoCommit;
@@ -416,7 +416,7 @@ fn sidebar_destinations_narrow_the_list() {
         let mut contact = app.store.contact(id).cloned().unwrap();
         let before = contact.clone();
         contact.groups.clear();
-        app.invoke(&ContactPart::save(&before, &contact).unwrap());
+        app.invoke(&ContactCards::save(&before, &contact).unwrap());
     }
     app.list_stale = true;
     app.publish();
@@ -831,11 +831,11 @@ fn search_and_open_operations_reveal_their_target() {
             .expect("Grace is seeded")
             .id;
         app.selected = None;
-        let part = ContactPart {
+        let part = ContactCards {
             contacts: app.book().into(),
             removed: ui::tilo_resource::Set::default(),
         };
-        let entries = ContactPart::search(&part);
+        let entries = ContactCards::search(&part);
         let hits: Vec<_> = entries
             .iter()
             .filter(|entry| entry.text.to_lowercase().contains("navy"))
@@ -843,7 +843,7 @@ fn search_and_open_operations_reveal_their_target() {
         assert_eq!(hits.len(), 1, "the organisation finds one contact");
         assert_eq!(hits[0].title, "Grace Hopper");
         let anchor = hits[0].anchor.clone().expect("the hit opens a contact");
-        assert_eq!(anchor, crate::part::contact_resource_id(id));
+        assert_eq!(anchor, crate::contact_cards::contact_resource_id(id));
         app.app
             .call("open", serde_json::json!({ "anchor": anchor }))
             .expect("the open operation succeeds");
@@ -874,7 +874,7 @@ fn search_and_open_operations_reveal_their_target() {
         app.app
             .call(
                 "open",
-                serde_json::json!({ "anchor": crate::part::contact_resource_id(id) }),
+                serde_json::json!({ "anchor": crate::contact_cards::contact_resource_id(id) }),
             )
             .expect("the addressed open succeeds");
         app.settle();
@@ -1117,7 +1117,7 @@ fn saves_persist_and_refusals_never_claim_success() {
         set_title(&app, "Unsaved draft");
         // A member deletes the resource while it is being edited.
         app.app
-            .chain_invoke(&ContactPart::delete(contact.id))
+            .chain_invoke(&ContactCards::delete(contact.id))
             .unwrap();
         app.settle();
         app.save_edit();
@@ -1152,7 +1152,7 @@ fn saves_persist_and_refusals_never_claim_success() {
             .cloned()
             .unwrap();
         app.app
-            .chain_invoke(&ContactPart::delete(contact.id))
+            .chain_invoke(&ContactCards::delete(contact.id))
             .unwrap();
         app.settle();
         std::rc::Rc::make_mut(&mut app.store)
@@ -1162,7 +1162,7 @@ fn saves_persist_and_refusals_never_claim_success() {
 
         assert!(
             app.submit(
-                Invoke::edit(&ContactPart::favorite(contact.id, !contact.favorite)).unwrap()
+                Invoke::edit(&ContactCards::favorite(contact.id, !contact.favorite)).unwrap()
             )
             .is_ok(),
             "the stale control submits the typed favorite action"
@@ -1848,7 +1848,7 @@ fn deleting_your_contact_is_the_palette_action_and_undo_takes_it_back() {
     let mut h = Harness::new(1280, 800);
     let id = h.app.selected.unwrap();
     let before = h.book();
-    let expected = h.app.book_after(&ContactPart::delete(id));
+    let expected = h.app.book_after(&ContactCards::delete(id));
     assert!(h.press_named(NamedKey::Delete));
     h.app.settle();
     assert!(!host_confirmation_is_up(&mut h.app), "nothing is asked");
@@ -1884,7 +1884,7 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
         let before = h.app.store.contact(id).unwrap().favorite;
         let expected = h
             .app
-            .book_after(&Invoke::edit(&ContactPart::favorite(id, !before)).unwrap());
+            .book_after(&Invoke::edit(&ContactCards::favorite(id, !before)).unwrap());
 
         assert!(h.press_right(row));
         let rows = menu_rows(&h.app);
@@ -1910,7 +1910,7 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
         h.app
             .app
             .call_on(
-                &crate::part::contact_resource_id(id),
+                &crate::contact_cards::contact_resource_id(id),
                 "delete-contact",
                 serde_json::json!({}),
             )
@@ -2464,7 +2464,7 @@ fn search_field_focus_and_typing_narrow_the_list() {
     let grace = id_named(&h.app, "Grace Hopper");
     assert_eq!(
         people[0].action_id,
-        crate::part::contact_resource_id(grace),
+        crate::contact_cards::contact_resource_id(grace),
         "the hit opens the contact"
     );
     assert!(providers[0].search("definitely no contact").is_empty());
@@ -3236,7 +3236,7 @@ fn saved_book_persists_across_restarts_and_imports() {
         let mut app = Live::sample(1280, 800);
         let before = app.store.len();
         let removed = app.store.contacts[0].id;
-        app.invoke(&ContactPart::delete(removed));
+        app.invoke(&ContactCards::delete(removed));
         app.settle();
 
         // Relaunch: the deletion stuck.
@@ -3685,8 +3685,8 @@ fn form_choice_semantics() {
 /// A peer's copies of the parts the app holds, and their states as the
 /// chain reads them.
 type PartReplicas = (
-    Vec<(u64, Replica<ContactPart>)>,
-    Vec<(u64, Rc<ContactPart>)>,
+    Vec<(u64, Replica<ContactCards>)>,
+    Vec<(u64, Rc<ContactCards>)>,
 );
 
 struct Live {
@@ -3720,7 +3720,7 @@ impl Live {
         let mut app = ui::framework::testing::TestApp::<crate::ContactsShell>::new().unwrap();
         let contacts = crate::resource::Scene::of(scenario).contacts();
         if !contacts.is_empty() {
-            app.chain_invoke(&ContactPart::add_all(contacts)).unwrap();
+            app.chain_invoke(&ContactCards::add_all(contacts)).unwrap();
         }
         app.settle();
         app.with_widget(|surface: &mut ContactsApp| surface.stage_capture(scenario))
@@ -3774,7 +3774,7 @@ impl Live {
     /// part among them; this host holds them all, so it answers that it has
     /// none to send, as a session with no other replica does.
     fn answer_the_book(&mut self) {
-        let chain = crate::part::chain();
+        let chain = crate::contact_cards::chain();
         loop {
             let asked: Vec<_> = self
                 .app
@@ -3818,7 +3818,7 @@ impl Live {
 
     /// The book the app's parts add up to.
     fn held(&self) -> Book {
-        Book::of(&self.app.chain_parts::<ContactPart>())
+        Book::of(&self.app.chain_parts::<ContactCards>())
     }
 
     fn book(&mut self) -> Vec<Contact> {
@@ -3835,7 +3835,7 @@ impl Live {
         self.shared.borrow_mut().push(request);
         self.app.settle();
     }
-    fn invoke(&mut self, invoke: &Invoke<ContactPart>) {
+    fn invoke(&mut self, invoke: &Invoke<ContactCards>) {
         self.app.chain_invoke(invoke).unwrap();
         self.settle();
     }
@@ -3859,11 +3859,11 @@ impl Live {
     /// The book as it would read were `invoke` applied through the chain,
     /// on a peer's copies of the parts: what a palette entry would leave
     /// behind, without the window's own write.
-    fn book_after(&self, invoke: &Invoke<ContactPart>) -> Vec<Contact> {
+    fn book_after(&self, invoke: &Invoke<ContactCards>) -> Vec<Contact> {
         let (mut replicas, mut states) = self.part_replicas();
         let mut action = invoke.build(1_000).expect("the action builds");
-        crate::part::prepare(&mut action, &states).expect("the action reads the book");
-        let index = crate::part::part_for(&action, &states).expect("a part holds it");
+        crate::contact_cards::prepare(&mut action, &states).expect("the action reads the book");
+        let index = ui::framework::placed::<ContactCards>(&action, &states);
         if let Some((_, replica)) = replicas.iter_mut().find(|(held, _)| *held == index) {
             replica
                 .apply_action(&action)
@@ -3879,18 +3879,18 @@ impl Live {
     /// A peer's copies of the parts the app holds, and their states as the
     /// chain reads them.
     fn part_replicas(&self) -> PartReplicas {
-        let replicas: Vec<(u64, Replica<ContactPart>)> = self
+        let replicas: Vec<(u64, Replica<ContactCards>)> = self
             .app
-            .chain_parts::<ContactPart>()
+            .chain_parts::<ContactCards>()
             .iter()
             .map(|(index, _)| {
                 let bytes = self
                     .app
-                    .resource_document(&crate::part::chain().part(*index))
+                    .resource_document(&crate::contact_cards::chain().part(*index))
                     .expect("the part is kept here");
                 (
                     *index,
-                    Replica::<ContactPart>::from_doc(
+                    Replica::<ContactCards>::from_doc(
                         automerge::AutoCommit::load(&bytes).expect("the part reads"),
                     ),
                 )
@@ -3934,7 +3934,7 @@ fn duplicates_are_reviewed_field_by_field_before_merging() {
     let mut copy = ada.clone();
     copy.id = uuid::Uuid::from_u128(ada.id.as_u128() + 0x100);
     copy.org = "Babbage & Co.".into();
-    app.invoke(&ContactPart::add(&copy));
+    app.invoke(&ContactCards::add(&copy));
     app.settle();
     assert!(
         app.duplicate_candidate.is_some(),
@@ -4080,7 +4080,7 @@ fn check_refused_save_reconciles_and_announces_an_error_without_claiming_success
     let mut app = synced();
     let contact = selected_contact(&app);
     app.app
-        .chain_invoke(&ContactPart::delete(contact.id))
+        .chain_invoke(&ContactCards::delete(contact.id))
         .unwrap();
     app.settle();
     app.begin_edit(contact.clone(), false);
@@ -4104,7 +4104,7 @@ fn check_refused_favorite_and_delete_reconcile_without_false_success() {
     let mut app = synced();
     let contact = selected_contact(&app);
     app.app
-        .chain_invoke(&ContactPart::delete(contact.id))
+        .chain_invoke(&ContactCards::delete(contact.id))
         .unwrap();
     app.settle();
     // A control can still have the last rendered contact when the peer's
@@ -4419,11 +4419,11 @@ fn check_large_books_virtualize_rows_and_keep_keyboard_selection_in_view() {
         })
         .collect();
     for contact in h.app.book() {
-        let _ = h.app.app.chain_invoke(&ContactPart::delete(contact.id));
+        let _ = h.app.app.chain_invoke(&ContactCards::delete(contact.id));
     }
     h.app
         .app
-        .chain_invoke(&ContactPart::add_all(directory.clone()))
+        .chain_invoke(&ContactCards::add_all(directory.clone()))
         .unwrap();
     h.app.settle();
     h.app.selected = Some(directory[0].id);
@@ -4517,14 +4517,14 @@ fn check_reimporting_the_same_uidless_card_is_idempotent() {
 
 fn check_disconnected_uidless_imports_converge_on_one_contact_and_stable_rows() {
     let card = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Grace Hopper\r\nN:Hopper;Grace;;;\r\nTEL;TYPE=work:+1 202 555 0143\r\nEMAIL:grace@example.com\r\nCATEGORIES:Pioneers\r\nEND:VCARD\r\n";
-    let mut left = Replica::<ContactPart>::new();
+    let mut left = Replica::<ContactCards>::new();
     let mut right = left.fork();
     let left_contact = vcard::parse_vcards(card).pop().unwrap();
     let right_contact = vcard::parse_vcards(card).pop().unwrap();
     assert_eq!(left_contact, right_contact);
 
-    left.apply(ContactPart::add(&left_contact)).unwrap();
-    right.apply(ContactPart::add(&right_contact)).unwrap();
+    left.apply(ContactCards::add(&left_contact)).unwrap();
+    right.apply(ContactCards::add(&right_contact)).unwrap();
     left.sync_with(&mut right).unwrap();
 
     let merged = left.state().unwrap().contacts.to_vec();
@@ -4662,7 +4662,7 @@ fn closing_a_dialog_while_the_host_asks_to_confirm_is_safe() {
     let mut source = survivor.clone();
     source.id = uuid::Uuid::from_u128(2);
     source.org = "Analytical Engines".into();
-    app.chain_invoke(&ContactPart::add_all(vec![
+    app.chain_invoke(&ContactCards::add_all(vec![
         survivor.clone(),
         source.clone(),
     ]))

@@ -38,8 +38,7 @@ pub mod descriptions;
 pub mod detail;
 pub mod digest;
 pub mod facets;
-pub mod file_changes;
-/// A folder's own changes, read from the tree record that holds its files' versions.
+/// A folder's own changes, read from the documents of the tree its files are.
 pub mod folder;
 pub mod groups;
 mod log;
@@ -68,7 +67,10 @@ pub use collaboration::history_source::verbs;
 pub use collaboration::history_source::words::{self, HistoryWords};
 pub use collaboration::history_source::{entry_id_from_hash, is_history_metadata};
 pub use compare::{CompareError, HistoryComparison, compare_entries};
-pub use detail::{HistoryResourceTarget, HistorySelectionDetail, contains_opaque_id, human_label};
+pub use detail::{
+    HistoryResourceTarget, HistorySelectionDetail, agent_spoken_label, contains_opaque_id,
+    human_label,
+};
 pub use digest::{ActivityBrief, ActivityBriefAction, ActivityDigest};
 pub use facets::HistoryFacetIndex;
 pub use groups::{

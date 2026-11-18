@@ -1,7 +1,7 @@
 //! One notebook per workspace: every Notes window in a workspace shows the same
 //! pages.
 
-use crate::framework_support::{add_note, body, deliver, notes, open, shown, surface};
+use crate::framework_support::{add_note, body, notes, open, shown, surface};
 use notes::NotesShell;
 use ui::framework::testing::TestApp;
 
@@ -36,9 +36,8 @@ fn a_second_open_window_updates_live_with_what_the_first_writes() {
     let mut first = notes();
     let inbox = add_note(&mut first, "Inbox", "Call the dentist");
     open(&mut first, inbox);
-    // The part the note is kept in is on disk when the second window opens,
-    // as a window opened later finds what an earlier one saved.
-    first.flush().unwrap();
+    // Both windows read and write the one store, as a person's two windows
+    // in one session do.
     let mut second = first.open_window().unwrap();
     assert_eq!(
         second.record(),
@@ -52,7 +51,7 @@ fn a_second_open_window_updates_live_with_what_the_first_writes() {
     first.harness().click_at(editor.x0 + 20.0, editor.y0 + 10.0);
     first.harness().key("End");
     first.harness().type_text(" today");
-    assert!(deliver(&mut first, &mut second));
+    second.settle();
     let shown_text = surface(&mut second, |notes| notes.editor_text_for_test());
     assert!(
         shown_text.contains("Call the dentist today"),
@@ -61,7 +60,7 @@ fn a_second_open_window_updates_live_with_what_the_first_writes() {
 
     // A note the second window adds appears in the first window's tree.
     let later = add_note(&mut second, "Later", "Read the paper");
-    assert!(deliver(&mut second, &mut first));
+    first.settle();
     let tree = surface(&mut first, |notes| {
         notes
             .workspace_pages_for_test()

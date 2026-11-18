@@ -131,7 +131,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
       return JSON.stringify({entered: JSON.parse(list).map(entry => entry.origin === origin && entry.workspace === workspace && !entry.name ? {...entry, name} : entry), unchoose: []});
     },
   });
-  globalThis.__entryPageFixture = {page, runtime, mounted: [], prepared, identity, kept, prepareGpu: () => prepared.push(document.documentElement.dataset.arrival),
+  globalThis.__entryPageFixture = {page, runtime, mounted: [], prepared, prefetched: [], identity, kept, prepareGpu: () => prepared.push(document.documentElement.dataset.arrival),
     joinViaHost: join ?? joinViaHost, pair,
     findProfile: async person => (profile ? {version: 1, user_public_key: person, ...profile} : null),
     boot: async options => {
@@ -150,7 +150,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
   let source = await readFile(new URL('./entry-page.mjs', import.meta.url), 'utf8');
   source = source
     .replace("import {boot, grammar} from './entry.mjs';", 'const boot = globalThis.__entryPageFixture.boot, grammar = () => globalThis.__entryPageFixture.page.link;')
-    .replace("import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetchDesktop, prefetchOfferedApplications, prepareGpu, reportPageErrors} from './host.mjs';", 'const applicationName = async () => null, loadRuntime = async () => globalThis.__entryPageFixture.runtime, mountDesktop = (...args) => globalThis.__entryPageFixture.mounted.push(args), prefetchApplication = () => {}, prefetchDesktop = () => {}, prefetchOfferedApplications = () => {}, prepareGpu = () => globalThis.__entryPageFixture.prepareGpu(), reportPageErrors = () => {};')
+    .replace("import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetchApplications, prefetchDesktop, prepareGpu, reportPageErrors} from './host.mjs';", 'const applicationName = async () => null, loadRuntime = async () => globalThis.__entryPageFixture.runtime, mountDesktop = (...args) => globalThis.__entryPageFixture.mounted.push(args), prefetchApplication = () => {}, prefetchApplications = apps => globalThis.__entryPageFixture.prefetched.push(apps), prefetchDesktop = () => {}, prepareGpu = () => globalThis.__entryPageFixture.prepareGpu(), reportPageErrors = () => {};')
     .replace(/import \{([^}]*)\bstartArrival, ([^}]*)\} from '.\/arrival.mjs';/, "import {$1$2} from './arrival.mjs';\nconst startArrival = () => {};")
     .replace("import {servedVersion, watchForUpdate} from './bundle-update.mjs';", "import {servedVersion} from './bundle-update.mjs';\nconst watchForUpdate = () => {};")
     .replace("import {rendererUnavailable} from './webgpu-safety.mjs';", 'const rendererUnavailable = async () => null;')
@@ -170,7 +170,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
   const failure = await startEntryPage({mode: 'desktop'}).then(() => null, error => error)
     .finally(() => { if (entryParts) delete globalThis.window; });
   await tick();
-  return {calls, shown, diagnostics, page, prepared, mounted: globalThis.__entryPageFixture.mounted, listeners, session: stored, failure, at: () => assigned, screen, module};
+  return {calls, shown, diagnostics, page, prepared, mounted: globalThis.__entryPageFixture.mounted, prefetched: globalThis.__entryPageFixture.prefetched, listeners, session: stored, failure, at: () => assigned, screen, module};
 }
 
 test('the entry says what works where passkeys cannot be used, and nothing when the person closes the sheet', async () => {
@@ -711,6 +711,20 @@ test('an uncaught page error reaches the entry the site names', async () => {
 function sessionOf({phase = 'ready', transport = 'connected', admission = 'ready'} = {}) {
   return {phase, outgoingPending: 0, health: {version: 1, transport: {phase: transport}, admission: {phase: admission}, records: [], failures: []}};
 }
+
+test("the page fetches the apps the workspace's windows show, and nothing else", async () => {
+  const r = await fixture();
+  const {diagnostics, prefetched} = r;
+  // A desktop still drawing asks for nothing: there is no window yet.
+  diagnostics.onStatus({phase: 'gpu-pending', frames: 0, openApps: []});
+  assert.deepEqual(prefetched, [], 'no fetch before the first frame is up');
+  diagnostics.onStatus({phase: 'presented', frames: 1, openApps: ['so.tilo.notes', 'so.tilo.tasks']});
+  assert.deepEqual(
+    prefetched,
+    [['so.tilo.notes', 'so.tilo.tasks']],
+    "one fetch, for the apps the windows show",
+  );
+});
 
 test('the bar follows the session after the mount, not the mount alone', async () => {
   const statuses = [];

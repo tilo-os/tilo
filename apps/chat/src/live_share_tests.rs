@@ -4,7 +4,7 @@
 use crate::testing::MountedChat;
 use serde_json::json;
 use ui::framework::testing::TestApp;
-use ui::tilo_actions::ActionInvoker;
+use ui::tilo_actions::{Acting, ActionInvoker};
 use ui::window_share::{EmbedState, OpenWindow};
 
 use crate::app::Hit;
@@ -13,6 +13,15 @@ use crate::resource::ChatShell;
 use crate::testing::{chain, message_item, mounted_rows};
 
 fn share(app: &mut TestApp<ChatShell>, access: Option<&str>) -> crate::model::Message {
+    share_as(app, None, access)
+}
+
+/// The window `sharer` shares, or the person at this window where nobody is named.
+fn share_as(
+    app: &mut TestApp<ChatShell>,
+    sharer: Option<ActionInvoker>,
+    access: Option<&str>,
+) -> crate::model::Message {
     let mut arguments = json!({
         "channel": "c_chat",
         "attached": {"app": "so.tilo.notes", "record": "plan",
@@ -21,8 +30,13 @@ fn share(app: &mut TestApp<ChatShell>, access: Option<&str>) -> crate::model::Me
     if let Some(access) = access {
         arguments["access"] = json!(access);
     }
-    app.call_on(&chain(), "share-window", arguments)
-        .expect("the window is shared");
+    match sharer {
+        Some(sharer) => app
+            .call_by(sharer, &chain(), "share-window", arguments)
+            .map(drop),
+        None => app.call_on(&chain(), "share-window", arguments).map(drop),
+    }
+    .expect("the window is shared");
     app.settle();
     mounted_rows(app, "c_chat")
         .into_iter()
@@ -624,5 +638,220 @@ fn an_agent_shares_a_resource_with_no_window_of_it_open() {
     app.settle();
     let grown = window.embeds().into_iter().next().expect("the view");
     assert!(grown.working && grown.label == "Plan");
+    ui::window_share::set_drawn(false);
+}
+
+/// An agent of the person at the window, and another agent, by their ids.
+const SCOUT: &str = "44444444-4444-4444-8444-444444444444";
+const PLANNER: &str = "55555555-5555-4555-8555-555555555555";
+
+/// The person at the window, by their id.
+fn person_here(app: &mut TestApp<ChatShell>) -> String {
+    app.chat()
+        .me
+        .id
+        .person_id()
+        .expect("a person is at the window")
+        .to_owned()
+}
+
+/// The message `id` as the window holds it now.
+fn held(app: &mut TestApp<ChatShell>, id: &str) -> crate::model::Message {
+    app.settle();
+    mounted_rows(app, "c_chat")
+        .into_iter()
+        .find(|m| m.id == id)
+        .expect("the message stands")
+}
+
+/// A share an agent made for a person is that person's to end, themselves, and nobody
+/// else's: another member, another member's agent, another agent of the same person, an
+/// automation of theirs and an agent that acts for nobody are refused as before. The person
+/// ends it and nothing more: what the others may do there, and whether its window is open,
+/// stay its sharer's. The message stays, saying what was shared.
+#[test]
+fn a_person_ends_the_share_their_own_agent_made_and_nobody_else_does() {
+    let mut app = TestApp::<ChatShell>::new().unwrap();
+    let person = person_here(&mut app);
+    let shared = share_as(
+        &mut app,
+        Some(ActionInvoker::agent(SCOUT).acting_for(person.as_str())),
+        Some("edit"),
+    );
+    assert!(
+        !app.chat().is_me(&shared.author),
+        "the share is the agent's own message, not its person's"
+    );
+    let item = message_item(&shared.id);
+    for (who, invoker) in [
+        ("another member", ActionInvoker::person("u_bob")),
+        (
+            "another member's agent",
+            ActionInvoker::agent(PLANNER).acting_for("u_bob"),
+        ),
+        (
+            "another agent of the same person",
+            ActionInvoker::agent(PLANNER).acting_for(person.as_str()),
+        ),
+        (
+            "an automation of the same person",
+            ActionInvoker::automation("nightly").acting_for(person.as_str()),
+        ),
+        (
+            "an agent that acts for nobody",
+            ActionInvoker::agent(PLANNER),
+        ),
+    ] {
+        assert!(
+            app.call_by(invoker, &item, "stop-sharing", json!({}))
+                .is_err(),
+            "{who} does not end it"
+        );
+    }
+    assert!(
+        !held(&mut app, &shared.id).share.unwrap().ended,
+        "a refused stop leaves it live"
+    );
+    for (action, arguments) in [
+        ("share-open", json!({"open": false})),
+        ("set-share-access", json!({"access": "view"})),
+    ] {
+        assert!(
+            app.call_on(&item, action, arguments).is_err(),
+            "{action} stays its sharer's"
+        );
+    }
+    let before = held(&mut app, &shared.id).share.unwrap();
+    assert_eq!(
+        (before.access, before.open, before.ended),
+        (ShareAccess::Edit, true, false),
+        "what its person was refused changed nothing"
+    );
+
+    app.call_on(&item, "stop-sharing", json!({}))
+        .expect("the person ends the share their own agent made for them");
+    let ended = held(&mut app, &shared.id);
+    let share = ended.share.clone().unwrap();
+    assert!(
+        share.ended && !share.open,
+        "ended, and no longer open: {share:?}"
+    );
+    assert!(
+        ended.resource().is_some(),
+        "the message stays and says what was shared"
+    );
+}
+
+/// What is not this person's own agent's share for them is not theirs to end: another
+/// member's own share, one an agent made for another member, one an agent made for nobody,
+/// and one made for several people at once, which is nobody's alone.
+#[test]
+fn a_share_made_for_someone_else_for_nobody_or_for_several_is_not_theirs_to_end() {
+    let mut app = TestApp::<ChatShell>::new().unwrap();
+    let person = person_here(&mut app);
+    let mut several = Acting::agent(SCOUT);
+    several.acted_for = vec![Acting::person(person.as_str()), Acting::person("u_bob")];
+    for (whose, sharer) in [
+        ("of another member's own", ActionInvoker::person("u_bob")),
+        (
+            "an agent made for another member",
+            ActionInvoker::agent(PLANNER).acting_for("u_bob"),
+        ),
+        ("an agent made for nobody", ActionInvoker::agent(PLANNER)),
+        (
+            "an agent made for several people at once",
+            ActionInvoker::admitted(&several),
+        ),
+    ] {
+        let shared = share_as(&mut app, Some(sharer), None);
+        assert!(
+            app.call_on(&message_item(&shared.id), "stop-sharing", json!({}))
+                .is_err(),
+            "a share {whose} is not this person's to end"
+        );
+        assert!(
+            !held(&mut app, &shared.id).share.unwrap().ended,
+            "a share {whose} stays live"
+        );
+    }
+}
+
+/// The page's own Chat offers the way to end such a share to the person the agent made it
+/// for, on its card and in the message's menu, and to nobody else: this person is offered
+/// neither on a share another member's agent made. What the others may do there is offered
+/// to no one but its sharer. A press on the card's control ends the share through Chat's
+/// `stop-sharing`.
+#[test]
+fn the_card_offers_ending_an_agents_share_to_its_person_and_to_nobody_else() {
+    let mut app = TestApp::<ChatShell>::new().unwrap();
+    let window = ui::hosted_window::HostedWindow::new();
+    let _hosted = ui::window_toolbar::enter(Some(&window));
+    ui::window_share::set_drawn(true);
+    ui::window_share::publish_windows(Vec::new());
+    let person = person_here(&mut app);
+    let theirs = share_as(
+        &mut app,
+        Some(ActionInvoker::agent(SCOUT).acting_for(person.as_str())),
+        Some("edit"),
+    );
+    let anothers = share_as(
+        &mut app,
+        Some(ActionInvoker::agent(PLANNER).acting_for("u_bob")),
+        Some("edit"),
+    );
+    app.harness().resize((1280, 1800)).unwrap();
+    app.settle();
+    app.settle();
+    let found = hits(&mut app);
+    for shared in [&theirs, &anothers] {
+        assert!(
+            found.contains(&Hit::GrowShare(shared.id.clone()).semantic_id()),
+            "both cards are drawn: {found:?}"
+        );
+        for access in [ShareAccess::View, ShareAccess::Edit] {
+            assert!(
+                !found.contains(&Hit::SwitchShare(shared.id.clone(), access).semantic_id()),
+                "what the others may do is its sharer's alone to switch"
+            );
+        }
+    }
+    assert!(
+        found.contains(&Hit::StopShare(theirs.id.clone()).semantic_id()),
+        "the person an agent shared it for is offered to stop sharing it: {found:?}"
+    );
+    assert!(
+        !found.contains(&Hit::StopShare(anothers.id.clone()).semantic_id()),
+        "nobody else is offered it"
+    );
+
+    // The message's menu offers the same, to the same person.
+    for (shared, offered) in [(&theirs, true), (&anothers, false)] {
+        app.chat()
+            .open_message_menu(shared.id.clone(), ui::kurbo::Point::new(40.0, 40.0));
+        let stops = app
+            .chat()
+            .menu
+            .as_ref()
+            .is_some_and(|menu| menu.items.contains(&crate::app::MenuAction::StopSharing));
+        assert_eq!(stops, offered, "the menu of {}", shared.id);
+        app.chat().menu = None;
+    }
+    app.settle();
+
+    // A press on the card's control ends it, through Chat's own verb.
+    let stop = hit_rect(&mut app, &Hit::StopShare(theirs.id.clone())).expect("the control");
+    app.harness().click_at(stop.center().x, stop.center().y);
+    app.settle();
+    app.settle();
+    let ended = held(&mut app, &theirs.id).share.unwrap();
+    assert!(ended.ended && !ended.open, "the press ended it: {ended:?}");
+    assert!(
+        !held(&mut app, &anothers.id).share.unwrap().ended,
+        "the share made for someone else stays live"
+    );
+    assert!(
+        !hits(&mut app).contains(&Hit::StopShare(theirs.id.clone()).semantic_id()),
+        "an ended share offers nothing to stop"
+    );
     ui::window_share::set_drawn(false);
 }

@@ -63,6 +63,10 @@ pub struct KindLine {
     pub label: String,
     /// The answer, as an index into [`AgentReview::answers`].
     pub answer: usize,
+    /// The answers it may be given, as indices into [`AgentReview::answers`]
+    /// in segment order: an outside effect is never allowed unasked, so its
+    /// line offers no Allow.
+    pub choices: Vec<usize>,
 }
 
 /// One app an agent's answers are given for.
@@ -451,6 +455,7 @@ fn reviewed(review: &AgentReview, parts: &Parts) -> Element {
     let agent = review.agent.clone();
     let mut head = ListRow::new("ws-agent-name", review.name.clone())
         .avatar(review.name.clone(), review.agent.clone())
+        .avatar_colour(colour_of(&review.agent))
         .secondary(review.status.clone());
     if let Some(tag) = &review.tag {
         head = head.tags(&[(tag.as_str(), ChipStyle::Neutral)]);
@@ -553,25 +558,32 @@ fn access_app(review: &AgentReview, app: &AccessApp, parts: &Parts) -> Element {
 /// One kind of action at one app: its name and the answer, which the arrow
 /// keys move along.
 fn kind_line(review: &AgentReview, app: &AccessApp, line: &KindLine, parts: &Parts) -> Element {
-    let segments = review
-        .answers
+    let segments = line
+        .choices
         .iter()
+        .filter_map(|choice| review.answers.get(*choice))
         .map(|answer| Segment::new(answer.clone()))
         .collect();
+    let chosen = line
+        .choices
+        .iter()
+        .position(|choice| *choice == line.answer)
+        .unwrap_or_default();
+    let choices = line.choices.clone();
     let (press, agent, scope, kind) = (
         parts.clone(),
         review.agent.clone(),
         app.scope.clone(),
         line.kind.clone(),
     );
-    let answers = ToggleGroup::new(segments, line.answer)
+    let answers = ToggleGroup::new(segments, chosen)
         .with_id(format!("ws-agent-answer-{}-{}", app.scope, line.kind))
         .with_accessible_name(format!("{} {}", app.label, line.label))
         .with_enabled(review.editable)
         .on_view(
             &format!("ws-agent-answer-{}-{}", app.scope, line.kind),
             move |index| {
-                if let Some(answer) = ANSWERS.get(index) {
+                if let Some(answer) = choices.get(index).and_then(|choice| ANSWERS.get(*choice)) {
                     press.ask(WorkspaceSettingsEffect::SetAgentAnswer {
                         agent: agent.clone(),
                         scope: scope.clone(),
@@ -776,6 +788,11 @@ pub(super) fn sample_review() -> AgentReview {
         kind: kind.to_owned(),
         label: label.to_owned(),
         answer,
+        choices: if kind == "outside" {
+            vec![1, 2]
+        } else {
+            vec![0, 1, 2]
+        },
     };
     AgentReview {
         agent: "claude".to_owned(),

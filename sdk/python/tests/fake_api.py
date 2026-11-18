@@ -137,11 +137,9 @@ class FakeApi:
         # What a test drives.
         self.requests: list[dict[str, Any]] = []
         self.version = "1"
-        # How many calls the host refuses as busy before answering them, and
-        # how long it says to wait.
+        # How many calls the server says it is briefly unavailable for before
+        # answering them.
         self.busy = 0
-        self.busy_status = 429
-        self.busy_wait_ms = 5
         # Runs that have not finished: each with the polls it was asked for.
         self.polls: dict[str, int] = {}
         self.polls_until_done = 1
@@ -229,10 +227,9 @@ class FakeApi:
         if self.busy > 0:
             self.busy -= 1
             return self.refuse(
-                self.busy_status,
-                "rate_limited" if self.busy_status == 429 else "unavailable",
-                "the host takes your changes more slowly; nothing ran",
-                retry_after_ms=self.busy_wait_ms,
+                503,
+                "unavailable",
+                "the server is briefly unavailable; nothing ran",
             )
         return self.route(request, call)
 
@@ -475,14 +472,14 @@ class FakeApi:
                     "path": "notes",
                     "kind": "notes",
                     "rows": [
-                        {"path": TODO, "name": "Todo", "label": "Todo", "kind": "notes.Page", "has_children": True, "actions": []}
+                        {"path": TODO, "name": "Todo", "id": "notes.page:todo", "key": "notes.notebook/pages/todo", "label": "Todo", "kind": "notes.Page", "has_children": True, "actions": []}
                     ],
                     "actions": [],
                 },
             )
         rows = [
-            {"path": f"{TODO}/c01e", "name": "Buy milk", "label": "Buy milk", "kind": "notes.Block", "has_children": False, "actions": [{"id": "toggle-checkbox", "label": "Done", "kind": "undoable", "params": [{"name": "id", "ty": "text", "required": True}]}]},
-            {"path": f"{TODO}/c02f", "name": "Buy bread", "label": "Buy bread", "kind": "notes.Block", "has_children": False, "actions": []},
+            {"path": f"{TODO}/c01e", "name": "Buy milk", "id": "notes.block:c01e", "key": "notes.page/body/blocks/c01e", "label": "Buy milk", "kind": "notes.Block", "has_children": False, "actions": [{"id": "toggle-checkbox", "label": "Done", "kind": "undoable", "params": [{"name": "id", "ty": "text", "required": True}]}]},
+            {"path": f"{TODO}/c02f", "name": "Buy bread", "id": "notes.block:c02f", "key": "notes.page/body/blocks/c02f", "label": "Buy bread", "kind": "notes.Block", "has_children": False, "actions": []},
         ]
         limit = query.get("limit")
         cursor = query.get("cursor")
@@ -892,13 +889,10 @@ class FakeApi:
         code: str,
         message: str,
         next_steps: list[str] | None = None,
-        retry_after_ms: int | None = None,
     ) -> httpx.Response:
         error: dict[str, Any] = {"code": code, "message": message}
         if next_steps:
             error["next_steps"] = list(next_steps)
-        if retry_after_ms is not None:
-            error["retry_after_ms"] = retry_after_ms
         return httpx.Response(status, json={"error": error}, headers=self.headers())
 
     def stream(

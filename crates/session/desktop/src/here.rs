@@ -284,6 +284,19 @@ pub struct AgentFinished {
     pub label: String,
 }
 
+/// Where a session worked: the document and resource its first change touched, so the notice of
+/// its finishing leads to the work rather than to a card.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionWork {
+    /// The app keeping the record.
+    pub app: String,
+    /// The document, as its route names it.
+    pub document: String,
+    /// The resource of it the first change touched: the issue an agent worked, the message it
+    /// answered.
+    pub resource: String,
+}
+
 /// What an agent's newest session did, as its finished notice says it: the session, as the history keeps
 /// it, so one session is told once however many sessions of the agent worked it; how many of its
 /// actions changed a record (a command it ran or a page it read changed none); what it worked, in
@@ -295,6 +308,8 @@ pub struct SessionSummary {
     pub changes: usize,
     pub worked: String,
     pub workspace: Option<String>,
+    /// The first resource it changed: what its notice opens.
+    pub work: Option<SessionWork>,
 }
 
 impl AgentFinished {
@@ -312,6 +327,26 @@ impl AgentFinished {
             .iter()
             .filter(|session| ui::presence::agent_client(&session.agent.name) == client)
             .max_by_key(|session| session.last_ms)?;
+        let work = session.actions.iter().find_map(|action| {
+            use tilo_actions::remote::workspace_activity::ActionView;
+            let target = action.view.target();
+            // A change to a resource names what it changed; a file, a page or a command names
+            // none.
+            if matches!(
+                action.view,
+                ActionView::File { .. } | ActionView::Command { .. } | ActionView::Page { .. }
+            ) {
+                return None;
+            }
+            Some(SessionWork {
+                app: target
+                    .app_id
+                    .clone()
+                    .unwrap_or_else(|| action.app_id.clone()),
+                document: action.record.clone(),
+                resource: target.id.clone(),
+            })
+        });
         Some(SessionSummary {
             session: session.id.clone(),
             changes: session.changes(),
@@ -320,6 +355,7 @@ impl AgentFinished {
                 .workspace
                 .clone()
                 .filter(|name| !name.trim().is_empty()),
+            work,
         })
     }
 }
@@ -329,6 +365,24 @@ use tilo_app_id::apps::CONSOLE as AGENTS_APP;
 /// The action key of a finished notice's choice that opens the card of the agent of the client
 /// after it.
 pub const AGENT_CARD_ACTION: &str = "agent-card:";
+/// The action key of a finished notice's choice that opens what the session worked: its app, the
+/// record and the resource after it, parted by [`WORK_SEPARATOR`].
+pub const AGENT_WORK_ACTION: &str = "agent-work:";
+/// What parts the place after [`AGENT_WORK_ACTION`]: a unit separator no app id, record or
+/// resource carries.
+pub const WORK_SEPARATOR: char = '\u{1f}';
+
+/// The place `action` names when it opens what a session worked: its app, record and resource.
+#[must_use]
+pub fn worked_place(action: &str) -> Option<(&str, &str, &str)> {
+    let mut parts = action
+        .strip_prefix(AGENT_WORK_ACTION)?
+        .split(WORK_SEPARATOR);
+    let app = parts.next().filter(|part| !part.is_empty())?;
+    let record = parts.next()?;
+    let resource = parts.next().filter(|part| !part.is_empty())?;
+    Some((app, record, resource))
+}
 
 /// The notice that `agent` finished: what its session changed and where, when `summary` says
 /// ("Claude Code finished: 4 changes in Storefront"), else that it finished; under it what the session
@@ -380,10 +434,27 @@ pub fn finished_notice(
         // It is the agent's news, said in its name wherever notices are grouped by who sent them;
         // the banner, which leads with the agent's face, shows no source line repeating it.
         .with_app_name(agent.label.clone());
-    notice.actions = vec![(
+    let mut actions = Vec::new();
+    if let Some(work) = summary.and_then(|summary| summary.work.as_ref()) {
+        actions.push((
+            format!(
+                "{AGENT_WORK_ACTION}{}{WORK_SEPARATOR}{}{WORK_SEPARATOR}{}",
+                work.app, work.document, work.resource
+            ),
+            t_args(
+                "workspace-notice-agent-open",
+                &[(
+                    "app",
+                    tilo_desktop_search::names::app_name(&work.app).into(),
+                )],
+            ),
+        ));
+    }
+    actions.push((
         format!("{AGENT_CARD_ACTION}{client}"),
         t("workspace-notice-agent-card"),
-    )];
+    ));
+    notice.actions = actions;
     Some(notice)
 }
 

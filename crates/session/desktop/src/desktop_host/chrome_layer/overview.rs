@@ -26,8 +26,17 @@ impl DesktopChrome {
                 .get(&card.id)
                 .and_then(|id| crate::overview_tilo::usage_line(&self.tilo.hosts, id));
         }
+        // The workspaces this session holds, by the names their governance gives them: a row
+        // that says which one an agent may reach names it as the person does.
+        let workspaces: Vec<(String, String)> = self.handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .map(|workspace| (workspace.id().to_string(), workspace.name.clone()))
+                .collect()
+        });
         let host_actions = self.handle.host_actions();
         shell.tilo = crate::overview_tilo::TiloOverview {
+            workspaces,
             // The person's workspaces the host knows that this session does not hold: going to one is
             // the host's to carry out.
             elsewhere: host_actions

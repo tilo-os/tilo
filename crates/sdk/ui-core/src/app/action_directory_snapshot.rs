@@ -57,6 +57,15 @@ impl DirectoryObservation {
     }
 }
 
+/// What the app published before a snapshot it holds was borrowed to answer a
+/// page at an older revision: what is put back after.
+pub(super) struct BorrowedDirectory {
+    stamp: Option<(std::rc::Rc<DirectoryObservation>, String)>,
+    snapshot: Option<std::rc::Rc<ActionDirectorySnapshot>>,
+    cursors: HashMap<String, super::ActionDirectoryCursor>,
+    borrowed: ModelDirectoryCandidate,
+}
+
 /// An inert, one-pass candidate. Real model sync and fresh publication still
 /// run. No executable declaration or permission decision is retained here.
 pub(super) struct ModelDirectoryCandidate {
@@ -398,22 +407,86 @@ impl App {
             // lists (a sync, a wake) continues the revision readers hold, so
             // a paged read of a busy app still reads one snapshot.
             let retired = self.actions.action_directory_retired.take();
+            let reusable = retired.as_ref().is_some_and(|retired| {
+                self.actions
+                    .action_directory_stamp
+                    .as_ref()
+                    .is_some_and(|(observation, _)| {
+                        observation.reusable_model_projection()
+                            && observation.same_non_scheduling_fields(&retired.observation)
+                    })
+                    && *retired.snapshot == snapshot
+            });
             self.actions.action_directory_cursors.clear();
-            if let Some((observation, revision)) = &mut self.actions.action_directory_stamp {
-                match retired.filter(|retired| {
-                    observation.reusable_model_projection()
-                        && observation.same_non_scheduling_fields(&retired.observation)
-                        && *retired.snapshot == snapshot
-                }) {
-                    Some(retired) => {
+            if let Some((_, revision)) = &mut self.actions.action_directory_stamp {
+                match retired {
+                    Some(retired) if reusable => {
                         *revision = retired.revision;
                         self.actions.action_directory_cursors = retired.cursors;
                     }
-                    None => *revision = format!("v5:{}", uuid::Uuid::new_v4()),
+                    other => {
+                        // The directory moved on: what the last revision named
+                        // is kept for a reader still paging it, unless one is
+                        // already kept and has not finished. Its own snapshot
+                        // is what that reader reads on in.
+                        if let Some(retired) = other
+                            && self.actions.action_directory_borrowed.is_none()
+                        {
+                            self.actions.action_directory_borrowed = Some(retired);
+                        }
+                        *revision = format!("v5:{}", uuid::Uuid::new_v4());
+                    }
                 }
             }
             self.actions.action_directory_snapshot = Some(std::rc::Rc::new(snapshot));
         }
+    }
+
+    /// Set the directory `revision` named as the one this app answers from,
+    /// for one page: a reader paging that revision reads on in the snapshot it
+    /// started on, whatever changed meanwhile. What was published before it is
+    /// handed back for [`Self::return_borrowed_directory`]; `None` when the
+    /// revision names nothing this app still holds.
+    pub(super) fn borrow_retired_directory(&mut self, revision: &str) -> Option<BorrowedDirectory> {
+        let held = |candidate: &Option<ModelDirectoryCandidate>| {
+            candidate
+                .as_ref()
+                .is_some_and(|held| held.revision == revision)
+        };
+        let borrowed = if held(&self.actions.action_directory_retired) {
+            self.actions.action_directory_retired.take()?
+        } else if held(&self.actions.action_directory_borrowed) {
+            self.actions.action_directory_borrowed.take()?
+        } else {
+            return None;
+        };
+        let saved = BorrowedDirectory {
+            stamp: self.actions.action_directory_stamp.take(),
+            snapshot: self.actions.action_directory_snapshot.take(),
+            cursors: std::mem::take(&mut self.actions.action_directory_cursors),
+            borrowed,
+        };
+        self.actions.action_directory_stamp = Some((
+            std::rc::Rc::clone(&saved.borrowed.observation),
+            saved.borrowed.revision.clone(),
+        ));
+        self.actions.action_directory_snapshot = Some(std::rc::Rc::clone(&saved.borrowed.snapshot));
+        self.actions
+            .action_directory_cursors
+            .clone_from(&saved.borrowed.cursors);
+        Some(saved)
+    }
+
+    /// Put back what was published before [`Self::borrow_retired_directory`].
+    /// A read that goes on keeps the borrowed snapshot and the cursors its
+    /// page handed out, so its next page finds them; one that ended leaves
+    /// the place free for the next reader.
+    pub(super) fn return_borrowed_directory(&mut self, mut saved: BorrowedDirectory, ended: bool) {
+        saved.borrowed.cursors = std::mem::take(&mut self.actions.action_directory_cursors);
+        self.actions.action_directory_stamp = saved.stamp.take();
+        self.actions.action_directory_snapshot = saved.snapshot.take();
+        self.actions.action_directory_cursors = std::mem::take(&mut saved.cursors);
+        self.actions.action_directory_borrowed = (!ended).then_some(saved.borrowed);
     }
 
     /// The directory went stale: what its revision named is set aside for

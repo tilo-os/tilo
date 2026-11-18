@@ -499,3 +499,36 @@ fn a_group_reaches_issues_kept_in_two_parts_and_is_refused_for_both() {
     assert_eq!(read(&app, &old).status, old_was);
     assert!(read(&app, &old).comments.is_empty());
 }
+
+/// One group creates a parent and a child under it: the child names the
+/// parent by the place it is made at, `{"$made": {"member": 0, "item": 0}}`,
+/// and the framework fills in the id the first member mints.
+#[test]
+fn a_group_creates_a_parent_and_a_child_under_it() {
+    let mut app = open();
+    group(
+        &mut app,
+        vec![
+            member("create", json!({ "title": "Parent" })),
+            member(
+                "create",
+                json!({ "title": "Child", "parent": { "$made": { "member": 0, "item": 0 } } }),
+            ),
+        ],
+    )
+    .expect("the parent and its child are made");
+    let issues: Vec<(Id, Issue)> = held(&app).iter().collect();
+    let parent = issues
+        .iter()
+        .find(|(_, issue)| issue.title == "Parent")
+        .expect("the parent");
+    let child = issues
+        .iter()
+        .find(|(_, issue)| issue.title == "Child")
+        .expect("the child");
+    assert_eq!(
+        child.1.parent.as_ref().map(Id::as_str),
+        Some(parent.0.as_str()),
+        "the child stands under the issue the same group made"
+    );
+}

@@ -4,7 +4,7 @@
 
 #[cfg(test)]
 use super::file_metadata;
-use crate::part::{Book, ContactPart};
+use crate::contact_cards::{Book, ContactCards};
 use std::cell::Cell;
 #[cfg(test)]
 use std::path::PathBuf;
@@ -440,7 +440,7 @@ pub(super) fn absorb(
     cards: impl IntoIterator<Item = Contact>,
     summary: &mut ImportSummary,
     first_new: &mut Option<ContactId>,
-    submit: impl FnOnce(Invoke<ContactPart>) -> Result<(), String>,
+    submit: impl FnOnce(Invoke<ContactCards>) -> Result<(), String>,
 ) {
     let mut added = Vec::new();
     for c in cards {
@@ -481,7 +481,7 @@ pub(super) fn absorb(
     }
     let count = added.len();
     let first = added.first().map(|contact| contact.id);
-    match submit(ContactPart::add_all(added)) {
+    match submit(ContactCards::add_all(added)) {
         Ok(()) => {
             if first_new.is_none() {
                 *first_new = first;
@@ -501,7 +501,7 @@ pub(super) fn import_chosen(
     files: Vec<ChosenFile>,
     work: FileWorkGuard,
     asked: Asked,
-    chain: Option<ui::framework::Chain<ContactPart>>,
+    chain: Option<ui::framework::Chain<ContactCards>>,
     cx: &mut EffectCx<crate::resource::Contacts>,
 ) -> EffectAnswer {
     if files.is_empty() {

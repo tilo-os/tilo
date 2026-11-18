@@ -1606,7 +1606,7 @@ tilo_test_env::scenario! {
             workspace.clone(),
             Acting::agent("scribe").acting_for(Acting::person(ALICE)),
         )
-        .granted(roles::agent_grants("r", "scribe", ALICE, &[]));
+        .granted(tilo_action_policy::Acting::handed_agent("scribe", ALICE).handed_preset("r"));
         assert_eq!(
             owner_agent.answer(&resources, ActionKind::Undoable, &cx()),
             Answer::Allow
@@ -1624,7 +1624,7 @@ tilo_test_env::scenario! {
             workspace,
             Acting::agent("scribe").acting_for(Acting::person(BOB)),
         )
-        .granted(roles::agent_grants("r", "scribe", BOB, &[]));
+        .granted(tilo_action_policy::Acting::handed_agent("scribe", BOB).handed_preset("r"));
         assert_eq!(
             viewer_agent.answer(&resources, ActionKind::Undoable, &cx()),
             Answer::Deny

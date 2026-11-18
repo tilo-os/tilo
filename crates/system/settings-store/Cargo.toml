@@ -33,6 +33,10 @@ unicode-normalization = "0.1.25"
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+# The device's document store the two documents are kept in: their one holder, and the writer
+# thread that commits their saves.
+tilo-app-state = { version = "0.1.0", path = "../app-state" }
+durable-store = { version = "0.1.0", path = "../durable-store" }
 # The system locale that stands in when the person has chosen no language.
 tilo-process = { version = "0.1.0", path = "../../platform/tilo-process", features = ["native"] }
 # Where the documents live: their files, the holder's lock, the follower's

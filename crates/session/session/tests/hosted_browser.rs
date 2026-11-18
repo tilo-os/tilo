@@ -213,7 +213,7 @@ fn browser(
         }
         .encode()
         .expect("a presentation encodes");
-        let route = tilo_action_broker::route::CrdtRoute {
+        let route = tilo_workspace_service::apps::route::CrdtRoute {
             app_id: BROWSER.into(),
             cluster_id: workspace.into(),
             document_id: document.into(),

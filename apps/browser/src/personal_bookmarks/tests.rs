@@ -318,7 +318,7 @@ fn assert_folder_controls(app: &mut TestApp<TestBrowser>, bundle: &ImportBundle)
     )
     .unwrap();
     app.call_on(
-        next.id.as_str(),
+        next.id(),
         "show-personal-bookmark-folder",
         serde_json::json!({}),
     )

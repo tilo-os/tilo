@@ -395,6 +395,7 @@ async fn a_write_costs_what_it_changed_however_long_the_record_history() {
     let mut costs = Vec::with_capacity(WRITES);
     let mut reads = Vec::with_capacity(WRITES);
     let mut times = Vec::with_capacity(WRITES);
+    let mut order = 0_u64;
     for n in 0..WRITES {
         let request = signed_write_to(&fixture, workspace, &mut record, &format!("k{n}"));
         let before = written();
@@ -408,8 +409,26 @@ async fn a_write_costs_what_it_changed_however_long_the_record_history() {
             wholes.push(whole());
         }
         if n % 50 == 49 {
-            // The host took what ownership held, as a linked device's does.
-            fixture.owner.retire_outgoing(workspace).unwrap();
+            // The workspace's holder keeps everything ownership sends it, as it answers a
+            // linked device: each answer lets the writes waiting behind it leave.
+            loop {
+                let answers = fixture
+                    .owner
+                    .with_outgoing(workspace, fixture.now, |_, outgoing| {
+                        Ok(outgoing
+                            .entries()
+                            .map(|entry| {
+                                order += 1;
+                                (entry.id(), crate::owner::HostAnswer::Durable(order))
+                            })
+                            .collect::<std::collections::BTreeMap<_, _>>())
+                    })
+                    .unwrap();
+                if answers.is_empty() {
+                    break;
+                }
+                fixture.owner.retire_answered(workspace, &answers).unwrap();
+            }
         }
     }
     let (early, late) = (median(&costs, 100..150), median(&costs, 2_000..2_050));

@@ -772,6 +772,25 @@ view home(t: Tasks) {
     }
 }
 
+/// A row opens the resource it presents in the type's default view; a type the package gives none
+/// opens as the platform's page of its fields, which the checker says out loud, with both fixes.
+#[test]
+fn opening_a_type_with_no_default_view_says_what_to_add() {
+    let page = "type Note {\n    title: Text\n}\ntype Notebook {\n    notes: Collection<Note>\n}\nroot Notebook\ndefault view notebook for Notebook\n";
+    let views = "view notebook(nb: Notebook) {\n    for n in nb.notes {\n        ui.ListRow(n.title, item: n) {\n            on activate: open(n)\n        }\n    }\n}\nview note(n: Note) {\n    ui.ListRow(n.title)\n}";
+    let named = diagnostics(&format!("{page}default view note for Note\n{views}"));
+    assert!(named.is_empty(), "{named:#?}");
+    let missing = diagnostics(&format!("{page}{views}"));
+    let codes: Vec<&str> = missing.iter().map(|d| d.code.as_str()).collect();
+    assert_eq!(codes, ["E141"], "{missing:#?}");
+    let message = &missing[0].message;
+    assert!(
+        message.contains("default view <view> for Note"),
+        "{message}"
+    );
+    assert!(message.contains("open(r, view: <view>)"), "{message}");
+}
+
 fn diagnostics(body: &str) -> Vec<crate::diag::Diagnostic> {
     let src = format!("app t.x \"X\"\n{body}\n");
     let (module, diags) = crate::parser::parse_module(&src);

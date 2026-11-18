@@ -812,6 +812,11 @@ as `today` reads it, `t.time_of_day()` the `Duration` since their midnight, and 
 time of day as the person reads a clock — `14:05`, or `2:05 PM` in the style they chose in
 Settings, as every date and time a window shows reads.
 
+Text holds a day or a moment the way the person reads it, as the same formats a window uses:
+`"{d}"` of a day in this year reads `Jun 29`, another year's `Jun 29, 2025`, and `"{t}"` of a
+moment reads `Jun 29, 6:00 PM`. `d.iso()` and `t.iso()` give the stored text (`2026-06-29`,
+`2026-06-29T18:00:00Z`) for a machine to read.
+
 An action reads the moment it is invoked at, `now`, and the day that falls on for the person,
 `today`; nothing else does, because a moment is a fact of the invocation, recorded with the
 change. Words name a day or a moment when they are read against one: `Date.parse(t, near: at)`

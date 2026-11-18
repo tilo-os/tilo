@@ -21,7 +21,8 @@ public struct WayIn: View {
                     .accessibilityAddTraits(.isHeader)
                 // While a code is compared, the code is what the window is about.
                 if !comparing {
-                    Text(AssistantWords.wayInLead.said).font(.tilo(15))
+                    // A device whose workspace is gone is told so, in the place of what a first pairing promises.
+                    Text((model.session == .reset ? AssistantWords.wayInReset : AssistantWords.wayInLead).said).font(.tilo(15))
                         .foregroundStyle(Token.ink2).multilineTextAlignment(.center)
                         .frame(maxWidth: 420)
                 }
@@ -149,6 +150,11 @@ private struct PairingAskView: View {
                     // Whose devices and which server come first, and are what the person decides on.
                     Text(sentence).font(place < 2 ? Font.tilo(14, .medium) : Font.body14)
                         .foregroundStyle(place < 2 ? Token.ink : Token.ink2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                // The site this app pairs with, its address in full, whoever handed the link.
+                if !ask.site.isEmpty {
+                    Text(AssistantWords.pairingSite.said(["site": ask.site])).font(.body14).foregroundStyle(Token.ink2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }

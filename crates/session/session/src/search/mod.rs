@@ -2070,6 +2070,7 @@ mod tests {
                     records: Some(crate::records::Records::over(
                         store,
                         crate::platform::records::Changes::default(),
+                        true,
                     )),
                     ..SearchOptions::default()
                 },
@@ -2221,6 +2222,7 @@ mod tests {
                 records: Some(crate::records::Records::over(
                     store,
                     crate::platform::records::Changes::default(),
+                    true,
                 )),
                 ..SearchOptions::default()
             },
@@ -2375,6 +2377,7 @@ mod tests {
                 records: Some(crate::records::Records::over(
                     store,
                     crate::platform::records::Changes::default(),
+                    true,
                 )),
                 ..SearchOptions::default()
             },

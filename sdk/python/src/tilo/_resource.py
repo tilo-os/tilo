@@ -261,6 +261,12 @@ class Resource:
         applies. Every call is the same run: History lists it once and one undo
         takes it back. An empty list sends nothing. Answers the list of each
         call's answer.
+
+        An item names one an earlier item of the same call makes with
+        `made(place)`, e.g. `{"title": "Child", "parent": made(0)}` for the
+        second item of a parent-then-child list: the server fills in the id the
+        first item got as the call applies, so nothing has to be read between
+        two calls, and both are one change.
         """
         return self._workspace.client.handoff(self._many(action, items))
 
@@ -350,7 +356,10 @@ class Resource:
         return f"Resource({self.path!r})"
 
 
-def _members(action: str, items: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+
+def _members(
+    action: str, items: Iterable[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
     """`items` as the group action's members: each an action's arguments."""
     members: list[dict[str, Any]] = []
     for item in items:
@@ -360,6 +369,18 @@ def _members(action: str, items: Iterable[Mapping[str, Any]]) -> list[dict[str, 
             )
         members.append({"action": action, "args": dict(item)})
     return members
+
+
+def made(member: int, item: int = 0) -> dict[str, dict[str, int]]:
+    """A reference to an item an earlier item of the same `many` call makes.
+
+    `member` is the item's place in the call, counted from 0, and `item` which
+    of the ids it made (counted from 0, in the order it made them): usually 0,
+    as a create makes one. The call fills the reference with that id as it
+    applies, and the change keeps the reference, so every device resolves it
+    the same.
+    """
+    return {"$made": {"member": member, "item": item}}
 
 
 def _chunks(members: list[dict[str, Any]]) -> Iterator[list[dict[str, Any]]]:

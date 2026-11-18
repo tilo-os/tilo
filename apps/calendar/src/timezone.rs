@@ -4,7 +4,9 @@ use jiff::civil::{Date, DateTime, Weekday};
 use jiff::tz::{AmbiguousOffset, TimeZone};
 use jiff::{SignedDuration, Span, Timestamp};
 
-pub use tilo_recurrence::zone::{Resolution, canonical_zone, named, normalize_wall, wall_to_utc};
+pub use tilo_recurrence::zone::{
+    Resolution, available, canonical, canonical_zone, named, normalize_wall, wall_to_utc,
+};
 
 mod windows_zones;
 
@@ -182,7 +184,7 @@ pub fn zone_following(observances: &[Observance], year: i16, tzid: &str) -> Opti
     let candidates = windows_zones::WINDOWS_ZONES
         .iter()
         .map(|(_, iana)| *iana)
-        .chain(jiff_tzdb::available())
+        .chain(available())
         .filter_map(|name| named(name).map(|zone| (name, zone)));
     let mut first = None;
     let mut on_time = None;

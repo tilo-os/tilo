@@ -24,7 +24,7 @@ export {
   urlFrom,
 } from "./client.ts";
 export { Workspace, Files, Members, WorkspaceKeys, type FileBytes } from "./workspace.ts";
-export { resourceProxy, kebab, segments } from "./resource.ts";
+export { resourceProxy, kebab, made, segments } from "./resource.ts";
 export type { Resource, Step, Surface, Entry } from "./resource.ts";
 export { Invocation } from "./invocation.ts";
 export { DEFAULT_URL, Endpoint, InvocationGroup, VERSION, withinInvocation, type Reply, type RequestOptions } from "./endpoint.ts";
@@ -33,7 +33,6 @@ export {
   KeyExpired,
   KeyRefused,
   KeyRevoked,
-  RateLimited,
   Refused,
   ProtocolError,
   SurfaceChanged,

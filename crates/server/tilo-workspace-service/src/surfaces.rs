@@ -125,10 +125,7 @@ pub(crate) fn keep(hash: &str, bytes: &[u8]) -> bool {
 
 /// Write `bytes` as `name` under `dir`, whole or not at all.
 fn write(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    let part = dir.join(format!("{name}.part"));
-    std::fs::write(&part, bytes)?;
-    std::fs::rename(&part, dir.join(name))
+    tilo_files::native::atomic::write_creating_parent(&dir.join(name), bytes)
 }
 
 /// The [u8; 32] address `hash` names, when it names one.
@@ -349,11 +346,16 @@ pub(crate) fn refusal(
     if let Some(person) = &person {
         cx = cx.with_own_resource(&route.document_id, person);
     }
-    let allows = |node: &tilo_action_policy::TreePath, kind| match author {
+    let allows = |invoker: Option<&tilo_action_policy::Acting>,
+                  node: &tilo_action_policy::TreePath,
+                  kind| match author {
         // No projection: membership already decided who may write here.
         None => true,
         Some(None) => false,
-        Some(Some(access)) => access.answer(node, kind, &cx) == tilo_action_policy::Answer::Allow,
+        Some(Some(access)) => {
+            collab_types::ChangeAuthor::answer(access, invoker, node, kind, &cx)
+                == tilo_action_policy::Answer::Allow
+        }
     };
     collab_types::decide_op(
         &envelope,

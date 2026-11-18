@@ -386,7 +386,8 @@ tilo_test_env::scenario! {
         // what it may do is what its person may, narrowed, never widened. It is the agent the
         // workspace admits, with the grants every agent of it has; one nobody granted anything
         // reaches no record at all, its person's own included.
-        let granted = roles::agent_grants(&workspace_id, "assistant", &person, &[]);
+        let granted = tilo_action_policy::Acting::handed_agent("assistant", person.as_str())
+            .handed_preset(&workspace_id);
         let agent = peer.permissions(source, now).unwrap().acting_as(
             tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::agent("assistant")),
             granted,

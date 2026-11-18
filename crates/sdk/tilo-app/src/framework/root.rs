@@ -56,8 +56,9 @@ use read::{offer_document_reads, offer_item_reads, read};
 pub(crate) use search::{
     BodyText, IndexedEntries, LiveSearch, ResourceSearch, field_weight, index_entry,
 };
+pub(crate) use shared_tree::ItemChildren;
 use shared_tree::{
-    DocumentChildren, ItemChildren, NestedViews, PublishedChildren, ResourceChildren, RowChildren,
+    DocumentChildren, NestedViews, PublishedChildren, ResourceChildren, RowChildren,
     SharedTreeCache, mark_document_jobs,
 };
 use typed::TypedRoot;
@@ -2282,7 +2283,21 @@ impl RootPublishes for ResourceRoot {
         if let Some(table) = self.resource.resource_table {
             offer_item_reads(&mut resource, table, self.resource.kind);
         }
+        // A chain holds the app's items, so its resource stands at the top
+        // of the app's tree, beside the app's own resource rather than under
+        // it: a path names the chain and its item, nothing in between.
+        let mut chains = Vec::new();
+        let mut children = Vec::with_capacity(resource.children.len());
+        for child in std::mem::take(&mut resource.children) {
+            if super::chain_of_resource_id(child.id.as_str()).is_some() {
+                chains.push(child);
+            } else {
+                children.push(child);
+            }
+        }
+        resource.children = children;
         let mut resources = vec![resource];
+        resources.append(&mut chains);
         resources.append(&mut extras);
         resources
     }
@@ -2412,7 +2427,7 @@ impl RootPublishes for ResourceRoot {
     }
 }
 
-// The root owns the file whose history it shows beside the resource's (the
+// The root owns the folder whose history it shows beside the resource's (the
 // runner checks the source it registered is this root's); everything else
 // about History is its content's, as before.
 // How History shows this app's changes is the view's to say; what a change acted on opens as
@@ -2443,33 +2458,21 @@ impl ui_core::history_mode::capability::DocumentHistory for ResourceRoot {
         Option<ui_core::history_mode::HistoryRegistration>,
         ui_core::history_mode::HistoryRegistrationError,
     > {
-        match &self.run.file_history {
+        match &self.run.folder_history {
+            // The folder History lists is the window's own: the root observes the source its
+            // runner registered.
             Some((source, definition)) => {
                 let scopes = definition.scopes.iter().map(|scope| {
-                    ui_core::history_mode::HistorySourceRegistration::CheckedFiles {
+                    ui_core::history_mode::HistorySourceRegistration::FolderFiles {
                         scope: scope.key,
                         source: source.clone(),
+                        window: None,
                     }
                 });
                 ui_core::history_mode::HistoryRegistration::new(definition, scopes.collect())
                     .map(Some)
             }
-            None => match &self.run.folder_history {
-                // The folder History lists is the window's own: the root observations the
-                // source its runner registered.
-                Some((source, definition)) => {
-                    let scopes = definition.scopes.iter().map(|scope| {
-                        ui_core::history_mode::HistorySourceRegistration::FolderFiles {
-                            scope: scope.key,
-                            source: source.clone(),
-                            window: None,
-                        }
-                    });
-                    ui_core::history_mode::HistoryRegistration::new(definition, scopes.collect())
-                        .map(Some)
-                }
-                None => ui_core::history_mode::capability::history_registration(self.app_view()),
-            },
+            None => ui_core::history_mode::capability::history_registration(self.app_view()),
         }
     }
 

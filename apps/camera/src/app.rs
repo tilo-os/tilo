@@ -552,9 +552,7 @@ impl CameraApp {
         }
     }
 
-    fn media_handoff_resource(app_id: &str, label: &str) -> ui::tilo_actions::ResourceSpec {
-        use ui::tilo_actions::ResourceSpec;
-
+    fn media_handoff_resource(app_id: &str, label: &str) -> ui::framework::LiveRow {
         let spec = crate::actions::ApplicationLaunch::content_spec(
             app_id,
             "open",
@@ -567,7 +565,8 @@ impl CameraApp {
                 &[("app", ui::i18n::ArgValue::Text(label.to_owned()))],
             ),
         );
-        ResourceSpec::new(format!("{app_id}.app"), "applications.app", label).with_action(spec)
+        ui::framework::LiveRow::new(format!("{app_id}.app"), "applications.app", label)
+            .operation(spec)
     }
 
     /// An emitter handing a capture to `app_id`, whose name `name` is a
@@ -575,9 +574,9 @@ impl CameraApp {
     fn media_handoff_emitter(app_id: &str, name: &str) -> Option<ActionEmitter<String>> {
         use ui::tilo_actions::ActionBinding;
 
-        let resource = Self::media_handoff_resource(app_id, &crate::CATALOG.t(name));
-        let spec = resource.actions.first()?;
-        ActionBinding::new(&resource, spec, |content_hash| {
+        let row = Self::media_handoff_resource(app_id, &crate::CATALOG.t(name));
+        let spec = row.operations().first()?;
+        ActionBinding::new(&row, spec, |content_hash| {
             let mut arguments = serde_json::Map::new();
             arguments.insert(
                 "content_hash".into(),
@@ -596,13 +595,13 @@ impl CameraApp {
         // affordance. The action payload itself delegates to Photos, but the
         // host can still re-resolve this address against the current Camera
         // resource surface before permitting the launch.
-        let resource = ui::tilo_actions::ResourceSpec::new(
+        let row = ui::framework::LiveRow::new(
             "camera.capture",
             "camera.capture",
             crate::CATALOG.t("camera-resource-capture"),
         )
-        .with_action(crate::actions::open_photos_action());
-        ActionBinding::unit_for(&resource, "open-photos")
+        .operation(crate::actions::open_photos_action());
+        ActionBinding::unit_for(&row, "open-photos")
             .ok()
             .map(ActionEmitter::new)
     }
@@ -3983,24 +3982,20 @@ mod tests {
     #[test]
     fn a_camera_waiting_for_permission_sleeps_until_the_answer_wakes_it() {
         use std::sync::{Arc, Mutex, mpsc};
-        use tilo_capture::broker::{Client, Policy, Sources, serve, synthetic};
-        use tilo_capture::grants::{DeviceGrants, GrantPolicy};
+        use tilo_capture::broker::{Asking, Client, Policy, Sources, serve, synthetic};
 
         for allow in [true, false] {
             let dir = std::env::temp_dir().join(format!(
                 "camera-permission-wake-{}-{allow}",
                 std::process::id()
             ));
-            let grants = Arc::new(DeviceGrants::open(&dir.join("grants")).unwrap());
             let (asked_tx, asked_rx) = mpsc::channel::<()>();
             let (answer_tx, answer_rx) = mpsc::channel::<bool>();
             let prompt = Mutex::new((asked_tx, answer_rx));
             let (app_end, host_end) = std::os::unix::net::UnixDatagram::pair().unwrap();
-            let policy: Arc<dyn Policy> = Arc::new(GrantPolicy {
-                grants,
-                workspace: "r".into(),
-                app: "so.tilo.camera".into(),
+            let policy: Arc<dyn Policy> = Arc::new(Asking {
                 declared: vec![tilo_capture::DeviceKind::Camera],
+                answers: synthetic::Kept::default(),
                 consent: move |_| {
                     let prompt = prompt.lock().unwrap();
                     let _ = prompt.0.send(());

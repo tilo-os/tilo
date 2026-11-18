@@ -57,8 +57,8 @@ fn connect(socket: &Path) -> CollabClient {
 }
 
 /// The channel key of Tasks' own route in the workspace.
-fn route_key() -> String {
-    tilo_action_broker::route::CrdtRoute::app(TASKS, WORKSPACE).channel_key()
+fn channel() -> String {
+    tilo_workspace_service::apps::route::CrdtRoute::app(TASKS, WORKSPACE).channel_key()
 }
 
 /// The session serving the apps it starts on `socket` , holding the fixture's workspace from its
@@ -134,7 +134,7 @@ fn tasks(
     runtime.block_on(async {
         let client = connect(socket);
         let mine = client
-            .join_channel(&route_key(), &presentation(device, cert))
+            .join_channel(&channel(), &presentation(device, cert))
             .await
             .expect("the app the session launched joins the workspace's channel");
         let invocations = mine

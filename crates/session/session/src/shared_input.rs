@@ -1230,7 +1230,7 @@ fn carried_formats(formats: &[String]) -> Vec<String> {
         .filter(|format| {
             !ui::dnd::is_file_mime(format) && format.as_str() != ui::clipboard::SECRET_MIME
         })
-        .take(tilo_device_fabric::MAX_CARRIED_OFFERS)
+        .take(tilo_network_actor::fabric::MAX_CARRIED_OFFERS)
         .cloned()
         .collect()
 }

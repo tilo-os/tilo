@@ -103,3 +103,15 @@ terminal-recent-environments-used = Verwendete Umgebung erfassen
 
 ## What the app is called in a window and in the launcher
 terminal-app-title = Terminal
+
+## A session's commands, as a page shows them
+terminal-commands-none = Noch keine Befehle
+terminal-commands-working = Läuft…
+terminal-commands-exit = Exit { $code }
+terminal-commands-exit-after = Exit { $code } nach { $took }
+terminal-commands-output-arriving = Ausgabe kommt
+terminal-commands-output-cut = Frühere Ausgabe nicht gezeigt
+terminal-commands-stop = Stoppen
+terminal-commands-send = Eingabe
+terminal-commands-placeholder = Befehl eingeben
+terminal-commands-on-a-computer = Die Shell dieser Sitzung ist auf dem Computer von jemandem. Ihre Befehle stehen hier; getippt wird dort.

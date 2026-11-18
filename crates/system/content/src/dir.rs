@@ -291,7 +291,14 @@ impl DirBackend {
         Ok(())
     }
 
-    fn receive(&self, reader: &mut dyn Read) -> Result<(PathBuf, String, usize), ContentError> {
+    /// Receive `reader` into a temporary file under the root, answering its
+    /// temporary file, hash and length. `sync` flushes it before answering;
+    /// a set of items is synced once through [`Self::sync_store`] instead.
+    fn receive(
+        &self,
+        reader: &mut dyn Read,
+        sync: bool,
+    ) -> Result<(PathBuf, String, usize), ContentError> {
         std::fs::create_dir_all(&self.root)?;
         let serial = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let tmp = self
@@ -323,7 +330,7 @@ impl DirBackend {
                 hasher.update(chunk);
                 file.write_all(chunk)?;
             }
-            if self.durable {
+            if sync {
                 file.sync_all()?;
             }
             Ok((hasher.finalize().to_hex().to_string(), len))
@@ -392,11 +399,128 @@ impl DirBackend {
             verified.remove(path);
         }
     }
+
+    /// Flush everything this backend wrote under its root in one call, for
+    /// [`Self::put_many`] to leave a batch unsynced until it is admitted. The
+    /// platform flushes a filesystem; elsewhere each item is synced as it is
+    /// received.
+    #[cfg(target_os = "linux")]
+    fn sync_store(&self) -> Result<(), String> {
+        if !self.durable {
+            return Ok(());
+        }
+        let root = std::fs::File::open(&self.root).map_err(|error| error.to_string())?;
+        rustix::fs::syncfs(&root).map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    /// Admit the received items of [`ContentBackend::put_many`] under one
+    /// lock: the index, its generation and each shard directory are written
+    /// once for the whole set instead of once per item.
+    fn admit_received(
+        &self,
+        outcomes: &mut [Option<Result<Stored, ContentError>>],
+        received: &[(usize, PathBuf, String, usize)],
+    ) -> Result<(), String> {
+        if received.is_empty() {
+            return Ok(());
+        }
+        let mut index = self
+            .state
+            .lock()
+            .map_err(|_| "content store lock poisoned".to_string())?;
+        let root_lock = self
+            .lock_root_for_write()
+            .map_err(|error| error.to_string())?;
+        let (generation, _) = self
+            .refresh_index(&mut index)
+            .map_err(|error| error.to_string())?;
+        let mut shards: BTreeSet<PathBuf> = BTreeSet::new();
+        let mut wrote = false;
+        for (at, tmp, hash, len) in received {
+            let stored = Stored {
+                hash: hash.clone(),
+                len: u64::try_from(*len).unwrap_or(u64::MAX),
+            };
+            let Some(path) = Self::path_in(&self.root, hash) else {
+                let _ = std::fs::remove_file(tmp);
+                note(outcomes, *at, Err(ContentError::InvalidHash(hash.clone())));
+                continue;
+            };
+            if self.intact(&path, hash, usize::MAX) {
+                self.written_now(&path);
+                let _ = std::fs::remove_file(tmp);
+                note(outcomes, *at, Ok(stored));
+                continue;
+            }
+            if check_admission(&self.limits, &index, hash, *len).is_err() {
+                // Files removed behind the store's back make the kept total
+                // over-count: look again before refusing on it.
+                self.load_index(&mut index)
+                    .map_err(|error| error.to_string())?;
+                if let Err(refusal) = check_admission(&self.limits, &index, hash, *len) {
+                    let _ = std::fs::remove_file(tmp);
+                    note(outcomes, *at, Err(refusal));
+                    continue;
+                }
+            }
+            let Some(dir) = path.parent() else {
+                let _ = std::fs::remove_file(tmp);
+                note(outcomes, *at, Err(ContentError::InvalidHash(hash.clone())));
+                continue;
+            };
+            let dir = dir.to_path_buf();
+            if !dir.is_dir() {
+                if let Err(error) = std::fs::create_dir_all(&dir) {
+                    let _ = std::fs::remove_file(tmp);
+                    note(outcomes, *at, Err(error.into()));
+                    continue;
+                }
+                let _ = self.sync_dir(&self.root);
+            }
+            if let Err(error) = std::fs::rename(tmp, &path) {
+                let _ = std::fs::remove_file(tmp);
+                note(outcomes, *at, Err(error.into()));
+                continue;
+            }
+            if let Some(old_len) = index.entries.insert(hash.clone(), *len) {
+                index.bytes = index.bytes.saturating_sub(old_len);
+            }
+            index.bytes = index.bytes.saturating_add(*len);
+            match std::fs::metadata(&path) {
+                Ok(meta) => self.remember_intact(path.clone(), FileSig::of(&meta)),
+                Err(_) => self.forget_intact(&path),
+            }
+            shards.insert(dir);
+            wrote = true;
+            note(outcomes, *at, Ok(stored));
+        }
+        if wrote {
+            self.bump_generation(&mut index, generation);
+        }
+        drop(root_lock);
+        drop(index);
+        for shard in shards {
+            let _ = self.sync_dir(&shard);
+        }
+        Ok(())
+    }
+}
+
+/// Mark item `index`'s outcome of [`DirBackend::admit_received`].
+fn note(
+    outcomes: &mut [Option<Result<Stored, ContentError>>],
+    index: usize,
+    result: Result<Stored, ContentError>,
+) {
+    if let Some(outcome) = outcomes.get_mut(index) {
+        *outcome = Some(result);
+    }
 }
 
 impl ContentBackend for DirBackend {
     fn put(&self, reader: &mut dyn Read, _mime: &str) -> Result<Stored, ContentError> {
-        let (tmp, hash, len) = self.receive(reader)?;
+        let (tmp, hash, len) = self.receive(reader, self.durable)?;
         let stored = Stored {
             hash: hash.clone(),
             len: u64::try_from(len).unwrap_or(u64::MAX),
@@ -458,6 +582,49 @@ impl ContentBackend for DirBackend {
         let result = admit();
         let _ = std::fs::remove_file(&tmp);
         result.map(|()| stored)
+    }
+
+    /// Store `items` together: each is received and flushed as [`Self::put`]
+    /// does, and the index, its generation and each shard directory are
+    /// written once for the whole set instead of once per item.
+    fn put_many(&self, items: &[(&[u8], &str)]) -> Vec<Result<Stored, ContentError>> {
+        let mut outcomes: Vec<Option<Result<Stored, ContentError>>> =
+            Vec::with_capacity(items.len());
+        let mut received: Vec<(usize, PathBuf, String, usize)> = Vec::new();
+        for (index, (bytes, _mime)) in items.iter().enumerate() {
+            outcomes.push(None);
+            // One sync for the whole set, once it is admitted (Linux's
+            // `syncfs`), rather than a flush per small item.
+            match self.receive(&mut &bytes[..], self.durable && !cfg!(target_os = "linux")) {
+                Ok((tmp, hash, len)) => received.push((index, tmp, hash, len)),
+                Err(error) => note(&mut outcomes, index, Err(error)),
+            }
+        }
+        match self.admit_received(&mut outcomes, &received) {
+            Ok(()) =>
+            {
+                #[cfg(target_os = "linux")]
+                if let Err(why) = self.sync_store() {
+                    for (index, _, _, _) in &received {
+                        note(&mut outcomes, *index, Err(ContentError::Io(why.clone())));
+                    }
+                }
+            }
+            Err(why) => {
+                for (index, tmp, _, _) in &received {
+                    if outcomes.get(*index).is_some_and(Option::is_none) {
+                        note(&mut outcomes, *index, Err(ContentError::Io(why.clone())));
+                    }
+                    let _ = std::fs::remove_file(tmp);
+                }
+            }
+        }
+        outcomes
+            .into_iter()
+            .map(|outcome| {
+                outcome.unwrap_or_else(|| Err(ContentError::Io("no item was received".into())))
+            })
+            .collect()
     }
 
     fn open(&self, hash: &str) -> Result<Option<ContentReader>, ContentError> {

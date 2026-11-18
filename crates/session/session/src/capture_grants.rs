@@ -3,21 +3,22 @@
 //! stream it handed out and stops answering the app's next ask. Neither closes the app: it loses
 //! the stream, not its window.
 
-use collab_types::caps::{CapDecision, DeviceCap, ResourceRef};
-use tilo_action_policy::{Acting, MemberId};
+use collab_types::caps::{DeviceCap, Effect, Scope};
+use tilo_action_policy::Answer;
 use tilo_desktop_model::Layout;
+use tilo_peer_state::DeviceGrants;
 use tilo_portal::capture_broker::CaptureKind;
 
-/// Whether app `app_id` , running for `person` in workspace `workspace` (named by its id, as the
-/// portal names it), may still capture `kind` at `now` : the workspace's sandbox still grants that
-/// person the device through that app, and no restriction takes it away.
+/// Whether app `app_id` in workspace `workspace` (named by its id, as the portal names it) may
+/// still capture `kind` at `now` (in milliseconds): the person's answer for this device still
+/// allows it, and the workspace does not refuse that device to the app.
 ///
 /// A screen share or the sound the machine plays is the person's answer to a portal question, and
-/// ends with the session, the lock, or the person stopping it, never with a workspace's list.
+/// ends with the session, the lock, or the person stopping it.
 #[must_use]
 pub(crate) fn still_allowed(
     tree: &Layout,
-    person: &str,
+    grants: &DeviceGrants,
     app_id: &str,
     workspace: &str,
     kind: CaptureKind,
@@ -28,17 +29,19 @@ pub(crate) fn still_allowed(
         CaptureKind::Microphone => DeviceCap::Microphone,
         CaptureKind::Screen | CaptureKind::SystemAudio => return true,
     };
-    let Some(member) = MemberId::parsed_person(person) else {
-        return false;
-    };
-    let acting = Acting::member(member).in_app(app_id);
-    tree.workspaces
+    let refused = tree
+        .workspaces
         .iter()
-        .find(|held| held.id().to_string() == workspace)
-        .is_some_and(|held| {
-            held.sandbox_decide_as_at(&acting, &ResourceRef::Device(device), device.access(), now)
-                == CapDecision::Allow
-        })
+        .filter(|held| held.id().to_string() == workspace)
+        .flat_map(|held| &held.sandbox)
+        .any(|cap| {
+            cap.effect == Effect::Restrict
+                && cap.scope == Scope::Device(device)
+                && cap.names_app(app_id)
+                && cap.is_live_at(Some(now))
+        });
+    let ceiling = if refused { Answer::Deny } else { Answer::Allow };
+    grants.decide(app_id, device, ceiling) == Answer::Allow
 }
 
 #[cfg(test)]
@@ -51,13 +54,13 @@ pub(crate) fn still_allowed(
 )]
 mod tests {
     use super::*;
-    use collab_types::caps::{Access, CapOverride, Scope};
-    use tilo_action_policy::Grantee;
+    use collab_types::caps::{Access, CapOverride};
+    use tilo_action_policy::{Grantee, Lifetime};
     use tilo_desktop_model::Workspace;
 
-    fn shell(grant: CapOverride) -> Layout {
+    fn shell(caps: Vec<CapOverride>) -> Layout {
         let mut workspace = Workspace::new(tilo_desktop_model::WorkspaceId::new(), "Studio");
-        workspace.sandbox.push(grant);
+        workspace.sandbox = caps;
         Layout {
             workspaces: vec![workspace],
             ..Layout::default()
@@ -74,79 +77,51 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_capture_is_allowed_only_while_its_workspaces_grant_stands;
+        fn a_capture_is_allowed_only_while_the_persons_answer_stands;
 
-        phase taking_the_camera_away_stops_the_next_ask_but_not_any_other_device;
+        phase taking_the_answer_back_stops_the_next_ask_but_not_any_other_device;
         {
-            let mut tree = shell(camera("so.tilo.meet"));
+            let tree = shell(Vec::new());
             let workspace = tree.workspaces[0].id().to_string();
-            assert!(still_allowed(
-                &tree,
-                "ada",
-                "so.tilo.meet",
-                &workspace,
-                CaptureKind::Camera,
-                10
-            ));
+            let grants = DeviceGrants::unkept();
+            grants.answer("so.tilo.meet", DeviceCap::Camera, Answer::Allow, Lifetime::Session).unwrap();
+            assert!(still_allowed(&tree, &grants, "so.tilo.meet", &workspace, CaptureKind::Camera, 10));
             assert!(
-                !still_allowed(
-                    &tree,
-                    "ada",
-                    "so.tilo.meet",
-                    &workspace,
-                    CaptureKind::Microphone,
-                    10
-                ),
-                "the camera grant is not a microphone grant"
+                !still_allowed(&tree, &grants, "so.tilo.meet", &workspace, CaptureKind::Microphone, 10),
+                "the camera answer is not a microphone answer"
             );
-            let id = tree.workspaces[0].sandbox[0].id.clone();
-            assert!(tree.workspaces[0].revoke_sandbox(&id));
+            assert!(grants.revoke("", "so.tilo.meet", DeviceCap::Camera).unwrap());
             assert!(
-                !still_allowed(&tree, "ada", "so.tilo.meet", &workspace, CaptureKind::Camera, 10),
+                !still_allowed(&tree, &grants, "so.tilo.meet", &workspace, CaptureKind::Camera, 10),
                 "the revoked camera is refused at once"
             );
             assert!(
-                still_allowed(&tree, "ada", "so.tilo.meet", &workspace, CaptureKind::Screen, 10),
-                "a screen share is the person's answer, not a workspace grant"
+                still_allowed(&tree, &grants, "so.tilo.meet", &workspace, CaptureKind::Screen, 10),
+                "a screen share is the person's answer to its own question"
             );
         }
 
-        phase an_expired_grant_stops_capturing_and_another_workspace_does_not_count;
+        phase a_workspace_cannot_allow_the_camera_but_can_refuse_it;
         {
-            let tree = shell(camera("so.tilo.meet").lasting(tilo_action_policy::Lifetime::Until(20_000)));
+            let tree = shell(vec![camera("so.tilo.meet")]);
             let workspace = tree.workspaces[0].id().to_string();
-            assert!(still_allowed(
-                &tree,
-                "ada",
-                "so.tilo.meet",
-                &workspace,
-                CaptureKind::Camera,
-                19
-            ));
+            let grants = DeviceGrants::unkept();
             assert!(
-                !still_allowed(&tree, "ada", "so.tilo.meet", &workspace, CaptureKind::Camera, 21),
-                "a lapsed grant stops capturing without anyone revoking it"
+                !still_allowed(&tree, &grants, "so.tilo.meet", &workspace, CaptureKind::Camera, 10),
+                "a member's grant in the workspace never opens this device's camera"
             );
+            grants.answer("so.tilo.meet", DeviceCap::Camera, Answer::Allow, Lifetime::Session).unwrap();
+            let refusing = shell(vec![CapOverride::new(
+                Grantee::person("ada"),
+                Scope::Device(DeviceCap::Camera),
+                Effect::Restrict,
+                Access::Read,
+            )
+            .through("so.tilo.meet")]);
+            let workspace = refusing.workspaces[0].id().to_string();
             assert!(
-                !still_allowed(
-                    &tree,
-                    "ada",
-                    "so.tilo.meet",
-                    "another-workspace",
-                    CaptureKind::Camera,
-                    19
-                ),
-                "a grant in one workspace says nothing about another"
-            );
-        }
-
-        phase another_persons_grant_does_not_let_the_app_capture;
-        {
-            let tree = shell(camera("so.tilo.meet"));
-            let workspace = tree.workspaces[0].id().to_string();
-            assert!(
-                !still_allowed(&tree, "bob", "so.tilo.meet", &workspace, CaptureKind::Camera, 10),
-                "ada's grant is not bob's"
+                !still_allowed(&refusing, &grants, "so.tilo.meet", &workspace, CaptureKind::Camera, 10),
+                "the workspace refuses its apps the camera the person allowed"
             );
         }
     }

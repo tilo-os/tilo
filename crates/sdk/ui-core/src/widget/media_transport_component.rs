@@ -244,6 +244,53 @@ impl crate::widget::Widget for DeclaredTransport {
         self.band.children_mut()
     }
 
+    /// The band is this widget's one layout child: the window reaches it (and the manual
+    /// region its controls are placed in) through this, never only through the controls
+    /// themselves.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn crate::widget::Widget)) -> bool {
+        visitor(&self.band);
+        true
+    }
+
+    /// The band places its own controls: without this the window never hands the band its
+    /// region's policy, and its controls fall back to a plain flow that spills past the band.
+    fn manual_layout_policy(&self) -> Option<crate::widget::ManualPolicy> {
+        self.band.manual_layout_policy()
+    }
+
+    fn layout_needs_measure(&self) -> bool {
+        self.band.layout_needs_measure()
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.band.is_layout_dirty()
+    }
+
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut taffy::TaffyTree<()>,
+        node: taffy::NodeId,
+        text: &mut crate::text_render::TextRenderer,
+    ) -> bool {
+        self.band.adjust_layout_style(taffy, node, text)
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        self.band.take_structure_dirty()
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.band.needs_animation_frame()
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.band.needs_redraw()
+    }
+
+    fn mark_drawn(&mut self) {
+        self.band.mark_drawn();
+    }
+
     fn get_rect(&self) -> crate::kurbo::Rect {
         self.band.get_rect()
     }

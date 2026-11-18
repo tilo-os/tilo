@@ -13,7 +13,6 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
 use crate::platform::surfaces::{ShellDesktop, WidgetSurface};
-use tilo_action_broker::collab_app_broker::AppBrokerState;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, Caller, InvokeArgument, InvokeRequest,
     RemoteActionTarget, application_open_target, application_provider, provider_workspace,
@@ -28,6 +27,7 @@ use tilo_desktop_search::LaunchPlace as OpenPlace;
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
 use tilo_desktop_surface::outcome::{Closed, Outcome};
+use tilo_workspace_service::apps::collab_app_broker::AppBrokerState;
 
 mod launch;
 mod reach;
@@ -75,6 +75,9 @@ pub struct Apps {
     /// The desktop the launches come from, once the session has mounted it: what a launch reads its
     /// workspace from, and where a stopped app's notice goes.
     desktop: RefCell<Option<ShellDesktop>>,
+    /// The person's answers about this device's camera, microphone, screen and input: what a
+    /// launch hands an app of them.
+    device_answers: RefCell<Option<tilo_peer_state::DeviceGrants>>,
     state: RefCell<State>,
     /// Why a workspace's apps may not start yet, once the session lent it ([`Self::lend_admission`]).
     admission: RefCell<Option<Admission>>,
@@ -283,6 +286,7 @@ impl Apps {
     ) -> Self {
         Self {
             desktop: RefCell::new(None),
+            device_answers: RefCell::new(None),
             admission: RefCell::new(None),
             reach: reach::Reach::default(),
             awaited: Arc::default(),
@@ -1386,7 +1390,18 @@ impl Apps {
                 )
         });
         launched.person = person;
+        launched.devices = self
+            .device_answers
+            .borrow()
+            .as_ref()
+            .map(tilo_peer_state::DeviceGrants::allowed_here)
+            .unwrap_or_default();
         launched
+    }
+
+    /// Hand the apps this session starts the devices the person allowed them through `grants`.
+    pub fn answer_devices_with(&self, grants: tilo_peer_state::DeviceGrants) {
+        self.device_answers.replace(Some(grants));
     }
 
     /// `shown` as a launch into it is planned: what the person granted apps there, and the policy

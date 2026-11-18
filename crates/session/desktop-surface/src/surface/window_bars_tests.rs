@@ -494,6 +494,7 @@ fn a_window_an_agent_opened_names_the_agent_and_its_run_and_one_a_person_opened_
     let tabs: Vec<u64> = handle.read(|tree| tree.tabs().map(|tab| tab.id).collect());
     let run = tilo_desktop_model::ownership::OpenedBy {
         run: "agent-session:7".into(),
+        agent: "scribe".into(),
         label: AGENT.into(),
         title: "Fill Jane Doe's visa application".into(),
     };
@@ -664,6 +665,7 @@ fn tab_walks_the_focused_windows_bar_and_app_and_enter_on_the_agent_opens_its_ru
         focused,
         tilo_desktop_model::ownership::OpenedBy {
             run: "agent-session:7".into(),
+            agent: "scribe".into(),
             label: AGENT.into(),
             title: "Fill Jane Doe's visa application".into(),
         },

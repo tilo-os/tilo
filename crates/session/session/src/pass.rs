@@ -704,6 +704,11 @@ impl Session {
             .and_then(crate::app_wire::AppWire::action_broker)
             .and_then(|broker| broker.hosted_workspaces());
         self.shared.follow_records(hosted.as_deref());
+        // The person's settings follow them between their devices in their own store: what they set
+        // here is written there, and what they set there reaches the document this session reads.
+        if let Some(personal) = self.shared.sync.as_ref().and_then(|sync| sync.personal()) {
+            self.shared.settings.sync(personal.sync());
+        }
         // What was sent since the last look, by a box, an agent or a script.
         self.shared.deliver_sends();
         // The community this computer is configured for is joined on its own,
@@ -836,10 +841,6 @@ impl Session {
             if let Some(renewal) = &self.shared.fleet_renewal {
                 renewal.follow();
             }
-            // The person's settings follow them between their devices on the same fabric: what they
-            // set here is offered to it, and what they set there reaches the document this session
-            // reads.
-            self.shared.settings.sync(fabric.as_ref());
             // A Bluetooth accessory the person moved to another of their devices, and what came of
             // the moves under way.
             self.shared.bluetooth.pump(&self.shared, fabric);

@@ -193,47 +193,95 @@ export async function applicationName(app,{fetch=globalThis.fetch}={}){
   const listed=(await applications(fetch)).find(entry=>entry.id===app);
   return typeof listed?.name==='string'?listed.name:null;
 }
-/** How many apps' modules `prefetchOfferedApplications` fetches and compiles
- * at once. A desktop offers dozens; fetching them all at once saturates the
- * link the person's own work shares, so a bounded few go at a time, each in
- * an idle period, and the rest wait for one to finish. */
+/** How many of the windows' apps' modules `prefetchApplications` fetches and
+ * compiles at once: the link the person's own work shares carries them, so a
+ * bounded few go at a time, each in an idle period. */
 const PREFETCH_AT_ONCE=2;
-/** Fetch and compile the modules of every app the desktop offers, in the
- * background after the page has drawn its first frame.
+/** How long the page must have gone without the person doing anything before
+ * it fetches one app's module ahead of them. Long enough that a person using
+ * the page never waits behind a download they did not ask for, short enough
+ * that one who turned to another window finds the app they come back to
+ * already in. */
+const WARM_QUIET_MS=5_000;
+/** When the person last did something in the page (a pointer, a key, a
+ * wheel), on the page's clock: what the warm pass waits out, so it never
+ * competes with them. */
+let lastActivity=0;
+if(typeof document!=='undefined'){
+  const noted=()=>{ lastActivity=performance.now(); };
+  for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])addEventListener(type,noted,{capture:true,passive:true});
+}
+/** Resolve once the person has been quiet for [`WARM_QUIET_MS`]: one timer at
+ * a time, re-armed to the quiet deadline, so a page waiting never wakes more
+ * often than the deadline moves. */
+function untilQuiet(){
+  return new Promise(resolve=>{
+    const step=()=>{
+      const left=WARM_QUIET_MS-(performance.now()-lastActivity);
+      if(left<=0){resolve();return;}
+      setTimeout(step,Math.ceil(left)+5);
+    };
+    step();
+  });
+}
+/** Fetch and compile the modules of `apps`, in the background after the page
+ * has drawn its first frame, and then the rest of what the desktop offers,
+ * one at a time and only while the person is not at the page.
  *
- * The desktop bundle names each app's module in `apps.json`, and an app
- * whose module is not yet in has nothing to draw when the person opens it:
- * its window appears at once but stays a placeholder until the module lands
- * — on a cold page, the seconds before an app the person chose shows
- * anything. The apps the desktop offers do not depend on what the person
- * opens, so their modules are fetched ahead of time, starting after the
- * first frame so nothing of it delays what the person sees. It never
- * competes: [`PREFETCH_AT_ONCE`] modules at a time, each in the page's idle
- * period (or a timeout when it is never idle), and the browser's HTTP cache
- * and the splitter's own compiled-module cache keep what came, so an app
- * opened later instantiates without fetching or compiling again.
+ * The workspace's open windows are what the person was just doing and what
+ * they come back to, so their applications' modules go first, a bounded few at
+ * a time, each in an idle period. Everything else waits for the page to be
+ * idle and for the person to have been quiet for [`WARM_QUIET_MS`]: a page
+ * that fetched all of an app shelf's modules as it came up — one hundred and
+ * twelve modules, tens of megabytes — made the person's own work wait behind
+ * the download, so the rest of the shelf fills in only when nobody is waiting
+ * on the link. A module is asked for once per page, so a restated set costs
+ * nothing.
  *
  * An app the listing does not name, or a module that fails, is left to the
- * app's first open, as without this: a prefetch never breaks a page. It runs
- * once; asking again is the same run. */
-let offeredPrefetch;
-export function prefetchOfferedApplications({fetch=globalThis.fetch,load=()=>import('./pkg/__wasm_split.js'),after=ready,idle=globalThis.requestIdleCallback??(run=>setTimeout(()=>run({timeRemaining:()=>4}),0))}={}){
-  offeredPrefetch??=(async()=>{
+ * app's first open, as without this: a prefetch never breaks a page. */
+const askedModules=new Set();
+/** Whether a warm pass is running: one per page, so a status that restates the
+ * windows does not start a second one beside it. */
+let warming=false;
+export function prefetchApplications(apps,{fetch=globalThis.fetch,load=()=>import('./pkg/__wasm_split.js'),after=ready,idle=globalThis.requestIdleCallback??(soon=>setTimeout(()=>soon({timeRemaining:()=>4}),0)),untilPersonQuiet=untilQuiet,warm=true}={}){
+  const wanted=[...new Set(Array.isArray(apps)?apps:[])].filter(app=>typeof app==='string');
+  // A page with no window open still has a shelf to warm.
+  if(!wanted.length&&!warm)return Promise.resolve();
+  return (async()=>{
     const [modules]=await Promise.all([applications(fetch),after()]);
-    const names=modules.map(entry=>entry.module).filter(name=>typeof name==='string');
-    if(!names.length)return;
+    const nameOf=app=>modules.find(entry=>entry.id===app)?.module;
+    const first=wanted.map(nameOf).filter(name=>typeof name==='string'&&!askedModules.has(name));
+    const waitForIdle=()=>new Promise(resolve=>idle(resolve));
     const compiled=await load();
+    const fetchOne=async name=>{
+      askedModules.add(name);
+      try{await compiled.prefetch(name);}catch{}
+    };
     let next=0;
     const worker=async()=>{
-      while(next<names.length){
-        const name=names[next++];
-        await new Promise(resolve=>idle(resolve));
-        try{await compiled.prefetch(name);}catch{}
+      while(next<first.length){
+        const name=first[next++];
+        await waitForIdle();
+        await fetchOne(name);
       }
     };
-    await Promise.all(Array.from({length:Math.min(PREFETCH_AT_ONCE,names.length)},worker));
+    await Promise.all(Array.from({length:Math.min(PREFETCH_AT_ONCE,first.length)},worker));
+    if(!warm||warming)return;
+    // The rest of the shelf, in the order the desktop offers it, one at a
+    // time and only in the person's own idle time.
+    const rest=modules.map(entry=>entry.module).filter(name=>typeof name==='string'&&!askedModules.has(name));
+    warming=true;
+    try{
+      for(const name of rest){
+        await waitForIdle();
+        await untilPersonQuiet();
+        await fetchOne(name);
+      }
+    }finally{
+      warming=false;
+    }
   })().catch(()=>{});
-  return offeredPrefetch;
 }
 export async function openProfileStorage(profile,device,options={}){await ready();return durableHost.open(profile,device,options);}
 // The startup fonts the runtime sets text in, as the page's own faces, for

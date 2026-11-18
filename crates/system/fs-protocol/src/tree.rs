@@ -4,8 +4,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use automerge::{ObjId, ObjType, ROOT, ReadDoc};
+use tilo_actions::{ActionParam, ParamType};
 use tilo_automerge::read::ReadTyped as _;
-use tilo_resource::{Delta, Doc, ModelError, NoAction, Resource, SharedResource, Touch};
+use tilo_resource::{ActionDecl, Delta, Doc, ModelError, Resource, SharedResource, Touch};
+
+use crate::file_action::{FileAction, verbs};
 
 use crate::files::{FIRST_TREE_CHUNK, FileDocumentId, FileNameV1, FileNodeKind, TreeChunk};
 
@@ -116,14 +119,20 @@ pub const FILES_APP: &str = <FilesTree as SharedResource>::OWNER;
 /// of its people is off, or the device that keeps the workspace. The same verbs naming a
 /// `device` and absolute paths change that device's own disk, and only that device carries
 /// them out.
-pub const TREE_VERBS: [&str; 6] = [
+pub const TREE_VERBS: [&str; 7] = [
     "new-folder",
     "rename",
     "move",
     "copy-into",
     "trash",
     "restore",
+    UNDO,
 ];
+
+/// The verb of Files that takes back a call's changes of a workspace's own folder, by the
+/// invocation the call answered: History's undo of that step, in every document of the tree
+/// it wrote.
+pub const UNDO: &str = "undo";
 
 /// Whether `action` is one of [`TREE_VERBS`].
 #[must_use]
@@ -138,6 +147,27 @@ pub const LIST: &str = "list";
 /// The read of Files that answers what a file of the workspace says, by a path in the
 /// workspace, a page at a time.
 pub const READ_TEXT: &str = "read-text";
+
+/// What the resource a file of the workspace's folder is starts with: the file is named by its
+/// path in the workspace after it (`file:Tasks/12 Plan/notes.md`). A listing of the workspace
+/// offers each file as one, with [`READ_TEXT`] on it, so an agent that lists what the workspace
+/// holds sees its files and reads one by the row it was shown.
+pub const FILE_RESOURCE_PREFIX: &str = "file:";
+
+/// The resource the file at `path` in the workspace's folder is ([`FILE_RESOURCE_PREFIX`]).
+#[must_use]
+pub fn file_resource(path: &str) -> String {
+    format!("{FILE_RESOURCE_PREFIX}{}", path.trim_matches('/'))
+}
+
+/// The path in the workspace's folder the resource `resource` names, when it is a file's
+/// ([`file_resource`]).
+#[must_use]
+pub fn file_of_resource(resource: &str) -> Option<&str> {
+    resource
+        .strip_prefix(FILE_RESOURCE_PREFIX)
+        .filter(|path| !path.is_empty())
+}
 
 /// Whether `action` is one of the reads of a workspace's own folder by a path in the workspace
 /// ([`LIST`], [`READ_TEXT`]), which whoever holds its tree answers as it carries out
@@ -212,12 +242,6 @@ pub const SIZE_KEY: &str = "size";
 /// When the content last changed, in milliseconds since the epoch.
 pub const MTIME_KEY: &str = "mtime";
 pub const AUTHOR_KEY: &str = "author";
-/// The format of a text document's file (`md`, `odt`): a file whose content
-/// the tree holds itself, as a rich-text document under [`DOCUMENT_KEY`], and
-/// names by no hash.
-pub const CODEC_KEY: &str = "codec";
-/// The document a text document's node holds.
-pub const DOCUMENT_KEY: &str = "doc";
 /// The signed content revision the node's bytes come from.
 pub const CONTENT_REVISION_KEY: &str = "content_revision_v1";
 
@@ -411,9 +435,6 @@ pub struct TreeEntry {
     pub kind: FileNodeKind,
     /// The content blob its bytes come from, as the document's hex digest.
     pub hash: Option<String>,
-    /// For a text document, the format its file is in: its content is the
-    /// tree's own ([`document_file`] reads it), and it has no hash.
-    pub codec: Option<String>,
     /// The content's length in bytes.
     pub size: u64,
     /// When its content last changed, in milliseconds since the epoch.
@@ -437,7 +458,7 @@ impl Resource for FilesTree {
     const LABEL: &'static str = "Files";
 
     type State = Tree;
-    type Action = NoAction;
+    type Action = FileAction;
 
     fn read(doc: &Doc) -> Result<Tree, ModelError> {
         let Some(nodes) = nodes_of(doc) else {
@@ -497,36 +518,154 @@ impl Resource for FilesTree {
     fn initialize(_doc: &mut Doc) -> Result<(), ModelError> {
         Ok(())
     }
+
+    /// What anyone may do to a node already in the tree, by its key: what an agent or a
+    /// script that listed the tree acts on. A node is made where its chunk is chosen, by the
+    /// mount or by Files' verbs on a path, and those write [`FileAction::Create`] themselves.
+    fn declarations() -> Vec<ActionDecl<Self>> {
+        vec![
+            create_declaration(verbs::NEW_FOLDER, "New folder", FileNodeKind::Directory)
+                .describe("Make an empty folder."),
+            create_declaration(verbs::NEW_FILE, "New file", FileNodeKind::File)
+                .describe("Make an empty file; write its content with `write`."),
+            ActionDecl::new(
+                verbs::MOVE,
+                "Move or rename",
+                vec![
+                    node_param(),
+                    ActionParam::required(
+                        "parent",
+                        ParamType::Text,
+                        "The key of the folder it goes into; ROOT for the workspace's own",
+                    ),
+                    ActionParam::required("name", ParamType::Text, "The name it takes there"),
+                ],
+                |args, now_ms| {
+                    Ok(FileAction::Move {
+                        node: text(args, "node")?,
+                        parent: text(args, "parent")?,
+                        name: FileNameV1::from(text(args, "name")?.as_str()),
+                        mtime: u64::try_from(now_ms).unwrap_or_default(),
+                    })
+                },
+            )
+            .describe("Put a file or folder into another folder, under another name, or both."),
+            write_declaration().describe("Give a file new content the workspace keeps."),
+            ActionDecl::new(
+                verbs::TRASH,
+                "Move to trash",
+                vec![node_param()],
+                |args, _| {
+                    Ok(FileAction::Trash {
+                        node: text(args, "node")?,
+                    })
+                },
+            )
+            .describe("Put a file or folder in the trash, with what it holds."),
+            ActionDecl::new(verbs::RESTORE, "Restore", vec![node_param()], |args, _| {
+                Ok(FileAction::Restore {
+                    node: text(args, "node")?,
+                    parent: None,
+                })
+            })
+            .describe("Take a file or folder out of the trash, back where it was."),
+        ]
+    }
+}
+
+/// The parameter naming the node an action of the tree acts on.
+fn node_param() -> ActionParam {
+    ActionParam::required("node", ParamType::Text, "The key of the file or folder")
+}
+
+/// The declaration `id` that makes an empty node of `kind`.
+fn create_declaration(
+    id: &'static str,
+    label: &'static str,
+    kind: FileNodeKind,
+) -> ActionDecl<FilesTree> {
+    ActionDecl::new(
+        id,
+        label,
+        vec![
+            ActionParam::required(
+                "parent",
+                ParamType::Text,
+                "The key of the folder it goes into; ROOT for the workspace's own",
+            ),
+            ActionParam::required("name", ParamType::Text, "Its name"),
+            ActionParam::optional(
+                "document",
+                ParamType::Text,
+                "The document id it takes, which names the chunk it lives in; a new one \
+                     in the first chunk when not named",
+            ),
+        ],
+        move |args, now_ms| {
+            let document_id = match args.text("document") {
+                Some(id) => uuid::Uuid::parse_str(id.trim())
+                    .map(FileDocumentId)
+                    .map_err(|_| format!("`{id}` is no document id"))?,
+                None => FileDocumentId::in_chunk(crate::files::FIRST_TREE_CHUNK),
+            };
+            Ok(FileAction::Create {
+                node: document_node_id(document_id),
+                document_id,
+                parent: text(args, "parent")?,
+                name: FileNameV1::from(text(args, "name")?.as_str()),
+                kind,
+                hash: None,
+                size: 0,
+                mtime: u64::try_from(now_ms).unwrap_or_default(),
+                author: String::new(),
+            })
+        },
+    )
+}
+
+/// The declaration that gives a file new content.
+fn write_declaration() -> ActionDecl<FilesTree> {
+    ActionDecl::new(
+        verbs::WRITE,
+        "Write",
+        vec![
+            node_param(),
+            ActionParam::required(
+                "content",
+                ParamType::Text,
+                "The new content, as its `tilo.content:<hash>` reference",
+            ),
+            ActionParam::required("size", ParamType::Integer, "Its length in bytes"),
+        ],
+        |args, now_ms| {
+            let content = text(args, "content")?;
+            let hash = tilo_actions::content_hash(&content)
+                .ok_or_else(|| format!("`{content}` names no content"))?
+                .to_owned();
+            Ok(FileAction::Write {
+                node: text(args, "node")?,
+                hash: Some(hash),
+                size: args.whole("size").unwrap_or_default(),
+                mtime: u64::try_from(now_ms).unwrap_or_default(),
+                author: String::new(),
+                revision: None,
+                keep_preview: false,
+            })
+        },
+    )
+}
+
+/// The text argument `name`, trimmed, which the action cannot do without.
+fn text(args: &tilo_actions::ActionArgs, name: &str) -> Result<String, String> {
+    args.text(name)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| format!("`{name}` is named"))
 }
 
 impl SharedResource for FilesTree {
     const OWNER: &'static str = tilo_app_id::apps::FILE_EXPLORER;
-}
-
-/// The file the text document `id` of the tree `doc` is: its document written
-/// in its format, the binary content it embeds read from `content`. `None` for
-/// a node that is no text document, or one in a format nothing here writes.
-#[cfg(feature = "documents")]
-#[must_use]
-pub fn document_file(
-    doc: &Doc,
-    id: &str,
-    content: &dyn tilo_content::ContentSource,
-) -> Option<Vec<u8>> {
-    let node = nodes_at(doc, &nodes_of(doc)?, id)?;
-    let codec = doc.str_at(&node, CODEC_KEY)?;
-    let provider = tilo_doc_codecs::provider_for_ext(&codec)?;
-    let root = doc.obj_at(&node, DOCUMENT_KEY, ObjType::Map)?;
-    let containers = tilo_doc::model::open(doc, &root).ok()?;
-    provider
-        .export(
-            tilo_doc::DocRef {
-                doc,
-                c: &containers,
-            },
-            content,
-        )
-        .ok()
 }
 
 /// The map of node objects, when the document has one.
@@ -561,9 +700,6 @@ fn entry_of<D: ReadDoc>(doc: &D, node: &ObjId) -> TreeEntry {
             _ => FileNodeKind::File,
         },
         hash: doc.str_at(node, HASH_KEY),
-        codec: doc
-            .str_at(node, CODEC_KEY)
-            .filter(|codec| !codec.is_empty()),
         size: doc.uint_at(node, SIZE_KEY).unwrap_or_default(),
         mtime: doc.uint_at(node, MTIME_KEY).unwrap_or_default(),
         author: doc.str_at(node, AUTHOR_KEY).filter(|name| !name.is_empty()),
@@ -730,7 +866,6 @@ pub fn place(
     placing: Placing<'_>,
     (mtime, author): (u64, &str),
 ) -> Result<Placed, ModelError> {
-    use automerge::transaction::Transactable as _;
     if name.is_empty() || name == "." || name == ".." || name.contains('/') {
         return Err(ModelError::invalid(format!("{name:?} is no file's name")));
     }
@@ -738,34 +873,25 @@ pub fn place(
         return Err(ModelError::invalid("the folder to put it in is gone"));
     }
     let name = free_name(tree, parent, name);
-    let nodes = tree_nodes(doc)?;
     let document_id = FileDocumentId::in_chunk(chunk);
     let id = document_node_id(document_id);
-    let node = doc.put_object(&nodes, &id, ObjType::Map)?;
-    doc.put(&node, PARENT_KEY, parent)?;
-    doc.put(&node, PREV_PARENT_KEY, parent)?;
-    doc.put(&node, NAME_KEY, name.as_bytes().to_vec())?;
-    doc.put(&node, PLACEMENT_NAME_KEY, name.as_bytes().to_vec())?;
     let (kind, hash, size) = match placing {
         Placing::Folder => (FileNodeKind::Directory, None, 0),
         Placing::File { hash, size } => (FileNodeKind::File, Some(hash), size),
     };
-    doc.put(
-        &node,
-        KIND_KEY,
-        if kind == FileNodeKind::Directory {
-            "dir"
-        } else {
-            "file"
-        },
-    )?;
-    if let Some(hash) = hash {
-        doc.put(&node, HASH_KEY, hash)?;
+    FileAction::Create {
+        node: id.clone(),
+        document_id,
+        parent: parent.to_owned(),
+        name: FileNameV1::from(name.as_str()),
+        kind,
+        hash: hash.map(str::to_owned),
+        size,
+        mtime,
+        author: author.to_owned(),
     }
-    doc.put(&node, SIZE_KEY, size)?;
-    doc.put(&node, MTIME_KEY, mtime)?;
-    doc.put(&node, AUTHOR_KEY, author)?;
-    doc.put(&node, DOCUMENT_ID_KEY, document_id.0.to_string())?;
+    .write(doc)
+    .map_err(|error| ModelError::invalid(error.to_string()))?;
     tree.nodes.insert(
         id.clone(),
         TreeEntry {
@@ -773,7 +899,6 @@ pub fn place(
             name: FileNameV1::from(name.as_str()),
             kind,
             hash: hash.map(str::to_owned),
-            codec: None,
             size,
             mtime,
             document_id: Some(document_id),
@@ -793,7 +918,6 @@ mod live_tests {
             name: FileNameV1::from(name),
             kind,
             hash: hash.map(str::to_owned),
-            codec: None,
             size: 3,
             mtime: 0,
             author: None,

@@ -116,7 +116,7 @@ impl Page<'_> {
     pub(super) fn kill_switch_rows(
         &self,
         vpn: &VpnInfo,
-        live: &ui::tilo_actions::ResourceSpec,
+        live: &(impl ui::tilo_actions::Exports + ?Sized),
     ) -> Vec<Item> {
         let switch = self.kill_switch(&vpn.uuid);
         let label = t("net-vpn-kill-switch");

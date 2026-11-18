@@ -6,7 +6,7 @@
 // once.
 //
 // Then one of them is made an owner while their page is open (the stack's own
-// owner adds them with `tilo members add`, the normal action), and invites a
+// owner adds them with `tilo workspace people add`, the normal action), and invites a
 // third person from the page's own sheet. That person
 // opens the link the sheet handed over — `http://<site>/i/<handle>#<key>` — in
 // a browser of their own, is told who invited them, to what and as what, and
@@ -45,7 +45,7 @@ if (!site || !server || !origin || !out || !stack) {
 }
 
 /** Make `user` (hex) an owner of the Lounge, as the stack's own owner does it:
- * `stack.sh owner KEY` runs `tilo members add KEY --role owner`, the action any
+ * `stack.sh owner KEY` runs `tilo workspace people add KEY --role owner`, the action any
  * owner takes, and the workspace's entry then lets them in. */
 const addOwner = user => execFileSync(
   'bash',

@@ -482,10 +482,6 @@ workspace-settings-section-agents = Agents
 workspace-settings-section-roles = Roles
 workspace-settings-subject-bot = Bot { $id }
 workspace-settings-subject-role = everyone with { $role }
-workspace-settings-grant-camera = Camera
-workspace-settings-grant-microphone = Microphone
-workspace-settings-grant-screencast = Screen capture
-workspace-settings-grant-remote-control = Remote control
 workspace-settings-grant-network = Network access
 workspace-settings-grant-read-files = Read workspace files
 workspace-settings-grant-edit-files = Edit workspace files
@@ -641,6 +637,12 @@ workspace-settings-device-shown = Shown
 workspace-settings-device-hidden = Kept off
 workspace-settings-move-earlier = Move up
 workspace-settings-move-later = Move down
+workspace-settings-servers-title = Servers
+workspace-settings-servers-description = A change on one reaches the others, and people can open the workspace from any of them.
+workspace-settings-servers-origin-label = Another server's site
+workspace-settings-servers-add = Add
+workspace-settings-servers-remove = Remove
+workspace-settings-servers-here = This server
 workspace-settings-leave = Leave workspace
 workspace-settings-leave-description = Takes it off this device, along with the windows and groups that belong to it. The workspace stays for everyone in it.
 workspace-settings-leave-action = Leave
@@ -773,6 +775,7 @@ window-switcher-hint-stay = Stay
 overview-empty-window = Empty window
 overview-untitled = Untitled
 overview-access-only-you = Only you
+overview-access-lead = Shared with
 overview-access-one = Shared with { $name }
 overview-access-two = Shared with { $name } and { $other }
 overview-access-many = Shared with { $name } and { $count } others
@@ -800,12 +803,8 @@ overview-no-workspace = No workspace selected
 overview-you-are-here = You are here
 overview-shared-out = Shared out of here
 overview-more-shares = and { $count } more
-overview-share-with-two = { $first } and { $second }
-overview-share-with-many = { $count ->
-        [one] { $first } and { $count } other
-       *[other] { $first } and { $count } others
-    }
-overview-share-can-edit = { $with } can edit
+overview-share-writable = can edit
+overview-more-people = +{ $count }
 overview-new-workspace = New workspace
 overview-join-workspace = Join a workspace…
 overview-leave-workspace = Leave
@@ -846,6 +845,7 @@ browser-new-workspace-name = Workspace { $number }
 workspace-notice-joined = { $name } joined
 workspace-notice-agent-finished = { $agent } finished
 workspace-notice-agent-card = Open card
+workspace-notice-agent-open = Open in { $app }
 workspace-notice-agent-finished-changes = { $agent } finished: { $count ->
     [one] 1 change
    *[other] { $count } changes

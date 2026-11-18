@@ -1,7 +1,5 @@
 /** What the SDK raises: a refusal, an ask, or a call that broke on the way. */
 
-/** The code of an answer that ran nothing because the host is busy. */
-export const RATE_LIMITED = "rate_limited";
 /** The code of a call made through generated types for another surface. */
 export const SURFACE_CHANGED = "surface_changed";
 export const KEY_REVOKED = "key_revoked";
@@ -21,21 +19,6 @@ export class Refused extends Error {
     this.name = "Refused";
     this.code = code;
     this.nextSteps = nextSteps;
-  }
-}
-
-/**
- * The host is busy with the person's changes and ran nothing. The client
- * asks again by itself, waiting what the host says (`retryAfterMs`), until
- * its retry deadline; this is thrown only once the deadline passed.
- */
-export class RateLimited extends Refused {
-  readonly retryAfterMs: number | null;
-
-  constructor(message = "", nextSteps: string[] = [], retryAfterMs: number | null = null) {
-    super(RATE_LIMITED, message, nextSteps);
-    this.name = "RateLimited";
-    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -166,7 +149,6 @@ export interface RefusalBody {
   code?: unknown;
   message?: unknown;
   next_steps?: unknown;
-  retry_after_ms?: unknown;
   revoked_at_ms?: unknown;
   expired_at_ms?: unknown;
 }
@@ -191,8 +173,6 @@ export function refusalOf(status: number, body: Record<string, unknown> | null):
       return new KeyExpired(message, intOf(detail.expired_at_ms), status, steps);
     case INVALID_TOKEN:
       return new KeyRefused(message, INVALID_TOKEN, status, steps);
-    case RATE_LIMITED:
-      return new RateLimited(message, steps, intOf(detail.retry_after_ms));
     case SURFACE_CHANGED:
       return new SurfaceChanged(message, steps);
     default:

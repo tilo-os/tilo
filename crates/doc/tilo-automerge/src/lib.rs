@@ -14,6 +14,7 @@
 pub mod heap;
 pub mod items;
 pub mod json;
+pub mod load_hint;
 pub mod read;
 pub mod rich_text;
 pub mod shared;

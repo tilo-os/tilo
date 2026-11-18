@@ -243,6 +243,10 @@ export function actionOf(raw: Record<string, unknown>): Action {
 export interface Row {
   path: string;
   name: string;
+  /** The resource's own id, which names it whatever else is titled the same. */
+  id: string | null;
+  /** The app's stable key for it, the name its actions answer it by. */
+  key: string | null;
   label: string;
   kind: string;
   hasChildren: boolean;
@@ -276,6 +280,8 @@ export function rowOf(
   return {
     path: String(raw.path ?? ""),
     name: String(raw.name ?? ""),
+    id: textOf(raw.id),
+    key: textOf(raw.key),
     label: String(raw.label ?? ""),
     kind,
     hasChildren: raw.has_children === true,

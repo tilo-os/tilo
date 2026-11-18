@@ -200,25 +200,12 @@ pub struct KeyLink {
     answers: tokio::sync::watch::Sender<u64>,
     /// What this session says on the peer network, once it is running.
     outgoing: Mutex<Option<std::sync::Arc<dyn crate::Outbox>>>,
-    /// The devices that reach this one as their workspace's host, when it
-    /// serves any ([`Self::serve_members`]).
-    members: Mutex<Option<Arc<dyn Members>>>,
     /// The workspaces whose group's frames this device asked the person's other devices for, each
     /// with the epoch it held then ([`Self::want_frames`]).
     wanted: Mutex<BTreeMap<ModelWorkspaceId, u64>>,
     /// This device's keys, which answer what the person's other devices ask of its groups.
     keys: Mutex<Option<SharedKeys>>,
     park: Arc<GovernancePark>,
-}
-
-/// The devices that take part in a workspace through this one, as their
-/// workspace's host: a group's governance reaches them only through this
-/// device, so it sends them what it hears and says, and takes what they say
-/// to its own key service and on to the workspace's own host.
-pub trait Members: Send + Sync {
-    /// Send `message`, a workspace's group governance, to the members
-    /// linked to this device in that workspace.
-    fn carry(&self, message: &NeighbourMsg);
 }
 
 impl KeyLink {
@@ -233,7 +220,6 @@ impl KeyLink {
             replays: tokio::sync::watch::Sender::new(0),
             answers: tokio::sync::watch::Sender::new(0),
             outgoing: Mutex::new(None),
-            members: Mutex::new(None),
             wanted: Mutex::new(BTreeMap::new()),
             keys: Mutex::new(None),
             park: GovernancePark::new(),
@@ -258,19 +244,14 @@ impl KeyLink {
         self.outgoing.lock_recover().is_some()
     }
 
-    /// Send the group governance this device hears and says to `members`, the devices that take
-    /// part in a workspace through this one, and take what they say: [`Self::heard_from_member`].
-    pub fn serve_members(&self, members: Arc<dyn Members>) {
-        *self.members.lock_recover() = Some(members);
-    }
-
     /// Take in one message the peer network heard. Anything but the groups' governance is left to the
-    /// peer network. The members linked to this device hear it too: the peer network is not their path.
+    /// peer network.
     pub fn heard(&self, message: &NeighbourMsg) {
-        if !self.take_in(message) {
+        let Some(governance) = InboundGovernance::from_message(message.clone()) else {
             return;
-        }
-        self.carry_to_members(message);
+        };
+        self.inbound.lock_recover().push(governance);
+        self.park.poke();
     }
 
     /// Answer what the person's other devices ask of this device's groups with `keys`.
@@ -354,37 +335,6 @@ impl KeyLink {
         if let Some(outgoing) = outgoing {
             let _ = outgoing.send(Cmd::TellSiblings(Box::new(message)));
         }
-    }
-
-    /// Send `message`, group governance, to the members linked to this device.
-    fn carry_to_members(&self, message: &NeighbourMsg) {
-        let members = self.members.lock_recover().clone();
-        if let Some(members) = members {
-            members.carry(message);
-        }
-    }
-
-    /// Take in group governance a member linked to this device said: the key service settles
-    /// its groups with it, and the peer network sends it on to the workspace's own host, so the devices
-    /// that take part there hear it. The link it came by already sent it to the other members.
-    pub fn heard_from_member(&self, message: &NeighbourMsg) {
-        if !self.take_in(message) {
-            return;
-        }
-        if let Some(workspace) = governance_workspace(message) {
-            self.say(workspace, message.clone());
-        }
-    }
-
-    /// Queue `message` for the key service when it is group governance, and say whether it
-    /// was.
-    fn take_in(&self, message: &NeighbourMsg) -> bool {
-        let Some(governance) = InboundGovernance::from_message(message.clone()) else {
-            return false;
-        };
-        self.inbound.lock_recover().push(governance);
-        self.park.poke();
-        true
     }
 
     /// Say `message`, group governance of `workspace`, on the peer network; `false` when the peer network is
@@ -593,23 +543,14 @@ impl GovernanceTransport for KeyLink {
         let Some(workspace) = governance_workspace(&message) else {
             return false;
         };
-        // The members linked to this device hear it from this device alone, and the person's other
-        // devices hear it whether the workspace's host is there or not: a device of theirs that
-        // fell behind asks them to be admitted again, and is admitted by them.
-        self.carry_to_members(&message);
+        // The person's other devices hear it whether the workspace's host is there or not: a device
+        // of theirs that fell behind asks them to be admitted again, and is admitted by them.
         self.tell_siblings(message.clone());
         self.say(workspace, message)
     }
 
     fn take_inbound(&self) -> Vec<InboundGovernance> {
         std::mem::take(&mut *self.inbound.lock_recover())
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl Members for tilo_peer_state::direct::Owning {
-    fn carry(&self, message: &NeighbourMsg) {
-        self.carry_governance(message);
     }
 }
 
@@ -903,70 +844,6 @@ mod tests {
                 "a governance frame waits for the next settle"
             );
             assert!(link.take_inbound().is_empty(), "and is taken once");
-        }
-
-        phase governance_passes_between_the_network_and_the_members_linked_here;
-        // The members linked to a device that hosts their workspace hear a group's governance
-        // through that device alone: what it says and what the peer network brings it reach them, and what
-        // they say reaches its key service and, on the peer network, the workspace's own host.
-        {
-            #[derive(Default)]
-            struct Linked(Mutex<Vec<NeighbourMsg>>);
-            impl Members for Linked {
-                fn carry(&self, message: &NeighbourMsg) {
-                    self.0.lock_recover().push(message.clone());
-                }
-            }
-            let link = KeyLink::new();
-            let (outgoing, mut said) = tokio::sync::mpsc::unbounded_channel();
-            link.attach(std::sync::Arc::new(outgoing));
-            let members = Arc::new(Linked::default());
-            link.serve_members(Arc::clone(&members) as Arc<dyn Members>);
-            let workspace = ModelWorkspaceId::new();
-            let frame = |epoch| NeighbourMsg::MlsGovernance {
-                workspace: workspace.to_string(),
-                frame: Box::new(collab_types::MlsGovernanceFrame {
-                    version: collab_types::MLS_GOVERNANCE_VERSION,
-                    workspace: collab_types::WorkspaceId::new(),
-                    previous_frame_digest: [0; 32],
-                    epoch,
-                    action: collab_types::MlsGovernanceAction::Genesis,
-                    signed_by: Ed25519PublicKey::from_bytes([2; 32]),
-                    signature: collab_types::Signature([0; 64]),
-                }),
-                delivery: epoch,
-            };
-            let published = |said: &mut tokio::sync::mpsc::UnboundedReceiver<Cmd>| {
-                let mut published = Vec::new();
-                while let Ok(command) = said.try_recv() {
-                    if let Cmd::Publish { msg, .. } = command {
-                        published.push(*msg);
-                    }
-                }
-                published
-            };
-
-            // What this device's key service says goes out on the peer network and to the members.
-            let own = frame(1);
-            assert!(link.publish(own.clone()));
-            assert_eq!(published(&mut said), vec![own.clone()]);
-            assert_eq!(*members.0.lock_recover(), vec![own]);
-
-            // What the peer network brings reaches the key service and the members, and is not said
-            // again on the peer network.
-            let from_the_host = frame(2);
-            link.heard(&from_the_host);
-            assert_eq!(link.take_inbound().len(), 1);
-            assert!(published(&mut said).is_empty());
-            assert_eq!(members.0.lock_recover().last(), Some(&from_the_host));
-
-            // What a member says reaches the key service and goes on to the workspace's host; its
-            // link already sent it to the other members.
-            let from_a_member = frame(3);
-            link.heard_from_member(&from_a_member);
-            assert_eq!(link.take_inbound().len(), 1);
-            assert_eq!(published(&mut said), vec![from_a_member]);
-            assert_eq!(members.0.lock_recover().len(), 2);
         }
     }
 

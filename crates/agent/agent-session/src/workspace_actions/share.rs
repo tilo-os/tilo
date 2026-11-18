@@ -2,12 +2,11 @@
 //! from the resource's views as the caller may read them, under the web entry
 //! the server announces; and the link a change answers with it.
 
+use tilo_actions::remote::InvokeRequest;
 use tilo_actions::remote::{ActionCallError, Caller, CatalogueQuery};
-use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
-use tilo_actions::{ActionAddress, ActionFailure, ActionOutput, InvocationId};
+use tilo_actions::{ActionFailure, ActionOutput};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId;
-use ui::tilo_resource::share::SHARE_LINK;
 
 use super::resource_of;
 use super::{Outcome, Worker, WorkspaceState, record_provider};
@@ -123,61 +122,46 @@ impl Worker {
 }
 
 impl Worker {
-    /// The link that opens what `request`, which answered `output`, made or
-    /// changed, for a person to review it: the own `share-link` of the first
-    /// resource it names that offers one, else its document's. Minted here as
-    /// `share-link` mints it, so the caller is answered it with the change
-    /// and asks nothing more. `None` for a read, and for an action on no
-    /// document.
+    /// The link that opens the document `request` changed, for a person to
+    /// review the change: answered with it, so the caller asks nothing more.
+    /// `None` for an action that wrote nothing, and for one on no document.
+    ///
+    /// It names the document alone: an item's own link is chosen from the
+    /// views the app publishes for it, which an item the change just made
+    /// is in only once a view laid it out, and an action never waits on a
+    /// view. Whoever opens the document shows the change; an item's own
+    /// link is still `share-link` on it.
     pub(super) fn changed_link(
         &mut self,
         workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
-        output: &ActionOutput,
     ) -> Option<String> {
+        if std::mem::take(&mut self.wrote).is_empty() {
+            return None;
+        }
         let workspace = self
             .workspaces
             .get(&workspace_id)?
             .cluster_id(workspace_id)?;
         let route = resource_of(&request.target.provider, &workspace)?;
-        let holder = self.holder_of(&route);
-        let target = self.with_document_resource(&request.target, &route.app_id);
-        let kind = self
-            .app_at(&holder)?
-            .descriptor(&target.address)?
-            .contract
-            .kind;
-        if kind == tilo_actions::ActionKind::Read {
-            return None;
-        }
-        let own = output
-            .resources
-            .iter()
-            .find(|resource| {
-                !resource.is_empty()
-                    && self.publishes(&holder, &ActionAddress::new(resource.as_str(), SHARE_LINK))
-            })
-            .cloned();
-        // The document's own link, named by its root, when no resource it names offers one.
-        own.into_iter().chain([String::new()]).find_map(|resource| {
-            let asked = InvokeRequest {
-                invocation: InvocationId::new(),
-                target: RemoteActionTarget {
-                    provider: request.target.provider.clone(),
-                    address: ActionAddress::new(resource, SHARE_LINK),
-                },
-                argument: InvokeArgument::None,
-                context: None,
-                confirmation: None,
-                revision: None,
-                on_behalf_of: None,
-                wait_ms: None,
-                appearance: None,
-            };
-            let (minted, _) = self.perform(workspace_id, caller, &asked).ok()?;
-            minted.value?.get("url")?.as_str().map(str::to_owned)
-        })
+        let opened = self.holder_of(&route);
+        let document = ui::tilo_resource::share::ShareRequest {
+            resource: String::new(),
+            kind: String::new(),
+            views: Vec::new(),
+            invite: false,
+            args: serde_json::Map::new(),
+        };
+        // Someone served within bounds changed the document as the person
+        // they are or act for, who reads it: the link is asked as them.
+        let asker = self
+            .bounded(caller)
+            .map_or_else(|| caller.clone(), |who| who.person_caller);
+        let minted = self
+            .document_link(workspace_id, &asker, &opened, &document)
+            .ok()?;
+        minted.value?.get("url")?.as_str().map(str::to_owned)
     }
 
     /// The views `wanted` offers `caller`, and where the record opens, from

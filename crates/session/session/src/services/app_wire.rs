@@ -10,7 +10,7 @@ use tilo_service::Started;
 use tilo_session_core::surfaces::{Published, Surfaces};
 use ui::host_operation::ResourceOperationStart;
 
-use tilo_action_broker::collab_broker::FanoutState;
+use tilo_workspace_service::apps::collab_broker::FanoutState;
 
 use crate::app_wire::AppWire;
 use crate::app_wire::{LayoutAuthority, Sealed, ShortcutLibrary};
@@ -370,6 +370,7 @@ pub(crate) fn start_app_wire(
                 channels,
                 std::sync::Arc::clone(&fanout),
                 sync.sibling_dials(),
+                options.wake.handle(),
             )
         }),
         _ => None,

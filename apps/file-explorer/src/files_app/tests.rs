@@ -169,7 +169,6 @@ mod open_with_tests {
             content_hash: None,
             document_id: None,
             availability: None,
-            history: None,
             app: None,
             rich_metadata: None,
             observed: None,
@@ -181,7 +180,6 @@ mod open_with_tests {
 
         phase files_are_classified_for_open_and_merge_by_extension;
         {
-            merge_is_never_offered_for_binary_or_unsupported_names();
         }
 
         phase activation_hands_every_file_to_the_session_to_open;
@@ -478,14 +476,6 @@ mod open_with_tests {
                 "one ask for .pdf and one for .txt, then cached"
             );
         }
-    }
-
-    fn merge_is_never_offered_for_binary_or_unsupported_names() {
-        assert!(merge_supported_path(std::path::Path::new("notes.txt")));
-        assert!(merge_supported_path(std::path::Path::new("legacy.QDOC")));
-        assert!(merge_supported_path(std::path::Path::new("draft.TILO-DOC")));
-        assert!(!merge_supported_path(std::path::Path::new("photo.png")));
-        assert!(!merge_supported_path(std::path::Path::new("unknown")));
     }
 
     pub(super) fn context_menu_opens_with_selection_aware_items() {
@@ -1477,7 +1467,6 @@ mod command_path_tests {
             content_hash: None,
             document_id: None,
             availability: None,
-            history: None,
             app: None,
             rich_metadata: None,
             observed: None,
@@ -2014,94 +2003,7 @@ mod command_path_tests {
         {
             sharing_offers_the_shells_invite_sheet();
             governed_history_surfaces_open_real_detail_panels();
-            history_activity_intent_preserves_selected_version_and_signed_identity();
             running_files_reloads_new_renamed_removed_and_expired_governed_devices();
-            previous_immutable_version_is_an_explicit_restore_command();
-        }
-
-        phase history_activity_names_an_agents_version_as_the_agent_for_its_person;
-        {
-            let root = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
-            let person = root.verifying_key().to_bytes();
-            let agent_key = ed25519_dalek::SigningKey::from_bytes(&[52; 32]);
-            let mut certificate = tilo_user_identity::DeviceCert {
-                user_public_key: person,
-                device_public_key: agent_key.verifying_key().to_bytes(),
-                device_label: "Agent: Scribe".into(),
-                capabilities: tilo_user_identity::CertificationPolicy::agent().ceiling,
-                issued_at_ns: 1,
-                expires_at_ns: None,
-                signature: [0; 64],
-                issuer: None,
-            };
-            tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
-            let device = certificate.device_public_key;
-            let version = "c0d4e23f-c7cb-4ded-a427-b32cf9da9342";
-            let record = "c0d4e23f-c7cb-4ded-a427-b32cf9da9341";
-            let mut entry = ent("report.txt", false, "text/plain");
-            entry.history = fs_protocol::HistoryProjectionV1::parse_xattr(
-                &serde_json::to_vec(&serde_json::json!({
-                    "schema_version": 1, "document_id": record, "total_versions": 1,
-                    "versions_truncated": false, "heads": [version],
-                    "versions": [
-                        {"id": version, "document_id": record, "parents": [],
-                         "actor": {"person": person.to_vec(), "device": device.to_vec()},
-                         "timestamp_ms": 9, "content_hash": vec![3; 32], "metadata_hash": vec![4; 32], "provenance": "Edit"}
-                    ], "conflicts_truncated": false, "conflicts": []
-                }))
-                .unwrap(),
-            ).ok();
-            let w = FileExplorerWidget::new();
-            w.state().trusted_humans =
-                crate::identity_directory::TrustedHumanDirectory::from_projection_v2(
-                    tilo_user_identity::TrustedIdentityProjectionV2 {
-                        schema_version: tilo_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
-                        humans: vec![tilo_user_identity::GovernedHumanIdentityV2 {
-                            root_public_key: person,
-                            display_name: "Ada Lovelace".to_string(),
-                            devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 {
-                                certificate,
-                                agent: Some(tilo_user_identity::GovernedAgentIdentityV2 {
-                                    agent_id: "scribe".into(),
-                                    label: "Scribe".into(),
-                                    color: [10, 20, 30],
-                                }),
-                            }],
-                        }],
-                    },
-                )
-                .unwrap();
-            w.state().entries = vec![entry];
-            w.state().selection.select_only(0);
-            let selected = fs_protocol::FileVersionId(uuid::Uuid::parse_str(version).unwrap());
-            w.state()
-                .apply_command(FileCommand::ShowInWorkspaceActivity {
-                    document_id: record.into(),
-                    version_id: selected,
-                });
-            let Some(ui::widget::AppProcessIntent::ShowWorkspaceActivity {
-                entry: Some(entry), ..
-            }) = w.state().take_process_intent()
-            else {
-                panic!("Files hands the selected version to Workspace Activity");
-            };
-            assert_eq!(entry.author.name, "Scribe");
-            assert_eq!(ui::author_line(&entry.author), "Scribe");
-            assert_eq!(entry.author.relation, ui::widget::AuthorRelation::Software);
-            let attribution = entry.author.attribution.expect("who acted for whom");
-            assert_eq!(attribution.acting.by, ui::tilo_actions::Actor::Member(ui::tilo_actions::MemberId::agent("scribe")));
-            assert_eq!(attribution.acting.acted_for_person().map(str::to_owned), Some(hex::encode(person)));
-            assert_eq!(
-                attribution.on_behalf_of_name.as_deref(),
-                Some("Ada Lovelace")
-            );
-        }
-
-        phase conflict_resolution_is_explicit_and_merge_preflight_guarded;
-        {
-            open_text_conflict_menu_requires_review_before_an_exact_merge();
-            merge_review_only_enables_apply_after_a_safe_daemon_preflight();
-            late_merge_preflight_cannot_repurpose_an_unrelated_confirmation_sheet();
         }
     }
 
@@ -2725,9 +2627,10 @@ mod command_path_tests {
             .state()
             .published_row(&id)
             .expect("an exact current-folder entry resolves on demand");
-        assert_eq!(resolved.id.as_str(), id);
-        assert!(resolved.actions.iter().any(|action| action.id == "open"));
-        assert!(resolved.actions.iter().any(|action| action.id == "copy"));
+        assert_eq!(resolved.id(), id);
+        let ops = resolved.operations();
+        assert!(ops.iter().any(|action| action.id == "open"));
+        assert!(ops.iter().any(|action| action.id == "copy"));
     }
 
     fn every_exported_local_file_handler_is_declared_for_the_broker() {
@@ -3949,7 +3852,7 @@ mod command_path_tests {
 
         let resource = {
             let state = w.state();
-            state.entry_resource(&state.entries[0])
+            state.entry_resource(&state.entries[0]).into_resource()
         };
         let presentation = resource.presentation.as_ref().expect("unavailable badge");
         assert_eq!(presentation.badge.as_deref(), Some("Unavailable"));
@@ -4117,29 +4020,6 @@ mod command_path_tests {
             .unwrap(),
         )
         .ok();
-        entry.history = fs_protocol::HistoryProjectionV1::parse_xattr(
-            &serde_json::to_vec(&serde_json::json!({
-                "schema_version": 1,
-                "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                "total_versions": 1,
-                "versions_truncated": false,
-                "heads": ["a0d4e23f-c7cb-4ded-a427-b32cf9da9342"],
-                "versions": [{
-                    "id": "a0d4e23f-c7cb-4ded-a427-b32cf9da9342",
-                    "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                    "parents": [],
-                    "actor": {"person": vec![1; 32], "device": vec![2; 32]},
-                    "timestamp_ms": 9,
-                    "content_hash": null,
-                    "metadata_hash": vec![3; 32],
-                    "provenance": "Create"
-                }],
-                "conflicts_truncated": false,
-                "conflicts": []
-            }))
-            .unwrap(),
-        )
-        .ok();
         let w = FileExplorerWidget::new();
         w.state().entries = vec![entry];
         w.state().selection.select_only(0);
@@ -4155,7 +4035,6 @@ mod command_path_tests {
         assert!(panel.title.contains("Properties"));
         let internal = |line: &String| line.contains("Collaborative resource");
         assert!(!panel.lines.iter().any(internal), "{:?}", panel.lines);
-        assert!(panel.lines.iter().any(|line| line.contains("1 version")));
         assert!(panel.lines.iter().any(|line| line.contains("1920 × 1080")));
         assert!(panel.lines.iter().any(|line| line.contains("1:05")));
         assert!(panel.lines.iter().any(|line| line.contains("Pages: 4")));
@@ -4163,52 +4042,6 @@ mod command_path_tests {
         assert!(w.state().collab_panel.is_none());
         w.state().apply_command(FileCommand::CloseCollabPanel);
         assert!(w.state().collab_panel.is_none());
-    }
-
-    fn history_activity_intent_preserves_selected_version_and_signed_identity() {
-        let older = "a0d4e23f-c7cb-4ded-a427-b32cf9da9342";
-        let current = "a0d4e23f-c7cb-4ded-a427-b32cf9da9344";
-        let record = "b0d4e23f-c7cb-4ded-a427-b32cf9da9341";
-        let mut entry = ent("report.txt", false, "text/plain");
-        entry.history = fs_protocol::HistoryProjectionV1::parse_xattr(
-            &serde_json::to_vec(&serde_json::json!({
-                "schema_version": 1, "document_id": record, "total_versions": 2,
-                "versions_truncated": false, "heads": [current],
-                "versions": [
-                    {"id": older, "document_id": record, "parents": [],
-                     "actor": {"person": vec![1; 32], "device": vec![2; 32]},
-                     "timestamp_ms": 9, "content_hash": vec![3; 32], "metadata_hash": vec![4; 32], "provenance": "Create"},
-                    {"id": current, "document_id": record, "parents": [older],
-                     "actor": {"person": vec![5; 32], "device": vec![6; 32]},
-                     "timestamp_ms": 10, "content_hash": vec![7; 32], "metadata_hash": vec![8; 32], "provenance": "Edit"}
-                ], "conflicts_truncated": false, "conflicts": []
-            }))
-            .unwrap(),
-        ).ok();
-        let w = FileExplorerWidget::new();
-        w.state().entries = vec![entry];
-        w.state().selection.select_only(0);
-        w.state().apply_command(FileCommand::ShowHistory);
-        let selected = fs_protocol::FileVersionId(uuid::Uuid::parse_str(older).unwrap());
-        w.state()
-            .apply_command(FileCommand::ShowInWorkspaceActivity {
-                document_id: record.into(),
-                version_id: selected,
-            });
-        assert!(w.state().collab_panel.is_none());
-        let Some(ui::widget::AppProcessIntent::ShowWorkspaceActivity {
-            resource_id,
-            version_id,
-            entry,
-        }) = w.state().take_process_intent()
-        else {
-            panic!("Files hands the selected immutable version to Workspace Activity");
-        };
-        assert_eq!(resource_id, record);
-        assert_eq!(version_id, Some(*selected.0.as_bytes()));
-        let entry = entry.expect("the handoff carries a factual app-native event");
-        assert_eq!(entry.id.as_bytes(), selected.0.as_bytes());
-        assert_eq!(entry.context.unwrap().resource.unwrap().id, record);
     }
 
     fn running_files_reloads_new_renamed_removed_and_expired_governed_devices() {
@@ -4359,7 +4192,7 @@ mod command_path_tests {
             .published_row(&hit.anchor())
             .expect("late resource materializes exactly for this anchor");
         assert!(
-            row.actions
+            row.operations()
                 .iter()
                 .any(|spec| spec.id == crate::search_provider::REVEAL_ACTION),
             "the anchored row reveals the resource"
@@ -4371,227 +4204,6 @@ mod command_path_tests {
         assert_eq!(widget.state().current_path, nested);
         assert_eq!(widget.state().selection.primary(), Some(0));
         assert_eq!(widget.state().entries[0].path, file);
-    }
-
-    fn previous_immutable_version_is_an_explicit_restore_command() {
-        let previous = "a0d4e23f-c7cb-4ded-a427-b32cf9da9342";
-        let current = "a0d4e23f-c7cb-4ded-a427-b32cf9da9344";
-        let mut entry = ent("history.txt", false, "text/plain");
-        entry.history = fs_protocol::HistoryProjectionV1::parse_xattr(
-            &serde_json::to_vec(&serde_json::json!({
-                "schema_version": 1,
-                "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                "total_versions": 2,
-                "versions_truncated": false,
-                "heads": [current],
-                "versions": [{
-                    "id": previous,
-                    "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                    "parents": [],
-                    "actor": {"person": vec![1; 32], "device": vec![2; 32]},
-                    "timestamp_ms": 9,
-                    "content_hash": vec![3; 32],
-                    "metadata_hash": vec![4; 32],
-                    "provenance": "Create"
-                }, {
-                    "id": current,
-                    "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                    "parents": [previous],
-                    "actor": {"person": vec![1; 32], "device": vec![2; 32]},
-                    "timestamp_ms": 10,
-                    "content_hash": vec![5; 32],
-                    "metadata_hash": vec![6; 32],
-                    "provenance": "Edit"
-                }],
-                "conflicts_truncated": false,
-                "conflicts": []
-            }))
-            .unwrap(),
-        )
-        .ok();
-        let widget = FileExplorerWidget::new();
-        widget.state().entries = vec![entry];
-        widget.state().selection.select_only(0);
-        let expected = fs_protocol::FileVersionId(uuid::Uuid::parse_str(previous).unwrap());
-        assert!(
-            widget
-                .state()
-                .context_menu_spec(&[])
-                .iter()
-                .any(|(label, command)| {
-                    label == "Restore previous version"
-                        && *command
-                            == Some(FileCommand::RestoreVersion {
-                                version_id: expected,
-                            })
-                })
-        );
-    }
-
-    fn open_text_conflict_menu_requires_review_before_an_exact_merge() {
-        let current = "a0d4e23f-c7cb-4ded-a427-b32cf9da9344";
-        let other = "a0d4e23f-c7cb-4ded-a427-b32cf9da9342";
-        let conflict = uuid::Uuid::parse_str("c0d4e23f-c7cb-4ded-a427-b32cf9da9343").unwrap();
-        let mut entry = ent("conflicted.qdoc", false, "application/x-qdoc");
-        entry.content_hash = Some([5; 32]);
-        entry.history = fs_protocol::HistoryProjectionV1::parse_xattr(
-            &serde_json::to_vec(&serde_json::json!({
-                "schema_version": 1,
-                "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                "total_versions": 2,
-                "versions_truncated": false,
-                "heads": [current, other],
-                "versions": [{
-                    "id": other,
-                    "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                    "parents": [],
-                    "actor": {"person": vec![1; 32], "device": vec![2; 32]},
-                    "timestamp_ms": 9,
-                    "content_hash": vec![3; 32],
-                    "metadata_hash": vec![4; 32],
-                    "provenance": "Edit"
-                }, {
-                    "id": current,
-                    "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                    "parents": [other],
-                    "actor": {"person": vec![6; 32], "device": vec![7; 32]},
-                    "timestamp_ms": 10,
-                    "content_hash": vec![5; 32],
-                    "metadata_hash": vec![8; 32],
-                    "provenance": "Edit"
-                }],
-                "conflicts_truncated": false,
-                "conflicts": [{
-                    "id": conflict,
-                    "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                    "versions": [other, current],
-                    "status": "Open",
-                    "resolution": null
-                }]
-            }))
-            .unwrap(),
-        )
-        .ok();
-        let widget = FileExplorerWidget::new();
-        widget.state().entries = vec![entry];
-        widget.state().selection.select_only(0);
-        let menu = widget.state().context_menu_spec(&[]);
-        let current_id = fs_protocol::FileVersionId(uuid::Uuid::parse_str(current).unwrap());
-        let other_id = fs_protocol::FileVersionId(uuid::Uuid::parse_str(other).unwrap());
-        assert!(menu.iter().any(|(_, command)| {
-            *command
-                == Some(FileCommand::ResolveConflict {
-                    conflict_id: conflict,
-                    strategy: fs_protocol::ConflictStrategy::KeepCurrent,
-                    version_id: current_id,
-                })
-        }));
-        assert!(menu.iter().any(|(_, command)| {
-            *command
-                == Some(FileCommand::ResolveConflict {
-                    conflict_id: conflict,
-                    strategy: fs_protocol::ConflictStrategy::UseOther,
-                    version_id: other_id,
-                })
-        }));
-        assert!(menu.iter().any(|(_, command)| {
-            *command
-                == Some(FileCommand::ResolveConflict {
-                    conflict_id: conflict,
-                    strategy: fs_protocol::ConflictStrategy::KeepBoth,
-                    version_id: other_id,
-                })
-        }));
-        assert!(menu.iter().any(|(_, command)| {
-            *command
-                == Some(FileCommand::ReviewConflictMerge {
-                    conflict_id: conflict,
-                    version_id: other_id,
-                    other_device: [2; 32],
-                })
-        }));
-    }
-
-    fn merge_review_only_enables_apply_after_a_safe_daemon_preflight() {
-        let conflict_id = uuid::Uuid::from_u128(42);
-        let version_id = fs_protocol::FileVersionId(uuid::Uuid::from_u128(43));
-        let widget = FileExplorerWidget::new();
-        widget.state().show_collab_panel(CollabPanel {
-            title: "Review merge".into(),
-            summary: "Checking".into(),
-            lines: Vec::new(),
-            action: None,
-        });
-        *widget.state().merge_preflight_result.lock_recover() = Some((
-            conflict_id,
-            version_id,
-            Ok(fs_protocol::MergePreflightProjectionV1 {
-                schema_version: fs_protocol::MERGE_PREFLIGHT_VERSION,
-                conflict_id,
-                safe: true,
-                explanation: "Changes are disjoint.".into(),
-                diff_summary: "Both revisions are included.".into(),
-            }),
-        ));
-        widget.state().merge_preflight_pending = Some((conflict_id, version_id));
-        assert!(widget.state().poll_merge_preflight());
-        assert!(matches!(
-            widget.state().collab_panel.as_ref().and_then(|panel| panel.action.as_ref()),
-            Some(CollabPanelAction::ApplySafeMerge {
-                conflict_id: actual_conflict,
-                version_id: actual_version,
-            }) if *actual_conflict == conflict_id && *actual_version == version_id
-        ));
-
-        *widget.state().merge_preflight_result.lock_recover() = Some((
-            conflict_id,
-            version_id,
-            Ok(fs_protocol::MergePreflightProjectionV1 {
-                schema_version: fs_protocol::MERGE_PREFLIGHT_VERSION,
-                conflict_id,
-                safe: false,
-                explanation: "Both revisions changed the same text region.".into(),
-                diff_summary: "No proposed content was produced.".into(),
-            }),
-        ));
-        widget.state().merge_preflight_pending = Some((conflict_id, version_id));
-        assert!(widget.state().poll_merge_preflight());
-        let panel = widget.state().collab_panel.as_ref().unwrap().clone();
-        assert!(
-            panel.action.is_none(),
-            "conflicting edits must not expose Apply safe merge"
-        );
-        assert!(panel.summary.contains("Needs review"));
-    }
-
-    fn late_merge_preflight_cannot_repurpose_an_unrelated_confirmation_sheet() {
-        let stale_conflict = uuid::Uuid::from_u128(50);
-        let current_conflict = uuid::Uuid::from_u128(51);
-        let version_id = fs_protocol::FileVersionId(uuid::Uuid::from_u128(52));
-        let widget = FileExplorerWidget::new();
-        widget.state().show_collab_panel(CollabPanel {
-            title: "Delete permanently?".into(),
-            summary: "This cannot be undone".into(),
-            lines: Vec::new(),
-            action: Some(CollabPanelAction::EmptyTrash),
-        });
-        widget.state().merge_preflight_pending = Some((current_conflict, version_id));
-        *widget.state().merge_preflight_result.lock_recover() = Some((
-            stale_conflict,
-            version_id,
-            Ok(fs_protocol::MergePreflightProjectionV1 {
-                schema_version: fs_protocol::MERGE_PREFLIGHT_VERSION,
-                conflict_id: stale_conflict,
-                safe: true,
-                explanation: "Changes are disjoint.".into(),
-                diff_summary: "Both revisions are included.".into(),
-            }),
-        ));
-
-        assert!(!widget.state().poll_merge_preflight());
-        let panel = widget.state().collab_panel.as_ref().unwrap().clone();
-        assert_eq!(panel.title, "Delete permanently?");
-        assert!(matches!(panel.action, Some(CollabPanelAction::EmptyTrash)));
     }
 
     fn archives_browse_as_read_only_folders_and_extract_from_inside() {

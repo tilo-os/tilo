@@ -530,7 +530,7 @@ keyboard-shortcuts-list-description = Every desktop shortcut with its current an
 ## The collaboration network's own questions: an agent on a workspace host
 ## asks its person to allow one action, and a device asks its sibling for the
 ## disk key it boots with.
-network-agent-question-title = { $agent } wants to { $doing }
+network-agent-question-title = { $agent } asks to use “{ $action }”
 network-agent-question-detail = On “{ $resource }” in the workspace “{ $workspace }”.
 network-agent-question-page = Page
 network-agent-question-outside = It acts outside Tilo.
@@ -698,6 +698,7 @@ so-tilo-uninstall-confirm = Uninstall
 so-tilo-workspace-settings-change-add-agent = Add an agent
 so-tilo-workspace-settings-change-add-bot = Add a bot
 so-tilo-workspace-settings-change-add-emoji = Add an emoji
+so-tilo-workspace-settings-change-add-server = Have another server keep the workspace as well
 so-tilo-workspace-settings-change-close = Close
 so-tilo-workspace-settings-change-delete = Remove from this desktop
 so-tilo-workspace-settings-change-delete-workspace = Delete the workspace
@@ -713,6 +714,7 @@ so-tilo-workspace-settings-change-remove-agent = Remove the agent
 so-tilo-workspace-settings-change-remove-bot = Remove the bot
 so-tilo-workspace-settings-change-remove-emoji = Remove the emoji
 so-tilo-workspace-settings-change-remove-member = Remove a member
+so-tilo-workspace-settings-change-remove-server = Have a server keep the workspace no more
 so-tilo-workspace-settings-change-rename = Rename the workspace
 so-tilo-workspace-settings-change-reset-agent-app = Reset the app's answers
 so-tilo-workspace-settings-change-review-activity = Review the activity

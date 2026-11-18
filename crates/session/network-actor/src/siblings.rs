@@ -9,9 +9,9 @@ use iroh::EndpointAddr;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use tokio::sync::mpsc;
 
-use crate::local_host::workspace_service::{ServiceConfig, WorkspaceService};
-use crate::local_host::{LocalHost, workspace_service};
-use crate::{Actor, DeviceIdentity, Hosting, NetCmd};
+use crate::own_service::workspace_service::{ServiceConfig, WorkspaceService};
+use crate::own_service::{OwnService, workspace_service};
+use crate::{Actor, DeviceIdentity, NetCmd, OwnServing};
 
 /// One of the person's devices, running.
 pub struct Sibling {
@@ -71,7 +71,7 @@ pub(crate) async fn spawn_ticking(
     let (endpoint, lookup) =
         crate::loopback_endpoint(Some(iroh::SecretKey::from_bytes(&key.to_bytes()))).await;
     let addr = endpoint.addr();
-    let (local, protocols) = LocalHost::deferred();
+    let (local, protocols) = OwnService::deferred();
     let identity = DeviceIdentity::kept(cert.clone(), key.clone());
     let (cmd, task) = Actor::spawn_with_heartbeat(
         endpoint.clone(),
@@ -80,8 +80,8 @@ pub(crate) async fn spawn_ticking(
         Arc::new(Mutex::new(Vec::new())),
         heartbeat,
         tilo_endpoint_reachability::Reachability::default(),
-        Some(Hosting {
-            host: local.clone(),
+        Some(OwnServing {
+            service: local.clone(),
             protocols,
         }),
         Vec::new(),
@@ -103,7 +103,7 @@ pub(crate) async fn spawn_ticking(
     .await
     .expect("the device's host opens");
     local.install(Arc::new(host));
-    cmd.send(NetCmd::LocalHostReady)
+    cmd.send(NetCmd::OwnServiceReady)
         .await
         .expect("the actor is running");
     Sibling {

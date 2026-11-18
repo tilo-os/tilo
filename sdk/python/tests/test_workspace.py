@@ -66,6 +66,26 @@ async def test_a_listing_pages_with_its_cursor(workspace, api):
     }
 
 
+async def test_a_listing_row_names_its_id_and_key_beside_its_title(workspace, api):
+    page = await workspace.ls(TODO)
+
+    assert page.rows[0].id == "notes.block:c01e"
+    assert page.rows[0].key == "notes.page/body/blocks/c01e"
+    apps = await workspace.ls()
+    assert apps.rows[0].id is None
+
+
+async def test_a_listing_reads_on_from_a_cursor_it_is_given(workspace, api):
+    rest = await workspace.ls(TODO, limit=1, cursor="1")
+
+    assert [row.name for row in rest.rows] == ["Buy bread"]
+    assert api.asked("GET", "/v1/workspaces/")[-1]["query"] == {
+        "path": TODO,
+        "limit": "1",
+        "cursor": "1",
+    }
+
+
 async def test_a_listing_is_iterated_page_by_page(workspace):
     first = await workspace.ls(TODO, limit=1)
 

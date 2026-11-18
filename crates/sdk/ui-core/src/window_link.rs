@@ -3,21 +3,9 @@
 //! one store the process holds; a second process could never take that store's writer
 //! lock.
 
-use serde::{Deserialize, Serialize};
-
-/// The shell's request to open one more window of the app.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WindowRequest {
-    pub instance: u64,
-    #[serde(default)]
-    pub collaboration: bool,
-    #[serde(default)]
-    pub shell_ui: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reveal: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub open: Option<String>,
-}
+/// The session's request to open one more window of the app.
+#[cfg(feature = "local-daemons")]
+pub use runtime_portal::process_link::WindowRequest;
 
 #[cfg(feature = "local-daemons")]
 pub use transport::*;
@@ -142,7 +130,7 @@ pub fn requested_reveal() -> Option<String> {
 #[cfg(feature = "local-daemons")]
 mod transport {
     use super::WindowRequest;
-    use runtime_portal::windows::Descriptor;
+    use runtime_portal::process_link::{Descriptor, FromProcess, Packet as _, ToProcess};
     use std::cell::RefCell;
     use std::sync::{Arc, Mutex};
 
@@ -205,56 +193,18 @@ mod transport {
         }
     }
 
-    /// Write `request` on the shell's end of `link`, with the connections it says it
-    /// carries.
-    pub fn send(
-        link: &Descriptor,
-        request: &WindowRequest,
-        collaboration: Option<&Descriptor>,
-        shell_ui: Option<&Descriptor>,
-    ) -> std::io::Result<()> {
-        if request.collaboration != collaboration.is_some()
-            || request.shell_ui != shell_ui.is_some()
-        {
-            return Err(std::io::ErrorKind::InvalidInput.into());
-        }
-        let encoded = serde_json::to_vec(request).map_err(std::io::Error::other)?;
-        let fds: Vec<&Descriptor> = collaboration.into_iter().chain(shell_ui).collect();
-        runtime_portal::windows::send_open(link, &encoded, &fds)
-    }
-
-    /// The next request on the app's end of `link`; `None` once the shell closed it.
-    pub fn receive(link: &Descriptor) -> std::io::Result<Option<WindowOpening>> {
-        let Some((encoded, fds)) = runtime_portal::windows::receive_open(link)? else {
-            return Ok(None);
-        };
-        opening(&encoded, fds).map(Some)
-    }
-
-    fn opening(encoded: &[u8], fds: Vec<Descriptor>) -> std::io::Result<WindowOpening> {
-        let request: WindowRequest = serde_json::from_slice(encoded)
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-        let expected = usize::from(request.collaboration) + usize::from(request.shell_ui);
-        if fds.len() != expected {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "a window request does not carry the connections it names",
-            ));
-        }
-        let mut fds = fds.into_iter();
-        let collaboration = if request.collaboration {
-            fds.next()
-        } else {
-            None
-        };
-        let shell_ui = if request.shell_ui { fds.next() } else { None };
-        Ok(WindowOpening {
+    fn opening(
+        request: WindowRequest,
+        collaboration: Option<Descriptor>,
+        shell_ui: Option<Descriptor>,
+    ) -> WindowOpening {
+        WindowOpening {
             request,
             collaboration,
             shell_ui,
             #[cfg(feature = "native")]
             arriving: None,
-        })
+        }
     }
 
     #[derive(Default)]
@@ -317,9 +267,9 @@ mod transport {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !TAKEN.swap(true, std::sync::atomic::Ordering::AcqRel) {
-            *slot = runtime_portal::windows::take_link();
+            *slot = runtime_portal::process_link::take();
             if let Some(link) = slot.as_ref()
-                && let Err(error) = runtime_portal::windows::send_serves(link)
+                && let Err(error) = FromProcess::Serves.send(link)
             {
                 tracing::warn!(%error, "the shell was not told this app opens its windows");
             }
@@ -347,19 +297,25 @@ mod transport {
         });
         tilo_rt::spawn_thread("tilo-window-link", move || {
             loop {
-                let received =
-                    runtime_portal::windows::receive_message(&link).and_then(|message| {
-                        Ok(match message {
-                            Some(runtime_portal::windows::Message::Open(encoded, fds)) => {
-                                Some(Some(opening(&encoded, fds)?))
-                            }
-                            Some(runtime_portal::windows::Message::Patch(instance, patch)) => {
-                                patch_arrived(instance, patch);
-                                Some(None)
-                            }
-                            None => None,
-                        })
-                    });
+                let received = ToProcess::receive(&link).map(|message| match message {
+                    Some(ToProcess::Window {
+                        request,
+                        collaboration,
+                        shell_ui,
+                    }) => Some(Some(opening(request, collaboration, shell_ui))),
+                    Some(ToProcess::Patch { instance, patch }) => {
+                        patch_arrived(instance, patch);
+                        Some(None)
+                    }
+                    Some(other) => {
+                        tracing::warn!(
+                            ?other,
+                            "the session's link carried what no window asks for"
+                        );
+                        Some(None)
+                    }
+                    None => None,
+                });
                 match received {
                     Ok(Some(Some(opening))) => {
                         let mut pending = PendingWindow::new(opening);
@@ -395,7 +351,7 @@ mod transport {
     /// rather than handing it to this one, which would drop it.
     pub fn stop_serving() {
         if let Some(link) = served().take()
-            && let Err(error) = runtime_portal::windows::close_link(&link)
+            && let Err(error) = runtime_portal::process_link::close(&link)
         {
             tracing::warn!(%error, "the window API stayed open as the loop ended");
         }
@@ -489,66 +445,11 @@ mod transport {
         use super::*;
 
         fn link_pair() -> Option<(Descriptor, Descriptor)> {
-            runtime_portal::windows::pair().ok()
+            runtime_portal::process_link::pair().ok()
         }
 
         fn connection() -> Option<Descriptor> {
             link_pair().map(|(one, _)| one)
-        }
-
-        tilo_test_env::scenario! {
-            /// A window request sent over the link and received at the app's end.
-            /// Each phase was a test of its own and builds its own fixture.
-            fn a_window_request_carries_exactly_the_connections_it_names;
-
-            phase a_window_request_arrives_with_its_own_connections;
-            {
-                let Some((shell, app)) = link_pair() else { return };
-                let (Some(collaboration), Some(shell_ui)) = (connection(), connection()) else {
-                    return;
-                };
-                let request = WindowRequest {
-                    instance: 41,
-                    collaboration: true,
-                    shell_ui: true,
-                    reveal: Some("chat/links/c_ada".into()),
-                    open: None,
-                };
-                send(&shell, &request, Some(&collaboration), Some(&shell_ui)).unwrap();
-                let opening = receive(&app).unwrap().unwrap();
-                assert_eq!(opening.request, request);
-                assert!(opening.collaboration.is_some() && opening.shell_ui.is_some());
-
-                let bare = WindowRequest {
-                    instance: 42,
-                    collaboration: false,
-                    shell_ui: false,
-                    reveal: None,
-                    open: Some("/documents/Budget.txt".into()),
-                };
-                send(&shell, &bare, None, None).unwrap();
-                let opening = receive(&app).unwrap().unwrap();
-                assert_eq!(opening.request, bare, "the file it opens comes with it");
-                assert!(opening.collaboration.is_none() && opening.shell_ui.is_none());
-                drop(shell);
-                assert!(receive(&app).unwrap().is_none());
-            }
-
-            phase a_request_that_does_not_carry_what_it_names_is_refused;
-            {
-                let Some((shell, app)) = link_pair() else { return };
-                let request = WindowRequest {
-                    instance: 1,
-                    collaboration: true,
-                    shell_ui: false,
-                    reveal: None,
-                    open: None,
-                };
-                assert!(send(&shell, &request, None, None).is_err());
-                runtime_portal::windows::send_open(&shell, &serde_json::to_vec(&request).unwrap(), &[])
-                    .unwrap();
-                assert!(receive(&app).is_err());
-            }
         }
 
         /// While a window is built for a request its instance and connections stand in
@@ -558,8 +459,6 @@ mod transport {
             let opening = WindowOpening {
                 request: WindowRequest {
                     instance: 9,
-                    collaboration: true,
-                    shell_ui: false,
                     reveal: Some("chat/links/c_ada".into()),
                     open: Some("/documents/Budget.txt".into()),
                 },

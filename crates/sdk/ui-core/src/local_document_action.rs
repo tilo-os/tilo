@@ -469,6 +469,7 @@ impl Drop for Lease {
 // the transport encoder so changes to that envelope cannot silently underbudget.
 #[derive(serde::Serialize)]
 struct BudgetReport<'a> {
+    #[serde(rename = "custody")]
     ownership: Option<&'a runtime_collab::committed_document::ConnectionSnapshot>,
     version: u8,
     invocation: uuid::Uuid,

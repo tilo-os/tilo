@@ -10,8 +10,8 @@ use std::rc::Rc;
 use ui::application::ProcessContext;
 use ui::framework::Chain;
 
+use crate::contact_cards::{Book, ContactCards};
 use crate::model::Contact;
-use crate::part::{Book, ContactPart};
 use crate::resource::Contacts;
 
 const INBOX: &str = "personal-data-incoming/contacts";
@@ -54,7 +54,7 @@ pub(crate) fn import(context: &ProcessContext) -> Result<(), String> {
     // The cards join the parts beside the book, through their own verbs, as
     // the window adds them.
     let author = context.author().clone();
-    let chain = Chain::<ContactPart>::detached_in(
+    let chain = Chain::<ContactCards>::detached_in(
         context.records().clone(),
         ui::apps::CONTACTS,
         &author,
@@ -70,7 +70,7 @@ pub(crate) fn import(context: &ProcessContext) -> Result<(), String> {
         return Ok(());
     }
     chain
-        .invoke(&ContactPart::add_all(cards))
+        .invoke(&ContactCards::add_all(cards))
         .map_err(|error| error.to_string())?;
     Ok(())
 }
@@ -84,8 +84,8 @@ mod tests {
         let parsed = crate::vcard::parse_vcards(
             "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:ada@example.test\r\nFN:Ada Lovelace\r\nEMAIL:ada@example.test\r\nEND:VCARD\r\n",
         );
-        let mut part = ui::tilo_resource::Replica::<ContactPart>::new();
-        part.apply(ContactPart::add_all(parsed)).unwrap();
+        let mut part = ui::tilo_resource::Replica::<ContactCards>::new();
+        part.apply(ContactCards::add_all(parsed)).unwrap();
         let held = part.state().unwrap();
         let card = held.contacts.iter().next().unwrap();
         assert_eq!(card.display_name(), "Ada Lovelace");

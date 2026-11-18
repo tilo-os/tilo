@@ -276,21 +276,19 @@ tilo_test_env::scenario! {
 
     phase a_commenters_typed_edit_needs_what_its_value_needs;
     {
-        // Through the window's API: the generic `apply` is offered to a
-        // commenter, and admits the values that need only commenting.
+        // Through the window's API: a commenter's typed remark is admitted,
+        // and the typed line only a fuller role reaches is refused.
         let mut app = TestApp::<MemoApp>::new().unwrap();
         app.set_role(tilo_app::Role::Commenter);
-        let remark = Memo::REMARK.with("typed remark").build(0).unwrap();
-        let line = Memo::ADD_LINE.with("typed line").build(0).unwrap();
-        app.invoke(Invoke::apply(&remark).unwrap())
+        app.invoke(Memo::REMARK.with("typed remark"))
             .expect("a commenter's typed remark is admitted");
         assert!(
-            app.invoke(Invoke::apply(&line).unwrap()).is_err(),
+            app.invoke(Memo::ADD_LINE.with("typed line")).is_err(),
             "a commenter's typed line is refused"
         );
         let group = Invoke::<Memo>::group([
-            Invoke::apply(&remark).unwrap(),
-            Invoke::apply(&line).unwrap(),
+            Memo::REMARK.with("a grouped remark"),
+            Memo::ADD_LINE.with("a grouped line"),
         ]);
         assert!(
             app.invoke(group).is_err(),
@@ -320,6 +318,8 @@ tilo_test_env::scenario! {
             false,
         )
         .unwrap();
+        let remark = Memo::REMARK.with("an agent's remark").build(0).unwrap();
+        let line = Memo::ADD_LINE.with("an agent's line").build(0).unwrap();
         view.invoke_typed(&Invoke::<Memo>::apply(&remark).unwrap(), false)
             .expect("the agent remarks");
         assert!(

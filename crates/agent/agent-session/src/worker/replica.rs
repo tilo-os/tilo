@@ -1081,6 +1081,12 @@ impl ConfinedReplica {
             DocumentMutation::Incremental(bytes) => (false, bytes),
         };
         let mut inner = self.lock();
+        // What the mirror holds already (this replica's own write, coming back
+        // from the workspace) is no change: neither merged again nor sent the
+        // worker.
+        if !snapshot && holds_all(&mut inner.mirror, bytes) {
+            return Ok(());
+        }
         // Admitted here before the worker sees it. A whole document may be
         // another record's, which the record refuses below, so it is merged
         // into a copy kept only if the record takes it. An increment that
@@ -1160,6 +1166,11 @@ impl ConfinedReplica {
         // made a post cost what the part already holds.
         let candidate = match inner.beside.get_mut(record) {
             Some(mirror) if !snapshot => {
+                // What the part holds already (this replica's own write
+                // coming back from the workspace) is no change to it.
+                if holds_all(mirror, bytes) {
+                    return Ok(());
+                }
                 admit_incoming(mirror, bytes)?;
                 None
             }
@@ -1348,6 +1359,12 @@ fn holds(doc: &mut AutoCommit, own: Option<&[automerge::ChangeHash]>) -> bool {
         own.iter()
             .all(|hash| doc.get_change_by_hash(hash).is_some())
     })
+}
+
+/// Whether `doc` holds every change the increment `bytes` carries, read
+/// from the changes' headers alone: then merging it brings nothing new.
+fn holds_all(doc: &mut AutoCommit, bytes: &[u8]) -> bool {
+    tilo_automerge_isolate::change_hashes(bytes).is_some_and(|carried| holds(doc, Some(&carried)))
 }
 
 /// Most bytes of a record's history admitted in one request: well under the

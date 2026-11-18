@@ -1,26 +1,17 @@
-/// The parts the shell is made of, as a view places them: a bar or a dock's body, a run of
-/// items a person reorders by dragging one, a view picked up and dragged to another, the target
-/// that takes it, and the divider a conversation marks its first unread line with. Each draws
-/// with the theme's own finish and rhythm, as the shell and the system search use them.
-type ShellParts {
-    title: Text
-    /// What the dock's items stand for: the apps pinned to it.
-    apps: Collection<Pinned>
-    /// Who is at the apps' tabs.
-    owner: Option<Actor>
-}
-
 /// One app on a dock: what it stands for and its name.
 type Pinned {
     title: Text
 }
 
-default view shell_parts for ShellParts
-
-/// The shell window: each kind in a section of its own page.
-view shell_parts(x: ShellParts) {
+/// The shell's page: each kind in a section of its own.
+view shell_parts(g: Gallery) {
     state last: Text = ""
-    std.page(x) {
+    ui.Text(
+        "The parts a bar or a dock is made of: its ground, its tabs, its chips and what it drags.",
+        role: .caption,
+        secondary: true,
+    )
+    stack(max: 48rem, gap: .section) {
         part("Chrome", "The ground a bar or a dock stands on, in the theme's finish.") {
             ui.Chrome(name: "A bar", shape: .square, edge: .top) {
                 row(gap: .related, align: .center, padding: .related) {
@@ -40,15 +31,15 @@ view shell_parts(x: ShellParts) {
             "Tab strip",
             "A frame's tabs: the one in front lifted, who is at each, and a changed one marked.",
         ) {
-            ui.TabStrip(x.apps.first(), focused: true) {
-                for pinned in x.apps {
+            ui.TabStrip(g.chrome_apps.first(), focused: true) {
+                for pinned in g.chrome_apps {
                     ui.TabItem(
                         pinned,
                         title: pinned.title,
                         icon: .file_text,
                         modified: pinned.title == "Tasks",
                     ) {
-                        ui.TabFace(x.owner, name: "Ada Lovelace")
+                        ui.TabFace(workspace.me, name: "Ada Lovelace")
                     }
                 }
             }
@@ -67,12 +58,12 @@ view shell_parts(x: ShellParts) {
             }
         }
         part("Drag run", "Items a person reorders by dragging one, across or stacked.") {
-            ui.DragRun(axis: .horizontal, distribute: .center, name: "Pinned") {
+            ui.DragRun(axis: .horizontal, distribute: .start, name: "Pinned") {
                 on drop(moved: Pinned, at: Int): mark_moved(last, moved, at)
-                for pinned in x.apps {
+                for pinned in g.chrome_apps {
                     ui.DragItem(pinned, title: pinned.title) {
                         on activate: set(last, pinned.title)
-                        ui.Button(pinned.title, icon: .folder, role: .plain, icon_only: true) {
+                        ui.Button(pinned.title, icon: .folder, icon_only: true) {
                             on press: set(last, pinned.title)
                         }
                     }
@@ -80,7 +71,7 @@ view shell_parts(x: ShellParts) {
             }
             ui.DragRun(axis: .vertical, align: .stretch, name: "Pinned, stacked") {
                 on drop(moved: Pinned, at: Int): mark_moved(last, moved, at)
-                for pinned in x.apps {
+                for pinned in g.chrome_apps {
                     ui.DragItem(pinned, title: pinned.title) {
                         on activate: set(last, pinned.title)
                         ui.ListRow(pinned.title)
@@ -92,7 +83,7 @@ view shell_parts(x: ShellParts) {
             "Drag source and drop target",
             "A view picked up and carried to a target that takes it.",
         ) {
-            for pinned in x.apps {
+            for pinned in g.chrome_apps {
                 ui.DragSource(pinned.id(), title: pinned.title) {
                     ui.ListRow(pinned.title, icon: .folder)
                 }
@@ -117,10 +108,9 @@ view shell_parts(x: ShellParts) {
 /// The shell group, with three apps pinned to the dock.
 scenario "shell parts" {
     let g = root Gallery
-    let s = g.chrome.insert(ShellParts(title: "Shell", owner: invoker))
-    s.apps.insert(Pinned(title: "Notes"))
-    s.apps.insert(Pinned(title: "Tasks"))
-    s.apps.insert(Pinned(title: "Mail"))
+    g.chrome_apps.insert(Pinned(title: "Notes"))
+    g.chrome_apps.insert(Pinned(title: "Tasks"))
+    g.chrome_apps.insert(Pinned(title: "Mail"))
 }
 
 /// Note the item moved, in the window's last answer.

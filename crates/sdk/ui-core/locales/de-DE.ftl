@@ -250,67 +250,6 @@ history-sync-unreadable = Die geteilte Fassung dieses Eintrags konnte hier nicht
 history-sync-remote-waiting = Änderungen anderer kommen an, sobald deine Bearbeitung abgeschlossen ist.
 history-sync-owner-closed = Die Verbindung des Dokuments wurde geschlossen. Verbinde dich neu, um Änderungen anderer zu empfangen.
 
-# File history in the History host.
-history-files-select-file = Wähle eine Datei mit versioniertem Verlauf
-history-files-choose-parent = Wähle, mit welcher früheren Version verglichen wird
-history-files-no-earlier = Keine frühere Version
-history-files-checking-compensation = Datei: { $file }
-
-    Die Datei wird erneut geprüft
-history-files-refresh-activity = Aktivität aktualisieren
-history-files-check-restore = Ergebnis der Wiederherstellung prüfen
-history-files-retry-restore = Dieselbe Wiederherstellung erneut versuchen
-history-files-redo-restore = Dateiwiederherstellung wiederholen…
-history-files-undo-restore = Dateiwiederherstellung rückgängig machen…
-history-files-revert-change = Änderung zurücknehmen
-history-files-current-unavailable = Die aktuelle Version lässt sich nicht lesen
-history-files-current-revision = Aktuelle Version: { $revision }
-history-files-live-updates = Die Datei hat sich seither geändert. Die gewählte Version bleibt
-history-files-before-parent = Mit Version { $revision } vergleichen
-history-files-showing-parent = Vergleich mit Version { $revision }
-history-files-created = Erstellt
-history-files-edited = Bearbeitet
-history-files-renamed = Umbenannt
-history-files-moved = Verschoben
-history-files-deleted = Gelöscht
-history-files-restored = Wiederhergestellt
-history-files-conflict-resolved = Konflikt gelöst
-history-files-change = { $action } { $file }
-history-files-unknown-author = Unbekannte Person
-history-files-author = Person { $identity }
-history-files-loading = Dateiverlauf wird geladen
-history-files-loading-version = Die Version wird geladen
-history-files-checking-permissions = Berechtigungen werden geprüft…
-history-files-earlier-pending = Eine frühere Wiederherstellung ist noch nicht abgeschlossen. Prüfe ihr Ergebnis
-history-files-submitting = Wird wiederhergestellt…
-history-files-version-count = { $count ->
-        [one] { $count } Version
-       *[other] { $count } Versionen
-    }
-history-files-binding-changed = Dieses Fenster zeigt jetzt eine andere Datei. Öffne den Verlauf erneut
-history-files-unavailable-host = Diese Datei hat hier keinen Verlauf
-history-files-historical-version = Frühere Version
-history-files-foreign-response = Diese Verlaufsantwort gehört zu einer anderen Datei. Versuche es erneut
-history-files-restore-explainer = Wiederherstellen erzeugt eine neue Version; die früheren bleiben im Verlauf
-history-files-foreign-review = Diese Prüfung gehört zu einer anderen Datei. Versuche es erneut
-history-files-invalid-result = Ob die Wiederherstellung lief, ist unklar. Prüfe den Verlauf der Datei
-history-files-not-visible = Diese Datei ist nicht mehr sichtbar
-history-files-error-stale = Der Verlauf der Datei hat sich geändert. Aktualisiere und versuche diese Version dann erneut
-history-files-error-missing-version = Diese Version ist nicht mehr verfügbar
-history-files-error-invalid = Der Verlauf dieser Datei ließ sich nicht lesen
-history-files-error-unavailable = Der Dateiverlauf ist vorübergehend nicht verfügbar
-history-files-error-too-large = Diese Version ist zu groß zum Anzeigen
-history-files-error-no-content = Diese Version hat keinen Inhalt zum Anzeigen
-history-files-outcome-applied = Version { $revision } wiederhergestellt. Die Datei zeigt ihren aktuellen Inhalt
-history-files-outcome-unchanged = Die Datei entspricht bereits dieser Version. Es wurde nichts wiederhergestellt
-history-files-outcome-pending = Die Wiederherstellung ist noch nicht abgeschlossen. Prüfe ihr Ergebnis oder versuche es erneut
-history-files-outcome-review = Die Datei hat sich geändert. Aktualisiere die Prüfung; die gewählte alte Version bleibt ausgewählt
-history-files-outcome-read-only = Diese Datei ist schreibgeschützt und lässt sich nicht wiederherstellen
-history-files-outcome-pending-writes = Speichere deine Änderungen, bevor du wiederherstellst. Nichts Getipptes geht verloren
-history-files-outcome-unsupported-owner = Diese App kann den Inhalt dieser Datei nicht wiederherstellen
-history-files-outcome-unavailable = Die Wiederherstellung ist vielleicht nicht erfolgt. Prüfe den Verlauf der Datei, bevor du es erneut versuchst
-history-files-outcome-invalid = Diese Wiederherstellung lief nicht. Versuche es erneut
-
 close-title = Dokument schließen
 close-unsaved = Änderungen vor dem Schließen speichern?
 close-save-failed = Änderungen konnten nicht gespeichert werden
@@ -989,6 +928,7 @@ window-search-replace-options = Suchoptionen und Ersetzen
 history-panel-title = Verlauf
 history-panel-selected-changes = { $count } Änderungen
 history-mode-restore-change = Nur diese Änderung wiederherstellen
+history-folder-restore = Diese Version wiederherstellen
 history-panel-name = Diese Änderungen benennen
 history-preview-after = Frühere Version, schreibgeschützt
 history-preview-before = Vor dieser Änderung, schreibgeschützt
@@ -1006,6 +946,7 @@ time-field-remove = Zeit entfernen
 
 person-field-none = Niemand
 person-field-me = Ich
+person-field-search = Personen suchen
 
 # Das Menü, das ein Rechtsklick oder langes Drücken auf bearbeitbarem Text öffnet.
 text-menu-cut = Ausschneiden
@@ -1303,14 +1244,6 @@ settings-text-assistance = Rechtschreibung und Text
 
 # One change to a file, described from what the content diff shows: no model
 # is involved, so these are the words a row shows by default.
-history-file-added-line = Eine Zeile zu { $file } hinzugefügt
-history-file-added-lines = { $lines } Zeilen zu { $file } hinzugefügt
-history-file-added-line-quote = { $sentence }: { $line }
-history-file-changed-line = Eine Zeile in { $file } geändert
-history-file-changed-lines = { $lines } Zeilen in { $file } geändert
-history-file-removed-line = Eine Zeile aus { $file } entfernt
-history-file-removed-lines = { $lines } Zeilen aus { $file } entfernt
-history-file-added-binary = { $file } hinzugefügt, { $size }
-history-file-removed-binary = { $file } entfernt, { $size }
-history-file-replaced-binary = { $file } ersetzt, vorher { $before } und jetzt { $after }
-history-file-changed = { $file } geändert
+
+# What a screen reader says for an agent's name beside its mark.
+member-agent-spoken = { $name }, Agent

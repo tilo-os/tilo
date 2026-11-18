@@ -295,7 +295,7 @@ mod tests {
             let hits = provider.search(needle);
             let hit = hits.iter().find(|hit| hit.title == needle).unwrap();
             assert_eq!(hit.action_id, crate::actions::history_resource_id(url));
-            let resource = index.resource(&hit.action_id).unwrap();
+            let resource = index.resource(&hit.action_id).unwrap().into_resource();
             assert_eq!(resource.kind, "browser.history-entry");
             let [action] = resource.actions.as_slice() else {
                 panic!("a history row offers one action: open its page");

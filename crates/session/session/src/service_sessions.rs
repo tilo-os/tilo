@@ -32,10 +32,10 @@ use std::io::{self, Read};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Component, Path};
 use std::sync::Arc;
-use tilo_action_broker::services::{
+use tilo_desktop_model::WorkspaceId;
+use tilo_workspace_service::apps::services::{
     BrowserServiceSessionRequestContext as Context, BrowserServiceSessionServices, ItemAnswering,
 };
-use tilo_desktop_model::WorkspaceId;
 
 use crate::engine::Engine;
 

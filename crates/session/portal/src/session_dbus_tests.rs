@@ -114,7 +114,10 @@ async fn bed() -> Bed {
         authenticator,
         tilo_documents::Documents::new(),
     )
-    .with_consents(crate::consent::Consents::new(questions.clone(), None))
+    .with_consents(crate::consent::Consents::new(
+        questions.clone(),
+        tilo_peer_state::DeviceGrants::unkept(),
+    ))
     .with_streams(Arc::clone(&streams) as Arc<dyn CaptureStreams>)
     .with_input(Arc::clone(&seat) as Arc<dyn InputInjector>);
     portal.serve(&backend).await.expect("served");

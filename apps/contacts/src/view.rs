@@ -83,7 +83,7 @@ pub(crate) struct Bridge {
     pub empty_icon: Option<Icon>,
     pub reveal: Option<ContactId>,
     pub painted: Vec<(ContactId, Rect)>,
-    pub book: Rc<crate::part::Book>,
+    pub book: Rc<crate::contact_cards::Book>,
     pub pictures: ui::held_images::HeldImages,
     pub images: Option<ui::ImageStore>,
     requests: Vec<Request>,

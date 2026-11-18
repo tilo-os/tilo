@@ -6,10 +6,10 @@ use std::path::{Path, PathBuf};
 
 use ui::collaboration::NearbyTransferTarget;
 use ui::framework::LiveRow;
-use ui::tilo_actions::ResourceSpec;
+use ui::tilo_actions::ResourcePresentation;
 use ui::tilo_resource::{AbsolutePath, Effect as _};
 
-use super::open_with_recent::{OpenWithFacts, append_open_with_actions};
+use super::open_with_recent::{OpenWithFacts, open_with_actions};
 use super::{FilesState, MAX_EAGER_ENTRY_RESOURCES, hex_prefix};
 use crate::i18n::{arg, t, t_args};
 use crate::model::Entry;
@@ -96,7 +96,7 @@ impl FilesState {
         }
     }
 
-    pub(super) fn entry_resource(&self, entry: &Entry) -> ResourceSpec {
+    pub(super) fn entry_resource(&self, entry: &Entry) -> LiveRow {
         let context = self.row_context();
         let facts = self.entry_row_facts(&context, entry);
         entry_row(&context, &facts, entry)
@@ -116,7 +116,7 @@ impl FilesState {
             let row = match last.remove(&key) {
                 Some(row) if row.entry == *entry && row.facts == facts => row,
                 _ => KeptRow {
-                    row: LiveRow::from_resource(entry_row(&context, &facts, entry)),
+                    row: entry_row(&context, &facts, entry),
                     entry: entry.clone(),
                     facts,
                 },
@@ -129,14 +129,10 @@ impl FilesState {
     }
 }
 
-fn app_row(
-    mut resource: ResourceSpec,
-    resource_id: &str,
-    removal: runtime_portal::tools::AppRemoval,
-) -> ResourceSpec {
+fn app_row(row: LiveRow, resource_id: &str, removal: runtime_portal::tools::AppRemoval) -> LiveRow {
     use crate::effects::{FilesEffect, row_action};
     use runtime_portal::tools::AppRemoval;
-    resource.actions.push(row_action(
+    let row = row.operation(row_action(
         &FilesEffect::OpenItem {
             item: resource_id.to_owned(),
         },
@@ -148,28 +144,27 @@ fn app_row(
             ("uninstall", t("files-menu-uninstall"))
         }
         AppRemoval::RemoveFromApps => ("remove-from-apps", t("files-menu-remove-from-apps")),
-        AppRemoval::None => return resource,
+        AppRemoval::None => return row,
     };
-    resource.actions.push(row_action(
+    row.operation(row_action(
         &FilesEffect::UninstallApp {
             app: resource_id.to_owned(),
         },
         id,
         label,
-    ));
-    resource
+    ))
 }
 
 #[allow(
     clippy::too_many_lines,
     reason = "an entry's complete canonical action contract stays together so lazy and eager resource resolution cannot diverge by dispatch route"
 )]
-fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> ResourceSpec {
+fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> LiveRow {
     use crate::effects::{FilesEffect, row_action};
     let resource_id = FilesState::entry_resource_id(entry);
     let id = || resource_id.clone();
     let document_id = entry.document_id.map(uuid::Uuid::from_bytes);
-    let mut resource = ResourceSpec::new(
+    let mut resource = LiveRow::new(
         resource_id.clone(),
         if document_id.is_some() {
             "files.record"
@@ -178,7 +173,7 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
         },
         entry.name.clone(),
     );
-    resource.actions.push(
+    resource = resource.operation(
         row_action(
             &FilesEffect::ReadEntry { entry: id() },
             "read",
@@ -190,18 +185,19 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
         return app_row(resource, &resource_id, removal);
     }
     if context.recent {
-        resource.actions.push(row_action(
-            &FilesEffect::RevealRecent { entry: id() },
-            crate::search_provider::REVEAL_ACTION,
-            t("files-recent-reveal"),
-        ));
-        resource.actions.push(row_action(
-            &FilesEffect::ForgetRecent { entry: id() },
-            "forget-recent",
-            t("files-recent-forget"),
-        ));
+        resource = resource
+            .operation(row_action(
+                &FilesEffect::RevealRecent { entry: id() },
+                crate::search_provider::REVEAL_ACTION,
+                t("files-recent-reveal"),
+            ))
+            .operation(row_action(
+                &FilesEffect::ForgetRecent { entry: id() },
+                "forget-recent",
+                t("files-recent-forget"),
+            ));
     } else if let Some(document_id) = document_id {
-        resource.actions.push(row_action(
+        resource = resource.operation(row_action(
             &FilesEffect::Reveal {
                 record: document_id.to_string(),
             },
@@ -209,7 +205,7 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
             t("files-action-reveal"),
         ));
     }
-    resource.actions.push(row_action(
+    let mut open = row_action(
         &FilesEffect::OpenItem { item: id() },
         "open",
         if facts.converted.is_some() {
@@ -217,9 +213,12 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
         } else {
             t("files-menu-open")
         },
-    ));
-    if let Some(description) = facts.converted.clone() {
-        resource.presentation = Some(ui::tilo_actions::ResourcePresentation {
+    );
+    // A file whose bytes no device delivered says so where an agent and a
+    // screen reader look, before anyone opens it and waits for nothing.
+    let presentation = if let Some(description) = facts.converted.clone() {
+        open.type_mut().description = Some(description.clone());
+        Some(ResourcePresentation {
             detail: Some(description.clone()),
             badge: Some(t("files-mounted-readonly")),
             preview: Some(format!(
@@ -227,36 +226,37 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
                 description,
                 t("files-mounted-independent")
             )),
-        });
-        if let Some(open) = resource.actions.last_mut() {
-            open.type_mut().description = Some(description);
-        }
-        resource.actions.push(row_action(
+        })
+    } else if entry
+        .availability
+        .as_ref()
+        .is_some_and(fs_protocol::AvailabilityProjectionV1::unavailable)
+    {
+        let detail = t("files-unavailable-offline");
+        open.type_mut().description = Some(detail.clone());
+        Some(ResourcePresentation {
+            detail: Some(detail),
+            badge: Some(t("files-unavailable")),
+            preview: None,
+        })
+    } else {
+        None
+    };
+    resource = resource.operation(open);
+    if let Some(presentation) = presentation {
+        resource = resource.presentation(presentation);
+    }
+    if facts.converted.is_some() {
+        resource = resource.operation(row_action(
             &FilesEffect::ImportConverted { entry: id() },
             "import-converted",
             t("files-mounted-copy"),
         ));
     }
-    // A file whose bytes no device delivered says so where an agent and a
-    // screen reader look, before anyone opens it and waits for nothing.
-    if resource.presentation.is_none()
-        && entry
-            .availability
-            .as_ref()
-            .is_some_and(fs_protocol::AvailabilityProjectionV1::unavailable)
-    {
-        let detail = t("files-unavailable-offline");
-        resource.presentation = Some(ui::tilo_actions::ResourcePresentation {
-            detail: Some(detail.clone()),
-            badge: Some(t("files-unavailable")),
-            preview: None,
-        });
-        if let Some(open) = resource.actions.last_mut() {
-            open.type_mut().description = Some(detail);
-        }
-    }
     if let Some(open_with) = &facts.open_with {
-        append_open_with_actions(open_with, &resource_id, &mut resource);
+        for action in open_with_actions(open_with, &resource_id) {
+            resource = resource.operation(action);
+        }
     }
     if !context.trash {
         if let Ok(here) = AbsolutePath::new(entry.path.parent().unwrap_or(entry.path.as_path())) {
@@ -266,7 +266,7 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
             }
             .bound_asking(&["folder"]);
             copy_to.type_mut().label = t("files-action-copy-to-folder");
-            resource.actions.push(copy_to);
+            resource = resource.operation(copy_to);
             if importable_under(&entry.path, &context.import_mounts) {
                 let mut import = FilesEffect::ImportOnce {
                     entry: id(),
@@ -274,10 +274,10 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
                 }
                 .bound_asking(&["folder"]);
                 import.type_mut().label = t("files-import-once");
-                resource.actions.push(import);
+                resource = resource.operation(import);
             }
         }
-        resource.actions.push(row_action(
+        resource = resource.operation(row_action(
             &FilesEffect::SendNearby { entry: id() },
             "send-nearby",
             t("files-menu-send-nearby"),
@@ -309,10 +309,10 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
             action.type_mut().description = Some(t("files-airdrop-action-detail"));
             action.type_mut().id = "send-airdrop".into();
             action.type_mut().label = t("files-action-send-airdrop");
-            resource.actions.push(action);
+            resource = resource.operation(action);
         }
         for target in &context.nearby {
-            resource.actions.push(row_action(
+            resource = resource.operation(row_action(
                 &FilesEffect::SendTo {
                     entry: id(),
                     target: target.handle,
@@ -368,16 +368,16 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
             .retain(|(effect, _, _)| !matches!(effect, FilesEffect::DeletePermanently { .. }));
     }
     for (effect, action, label) in entry_effects {
-        resource.actions.push(row_action(&effect, action, label));
+        resource = resource.operation(row_action(&effect, action, label));
     }
     if let Some(availability) = entry.availability.as_ref() {
-        resource.actions.push(row_action(
+        resource = resource.operation(row_action(
             &FilesEffect::Availability { entry: id() },
             "availability",
             t("files-availability-title-short"),
         ));
         if availability.policy == fs_protocol::AvailabilityPolicy::Automatic {
-            resource.actions.push(row_action(
+            resource = resource.operation(row_action(
                 &FilesEffect::KeepOffline { entry: id() },
                 "keep-offline",
                 t("files-keep-offline"),
@@ -386,7 +386,7 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
         if availability.policy == fs_protocol::AvailabilityPolicy::Pinned
             && !availability.policy_inherited
         {
-            resource.actions.push(row_action(
+            resource = resource.operation(row_action(
                 &FilesEffect::AutomaticStorage { entry: id() },
                 "automatic-storage",
                 t("files-use-automatic-storage"),
@@ -401,7 +401,7 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
                 fs_protocol::Residency::Partial { .. } | fs_protocol::Residency::Resident { .. }
             );
         if releasable {
-            resource.actions.push(row_action(
+            resource = resource.operation(row_action(
                 &FilesEffect::FreeLocalSpace { entry: id() },
                 "free-local-space",
                 t("files-free-local-space"),
@@ -412,7 +412,7 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
             fs_protocol::Residency::Resident { .. }
         ) && availability.transfer.phase == fs_protocol::TransferPhase::Idle;
         if retryable {
-            resource.actions.push(row_action(
+            resource = resource.operation(row_action(
                 &FilesEffect::RetryDownload { entry: id() },
                 "retry-download",
                 t("files-retry-download"),
@@ -420,7 +420,7 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
         }
     }
     if entry.document_id.is_some() {
-        resource.actions.push(row_action(
+        resource = resource.operation(row_action(
             &FilesEffect::Share { entry: id() },
             "share",
             t("files-share"),

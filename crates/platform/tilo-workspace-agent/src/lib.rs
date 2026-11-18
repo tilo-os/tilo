@@ -161,9 +161,14 @@ impl Bound {
     }
 
     /// Whether this narrows rather than widens: an outside effect is never carried
-    /// out unasked, whatever the person granting it may do.
-    fn narrows(&self) -> bool {
-        !(self.answer == "allow" && self.kinds.iter().any(|kind| kind == "outside"))
+    /// out unasked, whatever the person granting it may do
+    /// ([`tilo_action_policy::agent_answers::may_give`]).
+    fn narrows(&self) -> Result<bool, Refusal> {
+        let rule = self.rule()?;
+        Ok(rule
+            .kinds
+            .iter()
+            .all(|kind| tilo_action_policy::agent_answers::may_give(kind, rule.answer)))
     }
 }
 
@@ -622,8 +627,7 @@ impl WorkspaceAgents {
             )));
         }
         for rule in &bound {
-            rule.rule()?;
-            if !rule.narrows() {
+            if !rule.narrows()? {
                 return Err(Refusal::new(
                     "an agent never runs an outside effect unasked",
                 ));
@@ -841,8 +845,7 @@ impl WorkspaceAgents {
                 )));
             }
             for rule in &agent.bound {
-                rule.rule()?;
-                if !rule.narrows() {
+                if !rule.narrows()? {
                     return Err(Refusal::new(
                         "an agent never runs an outside effect unasked",
                     ));

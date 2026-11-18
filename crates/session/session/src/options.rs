@@ -267,7 +267,7 @@ pub(crate) fn start_collaboration(
     continuity: crate::platform::fabric::Continuity,
     engine: Option<std::sync::Arc<engine::Engine>>,
     (beside, device_agents): (
-        tilo_network_actor::local_host::Protocols,
+        tilo_network_actor::own_service::Protocols,
         &std::sync::Arc<crate::device_mcp::DeviceAgents>,
     ),
     documents: Option<sync::PeerDocuments>,
@@ -290,6 +290,17 @@ pub(crate) fn start_collaboration(
             }
         }
     });
+    // The person's answers about this device's camera, screen and the rest are kept in their own
+    // store, where their other devices see them and can take them back.
+    if let (Some(personal), Some(consents)) = (
+        personal.as_ref(),
+        options
+            .desktop
+            .as_ref()
+            .and_then(|desktop| desktop.consents()),
+    ) {
+        consents.grants().keep_in(personal.sync().clone());
+    }
     let mut beside = beside;
     // Which devices are the person's is their own store's to say, for the agents that connect from
     // one of them and for those this one dials.

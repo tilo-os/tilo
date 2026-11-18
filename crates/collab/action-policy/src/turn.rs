@@ -4,7 +4,7 @@
 //! is caused by a person's message in a conversation the agent takes part in.
 //! Its authority is that person's grants, capped at
 //! [`roles::agent_policy::ROLE_CAP`], narrowed by the bound the agent's resource
-//! keeps ([`roles::agent_grants`]).
+//! keeps ([`crate::Acting::handed_preset`], [`roles::agent_bound`]).
 //!
 //! Every one of those four facts is checked here, in one place, so every action API
 //! and every receiver asks the same question:
@@ -14,7 +14,8 @@
 //! 3. the turn has not ended ([`Looked::ended`]: its work is done or stopped);
 //! 4. the action's kind is within the person's grants at its heads ∩
 //!    [`roles::agent_policy::ROLE_CAP`] ∩ the agent's recorded bound — which
-//!    [`roles::agent_grants`] turns into grants the API decides with.
+//!    [`crate::Acting::handed_preset`] and [`roles::agent_bound`] turn into
+//!    grants the API decides with.
 //!
 //! A cause that has not reached the receiver yet is not a refusal: the op waits
 //! for it ([`Held::waits`]), the same way an op from a late joiner does.
@@ -173,7 +174,9 @@ pub fn authority(
     if looked.ended {
         return Err(Held::Ended);
     }
-    Ok(roles::agent_grants(workspace, agent, person, &looked.bound))
+    let mut grants = crate::Acting::handed_agent(agent, person).handed_preset(workspace);
+    grants.extend(roles::agent_bound(agent, person, &looked.bound));
+    Ok(grants)
 }
 
 /// The node an agent's turn decides an action at.

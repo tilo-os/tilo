@@ -5,7 +5,7 @@
 //! It has no app identity. The session starts it as the launch kind "tilolang process", keyed by
 //! the workspace and the author as the launcher attributes it, in a sandbox narrower than any
 //! app's: it holds only its api and its storage. Everything an instance is arrives over the API
-//! from the session (`runtime_portal::tilolang_process`): its broker connection and its
+//! from the session (`runtime_portal::process_link`): its broker connection and its
 //! identity-service connection, which the session opened and attested as that app's launch, its
 //! verified module, and its window's patch connection. The broker attributes everything the
 //! instance says to the app from the session's own document of the connection, never from the
@@ -43,8 +43,8 @@ use collaboration::CommittedDocument;
 use collaboration::native_initial::PrimaryRead;
 /// The person's formats and language, as the session says them on the API
 /// ([`TilolangProcess::set_locale`]).
-pub use runtime_portal::tilolang_process::Locale;
-use runtime_portal::tilolang_process::{AppBuild, InstanceFds, InstanceRequest, Module};
+pub use runtime_portal::process_link::Locale;
+use runtime_portal::process_link::{AppBuild, InstanceFds, InstanceRequest, Module};
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilolang_tilo::background::Waker;
@@ -253,8 +253,8 @@ impl TilolangProcess {
     /// Run the programs of the task the session handed over, until the API closes it.
     pub fn begin_task(
         &mut self,
-        request: &runtime_portal::tilolang_process::TaskRequest,
-        fds: runtime_portal::tilolang_process::TaskFds,
+        request: &runtime_portal::process_link::TaskRequest,
+        fds: runtime_portal::process_link::TaskFds,
     ) -> Result<(), String> {
         self.task = Some(task::Task::open(request, fds)?);
         Ok(())
@@ -670,7 +670,7 @@ impl TilolangProcess {
         let route = route_under(&bundle.meta, &records, workspace, &request.person);
         // A window asked for a document: its instance opens the one its route names, and only that
         // one is what it was asked for.
-        if let Some(asked) = request.record.as_deref()
+        if let Some(asked) = request.document.as_deref()
             && !opens_document(&route, asked)
         {
             return Err(AdmitError::OtherResource {

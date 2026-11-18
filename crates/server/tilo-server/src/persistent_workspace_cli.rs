@@ -182,7 +182,7 @@ pub struct PersistentArgs {
     /// A person who owns the workspace from its start, by their user public
     /// key (64 hex characters); repeatable. Declared at every start where
     /// they are not an owner yet: how a host gets its first owner, who then
-    /// lets everyone else in with `tilo members add` and `tilo members
+    /// lets everyone else in with `tilo workspace people add` and `tilo workspace people
     /// invite`. An owner taken out later is declared again at the next start
     /// while the deployment still names them.
     #[arg(long = "owner", value_name = "USER_PUBLIC_KEY")]
@@ -194,7 +194,7 @@ pub struct PersistentArgs {
     #[arg(long = "operator-socket", value_name = "PATH")]
     pub operator_socket: Option<PathBuf>,
     /// The workspaces of other people this host holds whoever's they are, when
-    /// an owner has the host governing one hand it over (`tilo workspace hosts
+    /// an owner has the host governing one hand it over (`tilo workspace servers
     /// add`): `anyone`, or the workspaces' ids, comma-separated. Without it
     /// the host holds its own person's, and those of the people it let in.
     #[arg(long = "hold-for", value_name = "WORKSPACES")]
@@ -505,11 +505,7 @@ fn host_key(state: &Path) -> anyhow::Result<SigningKey> {
 
 /// Write `bytes` to `path` atomically, readable by this user only.
 fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    write_atomic(path, bytes, true)
-}
-
-fn write_atomic(path: &Path, bytes: &[u8], private: bool) -> std::io::Result<()> {
-    tilo_files::native::atomic::write_with_mode(path, bytes, if private { 0o600 } else { 0o644 })
+    tilo_files::native::atomic::write_with_mode(path, bytes, 0o600)
 }
 
 /// The workspace id kept in `id_file`.
@@ -571,7 +567,8 @@ async fn governed_workspace(
         .rename(&workspace, shown)
         .await
         .map_err(|error| anyhow::anyhow!("name the workspace {shown:?}: {error}"))?;
-    write_atomic(id_file, workspace.as_bytes(), false).context("write the workspace id file")?;
+    tilo_files::native::atomic::write_with_mode(id_file, workspace.as_bytes(), 0o644)
+        .context("write the workspace id file")?;
     Ok(workspace)
 }
 
@@ -1793,8 +1790,8 @@ async fn answer_operator_socket(context: OperatorContext, stream: tokio::net::Un
             Ok(other) => OperatorEvent::Unanswered {
                 reason: format!(
                     "the operator socket takes state, not {}; owners and administrators let \
-                     people in with `tilo members add` and `tilo members invite`, and owners \
-                     choose a workspace's hosts with `tilo workspace hosts`",
+                     people in with `tilo workspace people add` and `tilo workspace people invite`, and owners \
+                     choose a workspace's servers with `tilo workspace servers`",
                     other.to_line().trim()
                 ),
             }

@@ -464,52 +464,23 @@ fn firefox(
     }
     root.validate()
 }
+/// The profiles a Firefox `profiles.ini` lists ([`migration_sources::browsers::firefox_sections`]),
+/// each inside the granted source: one with an absolute path, or past the bound, is refused.
 pub(crate) fn firefox_sections(content: &str) -> io::Result<Vec<(String, String)>> {
-    let mut output = Vec::new();
-    let mut active = false;
-    let mut name = None;
-    let mut path = None;
-    let mut relative = None;
-    let finish = |active,
-                  name: &mut Option<String>,
-                  path: &mut Option<String>,
-                  relative: &mut Option<bool>,
-                  output: &mut Vec<(String, String)>|
-     -> io::Result<()> {
-        if active {
-            if relative.take() != Some(true) {
-                return Err(invalid("Firefox profile lies outside its granted source"));
-            }
-            output.push((
-                name.take().unwrap_or_default(),
-                path.take()
-                    .ok_or_else(|| invalid("Firefox profile has no path"))?,
-            ));
-            if output.len() > browser_continuity::MAX_PROFILES {
-                return Err(invalid("Too many Firefox profiles"));
-            }
-        }
-        name.take();
-        path.take();
-        relative.take();
-        Ok(())
-    };
-    for line in content.lines().map(str::trim) {
-        if line.starts_with('[') && line.ends_with(']') {
-            finish(active, &mut name, &mut path, &mut relative, &mut output)?;
-            active = line.starts_with("[Profile");
-        } else if active && let Some((key, value)) = line.split_once('=') {
-            let value = value.trim();
-            match key.trim() {
-                "Name" => name = Some(value.into()),
-                "Path" => path = Some(value.into()),
-                "IsRelative" => relative = Some(value == "1"),
-                _ => {}
-            }
-        }
+    let sections = migration_sources::browsers::firefox_sections(content);
+    if sections.len() > browser_continuity::MAX_PROFILES {
+        return Err(invalid("Too many Firefox profiles"));
     }
-    finish(active, &mut name, &mut path, &mut relative, &mut output)?;
-    Ok(output)
+    sections
+        .into_iter()
+        .map(|(name, path, relative)| {
+            if relative == Some(true) {
+                Ok((name, path))
+            } else {
+                Err(invalid("Firefox profile lies outside its granted source"))
+            }
+        })
+        .collect()
 }
 
 fn installation_for(home: &Path, profile: &Path) -> Installation {

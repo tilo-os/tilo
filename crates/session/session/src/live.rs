@@ -36,7 +36,7 @@ use tilo_live::relay::{
 };
 use tilo_live::roster::Roster;
 use tilo_lock::MutexRecover as _;
-use tilo_network_actor::local_host::Protocols;
+use tilo_network_actor::own_service::Protocols;
 use tilo_user_identity::{DeviceCert, EndpointDelegation};
 
 use crate::engine::Engine;

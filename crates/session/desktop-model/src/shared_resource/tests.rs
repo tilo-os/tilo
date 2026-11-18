@@ -194,6 +194,7 @@ tilo_test_env::scenario! {
     {
         let run = crate::ownership::OpenedBy {
             run: "agent-session:7".into(),
+            agent: "scribe".into(),
             label: "Jane Doe's agent".into(),
             title: "Fill Jane Doe's visa application".into(),
         };

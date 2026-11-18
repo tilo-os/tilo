@@ -3,15 +3,15 @@
 //! sandbox with the network and ownership its manifest declares for that origin. It runs whether
 //! or not a window of the app is open.
 //!
-//! Each instance of the app a tilolang host runs reaches the connector over a connection of its
+//! Each instance of the app a tilolang process runs reaches the connector over a connection of its
 //! own: the session makes a pair, hands one end to the instance with the instance's other
-//! connections (`crate::tilolang_process::InstanceFds::origin`) and the other to the connector on
-//! this socket, as one `SOCK_SEQPACKET` packet in the framing of `jobs`: the verb
-//! [`ATTACH_VERB`] with the one descriptor.
+//! connections (`crate::process_link::InstanceFds::origin`) and the other to the connector on
+//! this socket, as one packet (`crate::packet`) carrying that one descriptor.
 
 use std::io;
 
-pub use crate::windows::Descriptor;
+pub use crate::packet::Descriptor;
+use crate::packet::Packet as _;
 
 pub const SERVICE: &str = "tilolang-origin";
 
@@ -21,7 +21,14 @@ pub const CHILD_FD: i32 = 37;
 /// tilolang runtime runs that origin's connector instead of a window.
 pub const ORIGIN_ENV: &str = "TILO_TILOLANG_CONNECTOR";
 
-pub const ATTACH_VERB: &[u8] = b"attach";
+/// An instance's connection, handed to the connector.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct Attach {
+    #[serde(with = "crate::packet::fd")]
+    connection: Descriptor,
+}
+
+impl crate::packet::Packet for Attach {}
 
 /// A connected pair of socket ends: the session keeps one and hands the other to the connector
 /// it starts.
@@ -29,7 +36,7 @@ pub const ATTACH_VERB: &[u8] = b"attach";
 /// # Errors
 /// The socket error, or [`io::ErrorKind::Unsupported`] off Linux.
 pub fn pair() -> io::Result<(Descriptor, Descriptor)> {
-    crate::windows::pair()
+    crate::packet::pair()
 }
 
 #[cfg(unix)]
@@ -60,17 +67,19 @@ pub fn take_socket() -> Option<Descriptor> {
 /// # Errors
 /// The socket's error, or [`io::ErrorKind::Unsupported`] off Linux.
 pub fn send_attachment(socket: &Descriptor, connection: &Descriptor) -> io::Result<()> {
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
-        use std::os::fd::AsFd as _;
-        crate::message::send(socket.as_fd(), &[ATTACH_VERB], &[connection.as_fd()])
+        Attach {
+            connection: connection.try_clone()?,
+        }
+        .send(socket)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(unix))]
     {
         let _ = (socket, connection);
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "only the Linux shell runs origin connectors",
+            "only the Linux session runs origin connectors",
         ))
     }
 }
@@ -82,32 +91,7 @@ pub fn send_attachment(socket: &Descriptor, connection: &Descriptor) -> io::Resu
 /// The socket's error; a message that is no attachment with its one descriptor;
 /// [`io::ErrorKind::Unsupported`] off Linux.
 pub fn receive_attachment(socket: &Descriptor) -> io::Result<Option<Descriptor>> {
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::fd::AsFd as _;
-        let invalid = |what: &str| io::Error::new(io::ErrorKind::InvalidData, what.to_owned());
-        let mut buffer = vec![0_u8; 64];
-        let Some((length, fds)) = crate::message::receive(socket.as_fd(), &mut buffer)? else {
-            return Ok(None);
-        };
-        let message = buffer.get(..length).unwrap_or_default();
-        if crate::message::decode(message).as_slice() != [ATTACH_VERB] {
-            return Err(invalid(
-                "the connector's socket carried something other than an attachment",
-            ));
-        }
-        let [connection] = <[Descriptor; 1]>::try_from(fds)
-            .map_err(|_| invalid("an attachment without its connection"))?;
-        Ok(Some(connection))
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = socket;
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "only the Linux shell runs origin connectors",
-        ))
-    }
+    Ok(Attach::receive(socket)?.map(|attach| attach.connection))
 }
 
 #[cfg(all(test, target_os = "linux"))]

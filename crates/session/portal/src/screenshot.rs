@@ -126,6 +126,7 @@ async fn take(
                 .decide(
                     caller,
                     &handle,
+                    collab_types::caps::DeviceCap::Screen,
                     AccessQuestion {
                         capability: SCREENSHOT_CAPABILITY.into(),
                         reason: None,

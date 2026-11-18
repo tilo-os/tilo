@@ -308,11 +308,8 @@ impl PersonalLists {
 
     fn write(&self, person: &[u8; 32], kept: &Kept) -> Result<(), String> {
         let bytes = serde_json::to_vec(kept).map_err(|error| error.to_string())?;
-        std::fs::create_dir_all(&self.dir).map_err(|error| error.to_string())?;
-        let path = self.path(person);
-        let staged = path.with_extension("json.new");
-        std::fs::write(&staged, bytes).map_err(|error| error.to_string())?;
-        std::fs::rename(&staged, &path).map_err(|error| error.to_string())
+        tilo_files::native::atomic::write_creating_parent(&self.path(person), &bytes)
+            .map_err(|error| error.to_string())
     }
 
     /// What `person`'s devices kept here; `None` when none did.

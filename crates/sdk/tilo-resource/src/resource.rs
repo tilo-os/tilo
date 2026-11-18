@@ -515,11 +515,70 @@ pub trait Resource: Sized + 'static {
         None
     }
 
+    /// The item of the resource's collections `action` acts on: an item verb's
+    /// (its first parameter), or the one a field edit's path passes through.
+    /// What a store keeping a collection's items in several resources routes
+    /// the action by. `#[resource]` generates it; `None` by default.
+    fn action_item(action: &Self::Action) -> Option<crate::Id> {
+        let _ = action;
+        None
+    }
+
+    /// The entries `action` lists that each name an item, in order: the
+    /// item an entry names, or `None` for an entry that makes a new one
+    /// (a message arriving). A verb declares the parameter it lists them in
+    /// with `#[action(items = param)]`; `None` for any other action.
+    fn listed_items(action: &Self::Action) -> Option<Vec<Option<crate::Id>>> {
+        let _ = action;
+        None
+    }
+
+    /// `action`, a verb listing items ([`listed_items`](Self::listed_items)),
+    /// over only its entries at the positions `keep`: the share of it a
+    /// resource holding those items carries out.
+    fn keep_listed(action: &Self::Action, keep: &[usize]) -> Option<Self::Action> {
+        let _ = (action, keep);
+        None
+    }
+
     /// Register this resource's replay decoder. Override to register an
     /// existing vocabulary under additional type ids.
     fn register(registry: &mut ActionRegistry) {
         registry.register::<Self::Action>(Self::ACTION_TYPE);
     }
+}
+
+/// An entry of a verb's list of items (`#[action(items = param)]`): the item
+/// it names, or `None` when it makes a new one.
+pub trait NamesItem: Clone {
+    fn named_item(&self) -> Option<crate::Id>;
+}
+
+impl NamesItem for crate::Id {
+    fn named_item(&self) -> Option<crate::Id> {
+        Some(self.clone())
+    }
+}
+
+impl NamesItem for String {
+    fn named_item(&self) -> Option<crate::Id> {
+        Some(crate::Id::from_raw(self.clone()))
+    }
+}
+
+/// [`Resource::listed_items`] of the list `entries`.
+#[doc(hidden)]
+pub fn listed_of<E: NamesItem>(entries: &[E]) -> Vec<Option<crate::Id>> {
+    entries.iter().map(NamesItem::named_item).collect()
+}
+
+/// The entries of `entries` at the positions `keep`, in order.
+#[doc(hidden)]
+#[must_use]
+pub fn kept_of<E: NamesItem>(entries: &[E], keep: &[usize]) -> Vec<E> {
+    keep.iter()
+        .filter_map(|at| entries.get(*at).cloned())
+        .collect()
 }
 
 /// The id of the action every resource publishes that applies one typed
@@ -2130,7 +2189,10 @@ pub(crate) fn group_param(vocabulary: &Vocabulary) -> ActionParam {
         crate::GROUP_PARAM,
         ParamType::Array,
         format!(
-            "{} actions to apply in order as one step, each {{\"action\": id, \"args\": {{..}}}}",
+            "{} actions to apply in order as one step, each {{\"action\": id, \"args\": {{..}}}}. \
+             A member names an item an earlier member of the same group makes by its place, \
+             {{\"$made\": {{\"member\": 0, \"item\": 0}}}}: the member counted from 0, then which \
+             of the ids it made, which the group fills in as it applies",
             vocabulary.label
         ),
     )

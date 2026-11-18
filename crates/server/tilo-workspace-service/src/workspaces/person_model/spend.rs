@@ -126,7 +126,5 @@ fn kept(root: &Path) -> Days {
 /// Write `days` into `root`, whole or not at all.
 fn keep(root: &Path, days: &Days) -> std::io::Result<()> {
     let bytes = serde_json::to_vec(days).map_err(std::io::Error::other)?;
-    let staged = root.join(format!("{FILE}.new"));
-    std::fs::write(&staged, bytes)?;
-    std::fs::rename(staged, root.join(FILE))
+    tilo_files::native::atomic::write(&root.join(FILE), &bytes)
 }

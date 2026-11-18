@@ -1,6 +1,8 @@
 notes-created-date = Erstellt { $date }
 notes-edited-date = Bearbeitet { $date }
 notes-dates = Erstellt { $created }, bearbeitet { $edited }
+notes-moved-date = Hierher verschoben { $date }
+notes-moved-dates = Hierher verschoben { $created }, bearbeitet { $edited }
 notes-date-today = heute um { $time }
 notes-date-unavailable = Datum unbekannt
 notes-table-add-row = Zeile darunter einfügen

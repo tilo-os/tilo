@@ -334,6 +334,7 @@ mod tests {
             unconfined: false,
             offers,
             capabilities: Vec::new(),
+            surface: None,
         };
         let lists = AppLists {
             launchable: vec![

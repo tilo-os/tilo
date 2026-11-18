@@ -281,6 +281,7 @@ impl ChatApp {
                     .hash(&mut hasher);
             }
             self.is_my_live_share(m).hash(&mut hasher);
+            self.may_end_share(m).hash(&mut hasher);
             // What a question shows follows who reads it and what was
             // written after it, beyond the message itself.
             self.question_shown(m).hash(&mut hasher);

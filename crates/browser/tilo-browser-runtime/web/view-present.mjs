@@ -614,6 +614,10 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
         input.step = control.step === undefined || control.step === null ? 'any' : String(control.step);
         if (document.activeElement !== input && Number(input.value) !== control.value) input.value = String(control.value);
         input.disabled = disabled;
+        // How far along its track it is, for the filled part the toolkit paints.
+        const span = control.max - control.min;
+        const along = span > 0 ? Math.min(100, Math.max(0, (control.value - control.min) / span * 100)) : 0;
+        write(input, 'css', `--tilo-along:${along}%;`);
         mark(input, 'value', target);
         out.push(input);
         // What it is at, said beside it as the canvas says it.
@@ -652,8 +656,9 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
           const plus = elementFor(`${key}:up`, 'button', next);
           for (const [button, sign, name] of [[minus, -1, control.decrease], [plus, 1, control.increase]]) {
             write(button, '@aria-label', name ?? null);
-            write(button, 'css', 'all:unset;box-sizing:border-box;flex:none;width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:6px;color:var(--tilo-text-dim,#6e6e73);font-size:13px;line-height:1;cursor:pointer;');
-            write(button, 'text', sign < 0 ? '−' : '+');
+            write(button, 'css', 'all:unset;box-sizing:border-box;position:relative;flex:none;width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:6px;color:var(--tilo-text-dim,#6e6e73);font-size:13px;line-height:1;cursor:pointer;');
+            // Its minus or plus is drawn as the toolkit's stroke, not a character.
+            write(button, 'text', '');
             button.disabled = disabled;
             button.dataset.tiloStepBy = String(sign * (control.step ?? 1));
             button.dataset.tiloText = control.text;
@@ -915,7 +920,7 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
 }
 
 // The lift a window or a panel stands at over the shell.
-const FLOATING_SHADOW = '0 1px 3px rgba(0,0,0,.08),0 10px 28px rgba(0,0,0,.12)';
+const FLOATING_SHADOW = '0 1px 3px rgba(0,0,0,.07),0 8px 22px rgba(0,0,0,.09)';
 
 // How the rendered composition looks beyond what each widget declares: the
 // document's blocks, the caret, the page's own selection. Colours and sizes
@@ -934,7 +939,8 @@ export const VIEW_CSS = `
 .tilo-view button{all:unset;box-sizing:border-box;display:block;cursor:default;}
 .tilo-link{color:var(--tilo-accent,#2f6fed);text-decoration:underline;text-underline-offset:2px;cursor:pointer;}
 .tilo-link:hover{color:var(--tilo-accent-hover,var(--tilo-accent,#2f6fed));}
-.tilo-view [aria-disabled=true]{opacity:.45;}
+/* A control the person cannot use is dimmed; a box or a switch says so by its own inks. */
+.tilo-view [aria-disabled=true]:not(label){opacity:.45;}
 .tilo-view [data-widget=WindowNoticeStrip]>[aria-hidden]{border-radius:var(--tilo-radius,8px);box-shadow:0 0 0 1px var(--tilo-border,rgba(127,127,127,.25)),0 6px 20px rgba(0,0,0,.12);}
 .tilo-view button:focus-visible{outline:2px solid var(--tilo-accent,#2f6fed);outline-offset:-2px;}
 .tilo-view ul,.tilo-view ol{margin:0;padding:0;list-style:none;}
@@ -951,12 +957,20 @@ export const VIEW_CSS = `
 .tilo-view input[role=switch]:checked::after{width:16px;height:16px;border:0;transform:translateX(14px);}
 .tilo-view input:disabled{cursor:default;}
 /* A box or switch the person cannot change is grey where it would be the accent, as painted. */
-.tilo-view input[type=checkbox]:disabled:checked,.tilo-view input[type=radio]:disabled:checked,.tilo-view input[type=checkbox]:disabled:indeterminate{background:color-mix(in srgb,var(--tilo-text-dim,#6e6e73) 60%,transparent);}
+.tilo-view input[type=checkbox]:disabled:checked,.tilo-view input[type=radio]:disabled:checked,.tilo-view input[type=checkbox]:disabled:indeterminate{background:color-mix(in srgb,var(--tilo-text-dim,#6e6e73) 35%,var(--tilo-raised,#e5e7eb));}
 .tilo-view input[type=checkbox]:disabled:not(:checked),.tilo-view input[type=radio]:disabled:not(:checked){opacity:.5;}
 .tilo-view input[type=checkbox]:focus-visible,.tilo-view input[type=radio]:focus-visible,.tilo-view input[type=range]:focus-visible{outline:2px solid var(--tilo-accent,#2f6fed);outline-offset:2px;}
-.tilo-view input[type=range]{flex:1;min-width:0;margin:0;accent-color:var(--tilo-accent,#2f6fed);cursor:pointer;}
+.tilo-view input[type=range]{flex:1;min-width:0;margin:0;height:20px;appearance:none;-webkit-appearance:none;background:transparent;cursor:pointer;}
+/* The track filled in the accent up to the knob, and the knob a white disc on its ring, as painted. */
+.tilo-view input[type=range]::-webkit-slider-runnable-track{height:4px;border-radius:2px;background:linear-gradient(to right,var(--tilo-accent,#2f6fed) var(--tilo-along,0%),var(--tilo-raised,#e5e7eb) var(--tilo-along,0%));}
+.tilo-view input[type=range]::-moz-range-track{height:4px;border-radius:2px;background:var(--tilo-raised,#e5e7eb);}
+.tilo-view input[type=range]::-moz-range-progress{height:4px;border-radius:2px;background:var(--tilo-accent,#2f6fed);}
+.tilo-view input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;margin-top:-7px;border-radius:50%;background:#fff;box-shadow:0 0 0 1.5px color-mix(in srgb,var(--tilo-text-dim,#6e6e73) 45%,transparent),0 1px 2px rgba(0,0,0,.2);}
+.tilo-view input[type=range]::-moz-range-thumb{width:18px;height:18px;border:0;border-radius:50%;background:#fff;box-shadow:0 0 0 1.5px color-mix(in srgb,var(--tilo-text-dim,#6e6e73) 45%,transparent),0 1px 2px rgba(0,0,0,.2);}
 /* Entries, choosers and strips of choices on the raised well the canvas paints them on. */
 .tilo-view [data-tilo-act=step]{width:28px!important;height:28px!important;background:var(--tilo-raised,#f1f2f4)!important;color:var(--tilo-text,#1d1d1f)!important;font-size:15px!important;}
+.tilo-view [data-tilo-act=step]::before,.tilo-view [data-tilo-act=step]:not([data-tilo-step-by^="-"])::after{content:"";position:absolute;left:50%;top:50%;width:10px;height:1.75px;border-radius:1px;background:currentColor;transform:translate(-50%,-50%);}
+.tilo-view [data-tilo-act=step]:not([data-tilo-step-by^="-"])::after{width:1.75px;height:10px;}
 .tilo-view [data-tilo-act=step]:hover{background:color-mix(in srgb,var(--tilo-raised,#f1f2f4) 85%,var(--tilo-text,#1d1d1f) 8%)!important;}
 .tilo-view [data-tilo-act=step]:disabled{opacity:.45;}
 .tilo-view [data-tilo-act=value][role=spinbutton],.tilo-view input[type=date],.tilo-view input[type=time],.tilo-view input[type=search]{height:28px;border-radius:6px!important;background:var(--tilo-raised,#f1f2f4)!important;padding:0 8px!important;text-align:center;}
@@ -969,7 +983,9 @@ export const VIEW_CSS = `
 .tilo-view [role=radiogroup]>button[aria-checked=true]{background:var(--tilo-ground,#fff)!important;color:var(--tilo-text,#1d1d1f);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.12);}
 .tilo-view [role=tablist]{flex-wrap:nowrap!important;}
 .tilo-view [role=tablist]>button{color:var(--tilo-text-dim,#6e6e73);}
-.tilo-view [role=tablist]>button[aria-selected=true]{color:var(--tilo-text,#1d1d1f);font-weight:600;box-shadow:inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.25));}
+.tilo-view [role=tablist]>button[aria-selected=true]{color:var(--tilo-text,#1d1d1f);font-weight:600;background:var(--tilo-raised,rgba(127,127,127,.16));}
+/* A control over what its widget paints is only where a press lands: the picture shows it. */
+.tilo-view [data-widget=Target]{background:transparent!important;box-shadow:none!important;}
 /* What the shell paints as cards, rows and keys, as elements: the lift and the edge
    come from the theme's own variables, the words from each part's own look. */
 .tilo-view [data-widget=NotificationBanner]{box-sizing:border-box;padding:12px 14px;background:var(--tilo-raised,rgba(127,127,127,.08));color:var(--tilo-text,#1d1d1f);border-radius:var(--tilo-radius,8px);box-shadow:0 8px 24px rgba(0,0,0,.16),inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.25));overflow:hidden;}
@@ -992,6 +1008,7 @@ export const VIEW_CSS = `
 /* A table's head stands over a rule, and its chosen row on the selection's tint, as painted. */
 .tilo-view thead{box-shadow:inset 0 -1px 0 var(--tilo-border,rgba(127,127,127,.25));}
 .tilo-view tr[aria-selected=true]{background:color-mix(in srgb,var(--tilo-accent,#2f6fed) 10%,transparent);border-radius:var(--tilo-radius,8px);}
+.tilo-view tbody tr:hover:not([aria-selected=true]){background:color-mix(in srgb,var(--tilo-raised) 70%,transparent);border-radius:var(--tilo-radius,8px);}
 .tilo-view img{object-fit:cover;overflow:clip;}
 .tilo-view img[data-fit=contain]{object-fit:contain;}
 .tilo-view img[data-fit=fill]{object-fit:fill;}

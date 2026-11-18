@@ -10,9 +10,8 @@ use fs_protocol::projection::{
     valid_document_index_revision,
 };
 use fs_protocol::{
-    AVAILABILITY_XATTR, AvailabilityProjectionV1, CONTENT_HASH_XATTR, HISTORY_XATTR,
-    HistoryProjectionV1, METADATA_XATTR, MetadataProjectionV1, Residency, SYNC_XATTR, SyncState,
-    THUMB_XATTR,
+    AVAILABILITY_XATTR, AvailabilityProjectionV1, CONTENT_HASH_XATTR, METADATA_XATTR,
+    MetadataProjectionV1, Residency, SYNC_XATTR, SyncState, THUMB_XATTR,
 };
 use ui::prelude::DOCUMENT_ID_XATTR;
 
@@ -23,44 +22,8 @@ pub fn read_sync_state(path: &Path) -> Option<SyncState> {
     }
 }
 
-pub fn read_merge_preflight(
-    path: &Path,
-    conflict_id: uuid::Uuid,
-) -> Option<fs_protocol::MergePreflightProjectionV1> {
-    let name = format!(
-        "{}{}",
-        fs_protocol::MERGE_PREFLIGHT_XATTR_PREFIX,
-        conflict_id
-    );
-    let bytes = xattr::get(path, name).ok()??;
-    if bytes.len() > fs_protocol::MAX_MERGE_PREFLIGHT_BYTES {
-        return None;
-    }
-    let projection: fs_protocol::MergePreflightProjectionV1 =
-        serde_json::from_slice(&bytes).ok()?;
-    (projection.conflict_id == conflict_id && projection.validate().is_ok()).then_some(projection)
-}
-
 pub fn read_metadata(path: &Path) -> Option<MetadataProjectionV1> {
     MetadataProjectionV1::parse_xattr(&xattr::get(path, METADATA_XATTR).ok()??).ok()
-}
-
-/// The catalogue key for a provenance: the wire value stays out of the UI.
-pub fn provenance_key(provenance: &fs_protocol::FileProvenance) -> &'static str {
-    use fs_protocol::FileProvenance;
-    match provenance {
-        FileProvenance::Create => "files-history-action-created",
-        FileProvenance::Edit => "files-history-action-edited",
-        FileProvenance::Rename => "files-history-action-renamed",
-        FileProvenance::Move => "files-history-action-moved",
-        FileProvenance::Delete => "files-history-action-deleted",
-        FileProvenance::ConflictResolution => "files-history-action-conflict-resolved",
-        FileProvenance::Restore { .. } => "files-history-action-restored",
-    }
-}
-
-pub fn read_history(path: &Path) -> Option<HistoryProjectionV1> {
-    HistoryProjectionV1::parse_xattr(&xattr::get(path, HISTORY_XATTR).ok()??).ok()
 }
 
 pub fn read_availability(path: &Path) -> Option<AvailabilityProjectionV1> {
@@ -762,20 +725,12 @@ pub struct Entry {
     pub content_hash: Option<[u8; 32]>,
     pub document_id: Option<[u8; 16]>,
     pub availability: Option<AvailabilityProjectionV1>,
-    pub history: Option<HistoryProjectionV1>,
     pub rich_metadata: Option<MetadataProjectionV1>,
     pub observed: Option<host_fs::ObservedObject>,
     pub app: Option<crate::applications::AppFacts>,
 }
 
 impl Entry {
-    /// A conflict is the resource's; a filename never creates or clears one.
-    pub fn is_conflict(&self) -> bool {
-        self.history
-            .as_ref()
-            .is_some_and(|history| history.open_conflicts().next().is_some())
-    }
-
     pub fn content_is_local(&self) -> bool {
         if let Some(availability) = &self.availability {
             return matches!(availability.residency, Residency::Resident { .. });
@@ -952,11 +907,6 @@ fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String>
         } else {
             None
         };
-        let history = if in_workspace {
-            read_history(&path)
-        } else {
-            None
-        };
         let rich_metadata = if in_workspace && !is_dir {
             read_metadata(&path)
         } else {
@@ -975,7 +925,6 @@ fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String>
             content_hash,
             document_id,
             availability,
-            history,
             app: None,
             rich_metadata,
             observed: meta
@@ -1048,19 +997,7 @@ pub(crate) mod sync_state_tests {
     }
 
     tilo_test_env::scenario! {
-        fn provenance_labels_and_workspace_roots_are_localised_and_bounded;
-
-        phase provenance_labels_are_localized;
-        {
-            assert_eq!(
-                crate::i18n::t(provenance_key(&fs_protocol::FileProvenance::Create)),
-                "Created"
-            );
-            let restored = fs_protocol::FileProvenance::Restore {
-                from: fs_protocol::FileVersionId(uuid::Uuid::from_u128(1)),
-            };
-            assert_eq!(provenance_key(&restored), "files-history-action-restored");
-        }
+        fn workspace_roots_are_localised_and_bounded;
 
         phase workspace_roots_and_pager_are_bounded;
         {

@@ -15,7 +15,7 @@ pub(super) struct HostRuns {
     /// The profile's workspace, by its UUID.
     pub(super) workspace: String,
     pub(super) actor: String,
-    pub(super) policy_time: tilo_action_broker::policy_clock::PolicyTime,
+    pub(super) policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
 }
 
 impl crate::key_sessions::Sessions for HostRuns {

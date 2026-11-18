@@ -16,10 +16,10 @@ use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ChangeHash};
 use collab_types::handoff::{HandoffReport, HandoffRequest, Successor};
-use tilo_action_broker::collab_broker::SessionFollowDispatcher;
 use tilo_app_launch::Launch;
 use tilo_compositor::Compositor;
 use tilo_desktop_model::{Layout, TabId, TileContent, Workspace, WorkspaceId};
+use tilo_workspace_service::apps::collab_broker::SessionFollowDispatcher;
 use ui::resource::DocumentId;
 use ui::resource::transfer::{Origin, Retirement, TransferError};
 

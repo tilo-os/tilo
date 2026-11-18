@@ -89,7 +89,7 @@ pub struct Starter {
 /// The one person `acting` leads to: the actor when it is a person, else the
 /// single person down the chain of who it acts for. `None` when it acts for
 /// nobody, or for several people at once.
-fn led_to(acting: &tilo_actions::Acting) -> Option<&str> {
+pub(crate) fn led_to(acting: &tilo_actions::Acting) -> Option<&str> {
     let mut node = acting;
     loop {
         if let Some(person) = node.person_id() {

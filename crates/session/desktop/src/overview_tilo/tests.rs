@@ -291,6 +291,37 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_workspace_an_agent_may_reach_is_named_as_the_person_knows_it;
+    // A host names a grant's workspace by its id, as its key's certificate
+    // carries it. The row says the workspace by its name, never the id.
+    {
+        en();
+        let id = "3f2a8c1e-0b4d-4e5f-9a6b-7c8d9e0f1a2b";
+        let shell = TiloOverview {
+            workspaces: vec![(id.to_owned(), "Launch".to_owned())],
+            server: Some(Server {
+                grants: vec![Grant {
+                    id: "g3".into(),
+                    agent: "Claude Code".into(),
+                    reach: Reach::Workspace {
+                        name: id.to_owned(),
+                        id: id.to_owned(),
+                    },
+                    ..Grant::default()
+                }],
+                ..Server::default()
+            }),
+            ..TiloOverview::default()
+        };
+        let rows = rows(&shell);
+        let agent = items(&rows)[0];
+        assert_eq!(facts(agent), ["Launch"], "the workspace by its name");
+        assert!(
+            !facts(agent).iter().any(|fact| fact.contains(id)),
+            "never by its id: {agent:?}"
+        );
+    }
+
     phase the_overview_offers_workspaces_not_the_session_or_the_account;
     // Locking, logging out, restarting and shutting down are quick settings' power menu's, the
     // account the person's own card's: the overview below the workspaces only goes to the

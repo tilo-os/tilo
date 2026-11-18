@@ -14,6 +14,7 @@
     )
 )]
 
+pub mod file_action;
 pub mod file_invite;
 pub mod files;
 pub mod history;
@@ -26,6 +27,7 @@ pub mod tree;
 /// the collaboration core.
 pub use collab_types::{Ed25519PublicKey, canonical};
 
+pub use file_action::FileAction;
 pub use file_invite::{
     BearerFileInvite, FILE_INVITE_DOMAIN_TAG, FILE_INVITE_LINK_PREFIX, FileInviteError,
     FileInviteSpec, FileInviteSubject, FileInviteV1, FilePermission, bearer_secret_hash,

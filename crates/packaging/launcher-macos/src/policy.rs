@@ -273,8 +273,9 @@ impl SeatbeltPolicy {
             .collect();
         for device in &capabilities.devices {
             not_enforced.push(format!(
-                "device `{device}`: macOS guards capture devices through TCC, which the \
-                 Seatbelt profile does not grant"
+                "device `{}`: macOS guards capture devices through TCC, which the \
+                 Seatbelt profile does not grant",
+                device.name()
             ));
         }
 
@@ -636,7 +637,7 @@ mod tests {
             let plan = CapabilityPlan {
                 ro_paths: vec![music.clone(), docs.clone()],
                 rw_paths: vec![docs.clone()],
-                devices: vec!["camera".to_string()],
+                devices: vec![launcher::capabilities::DeviceCap::Camera],
                 ..CapabilityPlan::empty()
             };
             let egress = EgressDecision::Blocked;

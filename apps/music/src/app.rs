@@ -1025,11 +1025,18 @@ impl Music {
     }
 
     /// The row `id` this surface shows now, or nothing when the address is stale.
+    fn row_for(&self, id: &str) -> Option<ui::framework::LiveRow> {
+        self.music_rows().row(id).or_else(|| {
+            <Library as ui::tilo_resource::Resource>::child(&self.lib, id)
+                .map(ui::framework::LiveRow::from_resource)
+        })
+    }
+
+    /// The row `id` as the published tree: what a test reads to check what the
+    /// row carries.
+    #[cfg(test)]
     pub(crate) fn publish_resource(&self, id: &str) -> Option<tilo_actions::ResourceSpec> {
-        self.music_rows()
-            .row(id)
-            .map(ui::framework::LiveRow::into_resource)
-            .or_else(|| <Library as ui::tilo_resource::Resource>::child(&self.lib, id))
+        self.row_for(id).map(ui::framework::LiveRow::into_resource)
     }
 
     /// The catalogue result's metadata, for the effect that imports it.
@@ -1048,11 +1055,7 @@ impl Music {
     /// This device's rows: the player, the queue, the open file and offline copies.
     pub(crate) fn device_rows(&self) -> Vec<ui::framework::LiveRow> {
         let mut rows = self.music_rows().all();
-        rows.extend(
-            crate::recommendations::resources(&self.lib)
-                .into_iter()
-                .map(ui::framework::LiveRow::from_resource),
-        );
+        rows.extend(crate::recommendations::rows(&self.lib));
         rows.push(self.source_row());
         rows.extend(self.spotify_device_rows());
         rows.extend(self.spotify_remote_rows());
@@ -1118,8 +1121,7 @@ impl Music {
             return Some(row);
         }
         if id.starts_with("music.recommendation") {
-            return crate::recommendations::resource_by_id(&self.lib, id)
-                .map(ui::framework::LiveRow::from_resource);
+            return crate::recommendations::row_by_id(&self.lib, id);
         }
         if let Some(track) = id.strip_prefix("music.track:")
             && !self.stored_library.tracks.contains_key(track)
@@ -1129,16 +1131,12 @@ impl Music {
                 .live_hits
                 .iter()
                 .any(|hit| hit.track.id == track)
-                .then(|| {
-                    self.publish_resource(id)
-                        .map(ui::framework::LiveRow::from_resource)
-                })
+                .then(|| self.row_for(id))
                 .flatten();
         }
         // The player, the queue, the open file and the library's rows; places and albums the
         // framework resolves itself.
-        self.publish_resource(id)
-            .map(ui::framework::LiveRow::from_resource)
+        self.row_for(id)
     }
 
     fn source_status(&self) -> String {

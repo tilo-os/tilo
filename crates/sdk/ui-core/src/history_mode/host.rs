@@ -45,15 +45,10 @@ enum Command {
     Open(crate::HistoryEntryId),
     Name,
     Review(review::ReviewCommand),
-    FileParent(fs_protocol::FileVersionId),
-    FileUndo,
-    FileRedo,
-    FileCheck,
-    FileRetry,
-    FileRefresh,
-    /// Take back the whole change a file row stands for, restoring the version
-    /// it replaced.
-    FileRevertChange(fs_protocol::FileVersionId),
+    /// Take back the change of the selected row of a folder's History.
+    FolderUndo,
+    /// Put the file of the selected row of a folder's History back as it was right after it.
+    FolderRestore,
 }
 
 #[derive(Clone)]
@@ -110,14 +105,13 @@ pub struct HistoryHost {
     review_node: Option<NodeId>,
     clock: fn() -> Option<u64>,
     controller: Option<HistoryController>,
-    files: Option<super::files_session::FileController>,
-    retired_files: Vec<super::files_session::FileController>,
-    requested_file_version: Option<fs_protocol::FileVersionId>,
-    observed_file_binding: Option<uuid::Uuid>,
-    file_target_resolved: bool,
     /// The folder revision whose changes the timeline lists: the folder is read again
     /// only when its tree record moved.
     observed_folder_revision: Option<u64>,
+    /// The row of a folder's History a person selected: what its Undo and Restore act on.
+    folder_selected: Option<crate::HistoryEntryId>,
+    /// What became of the last Undo or Restore of a folder's row, when it was refused.
+    folder_status: Option<String>,
     toolbar: Column,
     /// The side panel's foot while a change is selected: what it was, the before/after switch, Restore
     /// and Restore just this change.
@@ -332,10 +326,10 @@ impl HistoryHost {
         let controller = match source {
             HistorySourceRegistration::HostDocument { resource, .. }
             | HistorySourceRegistration::OwnedDocument { resource, .. } => Some(
-                HistoryController::unprojected(resource.clone(), source.committed_heads(doc)?),
+                HistoryController::unprojected(resource.clone(), source.committed_heads(doc)?)
+                    .with_parts(source.parts()),
             ),
             HistorySourceRegistration::Unversioned { .. }
-            | HistorySourceRegistration::CheckedFiles { .. }
             | HistorySourceRegistration::FolderFiles { .. } => None,
         };
         let unavailable = unavailable_state(match registration.sources.first() {
@@ -363,12 +357,9 @@ impl HistoryHost {
             review_node: None,
             clock: crate::time::try_unix_now,
             controller,
-            files: None,
-            retired_files: vec![],
-            requested_file_version: None,
-            observed_file_binding: None,
-            file_target_resolved: false,
             observed_folder_revision: None,
+            folder_selected: None,
+            folder_status: None,
             toolbar,
             footer: Column::new().with_no_padding().with_intrinsic_height(),
             banner: Row::new(),
@@ -610,14 +601,11 @@ impl HistoryHost {
             .find(|source| source.scope() == key)
             .expect("validated scope")
     }
-    /// The checked-file scope whose content asked to show a file's history while another scope is
-    /// shown: opening a file's history from the app (its History command on a selected file) moves to
-    /// that file's scope.
-    fn file_scope_asking_to_open(&self) -> Option<usize> {
-        if matches!(
-            self.source(),
-            HistorySourceRegistration::CheckedFiles { .. }
-        ) {
+    /// The folder scope whose content asked to show its History while another scope is shown:
+    /// opening a file's history from the app (its History command on a selected file) moves to
+    /// the folder's scope, narrowed to that file.
+    fn folder_scope_asking_to_open(&self) -> Option<usize> {
+        if self.source_is_folder() {
             return None;
         }
         self.registration
@@ -628,7 +616,7 @@ impl HistoryHost {
                 self.registration.sources.iter().any(|source| {
                     matches!(
                         source,
-                        HistorySourceRegistration::CheckedFiles { scope: key, source }
+                        HistorySourceRegistration::FolderFiles { scope: key, source, .. }
                             if *key == scope.key && source.wants_open()
                     )
                 })
@@ -653,9 +641,6 @@ impl HistoryHost {
         self.review = None;
         self.review_request = None;
         self.controller = None;
-        if let Some(files) = &mut self.files {
-            files.suspend();
-        }
         self.before.preview = None;
         self.after.preview = None;
         self.selected.clear();
@@ -1131,7 +1116,7 @@ impl HistoryHost {
     }
 
     fn return_to_live(&mut self) {
-        self.close_files_presentation();
+        self.close_folder_presentation();
         self.review = None;
         self.review_request = None;
         self.assets.cancel();
@@ -1240,7 +1225,7 @@ impl HistoryHost {
         self.open && (self.width >= 600.0 || self.selected.is_empty() || self.activity_page)
     }
     fn timeline_available(&self) -> bool {
-        self.controller.is_some() || self.files.is_some() || self.source_is_folder()
+        self.controller.is_some() || self.source_is_folder()
     }
     /// Whether the shown scope is a folder's own changes, which the timeline lists without a
     /// document controller: the window's record holds them.
@@ -1264,17 +1249,6 @@ impl HistoryHost {
             &mut self.after
         }
     }
-    /// The earliest moment this surface asks for a refresh on its own (a file history polling its
-    /// activity), on the clock of the work that polls.
-    pub(crate) fn next_refresh(
-        &self,
-    ) -> Option<(crate::background::Background, crate::time::Instant)> {
-        self.files
-            .iter()
-            .chain(&self.retired_files)
-            .filter_map(super::files_session::FileController::next_refresh)
-            .min_by_key(|(_, at)| *at)
-    }
     pub(crate) fn needs_refresh(&self, doc: &AutoCommit, width: f64) -> bool {
         self.refresh_without_owners(width)
             .unwrap_or_else(|| self.heads_need_refresh(doc))
@@ -1288,20 +1262,11 @@ impl HistoryHost {
         if self.assets.has_results() {
             return Some(true);
         }
-        if self.file_scope_asking_to_open().is_some() {
+        if self.folder_scope_asking_to_open().is_some() {
             return Some(true);
         }
-        if let HistorySourceRegistration::CheckedFiles { source, .. } = self.source()
-            && (source.target().map(|target| target.binding) != self.observed_file_binding
-                || source.wants_open()
-                || self
-                    .files
-                    .as_ref()
-                    .is_some_and(super::files_session::FileController::has_results)
-                || self
-                    .retired_files
-                    .iter()
-                    .any(super::files_session::FileController::has_results))
+        if let HistorySourceRegistration::FolderFiles { source, .. } = self.source()
+            && source.wants_open()
         {
             return Some(true);
         }
@@ -1320,13 +1285,13 @@ impl HistoryHost {
             return Some(true);
         }
         if let HistorySourceRegistration::FolderFiles { source, .. } = self.source() {
-            return Some(self.open && self.observed_folder_revision != Some(source.revision()));
+            return Some(
+                self.open
+                    && (self.observed_folder_revision != Some(source.revision())
+                        || self.timeline_folder_selection() != self.folder_selected),
+            );
         }
-        matches!(
-            self.source(),
-            HistorySourceRegistration::CheckedFiles { .. }
-        )
-        .then_some(false)
+        None
     }
     /// Whether the shown source's committed frontier asks for a refresh: it cannot be read, or an open
     /// History has not taken it up yet.
@@ -1340,6 +1305,7 @@ impl HistoryHost {
         self.open
             && self.controller.as_ref().is_some_and(|controller| {
                 super::sorted_heads(heads) != controller.observed_live_heads
+                    || controller.parts_moved()
             })
     }
     /// Whether every document this surface answers for is a hosted component's (or the host's own),
@@ -1351,8 +1317,7 @@ impl HistoryHost {
         self.enclosing_owner.as_ref().is_none_or(followed)
             && self.registration.sources.iter().all(|source| match source {
                 HistorySourceRegistration::OwnedDocument { owner, .. } => followed(owner),
-                HistorySourceRegistration::CheckedFiles { .. }
-                | HistorySourceRegistration::FolderFiles { .. }
+                HistorySourceRegistration::FolderFiles { .. }
                 | HistorySourceRegistration::HostDocument { .. }
                 | HistorySourceRegistration::Unversioned { .. } => true,
             })
@@ -1381,8 +1346,7 @@ impl HistoryHost {
             .controller
             .as_ref()
             .is_some_and(HistoryController::has_live_updates);
-        let target_changed = self.reconcile_file_target();
-        let mut changed = target_changed || std::mem::take(&mut self.toolbar_dirty);
+        let mut changed = std::mem::take(&mut self.toolbar_dirty);
         let started = crate::time::now();
         let mut opening = false;
         if self.open_requested.replace(false) {
@@ -1391,81 +1355,21 @@ impl HistoryHost {
 
             self.returning_live = !self.open;
             if !self.open {
-                self.close_files_presentation();
+                self.close_folder_presentation();
             }
             changed = true;
         }
         let requested = self.requested_entry.take().filter(|_| self.open);
-        if let Some(scope) = self.file_scope_asking_to_open() {
+        if let Some(scope) = self.folder_scope_asking_to_open() {
             self.commands.borrow_mut().push_back(Command::Scope(scope));
         }
         let commands: Vec<_> = self.commands.borrow_mut().drain(..).collect();
         for command in commands {
-            if target_changed
-                && matches!(
-                    command,
-                    Command::Review(_)
-                        | Command::FileParent(_)
-                        | Command::FileUndo
-                        | Command::FileRedo
-                        | Command::FileCheck
-                        | Command::FileRetry
-                        | Command::FileRefresh
-                        | Command::FileRevertChange(_)
-                )
-            {
-                continue;
-            }
             changed = true;
             match command {
-                Command::Review(command) => {
-                    if matches!(command, review::ReviewCommand::Cancel)
-                        && let Some(files) = &mut self.files
-                    {
-                        files.cancel_review();
-                        self.review = None;
-                    }
-                    self.review_request = Some(command);
-                }
-                Command::FileParent(parent) => {
-                    if let Some(files) = &mut self.files
-                        && let Some(version) = files.selected()
-                    {
-                        files.select(version, Some(parent));
-                    }
-                }
-                Command::FileUndo => self.review_file_compensation(false),
-                Command::FileRedo => self.review_file_compensation(true),
-                Command::FileCheck => {
-                    if let Some(files) = &mut self.files {
-                        files.check_result();
-                    }
-                }
-                Command::FileRetry => {
-                    if let Some(files) = &mut self.files {
-                        files.retry();
-                    }
-                }
-                Command::FileRefresh => {
-                    if let Some(files) = &mut self.files {
-                        files.load();
-                    }
-                }
-                Command::FileRevertChange(parent) => {
-                    if let Some(files) = &mut self.files {
-                        files.request_review(
-                            fs_protocol::files::CheckedHistoryOperationV1::Restore {
-                                version_id: parent,
-                            },
-                        );
-                    }
-                    let message = if let Some(files) = &self.files {
-                        format!("File: {}\n\n{}", files.target.label, files.message)
-                    } else {
-                        String::new()
-                    };
-                    self.show_review(None, message);
-                }
+                Command::Review(command) => self.review_request = Some(command),
+                Command::FolderUndo => self.apply_folder_verb(false),
+                Command::FolderRestore => self.apply_folder_verb(true),
                 Command::Live => self.return_to_live(),
                 Command::Open(entry) => {
                     self.opened = self
@@ -1541,20 +1445,17 @@ impl HistoryHost {
                             HistorySourceRegistration::HostDocument { resource, .. }
                             | HistorySourceRegistration::OwnedDocument { resource, .. } => {
                                 if let Ok(heads) = self.source().committed_heads(doc) {
-                                    self.controller = Some(HistoryController::unprojected(
-                                        resource.clone(),
-                                        heads,
-                                    ));
+                                    self.controller = Some(
+                                        HistoryController::unprojected(resource.clone(), heads)
+                                            .with_parts(self.source().parts()),
+                                    );
                                 }
                             }
                             HistorySourceRegistration::Unversioned { reason, .. } => {
                                 self.unavailable = unavailable_state(reason);
                             }
-                            HistorySourceRegistration::CheckedFiles { .. } => {
-                                self.close_files_presentation();
-                            }
                             HistorySourceRegistration::FolderFiles { .. } => {
-                                self.close_files_presentation();
+                                self.close_folder_presentation();
                                 self.observed_folder_revision = None;
                             }
                         }
@@ -1562,23 +1463,8 @@ impl HistoryHost {
                 }
             }
         }
-        if matches!(
-            self.source(),
-            HistorySourceRegistration::CheckedFiles { .. }
-        ) {
-            self.refresh_files(changed);
-            return;
-        }
-        if let HistorySourceRegistration::FolderFiles { source, .. } = self.source().clone() {
-            let revision = source.revision();
-            if self.observed_folder_revision != Some(revision) {
-                self.observed_folder_revision = Some(revision);
-                self.timeline.set_entries(source.entries());
-                changed = true;
-            }
-            if changed {
-                self.rebuild_toolbar();
-            }
+        if matches!(self.source(), HistorySourceRegistration::FolderFiles { .. }) {
+            self.refresh_folder(changed);
             return;
         }
         // Resolve actual current selected IDs before replacing the projection;
@@ -1602,10 +1488,13 @@ impl HistoryHost {
             && let Some(controller) = &mut self.controller
         {
             let _ = controller.refresh(document);
-            if selected != self.selected
-                && !selected.is_empty()
-                && controller.select(document, &selected).is_ok()
-            {
+            let choosing = selected != self.selected && !selected.is_empty();
+            let shown = choosing && controller.select(document, &selected).is_ok();
+            if choosing && !shown {
+                // A change of a document kept beside this one has no version of this one to show.
+                self.commands.borrow_mut().push_back(Command::Now);
+            }
+            if shown {
                 self.review = None;
                 self.review_request = None;
                 self.selected = selected;
@@ -1980,7 +1869,7 @@ impl HistoryHost {
             }
             toolbar = toolbar.push(Box::new(scopes));
         }
-        toolbar = self.files_toolbar(toolbar);
+        toolbar = self.folder_toolbar(toolbar);
         if let Some(status) = self
             .sync_status
             .as_ref()
@@ -2013,7 +1902,6 @@ impl HistoryHost {
             .get(self.active_scope)
             .is_some_and(|scope| {
                 scope.content_schema.is_some()
-                    || matches!(scope.presentation, HistoryPresentation::CheckedFiles { .. })
                     || (matches!(
                         scope.presentation,
                         HistoryPresentation::Domain { .. }
@@ -2323,7 +2211,6 @@ pub(crate) trait HistoryChromeApi: Widget {
     fn request_close(&self);
     #[cfg(test)]
     fn timeline_selection(&self) -> Vec<crate::HistoryEntryId>;
-    fn next_refresh(&self) -> Option<(crate::background::Background, crate::time::Instant)>;
     /// # Safety
     /// As [`HistoryHost::preserve_focus`].
     unsafe fn preserve_focus(
@@ -2526,9 +2413,6 @@ impl HistoryChromeApi for HistoryHost {
     #[cfg(test)]
     fn timeline_selection(&self) -> Vec<crate::HistoryEntryId> {
         HistoryHost::timeline_selection(self)
-    }
-    fn next_refresh(&self) -> Option<(crate::background::Background, crate::time::Instant)> {
-        HistoryHost::next_refresh(self)
     }
     unsafe fn preserve_focus(
         &mut self,
@@ -2911,7 +2795,7 @@ mod describe;
 
 mod media;
 
-mod files;
+mod folder;
 
 /// Why a scope has no History, where its timeline would stand: History is unavailable, and the reason
 /// (a message key or the owner's own text) says why.

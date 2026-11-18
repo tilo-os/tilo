@@ -12,7 +12,6 @@
 //! [`session`] holds the server co-edit session with that host.
 mod behind;
 mod certified;
-mod create;
 mod document_read;
 mod effect_history;
 mod effect_receipt;
@@ -26,8 +25,6 @@ mod file_store;
 pub(crate) mod fixture;
 #[cfg(not(target_arch = "wasm32"))]
 mod history_content;
-#[cfg(not(target_arch = "wasm32"))]
-mod join_service;
 mod journal;
 mod journaled;
 mod limits;
@@ -52,8 +49,6 @@ pub use document_read::{
 pub use file_store::{FileHost, open_file, open_file_with, owner_file_of, read_file};
 #[cfg(not(target_arch = "wasm32"))]
 pub use history_content::HistoryContent;
-#[cfg(not(target_arch = "wasm32"))]
-pub use join_service::OwnerJoinWorkspaces;
 pub use journaled::{JournalParts, Journaled};
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES};
 pub use publication::{
@@ -230,9 +225,6 @@ struct SharedOwner {
     mutation: Mutex<()>,
     current: RwLock<Current>,
     listeners: Mutex<Vec<Weak<dyn NativeFenceObserver>>>,
-    /// Who hands on what this device commits to a workspace it hosts itself
-    /// ([`NativeWorkspaceOwner::observe_kept_here`]).
-    kept_here: Mutex<Vec<Weak<dyn NativeKeptHereObserver>>>,
     /// The channel keys that keep this device's sealed record histories within
     /// their bound ([`NativeWorkspaceOwner::keep_sealed_histories`]).
     history_keys: Mutex<Option<Arc<dyn SealedHistoryKeys>>>,
@@ -346,11 +338,6 @@ impl NativeCommittedView {
     pub fn workspace_host(&self) -> &DeviceCert {
         &self.record.workspace_host
     }
-    /// Whether this device's own host orders the workspace's commits.
-    #[must_use]
-    pub fn hosted_here(&self) -> bool {
-        self.record.hosted_here()
-    }
     /// Whether this device created the workspace, and so founds its MLS group.
     #[must_use]
     pub fn founded_here(&self) -> bool {
@@ -462,66 +449,7 @@ pub struct NativeFenceSubscription {
     _observer: Arc<dyn NativeFenceObserver>,
 }
 
-/// Told what this device committed to a workspace it hosts itself, once per
-/// commit, after it is durable: such a workspace keeps no outgoing ownership
-/// (its own device is its keeper) and holds no link to a host, so what its
-/// device writes reaches the members linked to it only through whoever is
-/// told here.
-pub trait NativeKeptHereObserver: Send + Sync {
-    fn kept_here(&self, workspace: WorkspaceId, message: &NeighbourMsg);
-}
-impl<F: Fn(WorkspaceId, &NeighbourMsg) + Send + Sync> NativeKeptHereObserver for F {
-    fn kept_here(&self, workspace: WorkspaceId, message: &NeighbourMsg) {
-        self(workspace, message);
-    }
-}
-/// Retaining this token retains the observer; owner stores only a weak reference.
-pub struct NativeKeptHereSubscription {
-    _observer: Arc<dyn NativeKeptHereObserver>,
-}
 impl SharedOwner {
-    /// Tell [`NativeKeptHereObserver`]s what this device committed to
-    /// `workspace`, which it hosts itself.
-    fn kept_here(&self, workspace: WorkspaceId, message: &NeighbourMsg) {
-        let observers: Vec<_> = {
-            let mut observers = self.kept_here.lock();
-            let live = observers.iter().filter_map(Weak::upgrade).collect();
-            observers.retain(|observer| observer.strong_count() != 0);
-            live
-        };
-        for observer in observers {
-            observer.kept_here(workspace, message);
-        }
-    }
-    /// Tell [`NativeKeptHereObserver`]s of `changes`, what this device just
-    /// committed to the governance of `workspace`, when it hosts that
-    /// workspace itself (`hosted_here`): a share, a member's role, a grant, a
-    /// device it admitted, its verdict on a member's write. Such a workspace has no host that hands its
-    /// device's change on, and the ownership the change is also kept in leaves
-    /// on no link, so without this the members linked to the device read it
-    /// only in the governance their next link starts with.
-    fn governance_kept_here(
-        &self,
-        workspace: WorkspaceId,
-        hosted_here: bool,
-        changes: Vec<Vec<u8>>,
-    ) {
-        if !hosted_here || changes.is_empty() {
-            return;
-        }
-        tracing::debug!(
-            %workspace,
-            changes = changes.len(),
-            "a change of the governance this device keeps goes to the members linked to it"
-        );
-        self.kept_here(
-            workspace,
-            &NeighbourMsg::SyncResp {
-                changes,
-                workspace: workspace.to_string(),
-            },
-        );
-    }
     fn notify(&self, workspace: WorkspaceId, continuity: u64) {
         let observers: Vec<_> = {
             let mut listeners = self.listeners.lock();
@@ -594,7 +522,6 @@ impl NativeWorkspaceOwner {
             mutation: Mutex::new(()),
             current: RwLock::new(Current::default()),
             listeners: Mutex::new(Vec::new()),
-            kept_here: Mutex::new(Vec::new()),
             history_keys: Mutex::new(None),
             resting: publication::Resting::default(),
         }))
@@ -628,7 +555,6 @@ impl NativeWorkspaceOwner {
             mutation: Mutex::new(()),
             current: RwLock::new(current),
             listeners: Mutex::new(Vec::new()),
-            kept_here: Mutex::new(Vec::new()),
             history_keys: Mutex::new(None),
             resting: publication::Resting::default(),
         })))
@@ -695,23 +621,6 @@ impl NativeWorkspaceOwner {
     #[must_use]
     pub fn contains_workspace(&self, workspace: WorkspaceId) -> bool {
         self.0.current.read().required.contains(&workspace) || self.0.store.uncertain(workspace)
-    }
-
-    /// The workspaces this device hosts itself, in one read of the record: its
-    /// own host orders their records, whether or not the record says where
-    /// that host is reached. What names its own address in them reads this
-    /// ([`NativeWorkspaceOwner::name_host`]): most workspaces a device holds
-    /// are another device's to host, and their records are not copied to find
-    /// that out.
-    #[must_use]
-    pub fn hosted(&self) -> Vec<WorkspaceId> {
-        let current = self.0.current.read();
-        current
-            .workspaces
-            .iter()
-            .filter(|(_, view)| view.record.hosted_here())
-            .map(|(workspace, _)| *workspace)
-            .collect()
     }
 
     /// Store availability only; workspace authority still requires `with_current`.
@@ -804,17 +713,6 @@ impl NativeWorkspaceOwner {
         .unwrap_or_default()
     }
 
-    /// Be told what this device commits to a workspace it hosts itself, for as long as the
-    /// returned token is kept.
-    pub fn observe_kept_here(
-        &self,
-        observer: Arc<dyn NativeKeptHereObserver>,
-    ) -> NativeKeptHereSubscription {
-        self.0.kept_here.lock().push(Arc::downgrade(&observer));
-        NativeKeptHereSubscription {
-            _observer: observer,
-        }
-    }
     pub fn observe_fences(
         &self,
         observer: Arc<dyn NativeFenceObserver>,
@@ -1019,21 +917,6 @@ impl NativeWorkspaceOwner {
             replica, record, ..
         } = candidate;
         self.publish(workspace, &replica, record, enrollment)
-    }
-
-    /// Publish `workspace`'s record as `change` leaves a copy of it, keeping
-    /// this device's live replica: a change of this device's record alone.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn change_document<T>(
-        &self,
-        workspace: WorkspaceId,
-        change: impl FnOnce(&NativeCommittedView, &mut stored::StoredWorkspace) -> Result<T, String>,
-    ) -> Result<T, String> {
-        let view = self.view(workspace)?;
-        let mut record = view.record.clone();
-        let answer = change(&view, &mut record)?;
-        self.publish_document(workspace, &view, record, None)?;
-        Ok(answer)
     }
 
     /// Publish `record` for `workspace`, leaving this device's live replica as

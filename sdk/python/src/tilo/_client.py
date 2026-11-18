@@ -218,10 +218,10 @@ class AsyncTilo:
     ) -> None:
         """`url` is the API server (`TILO_API_URL`, `https://api.tilo.sh`) and
         `key` the `tilo_sk_…` it takes (`TILO_API_KEY`). `retry_deadline` is
-        how long, in seconds, a call keeps asking again while the host is busy
-        with the person's changes (60 by default; 0 raises `RateLimited` at
-        once). `transport` is where the calls go instead of HTTP, as
-        [`AsyncTilo.host`] makes one."""
+        how long, in seconds, a call keeps asking again while the server is
+        briefly unavailable or unreachable (60 by default; 0 raises its
+        refusal at once). `transport` is where the calls go instead of HTTP,
+        as [`AsyncTilo.host`] makes one."""
         self.transport = transport or HttpTransport(url, key, http=http)
         self.api = Api(self.transport, retry_deadline)
         self.catalog: WorkspaceList | None = None

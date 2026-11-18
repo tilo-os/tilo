@@ -231,24 +231,6 @@ async fn renames_keep_the_record_in_both_directions() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_legacy_format_file_is_imported_as_a_document_and_exported_again() {
-    let fx = Fixture::new().await;
-    let mut folder = fx.folder();
-    std::fs::write(fx.local("readme.md"), "# Plan\n\nShip it.\n").unwrap();
-    folder.reconcile().unwrap();
-
-    assert!(fx.fs.document_at(Path::new("readme.md")));
-    let exported = String::from_utf8(fx.remote("readme.md").unwrap()).unwrap();
-    assert!(exported.contains("Ship it."), "{exported}");
-
-    fx.write_remote("readme.md", b"# Plan\n\nShip it today.\n");
-    assert_eq!(folder.reconcile().unwrap(), pass(0, 1, 0, 0));
-    let local = std::fs::read_to_string(fx.local("readme.md")).unwrap();
-    assert!(local.contains("Ship it today."), "{local}");
-    assert_eq!(folder.reconcile().unwrap(), Pass::default());
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn a_change_made_while_stopped_is_found_after_a_restart() {
     let fx = Fixture::new().await;
     std::fs::write(fx.local_parent_ready("a.txt"), b"before").unwrap();

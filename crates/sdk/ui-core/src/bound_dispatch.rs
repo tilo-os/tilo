@@ -28,7 +28,7 @@ pub(crate) use deferred_intent::{DeferredIntent, PreparedActionIntent};
 
 use crate::permissions::{MemberId, PermissionContext, SharedPermissions};
 use crate::published::SharedResource;
-use crate::resource::{DocumentCheckout, ResourceOpenError, ResourceStore};
+use crate::resource::{DocumentCheckout, ResourceOpenError, ResourceSaveStatus, ResourceStore};
 use crate::wake::{WakeHandle, WakeScopeGuard};
 use crate::widget::Widget;
 use automerge::{AutoCommit, ChangeHash, ObjId, ROOT, transaction::Transactable};
@@ -2518,7 +2518,7 @@ pub fn minted_items(
 /// `value` beside what the write made: the ids it minted, and per item its
 /// id and the address it is published under (`made`). A create thus answers
 /// what it made on every surface, and a bulk of them answers each.
-fn with_made(
+pub fn with_made(
     value: Option<serde_json::Value>,
     minted: &[String],
     items: &[(String, String)],
@@ -3590,9 +3590,12 @@ pub(crate) fn service_retained_owner_model(
             // Original status projection follows the canonical loan, including
             // refusal. No application callback runs under a record-store loan.
             let projected = current.enter().and_then(|_entry| {
+                let handle = current.lifetime.clone();
+                let wake: durable_store::ReadyWake =
+                    std::sync::Arc::new(move || handle.wake_save_progress());
+                let parts = current.chain_parts();
                 current
-                    .records
-                    .save_status(&current.checkout.id)
+                    .sampled_save_status(&parts, &wake)
                     .map_err(BoundDispatchError::Record)
                     .map(|status| owner.resource_save_status(status))
             });
@@ -3632,17 +3635,13 @@ pub(crate) fn service_owner_save_progress(
                      _: &tilo_actions::ActionRegistry| {
         if current.same_component(captured) {
             result = Some(current.enter().and_then(|_entry| {
+                let handle = current.lifetime.clone();
+                let wake: durable_store::ReadyWake =
+                    std::sync::Arc::new(move || handle.wake_save_progress());
+                let parts = current.chain_parts();
                 let status = current
-                    .records
-                    .save_status(&current.checkout.id)
+                    .sampled_save_status(&parts, &wake)
                     .map_err(BoundDispatchError::Record)?;
-                if status == crate::resource::ResourceSaveStatus::Saving {
-                    let wake = current.lifetime.clone();
-                    current.records.wake_on_save_progress(
-                        &current.checkout.id,
-                        std::sync::Arc::new(move || wake.wake_save_progress()),
-                    );
-                }
                 let bar = crate::window_toolbar::revision();
                 owner.resource_save_status(status);
                 Ok(crate::window_toolbar::revision() != bar
@@ -4514,6 +4513,56 @@ impl CallbackBinding {
     /// The search this component asked for, once.
     pub(crate) fn take_search_request(&self) -> Option<crate::search::SearchRequest> {
         self.search_requests.borrow_mut().pop_front()
+    }
+
+    /// The chain parts this window keeps beside its own document (a
+    /// notebook's notes): saved as the document is.
+    pub(crate) fn chain_parts(&self) -> Vec<DocumentCheckout> {
+        let held = &self.records;
+        held.open_resources()
+            .into_iter()
+            .filter(|part| part.id.chain_part().is_some())
+            .collect()
+    }
+
+    /// The durability the window shows: its own document's and `parts`', the
+    /// worse of them, since a window whose part is not stored has unsaved
+    /// work whoever writes it. Arms `wake` for each one still being written.
+    ///
+    /// # Errors
+    /// The window's own document cannot be sampled now.
+    pub(crate) fn sampled_save_status(
+        &self,
+        parts: &[DocumentCheckout],
+        wake: &durable_store::ReadyWake,
+    ) -> Result<ResourceSaveStatus, ResourceOpenError> {
+        let held = &self.records;
+        let arm = |id| {
+            held.wake_on_save_progress(id, std::sync::Arc::clone(wake));
+        };
+        let mut status = held.save_status(&self.checkout.id)?;
+        if status == ResourceSaveStatus::Saving {
+            arm(&self.checkout.id);
+            status = held.save_status(&self.checkout.id)?;
+        }
+        for part in parts {
+            if matches!(status, ResourceSaveStatus::Failed(_)) {
+                break;
+            }
+            match held.save_status(&part.id) {
+                Ok(failed @ ResourceSaveStatus::Failed(_)) => status = failed,
+                Ok(ResourceSaveStatus::Saving) => {
+                    arm(&part.id);
+                    if held.save_status(&part.id).ok() == Some(ResourceSaveStatus::Saving)
+                        && status == ResourceSaveStatus::Saved
+                    {
+                        status = ResourceSaveStatus::Saving;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(status)
     }
 
     pub(crate) fn broker_route(&self) -> Option<crate::collaboration::RouteSpec> {

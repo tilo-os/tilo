@@ -794,7 +794,7 @@ impl BluetoothModel {
         control: C,
         effect: impl ui::tilo_resource::Binds<SettingsEffect, I>,
     ) -> C {
-        let resource = device_live_row(d, self.pairing.as_deref()).into_resource();
+        let resource = device_live_row(d, self.pairing.as_deref());
         crate::on_row::bind(dispatcher, &resource, control, effect)
     }
 

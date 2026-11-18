@@ -6,7 +6,7 @@
 //! for the person; and an action that asks first goes to the person.
 use super::*;
 use serde_json::{Value, json};
-use tilo_mcp::{McpServer, Surface};
+use tilo_mcp::McpServer;
 use tilo_session_client::Outbox;
 use tilo_session_client::remote::SessionActions;
 
@@ -121,7 +121,6 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
         WORKSPACE.into(),
         person.clone(),
     )
-    .with_surface(Surface::Agent)
     .with_agent_session("session-3");
 
     // Terminal: what it lists, it runs, as listed; a session first, then
@@ -372,10 +371,12 @@ fn agent_groups(changes: &[([u8; 32], Vec<u8>)]) -> Vec<Option<tilo_actions::Wor
     for (_, bytes) in changes {
         let _ = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes);
     }
+    // Read as History reads them: a change that continues the one before it
+    // carries the entry it continues.
+    let mut entries = tilo_actions::EntryReader::default();
     doc.get_changes(&[])
         .iter()
-        .filter_map(|change| change.message())
-        .filter_map(tilo_actions::ActionContext::from_change_message)
+        .filter_map(|change| entries.read(change.actor_id(), change.message()))
         .filter(|context| {
             context
                 .invoker
@@ -418,7 +419,6 @@ async fn a_persons_own_agent_starts_a_stopped_app_writes_and_reads_as_one_run() 
         WORKSPACE.into(),
         person,
     )
-    .with_surface(Surface::Agent)
     .with_agent_session("session-7");
 
     // Nobody started Notes: the listing says how to, and that works.
@@ -577,7 +577,6 @@ fn agent_runs(
     runs.iter()
         .map(|run| {
             McpServer::new(session.clone(), WORKSPACE.into(), person.to_owned())
-                .with_surface(Surface::Agent)
                 .with_agent_session(*run)
         })
         .collect()

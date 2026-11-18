@@ -425,8 +425,10 @@ impl<'a> Caller<'a> {
 
     async fn handle(self, operation: &Operation) -> Result<Answer, ApiError> {
         match operation.id {
-            "getAccount" | "listWorkspaces" | "createWorkspace" | "deleteWorkspace"
-            | "listKeys" | "mintKey" | "revokeKey" => self.account_operation(operation.id).await,
+            "getAccount" | "listWorkspaces" | "createWorkspace" | "renameWorkspace"
+            | "deleteWorkspace" | "listKeys" | "mintKey" | "revokeKey" => {
+                self.account_operation(operation.id).await
+            }
             "branchWorkspace" => self.branch_workspace().await,
             "setUnattended" => self.set_unattended().await,
             "listResources" | "readResource" | "search" | "getLink" | "viewResource" => {
@@ -486,6 +488,13 @@ impl<'a> Caller<'a> {
                 let made = self.account("account/workspaces#create", args).await?;
                 shaped::<answers::Workspace>(made.get("workspace").cloned().unwrap_or_default())
                     .map(Answer::created)
+            }
+            "renameWorkspace" => {
+                let new: answers::WorkspaceName = self.json_body()?;
+                let args = json!({"workspace": self.workspace(), "name": new.name});
+                let renamed = self.account("account/workspaces#rename", args).await?;
+                shaped::<answers::Workspace>(renamed.get("workspace").cloned().unwrap_or_default())
+                    .map(Answer::ok)
             }
             "deleteWorkspace" => {
                 let args = json!({"workspace": self.workspace()});
@@ -706,6 +715,25 @@ impl<'a> Caller<'a> {
                 shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
                     .map(Answer::ok)
             }
+            "setMemberRole" => {
+                let new: answers::MemberRole = self.json_body()?;
+                let person = self.params.get("person").to_owned();
+                let moved = json!({
+                    "path": "workspace/members#role",
+                    "args": {"person": person, "role": new.role},
+                });
+                let listed = self.call("tilo_do", moved).await?;
+                shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
+                    .map(Answer::ok)
+            }
+            "removeMember" => {
+                let person = self.params.get("person").to_owned();
+                let removed =
+                    json!({"path": "workspace/members#remove", "args": {"person": person}});
+                let listed = self.call("tilo_do", removed).await?;
+                shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
+                    .map(Answer::ok)
+            }
             "listWaitList" => {
                 let listed = self
                     .call("tilo_do", json!({"path": "workspace/members#wait-list"}))
@@ -721,25 +749,37 @@ impl<'a> Caller<'a> {
                 shaped::<answers::WaitList>(listed.get("result").cloned().unwrap_or_default())
                     .map(Answer::ok)
             }
-            "listHosts" => {
+            "listServers" => {
                 let listed = self
-                    .call("tilo_do", json!({"path": "workspace/hosts#list"}))
+                    .call("tilo_do", json!({"path": "workspace/servers#list"}))
                     .await?;
-                shaped::<answers::Hosts>(listed.get("result").cloned().unwrap_or_default())
+                shaped::<answers::Servers>(listed.get("result").cloned().unwrap_or_default())
                     .map(Answer::ok)
             }
-            "addHost" => {
-                let new: answers::NewHost = self.json_body()?;
-                let added = json!({"path": "workspace/hosts#add", "args": new});
+            "addServer" => {
+                let new: answers::NewServer = self.json_body()?;
+                let added = json!({"path": "workspace/servers#add", "args": new});
                 let listed = self.call("tilo_do", added).await?;
-                shaped::<answers::Hosts>(listed.get("result").cloned().unwrap_or_default())
+                shaped::<answers::Servers>(listed.get("result").cloned().unwrap_or_default())
                     .map(Answer::ok)
             }
-            "removeHost" => {
-                let host = self.params.get("host").to_owned();
-                let removed = json!({"path": "workspace/hosts#remove", "args": {"host": host}});
+            "removeServer" => {
+                let server = self.params.get("server").to_owned();
+                let removed =
+                    json!({"path": "workspace/servers#remove", "args": {"server": server}});
                 let listed = self.call("tilo_do", removed).await?;
-                shaped::<answers::Hosts>(listed.get("result").cloned().unwrap_or_default())
+                shaped::<answers::Servers>(listed.get("result").cloned().unwrap_or_default())
+                    .map(Answer::ok)
+            }
+            "moveServer" => {
+                let server = self.params.get("server").to_owned();
+                let to: answers::NewServer = self.json_body()?;
+                let moved = json!({
+                    "path": "workspace/servers#move",
+                    "args": {"server": server, "origin": to.origin},
+                });
+                let listed = self.call("tilo_do", moved).await?;
+                shaped::<answers::Servers>(listed.get("result").cloned().unwrap_or_default())
                     .map(Answer::ok)
             }
             "invitePerson" => {
@@ -795,6 +835,20 @@ impl<'a> Caller<'a> {
                 Ok(Answer::created(
                     json!({"content": content, "size": self.body.len()}),
                 ))
+            }
+            "putManyContents" => {
+                let put: answers::PutMany = self.json_body()?;
+                let answered = self
+                    .call("tilo_put_many", json!({"files": put.files}))
+                    .await?;
+                shaped::<answers::PutManyAnswer>(answered).map(Answer::ok)
+            }
+            "haveContents" => {
+                let asked: answers::HaveHashes = self.json_body()?;
+                let answered = self
+                    .call("tilo_put_have", json!({"hashes": asked.hashes}))
+                    .await?;
+                shaped::<answers::HeldHashes>(answered).map(Answer::ok)
             }
             "openUpload" => {
                 let id = self.params.get("upload").to_owned();
@@ -1748,6 +1802,8 @@ mod export_tests {
         answers::Row {
             path: path.to_owned(),
             name: path.to_owned(),
+            id: None,
+            key: None,
             label: path.to_owned(),
             kind: "page".to_owned(),
             has_children,

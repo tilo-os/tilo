@@ -1,6 +1,6 @@
-//! Publishing the app's action surface on its route: validated against the
-//! operations the app handles, refused whole when a control's binding is
-//! stale, and sent as the change since the broker's copy.
+//! Publishing the app's action surface on its route, sent as the change
+//! since the broker's copy. What it holds was validated as it was collected
+//! (`ensure_resource_cache`, bound components' contracts).
 
 use super::{App, ControlBindingStatus};
 use crate::collaboration::CollabRequest;
@@ -8,7 +8,7 @@ use crate::collaboration::CollabRequest;
 impl App {
     /// Whether the route now carries this app's current offer: its surface
     /// went out (or was already the host's copy) after the route's history
-    /// was applied, or the app withdrew an offer it may not make.
+    /// was applied.
     pub(super) fn publish_action_surface_on_route(&mut self) -> bool {
         let _background = crate::local_document_action::suspend();
         #[cfg(test)]
@@ -47,96 +47,28 @@ impl App {
             .manager
             .publish_action_directory(publication_app_id.clone());
         let resources = self.publication_resources();
-        // Use this exact snapshot for coverage as well as publication. That
-        // prevents recursive/repeated resource collection and makes the audit
-        // correspond to the catalogue about to cross the wire.
-        let binding_coverage = self.control_binding_coverage_for(
+        // The surface is read from the same tree as the controls, so every
+        // control's action is on it. One that is not is a bug in how the
+        // declarations follow the tree: it is reported, and the rest of the
+        // surface still goes out.
+        for entry in self.control_binding_coverage_for(
             &self.collect_resources(),
             crate::widget::controls::action_control_bindings(self.root_widget.as_ref()),
-        );
-        if binding_coverage
-            .iter()
-            .any(|entry| entry.status == ControlBindingStatus::StaleAddress)
-        {
-            self.actions.action_directory_snapshot = None;
-            self.actions.action_directory_stamp = None;
-            self.actions.action_directory_cursors.clear();
-            self.actions.action_directory_retired = None;
-            for entry in binding_coverage
-                .iter()
-                .filter(|entry| entry.status == ControlBindingStatus::StaleAddress)
-            {
-                let binding = format!("{:?}", entry.binding.kind);
-                if self.actions.refusals_logged.first(&(
+        ) {
+            let binding = format!("{:?}", entry.binding.kind);
+            if entry.status == ControlBindingStatus::StaleAddress
+                && self.actions.refusals_logged.first(&(
                     "stale",
                     &entry.binding.control_id,
                     &binding,
-                )) {
-                    tracing::error!(
-                        control = %entry.binding.control_id,
-                        %binding,
-                        "refusing to publish a surface with a stale control action binding"
-                    );
-                }
-            }
-            if self
-                .actions
-                .last_published_actions
-                .as_ref()
-                .is_some_and(|actions| !actions.is_empty())
+                ))
             {
-                return self.withdraw_action_surface();
+                tracing::error!(
+                    control = %entry.binding.control_id,
+                    %binding,
+                    "a control's action is missing from the surface it publishes"
+                );
             }
-            return true;
-        }
-        let mut operation_handlers = crate::widget::resource_operation_handlers(&*self.root_widget);
-        operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
-        #[cfg(feature = "native")]
-        if self.accessibility.zoom.in_window() {
-            operation_handlers.insert(crate::host_chrome::zoom::ZOOM_OPERATION.to_string());
-        }
-        // Bound components have already been validated against their own registries
-        // by publication_resources. Only legacy resources use the host registry.
-        let unbound_resources = resources
-            .iter()
-            .filter(|resource| {
-                !resource
-                    .id
-                    .as_str()
-                    .starts_with(crate::bound_dispatch::PUBLICATION_PREFIX)
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        let violations = tilo_actions::validate_surface(
-            &unbound_resources,
-            &self.actions.action_registry,
-            &operation_handlers,
-        );
-        if !violations.is_empty() {
-            for violation in &violations {
-                if self.actions.refusals_logged.first(&(
-                    "surface",
-                    &violation.address,
-                    &violation.reason,
-                )) {
-                    tracing::error!(
-                        address = %violation.address,
-                        reason = %violation.reason,
-                        "refusing to publish an invalid resource/action surface"
-                    );
-                }
-            }
-            // Withdraw anything previously published. A stale, apparently
-            // valid catalogue is more dangerous than an empty one.
-            if self
-                .actions
-                .last_published_actions
-                .as_ref()
-                .is_none_or(Vec::is_empty)
-            {
-                return true;
-            }
-            return self.withdraw_action_surface();
         }
         let descriptors = tilo_actions::api::survey(&resources);
         self.capture_action_directory_snapshot(&resources, &descriptors);

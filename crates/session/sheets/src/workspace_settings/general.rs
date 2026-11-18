@@ -38,6 +38,30 @@ pub struct Device {
     pub shown: bool,
 }
 
+/// The servers keeping the workspace, for the people who may choose them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Servers {
+    pub group: Group,
+    /// What the site field is called for assistive tools.
+    pub origin_label: String,
+    pub add_label: String,
+    pub remove_label: String,
+    /// What marks the server the page is connected to, which is let go
+    /// from another one.
+    pub here_label: String,
+    pub rows: Vec<Server>,
+}
+
+/// One server keeping the workspace.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Server {
+    /// The device key the row is asked for by, and what removing it names.
+    pub key: String,
+    pub label: String,
+    /// Whether this is the server the page is connected to.
+    pub here: bool,
+}
+
 /// Everything the General tab shows, in the person's words.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct General {
@@ -56,6 +80,9 @@ pub struct General {
     pub stats: Vec<(String, String)>,
     pub devices: Group,
     pub device_rows: Vec<Device>,
+    /// The servers keeping the workspace: shown only to the people who may
+    /// choose them.
+    pub servers: Option<Servers>,
     pub move_labels: [String; 2],
     pub move_enabled: [bool; 2],
     /// The row that takes the workspace off this device.
@@ -79,19 +106,26 @@ pub struct General {
 /// The General tab of `settings`.
 pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
     let general = &settings.general;
-    let mut identity = vec![name_field(general, parts)];
-    if let Some(note) = &general.rename_note {
-        identity.push(caption(note));
+    // A section with nothing to say is not drawn: a page shows only the
+    // servers, and a person who was lent no part of one sees the rest.
+    let mut groups: Vec<Element> = Vec::new();
+    if !general.identity.title.is_empty() {
+        let mut identity = vec![name_field(general, parts)];
+        if let Some(note) = &general.rename_note {
+            identity.push(caption(note));
+        }
+        groups.push(described(&general.identity, identity));
     }
-    let invite = button(parts, "ws-general-invite", &general.invite_label, || {
-        WorkspaceSettingsEffect::Invite
-    })
-    .role(ButtonRole::Primary)
-    .with_enabled(general.can_invite);
-    let mut groups = vec![
-        described(&general.identity, identity),
-        described(&general.invite, vec![buttons(vec![invite])]),
-        Box::new(Section::titled(
+    if !general.invite.title.is_empty() {
+        let invite = button(parts, "ws-general-invite", &general.invite_label, || {
+            WorkspaceSettingsEffect::Invite
+        })
+        .role(ButtonRole::Primary)
+        .with_enabled(general.can_invite);
+        groups.push(described(&general.invite, vec![buttons(vec![invite])]));
+    }
+    if !general.glance_title.is_empty() {
+        groups.push(Box::new(Section::titled(
             general.glance_title.clone(),
             vec![Box::new(
                 Column::new()
@@ -108,14 +142,89 @@ pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
                             .collect(),
                     ))),
             )],
-        )),
-    ];
-    groups.push(devices(general, parts));
+        )));
+    }
+    if !general.devices.title.is_empty() {
+        groups.push(devices(general, parts));
+    }
+    if let Some(servers) = &general.servers {
+        groups.push(servers_section(servers, parts));
+    }
     // Leaving stands apart, last and under a rule, where nothing else is
     // reached for on the way to it.
-    let mut leaving: Vec<Element> = vec![
-        Box::new(Divider::horizontal()),
-        Box::new(
+    if !general.leave.title.is_empty() || general.delete.is_some() {
+        groups.push(leaving(general, parts));
+    }
+    Box::new(
+        groups.into_iter().fold(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_rhythm(Rhythm::Section),
+            Column::push,
+        ),
+    )
+}
+
+/// The servers keeping the workspace: each named, the one it was made on
+/// marked, and a site to have another keep it as well or let one go.
+fn servers_section(servers: &Servers, parts: &Parts) -> Element {
+    let mut items: Vec<Element> = vec![caption(&servers.group.description)];
+    for server in &servers.rows {
+        let trailing: Element = if server.here {
+            Box::new(
+                Text::new(&servers.here_label)
+                    .with_role(TextRole::Caption)
+                    .dimmed(),
+            )
+        } else {
+            let key = server.key.clone();
+            Box::new(
+                button(
+                    parts,
+                    &format!("ws-general-server-remove-{}", server.key),
+                    &servers.remove_label,
+                    move || WorkspaceSettingsEffect::RemoveServer {
+                        server: key.clone(),
+                    },
+                )
+                .role(ButtonRole::Destructive),
+            )
+        };
+        items.push(Box::new(
+            ListRow::new(
+                format!("ws-general-server-{}", server.key),
+                server.label.clone(),
+            )
+            .trailing(trailing),
+        ));
+    }
+    let submitting = parts.clone();
+    let field = Box::new(
+        TextInput::from_state(&parts.server_origin)
+            .with_id("ws-general-server-origin")
+            .with_accessible_name(servers.origin_label.clone())
+            .on_submit_view(move |_| submitting.ask_server_origin()),
+    );
+    let asking = parts.clone();
+    let add = Button::new("ws-general-server-add", &servers.add_label)
+        .on_effect(move || asking.ask_server_origin());
+    items.push(Box::new(
+        Row::new()
+            .with_rhythm(Rhythm::Related)
+            .align_start()
+            .push(field)
+            .push(Box::new(add)),
+    ));
+    Box::new(Section::titled(servers.group.title.clone(), items))
+}
+
+/// Taking the workspace off this device, and deleting it where it is this
+/// device's own.
+fn leaving(general: &General, parts: &Parts) -> Element {
+    let mut leaving: Vec<Element> = vec![Box::new(Divider::horizontal())];
+    if !general.leave.title.is_empty() {
+        leaving.push(Box::new(
             ListRow::new("ws-general-leave-row", general.leave.title.clone())
                 .secondary(general.leave.description.clone())
                 .two_line_secondary()
@@ -125,8 +234,8 @@ pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
                     })
                     .with_enabled(general.leavable),
                 )),
-        ),
-    ];
+        ));
+    }
     // A control the person may not press says why, beside itself.
     if let Some(note) = &general.leave_note {
         leaving.push(caption(note));
@@ -148,16 +257,7 @@ pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
             leaving.push(caption(note));
         }
     }
-    groups.push(Box::new(Section::new(leaving)));
-    Box::new(
-        groups.into_iter().fold(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .with_rhythm(Rhythm::Section),
-            Column::push,
-        ),
-    )
+    Box::new(Section::new(leaving))
 }
 
 /// The devices that show the workspace, each shown or hidden, and, with more
@@ -286,6 +386,29 @@ pub(super) fn sample() -> General {
                 shown: false,
             },
         ],
+        servers: Some(Servers {
+            group: Group::new(
+                "Servers",
+                "A change on one reaches the others, and people can open the \
+                 workspace from any of them.",
+            ),
+            origin_label: "Another server's site".to_owned(),
+            add_label: "Add".to_owned(),
+            remove_label: "Remove".to_owned(),
+            here_label: "This server".to_owned(),
+            rows: vec![
+                Server {
+                    key: "3f2b1c00".to_owned(),
+                    label: "3f2b1c00".to_owned(),
+                    here: true,
+                },
+                Server {
+                    key: "8d4e0a11".to_owned(),
+                    label: "8d4e0a11".to_owned(),
+                    here: false,
+                },
+            ],
+        }),
         move_labels: ["Move earlier".to_owned(), "Move later".to_owned()],
         move_enabled: [false, true],
         leave: Group::new(
@@ -324,6 +447,8 @@ pub(super) fn sample_viewer() -> General {
         rename_note: Some("Only admins can rename the workspace.".to_owned()),
         invite: Group::new("Invite people", "Only admins can invite people."),
         can_invite: false,
+        // Choosing the servers keeping the workspace is its owners' alone.
+        servers: None,
         delete: None,
         ..sample()
     }

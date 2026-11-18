@@ -437,7 +437,7 @@ pub enum NativeConnection {
     Launch,
     /// A window the shell opened in the running process, on the connection
     /// its request attached, if it attached one.
-    Window(Option<runtime_portal::windows::Descriptor>),
+    Window(Option<runtime_portal::process_link::Descriptor>),
 }
 
 /// Host-local original contributor ownership a document change carries to the

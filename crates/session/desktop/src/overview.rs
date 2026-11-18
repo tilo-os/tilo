@@ -106,6 +106,15 @@ pub struct WorkspacePerson {
     pub is_you: bool,
 }
 
+/// A person the overview names, as their chip shows them: the id their face takes its colour
+/// from, and what the workspace calls them. A person the workspace has not named reads as a
+/// guest, never as their key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShownPerson {
+    pub id: UserId,
+    pub name: String,
+}
+
 /// A capability naming a *resource* — a path, document, device — held by a person. Workspace
 /// membership is [`WorkspaceCard::people`] instead, so "shared one file with Bob" can't collapse
 /// into "Bob is a member".
@@ -113,7 +122,8 @@ pub struct WorkspacePerson {
 pub struct WorkspaceShare {
     /// In `workspace_settings::scope_label` 's own words, so a revoke there is recognisable here.
     pub what: String,
-    pub with: Vec<String>,
+    /// Who holds it, each as their chip shows them.
+    pub with: Vec<ShownPerson>,
     /// Whether any holder may write, not just read.
     pub writable: bool,
 }
@@ -230,11 +240,23 @@ impl WorkspaceCard {
 
 /// Falls back to the actor itself rather than a placeholder — a row labelled "Unknown" tells
 /// the reader nothing, while the raw subject is both true and the value a revoke would name.
+/// What `ws` calls `id`: the member's own name, or a guest's label where the workspace has not
+/// named them. Never the id itself: nobody is shown their key.
 fn display_name(id: &UserId, ws: &Workspace, _tree: &Layout) -> String {
     ws.members
         .iter()
         .find(|member| member.id.person_id() == Some(id.as_str()))
-        .map_or_else(|| id.clone(), |member| member.name.clone())
+        .map(|member| member.name.trim().to_owned())
+        .filter(|name| ui::presence::shown_name(name).is_some())
+        .unwrap_or_else(ui::presence::guest_label)
+}
+
+/// `holder` as a share row shows them: their face's id and the name they go by.
+fn shown_person(holder: &str, ws: &Workspace, tree: &Layout) -> ShownPerson {
+    ShownPerson {
+        id: holder.to_owned(),
+        name: display_name(&holder.to_owned(), ws, tree),
+    }
 }
 
 /// Everyone who may be in `ws` at unix time `now` , and whether they are here now.
@@ -284,12 +306,12 @@ pub fn workspace_shares(
     now: u64,
 ) -> Vec<WorkspaceShare> {
     let mut out: Vec<WorkspaceShare> = Vec::new();
-    let mut share = |what: String, holder: String, writable: bool| match out
+    let mut share = |what: String, holder: ShownPerson, writable: bool| match out
         .iter_mut()
         .find(|s| s.what == what)
     {
         Some(existing) => {
-            if !existing.with.contains(&holder) {
+            if !existing.with.iter().any(|with| with.id == holder.id) {
                 existing.with.push(holder);
             }
             existing.writable |= writable;
@@ -317,7 +339,7 @@ pub fn workspace_shares(
         };
         share(
             host.node_label(&grant.node),
-            display_name(&holder.to_owned(), ws, tree),
+            shown_person(holder, ws, tree),
             grant
                 .kinds
                 .contains(tilo_action_policy::ActionKind::Undoable),
@@ -343,7 +365,7 @@ pub fn workspace_shares(
         };
         share(
             what,
-            display_name(&holder.to_owned(), ws, tree),
+            shown_person(holder, ws, tree),
             cap.access == Access::Write,
         );
     }
@@ -714,10 +736,55 @@ mod workspace_tests {
             // …and the file shows up as exactly one share, named the way the permissions pane names
             // it.
             assert_eq!(card.shares.len(), 1);
-            assert_eq!(card.shares[0].with, vec!["ada".to_string()]);
+            assert_eq!(card.shares[0].with.len(), 1);
+            assert_eq!(card.shares[0].with[0].id, "ada");
+            assert_eq!(
+                card.shares[0].with[0].name, "Guest",
+                "a person the workspace has not named reads as a guest, never their key"
+            );
             assert_eq!(
                 workspace_shares_label(card).as_deref(),
                 Some("1 item shared")
+            );
+        }
+
+        fn a_share_shows_a_person_never_a_key() {
+            // A key nobody has named yet: the holder is a guest with a face of their own, and the
+            // key only picks that face's colour.
+            let key = "3e9df58014089bec7ec7cc9a55c4f0d9a1b2c3d4e5f60718293a4b5c6d7e8f90";
+            let mut w = ws("Design");
+            w.sandbox.push(CapOverride::grant(
+                Grantee::person(key),
+                Scope::FsPath("/var/workspace/brief".to_string()),
+                Access::Write,
+            ));
+            // A member the workspace named reads by their name.
+            w.admit("bob", collab_types::Role::Editor);
+            w.member_here(tilo_desktop_model::Member::named(
+                collab_types::MemberId::person("bob"),
+                "Bob",
+            ));
+            w.sandbox.push(CapOverride::grant(
+                Grantee::person("bob"),
+                Scope::FsPath("/var/workspace/brief".to_string()),
+                Access::Write,
+            ));
+            let tree = tree_with(vec![w]);
+            let card = &workspace_cards(&tree)[0];
+            let share = &card.shares[0];
+            assert_eq!(share.with.len(), 2);
+            let named: Vec<&str> = share.with.iter().map(|with| with.name.as_str()).collect();
+            assert!(
+                named.contains(&"Bob"),
+                "a member reads by the name the workspace gave them: {named:?}"
+            );
+            assert!(
+                !named.iter().any(|name| name.contains("3e9df5")),
+                "a person nobody named is a guest, never their key: {named:?}"
+            );
+            assert!(
+                share.with.iter().any(|with| with.id == key),
+                "their face still takes their own colour from who they are"
             );
         }
 
@@ -787,12 +854,17 @@ mod workspace_tests {
             }
             let tree = tree_with(vec![w]);
             let card = &workspace_cards(&tree)[0];
-            assert_eq!(workspace_access_label(card), "Shared with ada and 3 others");
+            assert_eq!(
+                workspace_access_label(card),
+                "Shared with Guest and 3 others",
+                "a member nobody named is a guest, never their key"
+            );
         }
 
         a_workspace_only_you_own_reads_as_private();
         a_member_makes_the_workspace_read_as_shared_with_them();
         a_file_grant_is_a_share_and_not_a_membership();
+        a_share_shows_a_person_never_a_key();
         two_grants_on_one_path_are_one_share_with_two_holders();
         write_grants_are_marked_writable();
         expired_grants_neither_admit_members_nor_count_as_shares();

@@ -5,12 +5,6 @@
 # of. A use of Tilo's own concept never goes here: rename it.
 
 [[allow]]
-reason = "The identity crate's own name for the material a device signs a join with, and the peer-state owner API's names for where a device's own copy of a workspace is reached."
-words = ["host"]
-identifiers = ["HostIdentity", "own_host_hint_here"]
-paths = ["crates/collab/tilo-peer-state/tests/adhoc_group.rs"]
-
-[[allow]]
 reason = "The hosted-VM service's load of the machine running its VMs, which the glossary keeps as host."
 words = ["host"]
 identifiers = ["HostLoad"]
@@ -143,9 +137,10 @@ words = ["custody"]
 paths = [
     "crates/runtime/runtime-collab/src/lib.rs",
     "crates/runtime/runtime-collab/src/local_document_action_transport_tests.rs",
-    "crates/collab/tilo-action-broker/src/local_document_action.rs",
+    "crates/server/tilo-workspace-service/src/apps/local_document_action.rs",
     "crates/sdk/ui-core/src/app/local_action_persistence.rs",
     "crates/sdk/ui-core/src/app/local_action_persistence_tests.rs",
+    "crates/sdk/ui-core/src/local_document_action.rs",
 ]
 
 [[allow]]
@@ -153,6 +148,7 @@ reason = "An iCalendar or WhatsApp group participant."
 words = ["participant"]
 paths = [
     "apps/calendar/src/ics.rs",
+    "apps/calendar/src/ics/tests.rs",
     "apps/calendar/src/model.rs",
     "apps/calendar/src/app.rs",
     "crates/system/messaging-protocol/src/supervisor/whatsapp/*",
@@ -377,6 +373,11 @@ words = ["run"]
 paths = ["tools/integrate.sh", "tools/ci/pre_push_lint.py", "tools/ci/check-changed-rustfmt.sh", "tools/tests/test_pre_push_lint.py", "tools/tests/test_changed_rustfmt.py"]
 
 [[allow]]
+reason = "t's own key for the commands a check starts, and the `run` subcommands of cargo and nextest it names."
+words = ["run"]
+paths = ["t.toml"]
+
+[[allow]]
 reason = "The system's directory /run/user/<uid>, where the session's Pulse server listens: the private audio graph of a Windows program tunnels to it."
 words = ["run"]
 paths = ["crates/packaging/launcher/src/audio_graph.rs"]
@@ -424,12 +425,26 @@ paths = [
 reason = "The module an action's edited-field constant is declared in."
 words = ["run"]
 identifiers = ["run"]
-paths = ["crates/collab/tilo-action-broker/src/collab_app_broker/execution_activity.rs"]
+paths = ["crates/server/tilo-workspace-service/src/apps/collab_app_broker/execution_activity.rs"]
 
 [[allow]]
 reason = "CSS's own property and keyword names (white-space, space-between) in the styles the HTML presenter writes."
 words = ["space"]
 paths = ["crates/browser/tilo-browser-runtime/web/view-present.mjs"]
+
+[[allow]]
+reason = "The standard library's blocking hand-off between threads."
+words = ["channel"]
+identifiers = ["sync_channel"]
+
+[[allow]]
+reason = "A file's name: `./host.mjs` is the module that puts the wasm runtime in a page, and these two files name it in their imports."
+words = ["host"]
+identifiers = ["host"]
+paths = [
+    "crates/browser/tilo-browser-runtime/web/entry-page.mjs",
+    "crates/browser/tilo-browser-runtime/web/entry-page.test.mjs",
+]
 
 [[allow]]
 reason = "Plain English 'long-standing': an old problem, conjecture or surface the sample articles and a test's note name."
@@ -444,6 +459,42 @@ paths = [
 reason = "A photo taken standing is a portrait: plain English, and the gallery's tall photos say it."
 words = ["standing"]
 paths = ["apps/tl/gallery/locales/en-US.ftl", "apps/tl/gallery/media.tl"]
+
+[[allow]]
+reason = "Tokio's oneshot channel: the pipe between the task that sends a call and the task that answers it."
+words = ["channel"]
+paths = ["crates/runtime/tilo-mcp/src/devices.rs"]
+
+[[allow]]
+reason = "The helper that drives a test phase's async body on a current-thread runtime."
+words = ["run"]
+paths = ["crates/runtime/tilo-mcp/src/mcp_put_tests.rs"]
+
+[[allow]]
+reason = "tokio's LocalSet method that drives a future to completion."
+words = ["run"]
+identifiers = ["run_until"]
+
+[[allow]]
+reason = "The MCP bridge's error variant for what the workspace answered; the test names it to build that answer."
+words = ["host"]
+identifiers = ["Host"]
+paths = ["crates/runtime/tilo-mcp/src/mcp_serve_tests.rs"]
+
+[[allow]]
+reason = "A replica test drives the platform's Host API: `migrate` is only on Host, and the tests' own field for it keeps that name while the API is being renamed."
+words = ["host"]
+paths = ["crates/platform/tilolang-tilo/tests/migrations.rs"]
+identifiers = ["host"]
+
+[[allow]]
+reason = "The existing wire's name for the document a change or a place is in (SessionAction, notice::Place): these files read it and pass it on, and renaming it is a wire change of its own."
+words = ["record"]
+identifiers = ["record"]
+paths = [
+    "crates/session/desktop/src/here.rs",
+    "crates/browser/tilo-browser-runtime/src/browser/agent_notices.rs",
+]
 
 [[allow]]
 reason = "The launcher's `--dry-run`, the common command-line name for planning a launch without making it, which a test hands the launcher."

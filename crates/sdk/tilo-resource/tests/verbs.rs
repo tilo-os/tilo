@@ -368,14 +368,13 @@ tilo_test_env::scenario! {
             ))))
             .unwrap();
         shelf.apply(Shelf::RESTORE.with(id)).unwrap();
-        // A reference to no card of the collection says so, and says which
-        // there are, rather than reporting a card that went away.
+        // A reference to no card of the collection is the verb's to refuse, in
+        // its own words, rather than reporting a card that went away.
         let why = shelf
             .apply(Shelf::ARCHIVE_CARD.with(Id::from_raw("Milk")))
             .expect_err("no card is named Milk")
             .to_string();
-        assert!(why.contains("no card named Milk"), "{why}");
-        assert!(why.contains("Tea"), "what there is follows: {why}");
+        assert_eq!(why, "no such card");
     }
 
     phase an_id_that_names_no_item_is_handed_to_the_verb_as_written;
@@ -396,16 +395,15 @@ tilo_test_env::scenario! {
             .map(|note| note.place.clone())
             .collect();
         assert_eq!(places, ["lobby", "kitchen"]);
-        // A note is still named by what it says, as any item is, and one
-        // that is not there is refused with the notes there are.
+        // A note is still named by what it says, as any item is, and one that
+        // is not there is the verb's to refuse, in its own words.
         wall.apply(Wall::TAKE_DOWN.with(Id::from_raw("Mind the step")))
             .unwrap();
         let why = wall
             .apply(Wall::TAKE_DOWN.with(Id::from_raw("Wet paint")))
             .expect_err("no note says so")
             .to_string();
-        assert!(why.contains("no note named Wet paint"), "{why}");
-        assert!(why.contains("kitchen"), "what there is follows: {why}");
+        assert_eq!(why, "no such note");
     }
 
     phase a_verb_with_an_outbox_reaches_outside;

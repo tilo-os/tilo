@@ -67,26 +67,29 @@ and forwards each call to the host that serves that workspace best right now, so
 through any of our API servers and through yours. When only hosts that hold a workspace's encrypted data
 are online, none that can read it, the call is refused in plain words rather than answered.
 
-## One workspace on more than one host
+## One workspace on more than one server
 
-A workspace you made on one host can be held by another as well: make it on your own host and have tilo.sh
+A workspace you made on one server can be kept by another as well: make it on your own server and have tilo.sh
 keep it too, say. Both keep the whole workspace, a change on either reaches the other, and you and its
 other members reach it at either, also while the first one is off.
 
 ```sh
-tilo workspace hosts add https://tilo.sh -w Tilo      # tilo.sh holds it as well
-tilo workspace hosts ls -w Tilo                       # the hosts holding it, the one it was made on first
-tilo workspace hosts remove https://tilo.sh -w Tilo   # tilo.sh lets it go
+tilo workspace servers add https://tilo.sh -w Tilo      # tilo.sh keeps it as well
+tilo workspace servers ls -w Tilo                       # the servers keeping it, the one asked first
+tilo workspace servers remove https://tilo.sh -w Tilo   # tilo.sh lets it go
+tilo workspace servers move https://old.example.com https://tilo.sh -w Tilo
+                                                        # tilo.sh keeps it, then the old one lets it go
 ```
 
-The same is `workspace/hosts#add {origin}`, `#list` and `#remove {host}` for an agent over MCP, and
-`POST`, `GET` and `DELETE /v1/workspaces/{workspace}/hosts` over HTTP. Only the workspace's owners
-choose its hosts, from a device of theirs or a key they created reaching all their workspaces.
+The same is `workspace/servers#add {origin}`, `#list`, `#remove {server}` and `#move {server, origin}`
+for an agent over MCP, and `POST`, `GET` and `DELETE /v1/workspaces/{workspace}/servers` and
+`POST /v1/workspaces/{workspace}/servers/{server}/move` over HTTP. Only the workspace's owners choose its
+servers, from a device of theirs or a key they created reaching all their workspaces. A move that the new
+server refuses leaves the workspace where it was.
 
-The other host decides whether it takes the workspace, by its own rules: it keeps one only for an owner
+The other server decides whether it takes the workspace, by its own rules: it keeps one only for an owner
 of it whom it let in (on tilo.sh: you signed in there), and only while that person's workspaces there
-have capacity. Otherwise it refuses, and says why. The host the workspace was made on stays the one that
-decides who is in it; the others follow it.
+have capacity. Otherwise it refuses, and says why.
 
 ## Running your own host
 

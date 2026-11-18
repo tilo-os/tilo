@@ -1183,6 +1183,14 @@ impl<T> Grid<T> {
         })
     }
 
+    /// Whether any cell satisfies `predicate`, by its value alone: no row or column id is made
+    /// to ask.
+    pub fn any(&self, mut predicate: impl FnMut(&T) -> bool) -> bool {
+        self.cells
+            .iter()
+            .any(|(_, cells)| cells.values().any(&mut predicate))
+    }
+
     /// Every non-empty cell: row, column, value.
     pub fn cells(&self) -> impl Iterator<Item = (Id, Id, &T)> {
         self.cells.iter().flat_map(|(row, cells)| {

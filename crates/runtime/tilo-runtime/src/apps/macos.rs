@@ -139,10 +139,11 @@ impl Capture {
     ) -> std::io::Result<Self> {
         use tilo_capture::DeviceKind;
         use tilo_capture::broker::{Policy, Sources, SystemSources};
-        let declared = collab_types::caps::DeviceCap::ALL
+        let declared = [DeviceKind::Camera, DeviceKind::Microphone]
             .into_iter()
-            .filter(|device| launcher::capabilities::declares(manifest, *device))
-            .filter_map(crate::device_grants::capture_device)
+            .filter(|device| {
+                launcher::capabilities::declares(manifest, crate::apps::device_cap(*device))
+            })
             .collect();
         let (app_end, runtime_end) = std::os::unix::net::UnixDatagram::pair()?;
         let exe = std::env::current_exe()?;
@@ -157,10 +158,11 @@ impl Capture {
             }
         };
         let policy: std::sync::Arc<dyn Policy> =
-            std::sync::Arc::new(tilo_capture::grants::GrantPolicy {
-                grants: apps.device_grants()?,
-                workspace: apps.workspace.clone(),
-                app: app.app_id.to_string(),
+            std::sync::Arc::new(tilo_capture::broker::Asking {
+                answers: DeviceAnswers {
+                    grants: apps.device_grants().clone(),
+                    app: app.app_id.to_string(),
+                },
                 declared,
                 consent: move |device: DeviceKind| {
                     let mut helper = std::process::Command::new(&exe);
@@ -178,6 +180,38 @@ impl Capture {
                 }
             })?;
         Ok(Self { app_end })
+    }
+}
+
+/// The person's answers about one app's camera and microphone on this device, kept in their own
+/// store.
+struct DeviceAnswers {
+    grants: tilo_peer_state::DeviceGrants,
+    app: String,
+}
+
+impl tilo_capture::broker::Answers for DeviceAnswers {
+    fn answer(&self, device: tilo_capture::DeviceKind) -> Option<bool> {
+        use tilo_action_policy::Answer;
+        match self
+            .grants
+            .decide(&self.app, crate::apps::device_cap(device), Answer::Allow)
+        {
+            Answer::Allow => Some(true),
+            Answer::Deny => Some(false),
+            Answer::Ask => None,
+        }
+    }
+
+    fn keep(&self, device: tilo_capture::DeviceKind, allowed: bool) -> Result<(), String> {
+        use tilo_action_policy::{Answer, Lifetime};
+        let answer = if allowed { Answer::Allow } else { Answer::Deny };
+        self.grants.answer(
+            &self.app,
+            crate::apps::device_cap(device),
+            answer,
+            Lifetime::UntilRevoked,
+        )
     }
 }
 

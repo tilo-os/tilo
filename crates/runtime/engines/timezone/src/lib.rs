@@ -1,15 +1,35 @@
 //! The IANA time-zone database, as its own library in the runtime bundle
 //! (`libtilo_timezone_engine.so`).
 //!
-//! Like `runtime-dylib` it re-exports what it provides, which records it
+//! Like `runtime-dylib` it exports what it provides, which records it
 //! as provided by this library for the apps' `-C prefer-dynamic` link.
 //! Outside the thin build it is empty.
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
+/// The database's canonical spelling of the zone named `name`, in any letter
+/// case.
 #[cfg(feature = "thin")]
-pub use jiff_tzdb;
+#[must_use]
+pub fn canonical(name: &str) -> Option<&'static str> {
+    jiff_tzdb::get(name).map(|(name, _)| name)
+}
+
+/// Every zone name in the database.
+#[cfg(feature = "thin")]
+pub fn available() -> impl Iterator<Item = &'static str> {
+    jiff_tzdb::available()
+}
+
+/// The zone named `name`, from the database built into Tilo, so every device
+/// resolves a stored wall time the same way, whatever zoneinfo it has.
+#[cfg(feature = "thin")]
+#[must_use]
+pub fn named(name: &str) -> Option<jiff::tz::TimeZone> {
+    let (name, data) = jiff_tzdb::get(name)?;
+    jiff::tz::TimeZone::tzif(name, data).ok()
+}
 
 /// Run the database's own code: look zones up by name and convert fixed
 /// instants through their rules, in and out of daylight saving time and at
@@ -29,9 +49,7 @@ pub fn self_check() -> Result<String, String> {
         ("Australia/Adelaide", 2026, 1, 15, 37_800),
     ];
     for (name, year, month, day, expected) in cases {
-        let (name, data) =
-            jiff_tzdb::get(name).ok_or_else(|| format!("the database does not know {name}"))?;
-        let zone = TimeZone::tzif(name, data).map_err(|error| format!("{name}: {error}"))?;
+        let zone = named(name).ok_or_else(|| format!("the database does not know {name}"))?;
         let instant = date(year, month, day)
             .at(12, 0, 0, 0)
             .to_zoned(TimeZone::UTC)
@@ -46,7 +64,7 @@ pub fn self_check() -> Result<String, String> {
     }
     Ok(format!(
         "{} zones, {} instants converted",
-        jiff_tzdb::available().count(),
+        available().count(),
         cases.len()
     ))
 }

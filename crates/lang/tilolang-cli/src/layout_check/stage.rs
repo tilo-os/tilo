@@ -108,6 +108,10 @@ impl Platform for Packages {
         tilo_app_window::date::shown_text(kind, value)
     }
 
+    fn sentence(&self, kind: &str, value: &str) -> String {
+        tilo_app_window::date::sentence_text(kind, value)
+    }
+
     /// The time of day as the person reads a clock, in the style they chose.
     fn clock(&self, hour: u32, minute: u32) -> String {
         ui::clock::hour_minute(hour, minute)
@@ -747,33 +751,43 @@ impl Staged {
     }
 
     fn settle(&mut self) -> Result<(), String> {
-        // A widget that took a layout switch after its parts were placed asks for the frame that
-        // lays them out again, as a live window draws it.
-        if self.harness.root_widget_mut().is_layout_dirty() {
-            self.harness.relayout();
+        for _ in 0..EXCHANGES {
+            // A widget that took a layout switch after its parts were placed asks for the frame
+            // that lays them out again, as a live window draws it.
+            if self.harness.root_widget_mut().is_layout_dirty() {
+                self.harness.relayout();
+            }
+            if !self.harness.frame_schedule().needs_animation_frame
+                || self.harness.settle_for_capture(SETTLE_BOUND)
+            {
+                return Ok(());
+            }
+            // A live window sends the app what its frames asked for on every frame: a list laid
+            // out where it stands asks for the rows it shows there. Answer it, then settle again.
+            let owing =
+                self.window().is_some_and(|window| window.owes()) || self.instance.pending();
+            if !owing {
+                break;
+            }
+            self.exchange();
         }
-        if self.harness.frame_schedule().needs_animation_frame
-            && !self.harness.settle_for_capture(SETTLE_BOUND)
-        {
-            // A frame a widget asks for is named by the widget; one a motion asks for is named
-            // where the motion was started; and what else the window is owed — a frame at rest, an
-            // image on its way, work whose answer replaces a placeholder — is named, since none of
-            // those is a motion that never ends.
-            let now = ui::time::now();
-            return Err(format!(
-                "the window still moves after {} frames: {:?} asked, {:?} started motions, \
-                 {:?} waiting on an answer, the frame held until {:?}, \
-                 the schedule {:?} with {} images on their way",
-                ui::headless::capture_frames(SETTLE_BOUND),
-                self.harness.frame_requesters(),
-                ui::motion::frames_wanted_by(now),
-                self.harness.pending_visual_work(),
-                self.harness.root_widget().holds_frame_until(now),
-                self.harness.frame_schedule(),
-                ui::image_store::loads_in_flight(),
-            ));
-        }
-        Ok(())
+        // A frame a widget asks for is named by the widget; one a motion asks for is named
+        // where the motion was started; and what else the window is owed — a frame at rest, an
+        // image on its way, work whose answer replaces a placeholder — is named, since none of
+        // those is a motion that never ends.
+        let now = ui::time::now();
+        Err(format!(
+            "the window still moves after {} frames: {:?} asked, {:?} started motions, \
+             {:?} waiting on an answer, the frame held until {:?}, \
+             the schedule {:?} with {} images on their way",
+            ui::headless::capture_frames(SETTLE_BOUND),
+            self.harness.frame_requesters(),
+            ui::motion::frames_wanted_by(now),
+            self.harness.pending_visual_work(),
+            self.harness.root_widget().holds_frame_until(now),
+            self.harness.frame_schedule(),
+            ui::image_store::loads_in_flight(),
+        ))
     }
 
     /// Show `resource` with the view `view` (an id) in the window's detail
@@ -2560,6 +2574,113 @@ mod tests {
                     "{app} at {size:?}: {under} under the notice, where the page's gutter is {gutter}"
                 );
             }
+        }
+    }
+
+    /// The gallery is one window: each group stands in its sidebar, choosing one shows that
+    /// group's page in the content beside it, and the window opens on a page rather than on
+    /// nothing.
+    #[test]
+    fn the_gallery_shows_each_group_from_its_sidebar() {
+        use tilo_render_protocol::patch::Level;
+        use tilolang_tilo::runtime::{UiNode, Value};
+
+        fn find_key(node: &UiNode, place: &str) -> Option<String> {
+            if node.kind == "ui.NavItem" && node.props.get("label") == Some(&Value::text(place)) {
+                return Some(node.key.clone());
+            }
+            node.children
+                .iter()
+                .find_map(|child| find_key(child, place))
+        }
+
+        fn shows(node: &UiNode, kind: &str) -> bool {
+            node.kind == kind || node.children.iter().any(|child| shows(child, kind))
+        }
+
+        tilo_app_window::i18n::ensure();
+        ui::clock::freeze_for_capture();
+        let packages = app_packages("gallery");
+        let (width, height) = (1280, 800);
+        let mut staged = Staged::over(
+            "so.tilo.lang.gallery",
+            &packages,
+            "every family",
+            (width, height),
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the gallery stages");
+        staged
+            .lay_out(
+                (width, height),
+                ui::Theme::light(),
+                ui::interaction::InteractionEnvironment::POINTER,
+                1.0,
+            )
+            .expect("the gallery lays out");
+        // It opens on a page with content: the first group, Basics, rather than an empty one.
+        let tree = staged
+            .instance
+            .view(Level::Root)
+            .expect("the gallery's root view");
+        assert!(
+            shows(tree.borrow().tree(), "ui.Card"),
+            "the window opens on a page: {:#?}",
+            tree.borrow().tree()
+        );
+        for (place, marker) in [
+            ("Basics", "ui.Card"),
+            ("Controls", "ui.NumberInput"),
+            ("Feedback", "ui.Banner"),
+            ("Backlog", "ui.Docked"),
+            ("Release board", "ui.Board"),
+            ("Data", "ui.DataTable"),
+            ("Media", "ui.MediaGrid"),
+            ("Places", "ui.Map"),
+            ("Shell parts", "ui.TabStrip"),
+            ("Charts and views", "ui.Chart"),
+        ] {
+            let key = {
+                let tree = staged
+                    .instance
+                    .view(Level::Root)
+                    .expect("the gallery's root view");
+                let tree = tree.borrow();
+                find_key(tree.tree(), place)
+                    .unwrap_or_else(|| panic!("the sidebar names {place}: {:#?}", tree.tree()))
+            };
+            let view = staged
+                .instance
+                .view(Level::Root)
+                .expect("the gallery's root view");
+            view.borrow()
+                .fire(&key, "select")
+                .unwrap_or_else(|error| panic!("choosing {place}: {error}"));
+            view.borrow_mut()
+                .poll_patches()
+                .expect("chosen place answers");
+            drop(view);
+            staged.exchange();
+            staged
+                .lay_out(
+                    (width, height),
+                    ui::Theme::light(),
+                    ui::interaction::InteractionEnvironment::POINTER,
+                    1.0,
+                )
+                .expect("the chosen page lays out");
+            let tree = staged
+                .instance
+                .view(Level::Root)
+                .expect("the gallery's root view");
+            let tree = tree.borrow();
+            assert!(
+                shows(tree.tree(), marker),
+                "choosing {place} shows its page, with a {marker} on it: {:#?}",
+                tree.tree()
+            );
         }
     }
 }

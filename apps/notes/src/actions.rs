@@ -337,24 +337,18 @@ pub fn keep_image_action(bytes: Vec<u8>) -> Action {
     }))
 }
 
-/// Keep the picture `bytes` with note `page` and show it there by `show`,
-/// the edit of its body naming it: one change, one undo step.
-///
-/// # Errors
-/// Why the window's content store would not keep the picture.
+/// Show the picture `picture` in note `page` by `show`, the edit of its body
+/// naming it: one change, one undo step.
 pub fn show_image(
     page: PageId,
-    bytes: &[u8],
+    picture: Bytes,
     show: impl std::borrow::Borrow<RichTextAction>,
-) -> Result<Action, String> {
-    let store = ui::tilo_resource::content::current()
-        .ok_or("this window keeps no content to keep a picture in")?;
-    let picture = Bytes::keep(&store, bytes).map_err(|error| error.to_string())?;
-    Ok(stamped(PagePartAction::ShowImage(page_part::ShowImage {
+) -> Action {
+    stamped(PagePartAction::ShowImage(page_part::ShowImage {
         page: page_id(page),
         bytes: picture,
         edit: show.borrow().clone(),
-    })))
+    }))
 }
 
 /// Import `markdown` as a new top-level note titled `title` (kept under

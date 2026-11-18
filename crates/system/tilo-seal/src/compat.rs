@@ -217,6 +217,23 @@ pub fn nss_cbc_ciphertext(
     })
 }
 
+/// Encrypt `plaintext` as Linux `OSCrypt` does one value, without its `v10`/`v11` prefix: what
+/// writes a sample browser profile for tests and proofs, never Tilo's own ownership.
+///
+/// # Errors
+/// [`Error::InvalidKey`] never, for a key of the right length.
+pub fn chromium_oscrypt_ciphertext(
+    key: &[u8; CHROMIUM_KEY_LEN],
+    plaintext: &[u8],
+) -> Result<Vec<u8>> {
+    use cbc::cipher::BlockModeEncrypt as _;
+    Ok(
+        cbc::Encryptor::<aes::Aes128>::new_from_slices(key, &CHROMIUM_IV)
+            .map_err(|_| Error::InvalidKey)?
+            .encrypt_padded_vec::<Pkcs7>(plaintext),
+    )
+}
+
 /// Decode the plaintext of an rclone `obscure` password.
 ///
 /// The ciphertext is unauthenticated by design; the caller treats the result

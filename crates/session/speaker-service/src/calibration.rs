@@ -18,11 +18,11 @@ use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use tilo_device_fabric::PersonalFabricAction;
-use tilo_device_fabric::speaker_group::{
+use tilo_network_actor::fabric::DeviceId;
+use tilo_network_actor::fabric::PersonalFabricAction;
+use tilo_network_actor::fabric::speaker_group::{
     EndpointSelector, SpeakerGroup, SpeakerGroupId, SpeakerTrim,
 };
-use tilo_network_actor::fabric::DeviceId;
 
 /// Sweep used for every member: 20 Hz to 20 kHz over three seconds.
 pub const SWEEP_START_HZ: f64 = 20.0; // a frequency, not a pixel length
@@ -30,7 +30,9 @@ pub const SWEEP_END_HZ: f64 = 20_000.0;
 pub const SWEEP_SECONDS: f64 = 3.0; // a duration, not a pixel length
 pub const SWEEP_RATE: u32 = 48_000;
 /// Points of a smoothed response a listening device may send back.
-pub use tilo_device_fabric::speaker_group::{HearingFailure, MAX_RESPONSE_POINTS, SpeakerHearing};
+pub use tilo_network_actor::fabric::speaker_group::{
+    HearingFailure, MAX_RESPONSE_POINTS, SpeakerHearing,
+};
 /// How far ahead a sweep is scheduled: time for the requests to cross the
 /// fabric and for every stream to open.
 const SWEEP_LEAD_NS: i64 = 1_200_000_000;
@@ -351,7 +353,7 @@ pub struct SweepRequest {
 /// the estimate's error bound there, both in nanoseconds.
 #[must_use]
 pub fn schedule_on_peer(
-    clock: &tilo_device_fabric::clock::ClockEstimate,
+    clock: &tilo_network_actor::fabric::clock::ClockEstimate,
     play_at_ns: i64,
 ) -> Option<(i64, i64)> {
     let mapping = clock.local_to_peer(u64::try_from(play_at_ns / 1_000).ok()?)?;
@@ -402,7 +404,7 @@ pub struct TimedMeasurement {
     in_flight: Option<InFlight>,
     /// A sweep waiting for the clocks it is scheduled through.
     waiting: Option<SweepRequest>,
-    clock_syncs: Vec<tilo_device_fabric::clock::FabricClockSync>,
+    clock_syncs: Vec<tilo_network_actor::fabric::clock::FabricClockSync>,
 }
 
 impl TimedMeasurement {
@@ -421,7 +423,7 @@ impl TimedMeasurement {
         Self {
             clock_syncs: peers
                 .into_iter()
-                .map(tilo_device_fabric::clock::hold_fabric_clock_sync)
+                .map(tilo_network_actor::fabric::clock::hold_fabric_clock_sync)
                 .collect(),
             local,
             send,
@@ -474,7 +476,7 @@ impl TimedMeasurement {
     }
 }
 
-fn clock_reason(reason: tilo_device_fabric::clock::ClockSyncFailure) -> String {
+fn clock_reason(reason: tilo_network_actor::fabric::clock::ClockSyncFailure) -> String {
     crate::i18n::t_args(
         "speaker-calibration-reason-clock",
         &[("reason", crate::i18n::t(reason.message_key()).into())],
@@ -482,11 +484,14 @@ fn clock_reason(reason: tilo_device_fabric::clock::ClockSyncFailure) -> String {
 }
 
 impl TimedMeasurement {
-    fn clock_state(&self, device: &DeviceId) -> Option<tilo_device_fabric::clock::ClockSyncState> {
+    fn clock_state(
+        &self,
+        device: &DeviceId,
+    ) -> Option<tilo_network_actor::fabric::clock::ClockSyncState> {
         self.clock_syncs
             .iter()
             .find(|sync| sync.peer() == device)
-            .map(tilo_device_fabric::clock::FabricClockSync::state)
+            .map(tilo_network_actor::fabric::clock::FabricClockSync::state)
     }
 
     /// Start the waiting sweep once the member's clock and every listening
@@ -494,7 +499,7 @@ impl TimedMeasurement {
     /// member whose clock failed fails the sweep with the reason, a
     /// listening device whose clock failed just has no reading.
     fn start_waiting(&mut self) -> Option<Result<(), String>> {
-        use tilo_device_fabric::clock::ClockSyncState;
+        use tilo_network_actor::fabric::clock::ClockSyncState;
         let request = self.waiting.as_ref()?;
         let syncing = std::iter::once(&request.member)
             .chain(request.microphones.iter().map(|(device, _)| device))
@@ -525,7 +530,7 @@ impl TimedMeasurement {
             }
             // Schedule the recording on that device's own clock, through the
             // estimate this device holds of it.
-            let scheduled = tilo_device_fabric::clock::fabric_peer_clock(device)
+            let scheduled = tilo_network_actor::fabric::clock::fabric_peer_clock(device)
                 .and_then(|clock| schedule_on_peer(&clock, play_at));
             let Some((start_ns, error_ns)) = scheduled else {
                 immediate.insert(
@@ -541,11 +546,12 @@ impl TimedMeasurement {
             self.play_locally(request.output, play_at)?;
         } else {
             // The member plays on its own clock, converted the same way.
-            let (start_ns, _) = tilo_device_fabric::clock::fabric_peer_clock(&request.member)
-                .and_then(|clock| schedule_on_peer(&clock, play_at))
-                .ok_or_else(|| {
-                    clock_reason(tilo_device_fabric::clock::ClockSyncFailure::NoReply)
-                })?;
+            let (start_ns, _) =
+                tilo_network_actor::fabric::clock::fabric_peer_clock(&request.member)
+                    .and_then(|clock| schedule_on_peer(&clock, play_at))
+                    .ok_or_else(|| {
+                        clock_reason(tilo_network_actor::fabric::clock::ClockSyncFailure::NoReply)
+                    })?;
             (self.send)(
                 &request.member,
                 PersonalFabricAction::SpeakerSweep {

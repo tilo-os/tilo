@@ -87,6 +87,8 @@ pub(super) enum Refusal {
     Malformed(collab_types::DocumentMutationError),
     /// The action commit its payload carries does not check.
     Uncommitted(collab_types::CommitError),
+    /// Its changes say other than the claims the workspace decided it by.
+    Misclaimed(collab_types::ReceiptRefusal),
 }
 
 impl std::fmt::Display for Refusal {
@@ -99,6 +101,7 @@ impl std::fmt::Display for Refusal {
             Self::Unopened(never) => never.fmt(f),
             Self::Malformed(error) => write!(f, "malformed document frame: {error}"),
             Self::Uncommitted(error) => write!(f, "unreadable action commit: {error}"),
+            Self::Misclaimed(refusal) => refusal.fmt(f),
         }
     }
 }
@@ -130,6 +133,10 @@ pub(super) fn decrypt_document_payload(
             {
                 return Err(refused(Refusal::RetentionMismatch));
             }
+            // The workspace decided the sealed op by its claims, each change
+            // as its invoker: what it opens to must say the same.
+            collab_types::check_opened(envelope, &plaintext)
+                .map_err(|refusal| refused(Refusal::Misclaimed(refusal)))?;
             Ok(Some(plaintext))
         }
         Ok(None) => {

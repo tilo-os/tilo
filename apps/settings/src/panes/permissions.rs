@@ -63,6 +63,12 @@ pub enum PermissionsEffect {
         #[param("The application identity the secret store recorded")]
         app: String,
     },
+    /// Take back an answer the person gave an app about a device of theirs.
+    #[effect(job, idempotent)]
+    RevokeDeviceAnswer {
+        #[param("The answer, as the session publishes it")]
+        resource: String,
+    },
     /// Stop a terminal tab controlling the desktop beyond its workspace.
     #[effect(job)]
     StopDesktopControl {
@@ -83,6 +89,20 @@ pub(crate) fn answer(
         }
         PermissionsEffect::ForgetSecrets { app: id } => {
             secret_command(app, cx, vec!["apps".into(), "forget".into(), id])
+        }
+        PermissionsEffect::RevokeDeviceAnswer { resource } => {
+            let reader = Arc::clone(&area(app).ok_or_else(crate::area::missing)?.reader);
+            Ok(app.job(
+                cx,
+                move || reader.revoke_device_answer(&resource),
+                |app: &SettingsApp, done: Result<(), String>, _| {
+                    area(app)
+                        .ok_or_else(crate::area::missing)?
+                        .reading
+                        .refresh();
+                    done.map(|()| Effected::done())
+                },
+            ))
         }
         PermissionsEffect::StopDesktopControl { grant } => {
             let reader = Arc::clone(&area(app).ok_or_else(crate::area::missing)?.reader);
@@ -151,6 +171,38 @@ trait PermissionsReader: Send + Sync {
     fn desktop_control(&self) -> Vec<TabGrantEntry>;
     fn stop_desktop_control(&self, grant: &str) -> Result<(), String>;
     fn workspace_state(&self) -> Option<String>;
+    /// The answers the person kept about the devices of their machines, as the session publishes
+    /// them; empty when no session publishes them.
+    fn device_answers(&self) -> Vec<DeviceAnswer>;
+    fn revoke_device_answer(&self, resource: &str) -> Result<(), String>;
+}
+
+/// The resource the session publishes its device answers under.
+const PORTAL_RESOURCE: &str = "portal";
+
+/// One answer the person kept about a device of theirs, as the session publishes it.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+struct DeviceAnswer {
+    /// The resource that takes it back.
+    resource: String,
+    app: String,
+    /// The device's capability, as `DeviceCap` names it.
+    cap: String,
+    answer: tilo_action_policy::Answer,
+    lifetime: Lifetime,
+    device_label: String,
+    this_device: bool,
+}
+
+fn device_answers_of(reading: &str) -> Vec<DeviceAnswer> {
+    #[derive(Deserialize)]
+    struct Portal {
+        #[serde(default)]
+        consents: Vec<DeviceAnswer>,
+    }
+    serde_json::from_str::<Portal>(reading)
+        .map(|portal| portal.consents)
+        .unwrap_or_default()
 }
 
 struct SystemPermissions;
@@ -194,16 +246,76 @@ impl PermissionsReader for SystemPermissions {
         crate::device_read::off_ui_thread();
         load_text()
     }
+
+    fn device_answers(&self) -> Vec<DeviceAnswer> {
+        crate::device_read::off_ui_thread();
+        ui::collaboration::SessionResource::open(PORTAL_RESOURCE)
+            .ok()
+            .and_then(|portal| portal.latest())
+            .and_then(Result::ok)
+            .map(|reading| device_answers_of(&reading))
+            .unwrap_or_default()
+    }
+
+    fn revoke_device_answer(&self, resource: &str) -> Result<(), String> {
+        ui::collaboration::SessionResource::invoke_without_watching(
+            resource,
+            "forget",
+            &serde_json::Map::new(),
+        )
+    }
 }
 
 struct SamplePermissions {
     secrets: Mutex<Vec<SecretApp>>,
     desktop_control: Mutex<Vec<TabGrantEntry>>,
+    device_answers: Mutex<Vec<DeviceAnswer>>,
+}
+
+fn sample_answer(
+    app: &str,
+    cap: &str,
+    device: &str,
+    here: bool,
+    lifetime: Lifetime,
+) -> DeviceAnswer {
+    DeviceAnswer {
+        resource: format!("portal:consent:{device}\u{1f}{app}\u{1f}{cap}"),
+        app: app.into(),
+        cap: cap.into(),
+        answer: tilo_action_policy::Answer::Allow,
+        lifetime,
+        device_label: device.into(),
+        this_device: here,
+    }
 }
 
 impl Default for SamplePermissions {
     fn default() -> Self {
         Self {
+            device_answers: Mutex::new(vec![
+                sample_answer(
+                    "so.tilo.recorder",
+                    "camera",
+                    "Laptop",
+                    true,
+                    Lifetime::UntilRevoked,
+                ),
+                sample_answer(
+                    "so.tilo.recorder",
+                    "microphone",
+                    "Laptop",
+                    true,
+                    Lifetime::UntilRevoked,
+                ),
+                sample_answer(
+                    "so.tilo.meet",
+                    "screen",
+                    "Phone",
+                    false,
+                    Lifetime::Until(1_900_000_000_000),
+                ),
+            ]),
             secrets: Mutex::new(vec![
                 SecretApp {
                     id: "binary:/usr/bin/chromium".into(),
@@ -297,6 +409,21 @@ impl PermissionsReader for SamplePermissions {
             .clone()
     }
 
+    fn device_answers(&self) -> Vec<DeviceAnswer> {
+        self.device_answers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn revoke_device_answer(&self, resource: &str) -> Result<(), String> {
+        self.device_answers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|answer| answer.resource != resource);
+        Ok(())
+    }
+
     fn stop_desktop_control(&self, grant: &str) -> Result<(), String> {
         crate::device_read::off_ui_thread();
         let mut tabs = self
@@ -316,18 +443,11 @@ impl PermissionsReader for SamplePermissions {
 
     fn workspace_state(&self) -> Option<String> {
         crate::device_read::off_ui_thread();
-        let caps = [
-            (
-                "so.tilo.terminal",
-                Scope::Device(DeviceCap::DesktopControl),
-                Access::Write,
-            ),
-            (
-                "so.tilo.camera",
-                Scope::Device(DeviceCap::Camera),
-                Access::Read,
-            ),
-        ]
+        let caps = [(
+            "so.tilo.terminal",
+            Scope::Device(DeviceCap::DesktopControl),
+            Access::Write,
+        )]
         .map(|(app, scope, access)| {
             CapOverride::grant(Grantee::person("local"), scope, access).through(app)
         });
@@ -344,6 +464,7 @@ struct PermissionsReading {
     security: DeviceSecurity,
     secrets: Result<Vec<SecretApp>, String>,
     desktop_control: Vec<TabGrantEntry>,
+    device_answers: Vec<DeviceAnswer>,
     workspace_access: Option<Vec<WsGrants>>,
     app_actions: Vec<AppGrants>,
 }
@@ -355,6 +476,7 @@ impl PermissionsReading {
             security: reader.device_security(),
             secrets: reader.secret_apps(),
             desktop_control: reader.desktop_control(),
+            device_answers: reader.device_answers(),
             workspace_access: workspace_access(reader.workspace_state().as_deref()),
             app_actions: consent_views(&settings_store::app_consent::ANSWERS.get()),
         }
@@ -511,6 +633,56 @@ fn secrets_card(cx: &ViewCx<Settings>, apps: &Result<Vec<SecretApp>, String>) ->
         }
     }
     section(&title, rows(body))
+}
+
+/// The answers the person kept about the devices of their machines, each with what takes it back.
+fn device_answers_card(cx: &ViewCx<Settings>, answers: &[DeviceAnswer]) -> SettingsSection {
+    let mut body: Vec<Item> = vec![note(&t("perm-device-answers-intro"))];
+    if answers.is_empty() {
+        body.push(note(&t("perm-device-answers-none")));
+    }
+    for answer in answers {
+        let kind = match answer.cap.as_str() {
+            "camera" => "Camera",
+            "microphone" => "Microphone",
+            "screen" => "Screen sharing",
+            "input" => "Remote control",
+            _ => "",
+        };
+        let what = if kind.is_empty() {
+            answer.cap.clone()
+        } else {
+            kind_shown(kind)
+        };
+        let mut details = vec![if answer.this_device {
+            t("perm-device-answer-here")
+        } else {
+            t_args(
+                "perm-device-answer-on",
+                &[("device", answer.device_label.clone().into())],
+            )
+        }];
+        if answer.answer != tilo_action_policy::Answer::Allow {
+            details.push(t("perm-device-answer-refused"));
+        }
+        details.push(lifetime_shown(answer.lifetime));
+        let revoke = cx.actions().bind_effect_invocation(
+            Button::new(
+                &format!("device-answer-revoke:{}", answer.resource),
+                &t("perm-device-answer-revoke"),
+            ),
+            &SettingsEffect::from(PermissionsEffect::RevokeDeviceAnswer {
+                resource: answer.resource.clone(),
+            }),
+        );
+        body.push(row(Box::new(thing_row(
+            &format!("device-answer:{}", answer.resource),
+            &format!("{} · {what}", answer.app),
+            &details,
+            Some(Box::new(revoke)),
+        ))));
+    }
+    section(&t("perm-device-answers-title"), rows(body))
 }
 
 fn desktop_control_card(cx: &ViewCx<Settings>, tabs: &[TabGrantEntry]) -> SettingsSection {
@@ -685,9 +857,6 @@ struct WsView {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Tint {
     Files,
-    Camera,
-    Microphone,
-    Screen,
     Remote,
     Network,
     AppAction,
@@ -698,9 +867,6 @@ impl Tint {
         use ui::icons::Icon;
         match self {
             Tint::Files => Icon::Folder,
-            Tint::Camera => Icon::Camera,
-            Tint::Microphone => Icon::Mic,
-            Tint::Screen => Icon::ScreenShare,
             Tint::Remote => Icon::MousePointer2,
             Tint::Network => Icon::Globe,
             Tint::AppAction => Icon::AppWindow,
@@ -709,8 +875,8 @@ impl Tint {
 
     fn tone(self) -> StatusTone {
         match self {
-            Tint::Files | Tint::Screen | Tint::AppAction => StatusTone::Info,
-            Tint::Camera | Tint::Microphone | Tint::Remote => StatusTone::Warning,
+            Tint::Files | Tint::AppAction => StatusTone::Info,
+            Tint::Remote => StatusTone::Warning,
             Tint::Network => StatusTone::Success,
         }
     }
@@ -755,7 +921,9 @@ fn kind_shown(english: &str) -> String {
 
 /// Project one stored capability into a display capability, or `None` when it
 /// is not an app grant this pane renders (role/workspace/resource overrides and
-/// restrictions are enforcement plumbing, not app permissions).
+/// restrictions are enforcement plumbing, not app permissions, and a workspace
+/// never allows the person's camera, microphone, screen or input: their own
+/// answers do, listed under their devices).
 fn cap_view(cap: &CapOverride) -> Option<CapView> {
     if cap.effect != Effect::Grant {
         return None;
@@ -769,14 +937,6 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
             };
             ("Files", format!("{verb}: {p}"), Tint::Files)
         }
-        Scope::Device(DeviceCap::Camera) => ("Camera", t("perm-capture-video"), Tint::Camera),
-        Scope::Device(DeviceCap::Microphone) => {
-            ("Microphone", t("perm-capture-audio"), Tint::Microphone)
-        }
-        Scope::Device(DeviceCap::Screen) => {
-            ("Screen sharing", t("perm-stream-workspace"), Tint::Screen)
-        }
-        Scope::Device(DeviceCap::Input) => ("Remote control", t("perm-inject-input"), Tint::Remote),
         Scope::Device(DeviceCap::DesktopControl) => {
             ("Desktop control", t("perm-desktop-control"), Tint::Remote)
         }
@@ -1068,12 +1228,14 @@ fn panel(
     let mut panel: Vec<SettingsSection> = vec![scope_card()];
     if let Some(reading) = reading {
         panel.push(privacy_hardware_card(&reading.privacy));
+        panel.push(device_answers_card(cx, &reading.device_answers));
         panel.push(active_privacy_use_card(&reading.privacy));
         panel.push(device_security_card(&reading.security));
         panel.push(secrets_card(cx, &reading.secrets));
         panel.push(desktop_control_card(cx, &reading.desktop_control));
     } else {
         panel.push(reading_card("perm-privacy-hardware"));
+        panel.push(reading_card("perm-device-answers-title"));
         panel.push(reading_card("perm-active-use"));
         panel.push(reading_card("perm-device-security"));
         panel.push(reading_card("perm-secrets-title"));
@@ -1146,6 +1308,12 @@ mod tests {
         }
         fn workspace_state(&self) -> Option<String> {
             self.state.clone()
+        }
+        fn device_answers(&self) -> Vec<DeviceAnswer> {
+            Vec::new()
+        }
+        fn revoke_device_answer(&self, _: &str) -> Result<(), String> {
+            Ok(())
         }
     }
 
@@ -1326,6 +1494,45 @@ mod tests {
         assert!(with_id(app.harness().root_widget(), &stop).is_none());
     }
 
+    #[test]
+    fn each_device_answer_names_its_device_and_is_taken_back_from_here() {
+        let sample = SamplePermissions::default();
+        let answers = sample.device_answers();
+        let mut app = window_over(Arc::new(sample));
+        let joined = said(&mut app).join(" | ");
+        assert!(joined.contains(&t("perm-device-answer-here")), "{joined}");
+        assert!(
+            joined.contains(&t_args(
+                "perm-device-answer-on",
+                &[("device", "Phone".into())]
+            )),
+            "an answer kept on another device names it: {joined}"
+        );
+        let phone = answers
+            .iter()
+            .find(|answer| !answer.this_device)
+            .expect("the phone's answer");
+        let revoke = format!("device-answer-revoke:{}", phone.resource);
+        app.harness().click_named(&revoke).unwrap();
+        assert!(
+            app.harness()
+                .wait_until(tilo_test_env::hang_bound(), |harness| with_id(
+                    harness.root_widget(),
+                    &revoke
+                )
+                .is_none()),
+            "the answer taken back is gone"
+        );
+        assert!(
+            with_id(
+                app.harness().root_widget(),
+                &format!("device-answer-revoke:{}", answers[0].resource)
+            )
+            .is_some(),
+            "the others stay"
+        );
+    }
+
     struct StalledReader(Arc<crate::stall::Stall>);
 
     impl StalledReader {
@@ -1362,6 +1569,14 @@ mod tests {
         fn workspace_state(&self) -> Option<String> {
             self.wait();
             SamplePermissions::default().workspace_state()
+        }
+        fn device_answers(&self) -> Vec<DeviceAnswer> {
+            self.wait();
+            SamplePermissions::default().device_answers()
+        }
+        fn revoke_device_answer(&self, resource: &str) -> Result<(), String> {
+            self.wait();
+            SamplePermissions::default().revoke_device_answer(resource)
         }
     }
 
@@ -1405,10 +1620,10 @@ mod tests {
     /// `CapOverride` type so the fixture matches the compositor's on-disk
     /// shape exactly.
     fn sample_state() -> String {
-        let cam = CapOverride::grant(
+        let control = CapOverride::grant(
             Grantee::person("local"),
-            Scope::Device(DeviceCap::Camera),
-            Access::Read,
+            Scope::Device(DeviceCap::DesktopControl),
+            Access::Write,
         )
         .through("so.tilo.camera");
         let file = CapOverride::grant(
@@ -1417,7 +1632,7 @@ mod tests {
             Access::Read,
         )
         .through("so.tilo.camera");
-        let caps = serde_json::to_string(&vec![cam, file]).unwrap();
+        let caps = serde_json::to_string(&vec![control, file]).unwrap();
         format!(r#"{{"workspaces":[{{"name":"Studio","sandbox":{caps}}}]}}"#)
     }
 
@@ -1510,22 +1725,18 @@ mod tests {
                 cap_view(&CapOverride::grant(Grantee::person("local"), scope, verb).through("a"))
                     .map(|v| v.kind)
             };
-            assert_eq!(
-                g(Scope::Device(DeviceCap::Camera), Access::Read),
-                Some("Camera")
-            );
-            assert_eq!(
-                g(Scope::Device(DeviceCap::Microphone), Access::Read),
-                Some("Microphone")
-            );
-            assert_eq!(
-                g(Scope::Device(DeviceCap::Screen), Access::Read),
-                Some("Screen sharing")
-            );
-            assert_eq!(
-                g(Scope::Device(DeviceCap::Input), Access::Write),
-                Some("Remote control")
-            );
+            for personal in [
+                DeviceCap::Camera,
+                DeviceCap::Microphone,
+                DeviceCap::Screen,
+                DeviceCap::Input,
+            ] {
+                assert_eq!(
+                    g(Scope::Device(personal), Access::Read),
+                    None,
+                    "{personal:?}"
+                );
+            }
             assert_eq!(
                 g(Scope::Device(DeviceCap::DesktopControl), Access::Write),
                 Some("Desktop control")
@@ -1586,10 +1797,10 @@ mod tests {
             assert_eq!(all[0].name, "Studio");
             assert_eq!(all[0].apps.len(), 1, "one app");
             assert_eq!(all[0].apps[0].app, "so.tilo.camera");
-            assert_eq!(all[0].apps[0].caps.len(), 2, "camera + file grant");
+            assert_eq!(all[0].apps[0].caps.len(), 2, "desktop control + file grant");
             assert_eq!(grant_count(&all), 2);
             let kinds: Vec<&str> = all[0].apps[0].caps.iter().map(|c| c.kind).collect();
-            assert!(kinds.contains(&"Camera") && kinds.contains(&"Files"));
+            assert!(kinds.contains(&"Desktop control") && kinds.contains(&"Files"));
             let file = all[0].apps[0]
                 .caps
                 .iter()

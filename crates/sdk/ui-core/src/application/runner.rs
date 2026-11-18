@@ -844,6 +844,38 @@ impl ApplicationOwner {
         &self.permissions
     }
 
+    /// Another window of the same profile, as the launcher opens one: it
+    /// reads and writes the documents this window has open, and keeps its
+    /// own saved view.
+    ///
+    /// # Errors
+    ///
+    /// The view store could not be opened.
+    pub fn beside(
+        &self,
+        author: MemberId,
+        permissions: crate::permissions::SharedPermissions,
+        action_context: tilo_actions::ActionContext,
+    ) -> Result<Self, LaunchError> {
+        let views = InstanceViewStore::with_store(
+            self.views.durable_store(),
+            &self.device_id,
+            self.views.workspace_id(),
+        )
+        .map_err(LaunchError::Restore)?;
+        Ok(Self {
+            package_id: None,
+            models: self.models.clone(),
+            owners: self.owners.clone(),
+            views: Rc::new(views),
+            device_id: self.device_id.clone(),
+            permissions,
+            author,
+            action_context,
+            person: self.person.clone(),
+        })
+    }
+
     /// Keep a host-owned profile resource (such as a temporary capture directory)
     /// alive through record writers and failed record or presentation save retries.
     /// The resource must own the supplied profile root for its entire lifetime.

@@ -19,9 +19,8 @@ impl Viewer {
     }
 
     pub fn named(zone: &str) -> Self {
-        let (name, _) = jiff_tzdb::get(zone).unzip();
         Self {
-            zone: name.zip(crate::timezone::named(zone)),
+            zone: crate::timezone::canonical(zone).zip(crate::timezone::named(zone)),
         }
     }
 

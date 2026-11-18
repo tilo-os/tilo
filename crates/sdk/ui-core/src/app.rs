@@ -2069,6 +2069,10 @@ impl App {
         }
         // A widget that replaced children without saying so is found here.
         let stale = self.layout_maps_stale();
+        if change != crate::widget::StructureChange::None || stale {
+            // The resources and controls declared are the tree's.
+            self.invalidate_widget_resource_cache();
+        }
         if change == crate::widget::StructureChange::Children && !stale {
             self.layout.remount = true;
             self.layout.layout_dirty = true;

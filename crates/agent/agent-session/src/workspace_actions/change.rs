@@ -174,11 +174,20 @@ impl Workspace {
             } else {
                 self.undecided.remove(&route);
             }
-            self.records
+            self.documents
                 .get_or_insert_with(|| {
                     WorkspaceDocuments::new(&route.cluster_id, Arc::clone(self.peer.engine()))
                 })
                 .landed(&route);
+            // A document the folder is made of changed: the files it indexes are read again. Any
+            // write at all can move what a caller may read, so what a find kept of that is let
+            // go here rather than answered stale.
+            if route.app_id == fs_protocol::tree::FILES_APP {
+                self.files.landed(&route.document);
+            }
+            self.readers.clear();
+            self.listings.clear();
+            self.named.clear();
         }
     }
 }
@@ -209,7 +218,14 @@ impl Worker {
             .checked_add(MAX_REMOTE_WAIT)
             .unwrap_or_else(Instant::now);
         match self.membership(workspace_id) {
-            Ok(workspace) => workspace.watchers.wait(until, caller.clone(), done),
+            Ok(workspace) => {
+                workspace.watchers.wait(until, caller.clone(), done);
+                // The wait is woken by a change landing in the workspace, as a request held for
+                // one is: the session hands this thread every change of a workspace it is asked
+                // to be woken for, and the wait answers on it ([`Job::Joined`]) rather than only
+                // on its bound.
+                self.awaiting(workspace_id, true);
+            }
             Err(error) => done.complete(Err(error)),
         }
     }
@@ -268,7 +284,6 @@ impl Worker {
         }
     }
 
-    /// Answer the waits for a change of any workspace that ran out, so none is held for ever.
     pub(super) fn expire_watchers(&mut self) {
         let now = Instant::now();
         let mut ended = Vec::new();

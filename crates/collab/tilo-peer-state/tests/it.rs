@@ -12,22 +12,14 @@ mod common;
 // Workspace documents are decoded on a worker of this executable: this binary is that worker.
 tilo_automerge_isolate::test_worker!();
 
-#[path = "adhoc_group.rs"]
-mod adhoc_group;
 #[path = "bootstrap_growth.rs"]
 mod bootstrap_growth;
 #[path = "direct_actions.rs"]
 mod direct_actions;
-#[path = "direct_content.rs"]
-mod direct_content;
 #[path = "direct_held_writes.rs"]
 mod direct_held_writes;
-#[path = "direct_host_link.rs"]
-mod direct_host_link;
 #[path = "direct_lost_history.rs"]
 mod direct_lost_history;
-#[path = "direct_member_ownership.rs"]
-mod direct_member_ownership;
 #[path = "direct_two_devices.rs"]
 mod direct_two_devices;
 #[path = "offers.rs"]
@@ -42,5 +34,3 @@ mod personal_two_devices;
 mod renewed_enrollment;
 #[path = "renewed_membership.rs"]
 mod renewed_membership;
-#[path = "three_devices.rs"]
-mod three_devices;

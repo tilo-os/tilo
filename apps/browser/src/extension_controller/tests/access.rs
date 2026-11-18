@@ -138,7 +138,7 @@ tilo_test_env::scenario! {
                 .unwrap_or_default()
         };
         let revocable = |controller: &ExtensionController| {
-            let resource = controller.resources().remove(0);
+            let resource = controller.resources().remove(0).into_resource();
             let rows = controller.library_rows(|_| true);
             (
                 resource
@@ -177,6 +177,8 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             controller.resources()[0]
+                .clone()
+                .into_resource()
                 .presentation
                 .as_ref()
                 .and_then(|presentation| presentation.preview.as_deref()),
@@ -216,7 +218,7 @@ tilo_test_env::scenario! {
 
         controller.installed[0].access.granted = allowed;
         controller.tell_access(&shared);
-        let resource = controller.resources().remove(0);
+        let resource = controller.resources().remove(0).into_resource();
         invoke(&mut controller, &resource, "revoke-extension-access").unwrap();
         let before = window.commands().len();
         run_queued(&mut controller);

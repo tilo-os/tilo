@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::{Duration, UNIX_EPOCH};
 
-use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use fs_protocol::{
     ContentRevisionV1, FILE_BINDING_VERSION, FileActor, FileBindingV1, FileDocumentId,
     FileMutationTransactionManifest, FileNameV1, FileNodeKind, MAX_FILE_NAME_BYTES,
@@ -38,7 +38,6 @@ pub const MAX_LIVE_RECORD_BLOB_SCAN: usize = 100_000;
 mod changes;
 mod changesets;
 mod chunks;
-mod documents;
 mod records;
 pub use records::ResourceWrite;
 use records::bundle;
@@ -49,7 +48,7 @@ mod index_walk_tests;
 mod kernel_changes;
 mod leases;
 mod posix;
-mod projection;
+mod trash;
 pub use changesets::ChangesetMark;
 use chunks::Chunks;
 pub(crate) use chunks::Obj;
@@ -131,12 +130,6 @@ impl NodeKind {
             NodeKind::Dir => FileType::Directory,
         }
     }
-    fn as_str(self) -> &'static str {
-        match self {
-            NodeKind::File => "file",
-            NodeKind::Dir => "dir",
-        }
-    }
     fn from_str(s: &str) -> Self {
         if s == "dir" {
             NodeKind::Dir
@@ -184,9 +177,6 @@ pub(crate) struct InodeView {
     pub hash: Option<Hash>,
     pub live: bool,
     pub path: Option<String>,
-    /// A CRDT-backed document whose bytes are its export: a codec under the legacy
-    /// content authority.
-    pub document: bool,
 }
 
 /// One authoritative, path-current row in the namespace-owned record index.
@@ -426,6 +416,33 @@ pub struct NamespaceChangeToken {
     heads: Vec<automerge::ChangeHash>,
 }
 
+thread_local! {
+    /// What the file actions this thread writes are part of ([`acting_as`]).
+    static ACTING: std::cell::RefCell<Option<tilo_actions::ActionContext>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Write this thread's file actions as part of `ambient` until the guard is dropped: who does
+/// them (an agent writing through the mount, an agent's call carried out where the tree is
+/// kept), and the invocation and run they belong to. `None` is the person at this device.
+/// Each change of the tree then names who made it and in which call, which History shows,
+/// grants decide and Undo takes back as theirs. A thread, not the namespace, carries it:
+/// requests of several writers share one namespace at once.
+#[must_use]
+pub fn acting_as(ambient: Option<tilo_actions::ActionContext>) -> ActingAs {
+    ActingAs(ACTING.with(|acting| acting.replace(ambient)))
+}
+
+/// Puts back what the thread acted as before [`acting_as`].
+pub struct ActingAs(Option<tilo_actions::ActionContext>);
+
+impl Drop for ActingAs {
+    fn drop(&mut self) {
+        let before = self.0.take();
+        ACTING.with(|acting| *acting.borrow_mut() = before);
+    }
+}
+
 fn hash_to_hex(h: &Hash) -> String {
     hex::encode(h.as_bytes())
 }
@@ -492,13 +509,6 @@ fn str_at_doc(doc: &AutoCommit, key: &str) -> Option<String> {
             ScalarValue::Str(value) => Some(value.to_string()),
             _ => None,
         },
-        _ => None,
-    }
-}
-
-fn map_at(doc: &Chunks, obj: &Obj, key: &str) -> Option<Obj> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
         _ => None,
     }
 }
@@ -579,6 +589,16 @@ impl Namespace {
 
     pub fn author(&self) -> &str {
         &self.author
+    }
+
+    /// Write `action` into the tree as whoever this thread acts for ([`acting_as`]).
+    fn write_action(&mut self, action: &fs_protocol::FileAction) -> bool {
+        let ambient = ACTING.with(|acting| acting.borrow().clone());
+        let written = self.doc.write_action(action, ambient.as_ref());
+        if let Err(error) = &written {
+            tracing::warn!(?error, ?action, "a file action did not apply to the tree");
+        }
+        written.is_ok()
     }
 
     /// Changes whenever changes another replica made were merged in, and only then: equal
@@ -1833,8 +1853,8 @@ impl Namespace {
 
     /// Everything one FUSE request asks about `ino`, read in one pass so the caller takes the
     /// namespace lock once: what [`Self::getattr`] (or, with `unlinked`,
-    /// [`Self::getattr_including_unlinked`]), [`Self::hash_for`], [`Self::path_for`] and
-    /// [`Self::document_codec`] would each answer. The path is built only when `query.path` asks
+    /// [`Self::getattr_including_unlinked`]), [`Self::hash_for`] and [`Self::path_for`] would each
+    /// answer. The path is built only when `query.path` asks
     /// for it, so a mount without an ACL never looks at it.
     pub(crate) fn inode_view(&self, ino: u64, query: InodeQuery) -> Option<InodeView> {
         let id = self.ino_to_id.get(&ino)?;
@@ -1844,7 +1864,6 @@ impl Namespace {
                 hash: None,
                 live: true,
                 path: query.path.then(|| "/".to_string()),
-                document: false,
             });
         }
         let live = self.reaches_root(id);
@@ -1862,7 +1881,6 @@ impl Namespace {
             } else {
                 None
             },
-            document: str_at(&self.doc, &obj, "codec").is_some(),
         })
     }
 
@@ -1983,21 +2001,23 @@ impl Namespace {
         } else {
             derived
         };
-        let obj = self.doc.put_node(document_id.chunk(), &id).ok()?;
-        let _ = self.doc.put(&obj, "parent", parent_id);
-        let _ = self.doc.put(&obj, "prev_parent", parent_id);
-        let _ = self.doc.put(&obj, "name", name.to_vec());
-        let _ = self.doc.put(&obj, PLACEMENT_NAME_KEY, name.to_vec());
-        let _ = self.doc.put(&obj, "kind", kind.as_str());
-        if let Some(h) = hash {
-            let _ = self.doc.put(&obj, "hash", hash_to_hex(h));
+        let created = fs_protocol::FileAction::Create {
+            node: id.clone(),
+            document_id,
+            parent: parent_id.to_owned(),
+            name: FileNameV1(name.to_vec()),
+            kind: match kind {
+                NodeKind::Dir => fs_protocol::FileNodeKind::Directory,
+                NodeKind::File => fs_protocol::FileNodeKind::File,
+            },
+            hash: hash.map(hash_to_hex),
+            size,
+            mtime,
+            author: self.author.clone(),
+        };
+        if !self.write_action(&created) {
+            return None;
         }
-        let _ = self.doc.put(&obj, "size", size);
-        let _ = self.doc.put(&obj, "mtime", mtime);
-        let _ = self.doc.put(&obj, "author", self.author.clone());
-        let _ = self
-            .doc
-            .put(&obj, DOCUMENT_ID_KEY, document_id.0.to_string());
         self.tree
             .place(&id, parent_id.to_string(), name.to_vec().into());
         self.tree.bind_document(&id, document_id);
@@ -2132,33 +2152,6 @@ impl Namespace {
         }
     }
 
-    /// Whether the document file `ino` (its node: codec and content) changed between namespace heads
-    /// `before` and `after`. The diff walks only that node's objects. Unknown inodes count as
-    /// changed.
-    pub fn document_changed_between(
-        &mut self,
-        ino: u64,
-        before: &[automerge::ChangeHash],
-        after: &[automerge::ChangeHash],
-    ) -> bool {
-        let Some(node) = self.ino_to_id.get(&ino).and_then(|id| self.node(id)) else {
-            return true;
-        };
-        let Some(doc) = self.doc.doc_mut(node.chunk) else {
-            return true;
-        };
-        let mut of_doc = |heads: &[automerge::ChangeHash]| -> Vec<automerge::ChangeHash> {
-            heads
-                .iter()
-                .copied()
-                .filter(|hash| doc.has_change(hash))
-                .collect()
-        };
-        let (before, after) = (of_doc(before), of_doc(after));
-        doc.diff_obj(&node.id, &before, &after, true)
-            .map_or(true, |patches| !patches.is_empty())
-    }
-
     /// Every change this document holds beyond `heads`, as one incremental
     /// chunk for [`Self::apply_remote_and_resolve`]. Heads this document
     /// does not know (the asker's own changes) are ignored, so an asker that
@@ -2180,67 +2173,6 @@ impl Namespace {
         bundle(records)
     }
 
-    fn with_doc_mut<R>(
-        &mut self,
-        ino: u64,
-        f: impl FnOnce(&mut tilo_doc::DocMut) -> R,
-    ) -> Option<R> {
-        let id = self.ino_to_id.get(&ino)?.clone();
-        let root = self.document_root(&id)?;
-        let doc = &mut **self.doc.doc_mut(root.chunk)?;
-        let containers = tilo_doc::model::open(doc, &root.id).ok()?;
-        let mut ids = tilo_doc::model::seeded_id_gen(doc, &containers);
-        let mut dmut = tilo_doc::DocMut {
-            doc,
-            c: &containers,
-            ids: &mut ids,
-        };
-        Some(f(&mut dmut))
-    }
-
-    pub fn document_insert_block(
-        &mut self,
-        ino: u64,
-        after: Option<&str>,
-        kind: &str,
-    ) -> Option<String> {
-        self.with_doc_mut(ino, |d| d.insert_block(after, kind))
-    }
-
-    pub fn document_splice(
-        &mut self,
-        ino: u64,
-        block_id: &str,
-        idx: usize,
-        del: isize,
-        ins: &str,
-    ) -> bool {
-        self.with_doc_mut(ino, |d| d.splice_text(block_id, idx, del, ins))
-            .is_some()
-    }
-
-    pub fn document_block_text(&self, ino: u64, block_id: &str) -> Option<String> {
-        let id = self.ino_to_id.get(&ino)?;
-        let root = self.document_root(id)?;
-        let doc = &**self.doc.doc(root.chunk)?;
-        let containers = tilo_doc::model::open(doc, &root.id).ok()?;
-        tilo_doc::model::block_text(doc, &containers, block_id)
-    }
-
-    pub fn document_snapshot(&self, ino: u64) -> Option<tilo_doc::DocSnapshot> {
-        let id = self.ino_to_id.get(&ino)?;
-        let root = self.document_root(id)?;
-        let doc = &**self.doc.doc(root.chunk)?;
-        let containers = tilo_doc::model::open(doc, &root.id).ok()?;
-        Some(
-            tilo_doc::DocRef {
-                doc,
-                c: &containers,
-            }
-            .materialize(),
-        )
-    }
-
     pub fn set_content(&mut self, ino: u64, hash: Option<&Hash>, size: u64, mtime: u64) -> bool {
         let Some(id) = self.ino_to_id.get(&ino).cloned() else {
             return false;
@@ -2248,27 +2180,15 @@ impl Namespace {
         if self.node(&id).is_none() {
             return false;
         }
-        // A legacy mutation explicitly supersedes any atomic revision, so remaining old call sites
-        // cannot change mirror fields that revision-aware readers ignore.
-        if let Some(obj) = self.node(&id) {
-            let _ = self.doc.delete(&obj, CONTENT_REVISION_KEY);
-        }
-        match hash {
-            Some(h) => self.set_field(&id, "hash", hash_to_hex(h)),
-            None => {
-                if let Some(obj) = self.node(&id) {
-                    let _ = self.doc.delete(&obj, "hash");
-                }
-            }
-        }
-        if let Some(obj) = self.node(&id) {
-            let _ = self.doc.delete(&obj, "thumb");
-        }
-        self.set_field(&id, "size", size);
-        self.set_field(&id, "mtime", mtime);
-        let author = self.author.clone();
-        self.set_field(&id, "author", author);
-        true
+        self.write_action(&fs_protocol::FileAction::Write {
+            node: id,
+            hash: hash.map(hash_to_hex),
+            size,
+            mtime,
+            author: self.author.clone(),
+            revision: None,
+            keep_preview: false,
+        })
     }
 
     /// Atomically advertise one immutable signed history version as the current file content. Loose
@@ -2325,23 +2245,17 @@ impl Namespace {
         let Some(encoded) = revision_to_bytes(revision) else {
             return false;
         };
-        self.set_field(&id, CONTENT_REVISION_KEY, ScalarValue::Bytes(encoded));
-        match revision.content_hash {
-            Some(hash) => self.set_field(&id, "hash", hash_to_hex(&Hash::from(hash.0))),
-            None => {
-                if let Some(obj) = self.node(&id) {
-                    let _ = self.doc.delete(&obj, "hash");
-                }
-            }
-        }
-        if invalidate_preview && let Some(obj) = self.node(&id) {
-            let _ = self.doc.delete(&obj, "thumb");
-        }
-        self.set_field(&id, "size", revision.byte_len);
-        self.set_field(&id, "mtime", mtime);
-        let author = self.author.clone();
-        self.set_field(&id, "author", author);
-        true
+        self.write_action(&fs_protocol::FileAction::Write {
+            node: id,
+            hash: revision
+                .content_hash
+                .map(|hash| hash_to_hex(&Hash::from(hash.0))),
+            size: revision.byte_len,
+            mtime,
+            author: self.author.clone(),
+            revision: Some(encoded),
+            keep_preview: !invalidate_preview,
+        })
     }
 
     /// Attach the content hash of a generated thumbnail blob to `ino`, so the pointer rides the
@@ -2402,19 +2316,13 @@ impl Namespace {
         if self.node(&id).is_none() || !self.reaches_root(&id) {
             return false;
         }
-        // Record the content hash at deletion time, so a concurrent edit can be detected and
+        // The trash keeps the content hash it had, so a concurrent edit can be detected and
         // resurrected.
-        match self.node_hash(&id) {
-            Some(h) => self.set_field(&id, "deleted_hash", hash_to_hex(&h)),
-            None => {
-                if let Some(obj) = self.node(&id) {
-                    let _ = self.doc.delete(&obj, "deleted_hash");
-                }
-            }
-        }
         let cur = self.parent_of(&id).unwrap_or_else(|| ROOT_ID.to_string());
-        self.set_field(&id, "prev_parent", cur.clone());
-        self.set_field(&id, "parent", TRASH_ID);
+        if !self.write_action(&fs_protocol::FileAction::Trash { node: id.clone() }) {
+            return false;
+        }
+        self.reindex_node(&id);
         self.index_refresh_subtree(&id);
         // A delete may release a name another signed record was waiting for.
         let _ = self.settle_structural_conflicts(&cur);
@@ -2481,22 +2389,24 @@ impl Namespace {
         if let Some(existing) = self.child_named(&new_parent_id, new_name)
             && existing != id
         {
-            if let Some(h) = self.node_hash(&existing) {
-                self.set_field(&existing, "deleted_hash", hash_to_hex(&h));
+            if !self.write_action(&fs_protocol::FileAction::Trash {
+                node: existing.clone(),
+            }) {
+                return false;
             }
-            let ep = self
-                .parent_of(&existing)
-                .unwrap_or_else(|| ROOT_ID.to_string());
-            self.set_field(&existing, "prev_parent", ep);
-            self.set_field(&existing, "parent", TRASH_ID);
+            self.reindex_node(&existing);
             replaced = Some(existing);
         }
         let cur = self.parent_of(&id).unwrap_or_else(|| ROOT_ID.to_string());
-        self.set_field(&id, "prev_parent", cur.clone());
-        self.set_field(&id, "parent", &*new_parent_id);
-        self.set_field(&id, PLACEMENT_NAME_KEY, new_name.to_vec());
-        self.set_field(&id, "name", new_name.to_vec());
-        self.set_field(&id, "mtime", mtime);
+        if !self.write_action(&fs_protocol::FileAction::Move {
+            node: id.clone(),
+            parent: new_parent_id.clone(),
+            name: FileNameV1(new_name.to_vec()),
+            mtime,
+        }) {
+            return false;
+        }
+        self.reindex_node(&id);
         self.index_refresh_subtree(&id);
         if let Some(replaced) = replaced {
             self.index_refresh_subtree(&replaced);

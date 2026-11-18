@@ -47,6 +47,11 @@ public final class TiloEngine: NSObject {
         case open(route: String)
         /// The site said no. The sentence is its own.
         case refused(String)
+        /// The site says that the workspace this device was let into is no longer there: its
+        /// server was set up again since, or the workspace was deleted. The sentence is the
+        /// page's own. No later load changes that, so nothing is loaded again: the device
+        /// comes back by a pairing, as a new device does.
+        case gone(String)
         /// The page could not go on.
         case failed(String)
     }
@@ -492,6 +497,20 @@ public final class TiloEngine: NSObject {
                                  completionHandler: nil)
     }
 
+    /// The page's sentence for a device that kept another server's certificate than the one
+    /// that answers at its site now (web/peer.mjs keeps it). Today's page says this case in
+    /// these words alone: its failure screen calls it `refused`, as it calls a link that
+    /// could not be used, and no name of the case is on the page. A test holds this sentence
+    /// against the page's.
+    static let resetSaid = "This workspace was reset since this browser last opened it."
+
+    /// Whether what the page's failure screen says is that the workspace is no longer there:
+    /// its cases `gone` (another server answers at the site now) and `deleted` (its owner
+    /// deleted it), and the case it has only words for (`resetSaid`).
+    static func gone(failure: String, status: String) -> Bool {
+        ["gone", "deleted"].contains(failure) || status.contains(resetSaid)
+    }
+
     static func sameDocument(_ one: URL, _ other: URL) -> Bool {
         let bare = { (url: URL) -> String? in
             var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)
@@ -524,6 +543,7 @@ public final class TiloEngine: NSObject {
         case "state":
             stand(entry: said["entry"] as? String ?? "", arrival: said["arrival"] as? String ?? "",
                   code: said["code"] as? String ?? "", status: said["status"] as? String ?? "",
+                  failure: said["failure"] as? String ?? "", refusal: said["refusal"] as? String ?? "",
                   route: said["route"] as? String ?? "", mounted: said["mounted"] as? Bool ?? false,
                   ask: PairingAsk(said["ask"]))
         default:
@@ -531,8 +551,16 @@ public final class TiloEngine: NSObject {
         }
     }
 
-    private func stand(entry: String, arrival: String, code: String, status: String, route: String, mounted: Bool,
-                       ask: PairingAsk?) {
+    private func stand(entry: String, arrival: String, code: String, status: String, failure: String, refusal: String,
+                       route: String, mounted: Bool, ask: PairingAsk?) {
+        // A server that turns an open page's session away leaves that page as it was, with a
+        // card over it, and the page names the refusal on its root. What it shows is no longer
+        // what its server holds, so it is no page that is in: it is loaded again, as one that
+        // stopped, and the entry of the page that comes says where the device stands now.
+        if !refusal.isEmpty, entry == "open", !pairs {
+            if case .open = state { stopped(status.isEmpty ? "The server turned this device's session away" : status) }
+            return
+        }
         switch entry {
         case "open":
             guard mounted else { state = .arriving("draw"); return }
@@ -571,7 +599,9 @@ public final class TiloEngine: NSObject {
             stops = 0
             state = .open(route: inside)
         case "refused":
-            state = .refused(status)
+            // A link that leads into a workspace that is gone is a refused link. A device that
+            // was let in before is told more: where it was let in is no longer there.
+            state = !pairs && TiloEngine.gone(failure: failure, status: status) ? .gone(status) : .refused(status)
         case "unsupported":
             // The page was let in and cannot draw here (a simulator offers a page no graphics
             // adapter). Nothing a second load brings changes that, so it is not loaded again,

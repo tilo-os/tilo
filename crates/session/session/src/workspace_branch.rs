@@ -181,7 +181,7 @@ async fn found(
     changes: &[u8],
     until: Instant,
 ) -> Result<(), String> {
-    use tilo_action_broker::owner_commits::OwnerService as _;
+    use tilo_workspace_service::apps::owner_commits::OwnerService as _;
     let sealed = if engine.commits_documents(workspace) {
         None
     } else {
@@ -744,7 +744,6 @@ impl crate::Shared {
             return;
         };
         let engine = self.engine.clone();
-        let endpoint = self.sync.as_ref().map(|sync| sync.endpoint_addr());
         let until = Instant::now()
             .checked_add(PATIENCE)
             .unwrap_or_else(Instant::now);
@@ -753,7 +752,7 @@ impl crate::Shared {
             Arc::clone(&self.wake_handle),
             async move {
                 if let Some(engine) = &engine {
-                    engine.found(workspace, &founded, endpoint.as_ref()).await;
+                    engine.found(workspace, &founded).await;
                 }
                 copy(engine.as_deref(), Places::here(), from, workspace, until).await
             },
@@ -1126,8 +1125,8 @@ mod tests {
             let identity = identity();
             let engine = reopened(&state, &identity);
             let (from, to) = ids();
-            pollster::block_on(engine.found(from, "Research", None));
-            pollster::block_on(engine.found(to, "Research branch", None));
+            pollster::block_on(engine.found(from, "Research"));
+            pollster::block_on(engine.found(to, "Research branch"));
             let keys = key_group::KeyGroup::create(
                 collab_types::WorkspaceId::parse(&to.to_string()).unwrap(),
                 key_group::MemberKey::generate("owner").unwrap(),
@@ -1211,8 +1210,8 @@ mod tests {
             let identity = identity();
             let engine = reopened(&state, &identity);
             let (from, to) = ids();
-            pollster::block_on(engine.found(from, "Research", None));
-            pollster::block_on(engine.found(to, "Research branch", None));
+            pollster::block_on(engine.found(from, "Research"));
+            pollster::block_on(engine.found(to, "Research branch"));
             let keys = key_group::KeyGroup::create(
                 collab_types::WorkspaceId::parse(&to.to_string()).unwrap(),
                 key_group::MemberKey::generate("owner").unwrap(),
@@ -1315,7 +1314,7 @@ mod tests {
                 "7a6b5c4d-0000-4000-8000-000000000005",
             ]
             .map(|id| WorkspaceId::parse(id).unwrap());
-            pollster::block_on(engine.found(from, "Research", None));
+            pollster::block_on(engine.found(from, "Research"));
             let channel = collab_types::WorkspaceId::parse(FROM).unwrap();
             let keys =
                 key_group::KeyGroup::create(channel, key_group::MemberKey::generate("owner").unwrap())
@@ -1365,7 +1364,7 @@ mod tests {
             };
 
             for (n, to) in targets.into_iter().enumerate() {
-                pollster::block_on(engine.found(to, &format!("Question {n}"), None));
+                pollster::block_on(engine.found(to, &format!("Question {n}")));
                 let branched = branch(Some(&engine), places.clone(), from, to);
                 assert!(
                     branched.missing.is_empty(),
@@ -1393,8 +1392,8 @@ mod tests {
             let person = hex::encode(identity.device_cert.user_public_key);
             let engine = reopened(&state, &identity);
             let (from, to) = ids();
-            pollster::block_on(engine.found(from, "Research", None));
-            pollster::block_on(engine.found(to, "Research branch", None));
+            pollster::block_on(engine.found(from, "Research"));
+            pollster::block_on(engine.found(to, "Research branch"));
             assert!(engine.holds(from) && engine.holds(to));
             let channel = collab_types::WorkspaceId::parse(&to.to_string()).unwrap();
             let keys =
@@ -1530,13 +1529,15 @@ mod tests {
         state: &tempfile::TempDir,
         identity: &tilo_identity::identity_store::DeviceIdentity,
     ) -> Engine {
-        Engine::open(
+        let engine = Engine::open(
             identity.clone(),
             Some(state.path()),
             Vec::new(),
             crate::platform::membership_check::of_this_session(),
         )
-        .expect("this device's engine opens")
+        .expect("this device's engine opens");
+        crate::founding_fixture::serve(&engine);
+        engine
     }
 
     fn identity() -> tilo_identity::identity_store::DeviceIdentity {

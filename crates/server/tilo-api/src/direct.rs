@@ -1,14 +1,14 @@
 //! Tilo's API served in process, as a key its caller holds, against a Tilo
-//! host the caller reaches directly: what the SDKs' native part and the
-//! `tilo` command use when there is no API server between them and the host.
+//! server the caller reaches directly: what the SDKs' native part and the
+//! `tilo` command use when there is no API server between them and it.
 //!
 //! It is the API server itself ([`Server`]), with one key in its memory: the
 //! caller's own, a device of the person's (a computer `tilo login` made one)
 //! or a grant of theirs, with the certificate the person's root (or a key of
 //! theirs) gave it. Every route is answered as on an API server, by the same
-//! code, and the key dials the host as one of the person's devices does; the
-//! host decides everything, as it decides for an API server. Nothing here
-//! knows what kind of host it reaches.
+//! code, and the key dials the server as one of the person's devices does;
+//! the server decides everything, as it decides for an API server. Nothing here
+//! knows what kind of server it reaches.
 //!
 //! A key is carried as a key file ([`KeyFile`]): its secret and its
 //! certificate, hex, and the host it reaches.
@@ -113,6 +113,34 @@ impl Direct {
     /// # Errors
     /// The key or its certificate is not one, or does not hold now.
     pub fn new(file: &KeyFile) -> Result<Self, String> {
+        let (server, key) = Self::server_for(file)?;
+        Self::as_key(server, &key, &file.name)
+    }
+
+    /// [`Self::new`], every call going over `device`, the session with the
+    /// key's server its caller already holds as that key: a program holding
+    /// its device's one session (`tilo mcp`) answers the API on it, since a
+    /// second session of the same key would cut the first off. When that
+    /// session ends, calls answer that it is unavailable.
+    ///
+    /// # Errors
+    /// The key or its certificate is not one, or does not hold now.
+    pub fn over(
+        file: &KeyFile,
+        device: tilo_session_client::device::Device,
+    ) -> Result<Self, String> {
+        let (server, key) = Self::server_for(file)?;
+        let held = server
+            .hosts
+            .first()
+            .map(|first| Arc::new(first.held(&key, device)))
+            .ok_or_else(|| "the key names no server".to_owned())?;
+        let _ = server.held.set(held);
+        Self::as_key(server, &key, &file.name)
+    }
+
+    /// The server `file`'s key reaches, and the key.
+    fn server_for(file: &KeyFile) -> Result<(Arc<Server>, GrantKey), String> {
         let secret = hex::decode(&file.key).map_err(|_| "the key is not hex".to_owned())?;
         let cert = hex::decode(&file.cert).map_err(|_| "the certificate is not hex".to_owned())?;
         let secret: [u8; 32] = secret
@@ -144,7 +172,7 @@ impl Direct {
             Store::in_memory(),
         )
         .map_err(|error| error.to_string())?;
-        Self::as_key(server, &key, &file.name)
+        Ok((server, key))
     }
 
     /// The API of `here`, the Tilo desktop this is part of, as its device key
@@ -214,6 +242,36 @@ impl Direct {
                 Some(authorization.clone()),
             ));
         }
+    }
+
+    /// Answer one MCP request (a `tools/call`) as the API's MCP endpoint
+    /// answers it, on this key's own session for the API's calls: its answer. What
+    /// a person's account and a workspace's people do (`account/…`,
+    /// `workspace/members#…`) is answered here as for any key of theirs.
+    ///
+    /// # Errors
+    /// The key cannot act now, or the call was not answered.
+    pub async fn mcp(&self, request: serde_json::Value) -> Result<serde_json::Value, String> {
+        let mut headers = hyper::HeaderMap::new();
+        let value = hyper::header::HeaderValue::from_str(&self.authorization)
+            .map_err(|_| "this key cannot act now".to_owned())?;
+        headers.insert(hyper::header::AUTHORIZATION, value);
+        let grant = self
+            .server
+            .grant_of(&headers)
+            .map_err(|_| "this key cannot act now".to_owned())?;
+        let session = self
+            .server
+            .api_session(&grant)
+            .await
+            .map_err(|error| error.body.message)?;
+        session
+            .handle(request)
+            .await
+            .messages
+            .into_iter()
+            .last()
+            .ok_or_else(|| "your workspace didn't answer; try again in a minute".to_owned())
     }
 
     /// Answer `method` on `target` (a path with its query) with `headers` and

@@ -63,7 +63,7 @@ BASELINE = Path("tools/policy/swallowed_failures_baseline.toml")
 # Where a failure is the person's or a peer's problem when it is dropped: every
 # rule below holds here.
 SCANNED = (
-    Path("crates/collab/tilo-action-broker"),
+    Path("crates/server/tilo-workspace-service/src/apps"),
     Path("crates/collab/tilo-peer-state"),
     Path("crates/collab/collaboration"),
     Path("crates/sdk/tilo-app"),

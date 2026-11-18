@@ -95,9 +95,6 @@ files-residency-metadata-only = metadata only
 files-residency-partly-local = partly local ({ $bytes } bytes)
 files-residency-local = local ({ $bytes } bytes)
 files-property-on-device = On this device: { $state }
-files-property-history = History: { $versions } { $versions ->
-    [one] version
-   *[other] versions
 }, { $conflicts } open { $conflicts ->
     [one] conflict
    *[other] conflicts
@@ -164,40 +161,6 @@ files-import-local-destination = One-time import needs a local destination, not 
 
 ## History and conflict resolution
 files-version-history = Version history…
-files-restore-previous = Restore previous version
-files-resolve-keep-current = Resolve { $conflict }: keep current
-files-resolve-use-other = Resolve { $conflict }: use other (device { $device })
-files-conflict-resolved = Resolved
-files-strategy-keep-current = Keep current
-files-strategy-use-other = Use other
-files-strategy-keep-both = Keep both
-files-strategy-merge = Merge
-files-history-change-pending = A history change is already in progress
-files-select-file-with-history = Select one collaborative file with history first
-files-keeping-current = Keeping the current version…
-files-applying-other = Applying the other version…
-files-merging-versions = Safely merging non-overlapping changes…
-files-merge-review-menu = Review merge
-files-merge-review-title = Review the merge of { $name }
-files-merge-review-checking = Comparing the two versions…
-files-merge-review-checking-detail = Nothing changes while this runs.
-files-merge-review-safe = Safe to merge
-files-merge-review-needs-review = Needs review. No merge will be applied.
-files-merge-review-unavailable = The versions can’t be compared right now. Refresh the file and compare them in Version history.
-files-merge-review-no-apply = Keep both, or choose one after comparing them.
-files-merge-review-incoming = Incoming revision from device { $device }
-files-merge-review-undo = You can restore either earlier version afterwards without losing later work.
-files-merge-apply-safe = Apply safe merge
-files-merge-apply-safe-detail = Applies only if both versions can still be kept whole.
-files-conflict-resolved-signed = Conflict resolved
-files-history-change-saved = History change saved
-files-history-action-created = Created
-files-history-action-edited = Edited
-files-history-action-renamed = Renamed
-files-history-action-moved = Moved
-files-history-action-deleted = Deleted
-files-history-action-conflict-resolved = Resolved conflict
-files-history-action-restored = Restored
 
 ## Accessible collaborative state
 files-a11y-transfer-failed = Transfer failed
@@ -214,14 +177,9 @@ files-a11y-kept-offline = Kept offline
 files-a11y-replica-unknown = Copies on other devices unknown
 files-a11y-durably-replicated = Kept on other devices
 files-a11y-not-durably-replicated = Not kept on other devices yet
-files-a11y-version-conflict = Has a version conflict
 
 ## Service and received-share errors/status
 files-open-terminal-failed = Could not open Terminal: { $error }
-files-conflict-strategy-unsupported = That conflict strategy is not supported by Files yet
-files-conflict-encode-failed = Could not encode the conflict request
-files-conflict-request-too-large = This conflict can’t be resolved here. Try again from Version history.
-files-conflict-resolve-failed = Could not resolve that conflict: { $error }
 
 ## Application chrome and navigation
 files-app-title = Files
@@ -510,7 +468,6 @@ file-explorer-import-mounted = Created independent editable copies in { $folder 
 ## Notices
 files-notice-undo = Undo
 files-notice-open-with = Open With…
-files-notice-open-history = Open Version history
 files-menu-undo = Undo
 files-open-failed = Couldn’t open “{ $name }”
 files-new-folder-failed-title = Couldn’t create the folder

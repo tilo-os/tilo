@@ -282,7 +282,7 @@ fn an_agent_is_asked_first_before_a_file_is_read_or_written() {
     let mut app = with_sample();
     // An agent with no answer of the person's yet, inside a turn of the
     // person's that bound how far it reaches.
-    let grants = policy::roles::agent_grants(LOCAL_WORKSPACE, AGENT, LOCAL_USER, &[]);
+    let grants = policy::Acting::handed_agent(AGENT, LOCAL_USER).handed_preset(LOCAL_WORKSPACE);
     app.set_permissions(
         PermissionContext::member(&ui::permissions::MemberId::person(LOCAL_USER), Role::Owner)
             .acting_as(

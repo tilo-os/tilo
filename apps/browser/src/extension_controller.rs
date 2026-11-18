@@ -23,7 +23,8 @@ use ui::widget::{
 };
 use ui::window_toolbar::ToolbarAction;
 
-use ui::tilo_actions::{ResourcePresentation, ResourceSpec};
+use ui::framework::LiveRow;
+use ui::tilo_actions::ResourcePresentation;
 
 use crate::CATALOG;
 use crate::capabilities::ExtensionQuestion;
@@ -1908,7 +1909,7 @@ impl ExtensionController {
     /// The installed extensions as resources, each with what its Library row
     /// offers, so a screen reader, a script or an agent manages them as the person
     /// does.
-    pub fn resources(&self) -> Vec<ResourceSpec> {
+    pub fn resources(&self) -> Vec<LiveRow> {
         use crate::effects::BrowserEffect as E;
         use ui::tilo_resource::Effect as _;
         self.infos
@@ -1917,12 +1918,12 @@ impl ExtensionController {
             .map(|(info, extension)| {
                 let id = extension.id.clone();
                 let granted = granted_line(&extension.access.granted);
-                let mut resource = ResourceSpec::new(
+                let mut resource = LiveRow::new(
                     extensions::resource_id(&info.id),
                     "browser.extension",
                     info.name.clone(),
                 )
-                .with_presentation(ResourcePresentation {
+                .presentation(ResourcePresentation {
                     detail: Some(self.status(info, extension)),
                     preview: granted
                         .as_ref()
@@ -1930,27 +1931,25 @@ impl ExtensionController {
                         .cloned(),
                     ..ResourcePresentation::default()
                 })
-                .with_action(E::ShowExtensions.bound());
+                .effect(&E::ShowExtensions);
                 if granted.is_some() {
-                    resource =
-                        resource.with_action(E::RevokeExtensionAccess { id: id.clone() }.bound());
+                    resource = resource.effect(&E::RevokeExtensionAccess { id: id.clone() });
                 }
                 if info.manifest_version == 3 {
-                    resource = resource.with_action(if extension.enabled {
+                    resource = resource.operation(if extension.enabled {
                         E::TurnOffExtension { id: id.clone() }.bound()
                     } else {
                         E::TurnOnExtension { id: id.clone() }.bound()
                     });
                 }
                 if extension.enabled && extension.action.is_some() {
-                    resource = resource.with_action(E::UseExtension { id: id.clone() }.bound());
+                    resource = resource.effect(&E::UseExtension { id: id.clone() });
                 }
                 if extension.enabled && extension.options.is_some() {
-                    resource =
-                        resource.with_action(E::OpenExtensionSettings { id: id.clone() }.bound());
+                    resource = resource.effect(&E::OpenExtensionSettings { id: id.clone() });
                 }
                 if extension.enabled && extension.keyword.is_some() {
-                    resource = resource.with_action(
+                    resource = resource.operation(
                         E::SendToExtension {
                             id: id.clone(),
                             text: String::new(),
@@ -1959,16 +1958,16 @@ impl ExtensionController {
                     );
                 }
                 if let Some(action) = self.side_panel_action(extension) {
-                    resource = resource.with_action(action);
+                    resource = resource.operation(action);
                 }
                 if extension.enabled && extension.action.is_some() {
-                    resource = resource.with_action(if extension.pinned {
+                    resource = resource.operation(if extension.pinned {
                         E::UnpinExtension { id: id.clone() }.bound()
                     } else {
                         E::PinExtension { id: id.clone() }.bound()
                     });
                 }
-                resource.with_action(E::RemoveExtension { id }.bound())
+                resource.effect(&E::RemoveExtension { id })
             })
             .collect()
     }

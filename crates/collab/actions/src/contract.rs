@@ -28,8 +28,33 @@ pub enum Availability {
 read_through_json_value!(Availability);
 
 impl Availability {
+    /// The code of an action its caller's permissions deny ([`Self::not_allowed`]).
+    pub const NOT_ALLOWED: &'static str = "not_allowed";
+
     pub fn is_available(&self) -> bool {
         matches!(self, Self::Available)
+    }
+
+    /// An action an agent's permissions deny it, as it is listed to the agent: told it is not
+    /// allowed, and where that is changed, rather than left to read the action's absence as
+    /// there being no such action and look for another way.
+    #[must_use]
+    pub fn not_allowed() -> Self {
+        Self::Unavailable {
+            code: Self::NOT_ALLOWED.to_owned(),
+            reason: "not allowed: this workspace's permissions do not let this agent do it here \
+                     (its person sets what it may do in the workspace's settings, under Agents)"
+                .to_owned(),
+        }
+    }
+
+    /// The reason an action is listed as [`Self::not_allowed`], when it is.
+    #[must_use]
+    pub fn refusal(&self) -> Option<&str> {
+        match self {
+            Self::Unavailable { code, reason } if code == Self::NOT_ALLOWED => Some(reason),
+            Self::Available | Self::Unavailable { .. } => None,
+        }
     }
 }
 

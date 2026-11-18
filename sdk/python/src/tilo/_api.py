@@ -2,14 +2,13 @@
 
 Every call a client makes goes through [`Api.call`], which names the API's
 version on the way out, sends an `Idempotency-Key` with every call that
-changes something, asks a busy host again until its deadline, and raises the
-refusal an error answer is.
+changes something, asks a transient refusal again until its deadline, and
+raises the refusal an error answer is.
 """
 
 from __future__ import annotations
 
 import asyncio
-import math
 import random
 import time
 import uuid
@@ -18,10 +17,8 @@ from typing import Any
 from urllib.parse import urlencode
 
 from ._errors import (
-    RATE_LIMITED,
     SURFACE_CHANGED,
     ProtocolError,
-    RateLimited,
     Refused,
     SurfaceChanged,
     UnsupportedVersion,
@@ -36,8 +33,8 @@ VERSION_HEADER = "tilo-api-version"
 IDEMPOTENCY_HEADER = "idempotency-key"
 # The methods that change something, and so carry an `Idempotency-Key`.
 MUTATING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
-# How long a call keeps asking again while the host is busy with the
-# person's changes, in seconds.
+# How long a call keeps asking again while the server is briefly unavailable
+# or unreachable, in seconds.
 RETRY_DEADLINE = 60.0
 # The longest a call's answer is held on the server, in seconds.
 MAX_WAIT = 60
@@ -62,7 +59,7 @@ class Api:
         stream: bool = False,
         mutating: bool | None = None,
     ) -> Response:
-        """Send one call: a refusal raises, a busy host is asked again.
+        """Send one call: a refusal raises, a transient one is asked again.
 
         A call that changes something carries one `Idempotency-Key`, and every
         retry of it carries the same one, so the host runs it at most once.
@@ -79,14 +76,14 @@ class Api:
                 response = await self.transport.request(
                     method, url, json=json, data=data, headers=sent, stream=stream
                 )
-                busy = busy_of(response)
-                if busy is None:
+                transient = retryable_refusal(response)
+                if transient is None:
                     break
             except Unreachable as error:
-                busy = error
-            delay = _wait_seconds(busy, attempt)
+                transient = error
+            delay = _wait_seconds(attempt)
             if time.monotonic() + delay > deadline:
-                raise busy
+                raise transient
             attempt += 1
             await asyncio.sleep(delay)
         check_version(response)
@@ -162,12 +159,10 @@ def refusal_of(response: Response) -> Exception | None:
             f"the API answered {response.status}: {response.body[:200]!r}",
             status=response.status,
         )
-    return refusal_of_error(dict(error), response.status, response.header("retry-after"))
+    return refusal_of_error(dict(error), response.status)
 
 
-def refusal_of_error(
-    error: Mapping[str, Any], status: int | None = None, retry_after: str | None = None
-) -> Exception:
+def refusal_of_error(error: Mapping[str, Any], status: int | None = None) -> Exception:
     """What the API's refusal body `error` raises, at `status`."""
     code = str(error.get("code") or "failed")
     message = str(error.get("message") or "")
@@ -178,43 +173,20 @@ def refusal_of_error(
             return typed
     if code == SURFACE_CHANGED:
         return SurfaceChanged(message, steps)
-    if code == RATE_LIMITED:
-        return RateLimited(
-            message, steps, retry_after_ms=_retry_after_ms(error, retry_after)
-        )
     return Refused(code, message, steps)
 
 
-def busy_of(response: Response) -> RateLimited | Refused | None:
-    """What a busy host answered, if the call may be asked again as it is."""
-    if response.status not in (429, 503):
+def retryable_refusal(response: Response) -> Refused | None:
+    """The refusal a call may ask again as it is, when the server is briefly unavailable."""
+    if response.status != 503:
         return None
     error = error_of(response) or {}
-    code = str(error.get("code") or RATE_LIMITED)
+    code = str(error.get("code") or "unavailable")
     message = str(error.get("message") or "")
     steps = [str(step) for step in error.get("next_steps") or []]
-    if code == RATE_LIMITED:
-        return RateLimited(
-            message, steps, retry_after_ms=_retry_after_ms(error, response.header("retry-after"))
-        )
     return Refused(code, message, steps)
 
 
-def _retry_after_ms(error: Mapping[str, Any], retry_after: str | None) -> int | None:
-    """How long the host says to wait: its body's `retry_after_ms`, or `Retry-After`."""
-    waited = error.get("retry_after_ms")
-    if isinstance(waited, (int, float)) and waited >= 0:
-        return int(waited)
-    if retry_after is not None:
-        try:
-            return int(math.ceil(float(retry_after) * 1000))
-        except ValueError:
-            return None
-    return None
-
-
-def _wait_seconds(busy: Exception, attempt: int) -> float:
-    """How long to wait before asking `busy`'s call again."""
-    said = getattr(busy, "retry_after_ms", None)
-    said = (said or 0) / 1000.0 if isinstance(said, (int, float)) else 0.0
-    return max(said, min(0.05 * 2**attempt, 2.0)) * random.uniform(1.0, 1.5)
+def _wait_seconds(attempt: int) -> float:
+    """How long to wait before asking a transient refusal's call again."""
+    return min(0.05 * 2**attempt, 2.0) * random.uniform(1.0, 1.5)

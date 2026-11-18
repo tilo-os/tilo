@@ -153,6 +153,8 @@ install = { path = "../install" }
 # (`tests/bus_filters.rs`): what another client on the bus may do with its tree.
 accesskit = "0.25.0"
 accesskit_unix = { version = "0.23.0", default-features = false, features = ["tokio"] }
+# A sandboxed app's secrets, kept through the Secret portal (`tests/bus_filters.rs`).
+tilo-secrets = { path = "../../platform/tilo-secrets" }
 
 [[test]]
 name = "it"

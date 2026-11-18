@@ -494,15 +494,15 @@ async fn a_sub_agent_works_in_a_conversation_of_its_own_and_reads_nothing_of_its
         told.contains("Find the Q3 board deck in Files.") && told.contains("Scout started you"),
         "it is told its job and who started it: {told}"
     );
-    // The same read the person's own agent was answered is not offered to the sub-agent at all.
+    // The same read the person's own agent was answered is refused to the sub-agent as not allowed.
     let refused = tools_said(&subs[1]);
     assert_ne!(
         refused, main_read,
         "it is not answered what its starter was"
     );
     assert!(
-        refused.contains("chat/Messages has no read action"),
-        "its read of the chat is not offered to it: {refused}"
+        refused.contains("not_permitted: not allowed"),
+        "its read of the chat is refused as not allowed: {refused}"
     );
     for request in &subs {
         let shown = format!("{:?}", request.messages);
@@ -997,9 +997,14 @@ const READ: &str = "read ";
 /// Whether the tools answered a call with a refusal: the action is not offered to the caller,
 /// or the caller may not invoke it.
 fn refused_in_words(answer: &str) -> bool {
-    ["has no action", "no such action", "may not invoke"]
-        .iter()
-        .any(|said| answer.contains(said))
+    [
+        "has no action",
+        "no such action",
+        "may not invoke",
+        "not allowed",
+    ]
+    .iter()
+    .any(|said| answer.contains(said))
 }
 
 /// A sub-agent writes only into its own conversation. Its turn calls every action of Chat's
@@ -1236,8 +1241,8 @@ async fn a_sub_agent_writes_only_into_its_own_conversation() {
         for ((verb, path, _), (words, failed)) in calls.iter().zip(&answers) {
             if path.starts_with(READ) {
                 assert!(
-                    words.contains("chat/Messages has no read action") && !words.contains("heron"),
-                    "after its starter was told, its read is still not offered: {words}"
+                    words.contains("not_permitted: not allowed") && !words.contains("heron"),
+                    "after its starter was told, its read is still refused: {words}"
                 );
                 continue;
             }
@@ -1413,6 +1418,10 @@ mod teams;
 /// what gives a sub-agent its model.
 #[path = "hosted_skills.rs"]
 mod skills;
+
+/// A reply shows its model thinking.
+#[path = "hosted_reply_thinks.rs"]
+mod reply_thinks;
 
 /// What a look read before a turn ended, once that turn has ended.
 #[path = "hosted_turn_ends.rs"]

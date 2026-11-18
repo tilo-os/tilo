@@ -187,6 +187,15 @@ fn in_process(
             None
         }
     };
+    // Its own compiled modules kept beside its document, as the app process a session starts for
+    // an app's instances keeps its own: a later start of this app adopts the compiled module in
+    // its first frame instead of compiling it there again.
+    if let Some(storage) = &storage
+        && let Err(error) =
+            tilolang_tilo::runtime::engine::keep_compiled_in(storage.join(".compiled"))
+    {
+        tracing::warn!(%error, "compiled tilolang modules are not kept");
+    }
     let route = tilolang_process::route_of(&bundle.meta, workspace_id, me);
     let spec = tilolang_process::hosted::Spec::new(bundle.meta.app.clone(), workspace, 1, me);
     let kind = tilolang_tilo::meta::MetaExt::resource_type(&bundle.meta);

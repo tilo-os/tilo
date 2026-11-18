@@ -31,8 +31,8 @@ pub(crate) enum Completed {
     Open(PageId),
     /// Bind the open note's editor again: its blocks changed under it.
     Rebind,
-    /// Write this into the notes once the window reads nothing: what the
-    /// app does for itself, which the API takes from nobody.
+    /// Write this into the notes: what the app does on its own, named by no
+    /// published action, once the window's documents are free.
     Write(Box<actions::Action>),
 }
 
@@ -167,7 +167,10 @@ impl NotesApp {
                     self.bound_page = None;
                     self.self_dirty = true;
                 }
-                Completed::Write(action) => self.writes.borrow_mut().push(*action),
+                Completed::Write(action) => {
+                    self.deferred_writes.borrow_mut().push(*action);
+                    self.self_dirty = true;
+                }
             }
         }
     }
@@ -554,19 +557,17 @@ impl NotesApp {
                 .and_then(|stem| stem.to_str())
                 .map_or_else(|| CATALOG.t("notes-image-default-alt"), str::to_owned)
                 .replace([']', '[', '(', ')'], " ");
-            // A file the host hands over arrives while the window reads its
-            // documents: written once it reads nothing.
-            let insertion = match image_insertion(page, after, alt.trim(), &file.bytes) {
-                Ok(insertion) => insertion,
-                Err(error) => {
-                    completions.push(image_not_added(&error));
-                    return Err(error);
-                }
-            };
+            // Written once the window's documents are free: a file the host
+            // hands over arrives while they are in use.
             completions.extend([
-                Completed::Write(Box::new(insertion)),
                 Completed::Rebind,
                 Completed::Notify(CATALOG.t("notes-image-inserted"), ToastKind::Success),
+                Completed::Write(Box::new(image_insertion(
+                    page,
+                    after,
+                    alt.trim(),
+                    &file.bytes,
+                )?)),
             ]);
             Ok(Effected::done())
         }))
@@ -606,7 +607,11 @@ pub(super) fn image_insertion(
         Some(after) => tilo_document::RichTextAction::InsertParagraph { after, text },
         None => tilo_document::RichTextAction::AppendParagraph { text },
     };
-    actions::show_image(page, bytes, edit)
+    // A picture too large for a part is kept in the window's store, named by
+    // its reference there.
+    let picture = ui::tilo_resource::Bytes::keep(&crate::notebook::content(), bytes)
+        .map_err(|error| error.to_string())?;
+    Ok(actions::show_image(page, picture, edit))
 }
 
 /// The window's word that a chosen picture was not added, with `error`.

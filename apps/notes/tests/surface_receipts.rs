@@ -71,7 +71,7 @@ fn receipt_of_newest(app: &TestApp<NotesShell>) -> (String, Receipt) {
         Some(&[hash]),
         None,
         Some(&KindSurface(surface)),
-        &|_, _| true,
+        &|_, _, _| true,
     )
     .unwrap_or_else(|refusal| panic!("`{kind}` change refused: {refusal:?}"));
     (kind, receipt)
@@ -161,7 +161,7 @@ fn receipts_since(
                 Some(&[hash]),
                 None,
                 Some(&KindSurface(surface.clone())),
-                &|_, _| true,
+                &|_, _, _| true,
             )
             .map_err(|refusal| refusal.to_string());
             (kind, receipt)

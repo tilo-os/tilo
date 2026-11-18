@@ -73,7 +73,7 @@ pub enum FoldersCmd {
         paths: Vec<PathBuf>,
     },
     /// Whether workspaces get a folder here by themselves: one's own
-    /// (on unless turned off), and ones joined (off unless turned on).
+    /// and ones joined (both on unless turned off).
     Auto {
         #[arg(long, value_name = "on|off")]
         own: Option<Switch>,

@@ -2634,7 +2634,7 @@ impl CollaborationManager {
         let source = match connection {
             crate::NativeConnection::Window(None) => return Ok(Self::disabled()),
             crate::NativeConnection::Window(Some(connection)) => {
-                SdkConnectSource::Fd(runtime_portal::windows::into_raw(connection))
+                SdkConnectSource::Fd(runtime_portal::process_link::into_raw(connection))
             }
             crate::NativeConnection::Launch => {
                 if runtime_portal::service_fd("collab").is_none() {
@@ -2677,7 +2677,7 @@ impl CollaborationManager {
     /// identity-service connection `identity` holds.
     ///
     /// The session opened both connections for that app's launch and handed
-    /// them to the host (`runtime_portal::tilolang_process`): the broker attests
+    /// them to the host (`runtime_portal::process_link`): the broker attests
     /// `connection` against the session's launch record of the instance, never
     /// against what the host says, and refuses a hello for another app or
     /// workspace. Nothing is read from the process's environment, which is the
@@ -2685,7 +2685,7 @@ impl CollaborationManager {
     #[cfg(all(feature = "native", unix))]
     pub fn join_instance(
         kind: &collab_types::document::ResourceType,
-        connection: runtime_portal::windows::Descriptor,
+        connection: runtime_portal::process_link::Descriptor,
         identity: std::os::fd::BorrowedFd<'_>,
         route: RouteSpec,
     ) -> Result<Self, crate::NativeLaunchError> {
@@ -2694,7 +2694,7 @@ impl CollaborationManager {
         let identity = sdk_join_identity_from(signing, route.cluster_id)
             .map_err(|error| native_launch_refusal(&error))?;
         Ok(Self::connect_in_background(
-            SdkConnectSource::Fd(runtime_portal::windows::into_raw(connection)),
+            SdkConnectSource::Fd(runtime_portal::process_link::into_raw(connection)),
             SdkIdentitySource::Ready(Some(identity)),
             route,
             Some(kind.as_str().to_owned()),

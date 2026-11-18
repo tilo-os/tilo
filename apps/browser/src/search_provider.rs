@@ -8,7 +8,6 @@
 
 use ui::icons::Icon;
 use ui::lock::RwLockRecover as _;
-use ui::tilo_actions::ResourceSpec;
 use ui::tilo_resource::SearchEntry;
 
 #[derive(Clone)]
@@ -162,11 +161,14 @@ impl BrowserSearchIndex {
 
     /// The row a hit opens: the same row and effect the window publishes. `None` once the
     /// entry is gone.
-    pub fn resource(&self, id: &str) -> Option<ResourceSpec> {
+    pub fn resource(&self, id: &str) -> Option<ui::framework::LiveRow> {
         use ui::tilo_resource::Effect as _;
         let action = self.opened(id)?.bound();
         let row = self.state.read_recover().rows.get(id).cloned()?;
-        Some(ResourceSpec::new(&row.resource_id, row.resource_kind, &row.title).with_action(action))
+        Some(
+            ui::framework::LiveRow::new(&row.resource_id, row.resource_kind, &row.title)
+                .operation(action),
+        )
     }
 
     /// The search source the framework builds over these entries, resolving hits the way
@@ -348,7 +350,7 @@ mod tests {
                     id: "stable-download".into()
                 })
             );
-            let resource = index.resource(&hit.action_id).unwrap();
+            let resource = index.resource(&hit.action_id).unwrap().into_resource();
             assert_eq!(resource.kind, "browser.download");
             assert_eq!(resource.actions[0].id, "show-download");
             assert!(!provider.search_limited("example.test/sdk", 1).is_empty());

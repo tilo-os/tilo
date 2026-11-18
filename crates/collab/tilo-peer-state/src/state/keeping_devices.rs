@@ -45,6 +45,16 @@ pub fn keeping_devices_of(doc: &automerge::AutoCommit) -> Vec<TransportHint> {
         .collect()
 }
 
+/// The devices that keep `doc`'s workspace, by their keys: a workspace's
+/// servers are no member's devices, whichever of them founded it.
+#[must_use]
+pub fn keeping_device_keys_of(doc: &automerge::AutoCommit) -> std::collections::BTreeSet<[u8; 32]> {
+    keeping_devices_of(doc)
+        .into_iter()
+        .map(|hint| hint.host.device_public_key)
+        .collect()
+}
+
 /// How the holder whose signed address is `hint` holds the workspace, as the
 /// address says: with its keys, or as a store of its ciphertext. An address
 /// that does not say is read as a store's: nobody is given keys it did not

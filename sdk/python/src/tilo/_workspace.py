@@ -208,10 +208,16 @@ class Workspace:
     # -- reading ---------------------------------------------------------
 
     def ls(
-        self, path: str | None = None, *, kind: str | None = None, limit: int | None = None
+        self,
+        path: str | None = None,
+        *,
+        kind: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
     ) -> Any:
-        """The apps, an app's resources, or one resource's children and actions."""
-        return self.client.handoff(self._ls(path, kind, limit))
+        """The apps, an app's resources, or one resource's children and actions;
+        `cursor` reads on from where a page ended."""
+        return self.client.handoff(self._ls(path, kind, limit, cursor))
 
     async def _ls(
         self,

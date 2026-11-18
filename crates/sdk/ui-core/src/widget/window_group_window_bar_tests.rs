@@ -1303,8 +1303,9 @@ fn focused_stop(frame: &crate::headless::FrameHarness) -> Option<String> {
     frame.focused_access_node().and_then(|node| node.name)
 }
 
-/// The pixels of the frame that wear the toolkit's focus ring inside `rect`, as a renderer draws
-/// the frame the layout encoded.
+/// The pixels of the frame that wear the toolkit's focus ring around `rect`, as a renderer draws
+/// the frame the layout encoded. The ring stands just outside what it rings, so a face painted
+/// inside `rect` in a colour near the ring's (an agent's mark) is not taken for it.
 #[cfg(not(target_arch = "wasm32"))]
 fn ring_pixels(frame: &crate::headless::FrameHarness, rect: Rect) -> usize {
     let ring = Theme::dark().border_focus;
@@ -1316,6 +1317,12 @@ fn ring_pixels(frame: &crate::headless::FrameHarness, rect: Rect) -> usize {
     let mut found = 0;
     for y in u32_of(area.y0)..u32_of(area.y1) {
         for x in u32_of(area.x0)..u32_of(area.x1) {
+            if rect.contains(vello::kurbo::Point::new(
+                f64::from(x) + 0.5,
+                f64::from(y) + 0.5,
+            )) {
+                continue;
+            }
             let at = crate::num::usize_of_f64(f64::from(y * width + x) * 4.0);
             let near = rgba.get(at..at + 3).is_some_and(|pixel: &[u8]| {
                 pixel
@@ -1514,6 +1521,7 @@ fn the_agents_mark_is_the_keyboards_stop_after_the_tab_list() {
         1,
         Some(tilo_desktop_model::ownership::OpenedBy {
             run: "agent-session:7".into(),
+            agent: "scribe".into(),
             label: AGENT.into(),
             title: "Fill Jane Doe's visa application".into(),
         })

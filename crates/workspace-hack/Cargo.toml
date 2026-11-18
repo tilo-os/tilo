@@ -57,7 +57,6 @@ crypto-common-6f8ce4dd05d13bba = { package = "crypto-common", version = "0.2", d
 crypto-common-c65f7effa3be6d31 = { package = "crypto-common", version = "0.1", default-features = false, features = ["getrandom", "std"] }
 ctr = { version = "0.10", default-features = false, features = ["zeroize"] }
 ctutils = { version = "0.4", default-features = false, features = ["subtle"] }
-cursor-icon = { version = "1" }
 curve25519-dalek-164d15cefe24d7eb = { package = "curve25519-dalek", version = "4", features = ["digest", "rand_core"] }
 curve25519-dalek-cdf1610d3e1514e9 = { package = "curve25519-dalek", version = "5", features = ["rand_core"] }
 data-encoding = { version = "2" }
@@ -129,7 +128,7 @@ itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 kurbo = { version = "0.13" }
 lazy_static = { version = "1", default-features = false, features = ["spin_no_std"] }
-libc = { version = "0.2", features = ["extra_traits"] }
+libc = { version = "0.2" }
 libm = { version = "0.2" }
 litemap = { version = "0.8", default-features = false, features = ["serde"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
@@ -180,7 +179,7 @@ rcgen = { version = "0.14" }
 read-fonts-4beaf6d1349630b6 = { package = "read-fonts", version = "0.41", default-features = false, features = ["experimental_font_api", "std"] }
 read-fonts-f645eb7eb1285ab4 = { package = "read-fonts", version = "0.39" }
 regex = { version = "1" }
-regex-automata = { version = "0.4" }
+regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { path = "../../vendor/regex-syntax" }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "form", "json", "rustls-no-provider"] }
 resvg = { version = "0.47" }
@@ -243,7 +242,6 @@ unicode-properties = { version = "0.1" }
 url = { version = "2", features = ["serde"] }
 usvg = { version = "0.47" }
 uuid = { version = "1", features = ["serde", "v4", "v5", "v7"] }
-vte = { version = "0.15", features = ["ansi", "serde"] }
 wasm-encoder = { version = "0.252" }
 wasmi = { version = "1", default-features = false, features = ["simd", "std"] }
 wasmi_collections = { version = "1", default-features = false, features = ["std"] }
@@ -308,7 +306,6 @@ crypto-common-6f8ce4dd05d13bba = { package = "crypto-common", version = "0.2", d
 crypto-common-c65f7effa3be6d31 = { package = "crypto-common", version = "0.1", default-features = false, features = ["getrandom", "std"] }
 ctr = { version = "0.10", default-features = false, features = ["zeroize"] }
 ctutils = { version = "0.4", default-features = false, features = ["subtle"] }
-cursor-icon = { version = "1" }
 curve25519-dalek-164d15cefe24d7eb = { package = "curve25519-dalek", version = "4", features = ["digest", "rand_core"] }
 curve25519-dalek-cdf1610d3e1514e9 = { package = "curve25519-dalek", version = "5", features = ["rand_core"] }
 data-encoding = { version = "2" }
@@ -382,7 +379,7 @@ itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 kurbo = { version = "0.13" }
 lazy_static = { version = "1", default-features = false, features = ["spin_no_std"] }
-libc = { version = "0.2", features = ["extra_traits"] }
+libc = { version = "0.2" }
 libm = { version = "0.2" }
 litemap = { version = "0.8", default-features = false, features = ["serde"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
@@ -433,7 +430,7 @@ rcgen = { version = "0.14" }
 read-fonts-4beaf6d1349630b6 = { package = "read-fonts", version = "0.41", default-features = false, features = ["experimental_font_api", "std"] }
 read-fonts-f645eb7eb1285ab4 = { package = "read-fonts", version = "0.39" }
 regex = { version = "1" }
-regex-automata = { version = "0.4" }
+regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { path = "../../vendor/regex-syntax" }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "form", "json", "rustls-no-provider"] }
 resvg = { version = "0.47" }
@@ -498,7 +495,6 @@ unicode-properties = { version = "0.1" }
 url = { version = "2", features = ["serde"] }
 usvg = { version = "0.47" }
 uuid = { version = "1", features = ["serde", "v4", "v5", "v7"] }
-vte = { version = "0.15", features = ["ansi", "serde"] }
 wasm-encoder = { version = "0.252" }
 wasmi = { version = "1", default-features = false, features = ["simd", "std"] }
 wasmi_collections = { version = "1", default-features = false, features = ["std"] }
@@ -523,8 +519,9 @@ zune-jpeg = { version = "0.5" }
 [target.x86_64-unknown-linux-gnu.dependencies]
 ahash = { version = "0.8", features = ["no-rng"] }
 ash = { version = "0.38" }
-ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "tokio", "wallpaper"] }
+ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
 brotli = { version = "8" }
+cursor-icon = { version = "1" }
 derive_more = { version = "2", default-features = false, features = ["add", "add_assign"] }
 futures-executor = { version = "0.3" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
@@ -533,6 +530,7 @@ harfrust = { version = "0.12" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
+libc = { version = "0.2", default-features = false, features = ["extra_traits"] }
 linux-raw-sys-5ef9efb8ec2df382 = { package = "linux-raw-sys", version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
 linux-raw-sys-9fbad63c4bcf4a8f = { package = "linux-raw-sys", version = "0.4", default-features = false, features = ["elf", "errno", "general", "ioctl", "no_std", "prctl", "system"] }
 log = { version = "0.4", default-features = false, features = ["max_level_debug", "release_max_level_info"] }
@@ -540,6 +538,7 @@ naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 ordered-float = { version = "5" }
+regex-automata = { version = "0.4" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rqrr = { version = "0.10" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }
@@ -548,6 +547,7 @@ sysinfo = { version = "0.36" }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
+vte = { version = "0.15", features = ["ansi", "serde"] }
 wgpu-core = { version = "29", features = ["dx12", "gles", "metal", "noop", "portable-atomic", "renderdoc", "vulkan", "wgsl"] }
 x11rb = { version = "0.13", default-features = false, features = ["res", "xfixes"] }
 x11rb-protocol = { version = "0.13", default-features = false, features = ["res", "std", "xfixes"] }
@@ -555,8 +555,9 @@ x11rb-protocol = { version = "0.13", default-features = false, features = ["res"
 [target.x86_64-unknown-linux-gnu.build-dependencies]
 ahash = { version = "0.8", features = ["no-rng"] }
 ash = { version = "0.38" }
-ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "tokio", "wallpaper"] }
+ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
 brotli = { version = "8" }
+cursor-icon = { version = "1" }
 derive_more = { version = "2", default-features = false, features = ["add", "add_assign"] }
 derive_more-impl = { version = "2", default-features = false, features = ["add", "add_assign"] }
 futures-executor = { version = "0.3" }
@@ -566,6 +567,7 @@ harfrust = { version = "0.12" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
+libc = { version = "0.2", default-features = false, features = ["extra_traits"] }
 linux-raw-sys-5ef9efb8ec2df382 = { package = "linux-raw-sys", version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
 linux-raw-sys-9fbad63c4bcf4a8f = { package = "linux-raw-sys", version = "0.4", default-features = false, features = ["elf", "errno", "general", "ioctl", "no_std", "prctl", "system"] }
 log = { version = "0.4", default-features = false, features = ["max_level_debug", "release_max_level_info"] }
@@ -573,6 +575,7 @@ naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 ordered-float = { version = "5" }
+regex-automata = { version = "0.4" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rqrr = { version = "0.10" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }
@@ -581,6 +584,7 @@ sysinfo = { version = "0.36" }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
+vte = { version = "0.15", features = ["ansi", "serde"] }
 wgpu-core = { version = "29", features = ["dx12", "gles", "metal", "noop", "portable-atomic", "renderdoc", "vulkan", "wgsl"] }
 x11rb = { version = "0.13", default-features = false, features = ["res", "xfixes"] }
 x11rb-protocol = { version = "0.13", default-features = false, features = ["res", "std", "xfixes"] }
@@ -588,8 +592,9 @@ x11rb-protocol = { version = "0.13", default-features = false, features = ["res"
 [target.aarch64-unknown-linux-gnu.dependencies]
 ahash = { version = "0.8", features = ["no-rng"] }
 ash = { version = "0.38" }
-ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "tokio", "wallpaper"] }
+ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
 brotli = { version = "8" }
+cursor-icon = { version = "1" }
 derive_more = { version = "2", default-features = false, features = ["add", "add_assign"] }
 futures-executor = { version = "0.3" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
@@ -598,6 +603,7 @@ harfrust = { version = "0.12" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
+libc = { version = "0.2", default-features = false, features = ["extra_traits"] }
 linux-raw-sys-5ef9efb8ec2df382 = { package = "linux-raw-sys", version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
 linux-raw-sys-9fbad63c4bcf4a8f = { package = "linux-raw-sys", version = "0.4", default-features = false, features = ["elf", "errno", "general", "ioctl", "no_std", "prctl", "system"] }
 log = { version = "0.4", default-features = false, features = ["max_level_debug", "release_max_level_info"] }
@@ -605,6 +611,7 @@ naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 ordered-float = { version = "5" }
+regex-automata = { version = "0.4" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rqrr = { version = "0.10" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }
@@ -613,6 +620,7 @@ sysinfo = { version = "0.36" }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
+vte = { version = "0.15", features = ["ansi", "serde"] }
 wgpu-core = { version = "29", features = ["dx12", "gles", "metal", "noop", "portable-atomic", "renderdoc", "vulkan", "wgsl"] }
 x11rb = { version = "0.13", default-features = false, features = ["res", "xfixes"] }
 x11rb-protocol = { version = "0.13", default-features = false, features = ["res", "std", "xfixes"] }
@@ -620,8 +628,9 @@ x11rb-protocol = { version = "0.13", default-features = false, features = ["res"
 [target.aarch64-unknown-linux-gnu.build-dependencies]
 ahash = { version = "0.8", features = ["no-rng"] }
 ash = { version = "0.38" }
-ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "tokio", "wallpaper"] }
+ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
 brotli = { version = "8" }
+cursor-icon = { version = "1" }
 derive_more = { version = "2", default-features = false, features = ["add", "add_assign"] }
 derive_more-impl = { version = "2", default-features = false, features = ["add", "add_assign"] }
 futures-executor = { version = "0.3" }
@@ -631,6 +640,7 @@ harfrust = { version = "0.12" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
+libc = { version = "0.2", default-features = false, features = ["extra_traits"] }
 linux-raw-sys-5ef9efb8ec2df382 = { package = "linux-raw-sys", version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
 linux-raw-sys-9fbad63c4bcf4a8f = { package = "linux-raw-sys", version = "0.4", default-features = false, features = ["elf", "errno", "general", "ioctl", "no_std", "prctl", "system"] }
 log = { version = "0.4", default-features = false, features = ["max_level_debug", "release_max_level_info"] }
@@ -638,6 +648,7 @@ naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 ordered-float = { version = "5" }
+regex-automata = { version = "0.4" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rqrr = { version = "0.10" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }
@@ -646,6 +657,7 @@ sysinfo = { version = "0.36" }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
+vte = { version = "0.15", features = ["ansi", "serde"] }
 wgpu-core = { version = "29", features = ["dx12", "gles", "metal", "noop", "portable-atomic", "renderdoc", "vulkan", "wgsl"] }
 x11rb = { version = "0.13", default-features = false, features = ["res", "xfixes"] }
 x11rb-protocol = { version = "0.13", default-features = false, features = ["res", "std", "xfixes"] }

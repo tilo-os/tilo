@@ -28,20 +28,39 @@ pub struct Source {
 
 impl Source {
     /// The source as a person reads it: the tool, and the name the item had
-    /// there.
+    /// there when that name is one a person could say. A reference that is
+    /// only machine ids (a UUID an importer copied out of another tool) names
+    /// nothing a reader knows; the tool alone says it.
     #[must_use]
     pub fn label(&self) -> String {
-        match &self.reference {
-            Some(reference) if !reference.trim().is_empty() => crate::copy_catalogue::t_args(
+        match self.readable_reference() {
+            Some(reference) => crate::copy_catalogue::t_args(
                 "provenance-source-named",
                 &[
                     ("source", self.name.clone().into()),
-                    ("reference", reference.clone().into()),
+                    ("reference", reference.to_owned().into()),
                 ],
             ),
-            _ => self.name.clone(),
+            None => self.name.clone(),
         }
     }
+
+    /// The name it had there, when a reader would recognize it.
+    fn readable_reference(&self) -> Option<&str> {
+        let reference = self.reference.as_deref()?.trim();
+        (!reference.is_empty() && !is_uuid(reference)).then_some(reference)
+    }
+}
+
+/// Whether `text` is a bare UUID: the 8-4-4-4-12 hex form tools number their
+/// own items by. It identifies an item to a machine, not to a person.
+fn is_uuid(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes.len() == 36
+        && bytes.iter().enumerate().all(|(at, byte)| match at {
+            8 | 13 | 18 | 23 => *byte == b'-',
+            _ => byte.is_ascii_hexdigit(),
+        })
 }
 
 /// Who wrote an item and when, in the fields a view renders one by one.
@@ -62,9 +81,13 @@ pub struct Provenance {
 }
 
 impl Provenance {
-    /// The day it was written, as a person reads a date.
+    /// The day it was written, as a person reads a date; nothing when the
+    /// origin names no day (it has none, or none this build keeps).
     #[must_use]
     pub fn date(&self) -> String {
+        if self.at_ms <= 0 {
+            return String::new();
+        }
         jiff::Timestamp::from_millisecond(self.at_ms)
             .map(|at| {
                 let day = at.to_zoned(jiff::tz::TimeZone::UTC).date();
@@ -73,12 +96,37 @@ impl Provenance {
             .unwrap_or_default()
     }
 
+    /// The day as the row draws it. A moved item's day is the day it was
+    /// written in the tool it came from, not the day it moved here: it says
+    /// which of the two days beside it is which, "Written Oct 1, 2026" where
+    /// the item's own history here says it was created today.
+    #[must_use]
+    pub fn date_label(&self) -> String {
+        let date = self.date();
+        // A day the origin does not name shows nothing rather than "Written".
+        if date.is_empty() {
+            return date;
+        }
+        match &self.source {
+            Some(_) => {
+                crate::copy_catalogue::t_args("provenance-written-on", &[("date", date.into())])
+            }
+            None => date,
+        }
+    }
+
     /// One description of all of it, for a reader: built from the same
     /// fields the row shows, so what is spoken and what is drawn never say
     /// different things.
     #[must_use]
     pub fn spoken(&self) -> String {
-        let name: ArgValue = self.name.clone().into();
+        // A reader hears what the chip's mark says to the eye: that an agent wrote it.
+        let name: ArgValue = match &self.actor {
+            Some(actor) if actor.agent() => {
+                ui_core::history_source::agent_spoken_label(&self.name).into()
+            }
+            _ => self.name.clone().into(),
+        };
         let date: ArgValue = self.date().into();
         let Some(source) = &self.source else {
             return crate::copy_catalogue::t_args(
@@ -87,11 +135,7 @@ impl Provenance {
             );
         };
         let tool: ArgValue = source.name.clone().into();
-        let reference = source
-            .reference
-            .as_deref()
-            .filter(|reference| !reference.trim().is_empty());
-        match reference {
+        match source.readable_reference() {
             Some(reference) => crate::copy_catalogue::t_args(
                 "provenance-written-there-named",
                 &[
@@ -151,7 +195,7 @@ impl Provenance {
             });
         }
         row = row.push(Box::new(
-            Text::new(&self.date())
+            Text::new(&self.date_label())
                 .with_id(format!("{id}-date"))
                 .with_role(TextRole::Caption)
                 .dimmed(),
@@ -259,11 +303,73 @@ mod tests {
             !spoken.contains("tilo#5602") || spoken.contains("(tilo#5602)"),
             "the name it had there reads as its own field: {spoken}"
         );
+        assert!(
+            moved.date_label().starts_with("Written ") && moved.date_label().contains("2025"),
+            "the day drawn is said to be the day it was written there: {}",
+            moved.date_label()
+        );
 
         let here = people.provenance(Some(&ada), "", 1_763_164_800_000, None);
         assert_eq!(here.name, "Ada");
         assert!(here.actor.is_some(), "written here, it is by a member");
         assert!(here.source.is_none(), "written here, it came from nowhere");
+        assert_eq!(
+            here.date_label(),
+            here.date(),
+            "a day written here is the bare day, nothing to tell apart"
+        );
+    }
+
+    /// A tool that names its items by UUID only (an importer's own internal
+    /// id) names nothing a person reads: the source stands alone, and so does
+    /// the description a reader hears.
+    #[test]
+    fn a_machine_id_is_no_name_an_item_had_there() {
+        let people = People::named(None, &[]);
+        let origin = tilo_resource::Origin {
+            author: "Quinten".into(),
+            handle: None,
+            source: "Outline".into(),
+            url: Some("https://outline.example/doc/2407c7e1-97ca-4a14-938a-0610a2d7c18f".into()),
+            reference: Some(" 2407C7E1-97ca-4a14-938a-0610a2d7c18f ".into()),
+            created_ms: Some(1_759_286_400_000),
+            updated_ms: None,
+        };
+        let provenance = people.provenance(None, "", 0, Some(&origin));
+        let source = provenance.source.as_ref().expect("the tool it came from");
+        assert_eq!(source.label(), "Outline", "the tool alone");
+        assert_eq!(
+            source.url.as_deref(),
+            origin.url.as_deref(),
+            "the page it came from stays"
+        );
+        assert!(
+            !provenance.spoken().contains("2407c7e1"),
+            "a machine id is not spoken: {}",
+            provenance.spoken()
+        );
+        let undated = tilo_resource::Origin {
+            created_ms: None,
+            ..origin.clone()
+        };
+        assert_eq!(
+            people.provenance(None, "", 0, Some(&undated)).date_label(),
+            "",
+            "a source that names no day shows none, not a bare word"
+        );
+        // A readable name the tool gave it stays.
+        let named = tilo_resource::Origin {
+            reference: Some("tilo/tilo#5121".into()),
+            ..origin
+        };
+        assert_eq!(
+            people
+                .provenance(None, "", 0, Some(&named))
+                .source
+                .unwrap()
+                .label(),
+            "Outline (tilo/tilo#5121)"
+        );
     }
 
     /// The row a page draws, walked as the accessibility tree a reader meets:
@@ -313,8 +419,13 @@ mod tests {
         );
         assert!(
             nodes.iter().any(|(_, node)| node.role() == AkRole::Label
-                && node.value() == Some(&provenance.date())),
-            "the day is its own element"
+                && node.value() == Some(&provenance.date_label())),
+            "the day is its own element, said as the day it was written there"
+        );
+        assert!(
+            provenance.date_label().contains("Written"),
+            "the day it was written there is told apart from the day it arrived here: {}",
+            provenance.date_label()
         );
         assert!(
             nodes.iter().any(|(_, node)| node.role() == AkRole::Label

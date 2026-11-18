@@ -76,10 +76,6 @@ pub fn component_apps() -> Vec<&'static ApplicationDefinition> {
     // work on their records.
     #[cfg(target_os = "linux")]
     apps.push(discord::definition());
-    // A hosted workspace's Terminal sessions run on its host, beside its
-    // VMs: the host holds their records and runs their commands.
-    #[cfg(target_os = "linux")]
-    apps.push(terminal::definition());
     apps
 }
 
@@ -1650,15 +1646,9 @@ fn replica_access(
                 .acting_for(person.id().to_owned())
                 .named(Some(name).filter(|name| !name.trim().is_empty()));
             let permissions = PermissionContext::member_of(workspace, &person, Role::Editor);
-            let acting =
-                policy::Acting::agent(id).acting_for(policy::Acting::member(person.clone()));
-            let granted = policy::roles::agent_grants(workspace, id, person.id(), &[]);
-            match permissions
-                .access()
-                .clone()
-                .as_acting(acting)
-                .map(|access| access.granted(granted))
-            {
+            // The delegation its person handed it is its acting's own.
+            let acting = policy::Acting::handed_agent(id, person.id());
+            match permissions.access().clone().as_acting(acting) {
                 Some(access) => permissions.with_access(access),
                 None => permissions.read_only(),
             }

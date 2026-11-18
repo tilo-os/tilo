@@ -89,12 +89,14 @@ function offeredHarness(listed) {
   const prefetched = [];
   const loader = async () => ({prefetch: module => { prefetched.push(module); return Promise.resolve(true); }});
   const fetch = async () => ({ok: true, json: async () => ({applications: listed})});
-  return {prefetched, options: {fetch, load: loader, idle: run => run({timeRemaining: () => 4})}};
+  // The warm pass is off unless a test asks for it: these fixtures know
+  // nothing of a person at the page.
+  return {prefetched, options: {fetch, load: loader, idle: soon => soon({timeRemaining: () => 4}), warm: false}};
 }
 const flush = async () => { for (let i = 0; i < 40; i += 1) await Promise.resolve(); };
 
-test('every app the desktop offers is prefetched, so opening one needs no fetch', async () => {
-  const {prefetchOfferedApplications} = await load();
+test("only an app named among the workspace's windows is prefetched", async () => {
+  const {prefetchApplications} = await load();
   const listed = [
     {id: 'so.tilo.activity', module: 'activity'},
     {id: 'so.tilo.chat', module: 'chat'},
@@ -102,17 +104,29 @@ test('every app the desktop offers is prefetched, so opening one needs no fetch'
     {id: 'so.tilo.typst-editor', module: 'typst_editor'},
   ];
   const {prefetched, options} = offeredHarness(listed);
-  await prefetchOfferedApplications(options);
+  await prefetchApplications(['so.tilo.notes', 'so.tilo.chat'], options);
   await flush();
   assert.deepEqual(
     [...prefetched].sort(),
-    listed.map(entry => entry.module).sort(),
-    'every offered app module was prefetched',
+    ['chat', 'notes'],
+    'the apps the windows show were prefetched, and none of the others',
   );
 });
 
+test('with nothing to warm, a page with no app to fetch fetches nothing, not even the listing', async () => {
+  const {prefetchApplications} = await load();
+  const {prefetched, options} = offeredHarness([{id: 'so.tilo.chat', module: 'chat'}]);
+  const asked = [];
+  const fetch = url => { asked.push(String(url)); return options.fetch(url); };
+  await prefetchApplications([], {...options, fetch, warm: false});
+  await prefetchApplications(undefined, {...options, fetch, warm: false});
+  await flush();
+  assert.deepEqual(asked, [], 'no listing was fetched for an empty set');
+  assert.deepEqual(prefetched, []);
+});
+
 test('the prefetch runs a bounded few at a time, each in an idle period', async () => {
-  const {prefetchOfferedApplications} = await load();
+  const {prefetchApplications} = await load();
   const listed = Array.from({length: 8}, (_, i) => ({id: `so.tilo.app${i}`, module: `app${i}`}));
   const prefetched = [];
   let inFlight = 0;
@@ -127,44 +141,113 @@ test('the prefetch runs a bounded few at a time, each in an idle period', async 
     return true;
   }});
   const fetch = async () => ({ok: true, json: async () => ({applications: listed})});
-  await prefetchOfferedApplications({fetch, load: loader, idle: run => { idled.push(1); run({timeRemaining: () => 4}); }});
+  await prefetchApplications(listed.map(entry => entry.id), {fetch, load: loader, warm: false, idle: soon => { idled.push(1); soon({timeRemaining: () => 4}); }});
   await flush();
-  assert.equal(prefetched.length, listed.length, 'every app was prefetched');
+  assert.equal(prefetched.length, listed.length, 'every named app was prefetched');
   assert.ok(peak <= 2, `at most two modules compiled at once, saw ${peak}`);
   assert.ok(idled.length >= listed.length, 'each fetch waited for the page to be idle first');
 });
 
 test('an app listing the bundle does not name is left to its first open', async () => {
-  const {prefetchOfferedApplications} = await load();
-  const {prefetched, options} = offeredHarness([{id: 'so.tilo.chat'}]);
-  await prefetchOfferedApplications(options);
+  const {prefetchApplications} = await load();
+  const {prefetched, options} = offeredHarness([{id: 'so.tilo.chat', module: 'chat'}, {id: 'so.tilo.notes'}]);
+  await prefetchApplications(['so.tilo.chat', 'so.tilo.notes', 'so.tilo.music'], options);
   await flush();
-  assert.deepEqual(prefetched, [], 'an entry with no module prefetches nothing');
+  assert.deepEqual(prefetched, ['chat'], 'an entry with no module, and one not listed, prefetch nothing');
 });
 
 test('a refused listing, or a failed compile, leaves apps to their first open', async () => {
-  const {prefetchOfferedApplications} = await load();
+  const {prefetchApplications} = await load();
   const missing = {fetch: async () => ({ok: false, json: async () => ({})}),
-    load: async () => ({prefetch: () => { throw new Error('no'); }}), idle: run => run()};
-  await prefetchOfferedApplications(missing);
+    load: async () => ({prefetch: () => { throw new Error('no'); }}), idle: soon => soon(), warm: false};
+  await prefetchApplications(['so.tilo.chat'], missing);
   await flush();
   const broken = {fetch: async () => ({ok: true, json: async () => ({applications: [{id: 'so.tilo.chat', module: 'chat'}]})}),
-    load: async () => ({prefetch: async () => { throw new Error('module gone'); }}), idle: run => run()};
-  await prefetchOfferedApplications(broken);
+    load: async () => ({prefetch: async () => { throw new Error('module gone'); }}), idle: soon => soon(), warm: false};
+  await prefetchApplications(['so.tilo.chat'], broken);
   await flush();
   // Nothing thrown: a failed prefetch is the app's first open to report.
 });
 
-test('the prefetch asks once', async () => {
-  const {prefetchOfferedApplications} = await load();
+test("a module is asked for once however often the page names its app", async () => {
+  const {prefetchApplications} = await load();
   let fetches = 0;
   const fetch = async () => { fetches += 1; return {ok: true, json: async () => ({applications: [{id: 'so.tilo.chat', module: 'chat'}]})}; };
   const prefetched = [];
   const loader = async () => ({prefetch: module => { prefetched.push(module); return Promise.resolve(true); }});
-  const options = {fetch, load: loader, idle: run => run()};
-  await prefetchOfferedApplications(options);
-  await prefetchOfferedApplications(options);
+  const options = {fetch, load: loader, idle: soon => soon(), warm: false};
+  await prefetchApplications(['so.tilo.chat'], options);
+  // The status restates the windows on every presented frame.
+  await prefetchApplications(['so.tilo.chat'], options);
+  await prefetchApplications(['so.tilo.chat', 'so.tilo.chat'], options);
   await flush();
-  assert.equal(fetches, 1, 'one listing for the page');
-  assert.equal(prefetched.length, 1, 'one prefetch for the page');
+  assert.equal(fetches, 1, 'one listing for the page, remembered');
+  assert.deepEqual(prefetched, ['chat'], 'one prefetch of a module per page');
+});
+
+/** A loader that keeps what it was asked for and how many compiles were in
+ * flight at once. */
+function warmingHarness(listed) {
+  const prefetched = [];
+  let inFlight = 0;
+  let peak = 0;
+  const loader = async () => ({prefetch: async module => {
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
+    await Promise.resolve();
+    prefetched.push(module);
+    inFlight -= 1;
+    return true;
+  }});
+  const fetch = async () => ({ok: true, json: async () => ({applications: listed})});
+  return {prefetched, peak: () => peak, options: {fetch, load: loader, idle: soon => soon({timeRemaining: () => 4})}};
+}
+
+test("the rest of the shelf warms one at a time once the person is quiet", async () => {
+  const {prefetchApplications} = await load();
+  const listed = [
+    {id: 'so.tilo.activity', module: 'activity'},
+    {id: 'so.tilo.chat', module: 'chat'},
+    {id: 'so.tilo.notes', module: 'notes'},
+    {id: 'so.tilo.poker', module: 'poker'},
+  ];
+  const {prefetched, peak, options} = warmingHarness(listed);
+  const waited = [];
+  await prefetchApplications(['so.tilo.notes'], {...options, untilPersonQuiet: async () => { waited.push(1); }});
+  await flush();
+  assert.deepEqual(prefetched, ['notes', 'activity', 'chat', 'poker'], "the windows' app first, then the rest in the shelf's order");
+  assert.equal(waited.length, 3, 'each of the rest waited for the person to be quiet first');
+  assert.equal(peak(), 1, 'the warm pass compiles one module at a time');
+});
+
+test('a person busy at the page holds the warm pass back until they stop', async () => {
+  const {prefetchApplications} = await load();
+  const listed = [{id: 'so.tilo.chat', module: 'chat'}, {id: 'so.tilo.notes', module: 'notes'}];
+  const {prefetched, options} = warmingHarness(listed);
+  let quiet = false;
+  const untilPersonQuiet = () => quiet
+    ? Promise.resolve()
+    : new Promise(resolve => { globalThis.__releaseWarm = () => { quiet = true; resolve(); }; });
+  // A page with no window open still has a shelf to warm, and it waits.
+  const waiting = prefetchApplications([], {...options, untilPersonQuiet});
+  await flush();
+  assert.deepEqual(prefetched, [], 'nothing fetched while the person is at the page');
+  assert.equal(quiet, false);
+  globalThis.__releaseWarm();
+  await waiting;
+  await flush();
+  assert.deepEqual(prefetched, ['chat', 'notes'], 'the shelf warmed once the person went quiet');
+  delete globalThis.__releaseWarm;
+});
+
+test("the windows' apps fetch without waiting for a quiet page", async () => {
+  const {prefetchApplications} = await load();
+  const listed = [{id: 'so.tilo.chat', module: 'chat'}, {id: 'so.tilo.notes', module: 'notes'}];
+  const {prefetched, options} = warmingHarness(listed);
+  const untilPersonQuiet = () => new Promise(() => {});
+  const running = prefetchApplications(['so.tilo.notes'], {...options, untilPersonQuiet});
+  await flush();
+  assert.deepEqual(prefetched, ['notes'], "the window's app was fetched while the rest waits");
+  void running;
+  delete globalThis.__releaseWarm;
 });

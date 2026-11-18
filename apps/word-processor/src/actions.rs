@@ -14,17 +14,13 @@ pub mod view_ops;
 use automerge::AutoCommit;
 use std::collections::HashSet;
 
-use tilo_actions::{ActionRegistry, ContextRequirement};
+use tilo_actions::ContextRequirement;
 use ui::tilo_resource::Effect as _;
 
 use crate::effects::WordProcessorEffect;
 
 pub use tilo_document::action::*;
 pub use tilo_document::block_edit::Placement;
-/// Register the word processor's action decoder for palette execution and replay.
-pub fn register(registry: &mut ActionRegistry) {
-    <crate::model::Document as ui::tilo_resource::Resource>::register(registry);
-}
 
 /// What Ctrl+K needs to build the document's resource tree: the caret block and offset,
 /// the blocks a block-level action targets, the selection, Find results and content.
@@ -170,7 +166,7 @@ mod tests {
     use super::*;
     use automerge::transaction::Transactable;
     use tilo_actions::LocalTransport;
-    use tilo_actions::{ActionError, EncodedAction};
+    use tilo_actions::{ActionError, ActionRegistry, EncodedAction};
     use tilo_automerge::ApplyIncoming;
     use ui::tilo_resource::{Slot, write_key};
 
@@ -212,7 +208,7 @@ mod tests {
     use ui::testing::action_contract::spec_encoding;
 
     fn registry() -> ActionRegistry {
-        ActionRegistry::with(register)
+        ActionRegistry::with(ui::tilo_resource::group::register::<crate::model::Document>)
     }
 
     #[test]

@@ -16,7 +16,7 @@ use std::rc::Rc;
 
 use durable_store::{DurableStore, MemoryStore, StorageKey};
 use ui::application::{LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput};
-use ui::automerge::{AutoCommit, transaction::Transactable as _};
+use ui::automerge::{AutoCommit, ROOT, transaction::Transactable as _};
 use ui::headless::{HeadlessApp, fixture_runner_inputs};
 use ui::resource::{DocumentCheckout, DocumentId, ResourceOpenError, ResourceOwners};
 
@@ -162,4 +162,76 @@ fn a_record_with_changes_is_kept_for_whoever_opens_it() {
         Landed::Kept(doc.get_heads()),
         "an empty landing leaves what the page holds"
     );
+}
+
+/// A document the page keeps names the heads its bytes stand at, so a reader on this thread that
+/// already holds it (the replica that captured it) is found by them: a window opening the document
+/// takes its copy instead of loading it again.
+#[test]
+fn a_kept_document_names_the_heads_a_reader_holds_it_at() {
+    let memory = Rc::new(MemoryStore::queued());
+    let id = DocumentId::parse("tab:00000000000000a1").expect("a document id");
+    let key = key(ui::apps::NOTES, &id);
+    let mut doc = AutoCommit::new();
+    for page in 0..100 {
+        doc.put(ROOT, format!("page-{page}"), text(page)).unwrap();
+        doc.commit();
+    }
+    let heads = doc.committed_heads();
+    let raw: Vec<[u8; 32]> = heads.iter().map(|head| head.0).collect();
+    let bytes = doc.save();
+    tilo_automerge::shared::clear();
+    // The workspace's replica captured these bytes: a reader on this thread holds the document.
+    tilo_automerge::shared::hold(&bytes, &doc);
+    assert_eq!(
+        keep(&*memory, &key, bytes, &raw).expect("the page reads it"),
+        Landed::Kept(heads.clone())
+    );
+    let stored = memory.read(&key).unwrap().unwrap().bytes;
+    let hint = memory
+        .read_hint(&key)
+        .expect("a kept document names its heads");
+    assert_eq!(
+        tilo_automerge::load_hint::heads_for(&hint, &stored),
+        Some(heads),
+        "the reader that holds it is found by the heads the document stands at"
+    );
+
+    // A newer landing names the heads it merged to, not the ones before it: the document a window
+    // opens is the one the store now holds.
+    let mut newer = doc.fork();
+    newer
+        .put(ROOT, "page-extra", "a page written elsewhere")
+        .unwrap();
+    newer.commit();
+    let newer_heads = newer.committed_heads();
+    let raw_newer: Vec<[u8; 32]> = newer_heads.iter().map(|head| head.0).collect();
+    assert_eq!(
+        keep(&*memory, &key, newer.save(), &raw_newer).expect("the page reads it"),
+        Landed::Kept(newer_heads.clone())
+    );
+    let stored = memory.read(&key).unwrap().unwrap().bytes;
+    let hint = memory
+        .read_hint(&key)
+        .expect("the newer landing names the heads it stands at");
+    assert_eq!(
+        tilo_automerge::load_hint::heads_for(&hint, &stored),
+        Some(newer_heads)
+    );
+}
+
+/// Text that does not compress much, as a page of a notebook imported from another editor's
+/// export does not: `len` hex characters from a counter's own values.
+fn text(seed: u64) -> String {
+    use std::fmt::Write as _;
+
+    let mut value = seed;
+    let mut text = String::with_capacity(2_600);
+    while text.len() < 2_560 {
+        value = value
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let _ = write!(text, "{value:016x}");
+    }
+    text
 }

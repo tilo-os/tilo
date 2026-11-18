@@ -68,7 +68,7 @@ const WAITS: &str = "Your person was asked for the password of this calendar acc
 /// The failure code of a call that connected nothing because its person is asked first. It is
 /// not the code of an action that wants a confirmation: the agent's tools word that one
 /// themselves, and the words here are the ones the agent must read.
-const ASKED_FIRST: &str = "asked_person_first";
+pub(super) const ASKED_FIRST: &str = "asked_person_first";
 
 /// How long an ask whose question is not in the conversation is kept: its turn's server stopped
 /// between keeping it and asking.
@@ -79,8 +79,8 @@ const INTERRUPTED: &str = "The server restarted while this calendar was being co
      your assistant again if it is still wanted.";
 
 /// What the agent is told its person did, where they typed, and where they declined.
-const TYPED: &str = "they typed the password where you cannot read it";
-const DECLINED: &str = "they declined to type the password";
+pub(super) const TYPED: &str = "they typed the password where you cannot read it";
+pub(super) const DECLINED: &str = "they declined to type the password";
 
 /// The most of the calendars' names a question's outcome and an agent's news carry, in bytes.
 const MOST_NAMES_BYTES: usize = 600;
@@ -98,7 +98,7 @@ struct AskedIn {
 }
 
 /// Where and for which turn `caller` asks, as an ask keeps it.
-fn asked_in(caller: &Caller) -> Value {
+pub(super) fn asked_in(caller: &Caller) -> Value {
     let turn = caller.turn();
     let kept = AskedIn {
         conversation: turn
@@ -113,6 +113,82 @@ fn asked_in(caller: &Caller) -> Value {
     serde_json::to_value(kept).unwrap_or(Value::Null)
 }
 
+/// Whoever carries out a workspace's agents: what reads the answers to the questions this
+/// server put itself, and carries them out.
+pub(super) type Carrier = super::HostAgents;
+
+/// What this server keeps of a question it put itself for a person's password: enough to put
+/// it, to find it again, and to tell whether it still says what was asked.
+pub(super) trait PutAsk: Sync {
+    /// The agent that asked, by its id.
+    fn by_agent(&self) -> &str;
+    /// The person asked: their root key, hex.
+    fn of_person(&self) -> &str;
+    /// What the protected field is drawn from.
+    fn shown(&self) -> Value;
+    /// The question's words, as this server says them.
+    fn said(&self) -> String;
+    /// Where and for which turn it was asked.
+    fn put_in(&self) -> &Value;
+}
+
+impl PutAsk for ConnectAsk {
+    fn by_agent(&self) -> &str {
+        &self.agent
+    }
+
+    fn of_person(&self) -> &str {
+        &self.person
+    }
+
+    fn shown(&self) -> Value {
+        self.detail()
+    }
+
+    fn said(&self) -> String {
+        self.words()
+    }
+
+    fn put_in(&self) -> &Value {
+        &self.asked_in
+    }
+}
+
+/// Put the question `open` keeps to its person as `caller`, in their own conversation with the
+/// agent: what it shows of their account is theirs alone to read.
+pub(super) async fn put(
+    service: &WorkspaceActionProvider,
+    caller: &Caller,
+    workspace: &str,
+    open: &dyn PutAsk,
+) -> Result<(), String> {
+    let conversation = chat::Chat::direct_id([
+        MemberId::person(open.of_person().to_owned()),
+        MemberId::agent(open.by_agent().to_owned()),
+    ])
+    .to_string();
+    let mut arguments = Map::new();
+    arguments.insert("channel".into(), json!(conversation));
+    arguments.insert("text".into(), json!(open.said()));
+    arguments.insert("kind".into(), json!(chat::question::SECRET));
+    arguments.insert("detail".into(), open.shown());
+    let route = DocumentRoute {
+        app_id: CHAT.to_owned(),
+        cluster_id: workspace.to_owned(),
+        document: String::new(),
+    };
+    invoke_named(
+        service,
+        caller,
+        &route,
+        &ui::resource::chain_resource_id(&chat::parts::chain()),
+        "ask",
+        arguments,
+    )
+    .await
+    .map(drop)
+}
+
 /// What one turn connects of its person's calendars. A turn's caller changes when its person
 /// writes again while it works, so each telling is taken as the caller of the tool call that
 /// made it.
@@ -121,8 +197,6 @@ pub(super) struct TurnConnects {
     workspace: String,
     workspace_id: WorkspaceId,
     agent: Agent,
-    /// The person the turn acts for, by their person id.
-    person: String,
     /// The connecting this turn is offered: none for a turn the entry refuses.
     offered: Vec<CatalogueRow>,
     /// The workspace's own actions, through which the question is put.
@@ -147,7 +221,6 @@ impl TurnConnects {
             workspace: reply.workspace.clone(),
             workspace_id,
             agent: turn.agent.clone(),
-            person: turn.person.clone(),
             offered,
             service: reply.provider.clone(),
         })
@@ -173,16 +246,18 @@ impl TurnConnects {
             .await?;
         let words = match taken {
             TurnConnect::Waits => WAITS.to_owned(),
-            TurnConnect::Asks(open) => match self.put(caller, &open).await {
-                Ok(()) => ASKED.to_owned(),
-                Err(why) => {
-                    workspaces.connect_not_asked(&open);
-                    format!(
-                        "Your person could not be asked for the password ({why}), so nothing was \
+            TurnConnect::Asks(open) => {
+                match put(&self.service, caller, &self.workspace, open.as_ref()).await {
+                    Ok(()) => ASKED.to_owned(),
+                    Err(why) => {
+                        workspaces.connect_not_asked(&open);
+                        format!(
+                            "Your person could not be asked for the password ({why}), so nothing was \
                          connected."
-                    )
+                        )
+                    }
                 }
-            },
+            }
         };
         Ok(InvocationUpdate::Failed {
             invocation: request.invocation,
@@ -193,36 +268,6 @@ impl TurnConnects {
                 retryable: false,
             },
         })
-    }
-
-    /// Put the question about `open` to its person, in their own conversation with the agent:
-    /// what it shows of their calendar is theirs alone to read.
-    async fn put(&self, caller: &Caller, open: &ConnectAsk) -> Result<(), String> {
-        let conversation = chat::Chat::direct_id([
-            MemberId::person(self.person.clone()),
-            MemberId::agent(self.agent.id.0.clone()),
-        ])
-        .to_string();
-        let mut arguments = Map::new();
-        arguments.insert("channel".into(), json!(conversation));
-        arguments.insert("text".into(), json!(open.words()));
-        arguments.insert("kind".into(), json!(chat::question::SECRET));
-        arguments.insert("detail".into(), open.detail());
-        let route = DocumentRoute {
-            app_id: CHAT.to_owned(),
-            cluster_id: self.workspace.clone(),
-            document: String::new(),
-        };
-        invoke_named(
-            &self.service,
-            caller,
-            &route,
-            &ui::resource::chain_resource_id(&chat::parts::chain()),
-            "ask",
-            arguments,
-        )
-        .await
-        .map(drop)
     }
 }
 
@@ -262,7 +307,7 @@ impl TurnProvider for TurnConnects {
 }
 
 /// How the question about a calendar to connect stands, where it is not over.
-enum Stands {
+pub(super) enum Stands {
     /// Its person has not answered.
     Waiting,
     /// Its person answered: the reference of what they typed, none where they declined.
@@ -272,16 +317,16 @@ enum Stands {
 }
 
 /// The question this server put about an ask, where the workspace's chat holds it.
-struct Found {
+pub(super) struct Found {
     /// The part of the chat's messages that holds the question.
-    document: String,
-    message: String,
+    pub(super) document: String,
+    pub(super) message: String,
     /// The conversation it stands in.
-    conversation_id: String,
+    pub(super) conversation_id: String,
     /// Whether it stands as this server asked it: it alone carries the ask, it says the
     /// server's words, and it was never edited.
-    as_asked: bool,
-    stands: Stands,
+    pub(super) as_asked: bool,
+    pub(super) stands: Stands,
 }
 
 /// The reference an answer's `detail` carries, as a person's device wrote it.
@@ -296,12 +341,15 @@ fn reference_of(detail: &str) -> Option<String> {
 /// The question this server put about `ask`, where `parts` hold it and it is not over: the one
 /// its agent wrote for that person that asks for a login at the calendar server under the user
 /// name. A question that ended, by whoever, is not it.
-fn question_about(parts: &[(String, chat::parts::ChatPart)], ask: &ConnectAsk) -> Option<Found> {
+pub(super) fn question_about(
+    parts: &[(String, chat::parts::ChatPart)],
+    ask: &dyn PutAsk,
+) -> Option<Found> {
     let (agent, person) = (
-        MemberId::agent(ask.agent.clone()),
-        MemberId::person(ask.person.clone()),
+        MemberId::agent(ask.by_agent().to_owned()),
+        MemberId::person(ask.of_person().to_owned()),
     );
-    let shown = ask.detail();
+    let shown = ask.shown();
     let mut open = parts
         .iter()
         .flat_map(|(document, part)| {
@@ -337,7 +385,7 @@ fn question_about(parts: &[(String, chat::parts::ChatPart)], ask: &ConnectAsk) -
     // its person was asked.
     let alone = open.next().is_none();
     let as_asked = alone
-        && message.text.trim() == ask.words().trim()
+        && message.text.trim() == ask.said().trim()
         && !message.edited
         && message.history.is_empty();
     Some(Found {
@@ -389,7 +437,7 @@ struct Carrying {
     outside: Caller,
 }
 
-impl super::HostAgents {
+impl Carrier {
     /// Carry out what the people of `workspace` answered where they were asked for the password
     /// of a calendar to connect: each answer once, claimed and said on its question before
     /// this returns, so what the look reads next finds no answer of these left to wake anybody
@@ -509,17 +557,17 @@ impl super::HostAgents {
     /// what the entry decides it by, and outside any turn, which is how it says what came of
     /// the answer once that turn has ended. `None` when the workspace admits the person on no
     /// device.
-    async fn connect_asker(
+    pub(super) async fn connect_asker(
         &self,
         workspace: &str,
         workspace_id: WorkspaceId,
-        ask: &ConnectAsk,
+        ask: &dyn PutAsk,
         agent: &Agent,
     ) -> Option<(Caller, Caller)> {
         let mut person = [0; 32];
-        hex::decode_to_slice(&ask.person, &mut person).ok()?;
+        hex::decode_to_slice(ask.of_person(), &mut person).ok()?;
         let device = self.workspaces.person_device(workspace_id, person).await?;
-        let asked_in: AskedIn = serde_json::from_value(ask.asked_in.clone()).ok()?;
+        let asked_in: AskedIn = serde_json::from_value(ask.put_in().clone()).ok()?;
         let outside = Caller::authenticated(person, device)
             .in_workspace(workspace)
             .delegated_to(agent.id.0.clone())

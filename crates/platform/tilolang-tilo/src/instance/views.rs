@@ -14,20 +14,50 @@ use tilolang_runtime::store::StoreError;
 use super::rows::{FIRST_ROWS, ListRows};
 use super::wire;
 use super::{
-    HistoryAsk, Instance, Shown, bound_values, convert_with, patch_in_place, referenced_resource,
-    rows_message, show_content_rows, sort, virtual_list_paths, window_tree,
+    HistoryAsk, Instance, Shown, bound_values, convert_with, facts, patch_in_place,
+    referenced_resource, rows_message, show_content_rows, sort, virtual_list_paths, window_tree,
 };
 use crate::host::Host;
 use crate::runtime::Store as _;
 use crate::runtime::{ResourceRef, ViewEvent};
 
 impl Instance {
+    /// The facts page, drawn again when what it says changed: the resource's fields, or what
+    /// only the window knows (a member's name, a day in the person's format). Whether it did.
+    pub(super) fn poll_facts(&mut self) -> bool {
+        if !std::mem::take(&mut self.facts_stale) {
+            return false;
+        }
+        let Some(app) = self.host() else {
+            return false;
+        };
+        let Some(facts) = self.facts.as_mut() else {
+            return false;
+        };
+        let details = self.platform.phrase("tilolang-detail", &[]);
+        let Some(tree) = facts::page(app.runtime(), &facts.target, &details) else {
+            return false;
+        };
+        let mut patches = Vec::new();
+        wire::diff(&facts.sent, &tree, &mut patches);
+        facts.sent = tree;
+        if patches.is_empty() {
+            return false;
+        }
+        self.out.push(ToUi::Patch {
+            level: Level::Detail,
+            patches,
+        });
+        true
+    }
+
     /// Open the package's root view.
     pub(super) fn open_root(&mut self, host: &Host) {
         match host.open_layer_at(&self.app, &self.root_view) {
             Ok((target, view)) => {
                 self.root = Some(Shown::new(target, self.spaced(Level::Root, view)));
-                if self.detail.take().is_some() {
+                let closed = self.detail.take().is_some() | self.facts.take().is_some();
+                if closed {
                     self.out.push(ToUi::Close);
                 }
                 self.send_open(Level::Root, None);
@@ -68,23 +98,47 @@ impl Instance {
         with: Option<&str>,
         front: Option<ui::Front>,
     ) {
-        let Some(host) = self.host() else {
+        let Some(app) = self.host() else {
             return;
         };
         if self
             .detail
             .as_ref()
             .is_some_and(|detail| detail.target == *target && with.is_none())
+            || (with.is_none()
+                && self
+                    .facts
+                    .as_ref()
+                    .is_some_and(|facts| facts.target == *target))
         {
             if let Some(front) = front {
                 self.out.push(ToUi::Front { front, shows: None });
             }
             return;
         }
-        match host.open_resource(target, with) {
+        let view = match with {
+            Some(view) => Some(view.to_owned()),
+            None => app.runtime().default_view(&target.ty),
+        };
+        let Some(view) = view else {
+            // The type declares no view: the platform's facts page says what the resource is
+            // (a tag, a table's row, a card's item), rather than a press that shows nothing.
+            let details = self.platform.phrase("tilolang-detail", &[]);
+            let Some(tree) = facts::page(app.runtime(), target, &details) else {
+                tracing::warn!(ty = %target.ty, "a resource did not open");
+                self.notice(Words::phrase("tilolang-open-failed"), ui::NoticeKind::Error);
+                return;
+            };
+            self.open_facts(target, tree, front);
+            return;
+        };
+        match app.open_resource(target, Some(&view)) {
             Ok(view) => {
                 let mut view = Shown::new(target.clone(), self.spaced(Level::Detail, view));
                 view.with = with.map(str::to_owned);
+                if let Some(shown) = self.facts.take() {
+                    self.seen_in_window(&shown.target);
+                }
                 if let Some(shown) = self.detail.replace(view) {
                     self.seen_in_window(&shown.target);
                 }
@@ -97,6 +151,27 @@ impl Instance {
                 self.notice(Words::phrase("tilolang-open-failed"), ui::NoticeKind::Error);
             }
         }
+    }
+
+    /// Show `target` in the platform's facts page: its name, its type and its fields as facts
+    /// ([`crate::instance::facts`]). The level's page, so Back leaves it as any page.
+    fn open_facts(&mut self, target: &ResourceRef, tree: ui::Node, front: Option<ui::Front>) {
+        if let Some(shown) = self.detail.take() {
+            self.seen_in_window(&shown.target);
+        }
+        if let Some(shown) = self.facts.replace(facts::Facts {
+            target: target.clone(),
+            sent: tree.clone(),
+        }) {
+            self.seen_in_window(&shown.target);
+        }
+        self.lenses_changed = true;
+        self.out.push(ToUi::Open {
+            level: Level::Detail,
+            target: wire::resource(target),
+            tree,
+            front,
+        });
     }
 
     /// Show `resource` in the detail level with the view `view` (an id) rather than its type's
@@ -144,9 +219,14 @@ impl Instance {
         self.open_detail(target, None, front);
     }
 
-    /// Close the detail view: Back.
+    /// Close the detail level: Back.
     pub fn close_detail(&mut self) {
         if let Some(shown) = self.detail.take() {
+            self.seen_in_window(&shown.target);
+            self.lenses_changed = true;
+            self.out.push(ToUi::Close);
+        }
+        if let Some(shown) = self.facts.take() {
             self.seen_in_window(&shown.target);
             self.lenses_changed = true;
             self.out.push(ToUi::Close);

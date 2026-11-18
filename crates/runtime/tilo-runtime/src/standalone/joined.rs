@@ -12,12 +12,6 @@ use std::{
     sync::{Arc, Mutex},
     time::SystemTime,
 };
-use tilo_action_broker::{
-    collab_broker::FanoutState,
-    collab_core::BrokerChannels,
-    collab_inbound::{self, RemoteDocument},
-    workspace_keys::{GovernancePark, GovernanceTransport, InboundGovernance, KeyProvider},
-};
 use tilo_desktop_model::{Workspace, WorkspaceId};
 use tilo_identity::identity_store::DeviceIdentity;
 use tilo_peer_state::direct::{DirectSync, Heard};
@@ -27,6 +21,12 @@ use tilo_peer_state::owner::{
     session::{Connect, Holder, Input, Link, Linked, Reach, Scope, hold},
 };
 use tilo_peer_state::owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService};
+use tilo_workspace_service::apps::{
+    collab_broker::FanoutState,
+    collab_core::BrokerChannels,
+    collab_inbound::{self, RemoteDocument},
+    workspace_keys::{GovernancePark, GovernanceTransport, InboundGovernance, KeyProvider},
+};
 use tokio::sync::Notify;
 
 #[path = "joined_content.rs"]
@@ -59,7 +59,7 @@ pub(super) struct Joined {
     fanout: Arc<FanoutState>,
     sessions: Mutex<BTreeMap<WorkspaceId, WorkspaceSession>>,
     /// The profile's record-content service, once the broker runs.
-    content: std::sync::OnceLock<Arc<tilo_action_broker::document_content::RouteContent>>,
+    content: std::sync::OnceLock<Arc<tilo_workspace_service::apps::document_content::RouteContent>>,
     /// Channel governance the sessions received, for the channel service.
     governance: Mutex<Vec<InboundGovernance>>,
     /// Wakes the channel service's pump when governance arrives.
@@ -416,7 +416,7 @@ impl Joined {
         now: u64,
     ) -> Option<std::collections::BTreeSet<collab_types::Ed25519PublicKey>> {
         let at = std::time::SystemTime::UNIX_EPOCH
-            .checked_add(tilo_action_broker::workspace_keys::policy_instant(now))
+            .checked_add(tilo_workspace_service::apps::workspace_keys::policy_instant(now))
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
         let holders = self
             .owner

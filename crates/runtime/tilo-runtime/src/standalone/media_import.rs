@@ -4,15 +4,15 @@
 
 use std::sync::Arc;
 
-use tilo_action_broker::services::{
-    WorkspaceGovernanceOutcome, WorkspaceGovernanceRequest, WorkspaceGovernanceServices,
-};
 use tilo_actions::remote::Pending;
 use tilo_actions::{ActionAddress, ActionContract, ActionDescriptor, ActionParam, ParamType};
 use tilo_desktop_model::{Workspace, WorkspaceId};
 use tilo_fs::document_media::{
     DocumentMedia, LegacyImportApproval, LegacyImportAuthority, LegacyImportRequest,
     LegacyMediaImportHost, MAX_LEGACY_IMPORT_LIFETIME,
+};
+use tilo_workspace_service::apps::services::{
+    WorkspaceGovernanceOutcome, WorkspaceGovernanceRequest, WorkspaceGovernanceServices,
 };
 
 use super::workspace::ProfileWorkspace;

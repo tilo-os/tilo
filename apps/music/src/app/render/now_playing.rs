@@ -117,10 +117,9 @@ impl NowPlayingLink {
     /// The link, invoking the item's own Open.
     fn control(&self) -> Option<Link> {
         let (id, kind, label) = &self.resource;
-        let resource = ui::tilo_actions::ResourceSpec::new(id.clone(), *kind, self.name.clone())
-            .with_action(crate::actions::bound(&self.effect, label));
-        let binding =
-            ui::tilo_actions::ActionBinding::unit_for(&resource, self.effect.id()).ok()?;
+        let row = ui::framework::LiveRow::new(id.clone(), *kind, self.name.clone())
+            .operation(crate::actions::bound(&self.effect, label));
+        let binding = ui::tilo_actions::ActionBinding::unit_for(&row, self.effect.id()).ok()?;
         Some(Link::action(&self.name, binding).with_text_role(TextRole::Body))
     }
 }

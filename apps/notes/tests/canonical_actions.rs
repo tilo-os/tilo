@@ -27,8 +27,9 @@ fn duplicate_subtree_round_trips_rich_content_and_mints_fresh_ids() {
         let encoded = actions::encode(&action);
         let mut a = doc.clone();
         let mut b = doc.clone();
-        let mut registry = tilo_actions::ActionRegistry::new();
-        <notes::PagePart as ui::tilo_resource::Resource>::register(&mut registry);
+        let registry = tilo_actions::ActionRegistry::with(
+            ui::tilo_resource::group::register::<notes::PagePart>,
+        );
         let dispatched = tilo_actions::dispatch(
             &mut a,
             &action,
@@ -190,8 +191,8 @@ fn bound_rich_split_tree_moves_and_duplicates_are_owned_actions() {
         a.set_modifiers(&[]);
         assert_eq!(
             revision(&f, &checkout),
-            before + 2,
-            "the typed word closes, then the format"
+            before + 1,
+            "the format is a step of its own after the typed word"
         );
         f.store
             .read(&f.part(), |doc| {
@@ -236,7 +237,7 @@ fn bound_rich_split_tree_moves_and_duplicates_are_owned_actions() {
             })
             .unwrap();
         f.store
-            .with_history(&checkout.id, |doc, history| {
+            .with_history(&f.part(), |doc, history| {
                 history.undo_in(doc, &f.author, 11, None, None).unwrap();
                 assert_eq!(
                     read::page_block_snapshots(doc, page)
@@ -369,8 +370,9 @@ fn bound_rich_split_tree_moves_and_duplicates_are_owned_actions() {
             &mut tilo_actions::LocalTransport::new(),
         )
         .unwrap();
-        let mut registry = tilo_actions::ActionRegistry::new();
-        <notes::PagePart as ui::tilo_resource::Resource>::register(&mut registry);
+        let registry = tilo_actions::ActionRegistry::with(
+            ui::tilo_resource::group::register::<notes::PagePart>,
+        );
         tilo_actions::replay(&mut b, dispatched.envelope(), &registry).unwrap();
         assert_eq!(a.get_heads(), b.get_heads());
         notes::read::validate(&a).unwrap();
@@ -497,6 +499,7 @@ fn bound_undo_to_empty_retypes_once_and_keeps_imports() {
         let checkout = notebook(&f);
         let before = f.store.read(&f.part(), content).unwrap();
         let mut a = driver(&f, 11, &checkout);
+        let revision_before = revision(&f, &checkout);
         invoke_with(
             &mut a,
             11,
@@ -504,9 +507,9 @@ fn bound_undo_to_empty_retypes_once_and_keeps_imports() {
             "rename",
             serde_json::json!({ "title": "first user edit" }),
         );
+        assert_eq!(revision(&f, &checkout), revision_before + 1);
         f.store
-            .with_history(&checkout.id, |doc, history| {
-                assert_eq!(history.revision(), 1);
+            .with_history(&f.part(), |doc, history| {
                 history.undo_in(doc, &f.author, 11, None, None).unwrap();
                 assert_eq!(content(doc), before);
                 assert!(history.next_undo_in(doc, &f.author, 11).is_none());
@@ -701,29 +704,10 @@ fn registry_authority_and_stale_page_views_keep_other_instances_live() {
     }
 }
 
-/// Type `text` at the start of `page`'s first paragraph.
-fn prepend(doc: &mut automerge::AutoCommit, page: notes::PageId, text: &str) {
-    let block = read::page_block_snapshots(doc, page)[0].0.clone();
-    crate::component_support::edit_page_body(
-        doc,
-        page,
-        &tilo_document::RichTextAction::SpliceText {
-            region: tilo_document::action::RegionKind::Body,
-            block,
-            at: 0,
-            del: 0,
-            ins: text.into(),
-        },
-    )
-    .unwrap();
-}
-
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn peer_mounts_and_rejected_deltas_keep_owners_and_the_empty_cta() {
-    eprintln!(
-        "phase mounting_same_author_peer_preserves_pending_typing_owner_and_stale_callback_refuses"
-    );
+    eprintln!("phase mounting_the_same_author_keeps_their_typing_their_own_step");
     {
         let f = NotebookFixture::rich();
         let checkout = notebook(&f);
@@ -734,19 +718,34 @@ fn peer_mounts_and_rejected_deltas_keep_owners_and_the_empty_cta() {
                 read::page_block_snapshots(doc, f.root)[0].1.clone()
             })
             .unwrap();
-        a.pending_edit(|doc| prepend(doc, f.root, "A pending "))
+        // The window's person types into the note: one step of the part, in
+        // their name.
+        let block = f
+            .store
+            .read(&f.part(), |doc| {
+                read::page_block_snapshots(doc, f.root)[0].0.clone()
+            })
             .unwrap();
-        let before = f
+        let prepend = |text: &str| tilo_document::RichTextAction::SpliceText {
+            region: tilo_document::action::RegionKind::Body,
+            block: block.clone(),
+            at: 0,
+            del: 0,
+            ins: text.into(),
+        };
+        crate::component_support::type_body_as_person(&f, f.root, &prepend("A pending "));
+        let typed = f
             .store
             .read(&f.part(), |doc| (doc.base_heads(), doc.pending_ops()))
             .unwrap();
-        assert!(before.1 > 0);
+        assert_eq!(typed.1, 0, "the window's typing is committed, one step");
+        let typed_revision = revision(&f, &checkout);
         let prepared = component(&f, 12, existing(&checkout));
         assert_eq!(
             f.store
                 .read(&f.part(), |doc| (doc.base_heads(), doc.pending_ops()))
                 .unwrap(),
-            before,
+            typed,
             "factory mount"
         );
         let mut b =
@@ -756,7 +755,11 @@ fn peer_mounts_and_rejected_deltas_keep_owners_and_the_empty_cta() {
         for _ in 0..3 {
             b.relayout();
         }
-        assert_eq!(revision(&f, &checkout), 0);
+        assert_eq!(
+            revision(&f, &checkout),
+            typed_revision,
+            "the mount writes nothing"
+        );
         assert_eq!(
             f.store
                 .read(&f.part(), |doc| read::page_block_snapshots(doc, f.root)[0]
@@ -765,9 +768,12 @@ fn peer_mounts_and_rejected_deltas_keep_owners_and_the_empty_cta() {
                 .unwrap(),
             format!("A pending {original}")
         );
-        a.pending_edit(|doc| prepend(doc, f.root, "A continued "))
-            .unwrap();
-        assert_eq!(revision(&f, &checkout), 0);
+        crate::component_support::type_body_as_person(&f, f.root, &prepend("A continued "));
+        assert_eq!(
+            revision(&f, &checkout),
+            typed_revision + 1,
+            "the next words are a step of their own"
+        );
         invoke_with(
             &mut b,
             12,
@@ -775,28 +781,34 @@ fn peer_mounts_and_rejected_deltas_keep_owners_and_the_empty_cta() {
             "rename",
             serde_json::json!({ "title": "B action" }),
         );
+        // Undo walks the parts' steps as the person: the other window's
+        // rename, then each of the typed words, in order.
         f.store
-            .with_history(&checkout.id, |doc, history| {
-                let pending = history.next_undo_in(doc, &f.author, 11).unwrap();
-                assert_eq!(pending.instance_id, Some(11));
-                assert_eq!(pending.author.as_ref(), Some(&f.author));
-                assert_eq!(pending.before, before.0);
+            .with_history(&f.part(), |doc, history| {
+                let rename = history.next_undo_in(doc, &f.author, 11).unwrap();
+                assert_eq!(rename.author.as_ref(), Some(&f.author));
                 history.undo_in(doc, &f.author, 11, None, None).unwrap();
-                assert_eq!(read::page_block_snapshots(doc, f.root)[0].1, original);
                 assert_eq!(
                     read::list_pages(doc)
                         .iter()
                         .find(|p| p.id == f.child)
                         .unwrap()
                         .title,
-                    "B action"
+                    "Launch"
                 );
+                history.undo_in(doc, &f.author, 11, None, None).unwrap();
+                assert_eq!(
+                    read::page_block_snapshots(doc, f.root)[0].1,
+                    format!("A pending {original}")
+                );
+                history.undo_in(doc, &f.author, 11, None, None).unwrap();
+                assert_eq!(read::page_block_snapshots(doc, f.root)[0].1, original);
             })
             .unwrap();
         a.close();
         let mut reopened = driver(&f, 11, &checkout);
         assert!(
-            a.pending_edit(|_| panic!("closed callback was delivered"))
+            a.pending_edit(|_| { panic!("closed callback was delivered") })
                 .is_err()
         );
         invoke_with(
@@ -1023,8 +1035,8 @@ fn assert_empty_retypes_once(
         .unwrap();
     assert_eq!(
         revision(f, checkout),
-        revision_before,
-        "the typed word is one step, still open"
+        revision_before.saturating_add(1),
+        "the typed word is one step"
     );
     assert!(driver.state_mut().doc.base_heads().is_empty());
     assert_eq!(driver.state_mut().doc.pending_ops(), 0);
@@ -1151,7 +1163,7 @@ fn page_tree_bound_action_preserves_rich_bodies_owned_undo_and_revocation() {
         })
         .unwrap();
     f.store
-        .with_history(&checkout.id, |doc, history| {
+        .with_history(&f.part(), |doc, history| {
             history.undo_in(doc, &f.author, 11, None, None).unwrap();
             assert_eq!(content(doc), before);
             assert!(history.next_undo_in(doc, &f.author, 11).is_none());

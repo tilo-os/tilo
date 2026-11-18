@@ -58,24 +58,30 @@ mod change;
 mod content;
 mod direct;
 mod feedback;
+mod files_index;
+mod files_listing;
+mod follow;
 mod found;
 mod found_files;
 mod host_actions;
+mod index;
 mod invocation_log;
 mod invocations;
+mod job;
 mod jobs;
 mod keys;
 mod layout_window;
 mod link;
 mod listing;
 mod member;
-mod notes_folder;
 mod opened;
 mod opened_file;
+mod outcome;
 mod placed;
 mod publish;
 mod reads;
 mod run_context;
+mod search_access;
 mod session_voice;
 mod share;
 mod terminal;
@@ -108,6 +114,9 @@ use collab_types::DocumentMutation;
 use invocation_log::InvocationLog;
 use jobs::Jobs;
 use keys::{Keys, catalogue_keys};
+use outcome::{
+    confirms, exact_view_query, log_outcome, opens_as_its_own, rejected, speaks_for_a_member,
+};
 use publish::Unsaved;
 use run_context::{caller_context, said_invocation_title};
 use tilo_actions::InteractionPhase;
@@ -118,9 +127,7 @@ use tilo_actions::remote::{
     MAX_REMOTE_WAIT, Pending, ReceiptStatus, RemoteActionMessage, application_provider,
     application_provider_resource, pending, provider_workspace,
 };
-use tilo_actions::{
-    ActionFailure, ActionOutput, ConfirmationPolicy, InvocationId, InvocationUpdate, MemberId,
-};
+use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate, MemberId};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use ui::permissions::policy::{ActionKind, Answer, TreePath};
@@ -136,170 +143,6 @@ const JOIN_WAIT: Duration = Duration::from_secs(30);
 /// keys are on their way. A named record whose keys have not arrived by
 /// then is refused, never acted on half seen.
 const KEYS_WAIT: Duration = Duration::from_secs(10);
-enum Job {
-    Feedback {
-        workspace_id: WorkspaceId,
-        query: Box<tilo_actions::remote::feedback::FeedbackQuery>,
-        caller: Caller,
-        done: Completer<Result<tilo_actions::remote::feedback::FeedbackAnswer, ActionCallError>>,
-    },
-    Catalogue {
-        workspace_id: WorkspaceId,
-        query: Box<CatalogueQuery>,
-        caller: Caller,
-        done: Completer<Result<CataloguePage, ActionCallError>>,
-    },
-    Invoke {
-        workspace_id: WorkspaceId,
-        invocation: InvocationId,
-        done: Completer<InvocationReceipt>,
-    },
-    /// A Terminal session's run that ended in the host's shell, to record.
-    Ran(Box<terminal::Ended>),
-    /// A step of an upload into a workspace whose store the service has not
-    /// found yet.
-    Content {
-        workspace_id: WorkspaceId,
-        caller: Caller,
-        step: tilo_actions::remote::ContentPutStep,
-        done: Completer<Result<tilo_actions::remote::ContentPutAnswer, ActionCallError>>,
-    },
-    /// A piece of content asked of a workspace whose store the service has
-    /// not found yet.
-    ContentGet {
-        workspace_id: WorkspaceId,
-        caller: Caller,
-        content: String,
-        offset: u64,
-        length: u64,
-        done: Completer<Result<tilo_actions::remote::ContentGetAnswer, ActionCallError>>,
-    },
-    /// A link to content of a workspace, for a caller who may read it.
-    ContentLink {
-        workspace_id: WorkspaceId,
-        caller: Caller,
-        link: tilo_actions::remote::ContentLinkAsk,
-        done: Completer<Result<tilo_actions::remote::ContentLink, ActionCallError>>,
-    },
-    /// A search of what a workspace holds.
-    Search {
-        workspace_id: WorkspaceId,
-        caller: Caller,
-        needle: String,
-        within: tilo_actions::remote::Within,
-        done: Completer<Result<Vec<tilo_actions::remote::Found>, ActionCallError>>,
-    },
-    /// The changes to a workspace's records after a cursor.
-    Changes {
-        workspace_id: WorkspaceId,
-        caller: Caller,
-        after: Option<String>,
-        done: Completer<Result<tilo_actions::remote::ChangePage, ActionCallError>>,
-    },
-    /// A caller waits for what it follows in a workspace to change
-    /// ([`tilo_actions::remote::ActionProvider::changed`]): a write landing in the workspace's
-    /// records, or who is in it moving.
-    Changed {
-        workspace_id: WorkspaceId,
-        caller: Caller,
-        done: Completer<Result<(), ActionCallError>>,
-    },
-    /// A page of a workspace's runs ([`runs`]).
-    Invocations {
-        workspace_id: WorkspaceId,
-        caller: Caller,
-        query: tilo_actions::remote::workspace_invocations::InvocationsQuery,
-        done: Completer<
-            Result<tilo_actions::remote::workspace_invocations::Invocations, ActionCallError>,
-        >,
-    },
-    /// An agent's run connected to a workspace and has asked nothing yet:
-    /// it is present there, waiting ([`session_voice`]).
-    Arrived {
-        workspace_id: WorkspaceId,
-        caller: Caller,
-    },
-    /// A workspace requests wait to be joined to changed: those it joined
-    /// run.
-    Joined(WorkspaceId),
-    /// A workspace was deleted: the service lets go of all it holds of it.
-    Forget(WorkspaceId),
-    /// A workspace's notebook or folder took a write: its notes and their files in the
-    /// folder are brought into step ([`notes_folder`]).
-    NotesFolder(WorkspaceId),
-    /// A record written since its name was last read: its name in its app's index is
-    /// read again ([`publish`]).
-    Rename(WorkspaceId, DocumentRoute),
-}
-
-impl Job {
-    const fn kind(&self) -> &'static str {
-        match self {
-            Self::Feedback { .. } => "feedback",
-            Self::Catalogue { .. } => "catalogue",
-            Self::Invoke { .. } => "invoke",
-            Self::Ran(_) => "ran",
-            Self::Arrived { .. } => "arrived",
-            Self::Content { .. } => "content",
-            Self::ContentGet { .. } => "content-get",
-            Self::ContentLink { .. } => "content-link",
-            Self::Search { .. } => "search",
-            Self::Changes { .. } => "changes",
-            Self::Invocations { .. } => "invocations",
-            Self::Changed { .. } => "changed",
-            Self::Joined(_) => "joined",
-            Self::Forget(_) => "forget",
-            Self::NotesFolder(_) => "notes-folder",
-            Self::Rename(..) => "rename",
-        }
-    }
-
-    /// The workspace whose records the job reads or changes.
-    const fn workspace(&self) -> Option<WorkspaceId> {
-        match self {
-            Self::Catalogue { workspace_id, .. }
-            | Self::Invoke { workspace_id, .. }
-            | Self::Content { workspace_id, .. }
-            | Self::ContentGet { workspace_id, .. }
-            | Self::ContentLink { workspace_id, .. }
-            | Self::Search { workspace_id, .. }
-            | Self::Changes { workspace_id, .. }
-            | Self::Invocations { workspace_id, .. }
-            | Self::Changed { workspace_id, .. }
-            | Self::Arrived { workspace_id, .. }
-            | Self::NotesFolder(workspace_id)
-            | Self::Rename(workspace_id, _) => Some(*workspace_id),
-            Self::Feedback { .. } | Self::Ran(_) | Self::Joined(_) | Self::Forget(_) => None,
-        }
-    }
-
-    /// What the job must have before it reads its workspace: what it is about
-    /// to read names what it waits for. An invocation is named here by its id
-    /// alone: the worker reads its request from the log
-    /// ([`Worker::keys`]).
-    fn keys(&self) -> Keys {
-        match self {
-            Self::Catalogue { query, .. } => catalogue_keys(query),
-            // Every record the workspace holds is searched and followed.
-            Self::Search { .. }
-            | Self::Changes { .. }
-            | Self::Invocations { .. }
-            | Self::Changed { .. } => Keys::Workspace,
-            Self::Feedback { .. }
-            | Self::Invoke { .. }
-            | Self::Ran(_)
-            | Self::Content { .. }
-            | Self::ContentGet { .. }
-            | Self::ContentLink { .. }
-            | Self::Arrived { .. }
-            | Self::Joined(_)
-            | Self::Forget(_)
-            | Self::NotesFolder(_)
-            | Self::Rename(..) => Keys::Joined,
-        }
-    }
-}
-
 /// A request that waited for the worker, or ran, at least this long is
 /// logged: every request of a workspace waits behind the one before it, and
 /// behind the requests of the other workspaces its thread serves.
@@ -327,10 +170,29 @@ struct Shared {
     approvals: bounded::Approvals,
     /// What asks an agent's person in the conversation its turn is in.
     in_conversation: std::sync::RwLock<Option<Arc<dyn AsksInConversation>>>,
-    /// Workspaces whose notes and folder wait for a pass to bring them into step.
-    projecting: Mutex<HashSet<WorkspaceId>>,
     /// Records whose name in their app's index waits to be read again.
     renaming: Mutex<HashSet<DocumentRoute>>,
+    /// What search read of the documents, counted for the timing lines and for the tests that
+    /// hold a query to the index instead of to what it is built from.
+    search: SearchActivity,
+}
+
+/// What search read of the documents and the folder, counted for the timing lines and for the
+/// tests that hold a query to the index instead of to what it is built from.
+#[derive(Default)]
+struct SearchActivity {
+    /// Documents opened to read what their apps publish to search while a query waited.
+    opened: std::sync::atomic::AtomicU64,
+    /// Documents opened to read the same between requests, so that a query never has to.
+    warmed: std::sync::atomic::AtomicU64,
+    /// Folder chunks read while a find waited.
+    files_chunks: std::sync::atomic::AtomicU64,
+    /// Files whose words were read while a find waited, from a chunk or the content store.
+    files_read: std::sync::atomic::AtomicU64,
+    /// Files whose words were read between requests, so that a find never has to.
+    files_warmed: std::sync::atomic::AtomicU64,
+    /// Permission reads made for a find's caller while it waited.
+    permissions: std::sync::atomic::AtomicU64,
 }
 
 /// The host's page actions over every record of its workspaces.
@@ -357,8 +219,8 @@ impl WorkspaceActions {
                 puts: tilo_actions::remote::HostedContentPuts::default(),
                 approvals: bounded::Approvals::default(),
                 in_conversation: std::sync::RwLock::default(),
-                projecting: Mutex::default(),
                 renaming: Mutex::default(),
+                search: SearchActivity::default(),
             }),
             catalogue,
         }
@@ -385,6 +247,47 @@ impl WorkspaceActions {
         if let Some(jobs) = self.shared.jobs.lock_recover().as_ref() {
             let _ = jobs.send((Instant::now(), Job::Forget(workspace_id)));
         }
+    }
+
+    /// How many documents search opened to read what their apps publish, since the service
+    /// started: a query answered from the index opens none, however much the workspace holds.
+    #[must_use]
+    pub fn search_documents_opened(&self) -> u64 {
+        self.shared.search.opened.load(Ordering::Relaxed)
+    }
+
+    /// How many documents were read for the search index between requests, as they landed:
+    /// what keeps a find from opening them while the person waits.
+    #[must_use]
+    pub fn search_documents_warmed(&self) -> u64 {
+        self.shared.search.warmed.load(Ordering::Relaxed)
+    }
+
+    /// How many of the workspace's folder documents a find read while it waited: none once the
+    /// folder's index is kept as its chunks land.
+    #[must_use]
+    pub fn search_files_chunks_read(&self) -> u64 {
+        self.shared.search.files_chunks.load(Ordering::Relaxed)
+    }
+
+    /// How many files a find read the words of while it waited, from a chunk or the content
+    /// store: what a folder kept without an index costs on every query.
+    #[must_use]
+    pub fn search_files_read(&self) -> u64 {
+        self.shared.search.files_read.load(Ordering::Relaxed)
+    }
+
+    /// How many files were read for the folder's index between requests, as they landed.
+    #[must_use]
+    pub fn search_files_warmed(&self) -> u64 {
+        self.shared.search.files_warmed.load(Ordering::Relaxed)
+    }
+
+    /// How many permission reads a find made for its caller: one for each answer it returned
+    /// that was not kept yet, and none once the caller's access is.
+    #[must_use]
+    pub fn search_permissions_read(&self) -> u64 {
+        self.shared.search.permissions.load(Ordering::Relaxed)
     }
 
     /// `caller`'s session became an agent's run in `workspace_id`: the run is
@@ -456,28 +359,6 @@ impl WorkspaceActions {
                 tracing::debug!(%error, workspace_id = %workspace_id, "workspace actions: a workspace was not joined ahead");
             }
         }
-    }
-
-    /// `workspace_id`'s notebook or folder took a write: bring its notes and their `.md`
-    /// files in the folder into step ([`notes_folder`]). Writes that arrive while a pass
-    /// waits to run are taken in by that pass.
-    pub fn notes_folder_written(&self, workspace_id: WorkspaceId) {
-        if self.shared.queue_notes_pass(workspace_id) {
-            self.join_ahead(workspace_id);
-        }
-    }
-
-    /// Whether `app`'s workspace record is the notebook whose notes are files in the
-    /// workspace's folder: a workspace without one has no notes to bring into step.
-    #[must_use]
-    pub fn is_notebook(app: &str) -> bool {
-        app == notes_folder::NOTES_APP
-    }
-
-    /// Whether a write to `app`'s record is one [`Self::notes_folder_written`] follows.
-    #[must_use]
-    pub fn follows_notes_folder(app: &str) -> bool {
-        app == notes_folder::NOTES_APP || app == tilo_fs::tree_document::FILES_APP
     }
 
     /// Whether `caller` started invocation `id` here.
@@ -586,15 +467,11 @@ impl WorkspaceActions {
                     result: Ok(surface.map(|bytes| String::from_utf8_lossy(bytes).into_owned())),
                 })
             }
-            RemoteActionMessage::Observe { invocation, .. } => {
-                let state = self.log().owned(caller, &invocation).map(|entry| {
-                    InvocationState::new(invocation, entry.update.clone())
-                        .left_at(entry.left_at.clone())
-                        .linked(entry.link.clone())
-                        .with_untrusted(tree_put::answers_from_outside(&entry.request.target))
-                });
-                Pending::ready(RemoteActionMessage::Update { invocation, state })
-            }
+            RemoteActionMessage::Observe {
+                invocation,
+                wait_ms,
+                seen,
+            } => self.follow(caller, invocation, seen, wait_ms),
             RemoteActionMessage::Cancel { invocation } => {
                 Pending::ready(RemoteActionMessage::CancelResponse {
                     invocation,
@@ -667,12 +544,19 @@ impl WorkspaceActions {
                     result,
                 })
             }
+            // One document, read as every reader of it is answered: the same answer a person's
+            // device gives, from what the service itself holds.
+            RemoteActionMessage::ResourceRead {
+                correlation, read, ..
+            } => {
+                let reads: Arc<dyn tilo_actions::remote::ResourceReads> = Arc::new(self.clone());
+                reads.answer_read(caller, correlation, read)
+            }
             RemoteActionMessage::FeedbackResponse { .. }
             | RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
-            | RemoteActionMessage::ResourceRead { .. }
             | RemoteActionMessage::ResourceReading { .. }
             | RemoteActionMessage::RetiredResourceRequest
             | RemoteActionMessage::RetiredResourceResponse
@@ -1028,9 +912,19 @@ struct Workspace {
     /// Records whose writes landed in the session's replica that it cannot open yet: their
     /// keys, surface or deciding governance have not arrived.
     undecided: BTreeSet<DocumentRoute>,
-    /// The workspace's records in the session's replica, once a write to one
+    /// The workspace's documents in the session's replica, once a write to one
     /// named the workspace.
-    records: Option<WorkspaceDocuments>,
+    documents: Option<WorkspaceDocuments>,
+    /// The files of its folder, kept as the tree's chunks land ([`files_index`]).
+    files: files_index::FilesIndex,
+    /// What each caller of a find here may read, until a write lands in the workspace
+    /// ([`search_access`]).
+    readers: HashMap<search_access::Reader, search_access::SearchAccess>,
+    /// What each document's app lists at its top level, as a find of the workspace's own person
+    /// last read it: what names a hit the app anchors on another resource.
+    listings: HashMap<DocumentRoute, Vec<CatalogueRow>>,
+    /// The resource a hit at a document was named as, by the resource id the hit names.
+    named: HashMap<(DocumentRoute, String), Option<tilo_actions::remote::Found>>,
     /// What the host says for the runs it executes here ([`session_voice`]).
     sessions: session_voice::Sessions,
     /// What changed in its records, for those following it ([`found`]).
@@ -1075,7 +969,11 @@ impl Workspace {
             not_yours: HashSet::new(),
             gave_up: GaveUp::default(),
             undecided: BTreeSet::new(),
-            records: None,
+            documents: None,
+            files: files_index::FilesIndex::default(),
+            readers: HashMap::new(),
+            listings: HashMap::new(),
+            named: HashMap::new(),
             changes: ui::history_source::feed::ChangeLog::new(),
             run_index: invocations::Index::default(),
             watchers: change::Watchers::default(),
@@ -1084,13 +982,24 @@ impl Workspace {
 
     /// The workspace as the session's replica holds it now.
     fn state(&mut self) -> WorkspaceState {
+        // A workspace this session joined after its documents were written has had no write
+        // land here yet, and a find over it would answer with nothing: its documents are in the
+        // replica, named where the workspace keeps them, so the index is built over those too.
+        if self.documents.is_none()
+            && let Some(cluster) = self.cluster_id(self.id)
+        {
+            self.documents = Some(WorkspaceDocuments::new(
+                &cluster,
+                Arc::clone(self.peer.engine()),
+            ));
+        }
         let engine = Arc::clone(self.peer.engine());
-        match &mut self.records {
-            Some(records) => WorkspaceState {
-                workspace: Some(records.workspace().to_owned()),
-                records: records.people_first(),
+        match &mut self.documents {
+            Some(kept) => WorkspaceState {
+                workspace: Some(kept.workspace().to_owned()),
+                records: kept.people_first(),
                 engine,
-                revision: records.landings(),
+                revision: kept.landings(),
             },
             None => WorkspaceState {
                 workspace: None,
@@ -1233,8 +1142,8 @@ impl Workspace {
     /// The cluster id of the workspace `workspace_id` names, from what the member has
     /// seen of it: its records, or, in a workspace with none yet, its governance.
     fn cluster_id(&self, workspace_id: WorkspaceId) -> Option<String> {
-        if let Some(records) = &self.records {
-            return Some(records.workspace().to_owned());
+        if let Some(kept) = &self.documents {
+            return Some(kept.workspace().to_owned());
         }
         self.peer
             .engine()
@@ -1290,18 +1199,30 @@ struct Worker {
     /// The registered reads listings offer, kept between them
     /// ([`canonical`]).
     canonical: canonical::CanonicalReads,
-    /// How many passes over each workspace's notes and their files failed in a row
-    /// ([`notes_folder`]): the next is tried again after a wait that grows with them.
-    notes_failures: HashMap<WorkspaceId, u32>,
-    /// The notebook and folder of the workspaces whose notes were projected last, as the
-    /// last pass left them ([`notes_folder::Followed`]).
-    notes_followed: HashMap<WorkspaceId, notes_folder::Followed>,
     /// When each record's name was last read for its app's index ([`publish`]).
     named: HashMap<DocumentRoute, Instant>,
     /// Why each document a listing offers did not mount, as it was told last
     /// ([`listing`]): an agent lists at every step it takes, so a cause is
     /// logged once, not once per listing.
     unmounted: HashMap<DocumentRoute, String>,
+    /// How long this thread waits, once it served a write, for the server to
+    /// hold it before answering the caller pending: the pace of the saves it
+    /// served recently ([`publish::Worker::saving`]), so writes whose saves
+    /// are slower than the grace do not hold the thread that serves every
+    /// workspace of its share.
+    save_grace: Duration,
+    /// Writes served since the pace was last measured with the full grace.
+    save_probes: u32,
+    /// Whether documents search keeps no entries for wait for the next pass that reads them:
+    /// what the thread builds while no request waits on it ([`Worker::warm_entries`]).
+    warming: bool,
+    /// Each workspace's tree as the last request served on it left it, by
+    /// workspace and tree name ([`tree_put::KeptTree`]): the next takes in
+    /// only what changed since.
+    trees: HashMap<(WorkspaceId, String), tree_put::KeptTree>,
+    /// The documents the request being served wrote to ([`publish::Worker::saved`]):
+    /// what its answer's link opens ([`share::Worker::changed_link`]).
+    wrote: HashSet<DocumentRoute>,
 }
 
 /// The API's answer for an action it has nothing by that address.
@@ -1349,6 +1270,25 @@ pub(super) fn commit_failed(message: String, retryable: bool) -> Outcome {
     })
 }
 
+/// A clock read for timing one phase of an action, when the
+/// `tilo_agent_session::timing` target is at debug: off, it reads no clock.
+fn timing_start() -> Option<Instant> {
+    tracing::enabled!(target: "tilo_agent_session::timing", tracing::Level::DEBUG)
+        .then(Instant::now)
+}
+
+/// Time the phase `step`, begun at `started` ([`timing_start`]), in
+/// microseconds: `TIMING <step> <µs>` says where a slow action waited.
+fn timing_done(step: &'static str, started: Option<Instant>) {
+    if let Some(started) = started {
+        tracing::debug!(
+            target: "tilo_agent_session::timing",
+            "TIMING {step} {}",
+            started.elapsed().as_micros()
+        );
+    }
+}
+
 /// Everything `app` changed since the last take, each with the route it
 /// belongs to: the held record's own is `holder`'s, then each record held
 /// beside it on the route of the same app and workspace its id names. All
@@ -1383,28 +1323,6 @@ fn take_all(
     Ok(taken)
 }
 
-/// The longest a pass over a workspace's notes waits for the requests queued
-/// behind it on the worker's thread.
-const PROJECTION_WAIT: Duration = Duration::from_secs(2);
-
-impl Shared {
-    /// Queue a pass over `workspace_id`'s notes and their files, unless one waits to run
-    /// already, which takes in whatever this one would have: whether it was queued.
-    fn queue_notes_pass(&self, workspace_id: WorkspaceId) -> bool {
-        if !self.projecting.lock_recover().insert(workspace_id) {
-            return false;
-        }
-        let sent = self.jobs.lock_recover().as_ref().is_some_and(|jobs| {
-            jobs.send((Instant::now(), Job::NotesFolder(workspace_id)))
-                .is_ok()
-        });
-        if !sent {
-            self.projecting.lock_recover().remove(&workspace_id);
-        }
-        sent
-    }
-}
-
 impl Worker {
     fn new(
         link: &dyn WorkspaceDocumentsLink,
@@ -1430,43 +1348,25 @@ impl Worker {
             clock: 0,
             handed: HashMap::new(),
             canonical: canonical::CanonicalReads::default(),
-            notes_failures: HashMap::new(),
-            notes_followed: HashMap::new(),
+            trees: HashMap::new(),
+            wrote: HashSet::new(),
             named: HashMap::new(),
             unmounted: HashMap::new(),
+            save_grace: publish::SAVE_GRACE,
+            save_probes: 0,
+            warming: false,
         }
     }
 
     fn run(mut self, jobs: &mpsc::Receiver<(Instant, Job)>) {
-        // Passes over a workspace's notes and their files, waiting for the
-        // requests queued behind them: a pass is what a person's folder shows,
-        // never what a caller waits on, so it goes once no request waits.
-        let mut projections: VecDeque<(Instant, Job)> = VecDeque::new();
         loop {
-            if projections
-                .front()
-                .is_some_and(|(queued, _)| queued.elapsed() >= PROJECTION_WAIT)
-            {
-                // Requests that keep coming never keep a folder behind for long.
-                if let Some((queued, job)) = projections.pop_front() {
-                    self.admit(queued, job);
-                }
-                continue;
-            }
-            if !projections.is_empty() {
-                match jobs.try_recv() {
-                    Ok((queued, job)) if matches!(job, Job::NotesFolder(_)) => {
-                        projections.push_back((queued, job));
-                    }
-                    Ok((queued, job)) => self.admit(queued, job),
-                    Err(mpsc::TryRecvError::Empty) => {
-                        if let Some((queued, job)) = projections.pop_front() {
-                            self.admit(queued, job);
-                        }
-                    }
-                    Err(mpsc::TryRecvError::Disconnected) => break,
-                }
-                continue;
+            // A document whose write landed since the last pass is read for the index here,
+            // between requests, and the folder's chunks likewise: a find answers from the
+            // indexes, never by opening every one while the person waits.
+            if self.warming {
+                let entries = self.warm_entries(index::WARM_SLICE);
+                let files = self.warm_files(index::WARM_SLICE);
+                self.warming = !(entries && files);
             }
             let due = [
                 self.joining_until(),
@@ -1477,6 +1377,10 @@ impl Worker {
             .flatten()
             .min();
             let next = match due {
+                // With documents still to read for the index, the thread never waits: it takes
+                // a request that is queued, else reads the next, so the index is ready as soon
+                // as the workspace is.
+                _ if self.warming => jobs.recv_timeout(Duration::ZERO),
                 Some(until) => jobs.recv_timeout(until.saturating_duration_since(Instant::now())),
                 None => jobs
                     .recv()
@@ -1484,9 +1388,6 @@ impl Worker {
             };
             self.expire_watchers();
             match next {
-                Ok((queued, job)) if matches!(job, Job::NotesFolder(_)) => {
-                    projections.push_back((queued, job));
-                }
                 Ok((queued, job)) => {
                     self.admit(queued, job);
                     // Requests that keep coming never hold back a run's word:
@@ -1778,6 +1679,10 @@ impl Worker {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm per kind of request, read together: a dozen tiny methods hide the map"
+    )]
     fn take(&mut self, job: Job) {
         {
             match job {
@@ -1823,6 +1728,12 @@ impl Worker {
                     workspace_id,
                     caller,
                 } => self.arrived(workspace_id, &caller),
+                Job::ReadDocument {
+                    workspace_id,
+                    caller,
+                    address,
+                    done,
+                } => done.complete(self.document_read(workspace_id, &caller, &address)),
                 Job::Search {
                     workspace_id,
                     caller,
@@ -1848,7 +1759,6 @@ impl Worker {
                     done,
                 } => done.complete(self.invocations(workspace_id, &caller, &query)),
                 Job::Joined(workspace_id) => self.resume(workspace_id),
-                Job::NotesFolder(workspace_id) => self.notes_pass(workspace_id),
                 Job::Rename(workspace_id, route) => self.rename(workspace_id, &route),
                 Job::Forget(workspace_id) => self.forget(workspace_id),
                 Job::Content {
@@ -1889,7 +1799,7 @@ impl Worker {
 
     /// Let go of everything held of `workspace_id`, deleted: its
     /// membership, the records mounted and the replicas callers acted
-    /// through there, and its content store. Requests still waiting for it
+    /// through there, its file tree, and its content store. Requests still waiting for it
     /// run, and are told it is not there.
     fn forget(&mut self, workspace_id: WorkspaceId) {
         let of =
@@ -1902,6 +1812,7 @@ impl Worker {
         self.parked.retain(|(route, _, _)| !of(route));
         self.beside.retain(|route, held| !of(route) && !of(held));
         self.channels_opened.retain(|route| !of(route));
+        self.trees.retain(|(held, _), _| *held != workspace_id);
         self.canonical.forget(of);
         for Waiting { queued, job, .. } in self.joining.remove(&workspace_id).unwrap_or_default() {
             self.timed(queued, job);
@@ -1958,6 +1869,12 @@ impl Worker {
         }
         for ((route, _, _), held) in &mut self.bounded {
             catch_up(route, &mut held.held, &state);
+        }
+        // A write that landed since the last pass is read for the index as soon as this
+        // request is answered, so the next find answers from it.
+        let files_waiting = self.files_unwarmed_any();
+        if !self.warming && (self.unindexed_any() || files_waiting) {
+            self.warming = true;
         }
         Ok(state)
     }
@@ -2275,6 +2192,8 @@ impl Worker {
         if let Some(receipt) = self.terminal(workspace_id, &caller, &request) {
             return receipt;
         }
+        let everything = timing_start();
+        self.wrote.clear();
         let (outcome, unsaved) = match self.invoke_or_ask(workspace_id, &caller, &request) {
             Ok(ran) => ran,
             Err(receipt) => {
@@ -2282,9 +2201,10 @@ impl Worker {
                 return receipt;
             }
         };
+        timing_done("action.total", everything);
         log_outcome(&request.target, &outcome);
-        if let Ok((output, _)) = &outcome {
-            let link = self.changed_link(workspace_id, &caller, &request, output);
+        if outcome.is_ok() {
+            let link = self.changed_link(workspace_id, &caller, &request);
             if let Some(entry) = self.log().entries.get_mut(&invocation) {
                 entry.link = link;
             }
@@ -2431,6 +2351,10 @@ impl Worker {
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
     )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one request dispatched in the order it is admitted through: appearance, keys, the document, action, save"
+    )]
     /// Invocation `request`: what it answered, and where it left its actor in the
     /// record it changed.
     fn perform(
@@ -2453,9 +2377,11 @@ impl Worker {
         // ([`Self::invoke_keys`], which the service's thread admitted this
         // request by).
         let keys = self.invoke_keys(request);
+        let refreshing = timing_start();
         let state = self
             .refresh(workspace_id, keys.needs())
             .map_err(Outcome::Rejected)?;
+        timing_done("action.refresh", refreshing);
         // A page names its source's revision: the workspace's, or a registered
         // read's committed source (checked where that source is read, below).
         let workspace = state.workspace.clone();
@@ -2483,18 +2409,17 @@ impl Worker {
         // action the record publishes never pays for that.
         let holder = self.holder_of(&route);
         let published_here = self.publishes(&holder, &target.address);
-        if !published_here
-            && let Some(output) = self
-                .try_registered_read(workspace_id, caller, request)
-                .map_err(|error| *error)?
-        {
+        if let Some(output) = self.source_read(workspace_id, caller, request, published_here)? {
+            self.note_reads(request);
             return Ok((withheld.shown(output), None));
         }
         if stale_revision(request.revision.as_deref(), &state.revision.to_string()) {
             return Err(Outcome::Rejected(ActionCallError::StaleRevision));
         }
+        let mounting = timing_start();
         let mounted = self.mount(&route, &state).map_err(|_| unknown_action())?;
         withheld.refuses(&target.address.resource)?;
+        timing_done("action.mount", mounting);
         if target.address.action == ui::tilo_resource::share::SHARE_LINK {
             // Sharing asks the record for everything it lists, which is what
             // the link is chosen from.
@@ -2507,6 +2432,7 @@ impl Worker {
                 .map(|descriptor| descriptor.resource_kind)
                 .ok_or_else(unknown_action)?;
             let at = (&route, &state, kind);
+            self.note_reads(request);
             return self
                 .share_link(workspace_id, caller, at, target, arguments)
                 .map(|output| (output, None));
@@ -2532,16 +2458,15 @@ impl Worker {
             .app
             .descriptor(&target.address)
             .ok_or_else(unknown_action)?;
+        if descriptor.contract.kind == ActionKind::Read {
+            self.note_reads(request);
+        }
         let arguments = withheld.given(descriptor.bind_prompt_text(arguments))?;
-        let binding = bounded::ApprovalBinding::of(workspace_id, caller, request);
-        let confirmed = confirms(
-            &descriptor.contract.confirmation,
-            request.confirmation.as_ref(),
-            |token| self.shared.approvals.take(token, &binding),
-        );
+        let confirmed = self.confirmed_here(workspace_id, caller, request, &descriptor);
         let holder = self.holder_of(&route);
         let mounted = self.mounted.get_mut(&holder).ok_or_else(unknown_action)?;
         let context = caller_context(caller, request);
+        let running = timing_start();
         let output = mounted
             .app
             .invoke_in(
@@ -2552,14 +2477,58 @@ impl Worker {
                 confirmed,
             )
             .map_err(|error| api_outcome(&error))?;
+        timing_done("action.call", running);
         // Where the action left its actor, for the API that shows it
         // working: the text it wrote, the item it acted on.
         let left_at = mounted.app.presence().map(bounded::placed);
+        let taking = timing_start();
         let taken = take_all(&mounted.app, &holder)
             .map_err(|error| commit_failed(error.to_string(), false))?;
+        timing_done("action.take", taking);
+        let committing = timing_start();
         self.commit_taken(workspace_id, &route, taken)
             .map_err(|reason| commit_failed(reason, true))?;
+        timing_done("action.commit", committing);
         Ok((withheld.shown(output), left_at))
+    }
+
+    /// The answer the committed source gives `request`, when what answers here
+    /// does not publish that action itself: one it publishes never pays to
+    /// open a worker for it.
+    #[allow(
+        clippy::result_large_err,
+        reason = "a failure here is the action API's Outcome, handed back to its caller unchanged"
+    )]
+    fn source_read(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        request: &InvokeRequest,
+        published_here: bool,
+    ) -> Result<Option<ActionOutput>, Outcome> {
+        if published_here {
+            return Ok(None);
+        }
+        self.try_registered_read(workspace_id, caller, request)
+            .map_err(|error| *error)
+    }
+
+    /// Whether this call is confirmed as the action's own contract asks and
+    /// the caller answered: a token its person's device issued for this very
+    /// call, taken once.
+    fn confirmed_here(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        request: &InvokeRequest,
+        descriptor: &tilo_actions::ActionDescriptor,
+    ) -> bool {
+        let binding = bounded::ApprovalBinding::of(workspace_id, caller, request);
+        confirms(
+            &descriptor.contract.confirmation,
+            request.confirmation.as_ref(),
+            |token| self.shared.approvals.take(token, &binding),
+        )
     }
 
     /// Open an app on a new record of the workspace `named`, as its
@@ -2839,119 +2808,7 @@ impl Worker {
     }
 }
 
-/// Whether `given`, from the host's own person on their own device, confirms
-/// an action asking `policy`: their own word, the phrase it names, or a
-/// token naming their answer that the host issued for this very invocation
-/// (`approved` spends it).
-fn confirms(
-    policy: &ConfirmationPolicy,
-    given: Option<&Confirmation>,
-    approved: impl FnOnce(&str) -> bool,
-) -> bool {
-    match (policy, given) {
-        (_, Some(Confirmation::Approved(token))) => approved(token),
-        (ConfirmationPolicy::Phrase { phrase }, Some(Confirmation::Phrase(given))) => {
-            phrase == given
-        }
-        (ConfirmationPolicy::Phrase { .. }, _) | (_, None) => false,
-        (_, Some(Confirmation::Confirmed | Confirmation::Phrase(_))) => true,
-    }
-}
-
-fn exact_view_query(
-    query: &CatalogueQuery,
-) -> Result<(&tilo_actions::remote::ViewResourceQuery, &str), ActionCallError> {
-    let wanted = query
-        .view_resource
-        .as_ref()
-        .ok_or(ActionCallError::UnknownAction)?;
-    let provider = query
-        .provider
-        .as_deref()
-        .ok_or(ActionCallError::UnknownAction)?;
-    if wanted.id.is_empty()
-        || wanted.id.trim().is_empty()
-        || wanted.id.chars().any(char::is_control)
-        || wanted.id.len() > 2048
-        || wanted.kind.is_empty()
-        || wanted.kind.trim().is_empty()
-        || wanted.kind.chars().any(char::is_control)
-        || wanted.kind.len() > 128
-        || provider.len() > 2048
-        || provider.chars().any(char::is_control)
-        || query.target.is_some()
-        || !query.cursor.is_empty()
-        || query.parent_resource.is_some()
-    {
-        return Err(ActionCallError::UnknownAction);
-    }
-    Ok((wanted, provider))
-}
-
-/// Whether `caller` speaks for someone a workspace may admit as a member: a
-/// person themselves, the agent a device of theirs handed its session to (an
-/// agent's grant), which every decision then holds to what an agent of
-/// theirs may do, or an agent device they certified, held to what the
-/// workspace grants that agent. The workspace's governance still decides
-/// whether it admits them.
-fn speaks_for_a_member(caller: &Caller) -> bool {
-    if caller.acting().is_person() {
-        return true;
-    }
-    if !caller.acting().is_agent() {
-        return false;
-    }
-    if caller.is_session_delegated() {
-        return caller.acting_for_person().is_some();
-    }
-    caller.user_public_key().is_some() && caller.device_public_key().is_some()
-}
-
-/// The receipt of an invocation the host turns away outright, with why.
-fn rejected(invocation: InvocationId, error: ActionCallError) -> InvocationReceipt {
-    InvocationReceipt {
-        invocation,
-        status: ReceiptStatus::Rejected { error },
-    }
-}
-
-/// Log how the action `target` names ended: succeeded, failed or refused.
-fn log_outcome(
-    target: &tilo_actions::remote::RemoteActionTarget,
-    outcome: &Result<(ActionOutput, Option<tilo_actions::remote::ActorPlace>), Outcome>,
-) {
-    match outcome {
-        Ok(_) => {
-            tracing::info!(provider = %target.provider, resource = %target.address.resource,
-            action = %target.address.action, "workspace actions: succeeded");
-        }
-        Err(Outcome::Failed(error)) => tracing::info!(provider = %target.provider,
-            resource = %target.address.resource, action = %target.address.action,
-            code = %error.code, message = %error.message, "workspace actions: failed"),
-        Err(Outcome::Rejected(error)) => tracing::info!(provider = %target.provider,
-            resource = %target.address.resource, action = %target.address.action,
-            code = error.code(), %error, "workspace actions: refused"),
-    }
-}
-
-/// Whether `record` is one of `app`'s own records, which its replica opens. An app that keeps one
-/// record per workspace opens that one, and what it keeps as records of its own beside it (a
-/// chain's parts); a person's record of some kind, kept beside the app's for that person (Files'
-/// tree of the workspace's folder, and the chunks that tree is kept in), is read where it is kept,
-/// never mounted as the app's, which refuses it as not the app's workspace record.
-fn opens_as_its_own(app: &ui::application::ApplicationDefinition, record: &str) -> bool {
-    // The empty route is the app's own record where it keeps one per workspace, and its index of
-    // the workspace's named records where it keeps none: the index is read where it is kept,
-    // never mounted as the app's record.
-    if record.is_empty() {
-        return app.keeps_workspace_resource();
-    }
-    // A tree's own record and its chunks are one folder, read record by record where it is kept.
-    if fs_protocol::tree::chunk_of_record(record).is_some() {
-        return false;
-    }
-    !app.keeps_workspace_resource() || collab_types::person_resource_type(record).is_none()
-}
-
 #[cfg(test)]
 mod tests;
+
+use job::Job;

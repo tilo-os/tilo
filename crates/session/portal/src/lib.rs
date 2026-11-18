@@ -96,17 +96,24 @@ pub const OBJECT_PATH: &str = "/org/freedesktop/portal/desktop";
 pub const PORTAL_RESOURCE: &str = "portal";
 const CONSENT_PREFIX: &str = "portal:consent:";
 
-/// What a remembered access decision offers.
+/// What a kept device answer offers.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.portal.consent")]
 pub enum ConsentEffect {
-    /// Forget what the app was allowed
+    /// Take back what the app was allowed
     #[effect(own_device, idempotent)]
     Forget,
 }
 
-fn consent_resource(app: &str, capability: &str) -> String {
-    format!("{CONSENT_PREFIX}{app}\u{1f}{capability}")
+/// A kept answer's resource: `portal:consent:<device>\u{1f}<app>\u{1f}<capability>`.
+#[must_use]
+pub fn consent_resource(kept: &tilo_peer_state::DeviceAnswer) -> String {
+    format!(
+        "{CONSENT_PREFIX}{}\u{1f}{}\u{1f}{}",
+        kept.device,
+        kept.app,
+        kept.cap.name()
+    )
 }
 
 /// The app a request is for.
@@ -267,14 +274,15 @@ impl Portal {
     /// frontend `authenticator` vouches for, and giving apps the files the
     /// person chose through their one store, `documents` (the table the
     /// session mounts and its launchers bind views of: [`documents_store`]).
-    /// Access answered for good is kept in the person's private state.
+    /// Access answered beyond the session is kept once the session hands it
+    /// the person's store ([`Self::with_consents`]).
     #[must_use]
     pub fn new(
         questions: Questions,
         authenticator: PortalAuthenticator,
         documents: tilo_documents::Documents,
     ) -> Self {
-        let consents = Consents::for_session(questions.clone());
+        let consents = Consents::new(questions.clone(), tilo_peer_state::DeviceGrants::unkept());
         let sessions = session::Sessions::default();
         let remotes = remote_desktop::Remotes::default();
         remotes.follow(&sessions);
@@ -287,7 +295,7 @@ impl Portal {
             host: Arc::new(host::System),
             app_states: background::AppStates::default(),
             autostart: background::Autostart::default(),
-            consents,
+            consents: consents.clone(),
             settings: Settings::default(),
             inhibitions: Inhibitions::default(),
             requests: lifecycle::Requests::default(),
@@ -295,7 +303,8 @@ impl Portal {
             grants: restore::Grants::default(),
             permissions: permission_store::PermissionStore::load(
                 private_state_root().map(|root| root.join("tilo/portal/permissions.json")),
-            ),
+            )
+            .answering(consents.grants().clone()),
             casts: screencast::Casts::default(),
             shortcuts: global_shortcuts::Shortcuts::new(&sessions),
             streams: Arc::new(NoStreams),
@@ -435,9 +444,10 @@ impl Portal {
         &self.consents
     }
 
-    /// The same, keeping access answered for good in `consents`.
+    /// The same, deciding device access with `consents`.
     #[must_use]
     pub fn with_consents(mut self, consents: Consents) -> Self {
+        self.permissions = self.permissions.answering(consents.grants().clone());
         self.consents = consents;
         self
     }
@@ -667,17 +677,18 @@ pub(crate) trait Published {
 
 impl Published for Consents {
     fn resources(&self) -> Vec<ResourceSpec> {
-        self.remembered()
+        self.kept()
             .into_iter()
-            .map(|(app, capability)| {
+            .map(|kept| {
                 offer::<ConsentEffect>(ResourceSpec::new(
-                    consent_resource(&app, &capability),
+                    consent_resource(&kept.answer),
                     "portal.consent",
-                    app,
+                    kept.answer.app.clone(),
                 ))
                 .with_presentation(ResourcePresentation {
-                    detail: Some(capability),
-                    badge: None,
+                    detail: Some(kept.answer.cap.name().to_owned()),
+                    // An answer kept for another of the person's devices names it.
+                    badge: (!kept.this_device).then(|| kept.device_label.clone()),
                     preview: None,
                 })
             })
@@ -685,12 +696,11 @@ impl Published for Consents {
     }
 
     fn read(&self, resource: &str) -> Option<Value> {
-        let (app, capability) = resource
-            .strip_prefix(CONSENT_PREFIX)?
-            .split_once('\u{1f}')?;
-        self.remembered()
-            .contains(&(app.to_owned(), capability.to_owned()))
-            .then(|| serde_json::json!({ "app_id": app, "capability": capability }))
+        resource.strip_prefix(CONSENT_PREFIX)?;
+        self.kept()
+            .into_iter()
+            .find(|kept| consent_resource(&kept.answer) == resource)
+            .and_then(|kept| serde_json::to_value(kept).ok())
     }
 
     fn invoke(
@@ -700,12 +710,16 @@ impl Published for Consents {
         action: &str,
         arguments: &Map<String, Value>,
     ) -> Option<Result<Started, ApiError>> {
-        let consent = resource.strip_prefix(CONSENT_PREFIX)?;
+        resource.strip_prefix(CONSENT_PREFIX)?;
         let unknown = || ApiError::Unknown(tilo_actions::ActionAddress::new(resource, action));
         Some(
             decode(published, resource, action, arguments).and_then(|ConsentEffect::Forget| {
-                let (app, capability) = consent.split_once('\u{1f}').ok_or_else(unknown)?;
-                self.forget(app, capability)
+                let kept = self
+                    .kept()
+                    .into_iter()
+                    .find(|kept| consent_resource(&kept.answer) == resource)
+                    .ok_or_else(unknown)?;
+                self.forget(&kept.answer.device, &kept.answer.app, kept.answer.cap)
                     .then(|| Started::Done(ActionOutput::default()))
                     .ok_or_else(unknown)
             }),
@@ -745,7 +759,18 @@ impl Service for Portal {
     fn read(&self, resource: &str) -> Option<Value> {
         if resource == PORTAL_RESOURCE {
             return Some(serde_json::json!({
-                "consents": reading(&self.consents.remembered()),
+                "consents": self
+                    .consents
+                    .kept()
+                    .into_iter()
+                    .map(|kept| {
+                        let mut read = reading(&kept);
+                        if let Value::Object(fields) = &mut read {
+                            fields.insert("resource".into(), consent_resource(&kept.answer).into());
+                        }
+                        read
+                    })
+                    .collect::<Vec<_>>(),
                 "inhibitions": self.inhibitions.reading(),
                 "autostart": self.autostart.apps(),
             }));
@@ -845,7 +870,9 @@ pub(crate) mod tests {
             ":1.1".try_into().expect("unique name"),
             Arc::new(|app: &str, _: Option<&str>| Some(PortalCaller::new(app))),
         );
-        Portal::new(questions.clone(), authenticator, documents)
-            .with_consents(Consents::new(questions.clone(), None))
+        Portal::new(questions.clone(), authenticator, documents).with_consents(Consents::new(
+            questions.clone(),
+            tilo_peer_state::DeviceGrants::unkept(),
+        ))
     }
 }

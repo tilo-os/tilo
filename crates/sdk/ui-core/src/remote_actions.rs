@@ -992,7 +992,6 @@ fn followed(
         }
         Err(
             error @ (ActionCallError::Unavailable { .. }
-            | ActionCallError::Busy { .. }
             | ActionCallError::NotReady
             | ActionCallError::Unanswered),
         ) => {

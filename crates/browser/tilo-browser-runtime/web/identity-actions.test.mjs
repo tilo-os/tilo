@@ -506,6 +506,8 @@ test('someone who arrived by an invitation is asked to set up their own Tilo onc
   const [ask] = mount.said;
   assert.equal(ask.title, 'Want a workspace of your own?');
   assert.equal(ask.action.title, 'Set up with your agent');
+  assert.equal(ask.action.source, 'identity',
+    'asked from their avatar, never as a banner over the note they are in');
   assert.match(ask.body, /Ctrl\+K, “Connect an agent or computer”/, 'says where to find it later');
   await actions.perform(CONNECT_AGENT.id);
   assert.equal(shown, 1, 'the first screen’s setup, over the workspace they are in');

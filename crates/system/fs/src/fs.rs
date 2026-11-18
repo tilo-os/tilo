@@ -65,10 +65,6 @@ const PINNED_FETCH_RECHECK: Duration = Duration::from_secs(5);
 const MAX_PINNED_FETCHES_PER_PASS: usize = 4;
 const HYDRATION_PROGRESS_PERSIST_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Each document's serialized form and the namespace heads it was last known current
-/// at; shared, so a read slices it instead of copying it.
-type DocExports = HashMap<u64, (Vec<automerge::ChangeHash>, Arc<[u8]>)>;
-
 /// The in-flight write stages of a mount, by inode. Holding this map's lock fixes the
 /// set of inodes with pending writes (storage eviction and checked restore rely on
 /// that); the bytes of a stage sit behind its own lock, so one inode's writes, reads
@@ -280,9 +276,7 @@ enum ReadPlan {
 }
 
 enum BufferedRead {
-    Shared(Arc<[u8]>, std::ops::Range<usize>),
     Staged(io::Result<StagedRead>),
-    Failed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -403,7 +397,7 @@ mod staging_limit_tests {
         fs.truncate_inode(b, offset).unwrap();
         assert_eq!(fs.staged_len(b), Some(offset));
         std::fs::remove_dir_all(fs.stage_dir.as_ref().unwrap()).unwrap();
-        fs.buffers().insert(c, fs.empty_stage(false).shared());
+        fs.buffers().insert(c, fs.empty_stage().shared());
         assert_eq!(fs.write_buffer(c, offset, b"x"), Err(EFBIG));
         assert_eq!(fs.truncate_inode(c, offset), Err(EFBIG));
         assert_eq!(fs.staged_len(c), Some(0));
@@ -475,14 +469,16 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// Clears this thread's writer when the request it was noted for returns.
-struct WriterNote(bool);
+/// Clears this thread's writer when the request it was noted for returns, and with it whom
+/// the request's file actions are done by.
+struct WriterNote(bool, Option<crate::namespace::ActingAs>);
 
 impl Drop for WriterNote {
     fn drop(&mut self) {
         if self.0 {
             CURRENT_WRITER.with(|current| *current.borrow_mut() = None);
         }
+        self.1.take();
     }
 }
 
@@ -620,16 +616,6 @@ use tilo_lock::MutexRecover as _;
 use write_stage::{MissingRanges, SharedStage, StagedRead};
 pub use write_stage::{Stage, WriteStage};
 
-/// The codec a new file named `name` is kept as a document with: a format the codecs both read
-/// and write, so the file can read back as written. A format they only read (HTML, RTF) is a
-/// plain file.
-pub fn document_codec_for(name: &str) -> Option<String> {
-    let ext = name.rsplit('.').next().filter(|e| *e != name)?;
-    tilo_doc_codecs::provider_for_ext(ext)
-        .filter(|provider| provider.exports())
-        .map(|_| ext.to_lowercase())
-}
-
 pub struct QuickFS {
     pub namespace: Arc<Mutex<Namespace>>,
     pub hydrator: Arc<Hydrator>,
@@ -639,8 +625,6 @@ pub struct QuickFS {
     /// through `kept_history`.
     access_history: Arc<Mutex<AccessHistory>>,
     kept_history: Option<Arc<KeptHistory>>,
-    /// Binary content that documents projected as files refer to.
-    document_content: tilo_content::ContentStore,
     write_buffers: Arc<Mutex<WriteStages>>,
     stage_dir: Option<std::path::PathBuf>,
     memory_stage_budget: Arc<write_stage::MemoryBudget>,
@@ -662,9 +646,6 @@ pub struct QuickFS {
     owner: Option<(u32, u32)>,
     open_file_handles: Mutex<HashMap<u64, OpenFileHandleState>>,
     next_file_handle: AtomicU64,
-    /// Cached serialized form of each document inode, keyed by the doc's heads, so a
-    /// multi-chunk read exports once.
-    doc_exports: Mutex<DocExports>,
     document_index_cursors: Mutex<HashMap<String, DocumentIndexCursor>>,
     document_index_initial_cursors: Mutex<HashMap<(String, String, u64), String>>,
     acl_visible_document_index: Arc<Mutex<Option<Arc<AclVisibleDocumentIndex>>>>,
@@ -738,7 +719,6 @@ impl QuickFS {
             heuristics,
             access_history: Arc::new(Mutex::new(AccessHistory::new())),
             kept_history: None,
-            document_content: tilo_content::ContentStore::memory(),
             write_buffers: Arc::new(Mutex::new(HashMap::new())),
             stage_dir: None,
             memory_stage_budget: Arc::new(write_stage::MemoryBudget::default()),
@@ -750,7 +730,6 @@ impl QuickFS {
             owner: None,
             open_file_handles: Mutex::new(HashMap::new()),
             next_file_handle: AtomicU64::new(1),
-            doc_exports: Mutex::new(HashMap::new()),
             document_index_cursors: Mutex::new(HashMap::new()),
             document_index_initial_cursors: Mutex::new(HashMap::new()),
             acl_visible_document_index: Arc::new(Mutex::new(None)),
@@ -1092,16 +1071,8 @@ impl QuickFS {
         Some(self.stage(ino)?.len())
     }
 
-    /// A stage for `ino` over its committed content, reading none of it. A
-    /// document is staged whole from its export (local, never a peer).
+    /// A stage for `ino` over its committed content, reading none of it.
     fn new_stage(&self, ino: u64) -> Result<(WriteStage, Option<Hash>), i32> {
-        if self.is_document(ino) {
-            let base = self.ns().hash_for(ino);
-            let bytes = self.document_export(ino).ok_or(EIO)?;
-            let stage = WriteStage::complete(&bytes, base, Arc::clone(&self.memory_stage_budget))
-                .map_err(|error| commit_errno(&error))?;
-            return Ok((stage, base));
-        }
         let (base, base_len) = {
             let ns = self.ns();
             let base = ns.hash_for(ino);
@@ -1124,11 +1095,8 @@ impl QuickFS {
         Ok((stage, base))
     }
 
-    fn empty_stage(&self, document: bool) -> WriteStage {
+    fn empty_stage(&self) -> WriteStage {
         let memory = || WriteStage::empty(Arc::clone(&self.memory_stage_budget));
-        if document {
-            return memory();
-        }
         WriteStage::over(
             None,
             0,
@@ -1470,12 +1438,11 @@ impl QuickFS {
         Ok(u32::try_from(data.len()).unwrap_or(u32::MAX))
     }
 
-    /// `setattr(size)` after its access check. Documents always stage (imported as a whole
-    /// on release), as do files that are open; other opaque files commit the new length
-    /// immediately.
+    /// `setattr(size)` after its access check. A file that is open stages it; any other
+    /// commits the new length immediately.
     fn truncate_inode(&self, ino: u64, new_size: u64) -> Result<(), i32> {
         let open = self.buffers().contains_key(&ino);
-        if !open && !self.is_document(ino) {
+        if !open {
             return self
                 .commit_resized(ino, new_size)
                 .map_err(|error| commit_errno(&error));
@@ -1492,57 +1459,26 @@ impl QuickFS {
     }
 
     /// Create the file `name` in `parent` with `mode` as a FUSE `create` does, open for
-    /// writing with an empty stage: a document when its name is a format kept as one. Returns
-    /// its inode and whether it is a document.
-    fn create_for_write(&self, parent: u64, name: &[u8], mode: u32) -> Result<(u64, bool), i32> {
-        let codec = std::str::from_utf8(name).ok().and_then(document_codec_for);
-        let ino = if let Some(codec) = codec.as_deref() {
-            let mut ns = self.ns();
-            let created = ns
-                .create_document(parent, name, codec, now_ms())
-                .ok_or(ENOENT)?;
-            ns.note_change();
-            created
-        } else {
-            self.create_empty_file(parent, name)?
-        };
+    /// writing with an empty stage. Returns its inode.
+    fn create_for_write(&self, parent: u64, name: &[u8], mode: u32) -> Result<u64, i32> {
+        let ino = self.create_empty_file(parent, name)?;
         self.set_mode(ino, mode)?;
-        let document = codec.is_some();
-        let stage = self.empty_stage(document).shared();
+        let stage = self.empty_stage().shared();
         self.buffers().insert(ino, stage);
-        // A new document is committed at its close even when nothing was written: an
-        // empty document's format may write something (an `.odt` is a zip), and the file
-        // must read back empty.
         self.buffer_states().insert(
             ino,
             BufferState {
-                committed: (!document).then_some(0),
+                committed: Some(0),
                 ..BufferState::default()
             },
         );
-        Ok((ino, document))
-    }
-
-    /// A range of document `ino`'s shared export, clamped to its length. `offset` and
-    /// `size` cross the FUSE boundary as untrusted values.
-    fn read_document_export(&self, ino: u64, offset: u64, size: u32) -> BufferedRead {
-        match self.document_export(ino) {
-            Some(bytes) => {
-                let start = usize::try_from(offset)
-                    .unwrap_or(usize::MAX)
-                    .min(bytes.len());
-                let end = start.saturating_add(size as usize).min(bytes.len());
-                BufferedRead::Shared(bytes, start..end)
-            }
-            None => BufferedRead::Failed,
-        }
+        Ok(ino)
     }
 
     /// What a FUSE `getattr` answers for `ino` (through kernel handle `fh`, when it has
-    /// one): the attributes and whether `ino` is a document. The inode is read under one
-    /// namespace lock; a document's export size and a directory's visible link count are
-    /// the only further reads.
-    fn attr_for_request(&self, ino: u64, fh: Option<u64>) -> Result<(FileAttr, bool), i32> {
+    /// one): its attributes. The inode is read under one namespace lock; a directory's
+    /// visible link count is the only further read.
+    fn attr_for_request(&self, ino: u64, fh: Option<u64>) -> Result<FileAttr, i32> {
         let buf_len = self.staged_len(ino);
         let open_handle = fh.and_then(|fh| self.open_handle(ino, fh));
         let view = self.inode_view(ino, open_handle.is_some()).ok_or(ENOENT)?;
@@ -1558,27 +1494,18 @@ impl QuickFS {
         if !visible {
             return Err(ENOENT);
         }
-        Ok((
-            self.live_attr(view.attr, buf_len, view.document),
-            view.document,
-        ))
+        Ok(self.live_attr(view.attr, buf_len))
     }
 
     /// `attr` as every answer about a file must give it: sized as a read serves it (a
-    /// write stage's length, a document's export) and a directory's visible link count.
-    /// `lookup`, `getattr` and `readdirplus` all answer through here, because the kernel
-    /// sets the file size from each of them: a `lookup` that answered the stored size of a
-    /// document while `getattr` answered its export's let the path walk of an `open` shrink
-    /// the size under a mapping sized by the `stat` before it, and git's index refresh died
-    /// with SIGBUS reading the mapping.
-    fn live_attr(&self, mut attr: FileAttr, staged_len: Option<u64>, document: bool) -> FileAttr {
+    /// write stage's length) and a directory's visible link count. `lookup`, `getattr` and
+    /// `readdirplus` all answer through here, because the kernel sets the file size from
+    /// each of them: a `lookup` that answered another size than `getattr` let the path walk
+    /// of an `open` shrink the size under a mapping sized by the `stat` before it, and git's
+    /// index refresh died with SIGBUS reading the mapping.
+    fn live_attr(&self, mut attr: FileAttr, staged_len: Option<u64>) -> FileAttr {
         let ino = attr.ino.0;
-        let doc_len = if staged_len.is_none() && document {
-            self.document_export(ino).map(|b| b.len() as u64)
-        } else {
-            None
-        };
-        if let Some(len) = staged_len.or(doc_len) {
+        if let Some(len) = staged_len {
             attr.size = len;
             attr.blocks = len.div_ceil(512);
         }
@@ -1591,28 +1518,21 @@ impl QuickFS {
     /// What a FUSE `lookup` answers for `name` in `parent`: the entry's attributes and
     /// TTL, or `None` when there is no such entry in the caller's view.
     fn lookup_entry(&self, parent: u64, name: &[u8]) -> Option<(FileAttr, Duration)> {
-        let (found, child, is_doc) = {
+        let (found, child) = {
             let mut ns = self.ns();
             let found = ns.lookup(parent, name);
             let child = ns.path_for(parent).map(|p| child_path(&p, name));
-            let is_doc = found
-                .as_ref()
-                .is_some_and(|attr| ns.document_codec(attr.ino.0).is_some());
             drop(ns);
-            (found, child, is_doc)
+            (found, child)
         };
         let attr = found.filter(|_| child.is_some_and(|c| self.in_view(&c)))?;
         let staged_len = self.staged_len(attr.ino.0);
-        Some((
-            self.live_attr(attr, staged_len, is_doc),
-            Self::ttl_for(is_doc),
-        ))
+        Some((self.live_attr(attr, staged_len), TTL))
     }
 
     /// Everything a FUSE `read` decides before it replies: authorization, then the write
-    /// stage, a document's export, or the committed content. The inode is read under one
-    /// namespace lock, so its liveness, path, kind, content hash and document-ness come
-    /// back together. Only a document read takes the lock again, to export it.
+    /// stage or the committed content. The inode is read under one namespace lock, so its
+    /// liveness, path, kind and content hash come back together.
     fn plan_read(&self, ino: u64, fh: u64, offset: u64, size: u32) -> ReadPlan {
         let open_handle = self.open_handle(ino, fh);
         let Some(view) = self.inode_view(ino, open_handle.is_some()) else {
@@ -1633,9 +1553,6 @@ impl QuickFS {
         }
         if let Some(staged) = self.read_staged(ino, offset, u64::from(size)) {
             return ReadPlan::Buffered(BufferedRead::Staged(staged));
-        }
-        if view.document {
-            return ReadPlan::Buffered(self.read_document_export(ino, offset, size));
         }
         if view.attr.kind != FileType::RegularFile {
             return ReadPlan::Error(EISDIR);
@@ -1734,7 +1651,6 @@ impl QuickFS {
     /// peer must supply are hydrated on the runtime, like an unbuffered read.
     fn reply_buffered(&self, ino: u64, buffered: BufferedRead, reply: ReplyData) {
         match buffered {
-            BufferedRead::Shared(bytes, range) => reply.data(bytes.get(range).unwrap_or_default()),
             BufferedRead::Staged(Ok(StagedRead::Ready(bytes))) => reply.data(&bytes),
             BufferedRead::Staged(Ok(StagedRead::Missing(missing))) => {
                 let hydrator = Arc::clone(&self.hydrator);
@@ -1756,7 +1672,6 @@ impl QuickFS {
                 eprintln!("read of the write stage of inode {ino} failed: {error}");
                 reply.error(to_errno(EIO));
             }
-            BufferedRead::Failed => reply.error(to_errno(EIO)),
         }
     }
 
@@ -1861,9 +1776,8 @@ impl QuickFS {
 
     fn presented_attr(&self, ino: u64) -> Option<(fuser::FileAttr, Duration)> {
         let buf_len = self.staged_len(ino);
-        let is_doc = self.is_document(ino);
         let attr = self.ns().getattr(ino)?;
-        Some((self.live_attr(attr, buf_len, is_doc), Self::ttl_for(is_doc)))
+        Some((self.live_attr(attr, buf_len), TTL))
     }
 
     fn payload_not_resident(&self, ino: u64) -> bool {
@@ -1881,12 +1795,10 @@ impl QuickFS {
 
     /// `FOPEN_KEEP_CACHE` when the kernel's page cache for `ino` was filled from the content
     /// the file still has; otherwise no flag, which makes the kernel drop the cache.
-    /// Buffered and document inodes never keep it, and neither do files whose payload is
+    /// Buffered inodes never keep it, and neither do files whose payload is
     /// not resident, so "Free Local Space" also frees the kernel's copy.
     fn open_cache_flags(&self, ino: u64) -> FopenFlags {
-        let volatile = self.payload_not_resident(ino)
-            || self.buffers().contains_key(&ino)
-            || self.is_document(ino);
+        let volatile = self.payload_not_resident(ino) || self.buffers().contains_key(&ino);
         let hash = self.ns().hash_for(ino);
         let mut cached = self.kernel_cached.lock_recover();
         if volatile {
@@ -1903,10 +1815,7 @@ impl QuickFS {
     /// passthrough is usable and every chunk is local.
     fn passthrough_backing(&self, ino: u64) -> Option<std::fs::File> {
         let passthrough = self.passthrough.as_ref().filter(|p| p.usable())?;
-        if self.payload_not_resident(ino)
-            || self.buffers().contains_key(&ino)
-            || self.is_document(ino)
-        {
+        if self.payload_not_resident(ino) || self.buffers().contains_key(&ino) {
             return None;
         }
         let hash = self.ns().hash_for(ino)?;
@@ -1934,29 +1843,19 @@ impl QuickFS {
         std::fs::File::open(&path).ok()
     }
 
-    fn doc_export_cache(&self) -> std::sync::MutexGuard<'_, DocExports> {
-        self.doc_exports.lock_recover()
-    }
-
-    fn is_document(&self, ino: u64) -> bool {
-        let namespace = self.ns();
-        namespace.document_codec(ino).is_some()
-    }
-
     /// The hydration state of `ino`, served for the `user.tilo.sync` xattr. `None` when the
-    /// inode does not exist. Directories, documents and empty files are always
+    /// inode does not exist. Directories and empty files are always
     /// [`SyncState::Local`]; a regular file's state comes from the hydrator.
     fn sync_state_for(&self, ino: u64) -> Option<fs_protocol::SyncState> {
         use fs_protocol::SyncState;
-        let (exists, is_dir, is_doc, hash) = {
+        let (exists, is_dir, hash) = {
             let ns = self.ns();
             let attr = ns.getattr(ino);
             let exists = attr.is_some();
             let is_dir = matches!(attr, Some(a) if a.kind == FileType::Directory);
-            let is_doc = ns.document_codec(ino).is_some();
             let hash = ns.hash_for(ino);
             drop(ns);
-            (exists, is_dir, is_doc, hash)
+            (exists, is_dir, hash)
         };
         if !exists {
             return None;
@@ -1964,7 +1863,7 @@ impl QuickFS {
         if self.buffers().contains_key(&ino) {
             return Some(SyncState::Local);
         }
-        if is_dir || is_doc {
+        if is_dir {
             return Some(SyncState::Local);
         }
         let Some(hash) = hash else {
@@ -1973,20 +1872,10 @@ impl QuickFS {
         Some(self.hydrator.block_on(self.hydrator.sync_state(hash)))
     }
 
-    /// Attribute and entry TTL: zero for documents, whose size the CRDT computes live, the
-    /// normal TTL otherwise.
-    fn ttl_for(is_doc: bool) -> Duration {
-        if is_doc { Duration::ZERO } else { TTL }
-    }
-
-    /// Commit a complete stage: import it as a document, or ingest it as opaque chunked
-    /// content (a file-backed stage straight from its file). Returns the errno the writer
-    /// should see when the bytes did not become the file's committed content.
+    /// Commit a complete stage: ingest it as chunked content (a file-backed stage straight
+    /// from its file). Returns the errno the writer should see when the bytes did not become
+    /// the file's committed content.
     fn commit_buffer(&self, ino: u64, stage: &mut WriteStage) -> Result<(), i32> {
-        if self.is_document(ino) {
-            let data = stage.contiguous().map_err(|error| commit_errno(&error))?;
-            return self.commit_document(ino, &data);
-        }
         Self::commit_retrying(ino, || {
             stage
                 .source()
@@ -1994,14 +1883,6 @@ impl QuickFS {
         })?;
         self.remember_staged_metadata(ino, stage);
         Ok(())
-    }
-
-    fn commit_bytes(&self, ino: u64, data: &[u8]) -> Result<(), i32> {
-        if self.is_document(ino) {
-            return self.commit_document(ino, data);
-        }
-        self.remember_rich_metadata(ino, data);
-        Self::commit_retrying(ino, || self.commit_content(ino, data))
     }
 
     /// Run `commit` until it succeeds or fails for good. `EBUSY` means the committed revision
@@ -2021,49 +1902,6 @@ impl QuickFS {
                 }
             }
         }
-    }
-
-    /// Commit `data` as the file document `ino` is. A file its codec cannot be (it refuses
-    /// the bytes, or the format is one it only reads) becomes a plain file holding them: a
-    /// file reads back what was written to it, whatever its name says.
-    fn commit_document(&self, ino: u64, data: &[u8]) -> Result<(), i32> {
-        if self
-            .document_export(ino)
-            .is_some_and(|current| *current == *data)
-        {
-            self.remember_rich_metadata(ino, data);
-            return Ok(());
-        }
-        // The version records the written bytes by the content id the store serves them
-        // under, like any other file's, so history can read and restore it; the document
-        // reads back as them, though its codec would normalize it, until it is edited
-        // ([`Self::document_export`]).
-        let stored = self
-            .write_content_blocking(data)
-            .map_err(|error| commit_errno(&error))?;
-        let kept = {
-            let mut ns = self.ns();
-            let kept =
-                ns.write_document(ino, data, stored.as_ref(), now_ms(), &self.document_content);
-            if !kept {
-                ns.make_plain_file(ino);
-            }
-            ns.note_change();
-            kept
-        };
-        self.doc_export_cache().remove(&ino);
-        if !kept {
-            return self.commit_bytes(ino, data);
-        }
-        let content = stored.map(|hash| fs_protocol::ContentHash(*hash.as_bytes()));
-        self.remember_rich_metadata_as(
-            ino,
-            data,
-            content.unwrap_or_else(|| fs_protocol::ContentHash(*blake3::hash(data).as_bytes())),
-        );
-        self.publish();
-        self.document_version(ino, fs_protocol::FileProvenance::Edit, content);
-        Ok(())
     }
 
     fn remember_staged_metadata(&self, ino: u64, stage: &WriteStage) {
@@ -2125,46 +1963,6 @@ impl QuickFS {
         Some(properties)
     }
 
-    /// The serialized bytes of a document inode, exported once per change of that
-    /// document and shared, so multi-chunk reads and `getattr` are cheap and
-    /// consistent. A change elsewhere in the namespace only advances the heads the
-    /// cached export is known current at.
-    fn document_export(&self, ino: u64) -> Option<Arc<[u8]>> {
-        let cached = self.doc_export_cache().get(&ino).cloned();
-        let mut ns = self.ns();
-        let heads = ns.heads();
-        if let Some((known, bytes)) = cached
-            && (known == heads || !ns.document_changed_between(ino, &known, &heads))
-        {
-            drop(ns);
-            if known != heads {
-                self.doc_export_cache()
-                    .insert(ino, (heads, Arc::clone(&bytes)));
-            }
-            return Some(bytes);
-        }
-        let projected = ns.export_document(ino, &self.document_content)?;
-        let written = ns
-            .document_written(ino)
-            .filter(|(_, reads)| *reads == tilo_content::hash_bytes(&projected));
-        let heads = ns.heads();
-        drop(ns);
-        // The bytes last written while the document still projects as it did then: a
-        // program's README.md reads back as it wrote it; an edit of the document is what
-        // changes the file.
-        let bytes: Arc<[u8]> = written
-            .and_then(|(hash, _)| {
-                self.hydrator
-                    .block_on(self.hydrator.read(hash, 0, u64::MAX))
-                    .ok()
-            })
-            .unwrap_or(projected)
-            .into();
-        self.doc_export_cache()
-            .insert(ino, (heads, Arc::clone(&bytes)));
-        Some(bytes)
-    }
-
     fn start_document_index_acl_worker(&self) {
         let Some((acl, identity)) = self.enforcement.clone() else {
             return;
@@ -2213,12 +2011,6 @@ impl QuickFS {
     #[must_use]
     pub fn with_thumbs(mut self, provider: crate::thumbs::ThumbProvider) -> Self {
         self.thumbs = Some(provider);
-        self
-    }
-
-    #[must_use]
-    pub fn with_document_content(mut self, content: tilo_content::ContentStore) -> Self {
-        self.document_content = content;
         self
     }
 
@@ -2377,9 +2169,15 @@ impl QuickFS {
     /// and, with `ino`, for the versions of that file committed later.
     fn note_writer(&self, pid: u32, ino: Option<u64>) -> WriterNote {
         let Some(writers) = &self.writers else {
-            return WriterNote(false);
+            return WriterNote(false, None);
         };
-        let attribution = writers.resolve(pid).attribution();
+        let writer = writers.resolve(pid);
+        let acting = crate::namespace::acting_as(
+            writer
+                .invoker()
+                .map(|invoker| tilo_actions::ActionContext::default().with_invoker(invoker)),
+        );
+        let attribution = writer.attribution();
         if let Some(ino) = ino {
             let mut last = self.last_writers.lock_recover();
             if last.len() >= LAST_WRITERS {
@@ -2392,7 +2190,7 @@ impl QuickFS {
         }
         let noted = attribution.map_or(NotedWriter::Person, NotedWriter::Attributed);
         CURRENT_WRITER.with(|current| *current.borrow_mut() = Some(noted));
-        WriterNote(true)
+        WriterNote(true, Some(acting))
     }
 
     /// Who wrote `record`'s version: the request being answered on this thread, else
@@ -3201,9 +2999,6 @@ impl QuickFS {
         self.check_access(ino, Access::Write)?;
         if self.write_buffers.lock_recover().contains_key(&ino) {
             return Err(EBUSY);
-        }
-        if self.is_document(ino) {
-            return Err(libc::ENOTSUP);
         }
         if strategy == fs_protocol::ConflictStrategy::Merge {
             return self.resolve_conflict_merge(ino, conflict_id, version_id);
@@ -4536,18 +4331,11 @@ impl QuickFS {
         stored.map_err(|e| io::Error::other(e.to_string()))
     }
 
-    /// Current full content of an inode: its stage if any, else the document export or the
-    /// hydrated blob. `Ok(empty)` only for an empty or hashless file; a hydration failure is
+    /// Current full content of an inode: its stage if any, else the hydrated blob. `Ok(empty)` only for an empty or hashless file; a hydration failure is
     /// `Err`.
     fn read_full_blocking(&self, ino: u64) -> io::Result<Vec<u8>> {
         if let Some(stage) = self.stage(ino) {
             return self.read_stage_blocking(&stage, 0, u64::MAX);
-        }
-        if self.is_document(ino) {
-            return self
-                .document_export(ino)
-                .map(|bytes| bytes.to_vec())
-                .ok_or_else(|| io::Error::other("document export failed"));
         }
         let hash = self.ns().hash_for(ino);
         let Some(hash) = hash else {
@@ -5489,12 +5277,7 @@ impl Filesystem for QuickFS {
 
     fn getattr(&self, req: &Request, ino: INodeNo, fh: Option<FileHandle>, reply: ReplyAttr) {
         match self.attr_for_request(ino.0, fh.map(|fh| fh.0)) {
-            Ok((attr, is_doc)) => {
-                reply.attr(
-                    &self.attr_ttl(Self::ttl_for(is_doc)),
-                    &self.presented_to(req, attr),
-                );
-            }
+            Ok(attr) => reply.attr(&self.attr_ttl(TTL), &self.presented_to(req, attr)),
             Err(e) => reply.error(to_errno(e)),
         }
     }
@@ -5682,7 +5465,7 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(e));
             return;
         }
-        let (ino, document) = match self.create_for_write(parent.0, name_bytes, mode & !umask) {
+        let ino = match self.create_for_write(parent.0, name_bytes, mode & !umask) {
             Ok(created) => created,
             Err(error) => {
                 reply.error(to_errno(error));
@@ -5713,7 +5496,7 @@ impl Filesystem for QuickFS {
             );
         }
         reply.created(
-            &self.attr_ttl(Self::ttl_for(document)),
+            &self.attr_ttl(TTL),
             &self.presented_to(req, attr),
             Generation(0),
             FileHandle(handle),

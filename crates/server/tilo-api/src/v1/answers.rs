@@ -249,6 +249,12 @@ pub struct ActionRow {
 pub struct Row {
     pub path: String,
     pub name: String,
+    /// The resource's own id, which names it whatever else is titled the same.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// The app's stable key for it, the name its actions answer it by.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
     pub label: String,
     /// The app's type of it, or `app`.
     pub kind: String,
@@ -592,19 +598,53 @@ pub struct NewMember {
     pub name: Option<String>,
 }
 
-/// The hosts holding the workspace (`hosts`, each its `device` key, the
-/// `person` it serves, the `label` it goes by, whether it `reads` the
-/// workspace, and whether its machine is `cloud` so its provider can read it
-/// too), and after a removal whether that keeper confirmed it let the
-/// workspace go (`confirmed`).
+/// The servers keeping the workspace, the one asked first, each with the
+/// name it goes by, whether it reads the workspace and whether its machine is
+/// a cloud provider's; after a removal or a move whether the server let go
+/// confirmed it.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct Hosts(pub Map<String, Value>);
+pub struct Servers {
+    /// The workspace's id.
+    pub workspace: String,
+    pub servers: Vec<KeptServer>,
+    /// After a removal or a move: whether the server let go confirmed it no
+    /// longer keeps the workspace. One that was not reached is no longer
+    /// named to anyone, and lets the workspace go once it hears so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmed: Option<bool>,
+    /// How many copies the workspace wants kept and where they stand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copies: Option<Value>,
+}
 
-/// Another host to hold the workspace as well.
+/// One server keeping the workspace.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct NewHost {
-    /// The host's site, like `https://tilo.sh`. You must be let in there, and
-    /// it may refuse by its own rules.
+pub struct KeptServer {
+    /// The server's device key, 64 hex characters: what removing or moving
+    /// it may name it by.
+    pub device: String,
+    /// The person the server runs for, by their user public key.
+    pub person: String,
+    /// Whether this is the server asked.
+    pub here: bool,
+    /// What it calls itself, as its own signed address names it.
+    #[serde(default)]
+    pub label: String,
+    /// Whether it holds the workspace's keys and reads it; a store keeps its
+    /// ciphertext and reads none of it.
+    #[serde(default)]
+    pub reads: bool,
+    /// Whether its machine is rented from a cloud provider, whose operator
+    /// can read what it holds too.
+    #[serde(default)]
+    pub cloud: bool,
+}
+
+/// Another server to keep the workspace as well.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NewServer {
+    /// The server's site, like `https://tilo.sh`. You must be let in there,
+    /// and it may refuse by its own rules.
     pub origin: String,
 }
 
@@ -612,6 +652,21 @@ pub struct NewHost {
 /// invitation, oldest first, and whether the entry mails invitations.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WaitList(pub Map<String, Value>);
+
+/// What the workspace is called from now on, by every list and device of it.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct WorkspaceName {
+    /// 1 to 80 characters.
+    pub name: String,
+}
+
+/// Where a member of the workspace is held from now on.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct MemberRole {
+    /// `viewer`, `commenter`, `editor`, `moderator`, `administrator` or
+    /// `owner`; never more than yours to give.
+    pub role: String,
+}
 
 /// How the key's person goes by in the workspace from now on.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -671,6 +726,31 @@ pub struct Uploaded {
     /// `tilo.content:<hash>`: what an action takes the file as.
     pub content: String,
     pub size: u64,
+}
+
+/// Several small files put into the workspace in one request.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PutMany {
+    /// Each file's bytes, base64.
+    pub files: Vec<String>,
+}
+
+/// Each file's `tilo.content:<hash>` reference, in the order asked.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PutManyAnswer {
+    pub contents: Vec<String>,
+}
+
+/// Content hashes (lowercase BLAKE3 hex) to ask whether the workspace holds.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct HaveHashes {
+    pub hashes: Vec<String>,
+}
+
+/// Whether each asked hash is held, in the order asked.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct HeldHashes {
+    pub have: Vec<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -782,13 +862,20 @@ pub fn schemas(generator: &mut schemars::SchemaGenerator) -> Vec<(&'static str, 
         NewInvitation,
         NewMember,
         WaitList,
-        Hosts,
-        NewHost,
+        Servers,
+        KeptServer,
+        NewServer,
         Invitation,
         NewName,
+        WorkspaceName,
+        MemberRole,
         Program,
         ProgramAnswer,
         Uploaded,
+        PutMany,
+        PutManyAnswer,
+        HaveHashes,
+        HeldHashes,
         NewUpload,
         Upload,
         Event,

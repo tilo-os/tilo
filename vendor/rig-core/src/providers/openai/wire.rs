@@ -334,6 +334,11 @@ pub struct Quirks {
     pub reliable_reasoning_count: bool,
     /// Whether a bare JSON string is accepted as a text-only completion reply.
     pub accepts_bare_string_reply: bool,
+    /// Whether a thought may stand in a message's own `content`, between
+    /// `<thought>` and `</thought>` at its head, and is read out of it as
+    /// the message's reasoning. Off, such text is answer text like any
+    /// other.
+    pub thought_tags: bool,
     /// Whether document and file inputs may use provider file IDs.
     pub accepts_file_ids: bool,
     /// The rewrite this dialect applies to the serialized chat body.
@@ -400,6 +405,7 @@ impl Quirks {
             reasoning_field: None,
             reliable_reasoning_count: true,
             accepts_bare_string_reply: false,
+            thought_tags: false,
             accepts_file_ids: true,
             rewrite: BodyRewrite::None,
             embedding: EmbeddingQuirks::openai(),

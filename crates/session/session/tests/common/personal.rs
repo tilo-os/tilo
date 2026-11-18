@@ -216,7 +216,7 @@ pub fn store_path(state: &Path) -> PathBuf {
 
 /// The channel key of the person's own record of `kind`, as `app` keeps it.
 pub fn channel(app: &str, cluster: &str, kind: &str) -> String {
-    tilo_action_broker::route::CrdtRoute::record(app, cluster, record(kind)).channel_key()
+    tilo_workspace_service::apps::route::CrdtRoute::record(app, cluster, record(kind)).channel_key()
 }
 
 /// The record of the person's own that `kind` names.

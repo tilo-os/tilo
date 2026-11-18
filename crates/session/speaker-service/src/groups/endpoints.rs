@@ -26,8 +26,8 @@ use media::audio::AudioGraph;
 use media::audio_watch::GraphWatchEvent;
 use tilo_lock::MutexRecover as _;
 
-use tilo_device_fabric::speaker_group::AudioEndpoint;
 use tilo_network_actor::fabric::DeviceId;
+use tilo_network_actor::fabric::speaker_group::AudioEndpoint;
 
 /// How long after a failed or lost watch the next sample may try again,
 /// and after a failed read the follower reads again.

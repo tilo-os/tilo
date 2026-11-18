@@ -561,6 +561,10 @@ print(found.group(1) if found else "")' "$hosted_workspace" <<<"$(vm_host status
         | grep -iE 'page action|person|ask|confirm|browser|environment' | tail -60 >&2 || true
       echo '--- the API said, to its end:' >&2
       bash "$here/stack.sh" logs api 2>/dev/null | tail -40 >&2 || true
+      echo '--- the Browser session in the VM said:' >&2
+      sudo -n podman exec tilo-sh-vm-host-0 sh -c \
+        'find /var /srv -name "browser*.log" 2>/dev/null | while read -r log; do echo "$log:"; tail -60 "$log"; done' \
+        >&2 2>/dev/null || true
       fail 'the visa test page did not open in the hosted window (see above)'
     fi
     VM_HOST_RUN="sudo -n podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all tilo-legacy" \

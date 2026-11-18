@@ -1892,8 +1892,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     #[cfg(target_os = "linux")]
     let signalled_availability = availability.clone();
     let fs = QuickFS::new(namespace, hydrator, heuristics)
-        .with_checked_history_workspace(checked_history_workspace)
-        .with_document_content(tilo_content_device::for_app());
+        .with_checked_history_workspace(checked_history_workspace);
     let fs = if allow_history_baseline {
         fs
     } else {
@@ -2325,7 +2324,6 @@ async fn seed_from_dir(
     store: &Arc<ContentStore>,
     root: &Path,
 ) -> Result<()> {
-    let document_content = tilo_content_device::for_app();
     let mut stack = vec![(ROOT_INO, root.to_path_buf())];
     while let Some((parent_ino, dir)) = stack.pop() {
         for entry in std::fs::read_dir(&dir)? {
@@ -2345,27 +2343,13 @@ async fn seed_from_dir(
                 let data = std::fs::read(&path)?;
                 let size = data.len() as u64;
                 let hash = store.write_content(&data).await?;
-                let mut ns = namespace.lock_recover();
-                // A recognized rich-text format is seeded as a CRDT document that reads
-                // back as the file; one its codec cannot be stays a plain file.
-                let document = fs::fs::document_codec_for(&name).and_then(|codec| {
-                    let ino = ns.create_document(parent_ino, &name, &codec, unix_now_ms())?;
-                    let kept = ns.write_document(
-                        ino,
-                        &data,
-                        hash.as_ref(),
-                        unix_now_ms(),
-                        &document_content,
-                    );
-                    if !kept {
-                        ns.make_plain_file(ino);
-                        ns.set_content(ino, hash.as_ref(), size, unix_now_ms());
-                    }
-                    Some(ino)
-                });
-                if document.is_none() {
-                    ns.create_file(parent_ino, &name, hash.as_ref(), size, unix_now_ms());
-                }
+                namespace.lock_recover().create_file(
+                    parent_ino,
+                    &name,
+                    hash.as_ref(),
+                    size,
+                    unix_now_ms(),
+                );
             }
         }
     }

@@ -840,10 +840,41 @@ pub fn merged_strength(
         } else {
             lexical
         };
-    lexical + score as f32 / top as f32 + application_intent + proximity
+    let naming = if title_names_query(needle, kind, title) {
+        TITLE_NAMES_FIT
+    } else {
+        0.0
+    };
+    lexical + score as f32 / top as f32 + application_intent + proximity + naming
 }
 
 const TITLE_BEGUN_FIT: f32 = 2.5;
+
+/// What a hit earns for being *named* by the query rather than merely holding its words: the
+/// person typed the name of an app, a note or a setting, so it leads what only mentions the word
+/// in its text (a paragraph of prose, an action on something else).
+const TITLE_NAMES_FIT: f32 = 3.0;
+
+/// Whether `needle` names the hit: its title is the query or begins with it. A title that holds
+/// the query inside it (a paragraph beginning with the word, an action "New note inside Tasks")
+/// merely mentions it.
+fn title_names_query(needle: &str, kind: &ResourceKind, title: &str) -> bool {
+    use super::{MatchTier, fold_search_text, rank::match_tier};
+    let needle = fold_search_text(needle.trim());
+    if needle.is_empty() {
+        return false;
+    }
+    let title = fold_search_text(title);
+    let title = if matches!(kind, ResourceKind::Application) {
+        title.strip_prefix("open ").unwrap_or(&title)
+    } else {
+        &title
+    };
+    matches!(
+        match_tier(&needle, title),
+        Some(MatchTier::Exact | MatchTier::Prefix | MatchTier::PrefixWord)
+    )
+}
 
 /// Order merged hits: groups by how well their best member matched, then the fixed kind
 /// order, then strength within a group. Enter activates the top row, so an app's name

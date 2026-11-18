@@ -21,7 +21,6 @@ pub(super) enum ReviewCommand {
     /// is empty.
     Name,
     Confirm,
-    FileConfirm(uuid::Uuid),
     Cancel,
     Refresh,
 }
@@ -48,19 +47,12 @@ impl HistoryHost {
         let confirm = self.commands.clone();
         let cancel = self.commands.clone();
         let dismiss = self.commands.clone();
-        let ready = token.is_some()
-            || self
-                .files
-                .as_ref()
-                .is_some_and(|files| files.review.is_some());
-        let command =
-            if let Some(files) = self.files.as_ref().filter(|files| files.review.is_some()) {
-                ReviewCommand::FileConfirm(files.confirmation_token())
-            } else if ready {
-                ReviewCommand::Confirm
-            } else {
-                ReviewCommand::Refresh
-            };
+        let ready = token.is_some();
+        let command = if ready {
+            ReviewCommand::Confirm
+        } else {
+            ReviewCommand::Refresh
+        };
         self.review = Some(ReviewPanel {
             token,
             dialog: ModalDialog::new(
@@ -112,9 +104,6 @@ impl HistoryHost {
         };
         if matches!(command, ReviewCommand::Cancel) {
             self.review = None;
-            if let Some(files) = &mut self.files {
-                files.cancel_review();
-            }
             return false;
         }
         if self.validate_root(root).is_err() {
@@ -127,20 +116,7 @@ impl HistoryHost {
         if let Err(reason) =
             crate::history_mode::capability::history_restore_readiness(root, scope.key)
         {
-            if let Some(files) = &mut self.files {
-                files.cancel_review();
-            }
             self.show_review(None, reason);
-            return false;
-        }
-        if matches!(
-            self.source(),
-            HistorySourceRegistration::CheckedFiles { .. }
-        ) {
-            self.service_file_review(command);
-            return false;
-        }
-        if matches!(command, ReviewCommand::FileConfirm(_)) {
             return false;
         }
         if matches!(

@@ -17,17 +17,15 @@
 //!
 //! A native build without a capability's feature answers [`CaptureError::Unsupported`]
 //! for it; the web serves every capability. An app its sandbox confines is served by
-//! the host that launched it ([`broker`], [`grants`]).
+//! the process that launched it ([`broker`]).
 
 pub mod scanner;
 
 #[cfg(all(unix, not(web_page)))]
-pub mod broker;
-#[cfg(all(unix, not(web_page)))]
-pub mod grants;
-
 #[cfg(avf)]
 mod avf_backend;
+#[cfg(all(unix, not(web_page)))]
+pub mod broker;
 #[cfg(gst)]
 mod gst_backend;
 #[cfg(portal_screen)]

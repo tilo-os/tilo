@@ -208,8 +208,8 @@ fn path_parameter(name: &str) -> &'static str {
         "entry" => {
             "The address's entry, as `GET /v1/workspaces/{workspace}/members/wait-list` lists it"
         }
-        "host" => {
-            "The host's site (`https://tilo.sh`), or its device key as listing the hosts names it"
+        "server" => {
+            "The server's site (`https://tilo.sh`), or its device key as listing the servers names it"
         }
         _ => "",
     }

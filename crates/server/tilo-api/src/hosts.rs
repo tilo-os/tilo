@@ -58,6 +58,11 @@ impl Hosts {
             .collect()
     }
 
+    /// The first configured one.
+    pub(crate) fn first(&self) -> Option<&Arc<Server>> {
+        self.relays.first()
+    }
+
     /// The first configured one's name and origin: what a link that admits
     /// into it names.
     #[must_use]

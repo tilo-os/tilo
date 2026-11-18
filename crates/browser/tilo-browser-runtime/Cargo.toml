@@ -21,7 +21,7 @@ accounts = { version = "0.1.0", path = "../../system/accounts", features = ["per
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 # The workspace's files, which a page shows without a disk: the tree record they are.
-fs-protocol = { version = "0.1.0", path = "../../system/fs-protocol", features = ["documents"] }
+fs-protocol = { version = "0.1.0", path = "../../system/fs-protocol" }
 # Reading a PDF's words for search, through the portable engine the viewer draws with.
 tilo-pdf = { version = "0.1.0", path = "../../platform/tilo-pdf" }
 # Which app opens what a file's bytes are, as a workspace lands a file.
@@ -182,11 +182,6 @@ deferred-jobs-band = ["ui/lazy-jobs-band"]
 # own module the first time a drag reaches the shell. Without it the drops are
 # linked in.
 deferred-drops = []
-# The bundling crate supplies the code that writes a workspace's document (a
-# `.md`, an `.odt`) into the page's content for search (`DOCUMENT_FILES`), which
-# the browser desktop fetches as its own module the first time the tree names
-# one. Without it the document codecs are linked in.
-deferred-document-files = []
 # The bundling crate supplies the page's layout actions (`PAGE_LAYOUT`), which
 # the browser desktop fetches as its own module as the page first draws; an
 # action asked before they are in waits for them. Without it they are linked

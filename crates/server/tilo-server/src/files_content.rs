@@ -6,7 +6,7 @@
 //! the chunks, which hold the nodes ([`fs_protocol::tree`]) — whose nodes name
 //! each file's content by hash and never carry the bytes
 //! ([`fs::tree_document`]), and the bytes themselves, which travel beside the
-//! records as their content ([`tilo_action_broker::document_content`]) between
+//! records as their content (the broker's document content routes) between
 //! the members the host carries them for. A member keeps the files it wrote
 //! and answers whoever asks; a member that leaves — a VM host that was
 //! suspended, evicted or replaced, a laptop that went offline — takes the only

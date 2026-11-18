@@ -18,8 +18,6 @@ mod apps;
 pub mod cli;
 mod daemon;
 #[cfg(target_os = "macos")]
-pub mod device_grants;
-#[cfg(target_os = "macos")]
 mod i18n;
 pub mod key_sessions;
 pub mod mcp_process;
@@ -40,9 +38,6 @@ tilo_automerge_isolate::test_worker!();
 pub const COLLAB_SOCKET: &str = "collab.sock";
 pub const IDENTITY_SOCKET: &str = "identity.sock";
 pub const BLOB_SOCKET: &str = "blobs.sock";
-/// The runtime's own actions (the device grants), for `tilo-control
-/// --socket`.
-pub const CONSOLE_SOCKET: &str = "console.sock";
 /// The profile's workspace files, served read only (`tilo-file-provider`).
 pub const FILES_SOCKET: &str = "files.sock";
 
@@ -121,10 +116,11 @@ pub trait RuntimeServices: Sized {
         let host = self.action_provider()?;
         let actor = self.actor().to_owned();
         Ok(std::sync::Arc::new(move || {
-            Ok(
-                tilo_mcp::McpServer::new(host.clone(), workspace.clone(), actor.clone())
-                    .with_surface(tilo_mcp::Surface::Agent),
-            )
+            Ok(tilo_mcp::McpServer::new(
+                host.clone(),
+                workspace.clone(),
+                actor.clone(),
+            ))
         }))
     }
 

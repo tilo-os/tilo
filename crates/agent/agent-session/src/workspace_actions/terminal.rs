@@ -669,21 +669,13 @@ fn tail(output: &[u8], max: usize) -> (String, bool) {
     (text, start > 0)
 }
 
-/// The tool a command line runs and what Terminal's parsers read in its
-/// output (a build's errors, a test's failures), as a device records
-/// them.
-#[cfg(target_os = "linux")]
+/// The tool a command line calls and what Terminal's parsers read in its
+/// output (a build's errors, a test's failures), as a device keeps them.
 fn parsed(command: &str, output: &[u8]) -> (String, Value) {
     (
         terminal::parse::tool_of(command).to_owned(),
         serde_json::to_value(terminal::parse::items(command, output)).unwrap_or_default(),
     )
-}
-
-/// Without Terminal linked, a command is recorded without its parsed items.
-#[cfg(not(target_os = "linux"))]
-fn parsed(_command: &str, _output: &[u8]) -> (String, Value) {
-    (String::new(), json!([]))
 }
 
 #[cfg(test)]

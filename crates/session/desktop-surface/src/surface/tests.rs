@@ -2592,6 +2592,7 @@ fn agent_opens_notes_out_of_sight(
             notes,
             tilo_desktop_model::ownership::OpenedBy {
                 run: "agent-session:1".into(),
+                agent: "claude-code-0a1b2c3d4e".into(),
                 label: "Claude Code".into(),
                 title: String::new(),
             },

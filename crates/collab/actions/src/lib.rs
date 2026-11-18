@@ -253,11 +253,12 @@ pub use registry::{ActionRegistry, DecodePayload, decode_json, decode_payload};
 pub use resource::{
     ActionBinding, ActionBindingError, ActionInput, ActionSpec, ActionState, ActionType,
     ArgsBuilder, Collects, ContinuationArguments, ContinuationEvidence, ContinuationKey,
-    ContinuationQuery, ControlInvocation, FlatAction, KEY_SEP, ListedRow, NESTED_RESOURCE_FACET,
-    Noun, PROMPTED_PARAM, ResourceId, ResourcePresentation, ResourceSemanticIdentity, ResourceSpec,
-    ResourceType, ResourceViewMountSpec, ResourceViewRangeSpec, ResourceViewSpec, RunBy, Target,
-    action_label, app_label, flatten, in_words, kind_mirrors_a_control, listed_for_people,
-    listed_row, listed_row_problems, plural, singular, sole_text_argument,
+    ContinuationQuery, ControlInvocation, Exports, FlatAction, KEY_SEP, ListedRow,
+    NESTED_RESOURCE_FACET, Noun, PROMPTED_PARAM, ResourceId, ResourcePresentation,
+    ResourceSemanticIdentity, ResourceSpec, ResourceType, ResourceViewMountSpec,
+    ResourceViewRangeSpec, ResourceViewSpec, RunBy, Target, action_label, app_label, flatten,
+    in_words, kind_mirrors_a_control, listed_for_people, listed_row, listed_row_problems, plural,
+    singular, sole_text_argument,
 };
 pub use schema::{
     CatalogueSchemaEntry, ContextRequirement, PRESENCE_VIEW_TAG, REQUIRES_TAG_PREFIX,

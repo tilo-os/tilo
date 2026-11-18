@@ -57,6 +57,15 @@ if said=$(inside /usr/libexec/tilo/tilolang-process 2>&1); then
 fi
 grep -q 'tilolang-process: exiting: no api' <<<"$said" \
   || die "tilolang-process on the server image's base said: $said"
+# A server declares the two ways in it has: the token made for it, and the code
+# it shows. Nobody is at it to confirm a device it found on the network.
+methods=$root/usr/lib/tilo/enrollment-methods
+[[ -f $methods ]] || die 'the image declares no enrollment methods'
+grep -qx token "$methods" || die 'the server image offers no enrollment token'
+grep -qx code "$methods" || die 'the server image offers no enrollment code'
+if grep -qx local-network "$methods"; then
+  die 'the server image offers local-network pairing'
+fi
 # Scripts call these bare; the esp writer answers to the UKI editor's name too.
 [[ -x $root/usr/bin/tilo-image-trust ]] || die 'tilo-image-trust is not on PATH for the boot tools'
 [[ $(readlink "$root/usr/libexec/tilo-uki-cmdline") == tilo-esp-write ]] \
@@ -78,6 +87,12 @@ for module in 91tilo-rollback 92tilo-sibling-unlock; do
 done
 [[ -d $root/usr/share/tilo/pcr-predictions ]] \
   || die 'no /usr/share/tilo/pcr-predictions, where a signed PCR prediction is read from'
+# The installed machine boots the initramfs this image carries: without one built
+# with the unlock module, the kernel sees a LUKS device it cannot open.
+initrd=$(echo "$root"/usr/lib/modules/*/initramfs.img)
+[[ -s $initrd ]] || die 'the image carries no initramfs, so its root cannot be opened at boot'
+grep -qx tilo-rollback "$root/usr/lib/tilo/initramfs-modules.txt" \
+  || die 'the initramfs was not built with the unlock module (91tilo-rollback)'
 for t in cryptsetup tpm2_createprimary; do
   inside sh -c "command -v $t" >/dev/null || die "no $t, which the early-boot unlock runs"
 done

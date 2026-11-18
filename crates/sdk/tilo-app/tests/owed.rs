@@ -5,9 +5,8 @@
 #![allow(clippy::unwrap_used, reason = "test assertions")]
 
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
 
-use tilo_app::framework::{Chained, Effected};
+use tilo_app::framework::{Chained, Effected, PartLimits};
 use tilo_app::prelude::*;
 use tilo_app::resource::DocumentId;
 use tilo_app::tilo_resource::Collection;
@@ -67,26 +66,19 @@ impl ShelfPart {
 
     /// Change what an item says.
     #[action]
-    pub fn say(&mut self, id: String, text: String) {
-        if let Some(item) = self.items.get_mut(&Id::from_raw(id)) {
+    pub fn say(&mut self, id: &Id, text: String) {
+        if let Some(item) = self.items.get_mut(id) {
             item.text = text;
         }
     }
 
     /// The outside holds `text` of the item.
     #[action(external)]
-    pub fn told(&mut self, id: String, text: String) {
-        if let Some(item) = self.items.get_mut(&Id::from_raw(id)) {
+    pub fn told(&mut self, id: &Id, text: String) {
+        if let Some(item) = self.items.get_mut(id) {
             item.told = text;
         }
     }
-}
-
-fn holding(parts: &[(u64, Rc<ShelfPart>)], id: &str) -> Option<u64> {
-    parts
-        .iter()
-        .find(|(_, part)| part.items.get(&Id::from_raw(id)).is_some())
-        .map(|(index, _)| *index)
 }
 
 impl Chained for ShelfPart {
@@ -94,24 +86,6 @@ impl Chained for ShelfPart {
 
     fn chain() -> DocumentId {
         DocumentId::derived("shelf", &DocumentId::workspace_default())
-    }
-
-    fn part_for(action: &Self::Action, parts: &[(u64, Rc<Self>)]) -> Result<u64, String> {
-        let named = match &action.operation {
-            ShelfPartAction::Say(shelf_part::Say { id, .. })
-            | ShelfPartAction::Told(shelf_part::Told { id, .. }) => Some(id),
-            _ => None,
-        };
-        if let Some(index) = named.and_then(|id| holding(parts, id)) {
-            return Ok(index);
-        }
-        Ok(parts.last().map_or(0, |(head, part)| {
-            if part.items.len() >= PART_ITEMS {
-                head.saturating_add(1)
-            } else {
-                *head
-            }
-        }))
     }
 
     const HELD_WHOLE: bool = true;
@@ -150,7 +124,7 @@ impl ResourceApp for ShelfApp {
                     TOLD.with(|told| told.borrow_mut().push(format!("{id}={text}")));
                     // Written after the frame, when the store takes writes.
                     confirming.submit(ShelfPart::TOLD.with(shelf_part::Told {
-                        id: id.as_str().to_owned(),
+                        id: id.clone(),
                         text,
                     }));
                     Ok(Effected::done())
@@ -177,8 +151,29 @@ fn put(app: &mut TestApp<ShelfApp>, id: &str, text: &str) {
 tilo_test_env::scenario! {
     fn work_a_chain_owes_is_done_once_and_reads_only_the_part_that_changed;
 
+    phase a_chains_resource_stands_at_the_top_of_the_apps_tree;
+    // A chain holds the app's items, so its resource is published beside
+    // the app's own resource and not under it: a path an agent reads for an
+    // item names the chain and the item, nothing in between.
+    {
+        let mut app = TestApp::<ShelfApp>::new().unwrap();
+        app.settle();
+        let chain = tilo_app::framework::chain_resource_id(&ShelfPart::chain());
+        let forest = app.harness().resources();
+        let top: Vec<&str> = forest.iter().map(|resource| resource.id.as_str()).collect();
+        assert!(top.contains(&chain.as_str()), "the chain is published: {top:?}");
+        assert!(
+            forest.iter().all(|resource| resource
+                .children
+                .iter()
+                .all(|child| child.id.as_str() != chain)),
+            "the chain is not one of the app resource's children: {top:?}"
+        );
+    }
+
     phase each_item_is_told_once_and_confirmed_in_its_part;
     {
+        let _parts = PartLimits::scoped(PART_ITEMS, usize::MAX);
         let mut app = TestApp::<ShelfApp>::new().unwrap();
         for n in 0..=PART_ITEMS {
             put(&mut app, &format!("i{n}"), "new");
@@ -201,7 +196,7 @@ tilo_test_env::scenario! {
         app.settle();
         let before = READS.with(Cell::get);
         app.chain_invoke(&ShelfPart::SAY.with(shelf_part::Say {
-            id: "i4".into(),
+            id: Id::from_raw("i4"),
             text: "changed".into(),
         }))
         .unwrap();

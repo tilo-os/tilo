@@ -117,7 +117,7 @@ impl Workspaces {
 
     /// Whether `workspace`'s governance names the device `device` among its
     /// hosts.
-    pub(crate) async fn names_host(&self, workspace: &str, device: [u8; 32]) -> bool {
+    pub(crate) async fn names_server(&self, workspace: &str, device: [u8; 32]) -> bool {
         let Ok(governed) = self.workspace(workspace).await else {
             return false;
         };
@@ -252,7 +252,7 @@ impl Workspaces {
     }
 
     /// Have the server `device`, at `addr`, hold `workspace` as well, as
-    /// `role`, as its owners chose ([`Workspaces::chooses_hosts`]): hand the
+    /// `role`, as its owners chose ([`Workspaces::chooses_servers`]): hand the
     /// workspace over with [`HOST_WORKSPACE`] and name the address it answers,
     /// which says that role, among the workspace's holders. A device of this
     /// device's own person is admitted to the workspace as one of the owner's
@@ -507,7 +507,7 @@ impl Workspaces {
     /// acts for them from a script or a command. Never an agent's grant, and
     /// never a device for being of the person whose host this is: every
     /// holder answers it alike.
-    pub(super) fn chooses_hosts(governed: &GovernedWorkspace, caller: &DeviceCert) -> bool {
+    pub(super) fn chooses_servers(governed: &GovernedWorkspace, caller: &DeviceCert) -> bool {
         let person = caller.user_public_key;
         let speaks_for_person =
             caller.capabilities.agent.is_none() || caller.capabilities.server_key;
@@ -520,18 +520,32 @@ impl Workspaces {
                     .is_ok_and(|policy| policy.is_keeper(&hex::encode(person))))
     }
 
-    /// The holders of `workspace`, as its governance names them: every one
-    /// alike, by device key.
+    /// The servers keeping `workspace`, as its governance names them: this
+    /// one, the server asked, first, then each other one by the name it signs
+    /// into its own address.
     ///
     /// # Errors
     ///
     /// The workspace is not held here.
-    pub async fn keeping_devices(&self, workspace: &str) -> Result<Vec<WorkspaceHolder>, String> {
+    pub async fn keeping_devices(&self, workspace: &str) -> Result<Vec<KeepingDevice>, String> {
         let hosts = self
             .hosts(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        Ok(holders_of(&hosts))
+        let mut holders = holders_of(&hosts);
+        let here = hex::encode(self.inner.host.cert.device_public_key);
+        holders.sort_by_key(|holder| holder.device != here);
+        Ok(holders
+            .into_iter()
+            .map(|holder| KeepingDevice {
+                here: holder.device == here,
+                device: holder.device,
+                person: holder.person,
+                label: holder.label,
+                reads: holder.reads,
+                cloud: holder.cloud,
+            })
+            .collect())
     }
 
     /// Have the holder whose site is at `origin` (`https://tilo.sh`) hold
@@ -543,7 +557,7 @@ impl Workspaces {
     /// # Errors
     ///
     /// As [`Self::attach_server`], or the origin did not say who it is.
-    pub async fn add_host(
+    pub async fn add_server(
         &self,
         workspace: &str,
         origin: &str,
@@ -574,7 +588,7 @@ impl Workspaces {
     ///
     /// The holder is not one of the workspace's, or the origin did not say
     /// who it is.
-    pub async fn remove_host(&self, workspace: &str, named: &str) -> Result<bool, String> {
+    pub async fn remove_server(&self, workspace: &str, named: &str) -> Result<bool, String> {
         let named = named.trim();
         let (device, addr) = if let Some(device) = device_key(named) {
             (device, None)
@@ -582,10 +596,77 @@ impl Workspaces {
             let (device, addr) = host_at(named, self.site_reach()).await?;
             (device, Some(addr))
         };
-        if !self.names_host(workspace, device).await {
+        if !self.names_server(workspace, device).await {
             return Err(format!("{named} does not hold the workspace"));
         }
         self.detach_host(workspace, device, addr).await
+    }
+
+    /// Move `workspace` from the server `from` (its site, or its device key
+    /// as [`Self::keeping_devices`] names it) to the one at the site `to`
+    /// ([`Self::move_holder`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::move_holder`], or a site did not say who it is.
+    pub async fn move_server(&self, workspace: &str, from: &str, to: &str) -> Result<bool, String> {
+        let from = from.trim();
+        let old = match device_key(from) {
+            Some(device) => device,
+            None => host_at(from, self.site_reach()).await?.0,
+        };
+        let (new, addr) = host_at(to, self.site_reach()).await?;
+        self.move_holder(workspace, old, new, addr)
+            .await
+            .map_err(|error| {
+                error
+                    .replace("the old server", from)
+                    .replace("the new server", to)
+            })
+    }
+
+    /// Move `workspace` from the server `old` to the server `new` at `addr`:
+    /// `new` keeps it as well first, in the role `old` held it in
+    /// ([`Self::attach_server`]), then `old`
+    /// keeps it no more ([`Self::detach_host`]). Answers whether `old`
+    /// confirmed it let the workspace go.
+    ///
+    /// # Errors
+    ///
+    /// `old` does not keep the workspace, or `new` did not take it: the
+    /// workspace then stays where it was. Or `new` took it and `old` could
+    /// not be let go: both keep it then, and the error says so.
+    pub async fn move_holder(
+        &self,
+        workspace: &str,
+        old: [u8; 32],
+        new: [u8; 32],
+        addr: EndpointAddr,
+    ) -> Result<bool, String> {
+        if !self.names_server(workspace, old).await {
+            return Err("the old server does not keep the workspace".into());
+        }
+        let role = self
+            .hosts(workspace)
+            .await
+            .ok()
+            .and_then(|hosts| {
+                hosts
+                    .iter()
+                    .find(|hint| host_device(hint) == old)
+                    .map(tilo_peer_state::holder_role)
+            })
+            .unwrap_or(CopyRole::KeyHolder);
+        self.attach_server(workspace, new, addr, role)
+            .await
+            .map_err(|error| {
+                format!(
+                    "the new server did not take the workspace, which stays where it was: {error}"
+                )
+            })?;
+        self.detach_host(workspace, old, None).await.map_err(|error| {
+            format!("the new server keeps the workspace now, and so does the old server still: {error}")
+        })
     }
 
     /// `device`, a host at `addr`, reached for its host operations: its
@@ -682,6 +763,25 @@ fn hex_postcard(value: &impl serde::Serialize) -> Result<String, String> {
     postcard::to_stdvec(value)
         .map(hex::encode)
         .map_err(|error| error.to_string())
+}
+
+/// One host of a workspace, as its owners list them ([`Workspaces::keeping_devices`]).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct KeepingDevice {
+    /// The host's device key, hex: what removing it may name it by.
+    pub device: String,
+    /// The person the host runs for, by their user public key, hex.
+    pub person: String,
+    /// Whether this is the server asked: the one the list was read from.
+    pub here: bool,
+    /// What it calls itself, as its own signed address names it.
+    pub label: String,
+    /// Whether it holds the workspace's keys: it reads the workspace. A store
+    /// keeps its ciphertext and reads none of it.
+    pub reads: bool,
+    /// Whether the machine under it is rented from a cloud provider, whose
+    /// operator can read what it holds.
+    pub cloud: bool,
 }
 
 /// `holders` as a member reads them: each named by its own signed address. A

@@ -8,7 +8,7 @@ use std::sync::{LazyLock, Mutex};
 
 use ui::notify::PriorityContact;
 
-use crate::part::Book;
+use crate::contact_cards::Book;
 
 use ui::apps::CONTACTS as PACKAGE_ID;
 

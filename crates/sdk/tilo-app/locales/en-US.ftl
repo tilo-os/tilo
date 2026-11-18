@@ -102,3 +102,6 @@ provenance-written-there = Written by { $name } in { $source } on { $date }
 provenance-written-there-named = Written by { $name } in { $source } ({ $reference }) on { $date }
 # The tool an item came from, with the name it had there.
 provenance-source-named = { $source } ({ $reference })
+# The day a moved item was written there, in the row: it says which of the
+# days beside it is the source's, the item's own creation here being the other.
+provenance-written-on = Written { $date }

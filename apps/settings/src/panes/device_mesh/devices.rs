@@ -347,7 +347,7 @@ impl Page<'_> {
     ) -> Vec<provider_settings_ui::widgets::Item> {
         let device = peer.device_node_id.clone();
         let name = self.bind_on_row(
-            &home_server_row(peer).into_resource(),
+            &home_server_row(peer),
             EditableLabel::new(&peer.label)
                 .with_id(&peer_key("name", &peer.device_node_id))
                 .with_accessible_name(t("mesh-name"))
@@ -393,7 +393,7 @@ impl Page<'_> {
                     .push(Box::new(ui::widget::Spacer::new())),
             ))];
         };
-        let live = home_server_row(peer).into_resource();
+        let live = home_server_row(peer);
         if self.removing.as_deref() != Some(entry.key.as_str()) {
             return vec![provider_settings_ui::widgets::row(Box::new(
                 ui::widget::Row::new()

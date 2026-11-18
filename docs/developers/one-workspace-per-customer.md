@@ -253,8 +253,8 @@ the server holds no more than the reads in flight however much a workspace holds
 side by side up to a bound; the rest wait their turn rather than fail. The files the
 resources name are `tilo.content:` references: download each with `files.download` (`GET
 /v1/workspaces/<workspace>/content/<content>`) while the workspace still exists. From a shell,
-`tilo account workspaces create "Applicant cus_8121" --label customer_id=cus_8121` and
-`tilo account workspaces ls --label customer_id=cus_8121` do the same.
+`tilo workspace create "Applicant cus_8121" --label customer_id=cus_8121` and
+`tilo workspace ls --label customer_id=cus_8121` do the same.
 
 [`sdk/typescript/examples/workspace_per_customer.ts`](../../sdk/typescript/examples/workspace_per_customer.ts)
 is all of this at a backend's scale: it makes 300 labelled workspaces at once, finds each by its customer
@@ -303,9 +303,9 @@ names, so the agent can end its work by handing a person the link to what it did
 Open the workspace in Tilo, or invite the person who reviews it:
 
 ```sh
-tilo members invite --role editor --email ops@example.com -w applicant-jane-doe
-tilo members ls -w applicant-jane-doe
-tilo members name "Jane Doe" -w applicant-jane-doe   # what its people and your invitations call you
+tilo workspace people invite --role editor --email ops@example.com -w applicant-jane-doe
+tilo workspace people ls -w applicant-jane-doe
+tilo workspace people name "Jane Doe" -w applicant-jane-doe   # what its people and your invitations call you
 ```
 
 Following the link signs them in to Tilo (with a passkey, or by approving an agent) and lands them in the
@@ -329,7 +329,7 @@ changed ([invocations and history](../tilo-sh/invocations-and-history.md)). Watc
 Delete their workspace, and their data goes with it:
 
 ```sh
-tilo account workspaces rm applicant-jane-doe   # {"deleted": id, "revoked_keys": [...]}
+tilo workspace rm applicant-jane-doe   # {"deleted": id, "revoked_keys": [...]}
 ```
 
 Deleting is final: there is no undo, and nothing asks again, so the call is the confirmation. The host
@@ -346,18 +346,18 @@ A key the host turns away says why: `KeyRevoked`, `KeyExpired` (a minted key pas
 ## The same from a shell
 
 ```sh
-tilo account workspaces create "Applicant: Jane Doe"
-tilo account workspaces branch "Onboarding template" "Applicant: Amir Haddad"   # or start from one set up once
+tilo workspace create "Applicant: Jane Doe"
+tilo workspace branch "Onboarding template" "Applicant: Amir Haddad"   # or start from one set up once
 tilo files put passport.png -w applicant-jane-doe
 tilo -w applicant-jane-doe do pdf-viewer#import-pdf-content content=tilo.content:… name=application.pdf
 tilo -w applicant-jane-doe do pdf-viewer/application.pdf#read-form-fields
 tilo -w applicant-jane-doe do word-processor#export-content format=docx
 tilo files get tilo.content:… -w applicant-jane-doe -o cover-letter.docx
 tilo keys mint -w applicant-jane-doe --name "Jane Doe's agent"
-tilo members invite --role editor --email ops@example.com -w applicant-jane-doe
-tilo members ls -w applicant-jane-doe
+tilo workspace people invite --role editor --email ops@example.com -w applicant-jane-doe
+tilo workspace people ls -w applicant-jane-doe
 tilo keys revoke <grant>
-tilo account workspaces rm applicant-jane-doe   # when the customer leaves
+tilo workspace rm applicant-jane-doe   # when the customer leaves
 ```
 
 ## What is underneath

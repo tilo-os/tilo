@@ -29,9 +29,9 @@ use std::time::{Duration, Instant};
 use runtime_collab::file_clipboard::{
     Command, Conflict as Asked, NamedEntry, ObjectIdentity, Reply, SelectedDescriptor,
 };
-use tilo_action_broker::services::{FileClipboardContext, FileClipboardServices};
 use tilo_actions::ActionKind;
 use tilo_lock::MutexRecover as _;
+use tilo_workspace_service::apps::services::{FileClipboardContext, FileClipboardServices};
 use ui::dnd::CopiedFiles;
 
 use crate::clipboard::paste::{self, Conflict};

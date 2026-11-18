@@ -519,6 +519,7 @@ impl EncryptionMetadata {
 mod claims_wire {
     use crate::claim::{ChangeClaim, ClaimedAction, UnitPath};
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use tilo_action_policy::Acting;
 
     #[derive(Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
@@ -526,6 +527,8 @@ mod claims_wire {
         changes: Vec<[u8; 32]>,
         action: ClaimedAction,
         units: Vec<UnitPath>,
+        #[serde(with = "crate::claim::invoker_text")]
+        invoker: Option<Acting>,
     }
 
     #[derive(Serialize)]
@@ -533,26 +536,34 @@ mod claims_wire {
         changes: Vec<[u8; 32]>,
         action: &'a ClaimedAction,
         units: &'a [UnitPath],
+        invoker: Option<String>,
     }
 
     pub(super) fn serialize<S: Serializer>(
         claims: &[ChangeClaim],
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
-        let mut runs: Vec<RunRef<'_>> = Vec::new();
+        let mut grouped: Vec<RunRef<'_>> = Vec::new();
         for claim in claims {
-            match runs.last_mut() {
-                Some(run) if *run.action == claim.action && run.units == claim.units => {
-                    run.changes.push(claim.change);
+            let invoker = crate::claim::invoker_text::text(claim.invoker.as_ref())
+                .map_err(serde::ser::Error::custom)?;
+            match grouped.last_mut() {
+                Some(last)
+                    if *last.action == claim.action
+                        && last.units == claim.units
+                        && last.invoker == invoker =>
+                {
+                    last.changes.push(claim.change);
                 }
-                _ => runs.push(RunRef {
+                _ => grouped.push(RunRef {
                     changes: vec![claim.change],
                     action: &claim.action,
                     units: &claim.units,
+                    invoker,
                 }),
             }
         }
-        runs.serialize(serializer)
+        grouped.serialize(serializer)
     }
 
     pub(super) fn deserialize<'de, D: Deserializer<'de>>(
@@ -560,14 +571,21 @@ mod claims_wire {
     ) -> Result<Vec<ChangeClaim>, D::Error> {
         let runs = Vec::<Run>::deserialize(deserializer)?;
         let mut claims = Vec::new();
-        for run in runs {
-            if run.changes.is_empty() {
+        for Run {
+            changes,
+            action,
+            units,
+            invoker,
+        } in runs
+        {
+            if changes.is_empty() {
                 return Err(serde::de::Error::custom("a claim run names no change"));
             }
-            claims.extend(run.changes.into_iter().map(|change| ChangeClaim {
+            claims.extend(changes.into_iter().map(|change| ChangeClaim {
                 change,
-                action: run.action.clone(),
-                units: run.units.clone(),
+                action: action.clone(),
+                units: units.clone(),
+                invoker: invoker.clone(),
             }));
         }
         Ok(claims)
@@ -790,6 +808,7 @@ mod tests {
                 change: [change; 32],
                 action: edit(field),
                 units: vec![vec![PathStep::Field("pages".into())]],
+                invoker: None,
             };
             let op = |claims: Vec<ChangeClaim>| {
                 SignedOp::new_unsigned(
@@ -862,6 +881,7 @@ mod tests {
                     },
                 ]),
                 units: vec![Vec::new()],
+                invoker: None,
             }])
             .with_surface(Some([5; 32]));
             crate::crypto::sign_op(&mut op, &key).unwrap();
@@ -873,7 +893,7 @@ mod tests {
             );
             assert_eq!(
                 hex::encode(sha2::Sha256::digest(&bytes)),
-                "749e5ccb5556d65069f084e0d4d2d5bd30a88b9e3609dfc46eb390cd16822234",
+                "9771c868530b57b24a636d95b302981a82edc9c5e43c0bb7ace89f3676fadc08",
                 "{}",
                 hex::encode(&bytes)
             );

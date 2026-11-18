@@ -52,7 +52,7 @@ mkdir -p "$context/bin" "$context/keys/release" \
   "$context/os/usr/lib/tmpfiles.d" "$context/os/usr/lib/systemd/system" \
   "$context/os/usr/lib/systemd/system-generators" \
   "$context/os/usr/lib/dracut/modules.d" \
-  "$context/os/usr/libexec" "$context/docs/app-model"
+  "$context/os/usr/libexec" "$context/os/scripts" "$context/docs/app-model"
 cp os/Containerfile.host "$context/Containerfile"
 cp "$binaries"/* "$context/bin/"
 cp os/containers/tilo-vm-host/hosted-jail.json "$context/os/containers/tilo-vm-host/"
@@ -66,6 +66,7 @@ cp os/usr/libexec/* "$context/os/usr/libexec/"
 cp -r os/usr/lib/systemd/system/. "$context/os/usr/lib/systemd/system/"
 cp -r os/usr/lib/systemd/system-generators/. "$context/os/usr/lib/systemd/system-generators/"
 cp -r os/usr/lib/dracut/modules.d/. "$context/os/usr/lib/dracut/modules.d/"
+cp os/scripts/build-initramfs.sh os/scripts/verify-board-initramfs.py "$context/os/scripts/"
 cp docs/recovery.md "$context/docs/"
 cp docs/app-model/environments.md "$context/docs/app-model/"
 cp keys/cosign.pub keys/tpm2-pcr-signing.public.pem "$context/keys/"

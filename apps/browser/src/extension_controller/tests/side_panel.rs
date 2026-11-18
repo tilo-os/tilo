@@ -199,7 +199,7 @@ tilo_test_env::scenario! {
             controller
                 .resources()
                 .into_iter()
-                .flat_map(|resource| resource.actions)
+                .flat_map(|resource| resource.into_resource().actions)
                 .map(|spec| spec.id.clone())
                 .filter(|id| id.contains("side-panel"))
                 .collect::<Vec<_>>()

@@ -279,6 +279,83 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
+    /// The servers keeping the workspace, which its owners alone choose.
+    fn the_general_tab_lists_the_servers_keeping_the_workspace;
+
+    phase an_owner_sees_the_servers_keeping_the_workspace;
+    {
+        let mut owner = staged("general");
+        for text in ["Servers", "This server", "3f2b1c00", "8d4e0a11"] {
+            assert!(says(&mut owner, text), "{text:?} is shown");
+        }
+        // Only a server other than the one the page is connected to is let go here.
+        assert_eq!(
+            owner
+                .harness()
+                .a11y_nodes()
+                .iter()
+                .filter(|(_, node)| node.label() == Some("Remove"))
+                .count(),
+            1,
+            "one remove button, for the server that is not the one it was made on"
+        );
+
+        let mut viewer = staged("general-viewer");
+        assert!(!says(&mut viewer, "Servers"), "a viewer sees no servers");
+    }
+
+    phase removing_a_server_asks_the_shell_for_it;
+    {
+        let (mut app, state) = mounted("general");
+        press(&mut app, "ws-general-server-remove-8d4e0a11");
+        assert_eq!(
+            state.take_asked(),
+            [WorkspaceSettingsEffect::RemoveServer {
+                server: "8d4e0a11".to_owned()
+            }]
+        );
+    }
+
+    phase a_typed_site_is_asked_for_by_add_and_by_enter;
+    {
+        let (mut app, state) = mounted("general");
+        app.harness()
+            .perform_named(
+                "ws-general-server-origin",
+                &A11yAction::SetValue("https://tilo.sh".to_owned()),
+            )
+            .unwrap();
+        app.settle();
+        press(&mut app, "ws-general-server-add");
+        assert_eq!(
+            state.take_asked(),
+            [WorkspaceSettingsEffect::AddServer {
+                origin: "https://tilo.sh".to_owned()
+            }]
+        );
+
+        app.harness()
+            .perform_named(
+                "ws-general-server-origin",
+                &A11yAction::SetValue("https://eu1.tilo.sh".to_owned()),
+            )
+            .unwrap();
+        app.settle();
+        app.harness()
+            .perform_named("ws-general-server-origin", &A11yAction::Focus)
+            .unwrap();
+        app.harness().key("Enter");
+        app.settle();
+        assert_eq!(
+            state.take_asked(),
+            [WorkspaceSettingsEffect::AddServer {
+                origin: "https://eu1.tilo.sh".to_owned()
+            }]
+        );
+    }
+}
+
+tilo_test_env::scenario! {
     /// The People tab of workspace settings.
     fn the_people_tab_lists_members_and_asks_before_removing_one;
 
@@ -542,6 +619,39 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase an_outside_effect_offers_only_the_answers_it_may_be_given;
+    // An agent never carries out an outside effect unasked: its line offers Ask
+    // first and Deny, never an Allow the workspace would then refuse.
+    {
+        let (mut app, state) = mounted("agent-review");
+        let nodes: std::collections::HashMap<_, _> =
+            app.harness().a11y_nodes().into_iter().collect();
+        let offered = |name: &str| -> Vec<String> {
+            let (_, group) = nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some(name))
+                .unwrap_or_else(|| panic!("{name:?} is shown"));
+            group
+                .children()
+                .iter()
+                .filter_map(|child| nodes.get(child)?.label().map(str::to_owned))
+                .collect()
+        };
+        assert_eq!(offered("Notes Reading"), ["Allow", "Ask first", "Deny"]);
+        assert_eq!(offered("Notes Outside effects"), ["Ask first", "Deny"]);
+        press(&mut app, "ws-agent-answer-so.tilo.notes-outside:segment:0");
+        assert_eq!(
+            state.take_asked(),
+            [WorkspaceSettingsEffect::SetAgentAnswer {
+                agent: "claude".to_owned(),
+                scope: "so.tilo.notes".to_owned(),
+                kind: "outside".to_owned(),
+                answer: "ask".to_owned(),
+            }],
+            "its first choice is Ask first"
+        );
+    }
+
     phase in_a_review_escape_goes_back_to_the_agents;
     {
         let (mut app, state) = mounted("agent-review");
@@ -767,7 +877,7 @@ tilo_test_env::scenario! {
             state.take_asked(),
             [WorkspaceSettingsEffect::Grant {
                 subject: "member:ada".to_owned(),
-                permission: "camera".to_owned(),
+                permission: "network".to_owned(),
                 until: None,
             }]
         );

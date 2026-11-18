@@ -319,12 +319,12 @@ enum = "DesktopCommand"
 reason = "`SetLayout` is renamed `SetLayout` at the same index: postcard writes no names, so the bytes read the same"
 
 [[break]]
-file = "crates/collab/tilo-action-broker/src/invocation_journal.rs"
+file = "crates/server/tilo-workspace-service/src/apps/invocation_journal.rs"
 enum = "InvocationOwner"
 reason = "the task-run owners went with the task-run path; the variants left keep their tags (the journal is JSON, tagged by name), and a journal still holding a task run's record is refused as unsupported, as any record no build serves"
 
 [[break]]
-file = "crates/collab/tilo-action-broker/src/action_evidence.rs"
+file = "crates/server/tilo-workspace-service/src/apps/action_evidence.rs"
 enum = "VerifiedActor"
 reason = "the task-run actors went with the task-run path; the variants left keep their names in the JSON evidence, and evidence naming a task run is refused as unsupported"
 
@@ -441,6 +441,11 @@ reason = "the refusal a spent content budget sent goes with that budget; a refus
 file = "crates/server/tilo-server-protocol/src/refusal.rs"
 enum = "Refusal"
 reason = "the refusal a spent change budget sent goes with that budget, since a member's changes are no longer refused by a clock; a refusal is a live answer on a device's session and nothing keeps it, and the peer protocol version is bumped from 53 to 54 with the removal, so a device at another version reads none of these bytes"
+
+[[break]]
+file = "crates/collab/actions/src/remote.rs"
+enum = "WireActionCallError"
+reason = "the rate-limited answer a spent change budget sent goes with that budget, since a member's changes are no longer refused by a clock; a refusal is a live answer in a versioned frame and nothing keeps it, and the remote-action frame version is bumped from 1 to 2 with the removal, so a device at another version reads none of these bytes"
 
 [[break]]
 file = "crates/collab/action-policy/src/grant.rs"

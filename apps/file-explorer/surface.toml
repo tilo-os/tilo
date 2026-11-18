@@ -228,6 +228,56 @@ label = "Files"
 version = 1
 person = true
 
+[[resources.verbs]]
+id = "new-folder"
+kind = "undoable"
+params = [
+  { name = "parent", type = "text", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
+  { name = "document", type = "text", required = false, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "new-file"
+kind = "undoable"
+params = [
+  { name = "parent", type = "text", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
+  { name = "document", type = "text", required = false, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "move"
+kind = "undoable"
+params = [
+  { name = "node", type = "text", required = true, schema = { type = "string" } },
+  { name = "parent", type = "text", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "write"
+kind = "undoable"
+params = [
+  { name = "node", type = "text", required = true, schema = { type = "string" } },
+  { name = "content", type = "text", required = true, schema = { type = "string" } },
+  { name = "size", type = "int", required = true, schema = { type = "integer" } },
+]
+
+[[resources.verbs]]
+id = "trash"
+kind = "undoable"
+params = [
+  { name = "node", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "restore"
+kind = "undoable"
+params = [
+  { name = "node", type = "text", required = true, schema = { type = "string" } },
+]
+
 [[resources]]
 kind = "files.recent"
 label = "Recent files"

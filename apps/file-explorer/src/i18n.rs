@@ -115,7 +115,6 @@ mod tests {
                 let sources = [
                     include_str!("files_app.rs"),
                     include_str!("views/file_view.rs"),
-                    include_str!("history_control.rs"),
                     include_str!("main.rs"),
                     include_str!("model.rs"),
                 ];
@@ -149,16 +148,14 @@ mod tests {
                     .unwrap_or(SOURCE_FTL)
                     .lines()
                     .filter_map(|line| {
-                        let (key, value) = line.split_once(" = ")?;
-                        (!key.starts_with("files-history-action-")
-                            && !value.is_empty()
-                            && !value.contains('{'))
+                        let (_, value) = line.split_once(" = ")?;
+                        (!value.is_empty() && !value.contains('{'))
                         .then_some(value)
                     })
                 {
                     let literal = format!("\"{value}\"");
                     assert!(
-                        production[..5]
+                        production
                             .iter()
                             .all(|source| !source.contains(&literal)),
                         "catalog value remains a production string literal: {value}"

@@ -263,13 +263,31 @@ impl App {
         &mut self,
         query: runtime_collab::ActionDirectoryQuery,
     ) -> runtime_collab::ActionDirectoryPage {
-        let Ok(revision) = self.try_action_directory_revision() else {
+        let Ok(current) = self.try_action_directory_revision() else {
             return ::collaboration::action_directory::unavailable_page(&query);
         };
-        let requested_revision = query.revision.clone();
-        if !requested_revision.is_empty() && requested_revision != revision {
-            return ::collaboration::action_directory::stale_page(revision);
+        let requested = query.revision.clone();
+        if requested.is_empty() || requested == current {
+            return self.action_directory_page_at(query, current);
         }
+        // A reader pages the snapshot it started on: while this app still
+        // holds it, a page is answered from it though the directory moved on
+        // since. A read never fails because something else changed meanwhile;
+        // it reads the consistent snapshot its revision named.
+        let Some(saved) = self.borrow_retired_directory(&requested) else {
+            return ::collaboration::action_directory::stale_page(current);
+        };
+        let page = self.action_directory_page_at(query, requested);
+        self.return_borrowed_directory(saved, page.exhausted);
+        page
+    }
+
+    /// The page `query` asks for, answered from the directory at `revision`.
+    fn action_directory_page_at(
+        &mut self,
+        query: runtime_collab::ActionDirectoryQuery,
+        revision: String,
+    ) -> runtime_collab::ActionDirectoryPage {
         if !query.resource_name.is_empty() {
             return self.action_directory_named(&query, revision);
         }

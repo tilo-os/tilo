@@ -10,7 +10,6 @@ pub(crate) enum NoticeAction {
     Undo,
     OpenWith(PathBuf),
     CancelTransfer,
-    OpenHistory(PathBuf),
 }
 
 impl NoticeAction {
@@ -19,7 +18,6 @@ impl NoticeAction {
             Self::Undo => crate::i18n::t("files-notice-undo"),
             Self::OpenWith(_) => crate::i18n::t("files-notice-open-with"),
             Self::CancelTransfer => crate::i18n::t("files-notice-cancel"),
-            Self::OpenHistory(_) => crate::i18n::t("files-notice-open-history"),
         }
     }
 
@@ -28,7 +26,6 @@ impl NoticeAction {
             Self::Undo => "undo",
             Self::OpenWith(_) => "open-with",
             Self::CancelTransfer => "cancel-transfer",
-            Self::OpenHistory(_) => "open-history",
         };
         format!("{NOTICE_VERB}.{kind}")
     }

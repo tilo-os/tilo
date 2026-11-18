@@ -3,7 +3,7 @@
 //! published surface offers, rather than an effect of the whole app.
 
 use ui::framework::{ActionControl, Dispatcher};
-use ui::tilo_actions::{ActionBinding, ResourceSpec};
+use ui::tilo_actions::{ActionBinding, Exports};
 use ui::tilo_resource::{Binds, Effect as _};
 
 use crate::effects::SettingsEffect;
@@ -15,10 +15,11 @@ use crate::resource::Settings;
 /// sent: the row binds the rest.
 pub fn binding<I: 'static>(
     dispatcher: &Dispatcher<Settings>,
-    row: &ResourceSpec,
+    row: &(impl Exports + ?Sized),
     effect: impl Binds<SettingsEffect, I>,
 ) -> Option<ActionBinding<I>> {
     let spec = row
+        .exported()
         .actions
         .iter()
         .find(|spec| spec.id == effect.action_id())?;
@@ -43,11 +44,15 @@ pub fn binding<I: 'static>(
 /// now, or `dispatcher` may not invoke it.
 pub fn invocation(
     dispatcher: &Dispatcher<Settings>,
-    row: &ResourceSpec,
+    row: &(impl Exports + ?Sized),
     effect: impl Into<SettingsEffect>,
 ) -> Option<ActionBinding<()>> {
     let effect = effect.into();
-    let spec = row.actions.iter().find(|spec| spec.id == effect.id())?;
+    let spec = row
+        .exported()
+        .actions
+        .iter()
+        .find(|spec| spec.id == effect.id())?;
     if !dispatcher.may(&spec.contract.need()) {
         return None;
     }
@@ -64,7 +69,7 @@ pub fn invocation(
 #[must_use]
 pub fn bind<I: 'static, C: ActionControl<I>>(
     dispatcher: &Dispatcher<Settings>,
-    row: &ResourceSpec,
+    row: &(impl Exports + ?Sized),
     control: C,
     effect: impl Binds<SettingsEffect, I>,
 ) -> C {
@@ -77,7 +82,7 @@ pub fn bind<I: 'static, C: ActionControl<I>>(
 #[must_use]
 pub fn bind_invocation<C: ActionControl<()>>(
     dispatcher: &Dispatcher<Settings>,
-    row: &ResourceSpec,
+    row: &(impl Exports + ?Sized),
     control: C,
     effect: impl Into<SettingsEffect>,
 ) -> C {

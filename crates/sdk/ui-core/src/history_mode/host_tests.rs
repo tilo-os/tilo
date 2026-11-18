@@ -662,30 +662,22 @@ fn find_access<'a>(
         })
 }
 
-fn checked_preview(
-    _: crate::history_mode::checked_files::FilePreviewInput,
-) -> Result<Box<dyn crate::history_mode::HistoryPreview>, String> {
-    Err("no preview selected by the composition test".into())
-}
-
-static CHECKED_COMPOSITION: HistoryDefinition = HistoryDefinition {
-    app_id: "so.tilo.checked-composition-fixture",
+static FOLDER_COMPOSITION: HistoryDefinition = HistoryDefinition {
+    app_id: "so.tilo.folder-composition-fixture",
     scopes: &[HistoryScopeDefinition {
-        key: "file",
-        title: "File",
-        presentation: HistoryPresentation::CheckedFiles {
-            create: checked_preview,
-        },
+        key: "folder",
+        title: "Folder",
+        presentation: HistoryPresentation::Folder,
         content_schema: None,
     }],
 };
 
-struct CheckedCompositionRoot {
+struct FolderCompositionRoot {
     inner: Box<dyn Widget>,
-    source: crate::history_mode::checked_files::FileHistorySource,
+    source: crate::history_mode::folder::FolderHistorySource,
 }
 
-impl Widget for CheckedCompositionRoot {
+impl Widget for FolderCompositionRoot {
     crate::provides!(dyn crate::history_mode::capability::DocumentHistory);
 
     crate::testing::delegate_widget_methods!(
@@ -711,43 +703,45 @@ impl Widget for CheckedCompositionRoot {
     }
 
     fn name(&self) -> &str {
-        "checked-composition-root"
+        "folder-composition-root"
     }
 }
 
-impl crate::history_mode::capability::DocumentHistory for CheckedCompositionRoot {
+impl crate::history_mode::capability::DocumentHistory for FolderCompositionRoot {
     fn history_registration(
         &self,
     ) -> Result<Option<HistoryRegistration>, HistoryRegistrationError> {
         HistoryRegistration::new(
-            &CHECKED_COMPOSITION,
-            vec![HistorySourceRegistration::CheckedFiles {
-                scope: "file",
+            &FOLDER_COMPOSITION,
+            vec![HistorySourceRegistration::FolderFiles {
+                scope: "folder",
                 source: self.source.clone(),
+                window: None,
             }],
         )
         .map(Some)
     }
     fn document_history_definition(&self) -> Option<&'static HistoryDefinition> {
-        Some(&CHECKED_COMPOSITION)
+        Some(&FOLDER_COMPOSITION)
     }
 }
 
 #[test]
-fn checked_files_activity_keeps_the_wide_live_surface() {
-    let source = crate::history_mode::checked_files::FileHistorySource::default();
+fn folder_activity_keeps_the_wide_live_surface() {
+    let source = crate::history_mode::folder::FolderHistorySource::default();
     let registration = HistoryRegistration::new(
-        &CHECKED_COMPOSITION,
-        vec![HistorySourceRegistration::CheckedFiles {
-            scope: "file",
+        &FOLDER_COMPOSITION,
+        vec![HistorySourceRegistration::FolderFiles {
+            scope: "folder",
             source: source.clone(),
+            window: None,
         }],
     )
     .unwrap();
-    let live = CheckedCompositionRoot {
+    let live = FolderCompositionRoot {
         inner: Box::new(Column::new().push(Box::new(Button::new(
-            "checked-live-marker",
-            "Retained checked file",
+            "folder-live-marker",
+            "Retained folder",
         )))),
         source,
     };
@@ -762,8 +756,8 @@ fn checked_files_activity_keeps_the_wide_live_surface() {
         driver
             .inspection_json()
             .unwrap()
-            .contains("Retained checked file"),
-        "wide CheckedFiles activity keeps the live surface beside its controls"
+            .contains("Retained folder"),
+        "a wide folder History keeps the live surface beside its controls"
     );
 }
 
@@ -827,7 +821,7 @@ fn history_host_messages_exist_in_every_shipped_language() {
         .filter(|key| {
             [
                 "history-mode-",
-                "history-files-",
+                "history-folder-",
                 "history-media-",
                 "history-sync-",
             ]
@@ -835,7 +829,7 @@ fn history_host_messages_exist_in_every_shipped_language() {
             .any(|prefix| key.starts_with(prefix))
         })
         .collect();
-    assert!(keys.len() > 80, "{keys:?}");
+    assert!(keys.len() > 40, "{keys:?}");
     let args: &[(&str, crate::i18n::ArgValue)] = &[
         ("id", 7.into()),
         ("owner", "owner".into()),

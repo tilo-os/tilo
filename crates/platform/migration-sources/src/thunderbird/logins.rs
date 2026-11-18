@@ -97,9 +97,21 @@ pub fn saved_logins(home: &Path, profile: &str) -> Result<Vec<SavedLogin>, Login
     };
     let key4 = read_file(&reviewed.root, "key4.db", MAX_FILE_BYTES)
         .map_err(|error| LoginsError::Unreadable(format!("key4.db: {error}")))?;
-    let key = logins_key(&key4, b"")?;
-    decrypt_logins(&logins, &key)
+    nss_logins(&logins, &key4)
 }
+
+/// The logins an NSS profile (Thunderbird's, Firefox's) keeps: its `logins.json` and `key4.db`,
+/// opened with no primary password.
+///
+/// # Errors
+/// See [`LoginsError`].
+pub fn nss_logins(logins: &[u8], key4: &[u8]) -> Result<Vec<SavedLogin>, LoginsError> {
+    let key = logins_key(key4, b"")?;
+    decrypt_logins(logins, &key)
+}
+
+/// The largest `logins.json` or `key4.db` read.
+pub const MAX_NSS_FILE_BYTES: u64 = MAX_FILE_BYTES;
 
 /// The saved password for `username` at a server of `scheme` (`imap`,
 /// `smtp`, `pop3`) on `host`.

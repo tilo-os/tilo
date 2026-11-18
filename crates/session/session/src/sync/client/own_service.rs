@@ -1,0 +1,182 @@
+//! This device's own workspace service: the same service a server has, in this process,
+//! holding the workspaces this device founds.
+//!
+//! The desktop governs no workspace itself. A workspace made here is placed on this service,
+//! and the device's own engine enrolls in it as a member, as it would in a workspace held
+//! anywhere else: its session goes to the service over an in-process carrier, and the person's
+//! other devices and the people they invite reach the service over iroh, on the ALPNs it serves
+//! on this endpoint.
+//!
+//! The service takes part in a workspace's key groups as this device: it asks this device's key
+//! service for their keys, and hands what its members send for the groups to it, so the
+//! service and the device never found two groups under one leaf.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use crate::engine::Engine;
+use neighbour_wire::NeighbourMsg;
+use tilo_identity::identity_store::DeviceIdentity;
+use tilo_network_actor::own_service::{OwnService, workspace_service};
+use tilo_workspace_keys::KeyProvider;
+use tilo_workspace_service::workspaces::{DeviceKeyGroups, GroupKeys, KeySink};
+
+/// How long the service waits for this device's key service to open a workspace's key group:
+/// longer than the group's own founding wait, so a slow founding is not taken for a refusal.
+const OPEN_WAIT: Duration = Duration::from_secs(30);
+
+/// Open this device's workspace service under `engine`'s state, as `identity`, on `endpoint`,
+/// and serve it through `own` from now on.
+///
+/// # Errors
+/// The identity's key cannot leave its store (a page's), the engine keeps no state, or the
+/// service's store cannot be opened.
+pub(super) async fn open(
+    own: &OwnService,
+    identity: &DeviceIdentity,
+    engine: &Arc<Engine>,
+    endpoint: iroh::Endpoint,
+) -> Result<Arc<workspace_service::WorkspaceService>, String> {
+    let root = engine
+        .service_root()
+        .ok_or("this session keeps no state, so it opens no workspace service")?;
+    let secret = identity
+        .signer
+        .endpoint_secret()
+        .ok_or("this device's key never leaves its store, so it opens no workspace service")?;
+    let cert = identity.device_cert.clone();
+    let service = workspace_service::WorkspaceService::open(
+        workspace_service::ServiceConfig::new(root, tilo_server_protocol::WorkSetting::none()),
+        workspace_service::ServiceIdentity {
+            user_public_key: cert.user_public_key,
+            device_signing_key: ed25519_dalek::SigningKey::from_bytes(&secret),
+            device_cert: cert,
+            // Each workspace's own revocations reach the service through its governance.
+            revocations: tilo_user_identity::RevocationList::new(),
+        },
+        endpoint,
+        Some(DeviceKeyGroups {
+            keys: Arc::new(DeviceGroupKeys {
+                keys: engine.keys(),
+            }),
+            sink: Some(Arc::new(DeviceKeySink {
+                engine: Arc::downgrade(engine),
+            })),
+        }),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(own.install(Arc::new(service)))
+}
+
+/// This device's key service, as its workspace service asks it for a workspace's keys.
+struct DeviceGroupKeys {
+    keys: KeyProvider,
+}
+
+impl GroupKeys for DeviceGroupKeys {
+    fn group_keys<'a>(
+        &'a self,
+        workspace: &'a str,
+        create: bool,
+    ) -> tilo_workspace_service::workspaces::GroupKeysAnswerFuture<'a> {
+        Box::pin(async move {
+            if self.keys.get().is_none() {
+                return Some(Err("this device's key service is not up".into()));
+            }
+            self.keys.group_keys(workspace, create, OPEN_WAIT).await
+        })
+    }
+}
+
+/// Where the service hands what its members send for a workspace's key groups: this device's
+/// key service, through the link the session's key groups hear on.
+struct DeviceKeySink {
+    engine: std::sync::Weak<Engine>,
+}
+
+impl KeySink for DeviceKeySink {
+    fn take(&self, messages: Vec<NeighbourMsg>) {
+        let Some(link) = self.engine.upgrade().and_then(|engine| engine.link()) else {
+            return;
+        };
+        for message in &messages {
+            link.heard(message);
+        }
+    }
+
+    /// Nothing to note: this device's key service reads the workspace's governance itself,
+    /// through its own session to the service.
+    fn settled(&self, _workspace: &str, _state: tilo_peer_state::StatePeer) {}
+}
+
+/// Founds a workspace this device made on its own workspace service: the service creates it and
+/// invites this device, and this device redeems the invitation in process, as it redeems any.
+pub(super) struct Founding {
+    pub(super) service: OwnService,
+    pub(super) endpoint: iroh::Endpoint,
+    pub(super) identity: DeviceIdentity,
+    pub(super) engine: std::sync::Weak<Engine>,
+    pub(super) network: tokio::sync::mpsc::Sender<tilo_network_actor::NetCmd>,
+    pub(super) events: tokio::sync::mpsc::Sender<tilo_network_actor::NetEvent>,
+    pub(super) link: Option<Arc<crate::workspace_keys::KeyLink>>,
+}
+
+impl tilo_session_client::engine::Founder for Founding {
+    fn found(
+        &self,
+        workspace: tilo_desktop_model::WorkspaceId,
+        name: String,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>> {
+        Box::pin(async move {
+            let service = self
+                .service
+                .get()
+                .ok_or("this device's workspace service is not open")?;
+            let engine = self.engine.upgrade().ok_or("the session has stopped")?;
+            let invitation = service
+                .place_own_workspace(&workspace.to_string(), &name, &self.identity.device_cert)
+                .await?;
+            drop(service);
+            super::adopt::redeem(
+                self.endpoint.clone(),
+                self.identity.clone(),
+                engine,
+                &self.network,
+                &self.events,
+                crate::sync::Enrolling {
+                    workspace_id: workspace,
+                    way: tilo_workspace_directory::Way::Invitation(invitation),
+                    name,
+                    renewal: None,
+                },
+                self.link.as_deref(),
+                Some(&self.service),
+            )
+            .await
+            .map_err(|failure| failure.to_string())
+        })
+    }
+
+    fn ask(
+        &self,
+        workspace: tilo_desktop_model::WorkspaceId,
+        action: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Option<tilo_session_client::engine::ServiceAnswer> {
+        let engine = self.engine.upgrade()?;
+        let workspace = workspace.to_string();
+        // The service holds a workspace this device is the holder of: it shares this device's key.
+        if !engine.hosts_itself(&workspace) {
+            return None;
+        }
+        let service = self.service.get()?;
+        let caller = self.identity.device_cert.clone();
+        let action = action.to_owned();
+        Some(Box::pin(async move {
+            service
+                .ask_workspace(&caller, &workspace, &action, arguments)
+                .await
+        }))
+    }
+}

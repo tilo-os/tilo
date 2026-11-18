@@ -5,6 +5,15 @@ use imager_backend::destination::disks::{DiskPartition, EFI_SYSTEM_GUID, LINUX_F
 use serde_json::Value;
 use ui::widget::find_test_id;
 
+/// The installer's published live rows as the resource tree the palette, a
+/// script and an agent reach.
+fn published_resources(app: &InstallerApp) -> Vec<ui::tilo_actions::ResourceSpec> {
+    app.published()
+        .into_iter()
+        .map(ui::framework::LiveRow::into_resource)
+        .collect()
+}
+
 fn find_test_id_mut<'a>(widget: &'a mut dyn Widget, id: &str) -> Option<&'a mut dyn Widget> {
     if widget.test_id() == Some(id) {
         return Some(widget);
@@ -589,7 +598,7 @@ tilo_test_env::scenario! {
             let guidance = app.alongside_storage_guidance();
             assert!(guidance.contains(&crate::setup::strings::t(LINUX_ALONGSIDE_READY)));
             assert!(guidance.contains(&capacity));
-            let published = app.published();
+            let published = published_resources(&app);
             let storage = published[0]
                 .children
                 .iter()
@@ -1442,7 +1451,7 @@ fn the_media_step_is_one_install_button_and_review_repeats_it() {
         find_accessible(composed, &note).is_some(),
         "the rendered codec control must expose the formats source explanation"
     );
-    let resources = app.published();
+    let resources = published_resources(&app);
     let install = resources[0]
         .actions
         .iter()

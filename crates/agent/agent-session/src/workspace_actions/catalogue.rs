@@ -73,17 +73,7 @@ impl Worker {
         };
         let bounded = self.bounded(caller);
         let page_began = std::time::Instant::now();
-        // The workspace's own rows: its apps, to open.
-        let own_rows = if query
-            .provider
-            .as_deref()
-            .is_none_or(|provider| provider == own_provider)
-            && self.may_across(workspace_id, caller, ActionKind::Undoable)
-        {
-            self.open_rows(&cluster_id)
-        } else {
-            Vec::new()
-        };
+        let own_rows = self.own_rows(workspace_id, caller, (&cluster_id, &own_provider), query);
         let mut page = if query.view_resource.is_some() {
             let mut rows = self.listed_rows(workspace_id, bounded.as_ref(), &wanted, &state);
             rows.extend(own_rows);
@@ -173,6 +163,31 @@ impl Worker {
                 Err(error) => self.did_not_mount(route, error),
             }
         }
+        rows
+    }
+
+    /// The workspace's own rows `query` asks for, as `caller` is shown them: its apps, to
+    /// open, and its folder with the files in it by their paths ([`super::files_listing`]).
+    fn own_rows(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        (cluster_id, own_provider): (&str, &str),
+        query: &CatalogueQuery,
+    ) -> Vec<CatalogueRow> {
+        if query
+            .provider
+            .as_deref()
+            .is_some_and(|provider| provider != own_provider)
+        {
+            return Vec::new();
+        }
+        let mut rows = if self.may_across(workspace_id, caller, ActionKind::Undoable) {
+            self.open_rows(cluster_id)
+        } else {
+            Vec::new()
+        };
+        rows.extend(self.file_rows(workspace_id, caller, cluster_id, query));
         rows
     }
 

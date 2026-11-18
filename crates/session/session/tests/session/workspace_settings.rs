@@ -362,16 +362,15 @@ fn workspace_settings_gives_and_revokes_a_permission() {
         .flat_map(|section| section.permissions)
         .find(|permission| permission.holder == "ada")
         .expect("the sheet lists ada's permission");
-    let camera = tilo_desktop_surface::i18n::t("workspace-settings-scope-camera");
     assert!(
-        given.detail.contains(&camera),
+        given.detail.contains("network"),
         "the row says what the permission allows: {}",
         given.detail
     );
     let held = session
         .handle()
         .read(|tree| tree.active_workspace().expect("a workspace").sandbox.len());
-    assert_eq!(held, 1, "the workspace gives ada the camera");
+    assert_eq!(held, 1, "the workspace gives ada the network");
 
     press(&mut app, &format!("ws-permission-revoke-{}", given.key));
     press(&mut app, "ws-settings-decision.primary");
@@ -379,7 +378,7 @@ fn workspace_settings_gives_and_revokes_a_permission() {
     let left = session
         .handle()
         .read(|tree| tree.active_workspace().expect("a workspace").sandbox.len());
-    assert_eq!(left, 0, "the workspace gives the camera to no one again");
+    assert_eq!(left, 0, "the workspace gives the network to no one again");
     assert!(
         session
             .workspace_settings()
@@ -511,6 +510,17 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
             .any(|row| row.scope == "app:so.tilo.notes"),
         "the review lists the installed app though no window of it is open: {review:?}"
     );
+    // An agent never carries out an outside effect unasked: that line offers no Allow.
+    let notes = listed_app(&session, "app:so.tilo.notes");
+    let choices = |kind: &str| {
+        notes
+            .kinds
+            .iter()
+            .find(|line| line.kind == kind)
+            .map(|line| line.choices.clone())
+    };
+    assert_eq!(choices("change"), Some(vec![0, 1, 2]), "{notes:?}");
+    assert_eq!(choices("outside"), Some(vec![1, 2]), "{notes:?}");
     choose(&mut app, "Notes Changes", "Ask first");
     settle(&mut session, &mut app);
     assert_eq!(

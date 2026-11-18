@@ -26,6 +26,9 @@ const TYPES = {
   '.ttf': 'font/ttf',
   '.otf': 'font/otf',
   '.woff2': 'font/woff2',
+  '.svg': 'image/svg+xml',
+  '.ftl': 'text/plain; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
 };
 
 export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -129,8 +132,12 @@ function warm(root) {
 /** Serve `root` on 127.0.0.1, or the first of `roots` that has the file: a
  * built `pkg/` beside the page's sources serves one origin, so a module that
  * imports `./pkg/…` finds it though it lives in another directory. Resolves
- * to `{url, close}`. */
-export function serve(root, {also = []} = {}) {
+ * to `{url, close}`, on `port` (any free one by default).
+ *
+ * Nothing it serves may be cached: a bundle rebuilt under the same names would
+ * otherwise reach a browser that loaded it before as a mix of new files and
+ * old, which fails in ways neither build does. */
+export function serve(root, {also = [], port = 0} = {}) {
   const roots = [root, ...also].map(dir => resolve(dir));
   for (const dir of roots) warm(dir);
   const server = createServer((request, response) => {
@@ -153,7 +160,7 @@ export function serve(root, {also = []} = {}) {
     });
     response.end(bytes);
   });
-  return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve({
+  return new Promise(resolve => server.listen(port, '127.0.0.1', () => resolve({
     url: `http://127.0.0.1:${server.address().port}`,
     close: () => new Promise(done => server.close(done)),
   })));

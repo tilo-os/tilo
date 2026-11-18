@@ -10,12 +10,12 @@
 //! made by that device key, under a certificate the same root issued, on
 //! or after `revoked_at_ns`. A root speaks only for the devices it
 //! certified: its entry naming a key another root certified refuses
-//! nothing of that other person's. The
-//! revocation list lives in the user's directory CRDT (see
-//! [`crate::WorkspaceDirectory`]) so it propagates to every device
-//! that syncs with the user, and once acknowledged cannot be
-//! "un-revoked" — replacing a revoked device requires enrolling a
-//! new one under a fresh device key.
+//! nothing of that other person's. Each
+//! device says the revocations its root signed whenever it meets
+//! another of the person's devices, so the list propagates to every
+//! device of theirs, and once acknowledged cannot be "un-revoked" —
+//! replacing a revoked device requires enrolling a new one under a
+//! fresh device key.
 //!
 //! The signing preimage constant [`REVOCATION_PREIMAGE_TAG`] is
 //! frozen wire ABI.
@@ -206,7 +206,7 @@ pub fn cert_refused(
 
 /// In-memory, verified revocation list.
 ///
-/// Populated by merging every [`RevocationEntry`] a user's directory,
+/// Populated by merging every [`RevocationEntry`] a person's devices,
 /// a workspace or a host holds; one list may hold several people's.
 /// Each entry is kept under the root that signed it and the device it
 /// names, and is asked about only for that root: any root can sign an

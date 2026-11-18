@@ -325,6 +325,7 @@ impl From<Actor> for Acting {
             app: None,
             cause: None,
             foreign_device: false,
+            handed: false,
             acted_for: Vec::new(),
         }
     }
@@ -364,6 +365,13 @@ pub struct Acting {
     /// A person working from a device that is not theirs.
     #[serde(default, skip_serializing_if = "is_false")]
     pub foreign_device: bool,
+    /// An agent a person's own device handed its session to, acting for that
+    /// person: it carries the delegation a device gives its agents
+    /// ([`Self::handed_preset`]). A claim the signer of a change makes,
+    /// honoured only from the device of the person it acts for
+    /// ([`Self::signed_by`]).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub handed: bool,
     /// Who this actor acted for. Empty for a person acting themselves.
     #[serde(default, rename = "for", skip_serializing_if = "Vec::is_empty")]
     pub acted_for: Vec<Acting>,
@@ -379,6 +387,7 @@ impl Acting {
             app: None,
             cause: None,
             foreign_device: false,
+            handed: false,
             acted_for: Vec::new(),
         }
     }
@@ -399,6 +408,7 @@ impl Acting {
             app: None,
             cause: None,
             foreign_device: false,
+            handed: false,
             acted_for: Vec::new(),
         }
     }
@@ -428,6 +438,7 @@ impl Acting {
             app: None,
             cause: None,
             foreign_device: false,
+            handed: false,
             acted_for: Vec::new(),
         }
     }
@@ -444,6 +455,58 @@ impl Acting {
     pub fn on_foreign_device(mut self, foreign: bool) -> Self {
         self.foreign_device = foreign;
         self
+    }
+
+    /// The agent `agent` acting for `person`, carrying the delegation the
+    /// person handed it ([`Self::handed`]).
+    #[must_use]
+    #[track_caller]
+    pub fn handed_agent(agent: impl Into<String>, person: impl Into<PersonId>) -> Self {
+        Self::agent(agent).handed().acting_for(Self::person(person))
+    }
+
+    /// The same acting, by an agent a person's own device handed its session
+    /// to ([`Self::handed`]).
+    #[must_use]
+    pub const fn handed(mut self) -> Self {
+        self.handed = true;
+        self
+    }
+
+    /// Who made a change that names this acting as its invoker, signed by the
+    /// device acting as `signer`: this tree, for the signer, so the signer's
+    /// grants bound it. A handed agent keeps its delegation only where the
+    /// signer is the person it acts for, on their own device: only that device
+    /// can hand its session to an agent.
+    #[must_use]
+    pub fn signed_by(mut self, signer: &Self) -> Self {
+        let person = signer.direct_person().map(str::to_owned);
+        let hands = |node: &Self| {
+            person.as_deref().is_some_and(|person| {
+                node.acted_for.is_empty() || node.acted_for_person() == Some(person)
+            })
+        };
+        self.unhand(&hands);
+        match &person {
+            // The tree names the signing person already: it is theirs as it is.
+            Some(person) if self.people().contains(&person.as_str()) => self,
+            _ => {
+                if self.app.is_none() {
+                    self.app.clone_from(&signer.app);
+                }
+                self.acting_for(signer.clone())
+            }
+        }
+    }
+
+    /// Clears [`Self::handed`] on every node `keeps` refuses.
+    fn unhand(&mut self, keeps: &dyn Fn(&Self) -> bool) {
+        if self.handed && !keeps(self) {
+            self.handed = false;
+        }
+        for node in &mut self.acted_for {
+            node.unhand(keeps);
+        }
     }
 
     /// The same acting, caused by the resource `cause`.

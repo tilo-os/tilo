@@ -4,7 +4,7 @@
 //! iroh. Tilo only names authenticated endpoint ids and workspaces. Every
 //! workspace travels on one protocol, the session a workspace host serves: a
 //! device reaches the devices that hold a workspace through the hosts that
-//! store it, each device serving its own ([`local_host`]). Two of the
+//! store it, each device serving its own ([`own_service`]). Two of the
 //! person's own devices keep one session of their own between them
 //! ([`device_sessions`]), which carries what is for the person's devices
 //! alone: their device fabric, nearby transfers, codec adverts and their
@@ -17,12 +17,15 @@
 //! its tests run on their own.
 
 pub mod behaviour;
+mod i18n {
+    ui::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
+}
 mod device_sessions;
 pub mod fabric;
 mod fabric_link;
-pub mod local_host;
 pub mod media_caps;
 pub mod native_ingress;
+pub mod own_service;
 pub mod services;
 #[cfg(any(test, feature = "test-support"))]
 pub mod siblings;
@@ -191,11 +194,6 @@ pub struct HomePeerExpectation {
 
 #[derive(Debug)]
 pub enum NetCmd {
-    /// Server between the devices that take part in this device's workspaces
-    /// through it, as their workspace's host, and the rest of each workspace:
-    /// what they write reaches this device's apps and the workspace's own
-    /// host, and what reaches this device of the workspace reaches them.
-    ServeMembers(tilo_peer_state::direct::Owning),
     /// Ask the host of the joined workspace on `ws` to replay what it retains:
     /// something an app message let go earlier waited for has arrived, and
     /// the message is decided again when it comes back.
@@ -217,7 +215,7 @@ pub enum NetCmd {
     NativeConnect(native_ingress::Connect),
     /// This device's own workspace host opened: join the workspaces it hosts that
     /// wait for it.
-    LocalHostReady,
+    OwnServiceReady,
     NativePublish {
         ws: WorkspaceId,
     },
@@ -499,14 +497,7 @@ enum InternalEvent {
     /// A workspace's link brought a frame into this device's owner.
     NativeHeard {
         ws: WorkspaceId,
-        heard: tilo_peer_state::direct::Heard,
-    },
-    /// A device that takes part in workspace `ws` through this one brought a
-    /// frame into this device's owner over its link.
-    MemberHeard {
-        ws: WorkspaceId,
-        workspace: tilo_desktop_model::WorkspaceId,
-        heard: tilo_peer_state::direct::Heard,
+        heard: Box<tilo_peer_state::direct::Heard>,
     },
     /// A workspace's link has the host's retained history in hand.
     NativeReady { ws: WorkspaceId },
@@ -873,17 +864,19 @@ fn remote_party_event(event: &InternalEvent) -> Option<&'static str> {
 pub struct Actor;
 
 impl Actor {
-    /// Spawn the actor for `endpoint`, also serving `served` — protocol
-    /// handlers the session's own features answer on, beside the actor's: a
-    /// device's action service, say. Each names its own ALPN and serves it for
-    /// as long as the actor runs.
+    /// Spawn the actor for `endpoint`, serving this device's workspace service
+    /// (`serving_own`) and `served`: protocol handlers the session's own features
+    /// answer on, beside the actor's, such as a device's action service. Each
+    /// names its own ALPN and serves it while the actor is up; one of `served`
+    /// replaces the service's handler of the same ALPN.
     pub fn spawn_serving(
         endpoint: Endpoint,
         lookup: MemoryLookup,
         host_identity: Option<DeviceIdentity>,
         listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
         reachability: Reachability,
-        served: crate::local_host::Protocols,
+        serving_own: Option<OwnServing>,
+        served: crate::own_service::Protocols,
     ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
         Self::spawn_with_heartbeat(
             endpoint,
@@ -892,7 +885,7 @@ impl Actor {
             listen_addrs,
             HEARTBEAT_INTERVAL,
             reachability,
-            None,
+            serving_own,
             served,
         )
     }
@@ -907,8 +900,8 @@ impl Actor {
         listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
         heartbeat: Duration,
         reachability: Reachability,
-        hosting: Option<Hosting>,
-        served: crate::local_host::Protocols,
+        serving_own: Option<OwnServing>,
+        served: crate::own_service::Protocols,
     ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
         if let Ok(mut out) = listen_addrs.lock() {
             out.push(endpoint.addr());
@@ -922,7 +915,10 @@ impl Actor {
             cmd_rx,
             heartbeat,
             reachability,
-            Serving { hosting, served },
+            Serving {
+                serving_own,
+                served,
+            },
         ));
         (cmd_tx, task)
     }
@@ -933,16 +929,16 @@ impl Actor {
 /// and the session's own (its action service, say) — all on the one endpoint
 /// both reach this device at.
 struct Serving {
-    hosting: Option<Hosting>,
-    served: crate::local_host::Protocols,
+    serving_own: Option<OwnServing>,
+    served: crate::own_service::Protocols,
 }
 
-/// This device's workspace host, for the actor: the handle the native owner
-/// joins the workspaces hosted here through, and the handlers serving the host
-/// on the router ([`crate::local_host`]).
-pub struct Hosting {
-    pub host: crate::local_host::LocalHost,
-    pub protocols: crate::local_host::Protocols,
+/// This device's own workspace service, for the actor: the handle the native
+/// owner joins the workspaces it holds through, and the handlers serving it
+/// on the router ([`crate::own_service`]).
+pub struct OwnServing {
+    pub service: crate::own_service::OwnService,
+    pub protocols: crate::own_service::Protocols,
 }
 
 /// The channel governance a device published to one workspace: each message's
@@ -959,7 +955,7 @@ struct ActorState {
     native_routes: native_ingress::Routes,
     /// This device's workspace host, through which the native owner joins the
     /// workspaces hosted here.
-    local_host: Option<crate::local_host::LocalHost>,
+    own_service: Option<crate::own_service::OwnService>,
     /// Governance invocations waiting for their workspace's relay to answer.
     /// The endpoint's relays, held back until a remote party appears.
     reachability: Reachability,
@@ -989,12 +985,6 @@ struct ActorState {
     host_sessions: HashMap<(WorkspaceId, EndpointId), HostRuntime>,
     /// Each joined workspace's link, on the direct connection.
     native_links: HashMap<WorkspaceId, native_ingress::NativeLink>,
-    /// The devices that take part in this device's workspaces through it
-    /// ([`NetCmd::ServeMembers`]).
-    members: Option<tilo_peer_state::direct::Owning>,
-    /// What this device's apps take the members' frames of each workspace under while no link of
-    /// it is up, as they take a link's: a workspace this device hosts itself has none.
-    member_scopes: HashMap<WorkspaceId, Arc<native_ingress::Scope>>,
     connecting_hosts: HashSet<(WorkspaceId, EndpointId)>,
     content_discovery_tasks: HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
     /// Approver sessions that put this person's agents' questions on the
@@ -1179,8 +1169,7 @@ impl ActorState {
                 let _ = reply.send(Arc::clone(&self.tally));
             }
             Some(NetCmd::NativeConnect(connect)) => self.native_connect(connect),
-            Some(NetCmd::ServeMembers(members)) => self.serve_members(members),
-            Some(NetCmd::LocalHostReady) => self.retry_native_routes(),
+            Some(NetCmd::OwnServiceReady) => self.retry_native_routes(),
             Some(NetCmd::NativePublish { ws }) => self.drive_native_publication(ws),
             Some(NetCmd::JoinWorkspace { ws, on_event }) => {
                 self.handle_join_workspace(ws, on_event);
@@ -1262,7 +1251,6 @@ impl ActorState {
             }
             Some(NetCmd::Publish { ws, msg }) => {
                 remember_governance(&mut self.governance, ws, &msg);
-                self.carry_own(&msg);
                 if self.native_routes.contains(ws) {
                     match native_ingress::carried(&msg) {
                         Some(native_ingress::Carried::Link) => {
@@ -1924,13 +1912,8 @@ impl ActorState {
                 held,
             }) => self.native_link_connected(ws, *linked, scope, held),
             Some(InternalEvent::NativeHeard { ws, heard }) => {
-                self.native_heard(ws, heard).await;
+                self.native_heard(ws, *heard).await;
             }
-            Some(InternalEvent::MemberHeard {
-                ws,
-                workspace,
-                heard,
-            }) => self.member_heard(ws, workspace, heard).await,
             Some(InternalEvent::NativeReady { ws }) => self.native_ready(ws).await,
             Some(InternalEvent::NativeAnswered { ws, answers }) => {
                 self.native_answered(ws, answers);
@@ -2836,7 +2819,10 @@ async fn run(
     mut cmd_rx: mpsc::Receiver<NetCmd>,
     heartbeat_interval: Duration,
     reachability: Reachability,
-    Serving { hosting, served }: Serving,
+    Serving {
+        serving_own,
+        served,
+    }: Serving,
 ) {
     let (internal_tx, mut internal_rx) = mpsc::channel(256);
     let (input_tx, mut input_rx) = mpsc::channel(64);
@@ -2856,9 +2842,9 @@ async fn run(
             device_sessions::SiblingProtocol(internal_tx.clone()),
         );
     // This device's workspace host answers here once it opens: until then its
-    // handlers refuse, as a device hosting nothing does.
-    let (local_host, mut protocols) = match hosting {
-        Some(Hosting { host, protocols }) => (Some(host), protocols),
+    // handlers refuse, as a device serving_own nothing does.
+    let (own_service, mut protocols) = match serving_own {
+        Some(OwnServing { service, protocols }) => (Some(service), protocols),
         None => (None, Vec::new()),
     };
     // What the session serves beside the actor's own protocols: its action
@@ -2878,7 +2864,7 @@ async fn run(
         lookup,
         host_identity,
         native_routes: native_ingress::Routes::default(),
-        local_host,
+        own_service,
         workers,
         internal_tx,
         topics: HashMap::new(),
@@ -2892,8 +2878,6 @@ async fn run(
         hosts: HashMap::new(),
         host_sessions: HashMap::new(),
         native_links: HashMap::new(),
-        members: None,
-        member_scopes: HashMap::new(),
         connecting_hosts: HashSet::new(),
         content_discovery_tasks: HashMap::new(),
         agent_questions: services::approvers(),
@@ -3204,7 +3188,7 @@ fn message_fingerprint(bytes: &[u8]) -> [u8; 32] {
 
 /// Whether `msg` is said again byte for byte on purpose, so that every saying of it is news. A
 /// device says which windows of another it views every few seconds for as long as it views them,
-/// and the device hosting them stops naming a viewer it no longer hears: an ask dropped as a
+/// and the device serving them stops naming a viewer it no longer hears: an ask dropped as a
 /// repeat of the first would leave the viewer unnamed from then on. It says what the viewer wants
 /// now, so a copy that came over another route changes nothing.
 ///
@@ -3671,7 +3655,7 @@ fn spawn_host_pump(
                 inbound = session.recv() => inbound,
                 // A session with this device's own host runs in process: no
                 // link can die under it, and its end ends `recv`. Only a
-                // remote host is kept up, so a device hosting its workspaces with
+                // remote host is kept up, so a device serving_own its workspaces with
                 // nobody connected wakes for nothing.
                 alive = host_keepalive(&session, &mut pinged), if keepalive => {
                     if !alive {
@@ -3750,7 +3734,10 @@ fn spawn_direct_pump(
                 // from the workspace's history before it reads on.
                 received = reader.recv() => match received {
                     Some(heard) => {
-                        if tx.send(InternalEvent::NativeHeard { ws, heard }).await.is_err() {
+                        if tx.send(InternalEvent::NativeHeard {
+                            ws,
+                            heard: Box::new(heard),
+                        }).await.is_err() {
                             return;
                         }
                     }
@@ -3829,10 +3816,3 @@ fn record_content_event(from: &[u8; 32], frame: &[u8]) -> Option<HostEvent> {
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 mod tests;
-
-#[cfg(test)]
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "a test's device keeps its owner and its links for the whole run"
-)]
-mod member_apps_tests;

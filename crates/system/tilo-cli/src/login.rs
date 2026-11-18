@@ -2,9 +2,9 @@
 //! that runs here.
 //!
 //! The code is the short one the person's browser tab shows (`K7Q-MX2P`), in the prompt it copies
-//! for their agent. `tilo login` resolves it at the site's home host
+//! for their agent. `tilo login` resolves it at the site's home server
 //! (`tilo_server_protocol::login_code`) and tells that tab each step as it does it: it makes a
-//! device key here, asks the workspace's host to have the person's root (which only the tab holds)
+//! device key here, asks the workspace's server to have the person's root (which only the tab holds)
 //! certify it, keeps the key and certificate in this account's state directory, adds Tilo's tools
 //! to the agent and enters the workspace the link names as the person. A tab with no identity yet
 //! asks a computer that is already one of the person's devices to vouch for it.
@@ -48,15 +48,15 @@ const WHAT_TILO_DOES: &str = "you are in their Tilo workspace as them, where the
      tilo_do runs their actions, and tilo_do with path terminal#run runs a shell command \
      there, all of which History keeps as your run";
 
-/// What a login no host accepts any more says.
+/// What a login no server accepts any more says.
 pub(crate) const LOGIN_ENDED: &str = "This computer's Tilo login has ended: ask the person for a new code from their Tilo tab \
      (Set up with your agent).";
 
-/// What a tilo that speaks another version than the host says.
+/// What a tilo that speaks another version than the server says.
 pub(crate) const TOO_OLD: &str = "This tilo is too old for your workspace: install it again with \
      `curl -fsSL https://tilo.sh | sh`.";
 
-/// What a host that answers nothing usable says.
+/// What a server that answers nothing usable says.
 pub(crate) const UNREACHED: &str =
     "Tilo can't be reached from here right now; try again in a minute.";
 
@@ -185,7 +185,7 @@ pub(crate) fn hostname() -> String {
         .unwrap_or_else(|| "this computer".to_owned())
 }
 
-/// `"Claude Code on build-box"`, the name this computer asks the host for,
+/// `"Claude Code on build-box"`, the name this computer asks the server for,
 /// which it keeps unless another device of the person reads by it, within
 /// what a certificate's label carries.
 #[must_use]
@@ -202,7 +202,7 @@ pub fn label(agent: &str, host: &str) -> String {
 }
 
 /// Have the person's tab certify this computer as one of their devices, under
-/// the name [`label`] names for the agent here: the host answers the name it
+/// the name [`label`] names for the agent here: the server answers the name it
 /// gave it.
 async fn certify(
     host: &Origin,
@@ -258,10 +258,6 @@ fn certify_said(error: &CertifyError) -> String {
              the person's Tilo tab."
                 .to_owned()
         }
-        CertifyError::RateLimited { retry_after_ms } => format!(
-            "Tilo is taking in changes slowly right now: try again in {} seconds.",
-            retry_after_ms.div_ceil(1000).max(1)
-        ),
         CertifyError::Request(_) | CertifyError::Sign(_) => {
             "Tilo couldn't ask the person's Tilo tab to approve this computer. Try again in a \
              minute."
@@ -274,7 +270,7 @@ fn certify_said(error: &CertifyError) -> String {
     }
 }
 
-/// What a host that answered nothing usable says.
+/// What a server that answered nothing usable says.
 fn link_said(error: &LinkError) -> String {
     match error {
         LinkError::Unavailable(_) | LinkError::Refused(_) => UNREACHED.to_owned(),
@@ -331,7 +327,7 @@ pub(crate) fn enter_said(error: &anyhow::Error) -> String {
     }
 }
 
-/// How often entering the workspace is tried after a login: a host that has
+/// How often entering the workspace is tried after a login: a server that has
 /// just certified this device answers a moment later.
 const ENTER_TRIES: u32 = 3;
 
@@ -408,7 +404,7 @@ fn site_origin(flag: Option<&str>) -> Result<String> {
     Ok(url.origin().ascii_serialization())
 }
 
-/// The site's home host, as its `entry.json` names it (`home.host.origin`).
+/// The site's home server, as its `entry.json` names it (`home.server.origin`).
 ///
 /// A site that answers nothing, or nothing this tilo reads, is said as it
 /// is: Tilo cannot be reached from here right now.
@@ -442,11 +438,11 @@ async fn home_host(site: &Origin) -> Result<String> {
 
 /// What the code names, spending it.
 ///
-/// A code the host does not know is asked about again for a moment: the host
+/// A code the server does not know is asked about again for a moment: the server
 /// keeps a code from the moment the tab showing it follows it, which the tab
 /// does as soon as the prompt is on its screen (`web/first-run.mjs`,
 /// `watchShown`), so a person who hands the prompt to their agent at once can
-/// beat that request when their machine draws the page slowly. The host
+/// beat that request when their machine draws the page slowly. The server
 /// counts resolves that miss, so the asking is a few tries, not a wait.
 async fn resolve(host: &dyn HttpClient, code: &str) -> Result<Resolved> {
     let began = std::time::Instant::now();
@@ -461,8 +457,8 @@ async fn resolve(host: &dyn HttpClient, code: &str) -> Result<Resolved> {
     }
 }
 
-/// How long a code the host does not know yet is asked about again, and how
-/// often: a few tries inside the host's budget of misses (ten a minute from
+/// How long a code the server does not know yet is asked about again, and how
+/// often: a few tries inside the server's budget of misses (ten a minute from
 /// one address), long enough for the tab of a machine that is drawing slowly
 /// to keep the code it shows.
 const CODE_KEPT_WAIT: std::time::Duration = std::time::Duration::from_secs(6);
@@ -559,7 +555,7 @@ async fn claim(
         })
 }
 
-/// The name the host lists `workspace` under, when it lists it.
+/// The name the server lists `workspace` under, when it lists it.
 async fn workspace_name(host: &dyn HttpClient, workspace: &str) -> Option<String> {
     let path = format!(
         "{API_PREFIX}{}",
@@ -829,7 +825,7 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
     let host_web = Origin::new(&http(), &link.host_origin);
     eprintln!("Waiting for the person's tab to approve this computer…");
     let signed = certify(&host_web, &link, &agent.name, &key).await?;
-    // The host names this computer: the name asked for, or the next numbered
+    // The server names this computer: the name asked for, or the next numbered
     // one another device of the person reads by.
     let label = signed.label.clone();
     let mut device = device_of(&signed)?;
@@ -873,7 +869,7 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
             println!("Entered {place}: their tab shows you there.");
             entered.close();
             // The workspace's one folder, on this computer too, asked for a
-            // few times: it is the same host that just took this computer in.
+            // few times: it is the same server that just took this computer in.
             let mut folder =
                 crate::folders::after_login(&device.workspace, device.workspace_name.as_deref());
             for pause in [1, 2] {
@@ -928,7 +924,7 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
 }
 
 /// Signing in: this computer, a device of the person, vouches for the tab
-/// that asks, and the person's stand-in on the host approves it.
+/// that asks, and the person's stand-in on the server approves it.
 async fn vouch(reporter: &Reporter<'_>, host: &dyn HttpClient) -> Result<ExitCode> {
     let Some((key, device)) = load(&device_dir()?)? else {
         bail!(
@@ -936,16 +932,239 @@ async fn vouch(reporter: &Reporter<'_>, host: &dyn HttpClient) -> Result<ExitCod
              one isn't. In Tilo, choose \"Set up with your agent\" instead."
         );
     };
-    // The host tells the tab it approved, as it approves: that step is
+    // The server tells the tab it approved, as it approves: that step is
     // never this computer's to report.
     claim(host, &reporter.report, &key, &device).await?;
     println!("Approved: your tab is signing in as you.");
     Ok(ExitCode::SUCCESS)
 }
 
+/// `tilo login` on a computer that holds the person's root itself: no tab and no code. The root
+/// certifies a fresh device key for the agent here, the person's list of devices on the site's
+/// server takes the key in, and the computer enters `workspace` (by name or id),
+/// else their own workspace there, as [`set_up`] would after a tab approved it.
+///
+/// # Errors
+/// The site or its server is not reached, the person has no workspace there by that name, or the
+/// workspace refuses this device.
+pub fn login_held(
+    person: &crate::identity::Person,
+    agent: Option<&str>,
+    site: Option<&str>,
+    workspace: Option<&str>,
+) -> Result<ExitCode> {
+    trust_test_certificates()?;
+    let agent =
+        agent
+            .filter(|name| !name.trim().is_empty())
+            .map_or_else(agent::detect_here, |name| {
+                let named = agent::named(name);
+                agent::Agent {
+                    tool: named.tool.or_else(|| agent::detect_here().tool),
+                    ..named
+                }
+            });
+    let site = site_origin(site)?;
+    let runtime = runtime()?;
+    let (key, device) = runtime.block_on(held_device(person, &agent, &site, workspace))?;
+    let dir = device_dir()?;
+    store(&dir, &key, &device)?;
+    println!(
+        "Logged in: this computer holds {}'s identity, which made it \"{}\", one of their \
+         devices.\n{}",
+        person.name,
+        device.label,
+        which_agent(&agent.name)
+    );
+    let tilo = std::env::current_exe().context("finding this program")?;
+    let tools = add_tools(&agent, &tilo, &agent::System);
+    let place = format!(
+        "{} on {}",
+        device.workspace_name.as_deref().unwrap_or("the workspace"),
+        host_of(&device.host_origin)
+    );
+    runtime.block_on(async {
+        match connect_retrying(&key, &device).await {
+            Ok(entered) => {
+                println!("Entered {place}.");
+                entered.close();
+            }
+            Err(error) => println!(
+                "Logged in, but this computer can't open {place} yet: {}",
+                enter_said(&error)
+            ),
+        }
+    });
+    match crate::folders::after_login(&device.workspace, device.workspace_name.as_deref()) {
+        Ok(folder) => println!(
+            "Its files are in {}, kept in sync both ways (`tilo folders` lists every workspace's \
+             folder).",
+            folder.display()
+        ),
+        Err(error) => {
+            debug_why("putting the workspace's files in a folder", &error);
+            println!(
+                "Its files aren't in a folder on this computer yet: `tilo folders` asks for it again."
+            );
+        }
+    }
+    println!();
+    println!("{}", next_steps(&agent, &tools, &tilo));
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The device key and the device entry of a login here: the site's server lets this device
+/// connect, the person's list of devices takes its key in, and the device enters `workspace` by
+/// name or id, else the person's own workspace there.
+async fn held_device(
+    person: &crate::identity::Person,
+    agent: &agent::Agent,
+    site: &str,
+    workspace: Option<&str>,
+) -> Result<(SigningKey, Device)> {
+    let origin = home_host(&Origin::new(&http(), site)).await?;
+    let server = Origin::new(&http(), &origin);
+    let info = https::host_info(&server).await.map_err(|error| {
+        debug_why("asking the site's server", &error);
+        anyhow!(UNREACHED)
+    })?;
+    let dialed = info
+        .address
+        .as_ref()
+        .map(tilo_server_client::Host::published)
+        .ok_or_else(|| anyhow!("{origin} takes no device connections"))?;
+    let key = SigningKey::from_bytes(&rand::random());
+    let label = label(&agent.name, &hostname());
+    let cert = held_device_cert(person, &key, &label)?;
+    let user = person.user();
+    let unentered = PairingLink::parse(&format!(
+        "{site}/#/@{}/w/{}?pair={user}",
+        host_of(&origin),
+        uuid::Uuid::nil()
+    ))
+    .map_err(|error| anyhow!(error))?;
+    let signed = SignIn {
+        link: unentered,
+        agent: agent.name.clone(),
+        label: label.clone(),
+        host: dialed,
+        cert: cert.clone(),
+        host_cert: info.host_cert.clone(),
+    };
+    let session = Entered::connect(&signed, Arc::new(key.clone()));
+    let chosen = async {
+        session
+            .connected()
+            .await
+            .map_err(|refusal| anyhow!("{refusal}"))?;
+        let mut list = session
+            .personal_list(
+                &tilo_server_session::workspaces::WorkspaceLabels::new(),
+                None,
+            )
+            .await
+            .map_err(|refusal| anyhow!("{refusal}"))?;
+        // The person's list of devices takes this key in, as when a tab approves one.
+        list.devices
+            .push(tilo_server_session::workspaces::PersonalDevice {
+                cert: cert.clone(),
+                name: None,
+                revoked: false,
+                browser: None,
+                agent: Some(agent.name.clone()),
+                last_active_ms: None,
+                online: false,
+            });
+        session
+            .keep_personal(&list)
+            .await
+            .map_err(|refusal| anyhow!("{refusal}"))?;
+        choose_workspace(&list.workspaces, workspace)
+    }
+    .await;
+    session.close();
+    let (id, name) = chosen?;
+    let device = Device {
+        site: format!("{site}/"),
+        host_origin: origin,
+        workspace: id,
+        workspace_name: Some(name),
+        user,
+        agent: agent.name.clone(),
+        label,
+        cert: hex::encode(postcard::to_allocvec(&cert)?),
+        host_cert: hex::encode(postcard::to_allocvec(&info.host_cert)?),
+    };
+    Ok((key, device))
+}
+
+/// A member device certificate for `key`, signed by the person's root.
+fn held_device_cert(
+    person: &crate::identity::Person,
+    key: &SigningKey,
+    label: &str,
+) -> Result<tilo_user_identity::DeviceCert> {
+    let mut cert = tilo_user_identity::DeviceCert {
+        user_public_key: person.root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: label.to_owned(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: tilo_clock::unix_now_ns().saturating_sub(1_000_000_000),
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, &person.root)?;
+    Ok(cert)
+}
+
+/// The workspace a held login enters: the one `asked` names (its id, or its name in any case),
+/// else the person's own one, else the only one they have.
+fn choose_workspace(
+    listed: &[tilo_server_session::workspaces::PersonalWorkspace],
+    asked: Option<&str>,
+) -> Result<(String, String)> {
+    let pick = |found: &tilo_server_session::workspaces::PersonalWorkspace| {
+        (found.workspace.clone(), found.name.clone())
+    };
+    if let Some(asked) = asked.map(str::trim).filter(|asked| !asked.is_empty()) {
+        return listed
+            .iter()
+            .find(|found| {
+                found.workspace.eq_ignore_ascii_case(asked)
+                    || found.name.eq_ignore_ascii_case(asked)
+            })
+            .map(pick)
+            .ok_or_else(|| {
+                anyhow!(
+                    "You have no workspace called \"{asked}\" there; {}",
+                    names_of(listed)
+                )
+            });
+    }
+    let own: Vec<_> = listed
+        .iter()
+        .filter(|found| found.role.as_deref() == Some("owner"))
+        .collect();
+    match (own.as_slice(), listed) {
+        ([only], _) => Ok(pick(only)),
+        (_, [only]) => Ok(pick(only)),
+        ([], []) => bail!("You have no workspace there yet: make one in Tilo first."),
+        _ => bail!("Say which workspace with -w; {}", names_of(listed)),
+    }
+}
+
+fn names_of(listed: &[tilo_server_session::workspaces::PersonalWorkspace]) -> String {
+    let names: Vec<_> = listed
+        .iter()
+        .map(|found| format!("\"{}\"", found.name))
+        .collect();
+    format!("yours are {}.", names.join(", "))
+}
+
 pub(crate) fn host_of(origin: &str) -> &str {
-    // A host on this computer is plain http, which a link names by its
-    // address alone, as it names an https host by its name.
+    // A server on this computer is plain http, which a link names by its
+    // address alone, as it names an https server by its name.
     origin
         .trim_start_matches("https://")
         .trim_start_matches("http://")
@@ -1041,10 +1260,10 @@ mod tests {
         }
     }
 
-    /// How a test's host answers a route and its body.
+    /// How a test's server answers a route and its body.
     type Answer = Box<dyn Fn(&str, &Value) -> (u16, Value) + Send + Sync>;
 
-    /// A host that answers each route as a test says, and keeps what it
+    /// A server that answers each route as a test says, and keeps what it
     /// was sent.
     struct FakeHost {
         answer: Answer,
@@ -1130,13 +1349,6 @@ mod tests {
         use tilo_user_identity::DeviceCertError;
         let said = certify_said(&CertifyError::Expired);
         assert!(said.contains("Keep the tab open"), "{said}");
-        assert!(
-            certify_said(&CertifyError::RateLimited {
-                retry_after_ms: 1500
-            })
-            .contains("2 seconds"),
-            "a pause reads in seconds"
-        );
         for error in [
             CertifyError::Denied("declined".into()),
             CertifyError::Denied("not admissible".into()),

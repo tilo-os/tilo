@@ -160,9 +160,7 @@ pub enum Envelope {
         /// Automerge incremental delta bytes.
         #[serde(with = "serde_bytes")]
         delta: Vec<u8>,
-        /// Author's signature over the delta — the same
-        /// `DirectoryUpdate.signature` shape the identity crate
-        /// produces.
+        /// Author's device signature over the delta.
         #[serde(with = "serde_bytes")]
         signature: [u8; 64],
     },

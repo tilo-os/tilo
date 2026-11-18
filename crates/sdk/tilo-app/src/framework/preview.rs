@@ -29,36 +29,31 @@ use ui_core::storage::AppStorage;
 
 struct HistoryKey<A>(std::marker::PhantomData<A>);
 
-struct FileObservationKey<A>(std::marker::PhantomData<A>);
+struct FolderObservationKey<A>(std::marker::PhantomData<A>);
 
-/// The file scope of `A`'s History alone: what its root declares it owns, so
-/// the runner can tell the file source it was handed is the root's.
-pub(crate) fn file_history_observation<A: ResourceApp>() -> &'static HistoryDefinition {
+/// The folder scope of `A`'s History alone: what its root declares it owns, so
+/// the runner can tell the folder source it was handed is the root's.
+pub(crate) fn folder_history_observation<A: ResourceApp>() -> &'static HistoryDefinition {
     // The definition table is not reentrant: read the whole definition first.
     let definition = history_definition::<A>();
-    leaked(TypeId::of::<FileObservationKey<A>>(), || {
-        file_observation(definition)
+    leaked(TypeId::of::<FolderObservationKey<A>>(), || {
+        folder_observation(definition)
     })
 }
 
-/// [`file_history_observation`] of the app whose History is `definition`. Not
+/// [`folder_history_observation`] of the app whose History is `definition`. Not
 /// generic, so it is compiled once rather than for every app.
 #[inline(never)]
-fn file_observation(definition: &HistoryDefinition) -> HistoryDefinition {
+fn folder_observation(definition: &HistoryDefinition) -> HistoryDefinition {
     let scopes: &'static [HistoryScopeDefinition] = Box::leak(
         definition
             .scopes
             .iter()
-            .filter(|scope| scope.key == FILE_SCOPE)
+            .filter(|scope| scope.key == FOLDER_SCOPE)
             .map(|scope| HistoryScopeDefinition {
                 key: scope.key,
                 title: scope.title,
-                presentation: match scope.presentation {
-                    HistoryPresentation::CheckedFiles { create } => {
-                        HistoryPresentation::CheckedFiles { create }
-                    }
-                    _ => unreachable_scope(),
-                },
+                presentation: HistoryPresentation::Folder,
                 content_schema: None,
             })
             .collect::<Box<[_]>>(),
@@ -69,18 +64,6 @@ fn file_observation(definition: &HistoryDefinition) -> HistoryDefinition {
     }
 }
 
-#[allow(
-    clippy::panic,
-    reason = "the file scope is built as a checked-file scope above"
-)]
-fn unreachable_scope() -> ! {
-    panic!("the file History scope is a checked-file scope")
-}
-
-/// The History scope of the file an app of
-/// [`ResourceApp::FILE_HISTORY`](super::ResourceApp::FILE_HISTORY) shows.
-const FILE_SCOPE: &str = "file";
-
 /// The History scope of the folder an app of
 /// [`ResourceApp::FOLDER_HISTORY`](super::ResourceApp::FOLDER_HISTORY) shows.
 pub(crate) const FOLDER_SCOPE: &str = "folder";
@@ -90,7 +73,6 @@ pub(crate) fn history_definition<A: ResourceApp>() -> &'static HistoryDefinition
     leaked(TypeId::of::<HistoryKey<A>>(), || {
         history_definition_of(
             super::app::hooks::<A>().id(),
-            A::FILE_HISTORY,
             A::FOLDER_HISTORY,
             (<A::Resource as Resource>::LABEL, preview::<A>),
             restore_schema::<A::Resource>(),
@@ -99,39 +81,21 @@ pub(crate) fn history_definition<A: ResourceApp>() -> &'static HistoryDefinition
 }
 
 /// [`history_definition`] of the app `app_id`: its resource's scope, called
-/// `label` and previewed by `create`, and the scope of `file` when it shows
-/// files. Not generic, so it is compiled once rather than for every app.
+/// `label` and previewed by `create`, and the scope of `folder` when it shows
+/// the workspace's files. Not generic, so it is compiled once rather than for every app.
 #[inline(never)]
 fn history_definition_of(
     app_id: &'static str,
-    file: Option<super::app::FileHistory>,
     folder: Option<super::app::FolderHistory>,
     (label, create): (&'static str, ui_core::history_mode::PreviewFactory),
     content_schema: Option<&'static HistoryRestoreSchema>,
 ) -> HistoryDefinition {
-    // A window that shows the workspace's folder: its History is the folder's own
-    // changes, every file's in one list. The window's record only keeps which folder is
-    // open, which is not activity to list.
-    if let Some(folder) = folder {
-        let scopes: &'static [HistoryScopeDefinition] = Box::leak(
-            vec![HistoryScopeDefinition {
-                key: FOLDER_SCOPE,
-                title: folder.title,
-                presentation: HistoryPresentation::Folder,
-                content_schema: None,
-            }]
-            .into_boxed_slice(),
-        );
-        return HistoryDefinition { app_id, scopes };
-    }
-    // A file of the mounted filesystem the app shows is a scope beside
-    // the resource's; History moves to it when the app opens a file's.
-    let file = file.map(|file| HistoryScopeDefinition {
-        key: FILE_SCOPE,
-        title: file.title,
-        presentation: HistoryPresentation::CheckedFiles {
-            create: file.preview,
-        },
+    // A window that shows the workspace's folder: its History lists the folder's changes,
+    // or the shown file's; History moves to it when the app opens a file's.
+    let folder_scope = folder.map(|folder| HistoryScopeDefinition {
+        key: FOLDER_SCOPE,
+        title: folder.title,
+        presentation: HistoryPresentation::Folder,
         content_schema: None,
     });
     let resource = HistoryScopeDefinition {
@@ -140,8 +104,16 @@ fn history_definition_of(
         presentation: HistoryPresentation::Domain { create },
         content_schema,
     };
-    let scopes: &'static [HistoryScopeDefinition] =
-        Box::leak(std::iter::once(resource).chain(file).collect::<Box<[_]>>());
+    // A window whose record keeps only which folder is open lists the folder alone.
+    let resource = folder
+        .is_none_or(|folder| folder.beside_resource)
+        .then_some(resource);
+    let scopes: &'static [HistoryScopeDefinition] = Box::leak(
+        resource
+            .into_iter()
+            .chain(folder_scope)
+            .collect::<Box<[_]>>(),
+    );
     HistoryDefinition { app_id, scopes }
 }
 

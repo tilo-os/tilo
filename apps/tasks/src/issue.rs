@@ -12,7 +12,8 @@ use crate::model::{
     person_assignee,
 };
 use crate::part::{IssuePart, issue_part};
-use tilo_rich_text::RichTextFieldViews;
+use tilo_rich_text::{RichTextField, RichTextSource, RichTextSurface};
+use ui::framework::Chain;
 use ui::prelude::*;
 use ui::tilo_resource::NonBlank;
 use ui::widget::arrange::Stack;
@@ -109,11 +110,23 @@ fn content(cx: &ViewCx<IssuePart>, id: &Id, nav: &Nav, page: &Page) -> Element {
     let body_id = format!("{}/body", issue_resource(id));
     let body_path = paths.body.clone();
     let locate_path = paths.body;
-    let body = cx.rich_text_field(
-        &body_id,
-        move |doc| locate_path.object(doc),
-        move |op| body_edit(&body_path, &op),
-    );
+    // The part that keeps the issue: its body's page edits and reads it there,
+    // never the tracker's own document the page is a view of.
+    let part = page.window.chain.as_ref().and_then(|chain| {
+        chain
+            .parts()
+            .into_iter()
+            .find(|(_, held)| held.issues.contains(id))
+            .map(|(index, _)| index)
+    });
+    let body = IssueBody {
+        field: RichTextField::new(
+            cx.child::<tilo_rich_text::RichText>(&body_id, move |op| body_edit(&body_path, &op)),
+            move |doc| locate_path.object(doc),
+        ),
+        kept: page.window.chain.clone().zip(part),
+    };
+    let body: Element = Box::new(RichTextSurface::over(body));
 
     Box::new(
         Scrollable::new_vertical()
@@ -138,6 +151,67 @@ fn content(cx: &ViewCx<IssuePart>, id: &Id, nav: &Nav, page: &Page) -> Element {
                     )),
             )),
     )
+}
+
+/// An issue's description as its page reads and edits it: the rich text kept
+/// in the part that keeps the issue, not in the tracker the page is a view
+/// of. Hosted, every sync reads the part's document through the chain; shown
+/// without one, it reads the document it is given.
+struct IssueBody {
+    field: RichTextField,
+    /// The chain and the part keeping the issue.
+    kept: Option<(Chain<IssuePart>, u64)>,
+}
+
+impl RichTextSource for IssueBody {
+    fn read_only(&self) -> bool {
+        self.field.read_only()
+    }
+
+    fn sync(&mut self, doc: &ui::automerge::AutoCommit) {
+        let Self { field, kept } = self;
+        match kept {
+            Some((chain, part)) => {
+                if chain.read_part(*part, |doc| field.sync(doc)).is_none() {
+                    tracing::warn!(
+                        part = *part,
+                        "tasks: the part keeping the issue is not held"
+                    );
+                }
+            }
+            None => field.sync(doc),
+        }
+    }
+
+    fn revision(&self) -> Option<u64> {
+        self.field.revision()
+    }
+
+    fn read_from(&mut self, doc: &ui::automerge::AutoCommit) -> bool {
+        let Self { field, kept } = self;
+        match kept {
+            Some((chain, part)) => chain
+                .read_part(*part, |doc| field.read_from(doc))
+                .unwrap_or(false),
+            None => field.read_from(doc),
+        }
+    }
+
+    fn with_state<T>(&self, read: impl FnOnce(&tilo_document::RichTextState) -> T) -> Option<T> {
+        self.field.with_state(read)
+    }
+
+    fn apply(
+        &mut self,
+        edits: &mut ui::widget::Edits<'_>,
+        edit: &tilo_rich_text::RichTextAction,
+    ) -> Result<(), ui::tilo_actions::ActionError> {
+        self.field.apply(edits, edit)
+    }
+
+    fn presence_keys(&self) -> Option<ui::widget::PresenceKeyFn> {
+        self.field.presence_keys()
+    }
 }
 
 /// The edit of the description that `op` is: a field edit of the tracker.

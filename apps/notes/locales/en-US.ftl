@@ -1,6 +1,10 @@
 notes-created-date = Created { $date }
 notes-edited-date = Edited { $date }
 notes-dates = Created { $created }, edited { $edited }
+# A note written in another tool first: the day it arrived here is not the day
+# it was written, which its source row shows.
+notes-moved-date = Moved here { $date }
+notes-moved-dates = Moved here { $created }, edited { $edited }
 notes-date-today = today at { $time }
 notes-date-unavailable = Date unknown
 notes-table-add-row = Add row below

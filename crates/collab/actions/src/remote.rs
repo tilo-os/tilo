@@ -115,7 +115,8 @@ pub use content_link::{
 };
 pub use content_put::{
     CONTENT_PUTS_UNAVAILABLE, ContentPut, ContentPutAnswer, ContentPutStep, ContentPuts,
-    HostedContentPuts, MAX_CONTENT_PUT_CHUNK, MAX_HOSTED_CONTENT_PUTS, MAX_OPEN_CONTENT_PUTS,
+    HostedContentPuts, MAX_CONTENT_PUT_AHEAD, MAX_CONTENT_PUT_CHUNK, MAX_HAVE_HASHES,
+    MAX_HOSTED_CONTENT_PUTS, MAX_OPEN_CONTENT_PUTS, MAX_PUT_MANY_BYTES,
 };
 pub use nodes::{
     NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, node_target,
@@ -143,7 +144,7 @@ use crate::params::ARGUMENTS_JSON_PREFIX;
 ///
 /// Additive changes keep the version; a change an older peer would misread
 /// bumps it, and [`RemoteActionFrame::decode`] refuses a version it does not know.
-pub const REMOTE_ACTIONS_VERSION: u16 = 1;
+pub const REMOTE_ACTIONS_VERSION: u16 = 2;
 
 /// Upper bound on one encoded frame: a provider pages its catalogue rather than raise this.
 pub const MAX_REMOTE_ACTION_FRAME_BYTES: usize = 1024 * 1024;
@@ -679,10 +680,6 @@ pub enum ActionCallError {
     /// The provider refused for a reason of its own.
     #[error("refused: {reason}")]
     Refused { reason: String },
-    /// The provider is busy with this person's changes: the same call works
-    /// once `retry_after_ms` passed.
-    #[error("the provider is busy with this person's changes; retry in {retry_after_ms} ms")]
-    Busy { retry_after_ms: u64 },
     /// The workspace is not serving this caller here yet: the same call
     /// works once it is (its `serving` state).
     #[error("the workspace is not ready for this call yet")]
@@ -719,18 +716,17 @@ impl ActionCallError {
             Self::InvocationConflict => "invocation_conflict",
             Self::NotCancellable { .. } => "not_cancellable",
             Self::Refused { .. } => "refused",
-            Self::Busy { .. } => "rate_limited",
             Self::NotReady => "not_ready",
             Self::Unanswered => "unanswered",
         }
     }
 
     /// Whether the same call, under the same invocation id, is worth making
-    /// again: after [`Self::Busy`]'s wait, once the workspace serves the
-    /// caller ([`Self::NotReady`]), or at once ([`Self::Unanswered`]).
+    /// again: once the workspace serves the caller ([`Self::NotReady`]), or at
+    /// once ([`Self::Unanswered`]).
     #[must_use]
     pub const fn ask_again(&self) -> bool {
-        matches!(self, Self::Busy { .. } | Self::NotReady | Self::Unanswered)
+        matches!(self, Self::NotReady | Self::Unanswered)
     }
 
     /// Whether the provider refused a directory action that asks for
@@ -772,9 +768,6 @@ enum WireActionCallError {
     Refused {
         reason: String,
     },
-    Busy {
-        retry_after_ms: u64,
-    },
     NotReady,
     Unanswered,
 }
@@ -796,7 +789,6 @@ impl From<ActionCallError> for WireActionCallError {
             ActionCallError::InvocationConflict => Self::InvocationConflict,
             ActionCallError::NotCancellable { reason } => Self::NotCancellable { reason },
             ActionCallError::Refused { reason } => Self::Refused { reason },
-            ActionCallError::Busy { retry_after_ms } => Self::Busy { retry_after_ms },
             ActionCallError::NotReady => Self::NotReady,
             ActionCallError::Unanswered => Self::Unanswered,
         }
@@ -820,7 +812,6 @@ impl From<WireActionCallError> for ActionCallError {
             WireActionCallError::InvocationConflict => Self::InvocationConflict,
             WireActionCallError::NotCancellable { reason } => Self::NotCancellable { reason },
             WireActionCallError::Refused { reason } => Self::Refused { reason },
-            WireActionCallError::Busy { retry_after_ms } => Self::Busy { retry_after_ms },
             WireActionCallError::NotReady => Self::NotReady,
             WireActionCallError::Unanswered => Self::Unanswered,
         }
@@ -2444,7 +2435,10 @@ mod tests {
             })
         );
         assert!(matches!(
-            RemoteActionFrame::decode(b"{\"version\":1,\"message\":{\"Subscribe\":{}}}"),
+            RemoteActionFrame::decode(
+                format!(r#"{{"version":{REMOTE_ACTIONS_VERSION},"message":{{"Subscribe":{{}}}}}}"#)
+                    .as_bytes()
+            ),
             Err(RemoteFrameError::Malformed(_))
         ));
         assert!(matches!(
@@ -2461,7 +2455,9 @@ mod tests {
         .unwrap();
         assert_eq!(
             String::from_utf8(bytes).unwrap(),
-            r#"{"version":1,"message":{"Cancel":{"invocation":"00000000-0000-0000-0000-000000000000"}}}"#
+            format!(
+                r#"{{"version":{REMOTE_ACTIONS_VERSION},"message":{{"Cancel":{{"invocation":"00000000-0000-0000-0000-000000000000"}}}}}}"#
+            )
         );
     }
 

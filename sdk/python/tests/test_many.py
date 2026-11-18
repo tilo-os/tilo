@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from tilo import AsyncTilo, Tilo
+from tilo import AsyncTilo, Tilo, made
 
 from tilo.types.tasks import Issues
 
@@ -47,6 +47,18 @@ async def test_create_many_sends_a_few_bulk_calls_of_one_invocation(workspace, a
     ]
     assert members == [{"action": "create", "args": item} for item in items]
     assert [answer["result"]["applied"] for answer in answers] == [500, 500, 200]
+
+
+async def test_a_bulk_call_names_an_item_an_earlier_one_makes(workspace, api):
+    issues = await Issues(workspace, TASKS).load()
+
+    await issues.create_many(
+        [{"title": "Parent"}, {"title": "Child", "parent": made(0)}]
+    )
+
+    call = api.asked("POST", "/actions/group")[-1]
+    members = json.loads(call["body"])["actions"]
+    assert members[1]["args"]["parent"] == {"$made": {"member": 0, "item": 0}}
 
 
 async def test_an_empty_bulk_call_sends_nothing(workspace, api):

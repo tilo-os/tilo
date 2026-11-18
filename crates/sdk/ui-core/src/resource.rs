@@ -509,6 +509,11 @@ struct Parked {
 /// parking, not collaboration: routing a record's deltas is the toolkit's business, since a channel
 /// belongs to the connection.
 pub struct ResourceSet {
+    /// Moves on every write access to the set: whatever changed a resource's
+    /// document (a commit, a merge, a migration, an open or a close) took one,
+    /// so a reader that saw the same number has nothing new to look at
+    /// ([`ResourceStore::write_generation`]).
+    generation: std::cell::Cell<u64>,
     app_id: AppId,
     /// The workspace these records are opened in, which is the cluster its
     /// route names. Stamped as a record's home when it is first created here.
@@ -610,6 +615,7 @@ impl ResourceSet {
         home: impl Into<String>,
     ) -> Self {
         Self {
+            generation: std::cell::Cell::new(0),
             app_id: app_id.into(),
             home: home.into(),
             person: None,
@@ -644,6 +650,7 @@ impl ResourceSet {
     /// any run that must not leave state behind.
     pub fn in_memory() -> Self {
         Self {
+            generation: std::cell::Cell::new(0),
             app_id: AppId::default(),
             home: String::new(),
             person: None,
@@ -1702,6 +1709,7 @@ impl ResourceOwners {
             return Ok(ResourceStore(owner));
         }
         let store = ResourceStore::new(ResourceSet {
+            generation: std::cell::Cell::new(0),
             app_id: app_id.into(),
             home: workspace_id.to_owned(),
             person,
@@ -2230,7 +2238,7 @@ impl ResourceReservation {
         seed(&mut doc).map_err(ResourceOpenError::Initialization)?;
         validate_identity(&doc, &self.checkout, &workspace)?;
         commit_genesis(&mut doc);
-        let mut set = self.store.0.borrow_mut();
+        let mut set = self.store.set_mut();
         if set
             .pending
             .get(&self.checkout.id)
@@ -2277,7 +2285,7 @@ impl Drop for ResourceLoan<'_> {
         let Some((doc, history, action_state)) = self.parts.take() else {
             return;
         };
-        let Ok(mut set) = self.store.0.try_borrow_mut() else {
+        let Ok(mut set) = self.store.try_set_mut() else {
             tracing::error!(record = %self.id, "a lent record could not be returned to its set");
             return;
         };
@@ -2292,7 +2300,7 @@ impl Drop for ResourceLoan<'_> {
 
 impl Drop for ResourceReservation {
     fn drop(&mut self) {
-        let mut set = self.store.0.borrow_mut();
+        let mut set = self.store.set_mut();
         if set
             .pending
             .get(&self.checkout.id)
@@ -2324,6 +2332,32 @@ fn read_resource(
 }
 
 impl ResourceStore {
+    /// The set, to change: the write generation moves with it.
+    fn set_mut(&self) -> std::cell::RefMut<'_, ResourceSet> {
+        let set = self.0.borrow_mut();
+        set.generation.set(set.generation.get().wrapping_add(1));
+        set
+    }
+
+    /// [`Self::set_mut`], unless the set is borrowed now.
+    fn try_set_mut(&self) -> Result<std::cell::RefMut<'_, ResourceSet>, std::cell::BorrowMutError> {
+        let set = self.0.try_borrow_mut()?;
+        set.generation.set(set.generation.get().wrapping_add(1));
+        Ok(set)
+    }
+
+    /// A number that moves whenever anything may have changed a resource of
+    /// this store (a commit, a merge, a migration, an open or a close), and
+    /// stays the same while nothing did: what a reader holding many resources
+    /// compares before looking at each of them again. It may move without a
+    /// change; it never stays put across one.
+    #[must_use]
+    pub fn write_generation(&self) -> u64 {
+        self.0
+            .try_borrow()
+            .map_or(u64::MAX, |set| set.generation.get())
+    }
+
     /// The route record `id` travels on: its workspace, the app and its wire name, unchecked
     /// against the record's document. What names a record across workspaces in one process (its
     /// content content link) keys by it.
@@ -2386,8 +2420,8 @@ impl ResourceStore {
     /// or closing other owners' unfinished edits. # Errors The cache could not take the document,
     /// or the store is busy and took nothing.
     pub fn schedule_committed_history(&self, id: &DocumentId) -> Result<(), String> {
-        let Ok(mut set) = self.0.try_borrow_mut() else {
-            return Err("record store is busy".to_string());
+        let Ok(mut set) = self.try_set_mut() else {
+            return Err("resource store is busy".to_string());
         };
         if set.portable.is_some() {
             if set
@@ -2724,8 +2758,7 @@ impl ResourceStore {
         want: &DocumentCheckout,
     ) -> Result<ResourceOpenOutcome, ResourceOpenError> {
         let opened = self
-            .0
-            .try_borrow_mut()
+            .try_set_mut()
             .map_err(|_| ResourceOpenError::Busy)?
             .try_open_resource(want);
         match opened {
@@ -2757,8 +2790,7 @@ impl ResourceStore {
         &self,
         want: &DocumentCheckout,
     ) -> Result<ResourceOpenOutcome, ResourceOpenError> {
-        self.0
-            .try_borrow_mut()
+        self.try_set_mut()
             .map_err(|_| ResourceOpenError::Busy)?
             .try_open_resource(want)
     }
@@ -2812,10 +2844,7 @@ impl ResourceStore {
         &self,
         want: &DocumentCheckout,
     ) -> Result<ResourceReservation, ResourceOpenError> {
-        let mut set = self
-            .0
-            .try_borrow_mut()
-            .map_err(|_| ResourceOpenError::Busy)?;
+        let mut set = self.try_set_mut().map_err(|_| ResourceOpenError::Busy)?;
         if !want.is_valid_local_storage_request() {
             return Err(ResourceOpenError::IdentityMismatch);
         }
@@ -2932,7 +2961,7 @@ impl ResourceStore {
         let set = self
             .0
             .try_borrow()
-            .map_err(|_| "record store is busy".to_string())?;
+            .map_err(|_| "resource store is busy".to_string())?;
         let slot = set
             .open
             .get(id)
@@ -2965,10 +2994,7 @@ impl ResourceStore {
         id: &DocumentId,
         action: app_state::PrivateAction,
     ) -> Result<(), String> {
-        let mut set = self
-            .0
-            .try_borrow_mut()
-            .map_err(|_| "record store is busy")?;
+        let mut set = self.try_set_mut().map_err(|_| "resource store is busy")?;
         let slot = set.open.get_mut(id).ok_or("record is not open")?;
         slot.autosave
             .as_mut()
@@ -2982,7 +3008,7 @@ impl ResourceStore {
         &self,
         id: &DocumentId,
     ) -> Result<Vec<app_state::PrivateAction>, String> {
-        let set = self.0.try_borrow().map_err(|_| "record store is busy")?;
+        let set = self.0.try_borrow().map_err(|_| "resource store is busy")?;
         let slot = set.open.get(id).ok_or("record is not open")?;
         let doc = slot.doc.as_ref().ok_or("record document is lent")?;
         // Absence of a local checkpoint store is not failed recovery. In
@@ -2998,9 +3024,8 @@ impl ResourceStore {
     /// touching another record. Accepted bytes remain Saving until durable.
     pub(crate) fn offer_resource(&self, id: &DocumentId) -> Result<(), String> {
         let mut set = self
-            .0
-            .try_borrow_mut()
-            .map_err(|_| "record store is busy".to_owned())?;
+            .try_set_mut()
+            .map_err(|_| "resource store is busy".to_owned())?;
         if set.portable.is_some() {
             return set.offer_portable_resource(id);
         }
@@ -3022,9 +3047,8 @@ impl ResourceStore {
     /// Close/retry one actual owner without settling another record's edit.
     pub(crate) fn try_flush_resource(&self, id: &DocumentId) -> Result<(), String> {
         let mut set = self
-            .0
-            .try_borrow_mut()
-            .map_err(|_| "record store is busy".to_string())?;
+            .try_set_mut()
+            .map_err(|_| "resource store is busy".to_string())?;
         if set.portable.is_some() {
             return set.flush_portable(Some(id), false);
         }
@@ -3049,7 +3073,7 @@ impl ResourceStore {
     /// # Errors
     /// Returns record-specific storage failures; a subsequent explicit retry sends a full checkpoint.
     pub fn try_flush(&self) -> Result<(), String> {
-        let mut set = self.0.borrow_mut();
+        let mut set = self.set_mut();
         if set.portable.is_some() {
             return set.flush_portable(None, false);
         }
@@ -3060,7 +3084,7 @@ impl ResourceStore {
     /// records are the store's from then on, and the store's own thread
     /// commits them ([`ResourceSet::try_flush_written`]).
     pub fn try_flush_written(&self) -> Result<(), String> {
-        let mut set = self.0.borrow_mut();
+        let mut set = self.set_mut();
         if set.portable.is_some() {
             return set.flush_portable(None, true);
         }
@@ -3085,7 +3109,7 @@ impl ResourceStore {
     /// Open `want` if it is not open already. Returns whether this opened
     /// it.
     pub fn open_resource(&self, want: &DocumentCheckout) -> bool {
-        self.0.borrow_mut().open_resource(want, None)
+        self.set_mut().open_resource(want, None)
     }
 
     /// Create exactly the new resource named by its owning action. Reopening
@@ -3098,10 +3122,7 @@ impl ResourceStore {
             return Err(ResourceOpenError::IdentityMismatch);
         }
         let canonical = {
-            let set = self
-                .0
-                .try_borrow_mut()
-                .map_err(|_| ResourceOpenError::Busy)?;
+            let set = self.try_set_mut().map_err(|_| ResourceOpenError::Busy)?;
             set.backend.is_some() || set.portable.is_some()
         };
         if canonical {
@@ -3113,10 +3134,7 @@ impl ResourceStore {
                     other => other,
                 });
         }
-        let mut set = self
-            .0
-            .try_borrow_mut()
-            .map_err(|_| ResourceOpenError::Busy)?;
+        let mut set = self.try_set_mut().map_err(|_| ResourceOpenError::Busy)?;
         if set.open.contains_key(&want.id) {
             return Err(ResourceOpenError::AlreadyExists);
         }
@@ -3181,10 +3199,7 @@ impl ResourceStore {
         &self,
         want: &DocumentCheckout,
     ) -> Result<(), ResourceOpenError> {
-        let mut set = self
-            .0
-            .try_borrow_mut()
-            .map_err(|_| ResourceOpenError::Busy)?;
+        let mut set = self.try_set_mut().map_err(|_| ResourceOpenError::Busy)?;
         if set.backend.is_some() || set.portable.is_some() {
             return set.try_open_record_with_recovery(want, false).map(|_| ());
         }
@@ -3361,10 +3376,7 @@ impl ResourceStore {
         ) -> R,
     ) -> Result<R, ResourceOpenError> {
         let mut loan = {
-            let mut set = self
-                .0
-                .try_borrow_mut()
-                .map_err(|_| ResourceOpenError::Busy)?;
+            let mut set = self.try_set_mut().map_err(|_| ResourceOpenError::Busy)?;
             set.not_lent(id)?;
             let parked = set
                 .open
@@ -3519,8 +3531,7 @@ impl ResourceStore {
         // The workspace's record may still be decoding off the frame when its
         // route's committed history arrives: take it in first, as every open
         // of it does, so the history lands on it.
-        self.0
-            .try_borrow_mut()
+        self.try_set_mut()
             .map_err(|_| ResourceOpenError::Busy.to_string())?
             .take_in_opening(&checkout.id, true)
             .map_err(|error| error.to_string())?;
@@ -3692,8 +3703,7 @@ impl ResourceStore {
         reason: &str,
     ) -> Result<Option<Vec<automerge::ChangeHash>>, String> {
         let mut set = self
-            .0
-            .try_borrow_mut()
+            .try_set_mut()
             .map_err(|_| ResourceOpenError::Busy.to_string())?;
         let set = &mut *set;
         let portable = set
@@ -3809,7 +3819,7 @@ impl ResourceStore {
     /// The workspace's host answered every commit of record `id` it published:
     /// what was held for them is said ([`Self::take_said`]).
     pub fn workspace_settled(&self, id: &DocumentId) {
-        if let Ok(mut set) = self.0.try_borrow_mut()
+        if let Ok(mut set) = self.try_set_mut()
             && let Some(parked) = set.open.get_mut(id)
         {
             parked.action_state.notices.settled();
@@ -3818,7 +3828,7 @@ impl ResourceStore {
 
     /// What to say now of record `id` ([`Self::hold_notice`]), each once.
     pub fn take_said(&self, id: &DocumentId) -> Vec<String> {
-        let Ok(mut set) = self.0.try_borrow_mut() else {
+        let Ok(mut set) = self.try_set_mut() else {
             return Vec::new();
         };
         set.open
@@ -3830,7 +3840,7 @@ impl ResourceStore {
     /// The refusals of record `id` noted since the last call
     /// ([`Self::withdraw_refused`]).
     pub fn take_refusals(&self, id: &DocumentId) -> Vec<ResourceRefusal> {
-        let Ok(mut set) = self.0.try_borrow_mut() else {
+        let Ok(mut set) = self.try_set_mut() else {
             return Vec::new();
         };
         set.open
@@ -3949,7 +3959,7 @@ impl ResourceStore {
 
     /// Do something with a record's document. `None` if the record is not open here.
     pub fn with<R>(&self, id: &DocumentId, f: impl FnOnce(&mut AutoCommit) -> R) -> Option<R> {
-        let mut set = self.0.borrow_mut();
+        let mut set = self.set_mut();
         set.document_mut(id)
             .map(|document| crate::invocation_scope::with_resource_loan(self, id, document, f))
     }
@@ -3958,7 +3968,7 @@ impl ResourceStore {
     /// changes it (a frame's read of a record holds it).
     #[must_use]
     pub fn takes_writes(&self) -> bool {
-        self.0.try_borrow_mut().is_ok()
+        self.try_set_mut().is_ok()
     }
 
     pub fn read<R>(&self, id: &DocumentId, f: impl FnOnce(&AutoCommit) -> R) -> Option<R> {
@@ -3972,7 +3982,7 @@ impl ResourceStore {
         id: &DocumentId,
         f: impl FnOnce(&mut AutoCommit, &mut crate::state::UndoLog) -> R,
     ) -> Option<R> {
-        let mut set = self.0.try_borrow_mut().ok()?;
+        let mut set = self.try_set_mut().ok()?;
         let (doc, history) = set.document_and_history_mut(id)?;
         Some(f(doc, history))
     }
@@ -4015,7 +4025,7 @@ impl ResourceStore {
     /// # Errors
     /// A record's cache reports that it could not take the document.
     pub fn tick(&self) -> Result<(), String> {
-        self.0.borrow_mut().tick_open()
+        self.set_mut().tick_open()
     }
 
     /// Write out every open record and wait for it to land.
@@ -4023,7 +4033,7 @@ impl ResourceStore {
     /// # Errors
     /// Each record's writer that reports a storage failure, by record.
     pub fn flush(&self) -> Result<(), String> {
-        self.0.borrow_mut().flush_open()
+        self.set_mut().flush_open()
     }
 }
 

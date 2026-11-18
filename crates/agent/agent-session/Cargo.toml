@@ -26,6 +26,8 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # published tree is the action API.
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+# The host's state file is replaced whole, never half-written.
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # The dates a step's computed arguments (`{{= workday(…) }}`) work with.
 jiff.workspace = true
 # The patterns a step's argument takes a part of a value out with
@@ -79,6 +81,7 @@ slides = { path = "../../../apps/slides" }
 snippets = { path = "../../../apps/snippets" }
 speed-test = { path = "../../../apps/speed-test" }
 tasks = { path = "../../../apps/tasks" }
+terminal = { path = "../../../apps/terminal" }
 themes = { path = "../../../apps/themes" }
 totp = { path = "../../../apps/totp" }
 tube = { path = "../../../apps/tube", default-features = false, features = [] }
@@ -133,7 +136,7 @@ tilo-automerge-isolate = { path = "../../doc/tilo-automerge-isolate" }
 tilo-content = { version = "0.1.0", path = "../../system/content" }
 # The workspace tree a put file becomes a node of, written as its mount writes it.
 tilo-fs = { package = "tilo-fs", path = "../../system/fs" }
-fs-protocol = { path = "../../system/fs-protocol", features = ["documents"] }
+fs-protocol = { path = "../../system/fs-protocol" }
 fs-content = { path = "../../system/fs-content" }
 # What an uploaded file is, from its first bytes: the media type the store
 # keeps it under.
@@ -151,10 +154,6 @@ image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 # agent's video renders run in (the helper itself is its binary).
 tilo-video-render = { path = "../../media/video-render", default-features = false }
 
-# A workspace's notes as `.md` files in its folder: a note's body written as Markdown by
-# the codec the folder writes its `.md` files with.
-tilo-doc-codecs = { path = "../../doc/tilo-doc-codecs" }
-tilo-doc = { path = "../../doc/tilo-doc" }
 tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -173,11 +172,12 @@ seccompiler.workspace = true
 libc.workspace = true
 # A connector app, mounted only where a workspace's host runs its worker.
 discord = { path = "../../../apps/discord" }
-# Terminal's session records, whose commands a workspace's host runs.
-terminal = { path = "../../../apps/terminal" }
 
 
 [dev-dependencies]
+# Documents the tests write and read back as a Word or Markdown file.
+tilo-doc-codecs = { path = "../../doc/tilo-doc-codecs" }
+tilo-doc = { path = "../../doc/tilo-doc" }
 # The desktop broker's admission, which the host's decisions are held to.
 tilo-broker-core = { path = "../../collab/broker-core" }
 tilo-action-policy = { path = "../../collab/action-policy" }

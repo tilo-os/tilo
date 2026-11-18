@@ -44,13 +44,20 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
         // The app must run to show anything: start it (no window of the person's) when it
         // does not run.
-        match self.app_ref(&parsed.app).await? {
-            AppRef::Running { .. } => {}
-            AppRef::Installed { app_id, opens } => {
+        // A path naming a kind (`tasks.issues`) names what an app serves rather than
+        // an app: that one answers wherever what it keeps is served.
+        match self.app_ref(&parsed.app).await {
+            Ok(AppRef::Running { .. }) => {}
+            Ok(AppRef::Installed { app_id, opens }) => {
                 if !opens {
                     return Err(Self::may_not_open(&app_id).into());
                 }
                 self.started_provider(&app_id, None).await?;
+            }
+            Err(why) => {
+                if self.kind_app(&parsed.app).await.is_none() {
+                    return Err(why.into());
+                }
             }
         }
         let resolved = match self.resolve(&parsed).await? {
@@ -72,26 +79,41 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
         let path = format!("{}#{OUTLINE}", parsed.app);
         let mut refused_anchor: Option<String> = None;
-        let value = match Box::pin(self.do_one_value(&path, arguments.clone(), None, None)).await {
-            Ok(value) => answer_value(value),
-            // No window of the app answers on this connection (a server shows none): nothing
-            // has a view to read, and the calls that reach what the path names are said.
-            Err(why) if shows_no_window(&why) => return Err(no_view(&args.path).into()),
-            // An app that cannot show the item (a conversation it no longer holds, an item
-            // that is gone) still has a window: read that, and say which view the lines are.
-            Err(why) if anchor.is_some() => {
-                refused_anchor = Some(why.to_string());
-                arguments.remove("anchor");
-                answer_value(Box::pin(self.do_one_value(&path, arguments, None, None)).await?)
-            }
-            Err(why) => return Err(why),
+        let mut value =
+            match Box::pin(self.do_one_value(&path, arguments.clone(), None, None)).await {
+                Ok(value) => answer_value(value),
+                // No window of the app answers on this connection (a server shows none): nothing
+                // has a view to read, and the calls that reach what the path names are said.
+                Err(why) if shows_no_window(&why) => return Err(no_view(&args.path).into()),
+                // An app that cannot show the item (a conversation it no longer holds, an item
+                // that is gone) still has a window: read that, and say which view the lines are.
+                Err(why) if anchor.is_some() => {
+                    refused_anchor = Some(why.to_string());
+                    arguments.remove("anchor");
+                    answer_value(
+                        Box::pin(self.do_one_value(&path, arguments.clone(), None, None)).await?,
+                    )
+                }
+                Err(why) => return Err(why),
+            };
+        // An app that ran the read and refused what it was shown is in the
+        // same place as one that could not start on it: its window is the view
+        // it does show, and the refusal says how it read the address.
+        let shown = |value: &Value| {
+            value.pointer("/update/state").and_then(Value::as_str) == Some("succeeded")
+                && value
+                    .pointer("/update/output/value/outline")
+                    .and_then(Value::as_str)
+                    .is_some()
         };
-        if value.pointer("/update/state").and_then(Value::as_str) != Some("succeeded")
-            || value
-                .pointer("/update/output/value/outline")
-                .and_then(Value::as_str)
-                .is_none()
-        {
+        if !shown(&value) && anchor.is_some() {
+            if refused_anchor.is_none() {
+                refused_anchor = Some(outcome(&value).text.trim().to_owned());
+            }
+            arguments.remove("anchor");
+            value = answer_value(Box::pin(self.do_one_value(&path, arguments, None, None)).await?);
+        }
+        if !shown(&value) {
             return Ok(outcome(&value));
         }
         Ok(Self::view_answer(

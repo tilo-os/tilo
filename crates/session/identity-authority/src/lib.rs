@@ -16,8 +16,8 @@
 //! ([`device_certificate`]): what a native action of the person's own is
 //! admitted with, and what its effect is re-checked against.
 
-use tilo_action_broker::certificate_authority::CertificateAuthority;
-use tilo_action_broker::policy_clock::{PolicyClockError, PolicyOrigin, PolicyTime};
+use tilo_workspace_service::apps::certificate_authority::CertificateAuthority;
+use tilo_workspace_service::apps::policy_clock::{PolicyClockError, PolicyOrigin, PolicyTime};
 
 /// The certificate this device presents in `workspace`, for the person it
 /// belongs to: the identity the workspace is kept as, the device that
@@ -45,8 +45,9 @@ pub fn device_certificate(
     // matches it.
     let (_, certificate) = tilo_identity::broker::trusted_current_device(workspace)
         .map_err(|error| error.to_string())?;
-    if tilo_action_broker::collab_app_broker::person_id_for_root(certificate.user_public_key)
-        != person
+    if tilo_workspace_service::apps::collab_app_broker::person_id_for_root(
+        certificate.user_public_key,
+    ) != person
     {
         return Err("native caller does not match the device person".into());
     }
@@ -115,7 +116,7 @@ pub fn device_readiness(workspace: &str, person: &str) -> Readiness {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NativeLocalPerson;
 
-impl tilo_action_broker::services::LocalPersonServices for NativeLocalPerson {
+impl tilo_workspace_service::apps::services::LocalPersonServices for NativeLocalPerson {
     fn certificate(
         &self,
         workspace: &str,
@@ -165,7 +166,7 @@ pub struct NativeCertificates {
 impl Default for NativeCertificates {
     fn default() -> Self {
         Self {
-            origin: tilo_action_broker::policy_clock::OwnerPolicyClock::new()
+            origin: tilo_workspace_service::apps::policy_clock::OwnerPolicyClock::new()
                 .map(|clock| clock.new_origin()),
         }
     }
@@ -217,7 +218,7 @@ impl CertificateAuthority for NativeCertificates {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_action_broker::services::LocalPersonServices as _;
+    use tilo_workspace_service::apps::services::LocalPersonServices as _;
 
     /// The workspace the device certificates are asked about.
     const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
@@ -284,7 +285,7 @@ mod tests {
     impl Login {
         /// The person this login's identity names.
         fn person(&self) -> String {
-            tilo_action_broker::collab_app_broker::person_id_for_root(
+            tilo_workspace_service::apps::collab_app_broker::person_id_for_root(
                 self.certificate
                     .as_ref()
                     .expect("a provisioned login")

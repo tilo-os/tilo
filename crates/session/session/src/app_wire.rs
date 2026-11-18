@@ -2,7 +2,7 @@
 //! read, watched and invoked by the apps it runs.
 //!
 //! An app is a process of its own, and the socket it speaks to its session on
-//! is the launcher's: [`tilo_action_broker`] serves it, admits the peer by
+//! is the launcher's: [`tilo_workspace_service::apps`] serves it, admits the peer by
 //! the handoff the launcher stamped on the connection, and keeps the
 //! workspaces the apps share. What this session adds to that broker is one
 //! provider: what its services publish ([`Link`], as the broker's
@@ -20,15 +20,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use runtime_collab::wire::{Event, Receipt};
 use serde_json::Map;
-use tilo_action_broker::NativePeerBrokerConfig;
-use tilo_action_broker::collab_broker::{BrokerChannels, BrokerHandle, FanoutState};
-use tilo_action_broker::collab_outbound::PeerPublisher;
-use tilo_action_broker::services::{
-    ApplicationServices, BrowserServiceSessionServices, Caller, DisplayControlServices,
-    DriveServices, ProcessServices, PublishedResources, Reading, ResourceWatch,
-    ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore, SpeakerChange, SpeakerServices,
-    WifiContinuityServices, WorkspaceMemberships,
-};
 use tilo_actions::ApiError;
 use tilo_broker_core::services::{
     ContentStoreServices, SearchIndexServices, WorkspaceAuthority, WorkspaceAuthorityHandle,
@@ -38,6 +29,15 @@ use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_lock::MutexRecover as _;
 use tilo_service::{Services, Started, Wake};
 use tilo_workspace_keys::KeyProvider;
+use tilo_workspace_service::apps::NativePeerBrokerConfig;
+use tilo_workspace_service::apps::collab_broker::{BrokerChannels, BrokerHandle, FanoutState};
+use tilo_workspace_service::apps::collab_outbound::PeerPublisher;
+use tilo_workspace_service::apps::services::{
+    ApplicationServices, BrowserServiceSessionServices, Caller, DisplayControlServices,
+    DriveServices, ProcessServices, PublishedResources, Reading, ResourceWatch,
+    ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore, SpeakerChange, SpeakerServices,
+    WifiContinuityServices, WorkspaceMemberships,
+};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::activity_provider::ActivityWire;
@@ -523,7 +523,7 @@ pub fn serve(
         memberships,
     );
     let publisher = owner_publisher(engine, records);
-    let broker = tilo_action_broker::collab_broker::spawn_with_services(
+    let broker = tilo_workspace_service::apps::collab_broker::spawn_with_services(
         socket,
         Some(membership),
         publisher,
@@ -555,9 +555,11 @@ pub(crate) fn owner_publisher(
     engine.map_or_else(PeerPublisher::disabled, |engine| {
         PeerPublisher::with_optional_owner_commit(
             None,
-            std::sync::Arc::new(tilo_action_broker::owner_commits::NativeOwnerCommits::new(
-                engine, records,
-            )),
+            std::sync::Arc::new(
+                tilo_workspace_service::apps::owner_commits::NativeOwnerCommits::new(
+                    engine, records,
+                ),
+            ),
         )
     })
 }
@@ -958,7 +960,7 @@ impl SessionGrants {
     }
 }
 
-impl tilo_action_broker::services::WorkspaceGrants for SessionGrants {
+impl tilo_workspace_service::apps::services::WorkspaceGrants for SessionGrants {
     /// The person at this device records where its engine holds the
     /// workspace's governance and the workspace lets this device administer it.
     fn may_record(&self, workspace: &str, person: &str) -> bool {
@@ -971,9 +973,9 @@ impl tilo_action_broker::services::WorkspaceGrants for SessionGrants {
 
     fn record(
         &self,
-        request: &tilo_action_broker::app_actions::AppActionConsentRequest,
+        request: &tilo_workspace_service::apps::app_actions::AppActionConsentRequest,
         grant: tilo_action_policy::Grant,
-    ) -> tilo_action_broker::services::GrantRecording {
+    ) -> tilo_workspace_service::apps::services::GrantRecording {
         let workspace = request.workspace.clone();
         let id = grant.id.clone();
         let committed = self.commit(&workspace, tilo_action_policy::Change::Grant(grant));
@@ -1119,8 +1121,8 @@ fn broker_services(
     let steps_fabric = fabric.clone();
     // The certificate checks this session's broker decides a join and a
     // retained action against: the session's own, or one of the tests'.
-    let certificates: std::sync::Arc<dyn tilo_action_broker::CertificateAuthority> = certificates
-        .unwrap_or_else(|| {
+    let certificates: std::sync::Arc<dyn tilo_workspace_service::apps::CertificateAuthority> =
+        certificates.unwrap_or_else(|| {
             std::sync::Arc::new(tilo_identity_authority::NativeCertificates::default())
         });
     // This person's settings on this device: each app reaches its own entries
@@ -1168,7 +1170,7 @@ fn broker_services(
         // else is there, and what the app hears of it until it leaves.
         native_media: BrokerService::when(native_media.map(|media| {
             std::sync::Arc::new(media)
-                as std::sync::Arc<dyn tilo_action_broker::services::NativeMediaServices>
+                as std::sync::Arc<dyn tilo_workspace_service::apps::services::NativeMediaServices>
         })),
         // An app's sound plays on this device's output, rendered here: a hosted app has no socket
         // and no mixer of its own.
@@ -1289,7 +1291,10 @@ fn broker_services(
         // screenshot and a file alike, and the receiving device's person
         // chooses where it lands there.
         nearby_transfer: BrokerService::when(nearby.map(|nearby| {
-            nearby as std::sync::Arc<dyn tilo_action_broker::services::NearbyTransferServices>
+            nearby
+                as std::sync::Arc<
+                    dyn tilo_workspace_service::apps::services::NearbyTransferServices,
+                >
         })),
         // A person copies and cuts in Files and pastes the copy in another
         // folder or another app: what they copied is offered here, and every
@@ -1304,7 +1309,8 @@ fn broker_services(
             std::sync::Arc::new(SessionGrants::new(
                 engine,
                 std::sync::Arc::clone(&grants_layout),
-            )) as std::sync::Arc<dyn tilo_action_broker::services::WorkspaceGrants>
+            ))
+                as std::sync::Arc<dyn tilo_workspace_service::apps::services::WorkspaceGrants>
         })),
         launchable_catalogue: BrokerService::when(launchable_catalogue),
         document_content: BrokerService::when(document_content.map(|content| content.route())),
@@ -1335,7 +1341,7 @@ fn broker_services(
         // every device of theirs.
         hosted_workspaces: BrokerService::when(hosting.clone().map(|hosting| {
             std::sync::Arc::new(hosting)
-                as std::sync::Arc<dyn tilo_action_broker::services::HostedWorkspaces>
+                as std::sync::Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>
         })),
         // The steps only this session may take for the person: the
         // workspace's activity the Activity app reads, pairing a nearby
@@ -1466,7 +1472,7 @@ pub(crate) struct AppWire {
     pub(crate) layout: std::sync::Arc<LayoutAuthority>,
     /// Held so the broker's thread ends and its socket is unlinked with the
     /// session.
-    pub(crate) broker: tilo_action_broker::collab_broker::BrokerHandle,
+    pub(crate) broker: tilo_workspace_service::apps::collab_broker::BrokerHandle,
     /// The calls of the workspaces this session takes part in, as the loop
     /// heard them: what a voice channel shows.
     pub(crate) calls: std::sync::Arc<crate::calls::Calls>,
@@ -1481,7 +1487,7 @@ pub(crate) struct AppWire {
     pub(crate) file_clipboard: std::sync::Arc<crate::file_clipboard::NativeFileClipboard>,
     /// The person's own store open to their other devices, held so its links
     /// and the writes it keeps end with the session.
-    pub(crate) _personal: Option<tilo_action_broker::personal::Links>,
+    pub(crate) _personal: Option<tilo_workspace_service::apps::personal::Links>,
     /// What Browser's asks for vault items are answered with, shared with the service that
     /// answers them.
     pub(crate) item_lending: std::sync::Arc<crate::item_lending::ItemLending>,
@@ -1530,13 +1536,15 @@ impl AppWire {
     /// The broker the apps' runs are started on, while it serves one.
     pub(crate) fn action_broker(
         &self,
-    ) -> Option<std::sync::Arc<tilo_action_broker::collab_broker::AppActionBroker>> {
+    ) -> Option<std::sync::Arc<tilo_workspace_service::apps::collab_broker::AppActionBroker>> {
         self.broker.app_action_broker().map(std::sync::Arc::new)
     }
 
     /// The route to one window's app, for the step of a move it is asked for:
     /// what answers on the window's continuation channel.
-    pub(crate) fn handoff(&self) -> tilo_action_broker::collab_broker::SessionFollowDispatcher {
+    pub(crate) fn handoff(
+        &self,
+    ) -> tilo_workspace_service::apps::collab_broker::SessionFollowDispatcher {
         self.broker.follow_dispatcher()
     }
 
@@ -1544,7 +1552,8 @@ impl AppWire {
     /// through, while it takes work.
     pub(crate) fn agent_broker(
         &self,
-    ) -> Option<std::sync::Arc<tilo_action_broker::collab_app_broker::AppBrokerState>> {
+    ) -> Option<std::sync::Arc<tilo_workspace_service::apps::collab_app_broker::AppBrokerState>>
+    {
         self.broker.fanout.app_broker()
     }
 
@@ -1553,7 +1562,7 @@ impl AppWire {
     /// asks the host holding it about a departure it holds for the person.
     pub(crate) fn hosted_workspaces(
         &self,
-    ) -> Option<std::sync::Arc<dyn tilo_action_broker::services::HostedWorkspaces>> {
+    ) -> Option<std::sync::Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>> {
         self.action_broker()
             .and_then(|broker| broker.hosted_workspaces())
     }
@@ -1562,7 +1571,7 @@ impl AppWire {
 /// Whether the shortcut catalogue the services hand an app on this machine names every
 /// shortcut of the desktop.
 #[cfg(test)]
-fn shortcut_catalogue(services: &tilo_action_broker::services::ProcessServices) -> bool {
+fn shortcut_catalogue(services: &tilo_workspace_service::apps::services::ProcessServices) -> bool {
     let Some(keys) = services.keyboard_shortcuts.as_ref() else {
         return false;
     };
@@ -2221,7 +2230,7 @@ mod tests {
         // notice a name that went missing.
         assert_eq!(
             decisions.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
-            tilo_action_broker::services::ProcessServices::NAMES,
+            tilo_workspace_service::apps::services::ProcessServices::NAMES,
             "the broker's services, each decided in its order"
         );
         let mut names = std::collections::BTreeSet::new();

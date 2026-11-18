@@ -14,7 +14,7 @@ name = "tilo_native_media"
 runtime-collab = { path = "../../runtime/runtime-collab" }
 # The broker's trait a call service answers: the app's admitted connection,
 # and the fence that stops its call when that app goes away.
-tilo-action-broker = { path = "../../collab/tilo-action-broker" }
+tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps"] }
 tilo-lock = { path = "../../platform/tilo-lock" }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "rt"] }

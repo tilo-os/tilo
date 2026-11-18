@@ -317,7 +317,7 @@ fn gui_open_args(opts: &RunOptions) -> Vec<String> {
     let mut args = if let Some(uri) = &opts.open_uri {
         let mut args = vec![uri.clone()];
         if opts.open_as_visitor {
-            args.push(runtime_portal::windows::VISITOR_WINDOW_FLAG.to_owned());
+            args.push(runtime_portal::process_link::VISITOR_WINDOW_FLAG.to_owned());
         }
         args
     } else {
@@ -3240,16 +3240,16 @@ pub(crate) fn run_with_context(
             });
         }
         // The shell opens the app's later windows in this process through the link it released this
-        // launch with (`runtime_portal::windows`).
+        // launch with (`runtime_portal::process_link`).
         #[cfg(target_os = "linux")]
         if matches!(opts.mode, LaunchMode::Gui)
             && opts.tilolang_connector.is_none()
             && let Some(link) = crate::launch_hold::take_window_link()
         {
             resolved.push(crate::services::ResolvedService {
-                name: runtime_portal::windows::SERVICE.to_owned(),
+                name: runtime_portal::process_link::SERVICE.to_owned(),
                 host: link,
-                child_fd: runtime_portal::windows::CHILD_FD,
+                child_fd: runtime_portal::process_link::CHILD_FD,
             });
         }
         resolved
@@ -3307,10 +3307,7 @@ pub(crate) fn run_with_context(
     if opts.tilolang_process {
         splice_cli_setenv(
             &mut argv,
-            Some((
-                runtime_portal::tilolang_process::HOSTED_ENV.into(),
-                "1".into(),
-            )),
+            Some((runtime_portal::process_link::HOSTED_ENV.into(), "1".into())),
         )?;
     }
     if let Some(origin) = &opts.tilolang_connector {
@@ -5056,7 +5053,7 @@ mod app_dir_tests {
             assert!(
                 !argv
                     .iter()
-                    .any(|arg| arg.ends_with("/records") || arg.ends_with("/records/person.automerge")),
+                    .any(|arg| arg.ends_with("/records") || arg.ends_with("/records/person/state.automerge")),
                 "Settings must not bind or name the session document: {argv:?}"
             );
             assert_eq!(argv.last().map(String::as_str), Some("/entry"));

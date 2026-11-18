@@ -102,7 +102,7 @@ tilo-test-env = { path = "../../crates/dev/test-env" }
 # The broker tests (typed_peer and the tests built on it) drive the action
 # broker in-process, which runs on Linux.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-tilo-action-broker = { path = "../../crates/collab/tilo-action-broker", features = ["test-support"] }
+tilo-workspace-service = { path = "../../crates/server/tilo-workspace-service", features = ["apps", "test-support"] }
 parking_lot.workspace = true
 
 [[test]]

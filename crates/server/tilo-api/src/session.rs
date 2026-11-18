@@ -49,7 +49,7 @@ use std::{
     sync::{Arc, Mutex},
     time::Instant,
 };
-use tilo_mcp::{McpServer, Surface};
+use tilo_mcp::McpServer;
 
 /// The header naming an MCP session (Streamable HTTP).
 pub const SESSION_HEADER: &str = "mcp-session-id";
@@ -202,11 +202,10 @@ pub struct Call {
 /// any tool ran.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CallError {
-    /// The typed code: `not_found`, `beyond_scope`, `rate_limited`,
-    /// `invalid_request` or `unavailable`.
+    /// The typed code: `not_found`, `beyond_scope`, `invalid_request` or
+    /// `unavailable`.
     pub code: &'static str,
     pub message: String,
-    pub retry_after_ms: Option<u64>,
 }
 
 impl CallError {
@@ -214,7 +213,6 @@ impl CallError {
         Self {
             code: "beyond_scope",
             message: "this key reaches another workspace only".into(),
-            retry_after_ms: None,
         }
     }
 
@@ -222,7 +220,6 @@ impl CallError {
         Self {
             code: "unavailable",
             message: "your workspace didn't answer; try again in a minute".into(),
-            retry_after_ms: None,
         }
     }
 
@@ -233,20 +230,12 @@ impl CallError {
             .and_then(Value::as_str)
             .unwrap_or("the call was refused")
             .to_owned();
-        let retry_after_ms = error
-            .pointer("/data/retry_after_ms")
-            .and_then(Value::as_u64);
         let code = match error.get("code").and_then(Value::as_i64) {
-            _ if retry_after_ms.is_some() => crate::account::RATE_LIMITED,
             Some(-32602) if message.contains("no such workspace") => "not_found",
             Some(-32602 | -32600 | -32700 | -32601) => "invalid_request",
             _ => "unavailable",
         };
-        Self {
-            code,
-            message,
-            retry_after_ms,
-        }
+        Self { code, message }
     }
 }
 
@@ -254,17 +243,6 @@ impl CallError {
 #[must_use]
 pub fn error(id: &Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
-}
-
-/// The JSON-RPC error of a call the server ran nothing for because it is busy
-/// with the person's changes: `data` says so typed, with the wait, so a
-/// client retries the same call then.
-fn rate_limited(id: &Value, retry_after_ms: u64) -> Value {
-    json!({"jsonrpc":"2.0","id":id,"error":{
-        "code": -32000,
-        "message": ServerError::RateLimited { retry_after_ms }.to_string(),
-        "data": {"code": crate::account::RATE_LIMITED, "retry_after_ms": retry_after_ms},
-    }})
 }
 
 fn result(id: &Value, value: &Value) -> Value {
@@ -420,7 +398,6 @@ impl Session {
         let catalogue =
             tilo_mcp::task_hosts::WorkspaceCatalogue::new(actions.clone(), self.caller());
         let server = McpServer::new(actions, workspace.to_owned(), self.person.clone())
-            .with_surface(Surface::Agent)
             .with_agent_session(&self.id)
             .with_task_hosts(Some(Arc::new(tilo_mcp::task_hosts::TaskHosts::new(
                 Some(&self.person),
@@ -445,17 +422,22 @@ impl Session {
     /// names one.
     async fn serve_in(&self, workspace: &str, program: Option<&str>, request: Value) -> Reply {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
+        let looking = timing_start();
         match self.on_device(workspace, program).await {
             Ok(Some(held)) => {
-                return held
+                let handling = timing_start();
+                let answer = held
                     .0
                     .handle(request)
                     .await
                     .map_or_else(Reply::accepted, Reply::one);
+                timing_done("api.handle_on_device", handling);
+                return answer;
             }
             Ok(None) => {}
             Err(refused) => return Reply::one(error(&id, -32000, &refused)),
         }
+        timing_done("api.device", looking);
         if matches!(self.reach, Reach::Forwarded(_))
             && request.get("method").and_then(Value::as_str) == Some("tools/call")
         {
@@ -499,19 +481,21 @@ impl Session {
                 return Reply::one(result(&id, &answered));
             }
         }
-        let run = match self.served(workspace, program).await {
+        let entering = timing_start();
+        let served = match self.served(workspace, program).await {
             Ok(held) => held,
             Err(ServerError::NotFound) => {
                 return Reply::one(error(&id, -32602, "no such workspace"));
             }
-            Err(ServerError::RateLimited { retry_after_ms }) => {
-                return Reply::one(rate_limited(&id, retry_after_ms));
-            }
             Err(other) => return Reply::one(error(&id, -32000, &other.to_string())),
         };
-        Box::pin(run.server.handle(request))
+        timing_done("api.enter", entering);
+        let handling = timing_start();
+        let answer = Box::pin(served.server.handle(request))
             .await
-            .map_or_else(Reply::accepted, Reply::one)
+            .map_or_else(Reply::accepted, Reply::one);
+        timing_done("api.handle", handling);
+        answer
     }
 
     /// The session in `workspace` when one of the person's devices hosts it, as
@@ -655,13 +639,43 @@ impl Session {
         }
     }
 
-    /// The workspace tools, each with `workspace`; before a workspace served
-    /// them, the ones the account answers.
+    /// The workspace tools, each with the `workspace` it acts in: the ones a
+    /// workspace served, or, before one did, the same set the API and every
+    /// session serve, so an account key and a one-workspace key see one
+    /// vocabulary.
     fn account_tools(&self) -> Vec<Value> {
-        self.known_tools()
-            .map_or_else(account_tool_definitions, |known| {
-                known.iter().map(with_workspace_argument).collect()
-            })
+        self.known_tools().map_or_else(shared_tools, |known| {
+            known.iter().map(with_workspace_argument).collect()
+        })
+    }
+
+    /// The id of the workspace `named`: an id as it is, or the account's
+    /// workspace of that name, so an agent may say `sdkfix` as the CLI and
+    /// SDKs do.
+    async fn workspace_id(&self, named: &str) -> Option<String> {
+        if uuid::Uuid::parse_str(named).is_ok() {
+            return Some(named.to_owned());
+        }
+        let listed = self
+            .account(
+                &json!("resolve"),
+                "tilo_ls",
+                &json!({"path": "account/workspaces"}),
+                true,
+            )
+            .await;
+        let rows = listed
+            .messages
+            .first()?
+            .pointer("/result/structuredContent/rows")?
+            .as_array()?;
+        let wanted = named.trim().to_lowercase().replace(' ', "-");
+        rows.iter().find_map(|row| {
+            let label = row.get("label").and_then(Value::as_str)?;
+            (label.trim().to_lowercase().replace(' ', "-") == wanted)
+                .then(|| row.get("name").and_then(Value::as_str).map(str::to_owned))
+                .flatten()
+        })
     }
 
     fn known_tools(&self) -> Option<Vec<Value>> {
@@ -702,11 +716,15 @@ impl Session {
             .pointer("/params/arguments")
             .cloned()
             .unwrap_or_else(|| json!({}));
-        let Some(workspace) = arguments
+        let named = arguments
             .get(WORKSPACE_ARGUMENT)
             .and_then(Value::as_str)
-            .map(str::to_owned)
-        else {
+            .map(str::to_owned);
+        let resolved = match named {
+            Some(named) => Some(self.workspace_id(&named).await.unwrap_or(named)),
+            None => None,
+        };
+        let Some(workspace) = resolved else {
             if crate::account::addresses(&name, &arguments) {
                 let structured = request
                     .pointer("/params/_meta/so.tilo.mcp/structured")
@@ -717,8 +735,8 @@ impl Session {
             return Reply::one(error(
                 id,
                 -32602,
-                "name the workspace this acts in: `workspace`, an id as account/workspaces#list \
-                 answers it; only paths under `account` need none",
+                "name the workspace this acts in: `workspace`, its id or its name as \
+                 account/workspaces#list answers them; only paths under `account` need none",
             ));
         };
         if let Some(arguments) = request
@@ -859,7 +877,6 @@ impl Session {
                         message: "that program session ended: its lets and references are gone; \
                                   leave `session` out to start a new one"
                             .into(),
-                        retry_after_ms: None,
                     })?;
                 sessions.remove(at).1
             }
@@ -949,11 +966,11 @@ args: {role, email?}, workspace}` answers a `link` that signs them in and lands 
 `role` (viewer, commenter, editor or administrator); `workspace/members#list` names who is in it, and \
 `workspace/members#name {name}` sets how it names the key's own person, which is what their \
 invitations say. \
-A workspace can be held by more than one host: `tilo_do {path: \"workspace/hosts#add\", \
-args: {origin: \"https://tilo.sh\"}, workspace}` has that host keep it as well (both keep it, a change \
-on either reaches the other, and its people reach it at either; that host takes it only for an owner \
-it let in), `workspace/hosts#list` names the hosts holding it and `workspace/hosts#remove {host}` \
-lets one go; only its owners choose. \
+A workspace can be kept by more than one server: `tilo_do {path: \"workspace/servers#add\", \
+args: {origin: \"https://tilo.sh\"}, workspace}` has that server keep it as well (both keep it, a \
+change on either reaches the other, and its people reach it at either; that server takes it only \
+for an owner it let in), `workspace/servers#list` names the servers keeping it and \
+`workspace/servers#remove {server}` lets one go; only its owners choose. \
 A command an agent runs in a workspace's Linux machine (`terminal#run`) asks the person each \
 time; `tilo_do {path: \"workspace/unattended#set\", args: {on: true}, workspace}` asks them once \
 to let keys minted for that workspace alone run commands there without asking (and in branches \
@@ -982,35 +999,16 @@ fn with_hosted_instructions(mut answer: Value) -> Value {
     answer
 }
 
-/// The tools an account session offers before a workspace served the
-/// workspace tools: the ones the account itself answers.
-#[must_use]
-pub fn account_tool_definitions() -> Vec<Value> {
-    let path = json!({"type":"string","description":"A path under `account`, like account/workspaces#create."});
-    vec![
-        json!({
-            "name": "tilo_ls",
-            "description": "List what is under a path: `account` lists the account's actions.",
-            "inputSchema": {"type":"object","properties":{"path":path},"additionalProperties":false},
-            "annotations": {"readOnlyHint": true},
-        }),
-        json!({
-            "name": "tilo_read",
-            "description": "Read `account/workspaces`, `account/keys` or `account/usage` (VM time and storage per workspace).",
-            "inputSchema": {"type":"object","properties":{"path":path},"required":["path"],"additionalProperties":false},
-            "annotations": {"readOnlyHint": true},
-        }),
-        json!({
-            "name": "tilo_do",
-            "description": "Run an account action: `{path: \"account/workspaces#create\", args: {name: \"Applicant: Jane Doe\"}}`. Answers `ok` with the result, `failed: why`, or `pending <id>` for tilo_status.",
-            "inputSchema": {"type":"object","properties":{"path":path,"args":{"type":"object"}},"required":["path"],"additionalProperties":false},
-        }),
-        json!({
-            "name": "tilo_status",
-            "description": "How a pending invocation went.",
-            "inputSchema": {"type":"object","properties":{"invocation_id":{"type":"string"}},"required":["invocation_id"],"additionalProperties":false},
-        }),
-    ]
+/// The tools every session serves, each with the `workspace` an account
+/// session's call names: what the API and every workspace session answer,
+/// so a key to all the person's workspaces is offered the same vocabulary as
+/// a key for one.
+fn shared_tools() -> Vec<Value> {
+    tilo_mcp::tools_json()
+        .get("tools")
+        .and_then(Value::as_array)
+        .map(|tools| tools.iter().map(with_workspace_argument).collect())
+        .unwrap_or_default()
 }
 
 /// `tool` with the `workspace` argument an account session adds: required
@@ -1026,8 +1024,26 @@ fn with_workspace_argument(tool: &Value) -> Value {
     if let Some(properties) = properties.as_object_mut() {
         properties.insert(
             WORKSPACE_ARGUMENT.into(),
-            json!({"type":"string","description":"The workspace this acts in: its id, as account/workspaces#list answers it. Omit it for paths under `account`."}),
+            json!({"type":"string","description":"The workspace this acts in: its id, as account/workspaces#list answers it, or its name. Omit it for paths under `account`."}),
         );
     }
     tool
+}
+
+/// A clock read for timing one phase of a call, when the `tilo_api::timing`
+/// target is at debug: off, it reads no clock.
+fn timing_start() -> Option<Instant> {
+    tracing::enabled!(target: "tilo_api::timing", tracing::Level::DEBUG).then(Instant::now)
+}
+
+/// Time the phase `step`, begun at `started` ([`timing_start`]), in
+/// microseconds: `TIMING <step> <µs>` says where a slow call waited.
+fn timing_done(step: &'static str, started: Option<Instant>) {
+    if let Some(started) = started {
+        tracing::debug!(
+            target: "tilo_api::timing",
+            "TIMING {step} {}",
+            started.elapsed().as_micros()
+        );
+    }
 }

@@ -24,6 +24,21 @@ impl crate::Acting {
     pub fn asker(&self, host_reaches_person: bool) -> Asker {
         asker_of(self.delegated(), host_reaches_person)
     }
+
+    /// The preset every handed agent of the tree carries in `workspace`
+    /// ([`crate::Acting::handed`], [`crate::roles::agent_preset`]), for the
+    /// person it acts for: the one place a device's delegation to its agent
+    /// becomes grants, so the device that admitted the agent and every
+    /// receiver of its changes decide it alike.
+    #[must_use]
+    pub fn handed_preset(&self, workspace: &str) -> Vec<Grant> {
+        self.nodes()
+            .into_iter()
+            .filter(|node| node.handed)
+            .filter_map(|node| Some((node.agent_id()?, node.acted_for_person()?)))
+            .flat_map(|(agent, person)| crate::roles::agent_preset(workspace, agent, person))
+            .collect()
+    }
 }
 
 impl<'a> Authority<'a> {

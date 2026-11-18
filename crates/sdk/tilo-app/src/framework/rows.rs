@@ -138,6 +138,30 @@ impl LiveRow {
         self.resource.id.as_str()
     }
 
+    /// The row `id` names, this one or one nested beneath it, as a row of its own: what a
+    /// control showing that entity binds to.
+    #[must_use]
+    pub fn find(&self, id: &str) -> Option<Self> {
+        fn walk<'a>(resource: &'a ResourceSpec, id: &str) -> Option<&'a ResourceSpec> {
+            if resource.id.0 == id {
+                return Some(resource);
+            }
+            resource.children.iter().find_map(|child| walk(child, id))
+        }
+        if self.resource.id.0 == id {
+            return Some(self.clone());
+        }
+        walk(&self.resource, id).map(|found| Self {
+            resource: std::rc::Rc::new(found.clone()),
+        })
+    }
+
+    /// The operations the row offers, as it publishes them.
+    #[must_use]
+    pub fn operations(&self) -> &[ActionSpec] {
+        &self.resource.actions
+    }
+
     /// The row as the published tree carries it.
     pub fn into_resource(self) -> ResourceSpec {
         let mut resource = std::rc::Rc::unwrap_or_clone(self.resource);
@@ -149,6 +173,13 @@ impl LiveRow {
     /// clone of one row, not two rows that read alike.
     pub fn same_row(&self, other: &Self) -> bool {
         std::rc::Rc::ptr_eq(&self.resource, &other.resource)
+    }
+}
+
+/// A control binds to the row it shows: `ActionBinding::unit_for(&row, effect.id())`.
+impl tilo_actions::Exports for LiveRow {
+    fn exported(&self) -> &ResourceSpec {
+        &self.resource
     }
 }
 

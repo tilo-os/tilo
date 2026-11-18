@@ -460,7 +460,7 @@ async fn used_for_a_while(
     }
 }
 
-/// A session of `device` to `host`, a host of `person`.
+/// A session of `device` to `host_device`, a server of `person`.
 async fn session_at(
     device: &crate::common::TestDevice,
     person: &TestUser,
@@ -705,6 +705,10 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
 /// holds the workspace and a member's change through it reaches the governor.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[expect(
+    clippy::too_many_lines,
+    reason = "one scenario whose servers and sessions live until it ends"
+)]
+#[expect(
     clippy::significant_drop_tightening,
     reason = "Hosted::stop consumes each holder after the assertions; the suggested earlier drop would use a moved value"
 )]
@@ -808,9 +812,164 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
         phone.device_pubkey()
     );
 
-    drop((on_holder, local, outside));
+    // Restarted, the site still holds the workspace and follows the laptop's
+    // changes: it knows where it was handed the workspace from, as it did
+    // before.
+    drop((on_holder, outside));
+    let state = holder.stop_keeping().await;
+    let holder = crate::common::serve_in(&site, &server, WorkSetting::own_person(), state).await;
+    let on_holder = session_at(&phone, &site, &server, &holder).await;
+    tilo_test_env::within("the restarted site admits the workspace's member", async {
+        while !admitted(&on_holder, workspace.workspace_id).await {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    send_change(&local, workspace.workspace_id, &laptop, b"from the laptop");
+    assert_eq!(
+        change_author(&on_holder, b"from the laptop").await,
+        laptop.device_pubkey()
+    );
+
+    drop((on_holder, local));
     holder.stop().await;
     governor.stop().await;
+}
+
+/// A workspace moves from one server to another: the new one keeps it
+/// first, then the old one lets it go, and the workspace's member reaches it
+/// at the new one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario whose servers and sessions live until it ends"
+)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "Hosted::stop consumes each server after the assertions; the suggested earlier drop would use a moved value"
+)]
+async fn a_workspace_moves_from_one_server_to_another() {
+    let alice = TestUser::fresh("Alice");
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let phone = alice.enrol("phone", DeviceCapabilities::primary());
+    let site = TestUser::fresh("Site");
+    let made_on = serve_on(&alice, &laptop, WorkSetting::none()).await;
+    let workspaces = made_on.host.workspaces();
+    let workspace = workspaces.create("Notes").await.unwrap();
+    workspaces
+        .enter(&workspace.workspace, &phone.cert)
+        .await
+        .unwrap();
+    // Two servers of the site, each letting Alice in.
+    let mut kept = Vec::new();
+    for name in ["old", "new"] {
+        let device = site.enrol(name, DeviceCapabilities::member());
+        let server = serve_on(&site, &device, WorkSetting::own_person()).await;
+        let at_site = server.host.workspaces();
+        assert!(
+            at_site
+                .offer_own_workspaces(tilo_server::workspaces::OwnWorkspaceOffer::free(
+                    "site.test"
+                ))
+                .unwrap()
+        );
+        let home = at_site.create("Home").await.unwrap();
+        assert!(at_site.admit_own_through(&home.workspace));
+        at_site
+            .declare_owner(&home.workspace, alice.user_pk, None)
+            .await
+            .unwrap();
+        kept.push((device, server));
+    }
+    let mut kept = kept.into_iter();
+    let (old, old_server) = kept.next().unwrap();
+    let (new, new_server) = kept.next().unwrap();
+    workspaces
+        .attach_server(
+            &workspace.workspace,
+            old.device_pubkey(),
+            old_server.host.node_addr(),
+            tilo_peer_state::CopyRole::KeyHolder,
+        )
+        .await
+        .unwrap();
+
+    let confirmed = workspaces
+        .move_holder(
+            &workspace.workspace,
+            old.device_pubkey(),
+            new.device_pubkey(),
+            new_server.host.node_addr(),
+        )
+        .await
+        .unwrap();
+    assert!(confirmed, "the old server says it let the workspace go");
+    let keeping: Vec<String> = workspaces
+        .keeping_devices(&workspace.workspace)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|server| server.device)
+        .collect();
+    assert!(
+        keeping.contains(&hex::encode(new.device_pubkey())),
+        "{keeping:?}"
+    );
+    assert!(
+        !keeping.contains(&hex::encode(old.device_pubkey())),
+        "{keeping:?}"
+    );
+
+    // Alice's phone reaches the workspace at the new server, and a change
+    // made there reaches the server it was made on.
+    let local = made_on
+        .host
+        .connect_local(
+            laptop.cert.clone(),
+            laptop.sk.clone(),
+            RevocationList::new(),
+        )
+        .await
+        .unwrap();
+    assert!(admitted(&local, workspace.workspace_id).await);
+    let at_new = session_at(&phone, &site, &new, &new_server).await;
+    tilo_test_env::within("the new server admits the workspace's member", async {
+        while !admitted(&at_new, workspace.workspace_id).await {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    send_change(
+        &at_new,
+        workspace.workspace_id,
+        &phone,
+        b"from the new server",
+    );
+    assert_eq!(
+        change_author(&local, b"from the new server").await,
+        phone.device_pubkey()
+    );
+
+    // Moving from a server that does not keep it changes nothing.
+    let refused = workspaces
+        .move_holder(
+            &workspace.workspace,
+            old.device_pubkey(),
+            new.device_pubkey(),
+            new_server.host.node_addr(),
+        )
+        .await;
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|error| error.contains("does not keep")),
+        "{refused:?}"
+    );
+
+    drop((at_new, local));
+    old_server.stop().await;
+    new_server.stop().await;
+    made_on.stop().await;
 }
 
 /// A device that is handed a workspace keeps its files under the

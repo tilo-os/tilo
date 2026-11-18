@@ -639,7 +639,7 @@ impl FilesState {
             .into_widget()
     }
 
-    pub(super) fn cloud_resources(&self) -> Vec<ResourceSpec> {
+    pub(super) fn cloud_resources(&self) -> Vec<LiveRow> {
         if !self.cloud.active {
             return vec![];
         }
@@ -647,12 +647,12 @@ impl FilesState {
             .entries
             .iter()
             .map(|entry| {
-                let mut row = ResourceSpec::new(
+                let mut row = LiveRow::new(
                     format!("files.cloud-entry:{}", hex::encode(&entry.id)),
                     "files.cloud-entry",
                     entry.name.clone(),
-                );
-                row.actions.push(crate::effects::row_action(
+                )
+                .operation(crate::effects::row_action(
                     &FilesEffect::SelectCloud {
                         entry: entry.id.clone(),
                     },
@@ -660,7 +660,7 @@ impl FilesState {
                     t("files-cloud-select"),
                 ));
                 if entry.kind == ImportKind::Folder {
-                    row.actions.push(crate::effects::row_action(
+                    row = row.operation(crate::effects::row_action(
                         &FilesEffect::BrowseCloud {
                             account: self.cloud.account.clone(),
                             folder: Some(entry.id.clone()),

@@ -20,9 +20,7 @@ pub(crate) fn note_news() {
 
 pub(crate) mod api;
 pub mod capability;
-pub mod checked_files;
 pub mod coverage;
-mod files_session;
 pub mod folder;
 pub mod preview;
 pub mod restore;
@@ -43,6 +41,7 @@ pub use registration::*;
 
 use std::collections::HashMap;
 use std::fmt;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use automerge::transaction::Transactable;
@@ -188,9 +187,21 @@ struct SelectedPreview {
     effect_only: bool,
 }
 
+/// Documents a window keeps beside its own whose changes its History lists with its own: the parts of
+/// the app's chain.
+pub trait HistoryParts {
+    /// Every part's committed frontier, in one list: it moves whenever a part changes or arrives.
+    fn heads(&self) -> Vec<ChangeHash>;
+    /// Every part's committed document.
+    fn documents(&self) -> Vec<AutoCommit>;
+}
+
 pub struct HistoryController {
     resource: HistoryResource,
     source: HistorySource,
+    parts: Option<Rc<dyn HistoryParts>>,
+    /// The parts' frontier the entries were listed at.
+    projected_parts: Vec<ChangeHash>,
     entries: Vec<HistoryEntry>,
     named: Vec<NamedRange>,
     descriptions: HashMap<HistoryEntryId, String>,
@@ -254,6 +265,8 @@ impl HistoryController {
         Self {
             resource,
             source: source.with_max_entries(HISTORY_PAGE),
+            parts: None,
+            projected_parts: Vec::new(),
             entries: Vec::new(),
             named: Vec::new(),
             descriptions: HashMap::new(),
@@ -269,6 +282,44 @@ impl HistoryController {
             has_earlier: false,
             workspace_agents: None,
         }
+    }
+
+    /// List the changes of `parts` with the document's own, in time order.
+    #[must_use]
+    pub fn with_parts(mut self, parts: Option<Rc<dyn HistoryParts>>) -> Self {
+        self.parts = parts;
+        self.projected_heads = None;
+        self
+    }
+
+    /// Whether a part changed since the entries were listed.
+    pub(crate) fn parts_moved(&self) -> bool {
+        self.parts
+            .as_ref()
+            .is_some_and(|parts| sorted_heads(parts.heads()) != self.projected_parts)
+    }
+
+    /// The newest page of entries of `live` and of the parts, in time order, and whether older ones
+    /// exist. Each part's genesis is left out: nobody made it.
+    fn project(&self, live: &mut AutoCommit) -> (Vec<HistoryEntry>, bool) {
+        let mut entries = self.source.entries(live);
+        let mut earlier = live.get_changes_meta(&[]).len() > self.window;
+        let Some(parts) = &self.parts else {
+            return (entries, earlier);
+        };
+        for mut part in parts.documents() {
+            earlier |= part.get_changes_meta(&[]).len() > self.window;
+            entries.extend(
+                self.source
+                    .entries(&mut part)
+                    .into_iter()
+                    .filter(|entry| !entry.is_genesis()),
+            );
+        }
+        entries.sort_by_key(|entry| entry.timestamp);
+        let older = entries.len().saturating_sub(self.window);
+        entries.drain(..older);
+        (entries, earlier || older > 0)
     }
 
     /// Whether changes older than the listed ones exist.
@@ -306,10 +357,12 @@ impl HistoryController {
     #[cfg(any(feature = "native", test))]
     pub(crate) fn entries_at(&self, live: &AutoCommit) -> Vec<HistoryEntry> {
         let mut projection = committed_clone(live);
-        if self.projected_heads.as_ref() == Some(&sorted_heads(projection.get_heads())) {
+        if self.projected_heads.as_ref() == Some(&sorted_heads(projection.get_heads()))
+            && !self.parts_moved()
+        {
             return self.entries.clone();
         }
-        self.source.entries(&mut projection)
+        self.project(&mut projection).0
     }
 
     /// Reproject factual activity from committed graph state. An existing preview stays pinned to its
@@ -351,15 +404,21 @@ impl HistoryController {
                 self.projected_heads = None;
             }
         }
-        if self.projected_heads.as_ref() == Some(&live_heads) {
+        if self.projected_heads.as_ref() == Some(&live_heads) && !self.parts_moved() {
             return Ok(());
         }
-        let entries = self.source.entries(&mut projection);
+        let parts_heads = self
+            .parts
+            .as_ref()
+            .map(|parts| sorted_heads(parts.heads()))
+            .unwrap_or_default();
+        let (entries, earlier) = self.project(&mut projection);
         let named = read_named_ranges(&projection, self.source.authors());
         self.descriptions = crate::history_source::descriptions::read_descriptions(&projection);
 
-        self.has_earlier = projection.get_changes_meta(&[]).len() > self.window;
+        self.has_earlier = earlier;
         self.projected_heads = Some(live_heads);
+        self.projected_parts = parts_heads;
         self.entries = entries;
         self.named = named;
         Ok(())
@@ -376,13 +435,14 @@ impl HistoryController {
         let mut projection = committed_clone(live);
         let current_live_heads = sorted_heads(projection.get_heads());
         let comparison = compare_entries(&mut projection, entries).map_err(HistoryError::from)?;
-        let refreshed_projection = if self.projected_heads.as_ref() == Some(&current_live_heads) {
-            None
-        } else {
-            let projected_entries = self.source.entries(&mut projection);
-            let named = read_named_ranges(&projection, self.source.authors());
-            Some((projected_entries, named))
-        };
+        let refreshed_projection =
+            if self.projected_heads.as_ref() == Some(&current_live_heads) && !self.parts_moved() {
+                None
+            } else {
+                let projected_entries = self.project(&mut projection).0;
+                let named = read_named_ranges(&projection, self.source.authors());
+                Some((projected_entries, named))
+            };
         let factual_entries = refreshed_projection
             .as_ref()
             .map_or(self.entries.as_slice(), |(entries, _)| entries.as_slice());
@@ -415,6 +475,11 @@ impl HistoryController {
             self.entries = entries;
             self.named = named;
             self.projected_heads = Some(current_live_heads.clone());
+            self.projected_parts = self
+                .parts
+                .as_ref()
+                .map(|parts| sorted_heads(parts.heads()))
+                .unwrap_or_default();
         }
         self.observed_live_heads = current_live_heads;
         self.selected = Some(SelectedPreview {

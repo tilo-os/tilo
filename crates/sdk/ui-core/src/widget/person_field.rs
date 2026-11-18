@@ -3,11 +3,16 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use crate::LocalState;
 use crate::component::Person;
 use crate::icons::Icon;
+use crate::tokens::TextRole;
 use crate::widget::arrange::Stack;
 use crate::widget::binding::{BoxedBinding, Pulled, derived};
-use crate::widget::{AppModel, Button, ButtonRole, Decorator, ModelPath, PopoverButton, Widget};
+use crate::widget::{
+    AppModel, Button, ButtonRole, Decorator, ModelPath, PopoverButton, Text, TextInput, When,
+    Widget,
+};
 use tilo_actions::Actor;
 
 #[path = "person_field_component.rs"]
@@ -15,6 +20,27 @@ mod component;
 pub use component::PersonFieldProps;
 
 type Picked = Rc<Cell<Option<Option<Person>>>>;
+
+/// Whether `what` is offered again by `query`: its name or its identity holds the words typed,
+/// whatever case they were typed in.
+fn matches(query: &str, name: &str, identity: &str) -> bool {
+    let query = query.trim().to_lowercase();
+    query.is_empty()
+        || name.to_lowercase().contains(&query)
+        || identity.to_lowercase().contains(&query)
+}
+
+/// Whether the row `name` (who `identity` is) shows while `query` narrows the list.
+fn shown_matching(
+    query: &LocalState<String>,
+    name: &str,
+    identity: &str,
+) -> impl FnMut() -> bool + 'static {
+    let query = query.clone();
+    let name = name.to_owned();
+    let identity = identity.to_owned();
+    move || matches(&query.get(), &name, &identity)
+}
 
 /// Who the bound value took while the list was open: shown once it closes, so a person set
 /// elsewhere never moves the list from under the person picking.
@@ -33,6 +59,10 @@ pub struct PersonField {
     people: Vec<Person>,
     me: Option<Person>,
     picked: Picked,
+    /// The words typed into the open list's search field: it narrows who is offered.
+    query: LocalState<String>,
+    /// Whether the list was open at the last update, so opening it can start a fresh search.
+    was_open: bool,
     on_change: Option<Box<dyn FnMut(Option<Person>)>>,
     bound: Option<BoxedBinding<Option<Actor>>>,
     waiting: Waiting,
@@ -43,13 +73,16 @@ impl PersonField {
     #[must_use]
     pub fn new(id: &str, who: Option<&Actor>, people: Vec<Person>, me: Option<Person>) -> Self {
         let picked: Picked = Rc::default();
+        let query = LocalState::new(String::new());
         Self {
-            inner: field(id, who, &people, me.as_ref(), &picked),
+            inner: field(id, who, &people, me.as_ref(), &picked, &query),
             id: id.to_owned(),
             value: who.cloned(),
             people,
             me,
             picked,
+            query,
+            was_open: false,
             on_change: None,
             bound: None,
             waiting: Waiting::Nothing,
@@ -112,7 +145,14 @@ impl PersonField {
             return;
         }
         self.value = who.cloned();
-        self.inner = field(&self.id, who, &self.people, self.me.as_ref(), &self.picked);
+        self.inner = field(
+            &self.id,
+            who,
+            &self.people,
+            self.me.as_ref(),
+            &self.picked,
+            &self.query,
+        );
     }
 
     fn take_pick(&mut self) -> bool {
@@ -130,6 +170,7 @@ impl PersonField {
                 &self.people,
                 self.me.as_ref(),
                 &self.picked,
+                &self.query,
             );
             if let Some(on_change) = &mut self.on_change {
                 on_change(picked);
@@ -159,38 +200,8 @@ fn field(
     people: &[Person],
     me: Option<&Person>,
     picked: &Picked,
+    query: &LocalState<String>,
 ) -> PopoverButton<Stack> {
-    let mut content = Stack::stack();
-    if let Some(me) = me {
-        content = content.push(Box::new(entry(
-            &format!("{id}-me"),
-            &crate::i18n::widget_format("person-field-me", &[]),
-            me,
-            Some(me.clone()),
-            picked,
-        )));
-    }
-    let clear = Button::new(
-        &format!("{id}-none"),
-        &crate::i18n::widget_format("person-field-none", &[]),
-    )
-    .role(ButtonRole::Plain)
-    .with_placeholder();
-    let on_clear = Rc::clone(picked);
-    let clear = clear.on_view(move || on_clear.set(Some(None)));
-    content = content.push(Box::new(clear));
-    for person in people {
-        if me.is_some_and(|me| me.identity == person.identity) {
-            continue;
-        }
-        content = content.push(Box::new(entry(
-            &format!("{id}-{}", person.identity.id()),
-            &person.name,
-            person,
-            Some(person.clone()),
-            picked,
-        )));
-    }
     let name = who.map_or_else(String::new, |identity| {
         people
             .iter()
@@ -219,7 +230,101 @@ fn field(
             .with_placeholder()
             .showing_choice(),
     };
-    chip.with_popover(content)
+    chip.with_popover(picker(id, people, me, picked, query, false))
+}
+
+/// The open list: a search field over who may be picked, narrowed as it is typed, and a row
+/// that clears the field. Opened, the search takes the keyboard, so typing narrows at once.
+fn picker(
+    id: &str,
+    people: &[Person],
+    me: Option<&Person>,
+    picked: &Picked,
+    query: &LocalState<String>,
+    focus: bool,
+) -> Stack {
+    let mut content = Stack::stack();
+    let mut search = TextInput::from_state(query)
+        .with_id(&format!("{id}-search"))
+        .with_placeholder(crate::i18n::LabelKey::new("person-field-search"))
+        .with_clear_button();
+    if focus {
+        search = search.wants_focus();
+    }
+    content = content.push(Box::new(search));
+    if let Some(me) = me {
+        let label = crate::i18n::widget_format("person-field-me", &[]);
+        content = content.push(Box::new(When::new(
+            Box::new(entry(
+                &format!("{id}-me"),
+                &label,
+                me,
+                Some(me.clone()),
+                picked,
+            )),
+            shown_matching(query, &label, me.identity.id()),
+        )));
+    }
+    let none_label = crate::i18n::widget_format("person-field-none", &[]);
+    let on_clear = Rc::clone(picked);
+    let clear = Button::new(&format!("{id}-none"), &none_label)
+        .role(ButtonRole::Plain)
+        .with_icon(Icon::X)
+        .with_placeholder()
+        .on_view(move || on_clear.set(Some(None)));
+    content = content.push(Box::new(When::new(
+        Box::new(clear),
+        shown_matching(query, &none_label, ""),
+    )));
+    for person in people {
+        if me.is_some_and(|me| me.identity == person.identity) {
+            continue;
+        }
+        content = content.push(Box::new(When::new(
+            Box::new(entry(
+                &format!("{id}-{}", person.identity.id()),
+                &person.name,
+                person,
+                Some(person.clone()),
+                picked,
+            )),
+            shown_matching(query, &person.name, person.identity.id()),
+        )));
+    }
+    // What the list says while the search holds nobody: a line, never a row that does nothing.
+    let no_matches = crate::i18n::widget_format("search-no-matches", &[]);
+    let notice = Text::new(&no_matches)
+        .with_role(TextRole::Caption)
+        .dimmed()
+        .with_id(format!("{id}-no-matches"));
+    let names: Vec<(String, String)> = me
+        .iter()
+        .map(|me| {
+            (
+                crate::i18n::widget_format("person-field-me", &[]),
+                me.identity.id().to_owned(),
+            )
+        })
+        .chain(
+            people
+                .iter()
+                .filter(|person| me.is_none_or(|me| me.identity != person.identity))
+                .map(|person| (person.name.clone(), person.identity.id().to_owned())),
+        )
+        .chain(std::iter::once((
+            crate::i18n::widget_format("person-field-none", &[]),
+            String::new(),
+        )))
+        .collect();
+    let query_for_notice = query.clone();
+    content = content.push(Box::new(When::new(Box::new(notice), move || {
+        let typed = query_for_notice.get();
+        !typed.trim().is_empty()
+            && !names
+                .iter()
+                .any(|(name, identity)| matches(&typed, name, identity))
+    })));
+    content
 }
 
 fn entry(id: &str, label: &str, who: &Person, picked: Option<Person>, chosen: &Picked) -> Button {
@@ -259,8 +364,27 @@ impl Decorator for PersonField {
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let picked = self.take_pick();
         let shown = self.show_waiting();
+        // Opening starts a fresh search, its field taking the keyboard: the list is narrowed
+        // from the first letter typed without reaching for the field first.
+        let open = self.inner.is_open();
+        let mut started = false;
+        if open != self.was_open {
+            self.was_open = open;
+            if open {
+                self.query.set(String::new());
+                *self.inner.popover_mut().content_mut() = picker(
+                    &self.id,
+                    &self.people,
+                    self.me.as_ref(),
+                    &self.picked,
+                    &self.query,
+                    true,
+                );
+                started = true;
+            }
+        }
         let inner = self.inner.update(state, path);
-        picked || shown || inner
+        picked || shown || started || inner
     }
 
     fn name(&self) -> &'static str {
@@ -365,4 +489,23 @@ mod tests {
             );
         }
     }
+}
+
+/// The picker's search matches a person by their name or by who they are, whatever case the
+/// words are typed in, and always offers the "No one" row while nothing is typed.
+#[test]
+fn the_search_matches_names_and_identities() {
+    use crate::LocalState;
+
+    assert!(matches("", "Mia", "mia"));
+    assert!(matches("  ", "Mia", "mia"), "only blanks narrow nothing");
+    assert!(matches("mi", "Mia", "mia"));
+    assert!(matches("MIA", "Mia", "mia"));
+    assert!(matches("mia", "Mia", "mia"), "the identity matches too");
+    assert!(!matches("sam", "Mia", "mia"));
+    let query = LocalState::new("mi".to_owned());
+    let mut shown = shown_matching(&query, "Mia", "mia");
+    assert!(shown());
+    query.set("sam".to_owned());
+    assert!(!shown());
 }

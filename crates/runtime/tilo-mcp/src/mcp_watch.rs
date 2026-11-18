@@ -583,6 +583,13 @@ fn change_event(path: &str, app: Option<&str>, record: Option<&str>, entry: &Val
         "sentence": entry.get("sentence").cloned().unwrap_or_default(),
         "time_ms": entry.get("time_ms").cloned().unwrap_or_default(),
     });
+    if let Some(fields) = event.as_object_mut() {
+        for (key, value) in [("app", app), ("record", record)] {
+            if let Some(value) = value.filter(|value| !value.is_empty()) {
+                fields.insert(key.to_owned(), json!(value));
+            }
+        }
+    }
     if let (Some(fields), Some(entry)) = (event.as_object_mut(), entry.as_object()) {
         for key in ["by", "title", "group", "group_kind", "invocation", "undone"] {
             if let Some(value) = entry.get(key) {

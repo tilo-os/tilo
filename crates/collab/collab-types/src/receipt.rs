@@ -17,10 +17,62 @@
 
 use std::collections::BTreeSet;
 
-use tilo_action_policy::{ActionKind, Level, TreePath};
+use tilo_action_policy::{Acting, ActionKind, Answer, Context, Level, MemberAccess, TreePath};
 use tilo_actions::{HistoryOp, PathStep};
 
 use crate::claim::{ChangeClaim, ClaimedAction, FrameworkChange, UnitPath};
+
+/// Whether who made a change may take an action of `kind` at `node`: the
+/// change's invoker when it names one, as its whole tree bounded by the
+/// op's signer ([`MemberAccess::invoked_by`]), else the signer alone. Ask is
+/// a refusal on the wire.
+pub type Allows<'a> = dyn Fn(Option<&Acting>, &TreePath, ActionKind) -> bool + 'a;
+
+/// Who a received op's changes are decided as: its signer, and the invoker a
+/// change names bounded by its signer.
+pub trait ChangeAuthor {
+    /// The answer for an action of `kind` at `node` by `invoker` (the
+    /// signer itself when `None`) at `cx`.
+    fn answer(
+        &self,
+        invoker: Option<&Acting>,
+        node: &TreePath,
+        kind: ActionKind,
+        cx: &Context<'_>,
+    ) -> Answer;
+}
+
+impl ChangeAuthor for MemberAccess {
+    fn answer(
+        &self,
+        invoker: Option<&Acting>,
+        node: &TreePath,
+        kind: ActionKind,
+        cx: &Context<'_>,
+    ) -> Answer {
+        match invoker {
+            Some(invoker) => self.invoked_by(invoker).answer(node, kind, cx),
+            None => Self::answer(self, node, kind, cx),
+        }
+    }
+}
+
+/// An authority alone holds no policy to decide an invoker by: it decides a
+/// change naming none, and refuses one that names one.
+impl ChangeAuthor for tilo_action_policy::Authority<'_> {
+    fn answer(
+        &self,
+        invoker: Option<&Acting>,
+        node: &TreePath,
+        kind: ActionKind,
+        cx: &Context<'_>,
+    ) -> Answer {
+        match invoker {
+            None => self.decide(node, kind, cx).answer,
+            Some(_) => Answer::Deny,
+        }
+    }
+}
 
 /// What a received change writes, as the record's unit index maps its
 /// operations, by the change's hash.
@@ -99,6 +151,10 @@ pub enum ReceiptRefusal {
     /// A change names no action.
     #[error("a change names no action: {0}")]
     Unnamed(String),
+    /// An opened sealed change does not say what its claim says: another
+    /// action, or another invoker.
+    #[error("a sealed change says other than its claim: {0}")]
+    Misclaimed(String),
     /// The change writes a unit its claim does not name.
     #[error("the change writes the unit {0}, which its claim does not name")]
     UnclaimedUnit(String),
@@ -241,8 +297,8 @@ fn label(action: &ClaimedAction) -> String {
 /// - `written`: the units each change writes, as the record's unit index
 ///   maps its operations, when the receiver holds the record.
 /// - `surface`: the app's package surface; `None` holds the op.
-/// - `allows`: whether the author (and their delegation) is granted an
-///   action of `kind` at `node`. Ask is a refusal on the wire.
+/// - `allows`: whether who made each change is granted an action of `kind`
+///   at `node` ([`Allows`]).
 ///
 /// # Errors
 /// The first [`ReceiptRefusal`] of any change.
@@ -252,7 +308,7 @@ pub fn check_claims(
     changes: Option<&[[u8; 32]]>,
     written: Option<WrittenUnits<'_>>,
     surface: Option<&dyn ReceiptSurface>,
-    allows: &dyn Fn(&TreePath, ActionKind) -> bool,
+    allows: &Allows<'_>,
 ) -> Result<Receipt, ReceiptRefusal> {
     check_claimed_changes(claims, changes)?;
     let Some(surface) = surface else {
@@ -303,7 +359,7 @@ pub fn check_claims(
                 kind => kind,
             };
             let node = claim_node(document, surface, member);
-            if !allows(&node, kind) {
+            if !allows(claim.invoker.as_ref(), &node, kind) {
                 return Err(ReceiptRefusal::NotGranted {
                     node: node.to_string(),
                     kind,
@@ -458,7 +514,7 @@ pub fn decide_op(
     kind: Option<&str>,
     held: Option<automerge::AutoCommit>,
     surfaces: &Surfaces,
-    allows: &dyn Fn(&TreePath, ActionKind) -> bool,
+    allows: &Allows<'_>,
 ) -> Result<Receipt, ReceiptRefusal> {
     decide_op_pinned(op, document, kind, held, None, surfaces, allows)
 }
@@ -503,6 +559,37 @@ pub fn check_appearances(
     Ok(())
 }
 
+/// Check a sealed op as the device that opened it (`plaintext`, its signed
+/// payload) reads it: every change it carries is claimed once, as the action
+/// and the invoker it names itself. The workspace decided the op by those
+/// claims without reading it, so a change that says otherwise is refused.
+/// Snapshots and segments carry no claims of their own to check here.
+///
+/// # Errors
+/// [`ReceiptRefusal::Unclaimed`] for changes the claims do not name exactly,
+/// [`ReceiptRefusal::Misclaimed`] for a claim its change contradicts.
+pub fn check_opened(op: &crate::op::SignedOp, plaintext: &[u8]) -> Result<(), ReceiptRefusal> {
+    let Ok(crate::DocumentFrame::Whole(crate::op::DocumentMutation::Incremental(bytes))) =
+        crate::DocumentFrame::decode(plaintext)
+    else {
+        return Ok(());
+    };
+    let changes = crate::claim::parse_changes(&bytes).map_err(|_| ReceiptRefusal::Unclaimed)?;
+    let hashes: Vec<[u8; 32]> = changes.iter().map(|change| change.hash().0).collect();
+    check_claimed_changes(&op.claims, Some(&hashes))?;
+    for change in &changes {
+        let read = ChangeClaim::of_change(change.hash().0, change.message(), Vec::new())
+            .map_err(|error| ReceiptRefusal::Unnamed(error.to_string()))?;
+        let claimed = op.claims.iter().find(|claim| claim.change == read.change);
+        if claimed
+            .is_none_or(|claimed| claimed.action != read.action || claimed.invoker != read.invoker)
+        {
+            return Err(ReceiptRefusal::Misclaimed(label(&read.action)));
+        }
+    }
+    Ok(())
+}
+
 /// [`decide_op`] for a record whose identity names `pinned`, the surface
 /// its changes are decided against: an op naming another surface is
 /// refused unless it is the change that names a new one for the record
@@ -517,12 +604,12 @@ pub fn decide_op_pinned(
     held: Option<automerge::AutoCommit>,
     pinned: Option<[u8; 32]>,
     surfaces: &Surfaces,
-    allows: &dyn Fn(&TreePath, ActionKind) -> bool,
+    allows: &Allows<'_>,
 ) -> Result<Receipt, ReceiptRefusal> {
     use tilo_action_policy::roles;
     let governed = |action: &str| {
         let node = roles::governance_action(document.workspace, action);
-        if allows(&node, roles::GOVERNANCE_KIND) {
+        if allows(None, &node, roles::GOVERNANCE_KIND) {
             Ok(Receipt::Admit)
         } else {
             Err(ReceiptRefusal::NotGranted {
@@ -543,15 +630,7 @@ pub fn decide_op_pinned(
                 .as_ref()
                 .filter(|_| op.surface.is_some() || pinned.is_some())
             else {
-                let node = written_node(document);
-                return if allows(&node, ActionKind::Undoable) {
-                    Ok(Receipt::Admit)
-                } else {
-                    Err(ReceiptRefusal::NotGranted {
-                        node: node.to_string(),
-                        kind: ActionKind::Undoable,
-                    })
-                };
+                return decide_as_document_edit(op, document, allows);
             };
             let surface_for =
                 |kind: Option<&str>| source.surface(document, kind, op.surface.as_ref());
@@ -622,6 +701,35 @@ pub fn decide_op_pinned(
     }
 }
 
+/// A change of an app that publishes no surface (and of a document that names
+/// none), decided as an edit of the document by whoever made each of its
+/// changes, as far as the receiver reads them.
+fn decide_as_document_edit(
+    op: &crate::op::SignedOp,
+    document: &WrittenDocument<'_>,
+    allows: &Allows<'_>,
+) -> Result<Receipt, ReceiptRefusal> {
+    let node = written_node(document);
+    let mut invokers: Vec<Option<Acting>> = match cleartext_changes(op)? {
+        Some(changes) => changes.iter().map(crate::claim::invoker_of).collect(),
+        None => Vec::new(),
+    };
+    if invokers.is_empty() {
+        invokers.push(None);
+    }
+    if invokers
+        .iter()
+        .all(|invoker| allows(invoker.as_ref(), &node, ActionKind::Undoable))
+    {
+        Ok(Receipt::Admit)
+    } else {
+        Err(ReceiptRefusal::NotGranted {
+            node: node.to_string(),
+            kind: ActionKind::Undoable,
+        })
+    }
+}
+
 /// Finds the app surface of a resource kind (the app's own resource for
 /// `None`), or `None` while it is not here.
 pub type SurfaceFor<'a> = dyn Fn(Option<&str>) -> Option<std::sync::Arc<dyn ReceiptSurface>> + 'a;
@@ -639,7 +747,7 @@ pub fn check_claims_by_kind(
     document: &WrittenDocument<'_>,
     kind: Option<&str>,
     surface_for: &SurfaceFor<'_>,
-    allows: &dyn Fn(&TreePath, ActionKind) -> bool,
+    allows: &Allows<'_>,
 ) -> Result<Receipt, ReceiptRefusal> {
     check_claimed_changes(claims, None)?;
     for (group_kind, claims) in by_kind(kind, claims.to_vec()) {
@@ -709,10 +817,10 @@ fn by_kind(
 fn admittable_compaction(
     op: &crate::op::SignedOp,
     document: &WrittenDocument<'_>,
-    allows: &dyn Fn(&TreePath, ActionKind) -> bool,
+    allows: &Allows<'_>,
     governed: &dyn Fn(&str) -> Result<Receipt, ReceiptRefusal>,
 ) -> Result<Receipt, ReceiptRefusal> {
-    if op.encryption.is_some() && allows(&written_node(document), ActionKind::Undoable) {
+    if op.encryption.is_some() && allows(None, &written_node(document), ActionKind::Undoable) {
         Ok(Receipt::Admit)
     } else {
         governed(tilo_action_policy::roles::governance::COMPACT)

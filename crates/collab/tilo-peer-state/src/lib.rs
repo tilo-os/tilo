@@ -62,7 +62,7 @@ mod verified_certificate;
 pub use state::ChangeRefused;
 pub use state::mail_send_lease;
 /// The person's own documents between their devices, with no host in between.
-pub use state::{AdmittedFrame, PERSONAL_ALPN, PersonalSync};
+pub use state::{AdmittedFrame, PERSONAL_ALPN, PersonalSync, device_resource, resource_owner};
 pub use state::{
     BOT_SCHEDULES_KEY, CLOCK_SKEW_NS, COPY_POLICY_KEY, CopyPolicy, CopyRole, CopyStatus, DONE_KEY,
     DelegateInactive, DocumentRow, Done, GovernedAccess, GovernedAgent, GovernedDelegateRow,
@@ -72,12 +72,14 @@ pub use state::{
     OpenedWrite, PeerDocumentCapture, PeerDocumentReadError, PeerGovernance, PeerGovernanceMut,
     PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPersonal,
     PeerPublication, PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut, PersonalStore,
-    ReceiveOutcome, RequestedBot, Reseal, RowError, SealCheckpoint, SeedDocument, SeedState,
-    Shortfall, StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite,
-    WORKSPACE_KEEPING_DEVICES_KEY, committed_document_revision, decide_with_surfaces,
-    default_surfaces, holder_role, keeping_devices_of, peer_handle, seed_workspace, trigger_mark,
-    unranked, workspace_grants_of, workspace_host_actor, workspace_seed,
+    ReceiveOutcome, RequestedBot, Reseal, RowError, SETTINGS_KIND, SealCheckpoint, SeedDocument,
+    SeedState, Shortfall, StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite,
+    WORKSPACE_KEEPING_DEVICES_KEY, WORKSPACES_KIND, committed_document_revision,
+    decide_with_surfaces, default_surfaces, holder_role, keeping_devices_of, peer_handle,
+    seed_workspace, trigger_mark, unranked, workspace_grants_of, workspace_host_actor,
+    workspace_seed,
 };
+pub use state::{DEVICE_ANSWERS_KIND, DeviceAnswer, DeviceGrants, Kept};
 pub use state::{vm_lease, vm_rank};
 pub mod coverage;
 mod governed_routes;

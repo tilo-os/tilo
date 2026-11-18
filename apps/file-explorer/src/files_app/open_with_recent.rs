@@ -7,7 +7,7 @@ use crate::model::Entry;
 use crate::recent::{RecentResource, RecentUse};
 use runtime_portal::tools::DocumentApp;
 use std::path::{Path, PathBuf};
-use ui::tilo_actions::{ActionParam, ParamType, ResourceSpec};
+use ui::tilo_actions::{ActionParam, ActionSpec, ParamType};
 use ui::tilo_resource::{AbsolutePath, Effect as _, Invoke};
 use ui::widget::context_menu::MenuItem;
 
@@ -136,9 +136,8 @@ impl FilesState {
             return;
         };
         self.app_chooser_target = Some(path);
-        let resource = self.entry_resource(&entry);
         self.app_chooser.open(ui::search::SearchRequest::within(
-            ui::search::ScopeDecl::new(resource.id.0, entry.name),
+            ui::search::ScopeDecl::new(FilesState::entry_resource_id(&entry), entry.name),
         ));
         self.structure_dirty = true;
     }
@@ -171,11 +170,7 @@ pub(super) struct OpenWithFacts {
     chooser: bool,
 }
 
-pub(super) fn append_open_with_actions(
-    facts: &OpenWithFacts,
-    resource_id: &str,
-    resource: &mut ResourceSpec,
-) {
+pub(super) fn open_with_actions(facts: &OpenWithFacts, resource_id: &str) -> Vec<ActionSpec> {
     let params = vec![
         ActionParam::required_owned("app", ParamType::Text, t("files-open-with-app-param"))
             .with_choices(facts.candidates.iter().map(|app| app.id.clone())),
@@ -190,7 +185,7 @@ pub(super) fn append_open_with_actions(
     .bound_asking_params(params);
     open_with.type_mut().id = OPEN_WITH_ACTION.into();
     open_with.type_mut().label = t("files-menu-open-with");
-    resource.actions.push(open_with);
+    let mut actions = vec![open_with];
     if facts.chooser {
         for app in &facts.candidates {
             let name = if app.is_default {
@@ -211,9 +206,10 @@ pub(super) fn append_open_with_actions(
             if let Some(source) = app.source {
                 row.type_mut().description = Some(crate::applications::kind_label(source));
             }
-            resource.actions.push(row);
+            actions.push(row);
         }
     }
+    actions
 }
 
 impl FilesState {
@@ -382,7 +378,6 @@ pub(super) fn recent_entries_of(paths: &[PathBuf]) -> Vec<Entry> {
                 content_hash: None,
                 document_id: None,
                 availability: None,
-                history: None,
                 app: None,
                 rich_metadata: None,
                 observed: host_fs::ObservedObject::from_metadata(&meta),

@@ -171,7 +171,7 @@ fn serving(
 
 /// The channel key of `app` 's record in the workspace.
 fn document_channel(app: &str) -> String {
-    tilo_action_broker::route::CrdtRoute::record(app, WORKSPACE, RECORD).channel_key()
+    tilo_workspace_service::apps::route::CrdtRoute::record(app, WORKSPACE, RECORD).channel_key()
 }
 
 /// The channel key of the app's record in the workspace.
@@ -604,7 +604,7 @@ fn the_settings_app_the_app_lists_allow_reaches_every_section() {
 /// What `app` reads of the settings over the session's API, in a session whose app lists say of
 /// each of `declared` whether its manifest asks for the device's system settings reach.
 fn settings_of(person: &Keys, app: &str, declared: &[(&str, bool)]) -> serde_json::Value {
-    use tilo_action_broker::services::LaunchableApplication;
+    use tilo_workspace_service::apps::services::LaunchableApplication;
     let home = crate::common::private_home();
     let socket = home.path().join("collab.sock");
     let lists = AppLists {
@@ -620,6 +620,7 @@ fn settings_of(person: &Keys, app: &str, declared: &[(&str, bool)]) -> serde_jso
                 } else {
                     Vec::new()
                 },
+                surface: None,
             })
             .collect(),
         ..AppLists::default()

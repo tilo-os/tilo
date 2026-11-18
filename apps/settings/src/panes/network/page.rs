@@ -132,7 +132,7 @@ impl Page<'_> {
     }
 
     fn known_row(&self, profile: &SavedNetworkProfile) -> El {
-        let resource = self.wifi_live(&profile.name).into_resource();
+        let resource = self.wifi_live(&profile.name);
         let in_range = self
             .wifi_enabled
             .then(|| self.in_range(&profile.name))
@@ -222,7 +222,7 @@ impl Page<'_> {
         if let Some(notice) = &self.notice {
             out.push(note(notice));
         }
-        let live = self.wifi_live(ssid).into_resource();
+        let live = self.wifi_live(ssid);
         let Some(net) = net else {
             out.push(row(Box::new(
                 ListRow::new("settings.network.page.signal", t("net-out-of-range"))
@@ -299,7 +299,7 @@ impl Page<'_> {
     }
 
     fn settings_rows(&self, profile: &SavedNetworkProfile) -> Vec<Item> {
-        let live = self.profile_live(profile).into_resource();
+        let live = self.profile_live(profile);
         let uuid = profile.uuid.clone();
         let mut out = vec![setting_row(
             &t("net-autoconnect"),
@@ -352,7 +352,7 @@ impl Page<'_> {
     }
 
     fn advanced_rows(&self, profile: &SavedNetworkProfile) -> Vec<Item> {
-        let live = self.profile_live(profile).into_resource();
+        let live = self.profile_live(profile);
         let uuid = profile.uuid.clone();
         let mut out = Vec::new();
         let Some(settings) = self.profile_settings.get(&uuid) else {
@@ -446,7 +446,7 @@ impl Page<'_> {
     }
 
     fn password_rows(&self, profile: &SavedNetworkProfile) -> Vec<Item> {
-        let live = self.wifi_live(&profile.name).into_resource();
+        let live = self.wifi_live(&profile.name);
         let revealed = self
             .revealed
             .as_ref()
@@ -501,7 +501,7 @@ impl Page<'_> {
     }
 
     fn address_rows(&self, profile: &SavedNetworkProfile) -> Vec<Item> {
-        let live = self.profile_live(profile).into_resource();
+        let live = self.profile_live(profile);
         let uuid = profile.uuid.clone();
         let id = format!("settings.network.profile.ipv4.{uuid}");
         let mut out = self.ipv4_rows(profile, &id);
@@ -603,7 +603,7 @@ impl Page<'_> {
         net: Option<&WifiNetworkInfo>,
         profile: Option<&SavedNetworkProfile>,
     ) -> Vec<Item> {
-        let live = self.wifi_live(ssid).into_resource();
+        let live = self.wifi_live(ssid);
         let mut out = Vec::new();
         if net.is_some() {
             let shown = self.code.as_ref().filter(|code| code.of == ssid);

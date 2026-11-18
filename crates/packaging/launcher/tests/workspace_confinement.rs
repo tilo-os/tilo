@@ -328,7 +328,7 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
     let registries = host.join("registries.toml");
     let record = host.join("records/person.json");
     let state = host.join("state.json");
-    let settings = host.join("records/device.automerge");
+    let settings = host.join("records/device/state.automerge");
     let accounts = host.join("accounts/store.json");
     let root_secret = host.join("identity/secrets/0123abcd.key");
     let active = host.join("identity/active");
@@ -412,7 +412,7 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
 
     // Phase `the_settings_document_is_not_there`: Settings writes through the shell's settings
     // service, so a write where the session keeps the document never reaches the host's.
-    let session = format!("{config}/records/device.automerge");
+    let session = format!("{config}/records/device/state.automerge");
     let line = run(&["read", &session]);
     assert!(
         line.starts_with("ERR "),

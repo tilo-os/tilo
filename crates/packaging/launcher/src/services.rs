@@ -116,7 +116,7 @@ pub(crate) const RESERVED_CHILD_FDS: &[i32] = &[
     #[cfg(target_os = "linux")]
     crate::system_stats::CHILD_FD,
     #[cfg(target_os = "linux")]
-    runtime_portal::windows::CHILD_FD,
+    runtime_portal::process_link::CHILD_FD,
 ];
 
 fn child_fd_reserved(fd: i32) -> bool {

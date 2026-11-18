@@ -243,7 +243,7 @@ pub(super) struct HistoryWalk {
     /// The tree holds History surfaces, which the next walk looks at again
     /// when anything they read moved since: news reached one
     /// ([`crate::history_mode::news`]), the document, whether the window is
-    /// narrow, a surface's own refresh came due, or one needed a refresh.
+    /// narrow, or one needed a refresh.
     pub(super) embedded: bool,
     /// The window's own History found the root it registered.
     pub(super) root_valid: bool,
@@ -251,8 +251,6 @@ pub(super) struct HistoryWalk {
     pub(super) surfaces: HistorySurfaceInputs,
     /// A surface needed a refresh.
     pub(super) needed: bool,
-    /// When a surface asks for a refresh on its own, on its clock.
-    pub(super) due: Option<(crate::background::Background, crate::time::Instant)>,
 }
 
 /// What History surfaces read besides the tree and the window's status.
@@ -266,13 +264,7 @@ pub(super) struct HistorySurfaceInputs {
 impl HistoryWalk {
     /// Whether the surfaces this walk found need looking at again.
     pub(super) fn surfaces_owed(&self, inputs: &HistorySurfaceInputs) -> bool {
-        self.embedded
-            && (self.needed
-                || self.surfaces != *inputs
-                || self
-                    .due
-                    .as_ref()
-                    .is_some_and(|(clock, at)| clock.now() >= *at))
+        self.embedded && (self.needed || self.surfaces != *inputs)
     }
 }
 
@@ -391,6 +383,11 @@ pub(super) struct ActionRuntime {
     /// its cursors.
     pub(super) action_directory_retired:
         Option<super::action_directory_snapshot::ModelDirectoryCandidate>,
+    /// The snapshot a reader pages at a revision the app has moved past: held
+    /// beside what it publishes now, so the read keeps the directory it
+    /// started on whatever the app publishes meanwhile.
+    pub(super) action_directory_borrowed:
+        Option<super::action_directory_snapshot::ModelDirectoryCandidate>,
     pub(super) local_document_directory_pins:
         Vec<std::rc::Weak<super::action_directory_snapshot::LocalDocumentDirectoryPin>>,
     pub(super) bound_invocations: std::collections::HashMap<
@@ -507,6 +504,7 @@ impl ActionRuntime {
             action_directory_stamp: None,
             action_directory_snapshot: None,
             action_directory_retired: None,
+            action_directory_borrowed: None,
             local_document_directory_pins: Vec::new(),
             bound_invocations: std::collections::HashMap::new(),
             local_resource_cache: RefCell::new(None),

@@ -586,19 +586,34 @@ impl Spawner {
     /// The session is going away, and its apps with it: ask each one still
     /// running to end. Its watcher reaps it, and reports how it ended, as it
     /// would any other. An in-place restart leaves running what the run
-    /// that follows takes back ([`App::stays_for`]), untouched.
+    /// that follows takes back ([`App::stays_for`]), untouched. Every keeper
+    /// is asked before any app is ended, so what one app's end does to the
+    /// machine does not decide another's.
     pub fn end_running(&self, teardown: Teardown) {
         let apps = std::mem::take(&mut *running(&self.running));
+        let mut decisions = Vec::with_capacity(apps.len());
         for app in apps.into_values() {
             #[cfg(target_os = "linux")]
-            if let Some(kept) = app.stays_for(teardown) {
+            let stays = app.stays_for(teardown).is_some();
+            #[cfg(not(target_os = "linux"))]
+            let stays = false;
+            decisions.push((app, stays));
+        }
+        for (app, stays) in decisions {
+            #[cfg(target_os = "linux")]
+            if stays {
+                let Some(kept) = &app.kept else {
+                    continue;
+                };
                 tracing::info!(target: tilo_startup_metrics::KEPT_APPS_TARGET, app = %app.name, pid = app.pid, "kept across restart");
                 kept.release();
                 continue;
             }
+            #[cfg(not(target_os = "linux"))]
+            let _ = stays;
             #[cfg(target_os = "linux")]
             if teardown == Teardown::InPlaceRestart && app.kept.is_some() {
-                tracing::info!(target: tilo_startup_metrics::KEPT_APPS_TARGET, app = %app.name, pid = app.pid, "not kept across restart: its keeper does not answer");
+                tracing::info!(target: tilo_startup_metrics::KEPT_APPS_TARGET, app = %app.name, pid = app.pid, "not kept across restart: its keeper is gone");
             }
             #[cfg(not(target_os = "linux"))]
             let _ = teardown;
@@ -1227,8 +1242,8 @@ impl App {
     }
 
     /// The keeper of a launch `teardown` leaves running: a service's at any teardown; else only at
-    /// an in-place restart, and only a launch whose keeper answered in this run and still answers.
-    /// Everything else ends.
+    /// an in-place restart, and only a launch whose keeper is still there to take it back
+    /// ([`crate::kept::Kept::answers`]). Everything else ends.
     #[cfg(target_os = "linux")]
     fn stays_for(&self, teardown: Teardown) -> Option<&Arc<crate::kept::Kept>> {
         let kept = self.kept.as_ref()?;

@@ -830,7 +830,7 @@ async fn a_call_reaches_the_server_that_keeps_the_workspace_when_another_answers
         let through = V1 { api: &front, token };
         // Asked of the server itself, so the answer does not wait for the workspace's apps.
         let (status, held) = through
-            .get(&format!("/v1/workspaces/{workspace}/hosts"))
+            .get(&format!("/v1/workspaces/{workspace}/servers"))
             .await;
         assert_eq!(
             status, 200,

@@ -398,7 +398,7 @@ test('a window floats over the shell on its ground, edge and shadow; a ground al
     widget('Map[0]/Card[0]', [400, 40, 200, 100], {ground}),
   ]}));
   const window = byPath(layer, 'Map[0]/WindowFrame[0]').style.cssText;
-  assert.match(window, /box-shadow:0 1px 3px rgba\(0,0,0,.08\),0 10px 28px rgba\(0,0,0,.12\),inset 0 0 0 1px rgba\(200,200,200/);
+  assert.match(window, /box-shadow:0 1px 3px rgba\(0,0,0,.07\),0 8px 22px rgba\(0,0,0,.09\),inset 0 0 0 1px rgba\(200,200,200/);
   assert.match(window, /border-radius:14px;/);
   const card = byPath(layer, 'Map[0]/Card[0]').style.cssText;
   assert.match(card, /box-shadow:inset 0 0 0 1px/);

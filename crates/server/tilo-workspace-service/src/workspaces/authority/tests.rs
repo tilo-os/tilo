@@ -4,7 +4,7 @@
 
 #![expect(
     clippy::significant_drop_tightening,
-    reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
+    reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the server it drives and releases no lock"
 )]
 
 use ed25519_dalek::SigningKey;
@@ -1412,6 +1412,79 @@ async fn whom_a_workspace_is_kept_for_makes_and_unmakes_administrators() {
             .issue_as(&workspace, &cy, invitation(46, Role::Editor), true)
             .await
             .is_err()
+    );
+    server.shutdown().await;
+}
+
+/// A page's own route to the servers keeping a workspace: its owner lists them, and a person
+/// the workspace does not let choose them is refused, as is a site that names no server and a
+/// server that does not keep it.
+#[tokio::test]
+async fn a_page_lists_and_chooses_the_servers_keeping_the_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+
+    // Its owner lists the one server it was made on, which governs it.
+    let listed = workspaces
+        .page_workspaces(
+            &owner,
+            WorkspacesRequest::Servers {
+                workspace: workspace.clone(),
+            },
+        )
+        .await;
+    let WorkspacesReply::Servers(servers) = listed else {
+        panic!("the page lists the servers: {listed:?}");
+    };
+    assert_eq!(servers.len(), 1);
+    assert!(servers[0].here, "the server asked lists itself first");
+    assert_eq!(servers[0].device, hex::encode(owner.device_public_key));
+
+    // Someone the workspace does not let choose its servers sees none of them.
+    let (_, guest) = guest_device();
+    let refused = workspaces
+        .page_workspaces(
+            &guest,
+            WorkspacesRequest::Servers {
+                workspace: workspace.clone(),
+            },
+        )
+        .await;
+    assert!(
+        matches!(refused, WorkspacesReply::Refused(_)),
+        "{refused:?}"
+    );
+
+    // A site that names no server, and a server that does not keep it, are refused in their
+    // own words.
+    let refused = workspaces
+        .page_workspaces(
+            &owner,
+            WorkspacesRequest::AddServer {
+                workspace: workspace.clone(),
+                origin: "not a site".into(),
+            },
+        )
+        .await;
+    assert!(
+        matches!(refused, WorkspacesReply::Refused(_)),
+        "{refused:?}"
+    );
+    let refused = workspaces
+        .page_workspaces(
+            &owner,
+            WorkspacesRequest::RemoveServer {
+                workspace,
+                server: hex::encode([7; 32]),
+            },
+        )
+        .await;
+    assert!(
+        matches!(refused, WorkspacesReply::Refused(_)),
+        "{refused:?}"
     );
     server.shutdown().await;
 }

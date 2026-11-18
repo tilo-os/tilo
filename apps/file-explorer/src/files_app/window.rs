@@ -324,7 +324,6 @@ impl Widget for FileExplorerWidget {
     ) {
         ui::outside_paint::note();
         self.with_state(|state, chrome| {
-            state.poll_history_result();
             state.paint_background(theme);
             chrome
                 .nav

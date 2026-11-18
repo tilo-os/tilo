@@ -707,6 +707,8 @@ impl HostAgents {
         // first: its question says how it stands before this look reads which answers wake
         // their askers.
         Box::pin(self.settle_connects(workspace)).await;
+        // The same for a mail account's password.
+        Box::pin(self.settle_mail_connects(workspace)).await;
         let open = self.workspaces.open_asks(workspace);
         if open.is_empty() {
             return;

@@ -76,10 +76,6 @@ reason = "it is the sync engine, and everyone else acts on the workspace through
   why = "the shared runtime runs the engine for the apps attached to a member"
 
   [[rule.allow]]
-  package = "tilo-action-broker"
-  why = "the broker admits the actions apps publish against the engine's workspace"
-
-  [[rule.allow]]
   package = "tilo-broker-core"
   why = "the broker core declares the boundary a host's owner answers for its commits, so a broker and the host holding the owner name that owner in a signature; it holds no engine state and reads none"
 
@@ -90,10 +86,6 @@ reason = "it is the sync engine, and everyone else acts on the workspace through
   [[rule.allow]]
   package = "tilo-server"
   why = "the server embeds the workspace host and keeps workspaces for offline peers, the store node's network side"
-
-  [[rule.allow]]
-  package = "tilo-api"
-  why = "a front door derives a grant's id from the key it certifies and picks which of the person's devices runs a request, both pure functions of the placement module; it opens no replica and holds no engine state"
 
   [[rule.allow]]
   package = "tilo-agent-session"

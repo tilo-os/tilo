@@ -334,27 +334,11 @@ impl Worker {
         Ok(false)
     }
 
-    /// The record at `route`, saved, when this host holds it; `None` for one
-    /// the workspace holds none of. A record the workspace may still send is
-    /// refused as on its way, as [`Self::held_or_owed`] refuses it, `act`
-    /// waiting for its keys every time as a write to it needs them.
-    #[allow(
-        clippy::result_large_err,
-        reason = "the outcome becomes the receipt the host records"
-    )]
-    pub(super) fn record_here(
-        &mut self,
-        workspace_id: WorkspaceId,
-        route: &DocumentRoute,
-        act: bool,
-    ) -> Result<Option<Vec<u8>>, Outcome> {
-        Ok(self
-            .saved_here(workspace_id, route, act)?
-            .map(|(bytes, _)| bytes))
-    }
-
-    /// [`Self::record_here`], with the heads the record stands at: what a follower of the
-    /// record asks the changes after, next time.
+    /// The record at `route`, saved, when this host holds it, with the heads it stands at;
+    /// `None` for one the workspace holds none of. A record the workspace may still send is
+    /// refused as on its way, as [`Self::held_or_owed`] refuses it, `act` waiting for its keys
+    /// every time as a write to it needs them. The heads are what a follower of the record
+    /// asks the changes after, next time.
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
@@ -365,16 +349,7 @@ impl Worker {
         route: &DocumentRoute,
         act: bool,
     ) -> Result<Option<super::Saved>, Outcome> {
-        let app_id = route.app_id.as_str();
-        let record = route.document.as_str();
-        let needs = if act {
-            Needs::Act { app_id, record }
-        } else {
-            Needs::Read { app_id, record }
-        };
-        let held = self
-            .refresh(workspace_id, needs)
-            .map_err(Outcome::Rejected)?;
+        let held = self.refreshed_for(workspace_id, route, act)?;
         match held.document(route) {
             Ok(saved) => Ok(Some(saved)),
             Err(_) if !self.held_or_owed(workspace_id, route)? => Ok(None),
@@ -383,10 +358,32 @@ impl Worker {
             })),
         }
     }
+
+    /// The workspace as this member holds it, with what the document at
+    /// `route` needs to be read (or, with `act`, changed) held first.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome is what the request is answered with"
+    )]
+    pub(super) fn refreshed_for(
+        &mut self,
+        workspace_id: WorkspaceId,
+        route: &DocumentRoute,
+        act: bool,
+    ) -> Result<super::WorkspaceState, Outcome> {
+        let app_id = route.app_id.as_str();
+        let record = route.document.as_str();
+        let needs = if act {
+            Needs::Act { app_id, record }
+        } else {
+            Needs::Read { app_id, record }
+        };
+        self.refresh(workspace_id, needs).map_err(Outcome::Rejected)
+    }
 }
 
-/// Whether `request` opens a file in Files: what puts it into the workspace's
-/// tree ([`super::tree_put`]).
+/// Whether `request` opens files in Files: what puts them into the
+/// workspace's tree ([`super::tree_put`]), one file or many at once.
 fn puts_into_the_tree(request: &InvokeRequest) -> bool {
     let target = &request.target;
     if provider_workspace(&target.provider).is_none() {
@@ -397,14 +394,15 @@ fn puts_into_the_tree(request: &InvokeRequest) -> bool {
     if super::tree_put::acts_on_tree(target) {
         return true;
     }
+    let arguments = super::invoke_arguments(&request.argument);
     target.address.action == APPLICATION_OPEN_ACTION
         && target
             .address
             .resource
             .strip_prefix(APPLICATION_RESOURCE_PREFIX)
             == Some(tilo_fs::tree_document::FILES_APP)
-        && super::opened_file::OpenedFile::named(&super::invoke_arguments(&request.argument))
-            .is_ok_and(|file| file.is_some())
+        && (arguments.contains_key("files")
+            || super::opened_file::OpenedFile::named(&arguments).is_ok_and(|file| file.is_some()))
 }
 
 #[cfg(test)]

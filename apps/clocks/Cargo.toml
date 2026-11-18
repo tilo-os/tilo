@@ -15,7 +15,6 @@ path = "src/main.rs"
 
 [dependencies]
 jiff.workspace = true
-jiff-tzdb.workspace = true
 # A named zone read from the database built into Tilo, as Calendar reads it.
 tilo-recurrence = { path = "../../crates/sdk/tilo-recurrence" }
 serde.workspace = true
@@ -31,11 +30,11 @@ tilo-timezone-engine = { path = "../../crates/runtime/engines/timezone", optiona
 thin = ["dep:runtime-dylib"]
 # Reach the time-zone database through its engine library in the runtime
 # bundle (libtilo_timezone_engine.so, crates/runtime/engines/timezone)
-# instead of the runtime. The release collection enables it
-# (dist/apps/app-collections.toml); a `thin` build without it (`tilo-app dev`)
-# links jiff-tzdb statically, because an engine library links only through
-# tools/ci/rustc-thin-app-wrapper.sh.
-runtime-engine = ["thin", "tilo-timezone-engine/thin"]
+# instead of the runtime, as Calendar reads it. The release collection enables
+# it (dist/apps/app-collections.toml); a `thin` build without it
+# (`tilo-app dev`) links the database statically, because an engine library
+# links only through tools/ci/rustc-thin-app-wrapper.sh.
+runtime-engine = ["thin", "tilo-timezone-engine/thin", "tilo-recurrence/runtime-engine"]
 
 [lints]
 workspace = true

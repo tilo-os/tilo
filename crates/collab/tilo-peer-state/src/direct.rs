@@ -430,16 +430,6 @@ pub type ChannelHistory = Arc<
         + Sync,
 >;
 
-/// The channel governance a device hands each device that links to it in a
-/// workspace it serves ([`Owning::with_channel_history`]): what its own
-/// channel service holds of that workspace's channels when the link starts.
-pub type MemberChannels =
-    Arc<dyn Fn(tilo_desktop_model::WorkspaceId) -> Vec<NeighbourMsg> + Send + Sync>;
-
-/// What a link is handed as its channel history, once it is read.
-type ChannelHistoryRead =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Vec<([u8; 32], NeighbourMsg)>> + Send>>;
-
 struct Inner {
     replica: Replica,
     /// Where this device's engine owns the workspace: frames are admitted into
@@ -471,10 +461,6 @@ struct Inner {
     /// it sends on to its other links, so a member's frame reaches every
     /// member through one path.
     fan_out: std::sync::atomic::AtomicBool,
-    /// Who else takes what the links bring, when they are an [`Owning`]
-    /// device's members' links: the device's session, which hands it to its
-    /// apps and channels and on to the workspace's own host.
-    hearing: Option<Hearing>,
     /// Handed with the catch-up ([`DirectSync::with_channel_history`]).
     channels: Option<ChannelHistory>,
     /// The geneses of the workspace's group this host carries.
@@ -506,17 +492,6 @@ type HistoryAsk = (
     Vec<Cursor>,
     tokio::sync::oneshot::Sender<Result<Vec<NeighbourMsg>, String>>,
 );
-
-/// Where a device takes what its members' links bring it, in the workspace
-/// they are of ([`Owning::hear`]): each frame as its link took it in.
-pub type MemberSink = Arc<dyn Fn(tilo_desktop_model::WorkspaceId, &Heard) + Send + Sync>;
-
-/// The sinks a link of one workspace hands what it brings to.
-#[derive(Clone)]
-struct Hearing {
-    workspace: tilo_desktop_model::WorkspaceId,
-    sinks: Arc<RwLock<Vec<MemberSink>>>,
-}
 
 impl std::fmt::Debug for DirectSync {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -552,7 +527,6 @@ impl DirectSync {
             ended: watch::channel(None).0,
             replay: Arc::default(),
             fan_out: std::sync::atomic::AtomicBool::new(false),
-            hearing: None,
             channels: None,
             geneses: Geneses::default(),
             other_store: Arc::default(),
@@ -575,19 +549,10 @@ impl DirectSync {
             ended: self.0.ended.clone(),
             replay: Arc::clone(&self.0.replay),
             fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
-            hearing: self.0.hearing.clone(),
             channels: self.0.channels.clone(),
             geneses: Arc::clone(&self.0.geneses),
             other_store: Arc::clone(&self.0.other_store),
         }
-    }
-
-    /// The same link, handing what it brings to `hearing`'s sinks too.
-    fn hearing(&self, hearing: Hearing) -> Self {
-        Self(Arc::new(Inner {
-            hearing: Some(hearing),
-            ..self.copied()
-        }))
     }
 
     /// Hand every device that links the channel governance `channels` reads,
@@ -1818,14 +1783,8 @@ impl DirectSync {
         }
     }
 
-    /// Hand `heard` to this device's engine, and to the sinks an [`Owning`]
-    /// device's session hears its members by.
+    /// Hand `heard` to this device's engine.
     fn tell(&self, heard: Heard) {
-        if let Some(hearing) = &self.0.hearing {
-            for sink in hearing.sinks.read_recover().iter() {
-                sink(hearing.workspace, &heard);
-            }
-        }
         let _ = self.0.heard.send(heard);
     }
 
@@ -2171,203 +2130,6 @@ impl ProtocolHandler for Serving {
     }
 }
 
-/// A device answering [`DIRECT_ALPN`] for the workspaces its engine holds.
-///
-/// A device of a workspace that dials this one syncs with the replica held
-/// here and catches up from the history this device kept, whether the
-/// workspace was founded here, joined, or restored at start: a workspace is
-/// served the first time one of its devices asks, so nothing is registered as
-/// workspaces arrive. One this device no longer holds is refused, and its link
-/// let go.
-#[derive(Clone)]
-pub struct Owning {
-    owner: crate::owner::NativeWorkspaceOwner,
-    signer: Arc<dyn DeviceSigner>,
-    store: Arc<Store>,
-    serving: Serving,
-    /// Who takes what the members' links bring ([`Self::hear`]).
-    sinks: Arc<RwLock<Vec<MemberSink>>>,
-    /// What each member that links is handed of the workspace's channels
-    /// ([`Self::with_channel_history`]).
-    channels: Option<MemberChannels>,
-    /// Hands what this device commits to a workspace it hosts itself to the
-    /// members linked here, for as long as this is kept.
-    _kept_here: Arc<crate::owner::NativeKeptHereSubscription>,
-}
-
-impl std::fmt::Debug for Owning {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("Owning")
-            .field("device", &hex::encode(self.signer.device_public_key()))
-            .field("serving", &self.serving)
-            .finish_non_exhaustive()
-    }
-}
-
-impl Owning {
-    /// Answer for `owner`'s workspaces as the device `signer` is the ownership
-    /// of, keeping the frames of each at `store`.
-    #[must_use]
-    pub fn new(
-        owner: crate::owner::NativeWorkspaceOwner,
-        signer: impl DeviceSigner + 'static,
-        store: Arc<Store>,
-    ) -> Self {
-        let signer: Arc<dyn DeviceSigner> = Arc::new(signer);
-        let serving = Serving::new();
-        // What this device commits to a workspace it hosts itself reaches the
-        // members linked to it now, as this device's frame; the workspace keeps
-        // no ownership for it and holds no link to a host. Nothing is kept for a
-        // member linked later: the workspace's own state is what its link's
-        // catch-up hands it.
-        let device = signer.device_public_key();
-        let linked = serving.clone();
-        let kept_here = owner.observe_kept_here(Arc::new(
-            move |workspace: tilo_desktop_model::WorkspaceId, message: &NeighbourMsg| {
-                send_to_members(&linked, workspace, device, message.clone());
-            },
-        ));
-        Self {
-            owner,
-            signer,
-            store,
-            serving,
-            sinks: Arc::default(),
-            channels: None,
-            _kept_here: Arc::new(kept_here),
-        }
-    }
-
-    /// Hand every member that links to this device, in a workspace it serves,
-    /// the channel governance `channels` reads for that workspace then, each
-    /// frame in its signer's name: what a host that keeps a channel's newest
-    /// frame replays to a member that comes back
-    /// ([`DirectSync::with_channel_history`]). This device's channel service
-    /// publishes a frame once, to the members linked at that moment, and its
-    /// store keeps sealed records only: without this a member whose link came
-    /// up after a commit of a channel's group never heard of it, and sealed
-    /// under keys the workspace's other devices had moved past.
-    #[must_use]
-    pub fn with_channel_history(mut self, channels: MemberChannels) -> Self {
-        self.channels = Some(channels);
-        self
-    }
-
-    /// Hand `sink` every frame the members linked to this device bring it, in
-    /// any workspace it serves, as their link took it in: the device's own
-    /// apps and channels read the workspace as the members write it, and the
-    /// devices that take part through the workspace's own host hear it only
-    /// when this device sends it on there. The links already send it on to
-    /// the device's other members.
-    pub fn hear(&self, sink: MemberSink) {
-        self.sinks.write_recover().push(sink);
-    }
-
-    /// The owner whose workspaces this answers for.
-    #[must_use]
-    pub fn owner(&self) -> &crate::owner::NativeWorkspaceOwner {
-        &self.owner
-    }
-
-    /// Send `message`, `from`'s frame of `workspace`, to the members linked to
-    /// this device there: what this device writes, and what the workspace's
-    /// other devices wrote that reached it another way. A member linked here
-    /// has no other path to the rest of the workspace. A sealed write is kept
-    /// at this device's store as well, so a member that links later catches
-    /// up on it; nothing else goes out for a workspace no member reached here.
-    pub fn carry(
-        &self,
-        workspace: tilo_desktop_model::WorkspaceId,
-        from: [u8; 32],
-        message: NeighbourMsg,
-    ) {
-        carry_to(&self.store, &self.serving, workspace, from, message);
-    }
-
-    /// Send `message`, channel governance of a workspace this device serves,
-    /// to the members linked to it there: what this device's channel service
-    /// says, and what the workspace's other devices said that reached it
-    /// another way. A member hears no other path to the rest of the
-    /// workspace. Nothing goes out for a workspace no member reached here.
-    pub fn carry_governance(&self, message: &NeighbourMsg) {
-        if let Some(workspace) = message
-            .governance_workspace()
-            .and_then(tilo_desktop_model::WorkspaceId::parse)
-        {
-            self.carry(workspace, self.signer.device_public_key(), message.clone());
-        }
-    }
-
-    /// The link serving `workspace`: this device's replica of it, kept at its
-    /// store, made now when this device holds it and nothing serves it yet.
-    fn link(&self, workspace: WorkspaceId) -> Result<DirectSync, String> {
-        let held = self
-            .owner
-            .workspaces()
-            .into_iter()
-            .find(|held| *held == workspace);
-        let Some(held) = held else {
-            self.serving.release(workspace);
-            return Err("this device holds no such workspace".into());
-        };
-        if let Some(link) = self.serving.link(workspace) {
-            return Ok(link);
-        }
-        let link = DirectSync::over(self.owner.replica(held)?, Arc::clone(&self.signer))
-            .hearing(Hearing {
-                workspace: held,
-                sinks: Arc::clone(&self.sinks),
-            })
-            .owning(self.owner.clone(), held)?
-            .with_store(Arc::clone(&self.store));
-        let link = match &self.channels {
-            Some(channels) => {
-                let (channels, own) = (Arc::clone(channels), self.signer.device_public_key());
-                link.with_channel_history(Arc::new(move || -> ChannelHistoryRead {
-                    // Read when a link starts, not when the workspace was first served: the
-                    // channels moved since.
-                    let history: Vec<([u8; 32], NeighbourMsg)> = channels(held)
-                        .into_iter()
-                        .map(|message| (governance_signer(&message).unwrap_or(own), message))
-                        .collect();
-                    Box::pin(async move { history })
-                }))
-            }
-            None => link,
-        };
-        self.serving.serve(link.clone())?;
-        Ok(link)
-    }
-}
-
-/// The device that signed `message` when it is a frame of a channel's group:
-/// whose frame a link says it is, whichever device hands it on.
-fn governance_signer(message: &NeighbourMsg) -> Option<[u8; 32]> {
-    match message {
-        NeighbourMsg::MlsGovernance { frame, .. } => Some(*frame.signed_by.as_bytes()),
-        _ => None,
-    }
-}
-
-impl ProtocolHandler for Owning {
-    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        let serve = async {
-            let (named, send, recv) = dialed_workspace(&connection).await?;
-            let link = match self.link(named) {
-                Ok(link) => link,
-                Err(reason) => return Err(refuse(&connection, &Refusal::Other(reason))),
-            };
-            let live = link.0.outgoing.subscribe();
-            link.link(&connection, None, Control { send, recv }, live)
-                .await
-        };
-        serve
-            .await
-            .map_err(|error| AcceptError::from_err(std::io::Error::other(error)))
-    }
-}
-
 /// Take every frame `live`, the links of `sender`, publishes into
 /// `device`'s workspace, in its author's name: what `device` wrote itself
 /// does not come back to it. A frame that leaves `device` waiting for
@@ -2434,42 +2196,6 @@ fn channel_governance(message: &NeighbourMsg) -> bool {
 /// that member's replica lacks, so whose name a frame bears says nothing there.
 fn already_theirs(authored: &Authored, remote: [u8; 32], own: [u8; 32]) -> bool {
     !authored.published && remote != own && from_device(&authored.message, remote)
-}
-
-/// [`Owning::carry`]: keep `message`, `from`'s frame of `workspace`, at
-/// `store` when it is a sealed write, and send it to the members `serving`
-/// links there.
-fn carry_to(
-    store: &Store,
-    serving: &Serving,
-    workspace: tilo_desktop_model::WorkspaceId,
-    from: [u8; 32],
-    message: NeighbourMsg,
-) {
-    if let Ok(frame) = Frame::of(&message)
-        && let Err(error) = store.retain(workspace, &frame)
-    {
-        tracing::warn!(%error, "a frame was not kept for the workspace's members");
-    }
-    send_to_members(serving, workspace, from, message);
-}
-
-/// Send `message`, `from`'s frame of `workspace`, to the members `serving`
-/// links there now; nothing when none is linked.
-fn send_to_members(
-    serving: &Serving,
-    workspace: tilo_desktop_model::WorkspaceId,
-    from: [u8; 32],
-    message: NeighbourMsg,
-) {
-    let Some(link) = serving.link(workspace) else {
-        return;
-    };
-    link.outgoing(Authored {
-        from,
-        message,
-        published: false,
-    });
 }
 
 /// What one link's live stream sends besides the frames published live.

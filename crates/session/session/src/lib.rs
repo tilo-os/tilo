@@ -45,6 +45,8 @@ pub(crate) use assembly::Shared;
 
 mod activity_provider;
 mod continuations;
+#[cfg(all(test, target_os = "linux"))]
+mod founding_fixture;
 pub mod host_actions;
 pub mod records;
 #[cfg(target_os = "linux")]

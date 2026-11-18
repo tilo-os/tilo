@@ -91,6 +91,37 @@ pub(crate) fn decode_hex<T: serde::de::DeserializeOwned>(text: &str) -> Result<T
     postcard::from_bytes(&bytes).map_err(|error| error.to_string())
 }
 
+/// The extension of the file beside a held workspace's own naming the
+/// holder that handed it over ([`handed_by`]).
+const HANDED: &str = "handed";
+
+/// The holder that handed over the workspace kept at `path`, as the file
+/// beside it names it: none for a workspace made here, or one whose file
+/// does not hold up.
+pub(super) fn handed_by(path: &std::path::Path) -> Option<WorkspaceDeviceHintV1> {
+    let file = path.with_extension(HANDED);
+    let bytes = match std::fs::read(&file) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            tracing::warn!(path = %file.display(), %error, "the holder that handed a workspace over was not read");
+            return None;
+        }
+    };
+    let address = postcard::from_bytes::<TransportHint>(&bytes)
+        .map_err(|error| error.to_string())
+        .and_then(|hint| {
+            WorkspaceDeviceHintV1::from_transport_hint(&hint).map_err(|error| error.to_string())
+        });
+    match address {
+        Ok(address) => Some(address),
+        Err(error) => {
+            tracing::warn!(path = %file.display(), %error, "the holder that handed a workspace over is not an address");
+            None
+        }
+    }
+}
+
 /// Aborts its task when dropped.
 pub(super) struct AbortOnDrop(tokio::task::JoinHandle<()>);
 
@@ -294,6 +325,14 @@ impl Workspaces {
                 GovernedWorkspace::adopt(path, workspace.clone(), request, device.as_ref(), now)?
             };
             self.bind(&governed).await?;
+            // Kept with the workspace: until the change naming this server
+            // among its holders arrives, the holder that handed it over is
+            // the one this server syncs from, after a restart as well.
+            tilo_files::native::atomic::write(
+                &governed.path.with_extension(HANDED),
+                &postcard::to_stdvec(&request.holder_hint).map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
             governed.handed_by = Some(holder.clone());
             let state = Arc::new(AsyncMutex::new(governed));
             self.inner

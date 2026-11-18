@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
-use fs_protocol::files::{FIRST_TREE_CHUNK, FileNodeKind, TreeChunk};
+use fs_protocol::files::{FileNodeKind, TreeChunk};
 use fs_protocol::tree::{FILES_APP, ROOT_ID, Tree, TreeChunks, TreeEntry, chunk_document_id};
 use ui::carry_out::{ContentLinkAsk, ContentLinkFile, Offers};
 use ui::framework::{
@@ -22,8 +22,8 @@ use ui::framework::{
 };
 use ui::i18n::EmbeddedCatalog;
 use ui::icons::Icon;
+use ui::tilo_actions::ActionBinding;
 use ui::tilo_actions::remote::ApplicationLaunch;
-use ui::tilo_actions::{ActionBinding, ResourceSpec};
 use ui::tilo_resource::{self, Atom, Model, resource};
 use ui::widget::controls::ActionControls;
 use ui::widget::{
@@ -82,7 +82,10 @@ impl ResourceApp for FilesTreeShell {
     /// The folder this window shows: every file's changes in it, as one list, read from
     /// the tree record its rows are.
     const FOLDER_HISTORY: Option<ui::framework::FolderHistory> =
-        Some(ui::framework::FolderHistory { title: "Folder" });
+        Some(ui::framework::FolderHistory {
+            title: "Folder",
+            beside_resource: false,
+        });
 
     fn view(cx: &mut ViewCx<FilesWindow>) -> Element {
         Box::new(TreeBrowser::new(cx))
@@ -96,9 +99,6 @@ impl ResourceApp for FilesTreeShell {
 /// The bytes of content the window holds, by hash. Reading content the page
 /// lacks is what asks the workspace for it.
 type Reads = Rc<dyn Fn(&str) -> Option<Vec<u8>>>;
-/// Keeps bytes in the content the window reads, answering their hash: a text
-/// document's file, which the tree holds as a document rather than by hash.
-type Keeps = Rc<dyn Fn(&[u8]) -> Option<String>>;
 
 /// A file the person asked to open, waiting for the bytes that say which app
 /// opens it.
@@ -137,6 +137,8 @@ struct HeldChunk {
     /// The revision the nodes were last read at; `None` before the first read.
     revision: Option<u64>,
     nodes: BTreeMap<String, TreeEntry>,
+    /// Who last changed each of its nodes, as its changes name them.
+    writers: HashMap<String, (String, ui::tilo_actions::ActionContext)>,
 }
 
 impl Held {
@@ -187,6 +189,7 @@ impl Held {
                             record,
                             revision: None,
                             nodes: BTreeMap::new(),
+                            writers: HashMap::new(),
                         },
                     );
                 }
@@ -206,6 +209,10 @@ impl Held {
                 tree.nodes.remove(id);
             }
             held.nodes = state.nodes.clone();
+            held.writers = held
+                .record
+                .read(ui::history_source::folder::last_change_by_node)
+                .unwrap_or_default();
             tree.nodes.extend(
                 held.nodes
                     .iter()
@@ -239,7 +246,6 @@ pub struct TreeBrowser {
     /// The window's own document, which the open folder is set in.
     dispatch: Dispatcher<FilesWindow>,
     read: Option<Reads>,
-    keep: Option<Keeps>,
     body: Column,
     shown: Option<Shown>,
     structure_dirty: bool,
@@ -265,9 +271,6 @@ impl TreeBrowser {
                 })
             }) as Rc<dyn Fn(&str) -> Option<Vec<u8>>>
         });
-        let keep: Option<Keeps> = cx
-            .content()
-            .map(|content| Rc::new(move |bytes: &[u8]| content.put(bytes).ok()) as Keeps);
         let people = cx.people();
         // The workspace's tree is the resource every member holds, under the
         // Files app's own name for it — the one the page's search reads
@@ -285,7 +288,6 @@ impl TreeBrowser {
             people,
             dispatch: cx.dispatcher(),
             read,
-            keep,
             body: Column::new(),
             shown: None,
             structure_dirty: true,
@@ -426,7 +428,7 @@ impl TreeBrowser {
                 ui::carry_out::save(carried.clone());
             });
         }
-        if let Some(author) = self.author_of(node) {
+        if let Some(author) = self.author_of(id, node) {
             // Who made it as its own cell: the person's face and name, and what wrote
             // for them as a chip wearing the agent mark and its own colour. The hover
             // names the agent, its session, the computer and the folder. Never one line
@@ -465,7 +467,7 @@ impl TreeBrowser {
             }));
         }
         let Some(hash) = node.hash.clone() else {
-            return Box::new(self.document_row(row, id, node, name));
+            return Box::new(row);
         };
         let asked = Rc::clone(&self.asked);
         let read = self.read.clone();
@@ -482,69 +484,14 @@ impl TreeBrowser {
         }))
     }
 
-    /// The author of `node`'s newest version, as the folder's versions resource
-    /// it: the person whose device signed it, and the agent that wrote for them
-    /// when one did. `None` for a node the tree holds no version of.
-    fn author_of(&self, node: &TreeEntry) -> Option<ui::HistoryAuthor> {
+    /// Who last changed the node `id`, as the change names them: the person, or the agent
+    /// that wrote for them. `None` for a node no named change of its chunk acted on.
+    fn author_of(&self, id: &str, node: &TreeEntry) -> Option<ui::HistoryAuthor> {
         let document_id = node.document_id?;
-        // A file's versions are in the document of the chunk its resource id names.
+        // A node's changes are in the document of the chunk its document id names.
         let chunk = self.tree.as_ref()?.chunk(document_id.chunk())?;
-        let (version, attribution) = chunk
-            .record
-            .read(|doc| fs_protocol::history::latest(doc, document_id))??;
-        let registry = self.people.registry();
-        let folder = node
-            .parent
-            .as_deref()
-            .filter(|parent| *parent != ROOT_ID)
-            .map(|parent| {
-                let held = self.tree.as_ref().map(Held::tree);
-                let path = match held {
-                    Some(tree) => Self::path_of(tree, parent),
-                    None => String::new(),
-                };
-                format!("/{path}")
-            });
-        registry.resolve_attributed_file_actor_in(
-            version.actor.person.as_bytes(),
-            version.actor.device.as_bytes(),
-            attribution
-                .as_ref()
-                .map(|attributed| &attributed.attribution),
-            ui::history_source::WriterPlace {
-                folder: folder.as_deref(),
-            },
-        )
-    }
-
-    /// A text document's row (a `.md`, an `.odt`): its content is the tree's
-    /// own, so choosing it writes the file from the tree and opens that, as a
-    /// computer's folder reads it.
-    fn document_row(&self, row: ListRow, id: &str, node: &TreeEntry, name: String) -> ListRow {
-        let (Some(held), Some(keep)) = (self.tree.as_ref(), self.keep.clone()) else {
-            return row;
-        };
-        if node.codec.is_none() {
-            return row;
-        }
-        // The document is written from the chunk of the tree that holds the node.
-        let chunk = node.document_id.map_or(FIRST_TREE_CHUNK, |id| id.chunk());
-        let Some(record) = held.chunk(chunk).map(|chunk| chunk.record.clone()) else {
-            return row;
-        };
-        let asked = Rc::clone(&self.asked);
-        let id = id.to_owned();
-        row.on_view(move || {
-            let file = record
-                .read(|doc| fs_protocol::tree::document_file(doc, &id, &ui::content::NoContent))
-                .flatten();
-            if let Some(hash) = file.as_deref().and_then(|file| keep(file)) {
-                asked.borrow_mut().push(Asked {
-                    hash,
-                    name: name.clone(),
-                });
-            }
-        })
+        let (actor, context) = chunk.writers.get(id)?;
+        Some(self.people.registry().resolve_entry(actor, Some(context)))
     }
 
     /// What carrying the entry `id` out of the workspace takes: the file
@@ -647,31 +594,13 @@ impl TreeBrowser {
                 .submit(FilesWindow::paths().folder.set(Atom(id.to_owned())));
             return true;
         }
-        let hash = if let Some(hash) = node.hash {
-            if let Some(read) = &self.read {
-                // Reading content the page lacks asks the workspace for it.
-                let _ = read(&hash);
-            }
-            hash
-        } else {
-            // A text document is written from the chunk of the tree that holds the node.
-            let chunk = node.document_id.map_or(FIRST_TREE_CHUNK, |id| id.chunk());
-            let file = held
-                .chunk(chunk)
-                .and_then(|chunk| {
-                    chunk.record.read(|doc| {
-                        fs_protocol::tree::document_file(doc, id, &ui::content::NoContent)
-                    })
-                })
-                .flatten();
-            let Some(hash) = file
-                .as_deref()
-                .and_then(|file| self.keep.as_ref().and_then(|keep| keep(file)))
-            else {
-                return false;
-            };
-            hash
+        let Some(hash) = node.hash else {
+            return false;
         };
+        if let Some(read) = &self.read {
+            // Reading content the page lacks asks the workspace for it.
+            let _ = read(&hash);
+        }
         self.asked.borrow_mut().push(Asked { hash, name });
         self.open_what_arrived();
         true
@@ -723,16 +652,14 @@ impl TreeBrowser {
     fn handoff(app: &str, label: &str) -> Option<ActionEmitter<String>> {
         let spec =
             ApplicationLaunch::content_spec(app, "open", label, &t("files-tree-open-detail"));
-        let resource =
-            ResourceSpec::new(format!("{app}.app"), "applications.app", label).with_action(spec);
-        let binding = resource.actions.first().and_then(|spec| {
-            ActionBinding::new(&resource, spec, |hash: String| {
-                let mut arguments = serde_json::Map::new();
-                arguments.insert("content_hash".into(), serde_json::Value::String(hash));
-                arguments
-            })
-            .ok()
-        });
+        let row = ui::framework::LiveRow::new(format!("{app}.app"), "applications.app", label)
+            .operation(spec.clone());
+        let binding = ActionBinding::new(&row, &spec, |hash: String| {
+            let mut arguments = serde_json::Map::new();
+            arguments.insert("content_hash".into(), serde_json::Value::String(hash));
+            arguments
+        })
+        .ok();
         // The spec is this app's own, built from the resource a line above:
         // one it refuses is a change here, and the file stays unopened.
         binding.map(ActionEmitter::new)
@@ -823,7 +750,6 @@ mod tests {
             mtime: 1_767_225_600_000,
             author: Some("ada".to_owned()),
             document_id: None,
-            codec: None,
         };
         (id.to_owned(), entry)
     }

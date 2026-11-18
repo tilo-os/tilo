@@ -200,7 +200,8 @@ impl TurnTeam {
         // A turn carries the rules its server read for it; outside one an agent is held to what
         // the list keeps for it, which is the same rules read again.
         let kept = self.agent.turn_rules(&self.workspace);
-        let grants = caller.granted(&self.workspace, &kept);
+        let mut grants = caller.acting().handed_preset(&self.workspace);
+        grants.extend(caller.granted(&kept));
         // Its grants hold until they are taken back: no time decides them.
         let decided = Party::new(vec![Grantee::agent(agent.to_owned())], &grants).decide(
             &node,

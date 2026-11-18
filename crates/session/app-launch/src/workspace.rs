@@ -16,7 +16,7 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use collab_types::caps::{Access, CapOverride, LaunchGrants, Scope};
+use collab_types::caps::{Access, CapOverride, DeviceCap, Effect, LaunchGrants, Scope};
 use tilo_action_policy::Grantee;
 use tilo_action_policy::WorkspacePolicy;
 
@@ -42,6 +42,9 @@ pub struct Workspace {
     /// Where the session keeps a launch's private files, under the per-user
     /// runtime directory.
     pub directory: PathBuf,
+    /// The devices of this machine the person allowed each app, as
+    /// `(app, device)`: what their own answers give, never the workspace's.
+    pub devices: Vec<(String, DeviceCap)>,
 }
 
 impl Workspace {
@@ -55,6 +58,7 @@ impl Workspace {
             policy: None,
             person: String::new(),
             directory: directory.into(),
+            devices: Vec::new(),
         }
     }
 
@@ -89,6 +93,21 @@ impl Workspace {
     pub fn grants_for_launch(&self, app: &str, home: Option<PathBuf>) -> LaunchGrants {
         let mut grants = self.grants.for_app(app);
         grants.author = self.may_change(app);
+        // A workspace only ever refuses the person's devices; their own answers allow them.
+        grants.sandbox.retain(|cap| {
+            !(cap.effect == Effect::Grant
+                && matches!(cap.scope, Scope::Device(device) if device.is_personal()))
+        });
+        for (_, device) in self.devices.iter().filter(|(allowed, _)| allowed == app) {
+            grants.sandbox.push(
+                CapOverride::grant(
+                    Grantee::person(self.person.clone()),
+                    Scope::Device(*device),
+                    device.access(),
+                )
+                .through(app),
+            );
+        }
         if app != FILE_MANAGER {
             return grants;
         }

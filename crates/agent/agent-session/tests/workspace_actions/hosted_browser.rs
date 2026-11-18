@@ -11,7 +11,7 @@ use serde_json::json;
 use std::sync::Mutex;
 use tilo_actions::remote::server_account::Refusal;
 use tilo_actions::remote::{CataloguePage, CatalogueQuery};
-use tilo_mcp::{McpServer, Surface};
+use tilo_mcp::McpServer;
 use tilo_server::hosted_browser::{
     APP, BrowserMeter, BrowserSessions, HostedBrowsers, TITLE, Window,
 };
@@ -200,7 +200,6 @@ async fn an_agents_key_opens_browser_and_the_workspace_lists_it_like_any_app() {
         WORKSPACE.into(),
         person,
     )
-    .with_surface(Surface::Agent)
     .with_agent_session(hosted_documents::INVOCATION);
 
     // The workspace lists Browser like any app: an agent names it `browser`.

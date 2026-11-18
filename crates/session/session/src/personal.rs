@@ -14,11 +14,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use tilo_action_broker::collab_broker::FanoutState;
-use tilo_action_broker::personal::{self, Links, Person};
 use tilo_broker_core::collab_core::BrokerChannels;
 use tilo_network_actor::DeviceIdentity;
 use tilo_peer_state::{PeerPersonal, PersonalSync};
+use tilo_workspace_service::apps::collab_broker::FanoutState;
+use tilo_workspace_service::apps::personal::{self, Links, Person};
 
 use crate::options::Options;
 use crate::sync::SiblingDials;
@@ -69,7 +69,9 @@ impl Personal {
 
     /// Take the store to the person's other devices from `endpoint` : dial the ones this device has
     /// no link to, hand what they write to this session's apps through `channels` and `fanout` ,
-    /// and keep the store beside this session's state as it changes.
+    /// keep the store beside this session's state as it changes, and `wake` the session's loop
+    /// when it does: what a sibling wrote of the session's own resources (the person's list of
+    /// workspaces, the shell's own resource) is taken in by the next pass.
     /// `dials` opens the other connection to the same devices: the session between two of the person's
     /// sessions is where they tell each other what they hold — their workspaces and their hosts — so
     /// one adopts what the other keeps. Without it a device keeps only what it was there to make.
@@ -82,6 +84,7 @@ impl Personal {
         channels: Arc<Mutex<BrokerChannels>>,
         fanout: Arc<FanoutState>,
         dials: Option<SiblingDials>,
+        wake: tilo_service::Wake,
     ) -> Links {
         // An identity is filed under its root's hex, in the profile and in the fleet of the
         // person's devices alike.
@@ -102,6 +105,7 @@ impl Personal {
         if let Some(dials) = dials {
             runtime.spawn(keep_siblings(self.sync.clone(), dials, held));
         }
+        runtime.spawn(wake_on_changes(self.sync.clone(), wake));
         links
     }
 }
@@ -122,6 +126,14 @@ async fn keep_siblings(sync: PersonalSync, dials: SiblingDials, mut held: Vec<[u
     }
 }
 
+/// Wake the session's loop whenever the person's store changes, until it is gone.
+async fn wake_on_changes(sync: PersonalSync, wake: tilo_service::Wake) {
+    let mut changes = sync.changes();
+    while changes.changed().await.is_ok() {
+        wake();
+    }
+}
+
 /// The devices the person's store holds: this one, and every one of theirs whose certificate the
 /// fleet admitted.
 fn held_devices(sync: &PersonalSync) -> Vec<[u8; 32]> {
@@ -132,6 +144,41 @@ fn held_devices(sync: &PersonalSync) -> Vec<[u8; 32]> {
             .map(|device| device.device_public_key)
             .collect()
     })
+}
+
+/// Two of the person's devices in one process: their own stores, and the link between them as the
+/// session keeps it, carried by hand.
+#[cfg(test)]
+pub(crate) mod linked {
+    use std::sync::Arc;
+
+    use collab_types::signer::DeviceSigner;
+    use tilo_peer_state::{PeerPersonal, PersonalStore, PersonalSync};
+    use tilo_user_identity::DeviceCert;
+
+    /// The person's own store on the device `cert` names, which `signer` signs for, as the session
+    /// opens it.
+    pub(crate) fn store_of(cert: &DeviceCert, signer: Arc<dyn DeviceSigner>) -> PersonalSync {
+        let store = PersonalStore::open(cert.user_public_key, cert.clone(), tilo_clock::wall())
+            .expect("a store for one of the person's devices");
+        PersonalSync::over(PeerPersonal::new(store), signer)
+    }
+
+    /// `to` takes what `from` hands it on a link between the two: who `from` is, then every
+    /// resource of the person's it holds, each admitted as the link admits it.
+    pub(crate) fn hand(from: &PersonalSync, to: &PersonalSync) {
+        let device = |store: &PersonalSync| store.read(|store| store.device().device_public_key);
+        let (from_device, to_device) = (device(from), device(to));
+        from.take(to_device, to.read(PersonalStore::hello))
+            .expect("the person's other device says who it is");
+        for frame in from
+            .catch_up(to_device)
+            .expect("what the store hands the person's other device")
+        {
+            to.take(from_device, frame)
+                .expect("the person's own device's store is taken");
+        }
+    }
 }
 
 #[cfg(test)]

@@ -939,7 +939,7 @@ impl FakeHost {
             if let Some(held) = held {
                 // `JoiningProbe::REFUSAL`, word for word; the probe is not built on every target.
                 held.await
-                    .map_err(|_| "fixture join check dropped".to_owned())?;
+                    .map_err(|_| "fixture join hold dropped".to_owned())?;
             }
             let handle = Handle(host.next_handle.get());
             host.next_handle.set(handle.0 + 1);

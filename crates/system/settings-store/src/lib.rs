@@ -424,7 +424,11 @@ mod tests {
         let error = update_section("notifications", values.clone())
             .expect_err("a hand-started harness wrote the caller's settings");
         assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
-        assert!(!home.join(".config/tilo/records/person.automerge").exists());
+        assert!(
+            !home
+                .join(".config/tilo/records/person/state.automerge")
+                .exists()
+        );
 
         let config = home.join("own-config");
         env.set("XDG_CONFIG_HOME", &config);

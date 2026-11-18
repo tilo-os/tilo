@@ -17,7 +17,7 @@ use tilo_desktop_model::UserId;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::i18n::t;
 use tilo_server_protocol::workspaces::{
-    Member, Role, Workspace, WorkspacesReply, WorkspacesRequest,
+    Member, Role, ServerEntry, Workspace, WorkspacesReply, WorkspacesRequest,
 };
 use tilo_session::workspace_people;
 use tilo_session::workspace_settings::{AgentsHost, PageAgents};
@@ -112,11 +112,16 @@ struct PageWorkspaceSettings {
     asks: HostAsks,
     /// The workspace as its host last answered, with its members.
     workspace: Rc<RefCell<Option<Workspace>>>,
+    /// The servers keeping the workspace, once its server answered its owner:
+    /// `None` for a person who may not choose them, who sees nothing of them.
+    servers: Rc<RefCell<Option<Vec<ServerEntry>>>>,
     /// The sheet waits for the workspace's first answer before it goes up, rather than show
     /// nobody in it.
     opening: Rc<Cell<bool>>,
     /// Whether the host was asked who is in the workspace since the sheet was last down.
     asked: bool,
+    /// Whether the server was asked which servers keep the workspace since the sheet was last down.
+    asked_servers: bool,
     /// The members the page followed when the host was last asked: asked again when they move.
     asked_for: Option<BTreeSet<String>>,
     /// What the built sheet shows, and the revision of what it keeps to itself.
@@ -155,8 +160,10 @@ impl PageWorkspaceSettings {
             shared,
             here,
             workspace: Rc::default(),
+            servers: Rc::default(),
             opening: Rc::new(Cell::new(false)),
             asked: false,
+            asked_servers: false,
             asked_for: None,
             built: None,
         }
@@ -201,6 +208,42 @@ impl PageWorkspaceSettings {
         }
         self.asks
             .ask(move |_| request(uuid, request_id), self.taking());
+    }
+
+    /// Ask the server which servers keep the workspace. A person who may not choose them is refused,
+    /// and sees nothing of them: the sheet draws no servers then.
+    fn list_servers(&mut self) {
+        self.asked_servers = true;
+        let Some(uuid) = self.uuid() else {
+            *self.servers.borrow_mut() = None;
+            return;
+        };
+        let servers = Rc::clone(&self.servers);
+        self.asks.ask(
+            move |_| WorkspacesRequest::Servers { workspace: uuid },
+            move |reply| match reply {
+                Ok(WorkspacesReply::Servers(list)) => *servers.borrow_mut() = Some(list),
+                // Not an owner: the servers are the owner's to choose.
+                _ => *servers.borrow_mut() = None,
+            },
+        );
+    }
+
+    /// Ask the server `request` to change which servers keep the workspace: its answer is the servers
+    /// after the change, or why it refused, over the sheet.
+    fn change_servers(&self, request: impl FnOnce(String) -> WorkspacesRequest + 'static) {
+        let Some(uuid) = self.uuid() else {
+            self.state
+                .refuse(workspace_people::refusal("this page is in no workspace"));
+            return;
+        };
+        let (servers, state) = (Rc::clone(&self.servers), self.state.clone());
+        self.asks.ask(
+            move |_| request(uuid),
+            move |reply| {
+                take_servers(&servers, &state, reply);
+            },
+        );
     }
 
     /// Who takes a host's answer: the workspace it answers with, or why it refused.
@@ -259,6 +302,21 @@ impl PageWorkspaceSettings {
                         user_public_key,
                     });
                 }
+                WorkspaceSettingsEffect::AddServer { origin } => {
+                    let origin = origin.trim().to_owned();
+                    if !origin.is_empty() {
+                        self.change_servers(move |workspace| WorkspacesRequest::AddServer {
+                            workspace,
+                            origin,
+                        });
+                    }
+                }
+                WorkspaceSettingsEffect::RemoveServer { server } => {
+                    self.change_servers(move |workspace| WorkspacesRequest::RemoveServer {
+                        workspace,
+                        server,
+                    });
+                }
                 WorkspaceSettingsEffect::DismissNotice => self.state.dismiss_notice(),
                 // The sheet closes itself; a page shows the People and Agents tabs alone, and
                 // nothing else the sheet could ask is drawn on it.
@@ -314,7 +372,37 @@ impl PageWorkspaceSettings {
             workspace_people::tab(content_of(&rows, &viewer, role == Some(Role::Owner), &kept));
         // What the workspace did is the session's to show; a page offers only the decision.
         people.remove_decision.review.clear();
-        let mut tabs = vec![sheet::Tab::People];
+        // Which servers keep the workspace is its owners' to choose: the page shows them the tab
+        // once the server answered with them, and a person who may not choose sees nothing of them.
+        let general = match &*self.servers.borrow() {
+            Some(servers) => sheet::General {
+                servers: Some(sheet::Servers {
+                    group: sheet::Group {
+                        title: t("workspace-settings-servers-title"),
+                        description: t("workspace-settings-servers-description"),
+                    },
+                    origin_label: t("workspace-settings-servers-origin-label"),
+                    add_label: t("workspace-settings-servers-add"),
+                    remove_label: t("workspace-settings-servers-remove"),
+                    here_label: t("workspace-settings-servers-here"),
+                    rows: servers
+                        .iter()
+                        .map(|server| sheet::Server {
+                            key: server.device.clone(),
+                            label: server.device.clone(),
+                            here: server.here,
+                        })
+                        .collect(),
+                }),
+                ..sheet::General::default()
+            },
+            None => sheet::General::default(),
+        };
+        let mut tabs = Vec::new();
+        if general.servers.is_some() {
+            tabs.push(sheet::Tab::General);
+        }
+        tabs.push(sheet::Tab::People);
         if self.agents.is_some() {
             tabs.push(sheet::Tab::Agents);
         }
@@ -330,6 +418,7 @@ impl PageWorkspaceSettings {
             close: t("workspace-settings-close"),
             tabs: tabs.into_iter().map(workspace_people::tab_label).collect(),
             tab,
+            general,
             people,
             agents: self
                 .agents
@@ -358,6 +447,19 @@ fn take(
     }
     if opening.replace(false) {
         state.presentation().open(false);
+    }
+}
+
+/// Take the server's answer about the servers keeping the workspace: the servers after the change,
+/// or why it refused, over the sheet.
+fn take_servers(
+    servers: &RefCell<Option<Vec<ServerEntry>>>,
+    state: &sheet::WorkspaceSettingsState,
+    reply: Reply,
+) {
+    match reply {
+        Ok(WorkspacesReply::Servers(list)) => *servers.borrow_mut() = Some(list),
+        other => state.refuse(workspace_people::refusal(&refused(other))),
     }
 }
 
@@ -395,10 +497,16 @@ impl OverSheet for PageWorkspaceSettings {
         if up && (!self.asked || self.asked_for != *self.shared.members.borrow()) {
             self.list();
         }
+        // Which servers keep the workspace: whether the person may choose them is the server's to
+        // say, so it is asked once each time the sheet comes up.
+        if up && !self.asked_servers {
+            self.list_servers();
+        }
         changed |= self.follow_asked();
         if !self.is_open() {
             if !self.opening.get() {
                 self.asked = false;
+                self.asked_servers = false;
             }
             if self.built.take().is_some() {
                 changed = true;

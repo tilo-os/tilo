@@ -700,8 +700,8 @@ heavy = true
 [[check]]
 name = "app-surfaces"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- surfaces"
-fix = "cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- surfaces --write"
+run = "cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- surfaces\npython3 -I tools/apps/generate_catalogue_fleet.py --check\n"
+fix = "cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- surfaces --write\npython3 -I tools/apps/generate_catalogue_fleet.py\n"
 env = { CARGO_PROFILE_DEV_DEBUG = "0" }
 
 [[check]]
@@ -1429,6 +1429,14 @@ name = "weekly-latency"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "cargo test --locked -p tilo-media --features realtime --test realtime -- --ignored --exact realtime_latency_per_frame --nocapture"
 on = ["dispatch"]
+
+[[check]]
+name = "throughput"
+# One action, a bulk call, a file put and a second device hearing the change, at an empty
+# workspace and a filled one: one action over its ceiling fails the check.
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "bash tools/test-env.sh cargo nextest run --locked --profile ci --no-tests=fail -p tilo-agent-session --test it --run-ignored only -E 'test(=workspace_actions::throughput::a_workspace_takes_records_and_files_at_the_same_speed_however_full)'\n"
+env = { TILO_THROUGHPUT_SIZES = "0,200", TILO_THROUGHPUT_SINGLES = "10", TILO_THROUGHPUT_BULK = "200", TILO_THROUGHPUT_FILES = "20", TILO_THROUGHPUT_LARGE_MB = "16" }
 
 [[check]]
 name = "security-isolation-{part}"

@@ -299,10 +299,9 @@ impl StatePeer {
         let mut validated_channel = candidate.channel.clone();
         validated_channel.grants.clone_from(&member.policy.grants);
         validated_channel.surfaces.clone_from(&self.surfaces);
-        let author = member.authority();
         match collab_types::validate_admitted_inbound_op(
             &envelope,
-            &author,
+            &member,
             &mut validated_channel,
             authorization_time,
             if historical_validation {

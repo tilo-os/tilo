@@ -377,6 +377,67 @@
         }
       }
     },
+    "/v1/workspaces/{workspace}/name": {
+      "put": {
+        "operationId": "renameWorkspace",
+        "summary": "Name the workspace, for every list and device of it; its owners and moderators may",
+        "tags": [
+          "Resources"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "$ref": "#/components/parameters/Invocation"
+          },
+          {
+            "$ref": "#/components/parameters/InvocationTitle"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Name the workspace, for every list and device of it; its owners and moderators may",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Workspace"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceName"
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/workspaces/{workspace}": {
       "delete": {
         "operationId": "deleteWorkspace",
@@ -1613,10 +1674,10 @@
         }
       }
     },
-    "/v1/workspaces/{workspace}/hosts": {
+    "/v1/workspaces/{workspace}/servers": {
       "get": {
-        "operationId": "listHosts",
-        "summary": "The hosts holding the workspace, the one that governs it first",
+        "operationId": "listServers",
+        "summary": "The servers keeping the workspace, the one asked first",
         "tags": [
           "Resources"
         ],
@@ -1639,11 +1700,11 @@
         ],
         "responses": {
           "200": {
-            "description": "The hosts holding the workspace, the one that governs it first",
+            "description": "The servers keeping the workspace, the one asked first",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Hosts"
+                  "$ref": "#/components/schemas/Servers"
                 }
               }
             }
@@ -1661,8 +1722,8 @@
         }
       },
       "post": {
-        "operationId": "addHost",
-        "summary": "Have another host hold the workspace as well, as that host's rules allow",
+        "operationId": "addServer",
+        "summary": "Have another server keep the workspace as well, as that server's rules allow",
         "tags": [
           "Resources"
         ],
@@ -1688,11 +1749,11 @@
         ],
         "responses": {
           "200": {
-            "description": "Have another host hold the workspace as well, as that host's rules allow",
+            "description": "Have another server keep the workspace as well, as that server's rules allow",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Hosts"
+                  "$ref": "#/components/schemas/Servers"
                 }
               }
             }
@@ -1713,17 +1774,17 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/NewHost"
+                "$ref": "#/components/schemas/NewServer"
               }
             }
           }
         }
       }
     },
-    "/v1/workspaces/{workspace}/hosts/{host}": {
+    "/v1/workspaces/{workspace}/servers/{server}": {
       "delete": {
-        "operationId": "removeHost",
-        "summary": "Have a host, by its site (percent-encoded) or its device key, hold the workspace no more",
+        "operationId": "removeServer",
+        "summary": "Have a server, by its site (percent-encoded) or its device key, keep the workspace no more",
         "tags": [
           "Resources"
         ],
@@ -1738,13 +1799,13 @@
             "description": "The workspace's id"
           },
           {
-            "name": "host",
+            "name": "server",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string"
             },
-            "description": "The host's site (`https://tilo.sh`), or its device key as listing the hosts names it"
+            "description": "The server's site (`https://tilo.sh`), or its device key as listing the servers names it"
           },
           {
             "$ref": "#/components/parameters/Invocation"
@@ -1755,11 +1816,11 @@
         ],
         "responses": {
           "200": {
-            "description": "Have a host, by its site (percent-encoded) or its device key, hold the workspace no more",
+            "description": "Have a server, by its site (percent-encoded) or its device key, keep the workspace no more",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Hosts"
+                  "$ref": "#/components/schemas/Servers"
                 }
               }
             }
@@ -1771,6 +1832,76 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workspaces/{workspace}/servers/{server}/move": {
+      "post": {
+        "operationId": "moveServer",
+        "summary": "Move the workspace from a server, by its site (percent-encoded) or its device key, to the server at another site: that one keeps it first, then this one no more",
+        "tags": [
+          "Resources"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "name": "server",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The server's site (`https://tilo.sh`), or its device key as listing the servers names it"
+          },
+          {
+            "$ref": "#/components/parameters/Invocation"
+          },
+          {
+            "$ref": "#/components/parameters/InvocationTitle"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Move the workspace from a server, by its site (percent-encoded) or its device key, to the server at another site: that one keeps it first, then this one no more",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Servers"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewServer"
               }
             }
           }
@@ -1899,6 +2030,136 @@
         }
       }
     },
+    "/v1/workspaces/{workspace}/members/{person}/role": {
+      "put": {
+        "operationId": "setMemberRole",
+        "summary": "Move a member, by their user public key, to another role, as far as yours allows",
+        "tags": [
+          "Members"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "name": "person",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "$ref": "#/components/parameters/Invocation"
+          },
+          {
+            "$ref": "#/components/parameters/InvocationTitle"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Move a member, by their user public key, to another role, as far as yours allows",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Members"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemberRole"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workspaces/{workspace}/members/{person}": {
+      "delete": {
+        "operationId": "removeMember",
+        "summary": "Remove a member, by their user public key, and every device of theirs",
+        "tags": [
+          "Members"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "name": "person",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "$ref": "#/components/parameters/Invocation"
+          },
+          {
+            "$ref": "#/components/parameters/InvocationTitle"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Remove a member, by their user public key, and every device of theirs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Members"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/workspaces/{workspace}/programs": {
       "post": {
         "operationId": "runProgram",
@@ -2016,6 +2277,128 @@
               "schema": {
                 "type": "string",
                 "contentMediaType": "application/octet-stream"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workspaces/{workspace}/contents": {
+      "put": {
+        "operationId": "putManyContents",
+        "summary": "Store several small files whole in one request, answering each one's reference",
+        "tags": [
+          "Resources"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "$ref": "#/components/parameters/Invocation"
+          },
+          {
+            "$ref": "#/components/parameters/InvocationTitle"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Store several small files whole in one request, answering each one's reference",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PutManyAnswer"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutMany"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workspaces/{workspace}/contents/have": {
+      "post": {
+        "operationId": "haveContents",
+        "summary": "Which of these content hashes the workspace already holds",
+        "tags": [
+          "Resources"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "$ref": "#/components/parameters/Invocation"
+          },
+          {
+            "$ref": "#/components/parameters/InvocationTitle"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Which of these content hashes the workspace already holds",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldHashes"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HaveHashes"
               }
             }
           }
@@ -3214,6 +3597,20 @@
           "name": {
             "type": "string"
           },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The resource's own id, which names it whatever else is titled the same."
+          },
+          "key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The app's stable key for it, the name its actions answer it by."
+          },
           "label": {
             "type": "string"
           },
@@ -3775,23 +4172,86 @@
         "additionalProperties": true,
         "description": "The addresses left at the workspace's entry while it takes people by\ninvitation, oldest first, and whether the entry mails invitations."
       },
-      "Hosts": {
+      "Servers": {
         "type": "object",
-        "additionalProperties": true,
-        "description": "The hosts holding the workspace (`hosts`, each its `device` key, the\n`person` it runs for, and whether it `governs` the workspace: the one it\nwas made on, first), and after a removal whether that host confirmed it let\nthe workspace go (`confirmed`)."
+        "properties": {
+          "workspace": {
+            "type": "string",
+            "description": "The workspace's id."
+          },
+          "servers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KeptServer"
+            }
+          },
+          "confirmed": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "After a removal or a move: whether the server let go confirmed it no\nlonger keeps the workspace. One that was not reached is no longer\nnamed to anyone, and lets the workspace go once it hears so."
+          },
+          "copies": {
+            "description": "How many copies the workspace wants kept and where they stand."
+          }
+        },
+        "required": [
+          "workspace",
+          "servers"
+        ],
+        "description": "The servers keeping the workspace, the one asked first, each with the\nname it goes by, whether it reads the workspace and whether its machine is\na cloud provider's; after a removal or a move whether the server let go\nconfirmed it."
       },
-      "NewHost": {
+      "KeptServer": {
+        "type": "object",
+        "properties": {
+          "device": {
+            "type": "string",
+            "description": "The server's device key, 64 hex characters: what removing or moving\nit may name it by."
+          },
+          "person": {
+            "type": "string",
+            "description": "The person the server runs for, by their user public key."
+          },
+          "here": {
+            "type": "boolean",
+            "description": "Whether this is the server asked."
+          },
+          "label": {
+            "type": "string",
+            "description": "What it calls itself, as its own signed address names it.",
+            "default": ""
+          },
+          "reads": {
+            "type": "boolean",
+            "description": "Whether it holds the workspace's keys and reads it; a store keeps its\nciphertext and reads none of it.",
+            "default": false
+          },
+          "cloud": {
+            "type": "boolean",
+            "description": "Whether its machine is rented from a cloud provider, whose operator\ncan read what it holds too.",
+            "default": false
+          }
+        },
+        "required": [
+          "device",
+          "person",
+          "here"
+        ],
+        "description": "One server keeping the workspace."
+      },
+      "NewServer": {
         "type": "object",
         "properties": {
           "origin": {
             "type": "string",
-            "description": "The host's site, like `https://tilo.sh`. You must be let in there, and\nit may refuse by its own rules."
+            "description": "The server's site, like `https://tilo.sh`. You must be let in there,\nand it may refuse by its own rules."
           }
         },
         "required": [
           "origin"
         ],
-        "description": "Another host to hold the workspace as well."
+        "description": "Another server to keep the workspace as well."
       },
       "Invitation": {
         "type": "object",
@@ -3810,6 +4270,32 @@
           "name"
         ],
         "description": "How the key's person goes by in the workspace from now on."
+      },
+      "WorkspaceName": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "1 to 80 characters."
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "description": "What the workspace is called from now on, by every list and device of it."
+      },
+      "MemberRole": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string",
+            "description": "`viewer`, `commenter`, `editor`, `moderator`, `administrator` or\n`owner`; never more than yours to give."
+          }
+        },
+        "required": [
+          "role"
+        ],
+        "description": "Where a member of the workspace is held from now on."
       },
       "Program": {
         "type": "object",
@@ -3901,6 +4387,67 @@
           "content",
           "size"
         ]
+      },
+      "PutMany": {
+        "type": "object",
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Each file's bytes, base64."
+          }
+        },
+        "required": [
+          "files"
+        ],
+        "description": "Several small files put into the workspace in one request."
+      },
+      "PutManyAnswer": {
+        "type": "object",
+        "properties": {
+          "contents": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "contents"
+        ],
+        "description": "Each file's `tilo.content:<hash>` reference, in the order asked."
+      },
+      "HaveHashes": {
+        "type": "object",
+        "properties": {
+          "hashes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "hashes"
+        ],
+        "description": "Content hashes (lowercase BLAKE3 hex) to ask whether the workspace holds."
+      },
+      "HeldHashes": {
+        "type": "object",
+        "properties": {
+          "have": {
+            "type": "array",
+            "items": {
+              "type": "boolean"
+            }
+          }
+        },
+        "required": [
+          "have"
+        ],
+        "description": "Whether each asked hash is held, in the order asked."
       },
       "NewUpload": {
         "type": "object",
@@ -16359,6 +16906,108 @@
         "type": "object",
         "properties": {},
         "required": [],
+        "description": ""
+      },
+      "files.tree.new-folder.Arguments": {
+        "type": "object",
+        "properties": {
+          "parent": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "document": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "parent",
+          "name"
+        ],
+        "description": ""
+      },
+      "files.tree.new-file.Arguments": {
+        "type": "object",
+        "properties": {
+          "parent": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "document": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "parent",
+          "name"
+        ],
+        "description": ""
+      },
+      "files.tree.move.Arguments": {
+        "type": "object",
+        "properties": {
+          "node": {
+            "type": "string"
+          },
+          "parent": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "node",
+          "parent",
+          "name"
+        ],
+        "description": ""
+      },
+      "files.tree.write.Arguments": {
+        "type": "object",
+        "properties": {
+          "node": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "node",
+          "content",
+          "size"
+        ],
+        "description": ""
+      },
+      "files.tree.trash.Arguments": {
+        "type": "object",
+        "properties": {
+          "node": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "node"
+        ],
+        "description": ""
+      },
+      "files.tree.restore.Arguments": {
+        "type": "object",
+        "properties": {
+          "node": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "node"
+        ],
         "description": ""
       },
       "files.recent.note.Arguments": {
@@ -32436,6 +33085,42 @@
       "resource": "files.folder",
       "action": "cloud-progress",
       "arguments": "#/components/schemas/files.folder.cloud-progress.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "files.tree",
+      "action": "new-folder",
+      "arguments": "#/components/schemas/files.tree.new-folder.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "files.tree",
+      "action": "new-file",
+      "arguments": "#/components/schemas/files.tree.new-file.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "files.tree",
+      "action": "move",
+      "arguments": "#/components/schemas/files.tree.move.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "files.tree",
+      "action": "write",
+      "arguments": "#/components/schemas/files.tree.write.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "files.tree",
+      "action": "trash",
+      "arguments": "#/components/schemas/files.tree.trash.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "files.tree",
+      "action": "restore",
+      "arguments": "#/components/schemas/files.tree.restore.Arguments"
     },
     {
       "app": "so.tilo.file-explorer",

@@ -130,27 +130,6 @@ pub enum FileCommand {
     ShowAvailability,
     Share,
     ShowHistory,
-    SelectHistoryVersion {
-        version_id: fs_protocol::FileVersionId,
-    },
-    ToggleHistoryCompare,
-    ShowInWorkspaceActivity {
-        document_id: String,
-        version_id: fs_protocol::FileVersionId,
-    },
-    RestoreVersion {
-        version_id: fs_protocol::FileVersionId,
-    },
-    ResolveConflict {
-        conflict_id: uuid::Uuid,
-        strategy: fs_protocol::ConflictStrategy,
-        version_id: fs_protocol::FileVersionId,
-    },
-    ReviewConflictMerge {
-        conflict_id: uuid::Uuid,
-        version_id: fs_protocol::FileVersionId,
-        other_device: [u8; 32],
-    },
     CloseCollabPanel,
 }
 

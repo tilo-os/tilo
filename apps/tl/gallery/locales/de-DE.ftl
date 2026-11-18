@@ -1,5 +1,3 @@
-# Galerie auf Deutsch. Keys are the declarations' stable ids (app.ids); see locales/en-US.ftl.
-
 d-so-tilo-lang-gallery = Galerie
 
 d-bxbqgdkv = Eintrag
@@ -17,185 +15,12 @@ d-xttl6aec = Stufe
 
 d-44yujnht = Reaktionen
 
-d-5cf5i2l7 = Grundlagen
-    .doc = Die alltäglichen Teile eines Fensters: Navigation, Text und Knöpfe, Chips, eine Karte aus Fakten, ein leerer Zustand und eine Seite eines Stapels.
-    .noun = { $count ->
-        [one] Grundlagen
-       *[other] Grundlagen
-    }
-
-d-phmalltz = Titel
-
-d-322be7qf = Notiz
-
-d-4cquroaf = Verantwortlich
-    .doc = Wer sich um die Grundlagen kümmert.
-
-d-aimcpxqu = Aktualisiert
-    .doc = Wann sich die Grundlagen zuletzt geändert haben.
-
-d-5cf5i2l7-filter-owner = Verantwortlich
-
-d-5cf5i2l7-filter-updated = Aktualisiert
-
-d-oulybdah = Backlog
-    .doc = Die Einträge des Teams als Liste, mit dem Eingabefeld, das eine Unterhaltung an ihrem Fuß hat.
-    .noun = { $count ->
-        [one] Backlog
-       *[other] Backlogs
-    }
-
-d-ykafo7qj = Titel
-
-d-ks6wodcv = Einträge
-
-d-crrlhv3r = Entwurf
-
-d-knnd7epb = Release
-    .doc = Die Einträge des Teams auf einem Board, eine Liste je Stufe.
-    .noun = { $count ->
-        [one] Release
-       *[other] Releases
-    }
-
-d-uhteb2qc = Titel
-
-d-x6hy4icv = Einträge
-
 d-x3epwv5u = Galerie
     .doc = Die Galerie: ein Fenster für jede Gruppe.
     .noun = { $count ->
         [one] Galerie
        *[other] Galerien
     }
-
-d-eii5srqb = Grundlagen
-
-d-6p3of4rd = Backlogs
-
-d-wpni7xxp = Releases
-
-d-qi3nkvcl = Feedback
-
-d-kzg3iceh = Daten
-
-d-2fyvr737 = Bedienelemente
-
-d-vm3casub = Medien
-
-d-aia654wv = Orte
-
-d-t7ydaknu = Rahmen
-
-d-lhci3noh = Bedienelemente
-    .doc = Die Bedienelemente, aus denen ein Formular besteht: Kästchen und Schalter, eine Zahl, eine Auswahl aus einer kurzen Liste, eine Person, eine Reihe von Auswahlmöglichkeiten, Tabs, ein Tag und eine Zeit, eine Farbe, ein Tastenkürzel, eine Vervollständigung, eine Bildauswahl, eine Zeile mit Bedienelementen und ein Link.
-    .noun = { $count ->
-        [one] Bedienelemente
-       *[other] Bedienelemente
-    }
-
-d-6as2vdpa = Titel
-
-d-yykr4gsy = Per E-Mail
-    .doc = Ob der Bericht per E-Mail geht.
-
-d-ueet4dqw = Wiederholend
-    .doc = Ob er sich wiederholt.
-
-d-hje3rno5 = Gesperrt
-    .doc = Ob der Arbeitsbereich ihn gesperrt hält, was hier niemand ändern kann.
-
-d-ivx3pet3 = Rand
-    .doc = Der Rand um den Bericht, in Pixeln.
-
-d-lvaal6xy = Anteil
-    .doc = Wie viel der Zeit er läuft.
-
-d-rzo2wdf2 = Raum
-    .doc = Der Raum, in dem er ist.
-
-d-tfraxdz4 = Dringlichkeit
-    .doc = Wie bald der Bericht fällig ist.
-
-d-cb2aj7ey = Verantwortlich
-    .doc = Wer sich um den Bericht kümmert.
-
-d-rkns6vsj = Prüfer
-    .doc = Wer ihn prüft; noch niemand gewählt.
-
-d-u6zwjsis = Beginnt
-    .doc = Der Tag, an dem er beginnt.
-
-d-rmra563g = Uhr
-    .doc = Die Tageszeit, zu der er beginnt.
-
-d-pj6a5wgb = Endet
-    .doc = Der Tag, an dem er endet, der keiner sein kann.
-
-d-qauqkwot = Akzent
-    .doc = Der Akzent, den der Bericht trägt.
-
-d-ii5w5nej = Tastenkürzel
-    .doc = Die Taste, mit der er aufgeht.
-
-d-lnvof4vo = Empfänger
-    .doc = An wen es geht, getippt.
-
-d-an7amte4 = Hintergrund
-    .doc = Ob die Hintergrundebene zu sehen ist.
-
-d-6mugp36y = Schrift
-    .doc = Ob die Textebene zu sehen ist.
-
-d-lhci3noh-filter-by_email = Per E-Mail
-
-d-lhci3noh-filter-repeating = Wiederholend
-
-d-lhci3noh-filter-locked = Gesperrt
-
-d-lhci3noh-filter-margin = Rand
-
-d-lhci3noh-filter-background = Hintergrund
-
-d-lhci3noh-filter-lettering = Schrift
-
-d-lhci3noh-filter-share = Anteil
-
-d-lhci3noh-filter-urgency = Dringlichkeit
-
-d-lhci3noh-filter-owner = Verantwortlich
-
-d-lhci3noh-filter-reviewer = Prüfer
-
-d-lhci3noh-filter-starts = Beginnt
-
-d-lhci3noh-filter-clock = Uhr
-
-d-lhci3noh-filter-ends = Endet
-
-d-pprp6hfn = Daten
-    .doc = Die Datenansichten: eine Tabelle aus Spalten und Zeilen, ein Baum aus Knoten, eine Unterhaltung, ein Raster aus Karten und der Verlauf eines Dokuments, jede liest eine Sammlung der App selbst.
-    .noun = { $count ->
-        [one] Daten
-       *[other] Daten
-    }
-
-d-4ypxqojm = Titel
-
-d-gkbniaqt = Zeilen
-    .doc = Die Zeilen der Tabelle: jede ein Eintrag mit dem, was ihre Spalten lesen.
-
-d-4j7qef6f = Dateien
-    .doc = Die Dateien des Baums, jede nennt ihren übergeordneten Knoten über seinen Schlüssel.
-
-d-ft4q2k7a = Nachrichten
-    .doc = Die Nachrichten der Unterhaltung, die älteste zuerst.
-
-d-arnwswe6 = Karten
-    .doc = Die Karten des Rasters.
-
-d-y47rcahj = Änderungen
-    .doc = Die Änderungen des Dokuments, die älteste zuerst.
 
 d-7y5fd5tj = Zeile
     .doc = Eine Zeile der Tabelle: was ihre Spalten lesen.
@@ -285,55 +110,6 @@ d-e4daczuq = Um
 
 d-4cntcc2v-filter-at = Um
 
-d-oepvsx65 = Feedback
-    .doc = Wie es läuft: Abzeichen und Banner, Fortschritt und Anzeigen, Kennzahlen, die Fakten einer Sache, ein Pfad, eine Werkzeugleiste, Zeilen, die sich an Ort und Stelle öffnen, und was noch lädt.
-    .noun = { $count ->
-        [one] Feedback
-       *[other] Feedback
-    }
-
-d-2pxvl4zz = Titel
-
-d-bafspfun = Verantwortlich
-    .doc = Wer die Dateien abgleicht.
-
-d-oepvsx65-filter-owner = Verantwortlich
-
-d-rnok2vxj = Orte
-    .doc = Was die Galerie von einer Fläche zeigt: Orte an Punkten auf einer Oberfläche, die sich verschieben und zoomen lässt.
-    .noun = { $count ->
-        [one] Ort
-       *[other] Orte
-    }
-
-d-4wbrhgfm = Titel
-
-d-exu5jg4p = Medien
-    .doc = Was die Galerie von Medien und Oberflächen zeigt: Bilder, ein laufendes Band, ein Video, eine Bibliothek aus Karten, einen Code, den ein Scanner liest, eine Ablagezone, eine Seitenvorschau mit Leiste, einen Code-Editor, eine Zeile Text, die eigenen Oberflächen des Fensters (ein modales Fenster, ein Popover, ein schwebendes Panel) und eine Seite, live gezeigt.
-    .noun = { $count ->
-        [one] Medien
-       *[other] Medien
-    }
-
-d-m4bxkjt2 = Titel
-
-d-nooncpvq = Foto
-    .doc = Die Adresse eines Bildes: seine Daten, in der Adresse selbst getragen.
-
-d-deflwyrv = Fotos
-    .doc = Die Fotos der Bibliothek, in der Reihenfolge, in der sie aufgenommen wurden.
-
-d-qxsbcwcn = Bei
-    .doc = Wie weit der Player im Video ist, in Sekunden.
-
-d-7n6qkvce = Code
-    .doc = Der Code, den ein Scanner liest.
-
-d-o2brvdoa = Quelle
-    .doc = Der Quelltext, der geschrieben wird.
-
-d-exu5jg4p-filter-at = Bei
-
 d-36wloal6 = Foto
     .doc = Ein Foto der Bibliothek: was es zeigt, wo, und sein Bild, in seiner Adresse getragen.
     .noun = { $count ->
@@ -351,23 +127,6 @@ d-lb2wi6nq = Hochformat
     .doc = Hochkant aufgenommen: höher als breit.
 
 d-36wloal6-filter-tall = Hochformat
-
-d-wb23plj7 = Rahmenteile
-    .doc = Die Teile, aus denen die Shell besteht, wie eine Ansicht sie platziert: eine Leiste oder der Körper eines Docks, eine Reihe von Einträgen, die eine Person durch Ziehen umsortiert, und der Trenner, mit dem eine Unterhaltung ihre erste ungelesene Zeile markiert.
-    .noun = { $count ->
-        [one] Rahmenteile
-       *[other] Rahmenteile
-    }
-
-d-f6btt2yz = Titel
-
-d-y2iftasi = Apps
-    .doc = Wofür die Einträge des Docks stehen: die daran angehefteten Apps.
-
-d-35htarhp = Verantwortlich
-    .doc = Wer an den Tabs der Apps ist.
-
-d-wb23plj7-filter-owner = Verantwortlich
 
 d-uuewf2cr = Angeheftet
     .doc = Eine App auf einem Dock: wofür sie steht und ihr Name.
@@ -439,6 +198,20 @@ d-256inp7w-last = Zuletzt
 d-256inp7w-target = Ziel
 
 d-wjo4okew = Galerie
+    .w-more = Mehr
+    .w-copy-link = Link kopieren
+    .w-settings = Einstellungen
+    .w-gallery = Galerie
+    .w-basics = Grundlagen
+    .w-controls = Bedienelemente
+    .w-feedback = Feedback
+    .w-backlog = Backlog
+    .w-release-board = Release-Board
+    .w-data = Daten
+    .w-media = Medien
+    .w-places = Orte
+    .w-shell-parts = Rahmenteile
+    .w-charts-and-views = Diagramme und Ansichten
     .w-everyday-parts = Alltägliche Teile
     .w-collections = Sammlungen
     .w-media-and-places = Medien und Orte
@@ -446,14 +219,11 @@ d-wjo4okew = Galerie
     .w-your-own = Eigene
 
 d-7chkyi44 = Grundlagen
-    .w-basics = Grundlagen
-    .w-gallery = Galerie
-    .w-parts = Teile
-    .w-collections = Sammlungen
-    .w-list = Liste
-    .w-board = Board
-    .w-more = Mehr
-    .w-rename = Umbenennen
+    .w-text-rich-text-and-a-quote = Text, formatierter Text und ein Zitat, Buttons, Chips, eine Karte mit Fakten und ein Leerzustand.
+    .w-rich-text-and-a-quote = Formatierter Text und ein Zitat
+    .w-a-message-s-own-text-and = Der eigene Text einer Nachricht, und darüber die Nachricht, auf die sie antwortet.
+    .w-can-we-ship-the-screenshots-with = Können wir die Screenshots mit den Notizen ausliefern?
+    .w-replying-to = Antwort auf
     .w-delete = Löschen
     .w-text = Text
     .w-the-type-scale-a-title-body = Die Schriftskala: ein Titel, Fließtext in Lesebreite, eine Bildunterschrift.
@@ -491,23 +261,22 @@ d-7chkyi44 = Grundlagen
     .w-opened-from-the-panel-with-the = Aus dem Panel geöffnet, mit dem Weg zurück darüber.
 
 d-vvxmf5ve = Backlogliste
-    .w-backlog = Backlog
     .w-message-the-team = Nachricht ans Team
     .w-send = Senden
 
 d-7ptc3r7a = Eintragszeile
-    .w-can-we-ship-the-screenshots-with = Können die Screenshots mit den Notizen rausgehen?
-    .w-replying-to = Antwort an
     .w-copy-link = Link kopieren
     .w-delete = Löschen
     .w-reply = Antworten
 
 d-qczmqkvq = Release-Board
+    .w-a-board-a-list-per-stage = Ein Board, eine Liste je Phase, mit Karten, die eine App zwischen ihnen zieht.
     .w-release = Release
 
 d-glo4d4xp = Board-Eintragszeile
 
 d-z5ai6zk5 = Bedienelemente
+    .w-fields-switches-sliders-pickers-dates-and = Felder, Schalter, Regler, Auswahlen, Daten und Farben, jedes an das Feld des Dokuments gebunden.
     .w-boxes-and-switches = Kästchen und Schalter
     .w-send-by-email = Per E-Mail senden
     .w-repeat-weekly = Wöchentlich wiederholen
@@ -559,12 +328,19 @@ d-z5ai6zk5 = Bedienelemente
     .w-text = Text
     .w-open-with = Öffnen mit
     .w-bo = Bo
+    .w-note = Notiz
+    .w-shown-with-the-title = Steht beim Titel.
+    .w-a-note-for-the-team = Eine Notiz für das Team
+    .w-notes = Notizen
+    .w-anything-else-worth-saying = Noch etwas, das gesagt werden sollte
+    .w-signed = Unterschrieben
     .w-pictures = Bilder
     .w-small = Klein
     .w-regular = Normal
     .w-large = Groß
 
 d-wxq3apea = Daten
+    .w-tables-trees-conversations-cards-and-history = Tabellen, Bäume, Gespräche, Karten und Verlauf, jede aus einer Sammlung der App gelesen.
     .w-data-table = Datentabelle
     .w-a-collection-s-rows-in-columns = Die Zeilen einer Sammlung in Spalten: nach einer Spalte sortieren, eine Zeile wählen, sie öffnen.
     .w-files = Dateien
@@ -584,6 +360,8 @@ d-wxq3apea = Daten
     .w-what-happened-to-a-document-newest = Was mit einem Dokument geschah, das Neueste zuerst, jede Änderung zum Zurücknehmen.
 
 d-5cczuoub = Feedback
+    .w-banners-badges-progress-and-numbers-the = Banner, Badges, Fortschritt und Zahlen, die Fakten einer Sache und was noch lädt.
+    .w-shapes-and-lines-drawn-from-values = Formen und Linien aus Werten, in den Tinten des Themes.
     .w-toolbar = Werkzeugleiste
     .w-a-run-of-tools-one-on = Eine Reihe Werkzeuge: eins an, eins mit Neuigkeiten, ein Trenner und am Ende Teilen.
     .w-bold = Fett
@@ -659,6 +437,7 @@ d-5cczuoub = Feedback
     .w-the-shape-of-what-is-still = Die Form dessen, was noch lädt, damit nichts springt, wenn es ankommt.
 
 d-irl4ws35 = Orte
+    .w-places = Orte
     .w-notes = Notizen
     .w-a-place-on-the-canvas = Ein Ort auf der Fläche.
     .w-tasks = Aufgaben
@@ -671,6 +450,7 @@ d-irl4ws35 = Orte
     .w-a-window-on-the-shell-its = Ein Fenster auf dem Schreibtisch: seine Leiste, seine Bedienelemente, was es zeigt.
 
 d-tsxcwdoy = Medien
+    .w-pictures-players-a-library-codes-and = Bilder, Player, eine Bibliothek, Codes und Flächen, jede so, wie eine App sie platziert.
     .w-image = Bild
     .w-a-picture-at-its-own-shape = Ein Bild in seiner eigenen Form, so breit, wie die Spalte es lässt.
     .w-hills-at-dawn-the-sun-low = Hügel im Morgengrauen, die Sonne tief über dem letzten Kamm
@@ -731,6 +511,7 @@ d-tsxcwdoy = Medien
     .w-a-page = Eine Seite
 
 d-rygoropv = Rahmenteile
+    .w-the-parts-a-bar-or-a = Die Teile, aus denen eine Leiste oder ein Dock besteht: ihr Grund, ihre Tabs, ihre Chips und was sie zieht.
     .w-chrome = Rahmen
     .w-the-ground-a-bar-or-a = Der Grund, auf dem eine Leiste oder ein Dock steht, im Finish des Themes.
     .w-a-bar = Eine Leiste
@@ -757,18 +538,8 @@ d-rygoropv = Rahmenteile
     .w-section-divider = Abschnittstrenner
     .w-the-line-a-conversation-marks-its = Die Linie, mit der eine Unterhaltung ihre erste ungelesene Nachricht markiert.
 
-d-cq3vrgd7 = Eigene
-
-d-cdq37gtx = Eigenes
-    .doc = Komponenten, die eine App zu ihren eigenen macht, in jedem Abschnitt einen Schritt weiter: eine eigene Ansicht, die ein Aufrufer wie eine Komponente füllt, das Tempo, in dem eine Änderung abläuft, Formen in den Farben und der Schrift des Designs und die Diagramme und Graphen, die das Toolkit aus Werten zeichnet.
-    .noun = { $count ->
-        [one] Eigenes
-       *[other] Eigene
-    }
-
-d-qfb7dxgw = Titel
-
 d-juvyfisd = Eigenes
+    .w-views-an-app-fills-like-components = Ansichten, die eine App wie Komponenten füllt, Formen in den Tinten des Themes und lebendige Diagramme.
     .w-a-view-of-its-own = Eine eigene Ansicht
     .w-a-view-the-caller-fills-like = Eine Ansicht, die der Aufrufer wie eine Komponente füllt: benannte Optionen mit Vorgaben, ein Platz für eigenen Inhalt und ein Ereignis, auf das er antwortet.
     .w-ada-lovelace = Ada Lovelace
@@ -811,3 +582,183 @@ d-juvyfisd = Eigenes
     .w-waiting = Wartet
 
 d-xnmgxmkk = Speicherring
+
+d-5l4lnfd6 = Seitentitel
+    .w-basics = Grundlagen
+    .w-controls = Bedienelemente
+    .w-feedback = Feedback
+    .w-backlog = Backlog
+    .w-release-board = Release-Board
+    .w-data = Daten
+    .w-media = Medien
+    .w-places = Orte
+    .w-shell-parts = Rahmenteile
+    .w-your-own = Eigenes
+    .w-gallery = Galerie
+
+d-yy2pow4p = Eintrag notiert
+    .doc = Notiert das Element, das eine Zeile geöffnet hat, in der Antwort der Seite.
+
+d-o4oyc5hc = Gewählt
+    .doc = Notiert die Zeile, die die Tabelle gewählt hat, in der Antwort der Seite.
+
+d-5lkhzt52 = Geöffnet
+    .doc = Notiert die Zeile, die die Tabelle geöffnet hat, in der Antwort der Seite.
+
+d-rrw2whdg = Datei gewählt
+    .doc = Notiert die Datei, die der Baum gewählt hat, in der Antwort der Seite.
+
+d-zjikqce6 = Datei geöffnet
+    .doc = Notiert die Datei, die der Baum geöffnet hat, in der Antwort der Seite.
+
+d-bnhh2xt6 = Karte geöffnet
+    .doc = Notiert die Karte, die das Raster geöffnet hat, in der Antwort der Seite.
+
+d-6iv3za2p = Zurückgenommen
+    .doc = Notiert die Änderung, die der Verlauf zurückgenommen hat, in der Antwort der Seite.
+
+d-czoytffw = Änderung geöffnet
+    .doc = Notiert die Änderung, die der Verlauf geöffnet hat, in der Antwort der Seite.
+
+d-avk7hywt = Bild notiert
+    .doc = Notiert das Bild, das eine Karte geöffnet hat, in der Antwort der Seite.
+
+d-yy2pow4p-last = Letzte
+
+d-yy2pow4p-x = X
+
+d-o4oyc5hc-last = Letzte
+
+d-o4oyc5hc-row = Zeile
+
+d-5lkhzt52-last = Letzte
+
+d-5lkhzt52-row = Zeile
+
+d-rrw2whdg-last = Letzte
+
+d-rrw2whdg-node = Knoten
+
+d-zjikqce6-last = Letzte
+
+d-zjikqce6-node = Knoten
+
+d-bnhh2xt6-last = Letzte
+
+d-bnhh2xt6-card = Karte
+
+d-6iv3za2p-last = Letzte
+
+d-6iv3za2p-change = Änderung
+
+d-czoytffw-last = Letzte
+
+d-czoytffw-change = Änderung
+
+d-avk7hywt-last = Letzte
+
+d-avk7hywt-p = P
+
+d-3aihctss = Bedienelemente Anteil
+
+d-3tdz6w5q = Quelle der Medien
+
+d-4a4siddd = Bedienelemente Rand
+
+d-5fbblehc = Einträge des Backlogs
+    .doc = Die Einträge des Backlogs und die Zeile, die an seinem Fuß geschrieben wird.
+
+d-5rd763gr = Bedienelemente Dringlichkeit
+
+d-6fezt7u6 = Bedienelemente Schrift
+
+d-6jhjiv7f = Karten der Daten
+
+d-a3frzqb4 = Änderungen der Daten
+
+d-bfnlu2pr = Bedienelemente Raum
+
+d-cbwtcaei = Notiz der Grundlagen
+    .doc = Die Notiz, die das Textfeld der Grundlagen schreibt.
+
+d-kwuh65ek = Titel der Bedienelemente
+    .doc = Der Bericht, den die Seite der Bedienelemente bearbeitet: jedes Bedienelement dort schreibt eines dieser Felder.
+
+d-ljvsyqet = Bedienelemente gesperrt
+    .doc = Ob der Arbeitsbereich den Bericht gesperrt hält, was hier niemand ändern kann.
+
+d-frzefp4n = Einträge der Veröffentlichung
+    .doc = Die Einträge der Veröffentlichung, eine Liste pro Phase.
+
+d-upmpqtnv = Zeilen der Daten
+    .doc = Die Sammlungen der Datenseite: die Zeilen einer Tabelle, die Knoten eines Baums, die Zeilen eines Gesprächs, die Karten eines Rasters und die Änderungen eines Dokuments.
+
+d-mo2q5faz = Fotos der Medien
+    .doc = Die Bibliothek der Mediensesite, wie weit ihr Abspieler steht, und die Zeile, die geschrieben wird.
+
+d-wivzmqm3 = Apps der Shell
+    .doc = Die Einträge der Andockleiste auf der Shell-Seite.
+
+d-gfaekx4h = Bedienelemente per E-Mail
+
+d-wqgo62si = Bedienelemente wiederholen
+
+d-tov7hrtu = Bedienelemente verantwortlich
+
+d-pwg7s3ul = Bedienelemente Prüfung
+
+d-jg35gcbg = Bedienelemente Beginn
+
+d-ncm2bwon = Bedienelemente Zeit
+
+d-hy2q7by2 = Bedienelemente Ende
+
+d-izjturst = Bedienelemente Akzent
+
+d-jggqxsf4 = Bedienelemente Tastenkürzel
+
+d-icvcwg6u = Bedienelemente Empfänger
+
+d-socb2mg5 = Bedienelemente Notiz
+
+d-jxnozq52 = Bedienelemente Notizen
+
+d-h42gcfal = Bedienelemente unterzeichnet
+
+d-fqnths44 = Bedienelemente Hintergrund
+
+d-rbbe5kqg = Entwurf des Backlogs
+
+d-oj2bybhm = Dateien der Daten
+
+d-emr3i6eu = Nachrichten der Daten
+
+d-qd46u3ke = Position der Medien
+
+d-x3epwv5u-filter-controls_background = Bedienelemente Hintergrund
+
+d-x3epwv5u-filter-controls_by_email = Bedienelemente per E-Mail
+
+d-x3epwv5u-filter-controls_clock = Bedienelemente Zeit
+
+d-x3epwv5u-filter-controls_ends = Bedienelemente Ende
+
+d-x3epwv5u-filter-controls_lettering = Bedienelemente Schrift
+
+d-x3epwv5u-filter-controls_locked = Bedienelemente gesperrt
+
+d-x3epwv5u-filter-controls_margin = Bedienelemente Rand
+
+d-x3epwv5u-filter-controls_owner = Bedienelemente verantwortlich
+
+d-x3epwv5u-filter-controls_repeating = Bedienelemente wiederholen
+
+d-x3epwv5u-filter-controls_reviewer = Bedienelemente Prüfung
+
+d-x3epwv5u-filter-controls_share = Bedienelemente Anteil
+
+d-x3epwv5u-filter-controls_starts = Bedienelemente Beginn
+
+d-x3epwv5u-filter-controls_urgency = Bedienelemente Dringlichkeit
+
+d-x3epwv5u-filter-media_at = Position der Medien

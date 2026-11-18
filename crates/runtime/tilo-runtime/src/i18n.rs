@@ -1,5 +1,5 @@
 //! The runtime's Fluent catalogue: the words it shows or exports itself
-//! (the device consent prompt and the device grants), resolved in the
+//! (the device consent prompt), resolved in the
 //! person's locale, `en-US` where a translation lacks a message.
 
 use ui::i18n::{ArgValue, EmbeddedCatalog};
@@ -15,10 +15,7 @@ pub(crate) fn device_args(
 ) -> [(&'static str, ArgValue); 2] {
     [
         ("app", app.into()),
-        (
-            "device",
-            crate::device_grants::device_cap(device).name().into(),
-        ),
+        ("device", crate::apps::device_cap(device).name().into()),
     ]
 }
 

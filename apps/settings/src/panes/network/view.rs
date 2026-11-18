@@ -113,7 +113,7 @@ impl Page<'_> {
 
     pub(super) fn bind_on_row<I: 'static, C: ActionControl<I>>(
         &self,
-        row: &ui::tilo_actions::ResourceSpec,
+        row: &(impl ui::tilo_actions::Exports + ?Sized),
         control: C,
         effect: impl Binds<SettingsEffect, I>,
     ) -> C {
@@ -123,7 +123,7 @@ impl Page<'_> {
     pub(super) fn bind_row<C: ActionControl<()>>(
         &self,
         control: C,
-        row: &ui::tilo_actions::ResourceSpec,
+        row: &(impl ui::tilo_actions::Exports + ?Sized),
         effect: impl Into<SettingsEffect>,
     ) -> C {
         crate::on_row::bind_invocation(&self.dispatcher, row, control, effect)
@@ -131,7 +131,7 @@ impl Page<'_> {
 
     pub(super) fn row_invocation(
         &self,
-        row: &ui::tilo_actions::ResourceSpec,
+        row: &(impl ui::tilo_actions::Exports + ?Sized),
         effect: impl Into<SettingsEffect>,
     ) -> Option<ui::tilo_actions::ActionBinding<()>> {
         crate::on_row::invocation(&self.dispatcher, row, effect)
@@ -192,7 +192,7 @@ impl Page<'_> {
 
     pub(super) fn row_button_row(
         &self,
-        on: &ui::tilo_actions::ResourceSpec,
+        on: &(impl ui::tilo_actions::Exports + ?Sized),
         id: &str,
         label: &str,
         effect: impl Into<crate::effects::SettingsEffect>,
@@ -359,7 +359,7 @@ impl Page<'_> {
     fn network_row(&self, net: &WifiNetworkInfo) -> El {
         let detail = network_detail(net);
         let level = SignalLevel::from_bars(net.signal);
-        let resource = self.wifi_live(&net.ssid).into_resource();
+        let resource = self.wifi_live(&net.ssid);
         let page = self.bind_row(
             Button::icon_only(
                 &format!("settings.network.page.{}", net.ssid),
@@ -678,7 +678,7 @@ impl Page<'_> {
         match self.wake_settings.get(&profile.uuid) {
             Some(Ok(status)) => {
                 let uuid = profile.uuid.clone();
-                let live = self.profile_live(profile).into_resource();
+                let live = self.profile_live(profile);
                 let toggle = self.bind_on_row(
                     &live,
                     Toggle::from_state(&LocalState::new(status.configured))

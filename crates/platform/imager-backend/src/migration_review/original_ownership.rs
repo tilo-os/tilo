@@ -548,10 +548,10 @@ mod tests {
             // The setup held its settings profile in this Home; its lock stays.
             let records =
                 tilo_settings_records::Records::of(&tilo_settings_records::profile_root().unwrap());
-            fs::create_dir_all(records.dir()).unwrap();
+            fs::create_dir_all(records.dir().join("person")).unwrap();
             let [lock, _] = records.runtime_files();
             fs::write(&lock, b"").unwrap();
-            fs::write(records.dir().join("person.automerge"), b"real settings").unwrap();
+            fs::write(records.dir().join("person/state.automerge"), b"real settings").unwrap();
             fs::write(home.join("document"), b"real document").unwrap();
             let proofs = OriginalPreparation::review(&home)
                 .unwrap()

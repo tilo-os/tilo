@@ -537,6 +537,13 @@ impl Session {
         if let Some(launch) = &options.launch {
             launch.attach(desktop.clone());
             launch.set_person(options.person.clone());
+            if let Some(consents) = options
+                .desktop
+                .as_ref()
+                .and_then(|desktop| desktop.consents())
+            {
+                launch.answer_devices_with(consents.grants().clone());
+            }
         }
         // One process per app per workspace: its later windows open in the
         // process the session started, with connections of their own. A
@@ -649,7 +656,7 @@ impl Session {
         // an app holds shows everyone's writes, and the broker below shows
         // this device's own.
         let channels_fanout =
-            std::sync::Arc::new(tilo_action_broker::collab_broker::FanoutState::new());
+            std::sync::Arc::new(tilo_workspace_service::apps::collab_broker::FanoutState::new());
         let key_link = crate::workspace_keys::KeyLink::new();
         // Search reads the workspaces' records off the records themselves,
         // with no window of their app running: what this device holds is
@@ -948,7 +955,6 @@ impl Session {
             person: options.person.clone(),
             activities: Rc::clone(&activities),
             surfaces,
-            sync: sync.clone(),
             tray: tray.clone(),
             engine: engine.clone(),
             // The invite sheet is the session's own surface: the shell asks for it here.
@@ -2331,7 +2337,8 @@ impl Session {
     #[must_use]
     pub fn action_broker(
         &self,
-    ) -> Option<std::sync::Arc<tilo_action_broker::collab_app_broker::AppBrokerState>> {
+    ) -> Option<std::sync::Arc<tilo_workspace_service::apps::collab_app_broker::AppBrokerState>>
+    {
         self.app_wire.as_ref().and_then(AppWire::agent_broker)
     }
 

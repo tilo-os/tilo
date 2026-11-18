@@ -7,9 +7,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// The devices a plan names, as the launchers on every platform read them.
+pub use collab_types::caps::DeviceCap;
 use collab_types::caps::{
-    Access, CapDecision, CapOverride, DeviceCap, Effect, LaunchGrants, ResourceRef, Scope,
-    decide_app,
+    Access, CapDecision, CapOverride, Effect, LaunchGrants, ResourceRef, Scope, decide_app,
 };
 
 /// How an app may take part in the space it is launched into.

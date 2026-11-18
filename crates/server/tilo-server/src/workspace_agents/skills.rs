@@ -180,12 +180,14 @@ fn lets(agent: &Agent, workspace: &str, verb: &str, on: Option<&str>) -> bool {
                 .action(verb),
         );
     }
-    let grants = tilo_action_policy::roles::agent_grants(
-        workspace,
+    let mut grants =
+        tilo_action_policy::Acting::handed_agent(agent.id.0.as_str(), agent.keeper.as_str())
+            .handed_preset(workspace);
+    grants.extend(tilo_action_policy::roles::agent_bound(
         &agent.id.0,
         &agent.keeper,
         &agent.turn_rules(workspace),
-    );
+    ));
     let party = Party::new(vec![Grantee::agent(agent.id.0.clone())], &grants);
     // Its grants hold until they are taken back: no time decides them.
     nodes

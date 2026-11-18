@@ -368,6 +368,12 @@ pub struct CataloguePage {
     /// The provider stopped at a work limit, not at the end.
     #[serde(default)]
     pub budget_exhausted: bool,
+    /// Why the app the query named could not be listed: what it keeps did not
+    /// mount on this device, or the caller may not read it now. Such a page holds
+    /// no rows, and a caller tells the reason rather than taking the app for one
+    /// that lists nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<String>,
 }
 
 impl CataloguePage {
@@ -397,6 +403,17 @@ impl CataloguePage {
         Self {
             revision,
             stale_cursor: true,
+            ..Self::default()
+        }
+    }
+
+    /// A page at `revision` whose app `reason` says could not be listed:
+    /// no rows, and the reason in their place.
+    #[must_use]
+    pub fn unavailable(revision: String, reason: String) -> Self {
+        Self {
+            revision,
+            unavailable: Some(reason),
             ..Self::default()
         }
     }

@@ -27,8 +27,9 @@ type State = Rc<dyn Any>;
 /// An action of the parts' resource.
 type Action = Box<dyn Any>;
 
-/// Where an action happens, and the part it changes.
-type Route = (Option<String>, Result<u64, String>);
+/// Where an action happens, and the part the app places it in, when it
+/// places it itself ([`Chained::part_for`]).
+type Route = (Option<String>, Option<Result<u64, String>>);
 
 type ReadPart = fn(&ResourceStore, &DocumentId) -> Result<Box<dyn HeldPart>, String>;
 type Prepare = fn(&dyn Any, &dyn Any, &dyn Any, &ActionInvoker) -> Result<Action, String>;
@@ -79,6 +80,15 @@ pub(super) struct PartType {
     /// Where in the app's resource a prepared action happens
     /// ([`Chained::place`]), and the part it changes ([`Chained::part_for`]).
     pub(super) route: RouteOf,
+    /// Each item a part's state keeps.
+    pub(super) each_item: super::place::EachItem,
+    /// The item an action changes, or the one the new item it makes is
+    /// kept beside ([`Chained::beside`]).
+    pub(super) item: fn(&dyn Any) -> Option<tilo_resource::Id>,
+    /// The items a verb over several lists ([`Resource::listed_items`]).
+    pub(super) listed_items: fn(&dyn Any) -> Option<Vec<Option<tilo_resource::Id>>>,
+    /// That verb over only the entries at the positions given.
+    pub(super) keep_listed: fn(&dyn Any, &[usize]) -> Option<Action>,
     /// What an action is for the grants deciding it.
     pub(super) need: fn(&dyn Any) -> Option<ActionNeed>,
     pub(super) verb: fn(&dyn Any) -> Option<String>,
@@ -117,12 +127,25 @@ pub(super) struct PartType {
     pub(super) history: fn(&PartEdit) -> Box<dyn tilo_actions::Action>,
     /// What a part's state publishes, under the chain's address.
     pub(super) publish: fn(&str, &dyn Any) -> tilo_actions::ResourceSpec,
+    /// The same without its children ([`tilo_resource::publish_head`]).
+    pub(super) publish_head: fn(&str, &dyn Any) -> tilo_actions::ResourceSpec,
+    /// A part's children in the parts a publisher keeps between versions
+    /// ([`tilo_resource::Resource::children_parts`]).
+    pub(super) children: fn(&dyn Any) -> tilo_resource::items::ChildrenParts,
+    /// The parts' resource as a publisher of its items sees it.
+    pub(super) resource: fn() -> super::super::root::ResourceType,
     /// [`Chained::places`] published, from the app's resource and the parts.
     pub(super) places: fn(&dyn Any, &dyn Any) -> Vec<tilo_actions::ResourceSpec>,
     pub(super) search: fn(&dyn Any) -> Vec<tilo_resource::SearchEntry>,
     pub(super) search_over: fn(&dyn Any, &dyn Any) -> Vec<tilo_resource::SearchEntry>,
     pub(super) prepare_read: fn(&mut Filter, &dyn Any, &dyn Any) -> Result<(), String>,
+    /// [`Chained::read_over`], from the app's resource and the parts.
+    pub(super) read_over: fn(&dyn Any, &dyn Any, &str) -> ReadOver,
 }
+
+/// What [`Chained::read_over`] answers: the item's content, or why not;
+/// `None` for an item a part keeps.
+type ReadOver = Option<Result<serde_json::Value, String>>;
 
 /// The table of `P`, one for the whole program.
 pub(super) struct Of<P>(std::marker::PhantomData<P>);
@@ -143,6 +166,10 @@ impl<P: Chained> Of<P> {
         typed: typed::<P>,
         prepare: prepare::<P>,
         route: route::<P>,
+        each_item: each_item::<P>,
+        item: item::<P>,
+        listed_items: listed_items::<P>,
+        keep_listed: keep_listed::<P>,
         need: need::<P>,
         verb: verb::<P>,
         is_step: is_step::<P>,
@@ -162,10 +189,14 @@ impl<P: Chained> Of<P> {
         clone: clone::<P>,
         history: history::<P>,
         publish: publish::<P>,
+        publish_head: publish_head::<P>,
+        children: children::<P>,
+        resource: super::super::root::ResourceType::of::<P>,
         places: places::<P>,
         search: search::<P>,
         search_over: search_over::<P>,
         prepare_read: prepare_read::<P>,
+        read_over: read_over::<P>,
     };
 }
 
@@ -174,6 +205,10 @@ pub(super) trait HeldPart {
     fn sync(&self, doc: &tilo_resource::Doc) -> Result<bool, tilo_resource::ModelError>;
     fn take_change(&self);
     fn state(&self) -> Rc<dyn Any>;
+    /// What the part's state holds: its revision and its loads
+    /// ([`Live::revision`], [`Live::loads`]), which move with every change
+    /// to what it says.
+    fn held_at(&self) -> (u64, u64);
     fn as_any(&self) -> &dyn Any;
 }
 
@@ -188,6 +223,10 @@ impl<R: Resource> HeldPart for Live<R> {
 
     fn state(&self) -> Rc<dyn Any> {
         self.get()
+    }
+
+    fn held_at(&self) -> (u64, u64) {
+        (Live::revision(self), Live::loads(self))
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -304,19 +343,37 @@ fn prepare<P: Chained>(
     Ok(Box::new(action))
 }
 
-fn route<P: Chained>(
-    action: &dyn Any,
-    base: &dyn Any,
-    parts: &dyn Any,
-) -> (Option<String>, Result<u64, String>) {
+fn route<P: Chained>(action: &dyn Any, base: &dyn Any, parts: &dyn Any) -> Route {
     let action = match action_of::<P>(action) {
         Ok(action) => action,
-        Err(error) => return (None, Err(error)),
+        Err(error) => return (None, Some(Err(error))),
     };
     let place = base_of::<P>(base)
         .ok()
         .and_then(|base| P::place(action, base));
     (place, P::part_for(action, parts_of::<P>(parts)))
+}
+
+pub(super) fn each_item<P: Chained>(
+    state: &dyn Any,
+    found: &mut dyn FnMut(tilo_resource::Id, &dyn Any, &'static tilo_resource::table::ModelTable),
+) {
+    if let Some(table) = P::RESOURCE_TABLE {
+        tilo_resource::stored_items::each_item(table, state, found);
+    }
+}
+
+fn item<P: Chained>(action: &dyn Any) -> Option<tilo_resource::Id> {
+    let action = action.downcast_ref::<P::Action>()?;
+    P::beside(action).or_else(|| P::action_item(action))
+}
+
+fn listed_items<P: Chained>(action: &dyn Any) -> Option<Vec<Option<tilo_resource::Id>>> {
+    P::listed_items(action.downcast_ref()?)
+}
+
+fn keep_listed<P: Chained>(action: &dyn Any, keep: &[usize]) -> Option<Action> {
+    P::keep_listed(action.downcast_ref()?, keep).map(|action| Box::new(action) as Action)
 }
 
 fn need<P: Chained>(action: &dyn Any) -> Option<ActionNeed> {
@@ -460,6 +517,25 @@ fn publish<P: Chained>(id: &str, state: &dyn Any) -> tilo_actions::ResourceSpec 
     }
 }
 
+fn publish_head<P: Chained>(id: &str, state: &dyn Any) -> tilo_actions::ResourceSpec {
+    match state.downcast_ref::<P::State>() {
+        Some(state) => tilo_resource::publish_head::<P>(id, P::LABEL, state),
+        None => tilo_actions::ResourceSpec::new(id, P::KIND, P::LABEL),
+    }
+}
+
+fn children<P: Chained>(state: &dyn Any) -> tilo_resource::items::ChildrenParts {
+    match state.downcast_ref::<P::State>() {
+        Some(state) => P::children_parts(state),
+        None => tilo_resource::items::ChildrenParts {
+            others: Vec::new(),
+            kept: Rc::default(),
+            items: Vec::new(),
+            item_actions: Vec::new(),
+        },
+    }
+}
+
 fn places<P: Chained>(base: &dyn Any, parts: &dyn Any) -> Vec<tilo_actions::ResourceSpec> {
     let Ok(base) = base_of::<P>(base) else {
         return Vec::new();
@@ -476,6 +552,13 @@ fn search_over<P: Chained>(base: &dyn Any, parts: &dyn Any) -> Vec<tilo_resource
         return Vec::new();
     };
     P::search_over(base, parts_of::<P>(parts))
+}
+
+fn read_over<P: Chained>(base: &dyn Any, parts: &dyn Any, item: &str) -> ReadOver {
+    match base_of::<P>(base) {
+        Ok(base) => P::read_over(base, parts_of::<P>(parts), item),
+        Err(error) => Some(Err(error)),
+    }
 }
 
 fn prepare_read<P: Chained>(

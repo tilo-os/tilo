@@ -98,7 +98,6 @@ pub mod installed_consumers;
 pub mod journey_media;
 pub mod journey_promotion;
 pub mod journey_transfer;
-pub mod known_folders;
 pub mod media_capacity;
 #[cfg(target_os = "linux")]
 pub mod media_layout;

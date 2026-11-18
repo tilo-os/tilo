@@ -70,6 +70,13 @@ impl Listing {
         } else {
             item_field_names(table, part.kind, parts)
         };
+        // `*` is every field the items have: what a caller with no screen writes
+        // to read them all, answered with the fields the listing knows.
+        let asked: Vec<String> = if asked.iter().any(|name| name == "*") {
+            known.clone()
+        } else {
+            asked
+        };
         let asked: Vec<String> = if read.fields.is_some() {
             asked
         } else {

@@ -716,6 +716,31 @@ final class TiloSourceTests: XCTestCase {
         XCTAssertEqual(words(held[1]), "Maya asks for the October numbers.")
     }
 
+    func testWhatFollowsAnAnsweredQuestionStandsUnderItAndCarriesNoLine() async throws {
+        try await start(.agent(id: "assistant", name: "Assistant"))
+        try await enter(device: true, "window.byKind = true; window.holds = 60000")
+        // She asks. Her assistant asks her before it acts, and its reply ends there. She allows it: what her
+        // server then tells the assistant is no piece of her conversation, and the assistant's next words are
+        // its answer to that.
+        _ = try await page("""
+            direct({id: 'm_1', author: {person: ADA}, text: 'Send the numbers to Maya.'});
+            direct({id: 'm_r1', author: {agent: 'assistant'}, text: 'I asked you below.', parent: 'm_1'});
+            direct({id: 'm_q', author: {agent: 'assistant'}, text: 'I need your answer before I do this: Send (Mail).',
+              question: {kind: 'choice', person: ADA, answers: [{id: 'allow', label: ''}, {id: 'deny', label: ''}], detail: '',
+                         answered: {answer: 'allow'}, outcome: null, withdrawn: null}});
+            direct({id: 'm_ask_q', author: {agent: 'question'}, text: 'Your person allowed it. (for the assistant)',
+              cause: {kind: 'news', label: 'I need your answer before I do this: Send (Mail).', key: 'question:m_q', person: {person: ADA}}});
+            direct({id: 'm_r2', author: {agent: 'assistant'}, text: 'It is sent.', parent: 'm_ask_q'})
+            """)
+        try await until("what follows the answer is held") { self.held.last.map(self.words) == "It is sent." }
+        // In the order things happened: her words, the reply that ended where it asked, the question, what followed.
+        XCTAssertEqual(held.map(words), ["Send the numbers to Maya.", "I asked you below.",
+                                         "I need your answer before I do this: Send (Mail).", "It is sent."])
+        // A task line names a task. The question's own sentence is none, and nothing is watched here.
+        XCTAssertNil(held.last?.task, "what follows an answered question carries no line made of the question's sentence")
+        XCTAssertTrue(held.allSatisfy { $0.task == nil })
+    }
+
     func testALogThatMovesOnceWithNothingForThisDeviceDoesNotEndTheFollowing() async throws {
         try await start(.agent(id: "assistant", name: "Assistant"))
         try await enter(device: true, "window.byKind = true; window.holds = 60000")
@@ -1277,7 +1302,7 @@ final class TiloSourceTests: XCTestCase {
         let whose = "You are adding this device to Ada Lovelace’s devices. If that is not you, stop."
         let server = "The server that adds it is this site’s own, tilo.test."
         _ = try await page("askWhose(whose, server); return ''", ["whose": whose, "server": server])
-        let ask = PairingAsk(heading: "Add this device?", said: [whose, server], go: "Add this device", stop: "Stop")
+        let ask = PairingAsk(heading: "Add this device?", said: [whose, server], go: "Add this device", stop: "Stop", site: Self.site)
         try await until("the app stands at the question") { self.sessions.last == .asked(ask) }
         // Nothing answers for the person.
         try await Task.sleep(for: .milliseconds(300))

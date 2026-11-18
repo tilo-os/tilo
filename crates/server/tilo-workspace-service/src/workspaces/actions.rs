@@ -91,9 +91,9 @@ use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 
 /// Listing the invitations still redeemable: part of inviting.
-pub(crate) const INVITATIONS: &str = "invitation.list";
+pub const INVITATIONS: &str = "invitation.list";
 /// Cancelling an unredeemed invitation: part of inviting.
-pub(crate) const CANCEL_INVITATION: &str = "invitation.cancel";
+pub const CANCEL_INVITATION: &str = "invitation.cancel";
 /// The people in the workspace and their roles: what whoever invites sees
 /// before and after inviting.
 pub(crate) const MEMBERS: &str = "member.list";
@@ -120,21 +120,24 @@ pub(crate) const UNLIST: &str = "wait-list.remove";
 /// Mailing the invitation issued for an address on the wait list to it,
 /// where the entry sends mail: part of inviting.
 pub(crate) const MAIL_INVITATION: &str = "wait-list.mail";
-/// The holders holding the workspace: the one it was made on, which governs
-/// it, and each other holder its owners had hold it as well.
-pub(crate) const HOSTS: &str = "host.list";
-/// Having another holder, named by its site (`https://tilo.sh`), hold the
+/// The servers keeping the workspace: the one asked first, then each other
+/// server its owners had keep it as well.
+pub(crate) const SERVERS: &str = "server.list";
+/// Having another server, named by its site (`https://tilo.sh`), keep the
 /// workspace as well: both keep it, a change on either reaches the other, and
-/// its members reach it at either. The holder takes it as its own rules say.
-pub(crate) const ADD_HOST: &str = "host.add";
-/// Having a holder hold the workspace no more.
-pub(crate) const REMOVE_HOST: &str = "host.remove";
+/// its members reach it at either. The server takes it as its own rules say.
+pub(crate) const ADD_SERVER: &str = "server.add";
+/// Having a server keep the workspace no more.
+pub(crate) const REMOVE_SERVER: &str = "server.remove";
+/// Moving the workspace from one server to another: the new one keeps it
+/// as well, then the old one keeps it no more.
+pub(crate) const MOVE_SERVER: &str = "server.move";
 /// How many copies the workspace wants kept: key holders, which hold its
 /// keys and take its work, and stores, which keep its ciphertext.
 pub(crate) const SET_COPIES: &str = "copies.set";
-/// What checks choosing the workspace's hosts: its owners', which no grant of
-/// its governance gives ([`Workspaces::chooses_hosts`]).
-const CHOOSES_HOSTS: &str = "choose-hosts";
+/// What checks choosing the workspace's servers: its owners', which no grant
+/// of its governance gives ([`Workspaces::chooses_servers`]).
+const CHOOSES_SERVERS: &str = "choose-servers";
 /// Listing the workspace as a public workspace, with its description and the
 /// role everyone who joins gets.
 pub(crate) const PUBLISH: &str = "publish";
@@ -203,7 +206,7 @@ struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 26] = [
+const VERBS: [Verb; 27] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -261,30 +264,37 @@ const VERBS: [Verb; 26] = [
         params: mail_invitation_params,
     },
     Verb {
-        id: HOSTS,
-        label: "List the hosts holding it",
-        check: CHOOSES_HOSTS,
+        id: SERVERS,
+        label: "List the servers keeping it",
+        check: CHOOSES_SERVERS,
         kind: ActionKind::Read,
         params: Vec::new,
     },
     Verb {
-        id: ADD_HOST,
-        label: "Have another host hold it",
-        check: CHOOSES_HOSTS,
+        id: ADD_SERVER,
+        label: "Have another server keep it",
+        check: CHOOSES_SERVERS,
         kind: roles::GOVERNANCE_KIND,
-        params: add_host_params,
+        params: add_server_params,
     },
     Verb {
-        id: REMOVE_HOST,
-        label: "Have a host hold it no more",
-        check: CHOOSES_HOSTS,
+        id: REMOVE_SERVER,
+        label: "Have a server keep it no more",
+        check: CHOOSES_SERVERS,
         kind: roles::GOVERNANCE_KIND,
-        params: remove_host_params,
+        params: remove_server_params,
+    },
+    Verb {
+        id: MOVE_SERVER,
+        label: "Move it to another server",
+        check: CHOOSES_SERVERS,
+        kind: roles::GOVERNANCE_KIND,
+        params: move_server_params,
     },
     Verb {
         id: SET_COPIES,
         label: "Choose how many copies it keeps",
-        check: CHOOSES_HOSTS,
+        check: CHOOSES_SERVERS,
         kind: roles::GOVERNANCE_KIND,
         params: copies_params,
     },
@@ -485,12 +495,12 @@ fn add_member_params() -> Vec<ActionParam> {
     ]
 }
 
-fn add_host_params() -> Vec<ActionParam> {
+fn add_server_params() -> Vec<ActionParam> {
     vec![
         ActionParam::required(
             "origin",
             ParamType::Text,
-            "The other host's site, like https://tilo.sh. You must be let in there, and it may \
+            "The other server's site, like https://tilo.sh. You must be let in there, and it may \
              refuse by its own rules.",
         ),
         ActionParam::optional(
@@ -523,13 +533,30 @@ fn copies_params() -> Vec<ActionParam> {
     ]
 }
 
-fn remove_host_params() -> Vec<ActionParam> {
+fn remove_server_params() -> Vec<ActionParam> {
     vec![ActionParam::required(
-        "host",
+        "server",
         ParamType::Text,
-        "The host's site, like https://tilo.sh, or its device key (64 hex characters) as the \
-         host list names it.",
+        "The server's site, like https://tilo.sh, or its device key (64 hex characters) as the \
+         server list names it.",
     )]
+}
+
+fn move_server_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "server",
+            ParamType::Text,
+            "The server it moves from: its site, like https://tilo.sh, or its device key (64 hex \
+             characters) as the server list names it.",
+        ),
+        ActionParam::required(
+            "origin",
+            ParamType::Text,
+            "The site of the server it moves to, like https://tilo.sh. You must be let in there, \
+             and it may refuse by its own rules; the workspace then stays where it was.",
+        ),
+    ]
 }
 
 fn wait_list_entry_param() -> ActionParam {
@@ -1287,8 +1314,8 @@ impl Workspaces {
                     if verb.check.is_empty() {
                         return verb.id == NAME && speaks_for_themselves(caller);
                     }
-                    if verb.check == CHOOSES_HOSTS {
-                        return Self::chooses_hosts(&workspace, &device);
+                    if verb.check == CHOOSES_SERVERS {
+                        return Self::chooses_servers(&workspace, &device);
                     }
                     self.permits(
                         &device,
@@ -1543,7 +1570,7 @@ impl Workspaces {
             // themselves, in [`NAME`]'s case, and nobody else.
             let permitted = match check {
                 "" => true,
-                CHOOSES_HOSTS => Self::chooses_hosts(&workspace, &device),
+                CHOOSES_SERVERS => Self::chooses_servers(&workspace, &device),
                 check => self.permits(
                     &device,
                     Some(&workspace),
@@ -1582,7 +1609,7 @@ impl Workspaces {
                 self.governance_invitations(action, call).await
             }
             ADD_MEMBER => self.governance_add_member(call).await,
-            HOSTS | ADD_HOST | REMOVE_HOST | SET_COPIES => {
+            SERVERS | ADD_SERVER | REMOVE_SERVER | MOVE_SERVER | SET_COPIES => {
                 self.governance_hosts(action, call).await
             }
             WAIT_LIST | UNLIST | MAIL_INVITATION => self.governance_wait_list(action, call).await,
@@ -1972,8 +1999,8 @@ impl Workspaces {
             .into())
     }
 
-    /// The workspace's hosts, having another hold it as well, and having one
-    /// hold it no more: each answers the hosts as they are then. Choosing how
+    /// The workspace's servers, having another keep it as well, and having one
+    /// keep it no more: each answers the servers as they are then. Choosing how
     /// many copies it keeps answers the same, and each says where its copies
     /// stand.
     async fn governance_hosts(
@@ -1985,22 +2012,31 @@ impl Workspaces {
             workspace, args, ..
         } = call;
         let confirmed = match action {
-            ADD_HOST => {
+            ADD_SERVER => {
                 let role = args
                     .text("role")?
                     .map(|role| serde_json::from_value(Value::String(role.to_owned())))
                     .transpose()
                     .map_err(|_| invalid("`role` is `key_holder` or `store`"))?
                     .unwrap_or(tilo_peer_state::CopyRole::KeyHolder);
-                self.add_host(workspace, args.required_text("origin")?, role)
+                self.add_server(workspace, args.required_text("origin")?, role)
                     .await
                     .map_err(|error| refused(&error))?;
                 None
             }
-            REMOVE_HOST => Some(
-                self.remove_host(workspace, args.required_text("host")?)
+            REMOVE_SERVER => Some(
+                self.remove_server(workspace, args.required_text("server")?)
                     .await
                     .map_err(|error| refused(&error))?,
+            ),
+            MOVE_SERVER => Some(
+                self.move_server(
+                    workspace,
+                    args.required_text("server")?,
+                    args.required_text("origin")?,
+                )
+                .await
+                .map_err(|error| refused(&error))?,
             ),
             SET_COPIES => {
                 let count = |name| {
@@ -2031,7 +2067,7 @@ impl Workspaces {
             .copies(workspace)
             .await
             .map_err(|error| refused(&error.to_string()))?;
-        let mut answered = json!({ "workspace": workspace, "hosts": hosts });
+        let mut answered = json!({ "workspace": workspace, "servers": hosts });
         if let Some(fields) = answered.as_object_mut() {
             fields.insert("copies".into(), json!(copies));
         }

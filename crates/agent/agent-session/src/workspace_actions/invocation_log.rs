@@ -7,6 +7,7 @@ use std::sync::atomic::AtomicBool;
 
 use tilo_actions::remote::{Caller, InvokeRequest};
 use tilo_actions::{InvocationId, InvocationUpdate};
+use tilo_lock::MutexRecover as _;
 
 use tilo_actions::remote::ActorPlace;
 
@@ -38,6 +39,9 @@ pub(super) struct Entry {
     /// The workspace it was asked in, once admitted there: what a listing of
     /// that workspace's invocations reads it by ([`super::invocations`]).
     pub(super) workspace: Option<tilo_server_protocol::WorkspaceId>,
+    /// It only reads: a read is no invocation of the workspace, whatever it
+    /// answers, so a listing leaves it out.
+    pub(super) reads: bool,
     /// When it was asked for, in milliseconds since the Unix epoch.
     pub(super) started_ms: i64,
     /// When the host first saw it ended ([`InvocationLog::stamp_ended`]).
@@ -55,6 +59,43 @@ pub(super) struct InvocationLog {
     /// The invocations running now, each on the thread serving its
     /// workspace.
     pub(super) running: HashSet<InvocationId>,
+    /// Bumped whenever an invocation's state moves; a follow of one waits on
+    /// it instead of asking again on a timer.
+    moved: Arc<Moves>,
+}
+
+/// The log's moves: a generation a follow waits past, and what wakes it. Kept
+/// apart from the log's own lock so a follow waits without holding it.
+#[derive(Default)]
+pub(super) struct Moves {
+    at: std::sync::Mutex<u64>,
+    changed: std::sync::Condvar,
+}
+
+impl Moves {
+    /// The generation now: a follow reads it with the state it saw, then
+    /// waits past it.
+    pub(super) fn generation(&self) -> u64 {
+        *self.at.lock_recover()
+    }
+
+    /// Wait, at most `bound`, until an invocation's state moves past
+    /// `generation`.
+    pub(super) fn wait(&self, generation: u64, bound: std::time::Duration) {
+        let moved = self.at.lock_recover();
+        let _ = self
+            .changed
+            .wait_timeout_while(moved, bound, |now| *now == generation);
+    }
+
+    /// Note that an invocation's state moved: what wakes the follows
+    /// waiting on it.
+    fn moved(&self) {
+        let mut at = self.at.lock_recover();
+        *at = at.saturating_add(1);
+        drop(at);
+        self.changed.notify_all();
+    }
 }
 
 impl InvocationLog {
@@ -94,11 +135,13 @@ impl InvocationLog {
                 approval: None,
                 about: None,
                 workspace: None,
+                reads: false,
                 started_ms: now_ms(),
                 ended_ms: None,
                 written: Vec::new(),
             },
         );
+        self.moved();
         true
     }
 
@@ -116,6 +159,24 @@ impl InvocationLog {
     pub(super) fn forget(&mut self, id: &InvocationId) {
         self.entries.remove(id);
         self.order.retain(|candidate| candidate != id);
+        self.moved();
+    }
+
+    /// The generation of the log's moves, read with the state it is read
+    /// with.
+    pub(super) fn generation(&self) -> u64 {
+        self.moved.generation()
+    }
+
+    /// What a follow waits on, taken out so it waits without this log's lock.
+    pub(super) fn moves(&self) -> Arc<Moves> {
+        Arc::clone(&self.moved)
+    }
+
+    /// Note that an invocation's state moved: what wakes the follows
+    /// waiting on it.
+    pub(super) fn moved(&self) {
+        self.moved.moved();
     }
 
     /// `invocation` ends with `update`, the record it acted on showing where
@@ -130,6 +191,7 @@ impl InvocationLog {
             entry.update = update.clone();
             entry.left_at = left_at;
         }
+        self.moved();
     }
 
     pub(super) fn owned(&self, caller: &Caller, id: &InvocationId) -> Option<&Entry> {

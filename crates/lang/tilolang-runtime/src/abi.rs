@@ -271,6 +271,7 @@ imports! {
     (DayWeekday, "day_weekday", "i", "l"),
     (DayStartOfWeek, "day_start_of_week", "i", "i"),
     (DayParse, "day_parse", "ii", "i"),
+    (DateShow, "date_show", "ii", "i"),
     (TimeParse, "time_parse", "ii", "i"),
     // A draw (`uses random`).
     (RandomInt, "random_int", "ll", "l"),

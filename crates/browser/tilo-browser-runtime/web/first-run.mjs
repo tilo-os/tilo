@@ -92,7 +92,7 @@ const SETUP_STEPS = new Set(['later', 'start', 'waiting', 'expired', 'connected'
 
 /** Whether this browser's person arrived by an invitation and has not set
  * up their own Tilo yet: the workspace offers the setup once they used it a
- * while, and the site itself opens on it. */
+ * while, and the site itself shows it only while they have joined none. */
 export function setupLater(storage = globalThis.localStorage) {
   return readSetup(storage)?.step === 'later';
 }

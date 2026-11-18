@@ -8,7 +8,7 @@
 use crate::model::{Issue, Status, Tracker};
 use crate::part::{IssuePart, Issues, issue_part};
 use ui::prelude::*;
-use ui::widget::{Badge, Board, BoardDrop, Card, ChipStyle, Tone};
+use ui::widget::{Badge, Board, BoardDrop, Card};
 
 use crate::{Filter, Nav, TasksEffect, Window, reference, tr};
 
@@ -139,11 +139,9 @@ fn card(
             .dimmed(),
     ));
     if let Some(who) = assignee(people, issue) {
-        facts = facts.push(Box::new(if who.agent() {
-            Badge::text(who.name).style(ChipStyle::Tinted(Tone::Info))
-        } else {
-            Badge::text(who.name)
-        }));
+        // Who it is for, as their chip: a person's face or an agent's own mark beside the name
+        // they go by. The mark says which, so the name is never joined with its kind.
+        facts = facts.push(Box::new(who.chip()));
     }
     let (closed, total) = issues.progress(id);
     if total > 0 {

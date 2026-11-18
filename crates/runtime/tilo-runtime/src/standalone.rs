@@ -44,13 +44,6 @@ use std::{
     sync::{Arc, Mutex},
     time::SystemTime,
 };
-use tilo_action_broker::{
-    collab_broker::{AppActionBroker, BrokerHandle, FanoutState},
-    collab_core::BrokerChannels,
-    collab_history::CollabHistoryStore,
-    collab_outbound::PeerPublisher,
-    services::{LauncherServices, LegacyWorkspaceProjection, ProcessServices, WorkspaceAuthority},
-};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeRequest, Pending,
@@ -63,6 +56,13 @@ use tilo_identity::{
 use tilo_peer_state::actions::ActionService;
 use tilo_peer_state::owner_commit::OwnerCommitService;
 use tilo_peer_state::{PeerPersonal, PersonalSync};
+use tilo_workspace_service::apps::{
+    collab_broker::{AppActionBroker, BrokerHandle, FanoutState},
+    collab_core::BrokerChannels,
+    collab_history::CollabHistoryStore,
+    collab_outbound::PeerPublisher,
+    services::{LauncherServices, LegacyWorkspaceProjection, ProcessServices, WorkspaceAuthority},
+};
 use workspace::{ProfileGrants, ProfileWorkspace};
 use workspaces::Workspaces;
 
@@ -77,7 +77,7 @@ const HOST_STORE: &str = "workspace-host";
 pub struct Standalone {
     // Retired before broker fields: retained original ownership cannot survive
     // replacement of the runtime that supplied its policy time.
-    policy_origin: tilo_action_broker::policy_clock::PolicyOrigin,
+    policy_origin: tilo_workspace_service::apps::policy_clock::PolicyOrigin,
     broker: BrokerHandle,
     joined: Arc<Joined>,
     _workspace_keys: workspace_keys::KeyService,
@@ -97,7 +97,7 @@ pub struct Standalone {
     _personal: PeerPersonal,
     /// The store open to the person's other devices for as long as this
     /// runtime runs, and the workspaces' store answered on the same router.
-    _personal_links: tilo_action_broker::personal::Links,
+    _personal_links: tilo_workspace_service::apps::personal::Links,
     _personal_router: iroh::protocol::Router,
     /// The MCP servers of the person's other devices, dialed from this
     /// runtime's endpoint as the device its store certifies.
@@ -161,7 +161,6 @@ impl Standalone {
         let workspace_id = workspace.workspace();
         let workspace = Arc::new(workspace);
         let apps = Arc::new(apps::Apps::from_env(root, &workspace_id));
-        serve_device_grants(root, &apps);
         let channels = Arc::new(Mutex::new(channels(root)));
         let fanout = Arc::new(FanoutState::new());
         stage("opening the joined workspaces and channel keys");
@@ -201,6 +200,9 @@ impl Standalone {
             take_work,
             host: placed.as_ref().map(|(host, _)| host.as_ref()),
         })?;
+        // What the person answers about this device's camera and microphone is kept in their own
+        // store, where their other devices see it and can take it back.
+        apps.device_grants().keep_in(personal.sync.clone());
         let workspaces = Arc::new(Workspaces::new(&workspace, &joined));
         let identity_socket = root.join(IDENTITY_SOCKET);
         stage("starting the identity service");
@@ -343,7 +345,7 @@ struct BrokerParts<'a> {
     apps: &'a Arc<apps::Apps>,
     media: &'a profile::MediaHost,
     joined: &'a Arc<Joined>,
-    keys: &'a tilo_action_broker::workspace_keys::KeyProvider,
+    keys: &'a tilo_workspace_service::apps::workspace_keys::KeyProvider,
     device: [u8; 32],
     personal: PersonalSync,
 }
@@ -354,9 +356,12 @@ fn start_broker(
     workspaces: Arc<Workspaces>,
     channels: Arc<Mutex<BrokerChannels>>,
     fanout: Arc<FanoutState>,
-) -> io::Result<(tilo_action_broker::policy_clock::PolicyOrigin, BrokerHandle)> {
+) -> io::Result<(
+    tilo_workspace_service::apps::policy_clock::PolicyOrigin,
+    BrokerHandle,
+)> {
     let (policy_origin, policy_time) = execution_policy_clock()?;
-    let broker = tilo_action_broker::collab_broker::spawn_with_services(
+    let broker = tilo_workspace_service::apps::collab_broker::spawn_with_services(
         parts.root.join(COLLAB_SOCKET),
         Some(workspaces as Arc<dyn WorkspaceAuthority>),
         PeerPublisher::with_optional_owner_commit(
@@ -376,7 +381,7 @@ fn start_broker(
 /// so their other devices have them.
 fn broker_services(
     parts: BrokerParts<'_>,
-    policy_time: tilo_action_broker::policy_clock::PolicyTime,
+    policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
 ) -> io::Result<ProcessServices> {
     let document_content = joined::document_content(parts.joined, &parts.root.join(BLOB_SOCKET));
     // Where this workspace's offloadable actions may run instead of here: the
@@ -423,10 +428,10 @@ fn broker_services(
 }
 
 fn execution_policy_clock() -> io::Result<(
-    tilo_action_broker::policy_clock::PolicyOrigin,
-    tilo_action_broker::policy_clock::PolicyTime,
+    tilo_workspace_service::apps::policy_clock::PolicyOrigin,
+    tilo_workspace_service::apps::policy_clock::PolicyTime,
 )> {
-    let origin = tilo_action_broker::policy_clock::OwnerPolicyClock::new()
+    let origin = tilo_workspace_service::apps::policy_clock::OwnerPolicyClock::new()
         .map_err(io::Error::other)?
         .new_origin();
     let time = origin.capture().map_err(io::Error::other)?;
@@ -575,7 +580,7 @@ pub struct RuntimeActionProvider {
 }
 
 struct AdmittedRuntimeSession {
-    policy_time: tilo_action_broker::policy_clock::PolicyTime,
+    policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
     provider: Arc<dyn ActionProvider + Send + Sync>,
     admission: Arc<joined::SessionAdmission>,
     /// The agent the person's device handed this run to.
@@ -662,7 +667,7 @@ impl RuntimeActionProvider {
         self,
         workspace: String,
         actor: String,
-        policy_time: tilo_action_broker::policy_clock::PolicyTime,
+        policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
     ) -> tilo_mcp::SessionFactory<Self> {
         let provider = self;
         Arc::new(move || {
@@ -681,7 +686,7 @@ impl RuntimeActionProvider {
         &self,
         workspace: &str,
         actor: &str,
-        policy_time: &tilo_action_broker::policy_clock::PolicyTime,
+        policy_time: &tilo_workspace_service::apps::policy_clock::PolicyTime,
         agent: impl FnOnce(&Caller) -> String,
     ) -> io::Result<(Self, Caller, String)> {
         let admission = self
@@ -946,7 +951,7 @@ impl ActionProvider for RuntimeActionProvider {
 struct Certificates {
     workspace: String,
     device: [u8; 32],
-    policy_time: tilo_action_broker::policy_clock::PolicyTime,
+    policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
     joined: std::sync::Weak<Joined>,
 }
 
@@ -962,8 +967,10 @@ impl Certificates {
     }
 }
 
-impl tilo_action_broker::certificate_authority::CertificateAuthority for Certificates {
-    fn policy_time(&self) -> Result<Option<tilo_action_broker::policy_clock::PolicyTime>, String> {
+impl tilo_workspace_service::apps::certificate_authority::CertificateAuthority for Certificates {
+    fn policy_time(
+        &self,
+    ) -> Result<Option<tilo_workspace_service::apps::policy_clock::PolicyTime>, String> {
         self.policy_time
             .now_ns()
             .map_err(|error| error.to_string())?;
@@ -974,7 +981,7 @@ impl tilo_action_broker::certificate_authority::CertificateAuthority for Certifi
         &self,
         workspace: uuid::Uuid,
         cert: &tilo_user_identity::DeviceCert,
-        time: &tilo_action_broker::policy_clock::PolicyTime,
+        time: &tilo_workspace_service::apps::policy_clock::PolicyTime,
     ) -> Result<(), String> {
         if !time.same_origin(&self.policy_time) {
             return Err("original runtime policy origin changed".into());
@@ -1013,23 +1020,6 @@ impl tilo_action_broker::certificate_authority::CertificateAuthority for Certifi
     }
 }
 
-/// The person's camera and microphone decisions, as actions on the
-/// profile's console socket (macOS, where the runtime brokers capture). A
-/// socket that cannot be served leaves the runtime running without it.
-fn serve_device_grants(root: &Path, apps: &apps::Apps) {
-    #[cfg(target_os = "macos")]
-    {
-        let served = apps.device_grants().and_then(|grants| {
-            crate::device_grants::serve(grants, &root.join(crate::CONSOLE_SOCKET))
-        });
-        if let Err(error) = served {
-            tracing::warn!(%error, "the device grants are not served on the console socket");
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    let _ = (root, apps);
-}
-
 /// What the person's own store is served with: the profile's state it is kept
 /// in, the identity this device acts as, and the workspace this runtime runs.
 struct PersonalServing<'a> {
@@ -1051,7 +1041,7 @@ struct PersonalServing<'a> {
 /// The person's own store, and what serves it to their other devices.
 struct PersonalParts {
     sync: PersonalSync,
-    links: tilo_action_broker::personal::Links,
+    links: tilo_workspace_service::apps::personal::Links,
     /// The endpoint's accept loop, answering the person's store to their
     /// other devices.
     router: iroh::protocol::Router,
@@ -1081,7 +1071,7 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
     let (key, device) = tilo_identity::broker::trusted_current_device(workspace_id)?;
     let state = root.join("state");
     let sync = PersonalSync::new(
-        tilo_action_broker::personal::open(
+        tilo_workspace_service::apps::personal::open(
             &state,
             identity.user_public_key,
             device,
@@ -1109,11 +1099,14 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
         }
         router.spawn()
     };
-    let links = tilo_action_broker::personal::Links::serve(
+    let links = tilo_workspace_service::apps::personal::Links::serve(
         runtime,
         joined.endpoint(),
         sync.clone(),
-        &tilo_action_broker::personal::Person::of(identity.id.clone(), identity.user_public_key),
+        &tilo_workspace_service::apps::personal::Person::of(
+            identity.id.clone(),
+            identity.user_public_key,
+        ),
         &state,
         channels,
         fanout,
@@ -1323,7 +1316,7 @@ fn place_own_workspace(
     profile: &Path,
     workspace: &ProfileWorkspace,
     joined: &Arc<Joined>,
-    keys: &tilo_action_broker::workspace_keys::KeyProvider,
+    keys: &tilo_workspace_service::apps::workspace_keys::KeyProvider,
     (apps, dev): (&Arc<apps::Apps>, bool),
 ) -> io::Result<(
     Arc<tilo_workspace_service::service::WorkspaceService>,
@@ -1387,7 +1380,7 @@ fn serve_key_sessions(
     joined: &Arc<Joined>,
     personal: &PersonalSync,
     (workspace, actor): (&str, &str),
-    policy_origin: &tilo_action_broker::policy_clock::PolicyOrigin,
+    policy_origin: &tilo_workspace_service::apps::policy_clock::PolicyOrigin,
 ) -> io::Result<()> {
     let broker = broker
         .app_action_broker()
@@ -1557,7 +1550,7 @@ impl tilo_identity::broker::PersonResourceTypes for AttachedSurfaces {
                 tracing::warn!(%error, app_id, "the development surface could not be stored");
                 return;
             }
-            tilo_action_broker::register_package_surface(app_id, surface);
+            tilo_workspace_service::apps::register_package_surface(app_id, surface);
         }
     }
 }

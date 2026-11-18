@@ -423,6 +423,28 @@ pub enum WorkspacesRequest {
         workspace: String,
         name: String,
     },
+    /// The servers keeping `workspace`, which its owners alone choose:
+    /// answered with [`WorkspacesReply::Servers`], the one asked first.
+    Servers {
+        workspace: String,
+    },
+    /// Have the server whose site is `origin` keep `workspace` as well:
+    /// answered with [`WorkspacesReply::Servers`] after it took it, or
+    /// refused in its own words. Only the workspace's owners choose its
+    /// servers, and the other server takes it only for an owner it let in.
+    AddServer {
+        workspace: String,
+        /// The other server's site, like `https://tilo.sh`.
+        origin: String,
+    },
+    /// Have a server keep `workspace` no more, named by its site or by its
+    /// device key: answered with [`WorkspacesReply::Servers`]. Only the
+    /// workspace's owners choose its servers.
+    RemoveServer {
+        workspace: String,
+        /// The server's site, or its device key.
+        server: String,
+    },
 }
 
 /// The answer to a [`WorkspacesRequest`].
@@ -459,6 +481,21 @@ pub enum WorkspacesReply {
     /// Retired with [`WorkspacesRequest::RetiredPair`]; it keeps the replies
     /// after it at their encoded positions.
     RetiredPaired,
+    /// The servers keeping a workspace ([`WorkspacesRequest::Servers`],
+    /// [`WorkspacesRequest::AddServer`] and [`WorkspacesRequest::RemoveServer`]):
+    /// the one asked first.
+    Servers(Vec<ServerEntry>),
+}
+
+/// One server keeping a workspace, as a page lists it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerEntry {
+    /// The server's device key, hex: what removing it may name it by.
+    pub device: String,
+    /// The person the server keeps the workspace for, by their user public key, hex.
+    pub person: String,
+    /// Whether this is the server asked: the one the page is connected to.
+    pub here: bool,
 }
 
 /// What a host says of an invitation, or of a device it admitted with one.

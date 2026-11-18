@@ -392,6 +392,18 @@ pub trait Records {
         let _ = (app, workspace, record);
         None
     }
+    /// The kind of what `app` keeps in `workspace` (`notes.notebook`), empty when unknown: what
+    /// the workspace's index names first.
+    fn kind(&self, app: &str, workspace: &str) -> String {
+        self.document(app, workspace, "")
+            .and_then(|index| {
+                ui::resource::index::discoverable_references(&index)
+                    .into_iter()
+                    .next()
+            })
+            .map(|checkout| checkout.kind.as_str().to_owned())
+            .unwrap_or_default()
+    }
     /// Everything `workspace` holds here, by app and route; the empty route is the app's own
     /// document of the workspace, its index.
     fn held(&self, workspace: &str) -> Vec<(String, String)> {
@@ -605,12 +617,6 @@ mod loaded {
         static DOCUMENTS: RefCell<Documents> = RefCell::default();
     }
 
-    #[cfg(test)]
-    thread_local! {
-        /// How many documents this thread loaded whole.
-        static LOADED_WHOLE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    }
-
     /// The document `bytes`, what `store` keeps at `key`, as far as its writer finished writing
     /// it: brought up from the one read last when `bytes` are its bytes followed by more.
     pub(super) fn document(
@@ -638,12 +644,12 @@ mod loaded {
             // Kept only when it loads whole: a tail still being written is left out of what is
             // read, and the next read loads it again. A reader on this thread that holds the
             // document these bytes are (the workspace's replica, a window showing the record)
-            // hands over a copy of it instead.
-            let mut doc = if let Some(doc) = tilo_automerge::shared::held(bytes) {
+            // hands over a copy of it instead: by the heads the writer kept for exactly these
+            // bytes first, so a document saved another way is still the same one.
+            let mut doc = if let Some(doc) = held_elsewhere(store, key, bytes) {
                 doc
             } else {
-                #[cfg(test)]
-                LOADED_WHOLE.with(|loaded| loaded.set(loaded.get().saturating_add(1)));
+                tilo_automerge::shared::note_decoded();
                 let Ok(doc) = AutoCommit::load_with_options(
                     bytes,
                     LoadOptions::new().on_partial_load(OnPartialLoad::Error),
@@ -667,6 +673,21 @@ mod loaded {
             }
             Ok(doc)
         })
+    }
+
+    /// The document `bytes` are, when a reader on this thread holds it: by the heads the writer
+    /// kept beside exactly these bytes, else by the bytes themselves.
+    fn held_elsewhere(
+        store: &dyn DurableStore,
+        key: &StorageKey,
+        bytes: &[u8],
+    ) -> Option<AutoCommit> {
+        let at = store
+            .read_hint(key)
+            .as_deref()
+            .and_then(|hint| tilo_automerge::load_hint::heads_for(hint, bytes))
+            .and_then(|heads| tilo_automerge::shared::held_at(&heads));
+        at.or_else(|| tilo_automerge::shared::held(bytes))
     }
 
     /// `kept` brought up to `bytes`, when they are its own bytes followed by more.
@@ -724,11 +745,11 @@ mod loaded {
     mod tests {
         use super::*;
         use automerge::transaction::Transactable as _;
-        use automerge::{ROOT, ReadDoc as _};
+        use automerge::{ObjType, ROOT, ReadDoc as _};
         use durable_store::WriteOp;
 
         fn loaded_whole() -> usize {
-            LOADED_WHOLE.with(std::cell::Cell::get)
+            tilo_automerge::shared::decoded()
         }
 
         fn write(store: &durable_store::MemoryStore, key: &StorageKey, op: WriteOp) {
@@ -796,6 +817,117 @@ mod loaded {
             let read = read(&store, &key);
             assert!(read.get(ROOT, "issue-0").unwrap().is_none());
             assert!(read.get(ROOT, "note-0").unwrap().is_some());
+        }
+
+        /// A page opening a notebook of a hundred notes loads its document once: the workspace's
+        /// replica reads it, and the window showing it and the session's own reading of it take
+        /// the copy that read kept. The bytes the store holds are the same document saved whole
+        /// while the replica captured another save of it, so only the heads find the copy.
+        #[test]
+        fn a_page_opens_a_notebook_once_and_its_readers_share_it() {
+            use std::rc::Rc;
+            use std::time::Instant;
+
+            use ui::resource::{DocumentCheckout, DocumentId, ResourceOwners, ResourceType};
+
+            let workspace = "6d1c1f36-0000-4000-8000-000000000001";
+            let app = ui::apps::NOTES;
+            let id = DocumentId::parse("tab:00000000000000a1").expect("a document id");
+            let kind = ResourceType::new("notes.notebook");
+
+            // A hundred pages of prose, each its own change, as a notebook imported from another
+            // editor's export is: the text many ops, and not compressible much.
+            let mut doc = AutoCommit::new();
+            assert!(ui::resource::init_scoped(
+                &mut doc,
+                &id,
+                &kind,
+                workspace,
+                Some(workspace)
+            ));
+            for page in 0..100 {
+                let body = doc
+                    .put_object(ROOT, format!("page-{page}"), ObjType::Text)
+                    .unwrap();
+                let mut words = String::new();
+                for word in 0..160 {
+                    let word = blake3::hash(format!("page {page} word {word}").as_bytes())
+                        .to_hex()
+                        .to_string();
+                    words.push_str(word.get(..8).unwrap_or_default());
+                    words.push(' ');
+                }
+                doc.splice_text(&body, 0, 0, &words).unwrap();
+                doc.commit();
+            }
+            // What the replica captured: the document saved whole with what was appended since as
+            // change chunks, which is not the bytes a re-save of the same document makes.
+            let at = doc.committed_heads();
+            let mut captured = doc.save();
+            let text = blake3::hash(b"the last page").to_hex().to_string();
+            doc.put(ROOT, "page-last", text).unwrap();
+            doc.commit();
+            captured.extend_from_slice(&doc.save_after(&at));
+            let stored = doc.save();
+            assert_ne!(stored, captured, "the same document in another save");
+            assert!(
+                stored.len() >= tilo_automerge::shared::MIN_BYTES,
+                "a notebook of a hundred pages is large enough to share: {} bytes",
+                stored.len()
+            );
+
+            let store = Rc::new(durable_store::MemoryStore::new());
+            let key = StorageKey::document(app, workspace, id.storage_key());
+            write(&store, &key, WriteOp::Replace(stored.clone()));
+            store
+                .write_hint(
+                    &key,
+                    &tilo_automerge::load_hint::encode(&stored, &[], &doc.committed_heads())
+                        .expect("a notebook of a hundred pages is hinted"),
+                )
+                .unwrap();
+
+            // What the second read of the document cost before: these bytes loaded whole.
+            tilo_automerge::shared::clear();
+            let before = Instant::now();
+            let whole = tilo_automerge::shared::load(&stored).expect("the stored document");
+            let before_ms = before.elapsed().as_secs_f64() * 1000.0;
+            assert_eq!(whole.committed_heads(), doc.committed_heads());
+            assert_eq!(loaded_whole(), 1);
+
+            tilo_automerge::shared::clear();
+            // The workspace's replica reads the document: the one load of the open.
+            let read_at = Instant::now();
+            let replica = tilo_automerge::shared::load(&captured).expect("the replica's read");
+            let replica_ms = read_at.elapsed().as_secs_f64() * 1000.0;
+            assert_eq!(replica.committed_heads(), doc.committed_heads());
+            assert_eq!(loaded_whole(), 1, "the replica's read loads it");
+
+            // A window of Notes opens it: a copy of the document the replica holds.
+            let opened_at = Instant::now();
+            let memory: Rc<dyn durable_store::DurableStore> = store.clone();
+            let mut owners = ResourceOwners::with_store(memory);
+            let owner = owners.open(app, workspace).expect("the app's store");
+            let want = DocumentCheckout::new(id.clone(), kind.clone());
+            assert!(owner.open_resource(&want), "the document opens");
+            let opened = owner.read(&id, AutoCommit::clone).expect("it is open");
+            let opened_ms = opened_at.elapsed().as_secs_f64() * 1000.0;
+            assert_eq!(opened.committed_heads(), doc.committed_heads());
+            assert!(opened.get(ROOT, "page-last").unwrap().is_some());
+            assert_eq!(loaded_whole(), 1, "the window takes the copy");
+
+            // The session reads the same document for its roles and for search: also a copy.
+            let session_at = Instant::now();
+            let hold: &dyn durable_store::DurableStore = store.as_ref();
+            let mut read =
+                super::super::document(hold, app, workspace, id.route()).expect("it loads");
+            let session_ms = session_at.elapsed().as_secs_f64() * 1000.0;
+            assert_eq!(read.get_heads(), doc.committed_heads());
+            assert_eq!(loaded_whole(), 1, "the session's read takes the copy");
+            println!(
+                "notebook of 100 pages: one whole load {before_ms:.1} ms; replica {replica_ms:.1} \
+                 ms, window {opened_ms:.1} ms, session read {session_ms:.1} ms after it"
+            );
         }
     }
 }

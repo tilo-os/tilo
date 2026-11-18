@@ -496,9 +496,7 @@ fn block_on<T>(work: impl std::future::Future<Output = T>) -> T {
 #[cfg(target_os = "linux")]
 async fn sandbox_secret(connection: &zbus::Connection) -> zbus::Result<Vec<u8>> {
     let store = zbus::Proxy::new(connection, NAME, "/so/tilo/Secrets1", "so.tilo.Secrets1").await?;
-    store
-        .call("SandboxSecret", &("so.tilo.notes", Vec::<u8>::new()))
-        .await
+    store.call("SandboxSecret", &("so.tilo.notes",)).await
 }
 
 #[cfg(target_os = "linux")]

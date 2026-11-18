@@ -1,5 +1,4 @@
-//! Deciding a record's content kind from its record metadata alone (its codec,
-//! its name), never from the bytes a version holds, so no version is downloaded
+//! Deciding a record's content kind from its record metadata alone (its name), never from the bytes a version holds, so no version is downloaded
 //! to classify it.
 
 use crate::namespace::Namespace;
@@ -17,13 +16,10 @@ pub enum DocumentContentKind {
     /// A CRDT document stored as its serialization; restoring a version is a new
     /// change on the current document.
     SerializedDocument { schema: SerializedDocumentSchema },
-    /// A document the namespace holds as a CRDT and exports on read.
-    NamespaceDocument { codec: String },
 }
 
 impl DocumentContentKind {
-    /// The kind a record of this name holds when the namespace keeps no codec
-    /// for it.
+    /// The kind a record of this name holds.
     pub fn for_name(name: &FileNameV1) -> Self {
         let extension = std::str::from_utf8(name.as_bytes())
             .ok()
@@ -38,9 +34,6 @@ impl DocumentContentKind {
     }
 
     pub fn of(namespace: &Namespace, ino: u64) -> Option<Self> {
-        if let Some(codec) = namespace.document_codec(ino) {
-            return Some(Self::NamespaceDocument { codec });
-        }
         namespace
             .file_name_for(ino)
             .map(|name| Self::for_name(&name))
@@ -60,7 +53,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_records_content_kind_comes_from_its_name_and_codec;
+        fn a_records_content_kind_comes_from_its_name;
 
         phase serialized_documents_are_known_by_name_not_bytes;
         {
@@ -78,19 +71,12 @@ mod tests {
             assert_eq!(kind("report.docx"), DocumentContentKind::Opaque);
         }
 
-        phase a_namespace_codec_makes_a_namespace_document;
+        phase a_file_of_the_namespace_is_known_by_its_name;
         {
             let mut namespace = Namespace::new("content-kind").unwrap();
-            let document = namespace
-                .create_document(crate::namespace::ROOT_INO, "report.md", "md", 1)
-                .unwrap();
             let file = namespace
                 .create_file(crate::namespace::ROOT_INO, "data.tilo-doc", None, 0, 1)
                 .unwrap();
-            assert_eq!(
-                DocumentContentKind::of(&namespace, document),
-                Some(DocumentContentKind::NamespaceDocument { codec: "md".into() })
-            );
             assert!(
                 DocumentContentKind::of(&namespace, file)
                     .unwrap()

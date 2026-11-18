@@ -35,6 +35,9 @@ tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 # protocol. Framing is plain `Read`/`Write`, so the messages read and write on
 # every target; only the client's transport is a Unix socket.
 wire-frame = { version = "0.1.0", path = "../../system/wire-frame" }
+# A packet socket's messages (`packet`): one postcard value per packet.
+postcard = { workspace = true, features = ["use-std"] }
+serde_bytes.workspace = true
 tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 
 [target.'cfg(unix)'.dependencies]

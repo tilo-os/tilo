@@ -526,7 +526,7 @@ impl ReadSettings {
 /// The library: its folders and subscriptions, in the order they were made.
 ///
 /// What a subscription brought in — its articles — grows without bound, and
-/// is kept in parts beside the library ([`crate::part::ArticlePart`]); what
+/// is kept in parts beside the library ([`crate::article_list::ArticleList`]); what
 /// stays here is what a reader navigates: the folders and the subscriptions.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct Library {

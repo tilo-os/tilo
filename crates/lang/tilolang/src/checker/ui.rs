@@ -920,13 +920,14 @@ impl Checker<'_> {
             self.prop(Ex::local(n, Ty::View), &name, v, a.value.span);
             return;
         }
-        if p.name == "field" && name == "label" {
-            // A field's label is words the window shows: the view's message, in the person's language.
+        if p.name == "field" && matches!(name.as_str(), "label" | "help") {
+            // A field's label and its help line are words the window shows: the view's message,
+            // in the person's language.
             if self.st.ctx == Ctx::View {
                 self.mark_shown(&a.value);
             }
             let v = self.expr_as(&a.value, &Ty::Text);
-            self.prop(Ex::local(n, Ty::View), "label", v, a.value.span);
+            self.prop(Ex::local(n, Ty::View), &name, v, a.value.span);
             return;
         }
         self.apply_arg(n, p.name, &name, &a.value);

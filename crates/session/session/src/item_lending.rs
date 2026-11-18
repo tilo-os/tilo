@@ -26,9 +26,9 @@ use std::time::Duration;
 use runtime_collab::{
     BrowserServiceSessionCommand as Command, BrowserServiceSessionReply as Reply,
 };
-use tilo_action_broker::services::ItemAnswering;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::environment_device::ItemUse;
+use tilo_workspace_service::apps::services::ItemAnswering;
 use ui::apps::BROWSER;
 
 /// How long the workspace's server is waited for: less than the ten seconds Browser's own

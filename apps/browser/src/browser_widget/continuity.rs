@@ -1,6 +1,5 @@
 //! Device-local migration status and canonical retry; no profile data is published.
 use super::{BrowserOperation, BrowserWidget};
-use ui::tilo_resource::Effect as _;
 
 use crate::resource::CATALOG;
 
@@ -110,21 +109,20 @@ impl BrowserWidget {
         }
     }
 
-    pub(super) fn continuity_resource(&self) -> Option<ui::tilo_actions::ResourceSpec> {
+    pub(super) fn continuity_resource(&self) -> Option<ui::framework::LiveRow> {
         if let Some(controller) = &self.continuity {
             use crate::continuity_handoff::Status;
             if controller.status() == Status::Absent {
                 return None;
             }
-            let mut resource = ui::tilo_actions::ResourceSpec::new(
+            let mut resource = ui::framework::LiveRow::new(
                 "browser.continuity",
                 "browser.continuity",
                 crate::CATALOG.t("browser-resource-continuity"),
             )
-            .with_action(crate::effects::BrowserEffect::ReadContinuity.bound());
+            .effect(&crate::effects::BrowserEffect::ReadContinuity);
             if controller.status() == Status::Failed {
-                resource =
-                    resource.with_action(crate::effects::BrowserEffect::RetryContinuity.bound());
+                resource = resource.effect(&crate::effects::BrowserEffect::RetryContinuity);
             }
             return Some(resource);
         }

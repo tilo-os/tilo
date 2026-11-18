@@ -19,11 +19,11 @@ pub(super) struct OpenedByChip {
     pressed: Option<(u64, String)>,
 }
 
-/// The agent's colour, as presence draws the agent everywhere: the run's own id, never its display
-/// name's.
-fn agent_colour(run: &OpenedBy) -> vello::peniko::Color {
+/// The agent's colour, as presence draws the agent everywhere: by the agent, never by its display
+/// name or by the session that opened the window.
+fn agent_colour(opened: &OpenedBy) -> vello::peniko::Color {
     let (red, green, blue) =
-        crate::presence::member_color(&crate::permissions::MemberId::agent(&run.run));
+        crate::presence::member_color(&crate::permissions::MemberId::agent(&opened.agent));
     vello::peniko::Color::from_rgb8(red, green, blue)
 }
 

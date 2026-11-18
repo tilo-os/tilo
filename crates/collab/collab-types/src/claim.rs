@@ -32,6 +32,59 @@ pub struct ChangeClaim {
     /// a unit this list leaves out, and a list naming a unit its action may
     /// not write.
     pub units: Vec<UnitPath>,
+    /// Who made it, as its history entry names them, when not the person
+    /// whose device signed it: the change is decided as this invoker, bounded
+    /// by the signer. A receiver that cannot read a sealed change decides it
+    /// by this; the devices that open it check that the change names the same.
+    #[serde(with = "invoker_text")]
+    pub invoker: Option<tilo_action_policy::Acting>,
+}
+
+/// An invoker as a claim carries it: its tree as the history entry writes it.
+/// A tree leaves out what it does not name, which a positional format could
+/// not read field by field, so the bytes carry that entry's own text.
+pub(crate) mod invoker_text {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use tilo_action_policy::Acting;
+
+    /// The text `invoker` is written as.
+    ///
+    /// # Errors
+    /// A tree that does not write.
+    pub fn text(invoker: Option<&Acting>) -> Result<Option<String>, serde_json::Error> {
+        invoker.map(serde_json::to_string).transpose()
+    }
+
+    /// Writes `invoker` as its text.
+    ///
+    /// # Errors
+    /// A tree that does not write.
+    #[expect(
+        clippy::ref_option,
+        reason = "serde's `with` hands the field by reference"
+    )]
+    pub fn serialize<S: Serializer>(
+        invoker: &Option<Acting>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        text(invoker.as_ref())
+            .map_err(serde::ser::Error::custom)?
+            .serialize(serializer)
+    }
+
+    /// Reads an invoker [`serialize`] wrote.
+    ///
+    /// # Errors
+    /// Text that is no tree.
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Acting>, D::Error> {
+        Option::<String>::deserialize(deserializer)?
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 /// What a change does, in the terms grants are written in.
@@ -235,8 +288,23 @@ impl ChangeClaim {
             change: hash,
             action,
             units,
+            invoker: invoker_of_message(message),
         })
     }
+}
+
+/// Who made the change whose commit message is `message`, as its history
+/// entry names them, when not the person whose device signed it.
+fn invoker_of_message(message: &str) -> Option<tilo_action_policy::Acting> {
+    ActionContext::from_change_message(message)
+        .and_then(|context| context.invoker)
+        .map(|invoker| invoker.acting)
+}
+
+/// Who made `change` ([`invoker_of_message`]).
+#[must_use]
+pub fn invoker_of(change: &automerge::Change) -> Option<tilo_action_policy::Acting> {
+    change.message().and_then(invoker_of_message)
 }
 
 /// The changes an incremental document mutation carries, parsed but merged

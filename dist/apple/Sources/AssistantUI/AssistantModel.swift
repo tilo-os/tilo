@@ -79,6 +79,10 @@ public final class AssistantModel {
     public private(set) var setup = Setup.unknown
     /// What Tilo said before it asked whether to pair this device, kept while its code is compared.
     public private(set) var pairingSaid: [String] = []
+    /// A pairing link handed to the app from outside before it was known whether this device
+    /// stands at its way in: the app was started by the address, or its page is still on its
+    /// way in. It is taken once the device stands at its way in, and dropped once it is in.
+    @ObservationIgnored private var handed: String?
     /// What the person was told while no device of theirs was looking. Nil: nothing to say of it.
     public private(set) var sinceLeft: SinceLeft?
 
@@ -134,7 +138,7 @@ public final class AssistantModel {
         guard listeners.isEmpty else { return }
         follow(source.session()) { $0.take($1) }
         follow(source.setup()) { $0.setup = $1 }
-        follow(source.reach()) { $0.reach = $1 }
+        follow(source.reach()) { $0.take($1) }
         follow(source.subAgents()) { model, agents in
             model.subAgents = agents
             for agent in agents { model.listen(.subAgent(agent.id)) }
@@ -175,9 +179,33 @@ public final class AssistantModel {
         switch stands {
         case .asked(let ask): pairingSaid = Array(ask.said.prefix(2))
         case .signedOut, .signedIn: pairingSaid = []
+        case .reset:
+            // What the window showed of the workspace that is gone is put away with it. What
+            // the person wrote and did not send stays in its field for when they are back.
+            pairingSaid = []
+            place = .chat(.main)
+            keyStep = nil
+            openReplies = [:]
         case .pairing, .confirming: break
         }
         session = stands
+        guard let words = handed else { return }
+        switch stands {
+        case .signedOut, .reset:
+            handed = nil
+            pair(with: words)
+        case .asked, .pairing, .confirming:
+            handed = nil
+        case .signedIn:
+            // Whether the device gets in is known only once a try has ended.
+            if reach != .unknown { handed = nil }
+        }
+    }
+
+    private func take(_ reach: Reach) {
+        self.reach = reach
+        // A try has ended and the device is its person's: nothing handed from outside is kept for later.
+        if reach != .unknown, person != nil { handed = nil }
     }
 
     private func follow<Value: Sendable>(_ stream: AsyncStream<Value>, _ take: @escaping (AssistantModel, Value) -> Void) {
@@ -593,6 +621,30 @@ public final class AssistantModel {
         }
         keyStep = nil
         return true
+    }
+
+    /// A pairing link handed to the app from outside, in an address of the app's own
+    /// (`HandedLink`). Only an app that stands at its way in takes one, and then as a pasted
+    /// link. Whoever hands a link to an app that is in, or in the middle of a pairing, changes
+    /// nothing and is told nothing. An app that does not know yet where it stands keeps the
+    /// link until it does. Says whether the link was taken or kept.
+    @discardableResult
+    public func takeHanded(_ words: String) -> Bool {
+        switch session {
+        case .signedOut, .reset:
+            pair(with: words)
+            return true
+        case nil:
+            handed = words
+            return true
+        case .signedIn:
+            // Its page may still be on its way in, and find the workspace gone.
+            guard reach == .unknown else { return false }
+            handed = words
+            return true
+        case .asked, .pairing, .confirming:
+            return false
+        }
     }
 
     /// Pair this device with the link in what was scanned or pasted.

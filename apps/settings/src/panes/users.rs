@@ -890,7 +890,7 @@ impl UsersModel {
             .collect();
         let menu: Option<Box<dyn Widget>> = (!user.current).then(|| {
             let name = &user.username;
-            let live = user_live_row(user).into_resource();
+            let live = user_live_row(user);
             let mut menu = RowMenu::new(
                 format!("settings.users.more.{name}"),
                 &t_args(
@@ -964,7 +964,7 @@ impl UsersModel {
         dispatcher: &ui::framework::Dispatcher<Settings>,
         id: &IdentitySummary,
     ) -> Item {
-        let live = identity_live_row(id).into_resource();
+        let live = identity_live_row(id);
         let status = if id.active {
             t("settings-users-identity-active")
         } else {

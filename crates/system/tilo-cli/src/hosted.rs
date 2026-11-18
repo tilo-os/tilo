@@ -1,4 +1,4 @@
-//! Hosted workspaces from a shell: `tilo keys`, `tilo account workspaces`,
+//! Hosted workspaces from a shell: `tilo keys`, `tilo workspace`,
 //! `tilo do -w`, `tilo files` and `tilo run`.
 //!
 //! Each command is one call of Tilo's API (`/v1`, `docs/developers/api.md`),
@@ -88,44 +88,150 @@ pub enum KeysCmd {
 }
 
 #[derive(Debug, Subcommand)]
-pub enum HostsCmd {
-    /// The hosts holding the workspace (-w): the one it was made on, which
-    /// governs it, first.
+pub enum ServersCmd {
+    /// The servers keeping the workspace (-w): the one asked first.
     Ls,
-    /// Have the host whose site is ORIGIN hold the workspace (-w) as well.
+    /// Have the server whose site is ORIGIN keep the workspace (-w) as well.
     #[command(
-        after_help = "Example:\n  tilo workspace hosts add https://tilo.sh -w Tilo\n\n\
-                      Both hosts keep the workspace from then on: a change on either reaches the \
-                      other, and its people reach it at either. Only its owners choose its \
-                      hosts, and the other host takes it only if it let you in and has capacity for \
-                      it: sign in there first."
+        after_help = "Example:\n  tilo workspace servers add https://tilo.sh -w Tilo\n\n\
+                      Both servers keep the workspace from then on: a change on either reaches \
+                      the other, and its people reach it at either. Only its owners choose its \
+                      servers, and the other server takes it only if it let you in and has \
+                      capacity for it: sign in there first."
     )]
     Add {
-        /// The other host's site, like `https://tilo.sh`.
+        /// The other server's site, like `https://tilo.sh`.
         origin: String,
     },
-    /// Have a host hold the workspace (-w) no more.
+    /// Have a server keep the workspace (-w) no more.
     #[command(
-        after_help = "Example:\n  tilo workspace hosts remove https://tilo.sh -w Tilo\n\n\
-                      HOST is its site, or its device key as `tilo workspace hosts ls` names it. \
-                      It is no longer named to anyone at once, and lets the workspace go when it \
-                      hears so; the host the workspace was made on stays."
+        after_help = "Example:\n  tilo workspace servers remove https://tilo.sh -w Tilo\n\n\
+                      SERVER is its site, or its device key as `tilo workspace servers ls` names \
+                      it. It is no longer named to anyone at once, and lets the workspace go when \
+                      it hears so."
     )]
     Remove {
-        /// The host's site, or its device key.
-        host: String,
+        /// The server's site, or its device key.
+        server: String,
+    },
+    /// Move the workspace (-w) from the server FROM to the server whose site
+    /// is TO.
+    #[command(
+        after_help = "Example:\n  tilo workspace servers move https://old.example.com https://tilo.sh -w Tilo\n\n\
+                      TO keeps the workspace first, then FROM keeps it no more. If TO refuses, \
+                      the workspace stays where it was. FROM is a site, or a device key as \
+                      `tilo workspace servers ls` names it; TO is a site."
+    )]
+    Move {
+        /// The server it moves from: its site, or its device key.
+        from: String,
+        /// The site of the server it moves to, like `https://tilo.sh`.
+        to: String,
     },
 }
 
 #[derive(Subcommand)]
-pub enum MembersCmd {
-    /// A link that brings one more person into the workspace (-w) as --role.
+pub enum WorkspaceCmd {
+    /// Your workspaces.
+    Ls {
+        /// Only those labelled so, `NAME=VALUE`; several must all match.
+        #[arg(long = "label", value_name = "NAME=VALUE", value_parser = label_of)]
+        labels: Vec<(String, String)>,
+    },
+    /// Make a workspace; its server may refuse (quota, payment).
+    Create {
+        /// What to call it, as your workspaces list will name it.
+        name: String,
+        /// A label for your programs to find it by, `NAME=VALUE`
+        /// (`customer_id=cus_8121`); repeat it for more. Only your keys read them.
+        #[arg(long = "label", value_name = "NAME=VALUE", value_parser = label_of)]
+        labels: Vec<(String, String)>,
+    },
+    /// Give a workspace another name, for every list and device of it.
     #[command(
-        after_help = "Example:\n  tilo members invite --role editor --email ops@example.com -w jane-doe\n\n\
-                      Following the link signs them in and lands them in the workspace. A key you \
-                      created invites into workspaces you administer, as an editor at most, or as \
-                      an administrator where you may make administrators. No mail is sent: hand \
-                      the link over yourself."
+        after_help = "Example:\n  tilo workspace rename Research \"Research 2027\"\n\n\
+                      Its owners and moderators name it."
+    )]
+    Rename {
+        /// The workspace, by its name or its id.
+        workspace: String,
+        /// What to call it from now on.
+        name: String,
+    },
+    /// Delete a workspace of yours with everything in it, and revoke the keys
+    /// made for it: final, there is no undo.
+    Rm {
+        /// The workspace, by its name or its id.
+        workspace: String,
+    },
+    /// Make a workspace that starts with everything another holds and then
+    /// goes its own way, with you as its only member.
+    #[command(
+        after_help = "Example:\n  tilo workspace branch template \"Acme\" --label customer_id=cus_8121\n\n\
+                      Its records, with their history, its files and Terminal environments come \
+                      along; its chat, its people and each person's own places stay behind, as do \
+                      its labels. Nothing merges back."
+    )]
+    Branch {
+        /// The workspace to branch, by its name or its id.
+        source: String,
+        /// What to call the branch.
+        name: String,
+        /// A label for your programs to find it by, `NAME=VALUE`
+        /// (`customer_id=cus_8121`); repeat it for more. Only your keys read them.
+        #[arg(long = "label", value_name = "NAME=VALUE", value_parser = label_of)]
+        labels: Vec<(String, String)>,
+    },
+    /// Let the keys made for one workspace of yours alone run commands in its
+    /// Linux machine without asking you each time, or ask again.
+    #[command(after_help = "Example:\n  tilo workspace unattended template\n\n\
+                      It asks you on your approving device first, and waits for your answer. \
+                      Branches made from the workspace start with it on. A key for all your \
+                      workspaces is still asked, and so is everything else that asks. \
+                      `--off` asks again from the next command, without asking you.")]
+    Unattended {
+        /// The workspace, by its name or its id.
+        workspace: String,
+        /// Ask before each command again.
+        #[arg(long)]
+        off: bool,
+    },
+    /// The people in a workspace (-w): adding, removing, their roles, and
+    /// inviting more.
+    #[command(after_help = "Examples:\n  tilo workspace people ls -w Acme\n  \
+                      tilo workspace people invite --role editor -w Acme\n  \
+                      tilo workspace people add 3f9c…e1 --role editor -w Acme\n  \
+                      tilo workspace people role 3f9c…e1 administrator -w Acme\n  \
+                      tilo workspace people rm 3f9c…e1 -w Acme\n\n\
+                      Without -w, the workspace `tilo login` entered.")]
+    People {
+        #[command(subcommand)]
+        cmd: PeopleCmd,
+    },
+    /// The servers keeping a workspace (-w), and having another keep it as
+    /// well: both keep it, a change on either reaches the other, and its people
+    /// reach it at either.
+    #[command(after_help = "Examples:\n  tilo workspace servers ls -w Tilo\n  \
+                      tilo workspace servers add https://tilo.sh -w Tilo\n  \
+                      tilo workspace servers remove https://tilo.sh -w Tilo")]
+    Servers {
+        #[command(subcommand)]
+        cmd: ServersCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PeopleCmd {
+    /// The people in the workspace, with their roles and keys, and the
+    /// invitations still open.
+    Ls,
+    /// A link that brings one more person into the workspace as --role.
+    #[command(
+        after_help = "Example:\n  tilo workspace people invite --role editor --email ops@example.com -w Acme\n\n\
+                      Following the link signs them in and lands them in the workspace. You invite \
+                      as an editor at most where you administer the workspace, and as an \
+                      administrator or owner where you may make one. No mail is sent: hand the \
+                      link over yourself."
     )]
     Invite {
         /// viewer, commenter, editor, administrator or owner.
@@ -135,20 +241,19 @@ pub enum MembersCmd {
         #[arg(long)]
         email: Option<String>,
         /// The address on the wait list it is for (its entry, as `tilo
-        /// members wait-list` names it): mailed to it where the workspace
-        /// mails invitations, and it leaves the list once they join.
+        /// workspace people wait-list` names it): mailed to it where the
+        /// workspace mails invitations, and it leaves the list once they join.
         #[arg(long, value_name = "ENTRY", conflicts_with = "email")]
         waiting: Option<String>,
     },
-    /// Let the person whose key you know into the workspace (-w) at once, as
+    /// Let the person whose key you know into the workspace at once, as
     /// --role: no invitation to hand over.
     #[command(
-        after_help = "Example:\n  tilo members add 3f9c…e1 --role owner --name \"Ada Lovelace\" -w Lounge\n\n\
+        after_help = "Example:\n  tilo workspace people add 3f9c…e1 --role owner --name \"Ada Lovelace\" -w Lounge\n\n\
                       KEY is their user public key (`tilo login --new-identity --json` names it). \
                       The workspace lets them in from then on, and a key they create reaches it \
-                      before any device of theirs has joined. Someone in already is moved to \
-                      --role. You give at most what the workspace lets you: an administrator \
-                      makes administrators, an owner makes owners."
+                      before any device of theirs has joined. You give at most what the workspace \
+                      lets you: an administrator makes administrators, an owner makes owners."
     )]
     Add {
         /// Their user public key, 64 hex characters.
@@ -160,26 +265,43 @@ pub enum MembersCmd {
         #[arg(long)]
         name: Option<String>,
     },
-    /// The addresses people left at the workspace's (-w) entry while it
-    /// takes people by invitation, to invite.
+    /// Move someone in the workspace to another role.
+    #[command(
+        after_help = "Example:\n  tilo workspace people role 3f9c…e1 administrator -w Acme\n\n\
+                      You give at most what the workspace lets you."
+    )]
+    Role {
+        /// Their user public key, as `tilo workspace people ls` names it.
+        key: String,
+        /// viewer, commenter, editor, moderator, administrator or owner.
+        role: String,
+    },
+    /// Remove someone from the workspace, with every device of theirs.
+    #[command(
+        after_help = "Example:\n  tilo workspace people rm 3f9c…e1 -w Acme\n\n\
+                      Its owners remove people, and a moderator removes those ranked below them."
+    )]
+    Rm {
+        /// Their user public key, as `tilo workspace people ls` names it.
+        key: String,
+    },
+    /// The addresses people left at the workspace's entry while it takes
+    /// people by invitation, to invite.
     #[command(
         name = "wait-list",
-        after_help = "Example:\n  tilo members wait-list -w Lounge\n  \
-                      tilo members invite --waiting 5d1e…0a --role editor -w Lounge"
+        after_help = "Example:\n  tilo workspace people wait-list -w Lounge\n  \
+                      tilo workspace people invite --waiting 5d1e…0a --role editor -w Lounge"
     )]
     WaitList,
-    /// Take an address off the workspace's (-w) wait list.
+    /// Take an address off the workspace's wait list.
     Unlist {
-        /// The address's entry, as `tilo members wait-list` names it.
+        /// The address's entry, as `tilo workspace people wait-list` names it.
         entry: String,
     },
-    /// The people in the workspace (-w), with their roles, and the
-    /// invitations still open.
-    Ls,
-    /// How the workspace (-w) shows you from now on: the name its member list
-    /// and the invitations you make say for you.
+    /// How the workspace shows you from now on: the name its people and the
+    /// invitations you make say for you.
     #[command(
-        after_help = "Example:\n  tilo members name \"Quinten Wolff\" -w jane-doe\n\n\
+        after_help = "Example:\n  tilo workspace people name \"Quinten Wolff\" -w Acme\n\n\
                       Any device or key of yours sets it: the workspace knows you by it before a \
                       browser of yours joins, and whoever you invite sees who asked them in."
     )]
@@ -187,69 +309,6 @@ pub enum MembersCmd {
         /// The name to go by, as your teammates will read it.
         name: String,
     },
-}
-
-#[derive(Subcommand)]
-pub enum AccountCmd {
-    /// Your workspaces.
-    #[command(subcommand)]
-    Workspaces(WorkspacesCmd),
-}
-
-#[derive(Subcommand)]
-pub enum WorkspacesCmd {
-    /// The workspaces this key reaches.
-    Ls {
-        /// Only those labelled so, `NAME=VALUE`; several must all match.
-        #[arg(long = "label", value_name = "NAME=VALUE", value_parser = label_of)]
-        labels: Vec<(String, String)>,
-    },
-    /// Create a workspace; the host may refuse (quota, payment).
-    Create {
-        /// What to call it, as your workspaces list will name it.
-        name: String,
-        /// A label for your programs to find it by, `NAME=VALUE`
-        /// (`customer_id=cus_8121`); repeat it for more. Only your keys read them.
-        #[arg(long = "label", value_name = "NAME=VALUE", value_parser = label_of)]
-        labels: Vec<(String, String)>,
-    },
-    /// Branch a workspace of yours: a new one of yours that starts with
-    /// everything it holds and goes on apart; you are its only member.
-    #[command(
-        after_help = "Example:\n  tilo account workspaces branch template \"Acme\" --label customer_id=cus_8121\n\n\
-                      Its records, with their history, and its files come along; its chat, its \
-                      members and each person's own places stay behind, as do its labels. \
-                      Nothing merges back."
-    )]
-    Branch {
-        /// The workspace to branch, by its id or its name.
-        source: String,
-        /// What to call the branch, as your workspaces list will name it.
-        name: String,
-        /// A label for your programs to find it by, `NAME=VALUE`
-        /// (`customer_id=cus_8121`); repeat it for more. Only your keys read them.
-        #[arg(long = "label", value_name = "NAME=VALUE", value_parser = label_of)]
-        labels: Vec<(String, String)>,
-    },
-    /// Let the keys made for one workspace of yours alone run commands in its
-    /// Linux machine without asking you each time, or ask again.
-    #[command(
-        after_help = "Example:\n  tilo account workspaces unattended template\n\n\
-                      It asks you on your approving device first, and waits for your answer. \
-                      Branches made from the workspace start with it on. A key for all your \
-                      workspaces is still asked, and so is everything else that asks. \
-                      `--off` asks again from the next command, without asking you."
-    )]
-    Unattended {
-        /// The workspace, by its id or its name.
-        workspace: String,
-        /// Ask before each command again.
-        #[arg(long)]
-        off: bool,
-    },
-    /// Delete a workspace of yours with everything in it, and revoke its
-    /// minted keys: final, there is no undo.
-    Rm { workspace: String },
 }
 
 #[derive(Subcommand)]
@@ -433,17 +492,25 @@ fn action_text(answer: &Value) -> String {
 }
 
 /// `tilo ls [path] -w <workspace>`: what the workspace holds, or what `path`
-/// holds, as `tilo_ls` lists it.
-pub fn ls(reach: Reach<'_>, workspace: &str, path: Option<&str>) -> ExitCode {
+/// holds, as `tilo_ls` lists it: `cursor` reads on from where a page ended.
+pub fn ls(reach: Reach<'_>, workspace: &str, path: Option<&str>, cursor: Option<&str>) -> ExitCode {
     run(async {
         let client = Client::open(reach)?;
         let workspace = client.workspace_id(workspace).await?;
-        let mut route = format!("/v1/workspaces/{workspace}/resources");
+        let mut query = Vec::new();
         if let Some(path) = path.map(str::trim).filter(|path| !path.is_empty()) {
-            let _ = write!(route, "?path={}", api::encode_query(path));
+            query.push(format!("path={}", api::encode_query(path)));
+        }
+        if let Some(cursor) = cursor.map(str::trim).filter(|cursor| !cursor.is_empty()) {
+            query.push(format!("cursor={}", api::encode_query(cursor)));
+        }
+        let mut route = format!("/v1/workspaces/{workspace}/resources");
+        if !query.is_empty() {
+            let _ = write!(route, "?{}", query.join("&"));
         }
         let listed = client.get(&route).await?;
-        Ok(show(reach.json, &listed, &listing_text(&listed)))
+        let text = listing_text(&listed, &workspace, path);
+        Ok(show(reach.json, &listed, &text))
     })
 }
 
@@ -542,14 +609,29 @@ pub fn view(
 
 /// A listing as a person reads it: the lines `tilo_ls` prints, or the same
 /// built from its rows when the host sent no text.
-fn listing_text(listed: &Value) -> String {
-    if let Some(text) = listed
-        .get("text")
-        .and_then(Value::as_str)
-        .filter(|text| !text.is_empty())
-    {
-        return text.to_owned();
+fn listing_text(listed: &Value, workspace: &str, path: Option<&str>) -> String {
+    let mut said = match listed.get("text").and_then(Value::as_str) {
+        Some(text) if !text.is_empty() => text.to_owned(),
+        _ => listing_rows(listed),
+    };
+    // A listing that goes on says which command reads the rest, whether its
+    // lines came with the answer or were built here.
+    if let Some(cursor) = listed.get("next_cursor").and_then(Value::as_str) {
+        let what = path
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(|path| format!("{path} "))
+            .unwrap_or_default();
+        let _ = write!(
+            said,
+            "\nmore: tilo ls {what}--cursor {cursor} -w {workspace}"
+        );
     }
+    said
+}
+
+/// A listing's rows as lines, for an answer that carries no text to print.
+fn listing_rows(listed: &Value) -> String {
     let mut said = text(listed, "path").to_owned();
     if let Some(kind) = listed.get("kind").and_then(Value::as_str) {
         let _ = write!(said, "  ({kind})");
@@ -567,6 +649,30 @@ fn listing_text(listed: &Value) -> String {
             text(row, "label"),
             text(row, "kind")
         );
+    }
+    // What can be done to it, a line each as `tilo_ls` writes them: `#rename(title)  Rename
+    // note`, a `?` marking what may be left out.
+    for action in listed
+        .get("actions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let params: Vec<String> = action
+            .get("params")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(|param| {
+                let optional = param.get("required").and_then(Value::as_bool) != Some(true);
+                format!("{}{}", text(param, "name"), if optional { "?" } else { "" })
+            })
+            .collect();
+        let _ = write!(said, "\n#{}({})", text(action, "id"), params.join(", "));
+        let label = text(action, "label");
+        if !label.is_empty() {
+            let _ = write!(said, "  {label}");
+        }
     }
     said
 }
@@ -721,47 +827,34 @@ async fn read_surfaces(client: &Client, workspace: &str) -> Result<Vec<crate::sd
     Ok(apps)
 }
 
-/// `tilo account …`.
-pub fn account(reach: Reach<'_>, cmd: AccountCmd) -> ExitCode {
+/// `tilo workspace …`: the person's workspaces, and with `-w` (`workspace`)
+/// the people and servers of one.
+pub fn workspace(reach: Reach<'_>, workspace: Option<&str>, cmd: WorkspaceCmd) -> ExitCode {
+    let named = || {
+        workspace.ok_or_else(|| {
+            eprintln!("tilo: name the workspace: -w <name or id>");
+            ExitCode::from(2)
+        })
+    };
+    match cmd {
+        WorkspaceCmd::People { cmd } => {
+            named().map_or_else(|code| code, |workspace| members(reach, workspace, cmd))
+        }
+        WorkspaceCmd::Servers { cmd } => {
+            named().map_or_else(|code| code, |workspace| servers(reach, workspace, cmd))
+        }
+        cmd => workspaces(reach, cmd),
+    }
+}
+
+/// The person's workspaces: listing, making, naming, branching and deleting
+/// them.
+fn workspaces(reach: Reach<'_>, cmd: WorkspaceCmd) -> ExitCode {
     run(async {
         let client = Client::open(reach)?;
-        let AccountCmd::Workspaces(cmd) = cmd;
         match cmd {
-            WorkspacesCmd::Ls { labels } => {
-                let query: Vec<String> = labels
-                    .iter()
-                    .map(|(name, value)| {
-                        let encode = |text: &str| {
-                            percent_encoding::utf8_percent_encode(
-                                text,
-                                percent_encoding::NON_ALPHANUMERIC,
-                            )
-                            .to_string()
-                        };
-                        format!("label%5B{}%5D={}", encode(name), encode(value))
-                    })
-                    .collect();
-                let path = if query.is_empty() {
-                    "/v1/workspaces".to_owned()
-                } else {
-                    format!("/v1/workspaces?{}", query.join("&"))
-                };
-                let listed = client.get(&path).await?;
-                let rows = listed
-                    .get("workspaces")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .map(workspace_line)
-                    .collect::<Vec<_>>();
-                let said = if rows.is_empty() {
-                    "no workspaces".to_owned()
-                } else {
-                    rows.join("\n")
-                };
-                Ok(show(reach.json, &listed, &said))
-            }
-            WorkspacesCmd::Create { name, labels } => {
+            WorkspaceCmd::Ls { labels } => list_workspaces(&client, reach.json, &labels).await,
+            WorkspaceCmd::Create { name, labels } => {
                 let labels: serde_json::Map<String, Value> = labels
                     .into_iter()
                     .map(|(name, value)| (name, Value::String(value)))
@@ -774,7 +867,20 @@ pub fn account(reach: Reach<'_>, cmd: AccountCmd) -> ExitCode {
                     .await?;
                 Ok(show(reach.json, &made, &workspace_line(&made)))
             }
-            WorkspacesCmd::Branch {
+            WorkspaceCmd::Rename {
+                workspace: named,
+                name,
+            } => {
+                let id = client.workspace_id(&named).await?;
+                let renamed = client
+                    .put(
+                        &format!("/v1/workspaces/{id}/name"),
+                        &serde_json::json!({ "name": name }),
+                    )
+                    .await?;
+                Ok(show(reach.json, &renamed, &workspace_line(&renamed)))
+            }
+            WorkspaceCmd::Branch {
                 source,
                 name,
                 labels,
@@ -792,11 +898,11 @@ pub fn account(reach: Reach<'_>, cmd: AccountCmd) -> ExitCode {
                     .await?;
                 Ok(show(reach.json, &made, &workspace_line(&made)))
             }
-            WorkspacesCmd::Unattended {
+            WorkspaceCmd::Unattended {
                 workspace: named,
                 off,
             } => unattended(&client, reach.json, &named, off).await,
-            WorkspacesCmd::Rm { workspace: named } => {
+            WorkspaceCmd::Rm { workspace: named } => {
                 let id = client.workspace_id(&named).await?;
                 let deleted = client.delete(&format!("/v1/workspaces/{id}")).await?;
                 let mut said = format!("deleted {}", text(&deleted, "deleted"));
@@ -812,11 +918,52 @@ pub fn account(reach: Reach<'_>, cmd: AccountCmd) -> ExitCode {
                 }
                 Ok(show(reach.json, &deleted, &said))
             }
+            WorkspaceCmd::People { .. } | WorkspaceCmd::Servers { .. } => {
+                bail!("`tilo workspace people` and `servers` act in one workspace (-w)")
+            }
         }
     })
 }
 
-/// `tilo account workspaces unattended <workspace> [--off]`: held while the
+/// `tilo workspace ls [--label NAME=VALUE]`: the workspaces the key reaches,
+/// those labelled so when labels are named.
+async fn list_workspaces(
+    client: &Client,
+    json: bool,
+    labels: &[(String, String)],
+) -> Result<ExitCode> {
+    let query: Vec<String> = labels
+        .iter()
+        .map(|(name, value)| {
+            let encode = |text: &str| {
+                percent_encoding::utf8_percent_encode(text, percent_encoding::NON_ALPHANUMERIC)
+                    .to_string()
+            };
+            format!("label%5B{}%5D={}", encode(name), encode(value))
+        })
+        .collect();
+    let path = if query.is_empty() {
+        "/v1/workspaces".to_owned()
+    } else {
+        format!("/v1/workspaces?{}", query.join("&"))
+    };
+    let listed = client.get(&path).await?;
+    let rows = listed
+        .get("workspaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(workspace_line)
+        .collect::<Vec<_>>();
+    let said = if rows.is_empty() {
+        "no workspaces".to_owned()
+    } else {
+        rows.join("\n")
+    };
+    Ok(show(json, &listed, &said))
+}
+
+/// `tilo workspace unattended <workspace> [--off]`: held while the
 /// person decides on their approving device, and said as it stands then.
 async fn unattended(client: &Client, json: bool, named: &str, off: bool) -> Result<ExitCode> {
     let id = client.workspace_id(named).await?;
@@ -868,9 +1015,9 @@ pub fn files(reach: Reach<'_>, workspace: &str, cmd: FilesCmd) -> ExitCode {
 
 /// One file to upload: where it is here, and the name it keeps in the
 /// workspace.
-struct Uploading {
-    path: PathBuf,
-    name: String,
+pub(crate) struct Uploading {
+    pub(crate) path: PathBuf,
+    pub(crate) name: String,
 }
 
 /// Upload `paths` into `workspace`'s file tree, in the folder `to` when one
@@ -891,39 +1038,44 @@ async fn put_files(
         bail!("nothing to upload: those paths hold no files");
     }
     // Every byte goes up before any of it is imported: an app that cannot
-    // take one file does not stop the rest of the folder.
-    let mut uploaded = Vec::new();
-    for file in &files {
-        let mut progress = Progress::new(&file.name);
-        let put = client
-            .upload_file(workspace, &file.path, &mut |done, size| {
-                progress.told(done, size);
-            })
-            .await
-            .with_context(|| format!("uploading {}", file.name))?;
-        progress.done();
-        uploaded.push((file, text(&put, "content").to_owned()));
-    }
+    // take one file does not stop the rest of the folder. Many files go up
+    // side by side, a few at a time.
+    let uploaded = upload_all(client, workspace, files).await?;
     let mut rows = Vec::new();
     let mut failures = Vec::new();
-    for (file, content) in &uploaded {
-        let placed = if store {
-            Ok(None)
+    // The tree takes a folder in as few changes as its entries fit: one run
+    // and one History entry for a folder a request carries whole.
+    let parts = batches(&uploaded, to);
+    let count = parts.len();
+    for (part, batch) in parts.into_iter().enumerate() {
+        let paths = if store {
+            vec![None; batch.len()]
         } else {
-            put_in_tree(client, workspace, file, to, content).await
-        };
-        let path = match placed {
-            Ok(path) => path,
-            Err(why) => {
-                failures.push(format!("{}: {why:#}", file.name));
-                None
+            match put_in_tree(
+                client,
+                workspace,
+                &batch,
+                to,
+                (part.saturating_add(1), count),
+            )
+            .await
+            {
+                Ok(paths) => paths,
+                Err(why) => {
+                    for (file, _) in batch.iter().copied() {
+                        failures.push(format!("{}: {why:#}", file.name));
+                    }
+                    vec![None; batch.len()]
+                }
             }
         };
-        rows.push(json!({
-            "name": file.name,
-            "content": content,
-            "path": path.as_deref(),
-        }));
+        for ((file, content), path) in batch.iter().copied().zip(paths) {
+            rows.push(json!({
+                "name": file.name,
+                "content": content,
+                "path": path.as_deref(),
+            }));
+        }
     }
     if json {
         println!(
@@ -1004,43 +1156,330 @@ fn files_under(path: &Path) -> Result<Vec<Uploading>> {
     Ok(found)
 }
 
-/// Write `file` into `workspace`'s file tree, in the folder `to` when one is
-/// named, and answer its path there.
+/// How many files go up at once.
+const UPLOADS_AT_ONCE: usize = 32;
+/// How many files one action puts into the workspace's tree: a folder larger
+/// than this goes in a few runs, each answered well within the bound a
+/// workspace answers an action in.
+const TREE_BATCH_FILES: usize = 10_000;
+/// How many bytes of file entries one change carries: under the 64 MiB one
+/// upload carries, so a large folder goes in a few changes rather than one
+/// no request carries.
+const TREE_BATCH_BYTES: usize = 32 * 1024 * 1024;
+
+/// The most raw bytes one many-files call carries: under the 1 MiB request
+/// and session frame bounds once base64 and hex grow them.
+const MANY_BYTES: usize = 512 * 1024;
+/// How many content hashes one call asks the workspace about.
+const HAVE_HASHES: usize = 6_000;
+
+/// `file`'s length, as the disk says it.
+fn file_size(file: &Uploading) -> u64 {
+    std::fs::metadata(&file.path).map_or(0, |meta| meta.len())
+}
+
+/// The address `file`'s bytes keep in the workspace, lowercase BLAKE3 hex: what
+/// the upload would answer, read here so content already kept is not sent again.
+fn hash_of(file: &Uploading) -> Result<String> {
+    use std::io::Read as _;
+    let mut opened = std::fs::File::open(&file.path)
+        .with_context(|| format!("reading {}", file.path.display()))?;
+    let mut hasher = blake3::Hasher::new();
+    let mut piece = vec![0_u8; 256 * 1024];
+    loop {
+        let read = match opened.read(&mut piece) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => {
+                return Err(error).with_context(|| format!("reading {}", file.path.display()));
+            }
+        };
+        hasher.update(piece.get(..read).unwrap_or_default());
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+/// Upload `files`: what the workspace already holds is named without going up
+/// again, small files go many to a call, and a file larger than one call goes
+/// in pieces a few at a time. Tells a person at a terminal how far it is, and
+/// answers each with the `tilo.content:` reference it is kept by, in name
+/// order.
+pub(crate) async fn upload_all(
+    client: &Client,
+    workspace: &str,
+    files: Vec<Uploading>,
+) -> Result<Vec<(Uploading, String)>> {
+    use futures_util::StreamExt as _;
+    let count = files.len();
+    let total: u64 = files.iter().map(file_size).sum();
+    let name = if count == 1 {
+        files
+            .first()
+            .map_or_else(String::new, |file| file.name.clone())
+    } else {
+        format!("{count} files")
+    };
+    let mut progress = Progress::new(&name);
+    progress.told(0, total);
+    // What the workspace already holds needs no upload.
+    let hashes: Vec<String> = files.iter().map(hash_of).collect::<Result<_>>()?;
+    let held = already_held(client, workspace, &hashes).await?;
+    let mut contents: Vec<Option<String>> = (0..count).map(|_| None).collect();
+    let mut done = 0_u64;
+    let mut smalls: Vec<Vec<usize>> = Vec::new();
+    let mut larges: Vec<usize> = Vec::new();
+    let mut group: Vec<usize> = Vec::new();
+    let mut group_bytes = 0_usize;
+    for (index, file) in files.iter().enumerate() {
+        if held.get(index).copied().unwrap_or(false) {
+            if let (Some(kept), Some(hash)) = (contents.get_mut(index), hashes.get(index)) {
+                *kept = Some(format!("tilo.content:{hash}"));
+            }
+            done = done.saturating_add(file_size(file));
+            progress.told(done.min(total), total);
+            continue;
+        }
+        let len = usize::try_from(file_size(file)).unwrap_or(usize::MAX);
+        if len > MANY_BYTES {
+            larges.push(index);
+        } else {
+            if group_bytes.saturating_add(len) > MANY_BYTES && !group.is_empty() {
+                smalls.push(std::mem::take(&mut group));
+                group_bytes = 0;
+            }
+            group_bytes = group_bytes.saturating_add(len);
+            group.push(index);
+        }
+    }
+    if !group.is_empty() {
+        smalls.push(group);
+    }
+    // Small files go many to a call, a few calls at a time.
+    let mut sending = futures_util::stream::iter(smalls)
+        .map(|group| async {
+            let mut batch = Vec::with_capacity(group.len());
+            for index in &group {
+                let file = files
+                    .get(*index)
+                    .ok_or_else(|| anyhow!("a file went missing"))?;
+                batch.push(
+                    std::fs::read(&file.path)
+                        .with_context(|| format!("reading {}", file.path.display()))?,
+                );
+            }
+            let refs = client
+                .put_contents(workspace, &batch)
+                .await
+                .context("storing the files")?;
+            anyhow::Ok((group, refs))
+        })
+        .buffer_unordered(UPLOADS_AT_ONCE);
+    while let Some(sent) = sending.next().await {
+        let (group, refs) = sent?;
+        for (index, content) in group.into_iter().zip(refs) {
+            if let Some(kept) = contents.get_mut(index) {
+                *kept = Some(content);
+            }
+            if let Some(file) = files.get(index) {
+                done = done.saturating_add(file_size(file));
+            }
+            progress.told(done.min(total), total);
+        }
+    }
+    // A file larger than one many-files call goes up in pieces, a few at a time.
+    send_larges(
+        client,
+        workspace,
+        &files,
+        larges,
+        &mut contents,
+        &mut progress,
+        total,
+    )
+    .await?;
+    progress.done();
+    drop(sending);
+    let mut uploaded = Vec::with_capacity(count);
+    for (index, file) in files.into_iter().enumerate() {
+        let content = contents
+            .get_mut(index)
+            .and_then(Option::take)
+            .ok_or_else(|| anyhow!("no content reference was answered for {}", file.name))?;
+        uploaded.push((file, content));
+    }
+    Ok(uploaded)
+}
+
+/// Which of the `hashes` the workspace already holds: the files they name
+/// need no upload.
+async fn already_held(client: &Client, workspace: &str, hashes: &[String]) -> Result<Vec<bool>> {
+    let mut held = vec![false; hashes.len()];
+    for (at, asks) in hashes.chunks(HAVE_HASHES).enumerate() {
+        let answered = client
+            .have_contents(workspace, asks)
+            .await
+            .context("asking which files the workspace already holds")?;
+        for (offset, present) in answered.into_iter().enumerate() {
+            let index = at.saturating_mul(HAVE_HASHES).saturating_add(offset);
+            if let Some(held_here) = held.get_mut(index) {
+                *held_here = present;
+            }
+        }
+    }
+    Ok(held)
+}
+
+/// Send the files too large for a many-files call, each on its own, a few at a
+/// time.
+async fn send_larges(
+    client: &Client,
+    workspace: &str,
+    files: &[Uploading],
+    larges: Vec<usize>,
+    contents: &mut [Option<String>],
+    progress: &mut Progress,
+    total: u64,
+) -> Result<()> {
+    use futures_util::StreamExt as _;
+    let mut done = 0_u64;
+    let mut big = futures_util::stream::iter(larges)
+        .map(|index| async move {
+            let file = files
+                .get(index)
+                .ok_or_else(|| anyhow!("a file went missing"))?;
+            let put = client
+                .upload_file(workspace, &file.path, &mut |_, _| {})
+                .await
+                .with_context(|| format!("uploading {}", file.name))?;
+            anyhow::Ok((index, text(&put, "content").to_owned(), file_size(file)))
+        })
+        .buffer_unordered(UPLOADS_AT_ONCE);
+    while let Some(sent) = big.next().await {
+        let (index, content, len) = sent?;
+        if let Some(kept) = contents.get_mut(index) {
+            *kept = Some(content);
+        }
+        done = done.saturating_add(len);
+        progress.told(done.min(total), total);
+    }
+    Ok(())
+}
+
+/// `uploaded` in as few batches as the workspace takes: each a whole run and
+/// one History entry, under [`TREE_BATCH_FILES`] files and
+/// [`TREE_BATCH_BYTES`] bytes of entries.
+fn batches<'a>(
+    uploaded: &'a [(Uploading, String)],
+    to: Option<&str>,
+) -> Vec<Vec<&'a (Uploading, String)>> {
+    let size = |(file, content): &(Uploading, String)| {
+        content
+            .len()
+            .saturating_add(file.name.len())
+            .saturating_add(to.map_or(0, str::len))
+            .saturating_add(40)
+    };
+    let mut batches = Vec::new();
+    let mut batch = Vec::new();
+    let mut bytes = 0_usize;
+    for entry in uploaded {
+        let next = size(entry);
+        let full = batch.len() >= TREE_BATCH_FILES || bytes.saturating_add(next) > TREE_BATCH_BYTES;
+        if full && !batch.is_empty() {
+            batches.push(batch);
+            batch = Vec::new();
+            bytes = 0;
+        }
+        batch.push(entry);
+        bytes = bytes.saturating_add(next);
+    }
+    if !batch.is_empty() {
+        batches.push(batch);
+    }
+    batches
+}
+
+/// The folder `file` goes into under `to`, as the tree keeps it: the parts of
+/// both, no empty ones, joined by `/`.
+fn folder_of(file: &Uploading, to: Option<&str>) -> String {
+    let parent = parent_of(&file.name);
+    let mut kept: Vec<&str> = Vec::new();
+    for part in to.into_iter().chain([parent.as_str()]) {
+        for part in part.split('/') {
+            let part = part.trim();
+            if !part.is_empty() {
+                kept.push(part);
+            }
+        }
+    }
+    kept.join("/")
+}
+
+/// Write `files` into `workspace`'s file tree in one change, in the folder `to`
+/// when one is named, and answer each one's path there.
 ///
-/// The file's content is opened in Files (`files#open`), which is the
-/// workspace's folder: the bytes go where the workspace keeps its files, and
-/// the node names them, so every member's folder shows the file.
+/// Their content is opened in Files (`files#open`), which is the workspace's
+/// folder: the bytes go where the workspace keeps its files, and the nodes
+/// name them, so every member's folder shows the files. A folder's list goes
+/// up as content of its own, so the open carries one reference however many
+/// files it puts in the tree: one invocation, one History entry.
 async fn put_in_tree(
     client: &Client,
     workspace: &str,
-    file: &Uploading,
+    files: &[&(Uploading, String)],
     to: Option<&str>,
-    content: &str,
-) -> Result<Option<String>> {
-    let mut parts: Vec<&str> = Vec::new();
-    if let Some(to) = to.map(str::trim).filter(|to| !to.is_empty()) {
-        parts.push(to.trim_matches('/'));
-    }
-    let folder = parent_of(&file.name);
-    if !folder.is_empty() {
-        parts.push(&folder);
-    }
-    let dir = parts.join("/");
-    let name = file_base(&file.name);
-    let args = if dir.is_empty() {
-        json!({"content": content, "name": name})
+    (part, parts): (usize, usize),
+) -> Result<Vec<Option<String>>> {
+    let listed: Vec<Value> = files
+        .iter()
+        .map(|(file, content)| {
+            json!({"content": content, "name": file_base(&file.name),
+                   "dir": folder_of(file, to)})
+        })
+        .collect();
+    let title = if files.len() == 1 {
+        files.first().map_or_else(
+            || "Upload a file".to_owned(),
+            |(file, _)| format!("Upload {}", file.name),
+        )
+    } else if parts > 1 {
+        format!("Upload {} files ({part} of {parts})", files.len())
     } else {
-        json!({"content": content, "name": name, "dir": dir})
+        format!("Upload {} files", files.len())
     };
-    let title = format!("Upload {}", file.name);
+    let arguments = if files.len() == 1 {
+        // One file's entry is smaller than the reference that would name it.
+        json!({"files": listed})
+    } else {
+        let list = serde_json::to_vec(&listed)?;
+        let put = client.upload(workspace, list).await?;
+        json!({"files": text(&put, "content")})
+    };
     let answer = client
-        .act(workspace, "files", "open", &args, &title)
+        .act(workspace, "files", "open", &arguments, &title)
         .await?;
-    let path = answer
-        .pointer("/result/path")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("Files did not say where the file is: {answer}"))?;
-    Ok(Some(path.to_owned()))
+    // The open answers how many files it put, not each one: the paths are
+    // where the tree keeps what was asked for.
+    let counted = answer.pointer("/result/count").and_then(Value::as_u64);
+    if counted.is_some_and(|count| count != files.len() as u64) {
+        bail!(
+            "Files put {counted:?} of the {} files: {answer}",
+            files.len()
+        );
+    }
+    Ok(files
+        .iter()
+        .map(|(file, _)| {
+            let dir = folder_of(file, to);
+            let name = file_base(&file.name);
+            Some(if dir.is_empty() {
+                name
+            } else {
+                format!("{dir}/{name}")
+            })
+        })
+        .collect())
 }
 
 /// The folder part of an uploaded file's name in the workspace
@@ -1173,20 +1612,20 @@ async fn get_content(
     })
 }
 
-/// `tilo members … -w <workspace>`: the workspace's people, and inviting one
+/// `tilo workspace people … -w <workspace>`: the workspace's people, and inviting one
 /// more.
-pub fn members(reach: Reach<'_>, workspace: &str, cmd: MembersCmd) -> ExitCode {
+fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
     run(async {
         let client = Client::open(reach)?;
         let workspace = client.workspace_id(workspace).await?;
         match cmd {
-            MembersCmd::Ls => {
+            PeopleCmd::Ls => {
                 let listed = client
                     .get(&format!("/v1/workspaces/{workspace}/members"))
                     .await?;
                 Ok(show(reach.json, &listed, &members_text(&listed)))
             }
-            MembersCmd::Invite {
+            PeopleCmd::Invite {
                 role,
                 email,
                 waiting,
@@ -1212,7 +1651,28 @@ pub fn members(reach: Reach<'_>, workspace: &str, cmd: MembersCmd) -> ExitCode {
                 }
                 Ok(show(reach.json, &invited, &said))
             }
-            MembersCmd::Add { key, role, name } => {
+            PeopleCmd::Role { key, role } => {
+                let moved = client
+                    .put(
+                        &format!(
+                            "/v1/workspaces/{workspace}/members/{}/role",
+                            api::encode_path(&key)
+                        ),
+                        &serde_json::json!({ "role": role }),
+                    )
+                    .await?;
+                Ok(show(reach.json, &moved, &members_text(&moved)))
+            }
+            PeopleCmd::Rm { key } => {
+                let left = client
+                    .delete(&format!(
+                        "/v1/workspaces/{workspace}/members/{}",
+                        api::encode_path(&key)
+                    ))
+                    .await?;
+                Ok(show(reach.json, &left, &members_text(&left)))
+            }
+            PeopleCmd::Add { key, role, name } => {
                 let mut body = serde_json::json!({"person": key, "role": role});
                 if let (Some(fields), Some(name)) = (body.as_object_mut(), name) {
                     fields.insert("name".into(), Value::String(name));
@@ -1222,13 +1682,13 @@ pub fn members(reach: Reach<'_>, workspace: &str, cmd: MembersCmd) -> ExitCode {
                     .await?;
                 Ok(show(reach.json, &added, &members_text(&added)))
             }
-            MembersCmd::WaitList => {
+            PeopleCmd::WaitList => {
                 let listed = client
                     .get(&format!("/v1/workspaces/{workspace}/members/wait-list"))
                     .await?;
                 Ok(show(reach.json, &listed, &wait_list_text(&listed)))
             }
-            MembersCmd::Unlist { entry } => {
+            PeopleCmd::Unlist { entry } => {
                 let listed = client
                     .delete(&format!(
                         "/v1/workspaces/{workspace}/members/wait-list/{entry}"
@@ -1236,7 +1696,7 @@ pub fn members(reach: Reach<'_>, workspace: &str, cmd: MembersCmd) -> ExitCode {
                     .await?;
                 Ok(show(reach.json, &listed, &wait_list_text(&listed)))
             }
-            MembersCmd::Name { name } => {
+            PeopleCmd::Name { name } => {
                 let named = client
                     .post(
                         &format!("/v1/workspaces/{workspace}/members/name"),
@@ -1249,52 +1709,64 @@ pub fn members(reach: Reach<'_>, workspace: &str, cmd: MembersCmd) -> ExitCode {
     })
 }
 
-/// `tilo workspace hosts … -w <workspace>`: the hosts holding the workspace,
-/// and choosing them.
-pub fn hosts(reach: Reach<'_>, workspace: &str, cmd: HostsCmd) -> ExitCode {
+/// `tilo workspace servers … -w <workspace>`: the servers keeping the
+/// workspace, and choosing them.
+fn servers(reach: Reach<'_>, workspace: &str, cmd: ServersCmd) -> ExitCode {
     run(async {
         let client = Client::open(reach)?;
         let workspace = client.workspace_id(workspace).await?;
-        let path = format!("/v1/workspaces/{workspace}/hosts");
+        let path = format!("/v1/workspaces/{workspace}/servers");
         let listed = match cmd {
-            HostsCmd::Ls => client.get(&path).await?,
-            HostsCmd::Add { origin } => {
+            ServersCmd::Ls => client.get(&path).await?,
+            ServersCmd::Add { origin } => {
                 client
                     .post(&path, &serde_json::json!({ "origin": origin }))
                     .await?
             }
-            HostsCmd::Remove { host } => {
-                let host = percent_encoding::utf8_percent_encode(
-                    &host,
+            ServersCmd::Remove { server } => {
+                let server = percent_encoding::utf8_percent_encode(
+                    &server,
                     percent_encoding::NON_ALPHANUMERIC,
                 );
-                client.delete(&format!("{path}/{host}")).await?
+                client.delete(&format!("{path}/{server}")).await?
+            }
+            ServersCmd::Move { from, to } => {
+                let from = percent_encoding::utf8_percent_encode(
+                    &from,
+                    percent_encoding::NON_ALPHANUMERIC,
+                );
+                client
+                    .post(
+                        &format!("{path}/{from}/move"),
+                        &serde_json::json!({ "origin": to }),
+                    )
+                    .await?
             }
         };
-        Ok(show(reach.json, &listed, &hosts_text(&listed)))
+        Ok(show(reach.json, &listed, &servers_text(&listed)))
     })
 }
 
-/// A workspace's hosts, as lines: each by its device key, the one governing
-/// it marked.
-fn hosts_text(listed: &Value) -> String {
-    let hosts = listed
-        .get("hosts")
+/// A workspace's servers, as lines: each by its device key, the one asked
+/// marked.
+fn servers_text(listed: &Value) -> String {
+    let servers = listed
+        .get("servers")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let mut said = String::from("held by:");
-    for host in &hosts {
-        let governs = if host.get("governs").and_then(Value::as_bool) == Some(true) {
-            "  (made here; governs it)"
+    let mut said = String::from("kept by:");
+    for server in &servers {
+        let here = if server.get("here").and_then(Value::as_bool) == Some(true) {
+            "  (asked here)"
         } else {
             ""
         };
-        let _ = write!(said, "\n  {}{governs}", text(host, "device"));
+        let _ = write!(said, "\n  {}{here}", text(server, "device"));
     }
     if listed.get("confirmed").and_then(Value::as_bool) == Some(false) {
         said.push_str(
-            "\nthe host that was let go was not reached: it is no longer named, and lets the \
+            "\nthe server that was let go was not reached: it is no longer named, and lets the \
              workspace go once it hears so",
         );
     }
@@ -1350,6 +1822,10 @@ fn members_text(listed: &Value) -> String {
             }
         }
         let _ = write!(said, "\n  {} — {what}", text(member, "name"));
+        // A person is named by their key, which `role` and `rm` take.
+        if let Some(key) = member.pointer("/member/person").and_then(Value::as_str) {
+            let _ = write!(said, "  {key}");
+        }
     }
     if members.is_empty() {
         said.push_str("\n  nobody yet");
@@ -1796,6 +2272,22 @@ mod tests {
                     "host": "eu1.tilo.sh", "role": "owner",
                     "labels": {"customer_id": "cus_8121"}}),
             ),
+            ("POST", route) if route.ends_with("/contents/have") => {
+                let asked: Value = serde_json::from_slice(&request.body).unwrap_or_default();
+                let count = asked
+                    .get("hashes")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len);
+                json_reply(200, json!({"have": vec![false; count]}))
+            }
+            ("PUT", route) if route.ends_with("/contents") => {
+                let asked: Value = serde_json::from_slice(&request.body).unwrap_or_default();
+                let count = asked
+                    .get("files")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len);
+                json_reply(200, json!({"contents": vec!["tilo.content:abc"; count]}))
+            }
             ("POST", route) if route.ends_with("/uploads") => json_reply(
                 201,
                 json!({"content": "tilo.content:abc", "size": request.body.len()}),
@@ -1803,7 +2295,7 @@ mod tests {
             ("POST", route) if route.ends_with("/actions/open") => json_reply(
                 200,
                 json!({"status": "ok", "path": "files#open", "invocation": "inv-1",
-                    "result": {"path": "passport.png", "content": "tilo.content:abc"}}),
+                    "result": {}}),
             ),
             ("GET", route) if route.contains("/content/") => {
                 Some(test_http::Reply::status(200).body(b"hello".to_vec()))
@@ -1859,12 +2351,13 @@ mod tests {
             };
 
             // A workspace is made as `POST /v1/workspaces`, once per idempotency key.
-            account(
+            workspace(
                 reach,
-                AccountCmd::Workspaces(WorkspacesCmd::Create {
+                None,
+                WorkspaceCmd::Create {
                     name: "Applicant: Jane Doe".into(),
                     labels: vec![("customer_id".into(), "cus_8121".into())],
-                }),
+                },
             );
             let made = api_server.drain_requests();
             assert_eq!(made.len(), 1);
@@ -1881,13 +2374,14 @@ mod tests {
             );
             // A branch is `POST /v1/workspaces/{source}/branches`, its source
             // named by a read of the list, its labels as create takes them.
-            account(
+            workspace(
                 reach,
-                AccountCmd::Workspaces(WorkspacesCmd::Branch {
+                None,
+                WorkspaceCmd::Branch {
                     source: "Applicant: Jane Doe".into(),
                     name: "Applicant: Jane Doe, second try".into(),
                     labels: vec![("customer_id".into(), "cus_8121".into())],
-                }),
+                },
             );
             let branched = api_server.drain_requests();
             assert_eq!(branched.len(), 2, "the source is named by the list first");
@@ -1905,12 +2399,13 @@ mod tests {
             );
             // Running commands unattended is `PUT /v1/workspaces/{id}/unattended`,
             // held while the person decides.
-            account(
+            workspace(
                 reach,
-                AccountCmd::Workspaces(WorkspacesCmd::Unattended {
+                None,
+                WorkspaceCmd::Unattended {
                     workspace: "Applicant: Jane Doe".into(),
                     off: false,
-                }),
+                },
             );
             let unattended = api_server.drain_requests();
             let asked = unattended.last().expect("the setting");
@@ -1922,11 +2417,12 @@ mod tests {
                 json!({"on": true})
             );
             // Listing by a label is `GET /v1/workspaces?label[name]=value`.
-            account(
+            workspace(
                 reach,
-                AccountCmd::Workspaces(WorkspacesCmd::Ls {
+                None,
+                WorkspaceCmd::Ls {
                     labels: vec![("customer_id".into(), "cus_8121".into())],
-                }),
+                },
             );
             let listed = api_server.drain_requests();
             assert_eq!(
@@ -1949,21 +2445,36 @@ mod tests {
                 },
             );
             let put = api_server.drain_requests();
+            // Content the workspace already holds is not sent again: the
+            // command asks about the file's address first.
+            let asked = put
+                .iter()
+                .find(|request| request.target.ends_with("/contents/have"))
+                .expect("the file's address is asked about");
+            assert_eq!(asked.method, "POST");
+            let asked: Value = serde_json::from_slice(&asked.body).unwrap();
+            let hashes = asked["hashes"].as_array().expect("an address each");
+            assert_eq!(hashes.len(), 1);
+            assert!(hashes[0].as_str().is_some_and(|hash| hash.len() == 64));
+            // The file goes up whole in one call, base64 as the route takes it.
             let upload = put
                 .iter()
-                .find(|request| request.target.ends_with("/uploads"))
-                .expect("the upload");
-            assert_eq!(upload.target, format!("/v1/workspaces/{WORKSPACE}/uploads"));
-            assert_eq!(upload.method, "POST");
-            assert_eq!(upload.body, b"hello");
+                .find(|request| request.target.ends_with("/contents"))
+                .expect("the file goes up");
+            assert_eq!(upload.target, format!("/v1/workspaces/{WORKSPACE}/contents"));
+            assert_eq!(upload.method, "PUT");
             assert_eq!(
-                upload.header("content-type"),
-                Some("application/octet-stream")
+                serde_json::from_slice::<Value>(&upload.body).unwrap(),
+                json!({"files": ["aGVsbG8="]})
             );
-            assert!(upload.header("idempotency-key").is_some());
+            assert!(
+                put.iter()
+                    .all(|request| !request.target.ends_with("/uploads")),
+                "the file does not go up one request to a call"
+            );
             // The bytes are then written into the workspace's files: a Files
-            // open names the content and the name it takes, and answers the
-            // path it is at.
+            // open names the contents and the names they take, and answers
+            // the paths they are at.
             let placed = put
                 .iter()
                 .find(|request| request.target.ends_with("/actions/open"))
@@ -1974,7 +2485,65 @@ mod tests {
             );
             assert_eq!(
                 serde_json::from_slice::<Value>(&placed.body).unwrap(),
-                json!({"content": "tilo.content:abc", "name": "passport.png"})
+                json!({"files": [{"content": "tilo.content:abc", "name": "passport.png",
+                                  "dir": ""}]})
+            );
+
+            // A folder goes up as one open, however many files it holds: many
+            // uploads, one change of the workspace's tree.
+            let folder = dir.path().join("contracts");
+            std::fs::create_dir_all(folder.join("2026")).unwrap();
+            for name in ["nda.pdf", "2026/plan.md", "2026/signed.pdf"] {
+                std::fs::write(folder.join(name), b"hello").unwrap();
+            }
+            files(
+                reach,
+                "applicant-jane-doe",
+                FilesCmd::Put {
+                    paths: vec![folder],
+                    to: Some("docs".into()),
+                    store: false,
+                },
+            );
+            let folder_put = api_server.drain_requests();
+            let uploads: Vec<&test_http::Request> = folder_put
+                .iter()
+                .filter(|request| request.target.ends_with("/uploads"))
+                .collect();
+            assert_eq!(uploads.len(), 1, "the list goes up as content, once");
+            let sent: Vec<&test_http::Request> = folder_put
+                .iter()
+                .filter(|request| request.target.ends_with("/contents"))
+                .collect();
+            assert_eq!(sent.len(), 1, "the folder's files go up in one call");
+            let sent: Value = serde_json::from_slice(&sent[0].body).unwrap();
+            assert_eq!(
+                sent["files"].as_array().map(Vec::len),
+                Some(3),
+                "every file is in that call"
+            );
+            let listed = uploads
+                .iter()
+                .find(|request| request.body.starts_with(b"["))
+                .expect("the list of files goes up as content");
+            assert_eq!(
+                serde_json::from_slice::<Value>(&listed.body).unwrap(),
+                json!([
+                    {"content": "tilo.content:abc", "name": "plan.md", "dir": "docs/contracts/2026"},
+                    {"content": "tilo.content:abc", "name": "signed.pdf", "dir": "docs/contracts/2026"},
+                    {"content": "tilo.content:abc", "name": "nda.pdf", "dir": "docs/contracts"},
+                ]),
+                "each file keeps its place under the folder it came from"
+            );
+            let opened: Vec<&test_http::Request> = folder_put
+                .iter()
+                .filter(|request| request.target.ends_with("/actions/open"))
+                .collect();
+            assert_eq!(opened.len(), 1, "the folder is one change of the tree");
+            assert_eq!(
+                serde_json::from_slice::<Value>(&opened[0].body).unwrap(),
+                json!({"files": "tilo.content:abc"}),
+                "the open names the list, however many files it holds"
             );
 
             // An action is `POST …/resources/{path}/actions/{action}`: its
@@ -2006,13 +2575,20 @@ mod tests {
 
             // A listing and a read are the routes `tilo_ls` and `tilo_read`
             // answer: the same call, in the words a person's command takes.
-            ls(reach, "applicant-jane-doe", Some("notes/Todo"));
+            ls(reach, "applicant-jane-doe", Some("notes/Todo"), None);
             let listed = api_server.drain_requests();
             let listing = listed.last().expect("the listing");
             assert_eq!(listing.method, "GET");
             assert_eq!(
                 listing.target,
                 format!("/v1/workspaces/{WORKSPACE}/resources?path=notes%2FTodo")
+            );
+            // A listing past its first page names the cursor it ended with.
+            ls(reach, "applicant-jane-doe", Some("notes/Todo"), Some("12"));
+            let paged = api_server.drain_requests();
+            assert_eq!(
+                paged.last().expect("the listing").target,
+                format!("/v1/workspaces/{WORKSPACE}/resources?path=notes%2FTodo&cursor=12")
             );
             read(
                 reach,
@@ -2049,7 +2625,7 @@ mod tests {
             members(
                 reach,
                 "applicant-jane-doe",
-                MembersCmd::Invite {
+                PeopleCmd::Invite {
                     role: "administrator".into(),
                     email: Some("ops@example.com".into()),
                     waiting: None,
@@ -2065,6 +2641,54 @@ mod tests {
             assert_eq!(
                 serde_json::from_slice::<Value>(&invitation.body).unwrap(),
                 json!({"role": "administrator", "email": "ops@example.com"})
+            );
+
+            // Someone in is moved by their key, and removed by it.
+            let ada = "ab".repeat(32);
+            members(
+                reach,
+                "applicant-jane-doe",
+                PeopleCmd::Role {
+                    key: ada.clone(),
+                    role: "editor".into(),
+                },
+            );
+            let moved = api_server.drain_requests();
+            let moved = moved.last().expect("the move");
+            assert_eq!(moved.method, "PUT");
+            assert_eq!(
+                moved.target,
+                format!("/v1/workspaces/{WORKSPACE}/members/{ada}/role")
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&moved.body).unwrap(),
+                json!({"role": "editor"})
+            );
+            members(reach, "applicant-jane-doe", PeopleCmd::Rm { key: ada.clone() });
+            let removed = api_server.drain_requests();
+            let removed = removed.last().expect("the removal");
+            assert_eq!(removed.method, "DELETE");
+            assert_eq!(
+                removed.target,
+                format!("/v1/workspaces/{WORKSPACE}/members/{ada}")
+            );
+
+            // A workspace is named again with `PUT …/name`.
+            workspace(
+                reach,
+                None,
+                WorkspaceCmd::Rename {
+                    workspace: "applicant-jane-doe".into(),
+                    name: "Jane Doe".into(),
+                },
+            );
+            let renamed = api_server.drain_requests();
+            let renamed = renamed.last().expect("the rename");
+            assert_eq!(renamed.method, "PUT");
+            assert_eq!(renamed.target, format!("/v1/workspaces/{WORKSPACE}/name"));
+            assert_eq!(
+                serde_json::from_slice::<Value>(&renamed.body).unwrap(),
+                json!({"name": "Jane Doe"})
             );
         }
 
@@ -2105,10 +2729,10 @@ mod tests {
             );
         }
 
-        phase a_busy_host_is_asked_again_under_the_same_idempotency_key;
-        // A host busy with the person's changes answers `429` and names the wait;
-        // the same call is asked again under the id it first went with, so the
-        // host runs one invocation however often it is retried.
+        phase a_server_that_did_not_answer_is_asked_again_under_the_same_idempotency_key;
+        // A server that says it is briefly unavailable answers `503`; the same
+        // call is asked again under the id it first went with, so the host
+        // runs one invocation however often it is retried.
         {
             let _key = keyed();
             let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2124,9 +2748,8 @@ mod tests {
                 };
                 if first {
                     reply(
-                        429,
-                        json!({"error": {"code": "rate_limited", "message": "busy",
-                            "retry_after_ms": 1}}),
+                        503,
+                        json!({"error": {"code": "unavailable", "message": "still running"}}),
                     )
                 } else {
                     reply(200, json!({"revoked": "grant-1"}))
@@ -2145,7 +2768,11 @@ mod tests {
                 },
             );
             let sent = api_server.drain_requests();
-            assert_eq!(sent.len(), 2, "the busy answer is retried, not reported");
+            assert_eq!(
+                sent.len(),
+                2,
+                "the unavailable answer is retried, not reported"
+            );
             assert_eq!(sent[1].target, "/v1/keys/grant-1");
             assert_eq!(
                 sent[0].header("idempotency-key"),
@@ -2225,7 +2852,7 @@ mod tests {
                 "rows": [{"path": "notes/Notebook", "label": "Notebook", "kind": "notes.notebook"}],
                 "text": "notes  (notes.notebook)\nNotebook  notes.notebook"});
             assert_eq!(
-                listing_text(&listed),
+                listing_text(&listed, "jane-doe", None),
                 "notes  (notes.notebook)\nNotebook  notes.notebook"
             );
             // A host that sent none: the same, built from its rows.
@@ -2233,8 +2860,39 @@ mod tests {
                 "rows": [{"path": "notes/Notebook", "label": "Notebook",
                     "kind": "notes.notebook"}]});
             assert_eq!(
-                listing_text(&rows_only),
+                listing_text(&rows_only, "jane-doe", None),
                 "notes  (notes.notebook)\nnotes/Notebook  Notebook  notes.notebook"
+            );
+            // Its actions follow, so the listing says what can be done there.
+            let with_actions = serde_json::json!({"path": "notes/Plan", "kind": "notes.page",
+                "rows": [],
+                "actions": [
+                    {"id": "rename", "label": "Rename note",
+                        "params": [{"name": "title", "required": true}]},
+                    {"id": "move-note", "label": "Move note",
+                        "params": [{"name": "parent", "required": false}]},
+                    {"id": "delete", "label": "Delete note", "params": []}]});
+            assert_eq!(
+                listing_text(&with_actions, "jane-doe", None),
+                "notes/Plan  (notes.page)\n#rename(title)  Rename note\n\
+                 #move-note(parent?)  Move note\n#delete()  Delete note"
+            );
+            // A listing that goes on says which command reads it on, whether
+            // its lines came with the answer or the command built them.
+            let paged = serde_json::json!({"path": "notes", "text": "notes  (notes.notebook)",
+                "next_cursor": "1.0.61.30"});
+            assert_eq!(
+                listing_text(&paged, "jane-doe", Some("notes")),
+                "notes  (notes.notebook)\nmore: tilo ls notes --cursor 1.0.61.30 -w jane-doe"
+            );
+            let built = serde_json::json!({"path": "notes",
+                "rows": [{"path": "notes/Notebook", "label": "Notebook",
+                    "kind": "notes.notebook"}],
+                "next_cursor": "40.7"});
+            assert_eq!(
+                listing_text(&built, "jane-doe", Some("notes/Notebook")),
+                "notes\nnotes/Notebook  Notebook  notes.notebook\nmore: tilo ls \
+                 notes/Notebook --cursor 40.7 -w jane-doe"
             );
             let read = serde_json::json!({"path": "notes/Notebook/Todo",
                 "kind": "notes.page", "fields": {"title": "Todo"},

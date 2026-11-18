@@ -309,7 +309,7 @@ pub fn refusal(
                 as std::sync::Arc<dyn crate::ReceiptSurface>
         })
     };
-    match crate::check_claims_by_kind(&claims, document, None, &surface_for, &|_, _| true) {
+    match crate::check_claims_by_kind(&claims, document, None, &surface_for, &|_, _, _| true) {
         Ok(crate::Receipt::Admit) => None,
         // The surface is here: what holds is a resource kind it does not publish, which no
         // receiver holding it admits.
@@ -367,6 +367,7 @@ mod tests {
                 change: [7; 32],
                 action: group,
                 units: vec![Vec::new()],
+                invoker: None,
             }];
             let file = crate::surface::SurfaceFile::parse(FILE).unwrap();
             let receiver = crate::surface::KindSurface(file.resource(None).unwrap().clone());
@@ -376,7 +377,7 @@ mod tests {
                 document: "paper-1",
             };
             let decide = |claims: &[ChangeClaim]| {
-                crate::check_claims(claims, &document, None, None, Some(&receiver), &|_, _| true)
+                crate::check_claims(claims, &document, None, None, Some(&receiver), &|_, _, _| true)
             };
             assert!(matches!(
                 decide(&whole_resource),

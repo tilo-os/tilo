@@ -375,7 +375,7 @@ pub(super) fn bounded_access(
     policy: &super::ViewReadPolicy,
     who: &Bounded,
 ) -> Result<policy::MemberAccess, ActionCallError> {
-    let granted = who.caller.granted(&policy.workspace, &policy.agent_bound);
+    let granted = who.caller.granted(&policy.agent_bound);
     policy
         .access
         .clone()
@@ -617,7 +617,7 @@ impl Worker {
         }
         self.clock = self.clock.wrapping_add(1);
         let clock = self.clock;
-        let granted = who.caller.granted(&policy.workspace, &policy.agent_bound);
+        let granted = who.caller.granted(&policy.agent_bound);
         let same = self.bounded.get(&key).is_some_and(|held| {
             held.access == policy.access
                 && held.sandbox == policy.sandbox
@@ -870,24 +870,25 @@ impl Worker {
         ),
         Outcome,
     > {
+        let opening = super::timing_start();
         let key = self
             .bounded_replica(workspace_id, who, route, state)
             .map_err(Outcome::Rejected)?;
+        super::timing_done("bounded.open", opening);
         // Out of the map while it runs, and back in once what it changed is
         // handed over: a caller's next action reuses what they opened instead
         // of opening the record afresh, which costs more with every change
         // the record holds. An action whose change is refused leaves it
         // behind, and one not saved at once lets it go ([`Worker::saved`]),
         // so nothing unsaved is ever acted on.
-        let held = self
+        let mut held = self
             .bounded
             .remove(&key)
             .ok_or(Outcome::Rejected(ActionCallError::UnknownAction))?;
-        let app = &held.held.app;
         // What the caller's own view offers, asked for by address: the record
         // publishes to its owner what the caller may not run, which tells a
         // refused action from one that does not exist.
-        let Some(descriptor) = app.descriptor(&target.address) else {
+        let Some(descriptor) = held.held.app.descriptor(&target.address) else {
             return Err(Outcome::Rejected(
                 if self.publishes(&key.0, &target.address) {
                     ActionCallError::NotPermitted
@@ -896,6 +897,9 @@ impl Worker {
                 },
             ));
         };
+        if descriptor.contract.kind == super::ActionKind::Read {
+            self.note_reads(request);
+        }
         // What is said in a direct conversation the caller's person takes no part in is not
         // there for an action they are offered either ([`super::direct`]).
         let arguments = withheld.given(descriptor.bind_prompt_text(arguments))?;
@@ -910,28 +914,51 @@ impl Worker {
         let binding = ApprovalBinding::of(workspace_id, caller, request);
         let confirmed = approved(&self.shared.approvals, given, &binding);
         let context = super::caller_context(caller, request);
-        let output =
-            match app.invoke_in(Some(&context), None, &target.address, &arguments, confirmed) {
-                Ok(output) => output,
-                Err(tilo_actions::api::ApiError::ConfirmationRequired) if given.is_some() => {
-                    return Err(Outcome::Rejected(own_word_refused()));
-                }
-                Err(tilo_actions::api::ApiError::ConfirmationRequired) => {
-                    let about = self.about(workspace_id, route, &descriptor, arguments);
-                    return Err(self.waits_for_person(request.invocation, about));
-                }
-                Err(error) => return Err(super::api_outcome(&error)),
-            };
+        let running = super::timing_start();
+        let asked = |held: &BoundedReplica| {
+            held.held
+                .app
+                .invoke_in(Some(&context), None, &target.address, &arguments, confirmed)
+        };
+        let mut tried = asked(&held);
+        // What the action named is held by a part of a chain this replica has
+        // not been handed (an issue in an older part than the head): the parts
+        // it wants are handed, and the action asked once more.
+        if matches!(tried, Err(ref error) if !matches!(error, tilo_actions::api::ApiError::ConfirmationRequired))
+        {
+            let before = held.held.parts.len();
+            super::catch_up::hand_all_parts(&key.0, &mut held.held, state);
+            if held.held.parts.len() > before {
+                tried = asked(&held);
+            }
+        }
+        let output = match tried {
+            Ok(output) => output,
+            Err(tilo_actions::api::ApiError::ConfirmationRequired) if given.is_some() => {
+                return Err(Outcome::Rejected(own_word_refused()));
+            }
+            Err(tilo_actions::api::ApiError::ConfirmationRequired) => {
+                let about = self.about(workspace_id, route, &descriptor, arguments);
+                return Err(self.waits_for_person(request.invocation, about));
+            }
+            Err(error) => return Err(super::api_outcome(&error)),
+        };
+        super::timing_done("bounded.call", running);
+        let app = &held.held.app;
         let left_at = app.presence().map(placed);
         let holder = key.0.clone();
+        let taking = super::timing_start();
         let taken = super::take_all(app, &holder)
             .map_err(|error| super::commit_failed(error.to_string(), false))?;
+        super::timing_done("bounded.take", taking);
+        let saving = super::timing_start();
         self.save_bounded(
             workspace_id,
             (who, route, state),
             (&holder, taken),
             (declared.as_deref(), confirmed),
         )?;
+        super::timing_done("bounded.save", saving);
         self.bounded.insert(key, held);
         Ok((output, left_at))
     }
@@ -952,10 +979,13 @@ impl Worker {
         (holder, taken): (&DocumentRoute, Vec<(DocumentRoute, DocumentMutation)>),
         (declared, confirmed): (Option<&str>, bool),
     ) -> Result<(), Outcome> {
+        let reading_policy = super::timing_start();
         let policy = self
             .policy_at(workspace_id, who, route)
             .map_err(Outcome::Rejected)?;
+        super::timing_done("bounded.policy", reading_policy);
         let permissions = bounded_permissions(&policy, who).map_err(Outcome::Rejected)?;
+        let checking = super::timing_start();
         for (changed, mutation) in &taken {
             // What it wrote, from the record's own replica: neither the record
             // nor its history is read for what one change touched. Only a
@@ -981,6 +1011,8 @@ impl Worker {
                 return Err(Outcome::Rejected(ActionCallError::NotPermitted));
             }
         }
+        super::timing_done("bounded.check", checking);
+        let committing = super::timing_start();
         for (changed, mutation) in taken {
             // Handed to the session first: a change it was not handed is in no copy this
             // service writes through, or the next change made there would build on one no
@@ -1000,6 +1032,7 @@ impl Worker {
                 }
             }
         }
+        super::timing_done("bounded.commit", committing);
         Ok(())
     }
 

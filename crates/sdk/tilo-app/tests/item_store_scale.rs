@@ -1,0 +1,293 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    reason = "measurements over small known sizes and samples"
+)]
+
+//! The chain's storage of an app's items at 1,000, 10,000 and 50,000 items:
+//! a change to one item writes about the same bytes, finding an item by its
+//! id takes about as long, and a page of the listing reads about as fast,
+//! however many items the chain keeps. The app here declares only its
+//! items and verbs over them; where each item is kept is the chain's.
+
+use std::rc::Rc;
+use std::time::{Duration, Instant};
+
+use tilo_app::framework::{Chain, Chained, PART_ITEMS};
+use tilo_app::prelude::*;
+use tilo_app::resource::{DocumentId, ResourceOwners, ResourceStore};
+use tilo_app::tilo_resource::{Collection, NamesItem};
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Log {
+    pub title: String,
+}
+
+#[resource(kind = "test.scale-log", catalogue = "tests/locales")]
+impl Log {
+    /// Rename the log.
+    #[action]
+    pub fn rename(&mut self, title: String) {
+        self.title = title;
+    }
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Entry {
+    pub text: String,
+    pub amount: i64,
+}
+
+/// An entry a verb adds: new, so it names no item yet.
+#[derive(
+    Default,
+    Debug,
+    Clone,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_app::tilo_resource::JsonSchema,
+)]
+pub struct NewEntry {
+    pub text: String,
+    pub amount: i64,
+}
+
+impl NamesItem for NewEntry {
+    fn named_item(&self) -> Option<Id> {
+        None
+    }
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Entries {
+    #[model(readonly)]
+    pub entries: Collection<Entry>,
+}
+
+#[resource(kind = "test.scale-log-entries", catalogue = "tests/locales")]
+impl Entries {
+    /// Add entries.
+    #[action(items = entries)]
+    pub fn add(&mut self, cx: &mut ActionCx, entries: Vec<NewEntry>) {
+        for NewEntry { text, amount } in entries {
+            self.entries.push(cx.id(), Entry { text, amount });
+        }
+    }
+
+    /// Change what an entry says.
+    #[action]
+    pub fn say(&mut self, entry: &Id, text: String) {
+        if let Some(entry) = self.entries.get_mut(entry) {
+            entry.text = text;
+        }
+    }
+}
+
+impl Chained for Entries {
+    type Base = Log;
+
+    fn chain() -> DocumentId {
+        DocumentId::derived("entries", &DocumentId::workspace_default())
+    }
+
+    const HELD_WHOLE: bool = true;
+}
+
+fn chain() -> (ResourceStore, Chain<Entries>) {
+    let store = ResourceOwners::with_store(
+        Rc::new(durable_store::MemoryStore::new()) as Rc<dyn durable_store::DurableStore>
+    )
+    .open("so.tilo.test-scale-log", "workspace")
+    .unwrap();
+    let me = MemberId::person("ada");
+    let log = Rc::new(Log::default());
+    let chain = Chain::<Entries>::detached_in(store.clone(), "so.tilo.test-scale-log", &me, {
+        move || Rc::clone(&log)
+    })
+    .unwrap();
+    (store, chain)
+}
+
+/// Add `count` entries, a batch of them per call.
+fn add(chain: &Chain<Entries>, from: usize, count: usize) {
+    const BATCH: usize = 500;
+    let mut at = from;
+    while at < from + count {
+        let batch = BATCH.min(from + count - at);
+        let entries = (at..at + batch)
+            .map(|n| NewEntry {
+                text: format!("entry {n}: a line of what was bought, and for whom"),
+                amount: i64::try_from(n).unwrap(),
+            })
+            .collect();
+        chain
+            .invoke(&Entries::ADD.with(entries::Add { entries }))
+            .unwrap();
+        at += batch;
+    }
+}
+
+/// Every entry's id, oldest first.
+fn ids(chain: &Chain<Entries>) -> Vec<Id> {
+    chain
+        .parts()
+        .iter()
+        .flat_map(|(_, part)| part.entries.ids().cloned().collect::<Vec<_>>())
+        .collect()
+}
+
+/// What one change writes, in bytes, into every part together, and how many
+/// parts it wrote into.
+fn change_bytes(
+    store: &ResourceStore,
+    chain: &Chain<Entries>,
+    change: impl FnOnce(),
+) -> (usize, usize) {
+    let parts: Vec<DocumentId> = chain
+        .parts()
+        .iter()
+        .map(|(index, _)| Entries::chain().part(*index))
+        .collect();
+    let mut frontiers: Vec<_> = parts
+        .iter()
+        .map(|id| {
+            let mut frontier = tilo_app::DocumentFrontier::default();
+            let (_, heads) = store.replication_delta(id, &mut frontier).unwrap();
+            frontier.advance(heads);
+            frontier
+        })
+        .collect();
+    change();
+    let mut bytes = 0;
+    let mut written = 0;
+    for (id, frontier) in parts.iter().zip(&mut frontiers) {
+        let (changes, _) = store.replication_delta(id, frontier).unwrap();
+        if !changes.is_empty() {
+            written += 1;
+            bytes += changes.len();
+        }
+    }
+    (bytes, written)
+}
+
+struct Measured {
+    items: usize,
+    parts: usize,
+    edit_bytes: usize,
+    lookup: Duration,
+    page: Duration,
+}
+
+fn per(total: Duration, count: u32) -> Duration {
+    total / count
+}
+
+fn measure(store: &ResourceStore, chain: &Chain<Entries>, items: usize) -> Measured {
+    let ids = ids(chain);
+    assert_eq!(ids.len(), items);
+    assert_eq!(chain.len(), items, "the index holds every item");
+    let parts = chain.parts();
+    for (index, part) in &parts {
+        assert!(
+            part.entries.len() <= PART_ITEMS,
+            "part {index} holds {} items",
+            part.entries.len()
+        );
+    }
+
+    // A change to an item of the oldest part, and one of the newest.
+    let mut edit_bytes = 0;
+    for id in [&ids[1], &ids[items - 2]] {
+        let (bytes, written) = change_bytes(store, chain, || {
+            chain
+                .invoke(&Entries::SAY.with(entries::Say {
+                    entry: id.clone(),
+                    text: format!("changed at {items}"),
+                }))
+                .unwrap();
+        });
+        assert_eq!(written, 1, "a change to one item writes only its part");
+        edit_bytes = edit_bytes.max(bytes);
+        let holding = chain.find(id).expect("the item is found by its id");
+        assert_eq!(
+            holding.entries.get(id).unwrap().text,
+            format!("changed at {items}")
+        );
+    }
+
+    // Finding items by id, spread over the whole chain.
+    let probes: Vec<&Id> = ids.iter().step_by((items / 200).max(1)).collect();
+    let _ = chain.find(probes[0]);
+    let started = Instant::now();
+    for id in &probes {
+        assert!(chain.find(id).is_some());
+    }
+    let lookup = per(started.elapsed(), u32::try_from(probes.len()).unwrap());
+
+    // A page of the listing, then the page after it.
+    let rounds = 20u32;
+    let started = Instant::now();
+    for _ in 0..rounds {
+        let first = chain.read(&serde_json::json!({ "pageSize": 50 })).unwrap();
+        let cursor = first["nextCursor"].as_str().unwrap().to_owned();
+        let next = chain
+            .read(&serde_json::json!({ "pageSize": 50, "cursor": cursor }))
+            .unwrap();
+        assert!(next.get("nextCursor").is_some(), "{next}");
+    }
+    let page = per(started.elapsed(), rounds * 2);
+
+    Measured {
+        items,
+        parts: parts.len(),
+        edit_bytes,
+        lookup,
+        page,
+    }
+}
+
+#[test]
+fn bytes_lookup_and_paging_stay_flat_from_one_thousand_to_fifty_thousand_items() {
+    let (store, chain) = chain();
+    let mut measured = Vec::new();
+    let mut held = 0;
+    for items in [1_000, 10_000, 50_000] {
+        add(&chain, held, items - held);
+        held = items;
+        let m = measure(&store, &chain, items);
+        eprintln!(
+            "{} items in {} parts: a change writes {} bytes, a lookup takes {:?}, a page {:?}",
+            m.items, m.parts, m.edit_bytes, m.lookup, m.page
+        );
+        measured.push(m);
+    }
+    let small = &measured[0];
+    let large = &measured[2];
+    assert_eq!(
+        large.parts, 50,
+        "fifty thousand items in parts of a thousand"
+    );
+    assert!(
+        large.edit_bytes <= small.edit_bytes * 2 + 256,
+        "a change to one item costs the item: {} bytes at 1k, {} at 50k",
+        small.edit_bytes,
+        large.edit_bytes
+    );
+    // Timings on a shared machine move; what grows with the items held grows
+    // by fifty times here, far past this.
+    let flat = |small: Duration, large: Duration| large <= small * 8 + Duration::from_micros(50);
+    assert!(
+        flat(small.lookup, large.lookup),
+        "a lookup: {:?} at 1k, {:?} at 50k",
+        small.lookup,
+        large.lookup
+    );
+    assert!(
+        flat(small.page, large.page),
+        "a page: {:?} at 1k, {:?} at 50k",
+        small.page,
+        large.page
+    );
+}

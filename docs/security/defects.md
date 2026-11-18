@@ -503,7 +503,7 @@ acknowledges the already durable targeted governance outbox. The ciphertext
 document server is intentionally not that adapter; it must never broadcast
 Welcome bytes.
 
-**Production adapter now present.** `crates/collab/tilo-action-broker/src/workspace_keys.rs`
+**Production adapter now present.** `crates/server/tilo-workspace-service/src/apps/workspace_keys.rs`
 runs a key holder (`key_group::GroupPeer`) for every workspace a device takes part in: it
 reconciles each MLS group with the workspace's access policy, so an invite, a removal, a role change
 that ends access or a revoked device becomes a commit (`GroupPeer::reconcile`, which stages
@@ -547,7 +547,7 @@ refuses a replayed duplicate. The old `register_channel_state` observation descr
 bootstrap shape; current authority is populated from admitted workspace state
 at the ingress boundary instead of trusting an app-supplied role attestation.
 Held by the broker ingress tests in
-`crates/collab/tilo-action-broker/src/{collab_broker.rs,collab_app_broker.rs,collab_inbound.rs}`
+`crates/server/tilo-workspace-service/src/apps/{collab_broker.rs,collab_app_broker.rs,collab_inbound.rs}`
 and `crates/session/session/src/app_wire.rs`, plus
 `crates/collab/collab-types/tests/validator.rs`.
 

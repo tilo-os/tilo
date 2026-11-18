@@ -1350,7 +1350,7 @@ impl Page<'_> {
 
     pub(super) fn bind_on_row<I: 'static, C: ui::framework::ActionControl<I>>(
         &self,
-        row: &ui::tilo_actions::ResourceSpec,
+        row: &(impl ui::tilo_actions::Exports + ?Sized),
         control: C,
         effect: impl tilo_resource::Binds<SettingsEffect, I>,
     ) -> C {
@@ -1360,7 +1360,7 @@ impl Page<'_> {
     pub(super) fn bind_row<C: ui::framework::ActionControl<()>>(
         &self,
         control: C,
-        row: &ui::tilo_actions::ResourceSpec,
+        row: &(impl ui::tilo_actions::Exports + ?Sized),
         effect: impl Into<SettingsEffect>,
     ) -> C {
         crate::on_row::bind_invocation(&self.dispatcher, row, control, effect)

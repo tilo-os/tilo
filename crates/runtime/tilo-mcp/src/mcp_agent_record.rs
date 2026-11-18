@@ -5,7 +5,7 @@
 use super::{ActionProvider, Failure, McpServer, Reply};
 use tilo_actions::remote::{ResourceAddress, ResourceAsk, read_resources};
 
-/// How long a record read waits for a write past the revision it was given.
+/// How long a document read waits for a write past the revision it was given.
 const RECORD_WAIT_MS: u64 = 25_000;
 /// Longest answer, in characters, a record read gives: a longer chain is read a part at a time.
 const RECORD_CHARS: usize = 200_000;
@@ -50,6 +50,20 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         .await
         .map_err(|error| format!("the record read ended: {error}"))?
         .map_err(|error| error.to_string())?;
+        // A document the workspace holds none of is not an address to go on with: what the
+        // app does hold is, and the answer names it.
+        if let Some((document, _)) = readings
+            .records
+            .iter()
+            .find(|(_, copy)| matches!(copy, Some(tilo_actions::remote::ResourceCopy::Absent)))
+        {
+            let name = super::app_names(&[app.to_owned()]).join("");
+            return Err(format!(
+                "the workspace holds no {app} document {document}; tilo_ls {name} lists what it \
+                 has, and tilo_find {name} finds one of them"
+            )
+            .into());
+        }
         let mut answer = readings.readable()?;
         // A document's words are whoever wrote them's: its person, another member, a file
         // somebody passed on. The answer says first that it carries content from outside

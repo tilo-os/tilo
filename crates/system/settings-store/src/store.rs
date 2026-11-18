@@ -1,15 +1,18 @@
 //! One profile's settings, kept as two Automerge documents: the person's in
-//! `<root>/records/person.automerge` and this device's in `<root>/records/device.automerge`.
+//! `<root>/records/person/` and this device's in `<root>/records/device/`.
 //!
-//! A write changes the documents in memory and a background thread saves them, so no write waits
-//! for the disk; a failed save is reported and retried with the next change. One process holds a
-//! profile at a time (`<root>/records/settings.lock`): another process opening it follows the
-//! holder's saves, and its own writes go to the holder over `<root>/records/settings.sock`.
+//! The documents are kept in the device's document store (`app_state::FsStore` over
+//! `<root>/records`), the same layer an app's own documents live in: one process holds a profile
+//! at a time as the documents' only writer, and its writes append what changed, which the store
+//! commits on its own thread, so no write waits for the disk; a failed save is reported and
+//! retried with the next change. Another process opening the profile follows the holder's saves,
+//! and its writes, conditional ones included, go to the holder over `<root>/records/settings.sock`,
+//! so one process decides every change.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, Weak};
 
 use automerge::transaction::{CommitOptions, Transactable as _};
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc as _};
@@ -17,7 +20,10 @@ use serde_json::{Map, Value};
 use tilo_automerge::{ApplyIncoming as _, json};
 use tilo_lock::MutexRecover as _;
 
-use tilo_settings_records::{Hold, Holding, Records, Socket, Watch};
+use app_state::{FsStore, Held};
+use automerge::ChangeHash;
+use durable_store::{DurableStore as _, StorageKey, WriteOp};
+use tilo_settings_records::{Records, Socket, Watch};
 
 use crate::placement::{self, Holder};
 use crate::{ChangeOrigin, ConditionalUpdate, SectionChange, SettingsSource, merge_section};
@@ -28,9 +34,22 @@ pub use tilo_settings_records::RECORDS_DIR;
 /// undone) rather than a section.
 pub const BOOKKEEPING: &str = "tilo:";
 
-const PERSON_FILE: &str = "person.automerge";
-const DEVICE_FILE: &str = "device.automerge";
-const DOCUMENTS: &[&str] = &[PERSON_FILE, DEVICE_FILE];
+/// The two documents, as keys of the device's document store: the person's is leased first, and
+/// its lock is the profile's ([`tilo_settings_records::LOCK_FILE`]).
+const PERSON: &str = "person";
+const DEVICE: &str = "device";
+const DOCUMENTS: &[&str] = &[PERSON, DEVICE];
+
+fn key(holder: Holder) -> StorageKey {
+    StorageKey::app(match holder {
+        Holder::Person => PERSON,
+        Holder::Device => DEVICE,
+    })
+}
+
+/// Appends a document may gather before its next save rewrites it whole, as a multiple of its
+/// whole size: what keeps a long-lived profile's file from growing with every change.
+const COMPACT_AFTER: usize = 2;
 
 /// What a write makes of the section it found: the leaves to merge, or
 /// `None` when the writer's intent was superseded.
@@ -45,7 +64,10 @@ struct Docs {
     person: AutoCommit,
     device: AutoCommit,
     unsaved: std::collections::BTreeSet<String>,
+    /// What the documents' files stood at when they were last read, for a follower.
     seen: u64,
+    /// Each document's heads as last saved, and the bytes appended since it was last whole.
+    saved: [(Vec<ChangeHash>, usize, usize); 2],
 }
 
 impl Docs {
@@ -66,6 +88,17 @@ impl Docs {
         document
     }
 
+    fn loaded(mut person: AutoCommit, mut device: AutoCommit, seen: u64) -> Self {
+        let saved = [(person.get_heads(), 0, 0), (device.get_heads(), 0, 0)];
+        Self {
+            person,
+            device,
+            unsaved: std::collections::BTreeSet::new(),
+            seen,
+            saved,
+        }
+    }
+
     fn keep(&mut self, sections: Vec<String>) -> Arc<Map<String, Value>> {
         self.unsaved.extend(sections);
         Arc::new(self.projection())
@@ -80,9 +113,12 @@ pub struct Store {
     me: Weak<Store>,
     root: PathBuf,
     records: Records,
+    /// The device's document store the documents live in.
+    kept: FsStore,
     follower: std::sync::atomic::AtomicBool,
     may_hold: bool,
-    lock: Mutex<Option<Holding>>,
+    /// The leases of both documents while this process holds the profile.
+    lock: Mutex<Option<[Held; 2]>>,
     refused: Mutex<Option<String>>,
     docs: Mutex<Docs>,
     snapshot: Mutex<Snapshot>,
@@ -102,23 +138,71 @@ impl std::fmt::Debug for Store {
     }
 }
 
-fn load_doc(records: &Records, name: &str) -> std::io::Result<AutoCommit> {
-    match records.read(name)? {
-        Some(bytes) => AutoCommit::load(&bytes).map_err(|error| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("{}: {error}", records.dir().join(name).display()),
-            )
+/// What holding a profile came to.
+enum Hold {
+    Held([Held; 2]),
+    /// Another process holds it.
+    Busy,
+    /// Nothing here can be held (no files, or a target without locks): nobody else can hold it,
+    /// so this process does, in memory.
+    Unlockable,
+}
+
+fn try_hold(kept: &FsStore) -> Hold {
+    let lease = |holder| kept.hold(&key(holder));
+    match lease(Holder::Person) {
+        Ok(person) => match lease(Holder::Device) {
+            Ok(device) => Hold::Held([person, device]),
+            Err(durable_store::StoreError::Busy(_)) => Hold::Busy,
+            Err(_) => Hold::Unlockable,
+        },
+        Err(durable_store::StoreError::Busy(_)) => Hold::Busy,
+        Err(_) => Hold::Unlockable,
+    }
+}
+
+fn load_doc(kept: &FsStore, holder: Holder) -> std::io::Result<AutoCommit> {
+    let key = key(holder);
+    let stored = match kept.read(&key) {
+        Ok(stored) => stored,
+        // A target without files keeps nothing to read.
+        Err(_) if !cfg!(unix) && !cfg!(windows) => None,
+        Err(error) => return Err(std::io::Error::other(error.to_string())),
+    };
+    match stored {
+        // A save the holder is appending as this reads leaves a partial last chunk: what came
+        // before it is the save before, whole.
+        Some(stored) => AutoCommit::load_with_options(
+            &stored.bytes,
+            automerge::LoadOptions::new().on_partial_load(automerge::OnPartialLoad::Ignore),
+        )
+        .map_err(|error| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{key}: {error}"))
         }),
         None => Ok(AutoCommit::new()),
     }
 }
 
-fn load_docs(records: &Records) -> std::io::Result<(AutoCommit, AutoCommit, u64)> {
-    let seen = records.revision();
-    Ok((
-        load_doc(records, PERSON_FILE)?,
-        load_doc(records, DEVICE_FILE)?,
+/// Where the documents' files stand: their lengths and change times, so a follower takes a save
+/// in once.
+fn stamp(kept: &FsStore) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for holder in [Holder::Person, Holder::Device] {
+        let meta = kept
+            .local_path(&key(holder))
+            .and_then(|path| std::fs::metadata(path).ok());
+        meta.map(|meta| (meta.len(), meta.modified().ok()))
+            .hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn load_docs(kept: &FsStore) -> std::io::Result<Docs> {
+    let seen = stamp(kept);
+    Ok(Docs::loaded(
+        load_doc(kept, Holder::Person)?,
+        load_doc(kept, Holder::Device)?,
         seen,
     ))
 }
@@ -139,14 +223,9 @@ impl Store {
 
     fn open_as(root: &Path, hold: bool) -> std::io::Result<Arc<Self>> {
         let records = Records::of(root);
-        let taken = if hold { records.try_hold() } else { Hold::Busy };
-        let (person, device, seen) = load_docs(&records)?;
-        let docs = Docs {
-            person,
-            device,
-            unsaved: std::collections::BTreeSet::new(),
-            seen,
-        };
+        let kept = FsStore::new(records.dir());
+        let taken = if hold { try_hold(&kept) } else { Hold::Busy };
+        let docs = load_docs(&kept)?;
         let document = Arc::new(docs.projection());
         let (lock, refused) = match taken {
             Hold::Held(lock) => (Some(lock), None),
@@ -162,6 +241,7 @@ impl Store {
             me: me.clone(),
             root: root.to_path_buf(),
             records,
+            kept,
             follower: std::sync::atomic::AtomicBool::new(follower),
             may_hold: hold,
             lock: Mutex::new(lock),
@@ -179,7 +259,8 @@ impl Store {
         }
         if follower {
             let weak = Arc::downgrade(&store);
-            *store.watch.lock_recover() = store.records.watch(DOCUMENTS, move || {
+            let file = app_state::DOCUMENT_FILE;
+            *store.watch.lock_recover() = store.records.watch(DOCUMENTS, file, move || {
                 if let Some(store) = weak.upgrade() {
                     store.take_in_saves();
                 }
@@ -229,16 +310,14 @@ impl Store {
         if !self.may_hold || !self.is_follower() {
             return false;
         }
-        let Hold::Held(lock) = self.records.try_hold() else {
+        let Hold::Held(lock) = try_hold(&self.kept) else {
             return false;
         };
-        let Ok((person, device, seen)) = load_docs(&self.records) else {
+        let Ok(loaded) = load_docs(&self.kept) else {
             return false;
         };
         let mut docs = self.docs.lock_recover();
-        docs.person = person;
-        docs.device = device;
-        docs.seen = seen;
+        *docs = loaded;
         let document = Arc::new(docs.projection());
         drop(docs);
         *self.lock.lock_recover() = Some(lock);
@@ -274,19 +353,15 @@ impl Store {
         if !self.is_follower() {
             return;
         }
-        let now = self.records.revision();
+        let now = stamp(&self.kept);
         let mut docs = self.docs.lock_recover();
         if docs.seen == now {
             return;
         }
-        let (Ok(person), Ok(device)) = (
-            load_doc(&self.records, PERSON_FILE),
-            load_doc(&self.records, DEVICE_FILE),
-        ) else {
+        let Ok(loaded) = load_docs(&self.kept) else {
             return;
         };
-        docs.person = person;
-        docs.device = device;
+        *docs = loaded;
         docs.seen = now;
         // Shown before the save is let go: a reader that finds the save already taken in — one
         // that looks after `seen` became `now` — reads what this look loaded, never the save
@@ -395,21 +470,43 @@ impl Store {
         Ok(ConditionalUpdate::Stored)
     }
 
+    /// Hand what changed to the document store, which commits it on its own thread: the changes
+    /// since each document's last save, appended, or the whole document once the appends outgrow
+    /// it. Only the holder writes; a profile held in memory keeps what it has.
     fn save(&self) {
         let mut docs = self.docs.lock_recover();
-        if docs.unsaved.is_empty() {
+        if docs.unsaved.is_empty() || self.lock.lock_recover().is_none() {
             return;
         }
         let sections = std::mem::take(&mut docs.unsaved);
-        let person = docs.person.save();
-        let device = docs.device.save();
-        let revision = self.records.revision().saturating_add(1);
+        let mut saved = Ok(());
+        for (index, holder) in [Holder::Person, Holder::Device].into_iter().enumerate() {
+            let Some((heads, appended, whole)) = docs.saved.get(index).cloned() else {
+                continue;
+            };
+            let doc = docs.doc(holder);
+            let now = doc.get_heads();
+            if now == heads {
+                continue;
+            }
+            let op = if whole == 0 || appended > whole.saturating_mul(COMPACT_AFTER) {
+                WriteOp::Replace(doc.save())
+            } else {
+                WriteOp::Append(doc.save_after(&heads))
+            };
+            let written = op.bytes().len();
+            if let Err(error) = self.kept.write(&key(holder), op.clone(), None) {
+                saved = Err(error);
+                break;
+            }
+            if let Some(last) = docs.saved.get_mut(index) {
+                *last = match op {
+                    WriteOp::Replace(_) => (now, 0, written),
+                    WriteOp::Append(_) => (now, appended.saturating_add(written), whole),
+                };
+            }
+        }
         drop(docs);
-        let saved = self
-            .records
-            .write(PERSON_FILE, &person)
-            .and_then(|()| self.records.write(DEVICE_FILE, &device))
-            .and_then(|()| self.records.commit(revision));
         if let Err(error) = saved {
             tracing::warn!(root = %self.root.display(), %error, "settings not saved");
             self.docs
@@ -535,7 +632,7 @@ impl Store {
 
     fn show(&self, document: Arc<Map<String, Value>>) {
         self.publish(document);
-        writer().schedule(&self.me);
+        self.save();
     }
 
     /// Carry `edit` out on the person's document and on this device's,
@@ -1009,7 +1106,12 @@ impl SettingsSource for Store {
     }
 
     fn flush_pending(&self) {
-        writer().flush(self);
+        self.save();
+        if self.lock.lock_recover().is_some()
+            && let Err(error) = self.kept.flush(None)
+        {
+            tracing::warn!(root = %self.root.display(), %error, "settings not made durable");
+        }
     }
 
     fn take_deferred_failures(&self) -> Vec<crate::DeferredFailure> {
@@ -1018,87 +1120,6 @@ impl SettingsSource for Store {
 
     fn changes(&self) -> &crate::ChangeSignal {
         &self.changes
-    }
-}
-
-struct Writer {
-    queue: Mutex<WriterQueue>,
-    wake: Condvar,
-}
-
-#[derive(Default)]
-struct WriterQueue {
-    scheduled: Vec<Weak<Store>>,
-    busy: bool,
-    running: bool,
-}
-
-fn writer() -> &'static Writer {
-    static WRITER: OnceLock<Writer> = OnceLock::new();
-    WRITER.get_or_init(|| Writer {
-        queue: Mutex::new(WriterQueue::default()),
-        wake: Condvar::new(),
-    })
-}
-
-impl Writer {
-    fn schedule(&'static self, store: &Weak<Store>) {
-        let mut queue = self.queue.lock_recover();
-        if !queue.scheduled.iter().any(|known| known.ptr_eq(store)) {
-            queue.scheduled.push(store.clone());
-        }
-        if !queue.running {
-            let started = tilo_rt::spawn_thread("tilo-settings-writer", move || self.run());
-            if started.is_err() {
-                queue.scheduled.retain(|known| !known.ptr_eq(store));
-                drop(queue);
-                if let Some(store) = store.upgrade() {
-                    store.save();
-                }
-                return;
-            }
-            queue.running = true;
-        }
-        drop(queue);
-        self.wake.notify_all();
-    }
-
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the queue's lock is let go around each save and held only to take the next"
-    )]
-    fn run(&self) {
-        let mut queue = self.queue.lock_recover();
-        loop {
-            if queue.scheduled.is_empty() {
-                queue = self
-                    .wake
-                    .wait(queue)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                continue;
-            }
-            let next = queue.scheduled.remove(0);
-            queue.busy = true;
-            drop(queue);
-            if let Some(store) = next.upgrade() {
-                store.save();
-            }
-            queue = self.queue.lock_recover();
-            queue.busy = false;
-            self.wake.notify_all();
-        }
-    }
-
-    fn flush(&self, store: &Store) {
-        let mut queue = self.queue.lock_recover();
-        while queue.busy || queue.scheduled.iter().any(|known| known.ptr_eq(&store.me)) {
-            queue = self
-                .wake
-                .wait(queue)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-        }
-        drop(queue);
-        store.save();
     }
 }
 
@@ -1124,16 +1145,12 @@ fn empty(root: &Path) -> Arc<Store> {
         me: me.clone(),
         root: root.to_path_buf(),
         records: Records::of(root),
+        kept: FsStore::new(Records::of(root).dir()),
         follower: std::sync::atomic::AtomicBool::new(false),
         may_hold: false,
         lock: Mutex::new(None),
         refused: Mutex::new(None),
-        docs: Mutex::new(Docs {
-            person: AutoCommit::new(),
-            device: AutoCommit::new(),
-            unsaved: std::collections::BTreeSet::new(),
-            seen: 0,
-        }),
+        docs: Mutex::new(Docs::loaded(AutoCommit::new(), AutoCommit::new(), 0)),
         snapshot: Mutex::new(Snapshot {
             document: Arc::new(Map::new()),
         }),

@@ -12,6 +12,11 @@
 //!   user public key is `person` in the workspace at `role` (`administrator`
 //!   and `owner` included) at once: their entry lets them in, and a key of
 //!   theirs reaches the workspace before any device of theirs has joined;
+//! - `workspace/members#role {person, role}` moves a member to another role,
+//!   as far as the key's person may give it;
+//! - `workspace/members#remove {person}` removes a member and every device of
+//!   theirs, as the workspace's governance lets the key's person: the same
+//!   request, decided the same way, as removing them on the person's page;
 //! - `workspace/members#wait-list` (or `tilo_read workspace/members/wait-list`)
 //!   answers the addresses left at the workspace's entry while it takes
 //!   people by invitation, and `workspace/members#unlist {entry}` takes one
@@ -39,6 +44,7 @@
 
 use super::Session;
 use crate::account::{Outcome, answer, failed, refused};
+use crate::server::Administration;
 use base64::Engine as _;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::RemoteActionTarget;
@@ -97,6 +103,8 @@ impl Session {
         let outcome = match (tool, path) {
             ("tilo_do", "workspace/members#invite") => self.invite(workspace, &args).await,
             ("tilo_do", "workspace/members#add") => self.add(workspace, &args).await,
+            ("tilo_do", "workspace/members#role") => self.role(workspace, &args).await,
+            ("tilo_do", "workspace/members#remove") => self.remove(workspace, &args).await,
             ("tilo_do", "workspace/members#name") => self.name(workspace, &args).await,
             ("tilo_do", "workspace/members#wait-list") | ("tilo_read", WAIT_LIST_ROOT) => {
                 self.wait_list(workspace, WAIT_LIST, Map::new()).await
@@ -116,7 +124,8 @@ impl Session {
                 "not_found",
                 format!("the workspace has no action {other}"),
                 "workspace/members#list, workspace/members#invite {role, email?, waiting?}, \
-                 workspace/members#add {person, role, name?}, workspace/members#name {name}, \
+                 workspace/members#add {person, role, name?}, workspace/members#role {person, role}, \
+                 workspace/members#remove {person}, workspace/members#name {name}, \
                  workspace/members#wait-list and workspace/members#unlist {entry} are its actions",
             ),
         };
@@ -162,9 +171,7 @@ impl Session {
             .ask_host(id, target, arguments)
             .await
             .map_err(|error| {
-                if error.code == DeviceRefusal::RATE_LIMITED {
-                    refused(&error.into())
-                } else if error.code == DeviceRefusal::UNANSWERED {
+                if error.code == DeviceRefusal::UNANSWERED {
                     failed("unavailable", error.message, "try again shortly")
                 } else {
                     failed(
@@ -340,6 +347,47 @@ impl Session {
         }
     }
 
+    /// Move the member `args.person` names to `args.role`: what adding them
+    /// does to someone in already, said as what it is.
+    async fn role(&self, workspace: &str, args: &Value) -> Outcome {
+        let mut moved = Map::new();
+        for name in ["person", "role"] {
+            if let Some(value) = args.get(name) {
+                moved.insert(name.into(), value.clone());
+            }
+        }
+        self.add(workspace, &Value::Object(moved)).await
+    }
+
+    /// Remove the member `args.person` names, and every device of theirs:
+    /// answers the people as the workspace holds them then.
+    async fn remove(&self, workspace: &str, args: &Value) -> Outcome {
+        let Some(person) = person_key(args) else {
+            return failed(
+                "invalid_arguments",
+                "`person` is the member's user public key: 64 hex characters",
+                "workspace/members#list names each member's key",
+            );
+        };
+        let connection = match self.connection() {
+            Ok(connection) => connection,
+            Err(error) => return refused(&error),
+        };
+        match connection
+            .server()
+            .remove_member(connection, workspace, person)
+            .await
+        {
+            Ok(()) => self.list(workspace).await,
+            Err(Administration::Refused(why)) => failed(
+                "not_permitted",
+                format!("the workspace refused: {why}"),
+                "its owners remove people, and a moderator removes those ranked below them",
+            ),
+            Err(Administration::Unanswered(why)) => failed("unavailable", why, "try again shortly"),
+        }
+    }
+
     /// The workspace's wait list, after `verb` with `asked`.
     async fn wait_list(&self, workspace: &str, verb: &str, asked: Map<String, Value>) -> Outcome {
         match self.govern(workspace, verb, asked).await {
@@ -379,6 +427,12 @@ impl Session {
             Err(outcome) => outcome,
         }
     }
+}
+
+/// The user public key `args.person` names.
+fn person_key(args: &Value) -> Option<[u8; 32]> {
+    let person = args.get("person").and_then(Value::as_str)?.trim();
+    hex::decode(person).ok()?.try_into().ok()
 }
 
 /// The wait-list entry `args.entry` names, lowercase hex.

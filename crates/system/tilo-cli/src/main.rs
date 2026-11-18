@@ -209,6 +209,9 @@ enum Cmd {
     Ls {
         /// What to list: an app, a resource or an action, as `tilo ls` printed it.
         what: Option<String>,
+        /// The cursor a long listing ended with, for the rest of it.
+        #[arg(long)]
+        cursor: Option<String>,
     },
     /// Read one resource of a hosted workspace (-w).
     #[command(
@@ -234,10 +237,21 @@ enum Cmd {
         #[arg(long, value_name = "FILE")]
         picture: Option<std::path::PathBuf>,
     },
-    /// Your workspaces on this desktop.
+    /// Your workspaces, and the people in them.
+    #[command(
+        after_help = "Examples:\n  tilo workspace ls\n  tilo workspace create Acme\n  \
+                      tilo workspace rename Acme \"Acme Inc\"\n  tilo workspace rm Acme\n  \
+                      tilo workspace people ls -w Acme\n  \
+                      tilo workspace people invite --role editor -w Acme\n  \
+                      tilo workspace people role 3f9c…e1 administrator -w Acme\n  \
+                      tilo workspace people rm 3f9c…e1 -w Acme\n\n\
+                      On a computer `tilo login` set up these act as you, with no key. A script \
+                      elsewhere sets TILO_API_KEY (`tilo keys create`). Agents have the same \
+                      actions over MCP: account/workspaces#… and workspace/members#…."
+    )]
     Workspace {
         #[command(subcommand)]
-        cmd: desktop::WorkspaceCmd,
+        cmd: hosted::WorkspaceCmd,
     },
     /// Keys to your hosted workspaces, for your code and its agents.
     #[command(
@@ -249,28 +263,6 @@ enum Cmd {
     Keys {
         #[command(subcommand)]
         cmd: hosted::KeysCmd,
-    },
-    /// The people in a hosted workspace, inviting more, and how it names you.
-    #[command(
-        after_help = "Examples:\n  tilo members invite --role editor -w jane-doe   A link that brings a reviewer in\n  \
-                            tilo members invite --role administrator -w jane-doe   A link that makes a fellow administrator\n  \
-                            tilo members add 3f9c…e1 --role owner -w Lounge   Let someone in by their key, as an owner\n  \
-                            tilo members wait-list -w Lounge   The addresses waiting for an invitation\n  \
-                            tilo members invite --waiting 5d1e…0a --role editor -w Lounge   Invite one of them\n  \
-                            tilo members ls -w jane-doe\n  \
-                            tilo members name \"Quinten Wolff\" -w jane-doe   What its people and your invitations call you"
-    )]
-    Members {
-        #[command(subcommand)]
-        cmd: hosted::MembersCmd,
-    },
-    /// Your hosted account: its workspaces.
-    #[command(
-        after_help = "Examples:\n  tilo account workspaces create \"Applicant: Jane Doe\"\n  tilo account workspaces ls"
-    )]
-    Account {
-        #[command(subcommand)]
-        cmd: hosted::AccountCmd,
     },
     /// Files into a hosted workspace.
     #[command(
@@ -338,8 +330,8 @@ enum Cmd {
                       your browser: this computer gets a device key of its own, which that tab certifies. On a \
                       computer already set up, a sign-in code (\"Sign in with your agent\") signs that tab in as you.")]
     Login {
-        /// The code your Tilo tab shows, like K7Q-MX2P.
-        #[arg(required_unless_present = "new_identity")]
+        /// The code your Tilo tab shows, like K7Q-MX2P. Not needed on a computer that holds your
+        /// identity (`--new-identity`): it logs itself in, into -w or your own workspace.
         code: Option<String>,
         /// Instead: make a Tilo identity whose root this computer holds (or
         /// say it has one), and print its user public key. A host's operator
@@ -586,11 +578,6 @@ fn command_here(here: Here) -> clap::Command {
         .mut_subcommands(|sub| {
             let absent = match sub.get_name() {
                 "open" | "action" => !here.desktop,
-                // A hosted workspace's hosts are chosen from anywhere; only
-                // branching one is this desktop's.
-                "workspace" => {
-                    return sub.mut_subcommand("branch", |branch| branch.hide(!here.desktop));
-                }
                 "app" => !here.apps,
                 "device" => !(here.system || nouns::any_present(nouns::DEVICE, here.has)),
                 // A computer logged in as one of the person's devices tells of its folders.
@@ -732,7 +719,7 @@ fn examples(here: Here) -> String {
             "A key for your own backend: you approve it in your Tilo",
         ),
         (
-            "tilo account workspaces create \"Jane Doe\"",
+            "tilo workspace create \"Jane Doe\"",
             "A hosted workspace, one per customer",
         ),
         (
@@ -1023,9 +1010,9 @@ fn run_hosted(
     };
     Ok(match cmd {
         Cmd::Do { action, args } => Ok(run_do(reach, workspace, action, args, spelling)),
-        Cmd::Ls { what } => workspace
+        Cmd::Ls { what, cursor } => workspace
             .ok_or_else(needs_workspace)
-            .map(|workspace| hosted::ls(reach, &workspace, what.as_deref())),
+            .map(|workspace| hosted::ls(reach, &workspace, what.as_deref(), cursor.as_deref())),
         Cmd::Read { resource, cursor } => workspace
             .ok_or_else(needs_workspace)
             .map(|workspace| hosted::read(reach, &workspace, &resource, cursor.as_deref())),
@@ -1033,10 +1020,6 @@ fn run_hosted(
             .ok_or_else(needs_workspace)
             .map(|workspace| hosted::view(reach, &workspace, &resource, picture.as_deref())),
         Cmd::Keys { cmd } => Ok(hosted::keys(reach, workspace.as_deref(), cmd)),
-        Cmd::Members { cmd } => workspace
-            .ok_or_else(needs_workspace)
-            .map(|workspace| hosted::members(reach, &workspace, cmd)),
-        Cmd::Account { cmd } => Ok(hosted::account(reach, cmd)),
         Cmd::Files { cmd } => workspace
             .ok_or_else(needs_workspace)
             .map(|workspace| hosted::files(reach, &workspace, cmd)),
@@ -1047,11 +1030,19 @@ fn run_hosted(
             .ok_or_else(needs_workspace)
             .map(|workspace| hosted::invocations(reach, &workspace, limit, cursor.as_deref())),
         Cmd::Sdk { cmd } => Ok(sdk::generate(reach, workspace.as_deref(), cmd)),
+        // A Tilo desktop branches its own workspaces itself, as its workspace
+        // menu does; everywhere else a branch is the API's.
         Cmd::Workspace {
-            cmd: desktop::WorkspaceCmd::Hosts { cmd },
-        } => workspace
-            .ok_or_else(needs_workspace)
-            .map(|workspace| hosted::hosts(reach, &workspace, cmd)),
+            cmd:
+                hosted::WorkspaceCmd::Branch {
+                    source,
+                    name,
+                    labels,
+                },
+        } if labels.is_empty() && api_key_absent(api, key_file) && desktop::available() => {
+            Ok(desktop::branch_workspace(&source, &name, spelling))
+        }
+        Cmd::Workspace { cmd } => Ok(hosted::workspace(reach, workspace.as_deref(), cmd)),
         // Only an explicit `-w` lands a migration in a hosted workspace: without one it comes
         // over this computer's own, through the session `tilo login` holds.
         Cmd::Migrate { json, cmd } if workspace.is_some() => {
@@ -1064,6 +1055,12 @@ fn run_hosted(
         }
         other => return Err(other),
     })
+}
+
+/// Whether these calls act as this computer's own login rather than a key
+/// someone handed over (`--key-file`, `TILO_API_KEY`).
+fn api_key_absent(api: Option<&str>, key_file: Option<&std::path::Path>) -> bool {
+    api.is_none() && key_file.is_none() && std::env::var_os(api::KEY_ENV).is_none()
 }
 
 /// Every command as a page of documentation (`tilo help-markdown`).
@@ -1086,7 +1083,9 @@ fn acts_in_a_workspace(cmd: &Cmd) -> bool {
     matches!(
         cmd,
         Cmd::Keys { .. }
-            | Cmd::Members { .. }
+            | Cmd::Workspace {
+                cmd: hosted::WorkspaceCmd::People { .. } | hosted::WorkspaceCmd::Servers { .. },
+            }
             | Cmd::Files { .. }
             | Cmd::Run { .. }
             | Cmd::Invocations { .. }
@@ -1119,8 +1118,33 @@ fn list_actions(filter: Vec<String>, spelling: &tilo_control::front::Spelling) -
     desktop::run_action(desktop::ActionCmd::List { filter }, spelling)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per command, side by side, so the dispatch reads in one place"
+)]
 fn run(cli: Cli) -> Result<ExitCode> {
     let spelling = tilo_control::front::Spelling::tilo();
+    if let Cmd::Login {
+        code: None,
+        new_identity: false,
+        agent,
+        site,
+        ..
+    } = &cli.cmd
+    {
+        let Some(person) = identity::held()? else {
+            bail!(
+                "Give the code your Tilo tab shows, like `tilo login K7Q-MX2P` (in Tilo, choose \"Set \
+                 up with your agent\"). Only a computer that holds your identity logs in without one."
+            );
+        };
+        return login::login_held(
+            &person,
+            agent.as_deref(),
+            site.as_deref(),
+            cli.workspace.as_deref(),
+        );
+    }
     let workspace = workspace_or_entered(&cli)?;
     let cmd = match run_hosted(
         cli.api.as_deref(),
@@ -1139,8 +1163,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         | Cmd::Read { .. }
         | Cmd::View { .. }
         | Cmd::Keys { .. }
-        | Cmd::Members { .. }
-        | Cmd::Account { .. }
+        | Cmd::Workspace { .. }
         | Cmd::Files { .. }
         | Cmd::Run { .. }
         | Cmd::Invocations { .. }
@@ -1148,7 +1171,6 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Open { app, items } => Ok(desktop::run_open(&app, &items, &spelling)),
         Cmd::Action { cmd } => Ok(desktop::run_action(cmd, &spelling)),
         Cmd::Actions { filter } => Ok(list_actions(filter, &spelling)),
-        Cmd::Workspace { cmd } => Ok(desktop::run_workspace(cmd, &spelling)),
         Cmd::Complete { what, prefix } => Ok(desktop::complete(
             what,
             prefix.as_deref().unwrap_or_default(),
@@ -1942,8 +1964,10 @@ mod tests {
         env.set("TILO_DEVICE_DIR", dir.path());
         env.remove(api::KEY_ENV);
 
-        let members = || Cmd::Members {
-            cmd: hosted::MembersCmd::Ls,
+        let members = || Cmd::Workspace {
+            cmd: hosted::WorkspaceCmd::People {
+                cmd: hosted::PeopleCmd::Ls,
+            },
         };
         assert_eq!(
             workspace_or_entered(&with(members(), None, None)).unwrap(),
@@ -2282,8 +2306,6 @@ mod tests {
                     "view",
                     "workspace",
                     "keys",
-                    "members",
-                    "account",
                     "files",
                     "run",
                     "invocations",
@@ -2308,10 +2330,8 @@ mod tests {
                     "  ls           List what a hosted workspace (-w) holds: its apps, or what a path holds\n",
                     "  read         Read one resource of a hosted workspace (-w)\n",
                     "  view         What an app shows of a resource: its view, line by line\n",
-                    "  workspace    Your workspaces on this desktop\n",
+                    "  workspace    Your workspaces, and the people in them\n",
                     "  keys         Keys to your hosted workspaces, for your code and its agents\n",
-                    "  members      The people in a hosted workspace, inviting more, and how it names you\n",
-                    "  account      Your hosted account: its workspaces\n",
                     "  files        Files into a hosted workspace\n",
                     "  run          Run a tilolang program in a hosted workspace, as one undoable step\n",
                     "  invocations  The invocations of a hosted workspace (-w) in records you may read, newest first\n",
@@ -2329,21 +2349,21 @@ mod tests {
                     "  -V, --version                Print version\n",
                     "\n",
                     "Examples:\n",
-                    "  tilo open calculator                       Open Calculator\n",
-                    "  tilo open notes ~/plan.md                  Open a file in Notes\n",
-                    "  tilo actions                               What this desktop can do\n",
-                    "  tilo do new-terminal-window                Do one of those things\n",
-                    "  tilo app search pdf                        Find apps\n",
-                    "  tilo app update                            Update every app\n",
-                    "  tilo status                                What runs on this device\n",
-                    "  tilo device update                         Move onto the newest system\n",
-                    "  tilo update                                Update apps and this device\n",
-                    "  tilo agent connect claude                  Let Claude Code act on this desktop\n",
-                    "  tilo package pack                          Make a package of your app\n",
-                    "  tilo keys create \"Visa backend\"            A key for your own backend: you approve it in your Tilo\n",
-                    "  tilo account workspaces create \"Jane Doe\"  A hosted workspace, one per customer\n",
-                    "  tilo keys mint -w jane-doe                 An MCP URL and token for an agent in that workspace alone\n",
-                    "  tilo ls notes -w jane-doe                  What a hosted workspace holds\n",
+                    "  tilo open calculator              Open Calculator\n",
+                    "  tilo open notes ~/plan.md         Open a file in Notes\n",
+                    "  tilo actions                      What this desktop can do\n",
+                    "  tilo do new-terminal-window       Do one of those things\n",
+                    "  tilo app search pdf               Find apps\n",
+                    "  tilo app update                   Update every app\n",
+                    "  tilo status                       What runs on this device\n",
+                    "  tilo device update                Move onto the newest system\n",
+                    "  tilo update                       Update apps and this device\n",
+                    "  tilo agent connect claude         Let Claude Code act on this desktop\n",
+                    "  tilo package pack                 Make a package of your app\n",
+                    "  tilo keys create \"Visa backend\"   A key for your own backend: you approve it in your Tilo\n",
+                    "  tilo workspace create \"Jane Doe\"  A hosted workspace, one per customer\n",
+                    "  tilo keys mint -w jane-doe        An MCP URL and token for an agent in that workspace alone\n",
+                    "  tilo ls notes -w jane-doe         What a hosted workspace holds\n",
                 )
             );
         }
@@ -2362,8 +2382,7 @@ mod tests {
             assert_eq!(
                 listed(elsewhere),
                 [
-                    "app", "do", "ls", "read", "view", "workspace", "keys", "members", "account",
-                    "files", "run", "invocations", "sdk", "login", "folders", "migrate"
+                    "app", "do", "ls", "read", "view", "workspace", "keys", "files", "run", "invocations", "sdk", "login", "folders", "migrate"
                 ]
             );
             let help = command_here(elsewhere).render_help().to_string();
@@ -2382,8 +2401,7 @@ mod tests {
             assert_eq!(
                 listed(nothing),
                 [
-                    "do", "ls", "read", "view", "workspace", "keys", "members", "account", "files",
-                    "run", "invocations", "sdk", "login", "folders", "migrate"
+                    "do", "ls", "read", "view", "workspace", "keys", "files", "run", "invocations", "sdk", "login", "folders", "migrate"
                 ]
             );
             let bare = command_here(nothing).render_help().to_string();
@@ -2553,24 +2571,37 @@ mod tests {
             assert!(matches!(
                 branch.cmd,
                 Cmd::Workspace {
-                    cmd: desktop::WorkspaceCmd::Branch { ref source, ref name }
+                    cmd: hosted::WorkspaceCmd::Branch { ref source, ref name, .. }
                 } if source == "Research" && name == "Question 2"
             ));
             assert!(
                 Cli::try_parse_from(["tilo", "workspace", "branch", "Research"]).is_err(),
                 "a branch is named"
             );
-            let hosts = Cli::try_parse_from([
-                "tilo", "workspace", "hosts", "add", "https://tilo.sh", "-w", "Tilo",
+            let servers = Cli::try_parse_from([
+                "tilo", "workspace", "servers", "add", "https://tilo.sh", "-w", "Tilo",
             ])
-            .expect("workspace hosts add parses");
+            .expect("workspace servers add parses");
             assert!(matches!(
-                hosts.cmd,
+                servers.cmd,
                 Cmd::Workspace {
-                    cmd: desktop::WorkspaceCmd::Hosts {
-                        cmd: hosted::HostsCmd::Add { ref origin }
+                    cmd: hosted::WorkspaceCmd::Servers {
+                        cmd: hosted::ServersCmd::Add { ref origin }
                     }
                 } if origin == "https://tilo.sh"
+            ));
+            let moved = Cli::try_parse_from([
+                "tilo", "workspace", "servers", "move", "https://old.test", "https://tilo.sh",
+                "-w", "Tilo",
+            ])
+            .expect("workspace servers move parses");
+            assert!(matches!(
+                moved.cmd,
+                Cmd::Workspace {
+                    cmd: hosted::WorkspaceCmd::Servers {
+                        cmd: hosted::ServersCmd::Move { ref from, ref to }
+                    }
+                } if from == "https://old.test" && to == "https://tilo.sh"
             ));
             let list = Cli::try_parse_from(["tilo", "actions", "volume"]).expect("actions parses");
             assert!(matches!(list.cmd, Cmd::Actions { ref filter } if filter == &["volume"]));

@@ -78,6 +78,7 @@ landlock   = "strict"
 mode = "off"
 
 [sandbox.portals]
+secrets = "via-host"
 
 [sandbox.services]
 # The system interface: the contract with the system services Settings

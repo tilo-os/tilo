@@ -153,6 +153,14 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         .body(Body::Json("UnattendedChange"))
         .answers(Answer::Action),
         op(
+            "renameWorkspace",
+            Method::PUT,
+            "/v1/workspaces/{workspace}/name",
+            "Name the workspace, for every list and device of it; its owners and moderators may",
+        )
+        .body(Body::Json("WorkspaceName"))
+        .json(200, "Workspace"),
+        op(
             "deleteWorkspace",
             Method::DELETE,
             "/v1/workspaces/{workspace}",
@@ -321,27 +329,36 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         )
         .json(200, "WaitList"),
         op(
-            "listHosts",
+            "listServers",
             Method::GET,
-            "/v1/workspaces/{workspace}/hosts",
-            "The hosts holding the workspace, the one that governs it first",
+            "/v1/workspaces/{workspace}/servers",
+            "The servers keeping the workspace, the one asked first",
         )
-        .json(200, "Hosts"),
+        .json(200, "Servers"),
         op(
-            "addHost",
+            "addServer",
             Method::POST,
-            "/v1/workspaces/{workspace}/hosts",
-            "Have another host hold the workspace as well, as that host's rules allow",
+            "/v1/workspaces/{workspace}/servers",
+            "Have another server keep the workspace as well, as that server's rules allow",
         )
-        .body(Body::Json("NewHost"))
-        .json(200, "Hosts"),
+        .body(Body::Json("NewServer"))
+        .json(200, "Servers"),
         op(
-            "removeHost",
+            "removeServer",
             Method::DELETE,
-            "/v1/workspaces/{workspace}/hosts/{host}",
-            "Have a host, by its site (percent-encoded) or its device key, hold the workspace no more",
+            "/v1/workspaces/{workspace}/servers/{server}",
+            "Have a server, by its site (percent-encoded) or its device key, keep the workspace no more",
         )
-        .json(200, "Hosts"),
+        .json(200, "Servers"),
+        op(
+            "moveServer",
+            Method::POST,
+            "/v1/workspaces/{workspace}/servers/{server}/move",
+            "Move the workspace from a server, by its site (percent-encoded) or its device key, to \
+             the server at another site: that one keeps it first, then this one no more",
+        )
+        .body(Body::Json("NewServer"))
+        .json(200, "Servers"),
         op(
             "invitePerson",
             Method::POST,
@@ -359,6 +376,22 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         .body(Body::Json("NewName"))
         .json(200, "Members"),
         op(
+            "setMemberRole",
+            Method::PUT,
+            "/v1/workspaces/{workspace}/members/{person}/role",
+            "Move a member, by their user public key, to another role, as far as yours allows",
+        )
+        .body(Body::Json("MemberRole"))
+        .json(200, "Members"),
+        op(
+            "removeMember",
+            Method::DELETE,
+            "/v1/workspaces/{workspace}/members/{person}",
+            "Remove a member, by their user public key, and every device of theirs",
+        )
+        .mutating()
+        .json(200, "Members"),
+        op(
             "runProgram",
             Method::POST,
             "/v1/workspaces/{workspace}/programs",
@@ -374,6 +407,22 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         )
         .body(Body::Bytes)
         .json(201, "Uploaded"),
+        op(
+            "putManyContents",
+            Method::PUT,
+            "/v1/workspaces/{workspace}/contents",
+            "Store several small files whole in one request, answering each one's reference",
+        )
+        .body(Body::Json("PutMany"))
+        .json(200, "PutManyAnswer"),
+        op(
+            "haveContents",
+            Method::POST,
+            "/v1/workspaces/{workspace}/contents/have",
+            "Which of these content hashes the workspace already holds",
+        )
+        .body(Body::Json("HaveHashes"))
+        .json(200, "HeldHashes"),
         op(
             "openUpload",
             Method::POST,

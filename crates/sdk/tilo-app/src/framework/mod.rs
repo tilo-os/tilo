@@ -250,11 +250,11 @@
 //!   — are drained with [`ResourceEnv::outbox`]: the framework runs the drain in
 //!   the live app after every change, on every member's device, and
 //!   the drain acknowledges each entry with an action.
-//! * **Files of the mounted filesystem** an app shows (a file manager's
-//!   selected file) have a history of their own, kept by the filesystem's
-//!   projection rather than the app's document. The app declares it
-//!   ([`ResourceApp::FILE_HISTORY`]) and its view names the file
-//!   ([`ResourceEnv::file_history`]); History offers it beside the resource's.
+//! * **The workspace's files** an app shows (a file manager's folder) have a
+//!   history of their own, kept in the workspace's tree rather than the app's
+//!   document. The app declares it ([`ResourceApp::FOLDER_HISTORY`]) and its
+//!   view narrows it to the selected file ([`ResourceEnv::folder_history`]);
+//!   History offers it beside the resource's.
 //! * **Run mode.** A view is built for a window someone uses, a past version
 //!   in History, or a screenshot ([`RunMode`], from [`ResourceEnv::mode`]). Only a live view starts work that reaches outside
 //!   the process (a mail engine, a socket, a journal reader, a hardware
@@ -345,6 +345,7 @@ pub mod history;
 mod kinds;
 mod launch;
 mod live;
+mod made;
 mod opening;
 pub mod page_part;
 mod people;
@@ -384,14 +385,15 @@ mod workspace_emoji;
 
 pub use app::launch_spec;
 pub use app::{
-    AppName, FileHistory, FolderHistory, OpeningCx, OpeningView, ResourceApp, SURFACE_FLAG, SeedCx,
-    definition, run_helper,
+    AppName, FolderHistory, OpeningCx, OpeningView, ResourceApp, SURFACE_FLAG, SeedCx, definition,
+    run_helper,
 };
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use app::{definition_launch_spec, run};
 pub use attached::{AttachedView, OpenView};
 pub use bar_actions::{BarActions, BarCommands};
 pub use chain::{Chain, Chained, PartArrival, PartRecord, Parts};
+pub use chain::{PART_BYTES, PART_ITEMS, PartLimits, placed};
 pub use chain_list::{ChainList, ChainPager, ChainRow, Paged};
 pub use children::{ChildResource, Children, Listed, child_resource_id};
 pub use controls::{ActionControl, Actions};

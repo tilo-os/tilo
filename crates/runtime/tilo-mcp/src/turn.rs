@@ -2,7 +2,7 @@
 
 use tilo_actions::remote::{ActionProvider, Caller};
 
-use crate::{McpServer, Surface};
+use crate::McpServer;
 
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// One turn of an agent the host runs itself, for the person whose ask it answers: `caller` is
@@ -26,9 +26,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .workspace()
             .ok_or_else(|| std::io::Error::other("a turn names its workspace"))?
             .to_owned();
-        Ok(
-            Self::from_caller(host, workspace, person, caller.in_new_execution())
-                .with_surface(Surface::Agent),
-        )
+        Ok(Self::from_caller(
+            host,
+            workspace,
+            person,
+            caller.in_new_execution(),
+        ))
     }
 }

@@ -687,25 +687,6 @@ impl App {
         Some(why)
     }
 
-    /// Withdraw everything this app published: a reset delta with nothing in it.
-    fn withdraw_action_surface(&mut self) -> bool {
-        let withdrawn = self
-            .collaboration
-            .manager
-            .send(CollabRequest::PublishActionSurface {
-                delta: crate::collaboration::SurfaceDelta {
-                    reset: true,
-                    ..crate::collaboration::SurfaceDelta::default()
-                },
-            });
-        if withdrawn {
-            self.actions.last_published_actions = Some(Vec::new());
-            self.actions.published_surface =
-                Some(crate::collaboration::SurfacePublication::default());
-        }
-        withdrawn
-    }
-
     fn invoke_published_action(
         &mut self,
         id: u64,

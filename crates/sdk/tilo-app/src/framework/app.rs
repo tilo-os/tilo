@@ -10,7 +10,6 @@ use ui_core::application::{
     AppComponent, ApplicationDefinition, ComponentBehaviour, ComponentFactory, LaunchTarget,
     ProcessContext, RestoreInput,
 };
-use ui_core::history_mode::checked_files::FileHistorySource;
 use ui_core::i18n::EmbeddedCatalog;
 use ui_core::launch::LaunchError;
 use ui_core::permissions::MemberId;
@@ -132,16 +131,11 @@ pub trait ResourceApp: 'static {
     /// the person's own records ([`ResourceEnv::person`](super::ResourceEnv::person) answers `None`), and its
     /// view tells with [`ResourceEnv::is_private`](super::ResourceEnv::is_private).
     const PRIVATE_WINDOWS: bool = false;
-    /// The history of a file of the mounted filesystem the app shows (the
-    /// file selected in a file manager), a History scope beside the
-    /// resource's own: its versions are read, previewed and restored through
-    /// the filesystem's projection, not the app's document. The app's
-    /// view names the file with [`ResourceEnv::file_history`](super::ResourceEnv::file_history).
-    const FILE_HISTORY: Option<FileHistory> = None;
-    /// The History of the folder a window shows: every file's changes in it, one row per
-    /// file and writer, read from the workspace's tree record, the one the window's rows
-    /// show. The runner opens it with the window's storage, so History reads what the rows
-    /// read.
+    /// The History of the folder a window shows: the changes of the workspace's tree, the one
+    /// the window's rows show, each named by the path of what it changed and by whoever made
+    /// it. The runner opens it with the window's storage, so History reads what the rows
+    /// read. The view narrows it to the file it shows with
+    /// [`ResourceEnv::folder_history`](super::ResourceEnv::folder_history).
     const FOLDER_HISTORY: Option<FolderHistory> = None;
     /// What of the machine it runs on the app shows (its journal, its
     /// processes, its drives, the person's real files). A headless drive
@@ -445,17 +439,10 @@ impl<W: ui_core::widget::Widget + 'static> OpeningView for W {
 pub struct FolderHistory {
     /// What the scope is called in History: "Folder".
     pub title: &'static str,
-}
-
-/// The History scope of [`ResourceApp::FILE_HISTORY`]: the files of the
-/// mounted filesystem an app shows.
-#[derive(Clone, Copy)]
-pub struct FileHistory {
-    /// What the scope is called in History: "Selected file".
-    pub title: &'static str,
-    /// Draws one version of a file, from its bytes as the projection read
-    /// them.
-    pub preview: ui_core::history_mode::checked_files::FilePreviewFactory,
+    /// Whether the window's own record keeps what people did (bookmarks, settings), listed
+    /// as a scope of its own beside the folder's. A window whose record keeps only which
+    /// folder is open has none worth listing.
+    pub beside_resource: bool,
 }
 
 /// What [`ResourceApp::seed`] may read: who is creating the record, and the
@@ -603,7 +590,6 @@ pub(crate) struct AppHooks {
     label: &'static str,
     behaviour: ComponentBehaviour,
     document_history: bool,
-    file_history: Option<FileHistory>,
     folder_history: Option<FolderHistory>,
     #[cfg(tilo_native_runner)]
     private_windows: bool,
@@ -629,7 +615,7 @@ pub(crate) struct AppHooks {
     pub(crate) opening: fn(&OpeningCx<'_>) -> Option<Box<dyn OpeningView>>,
     pub(crate) action_registry: fn() -> tilo_actions::ActionRegistry,
     history: fn() -> &'static ui_core::history_mode::HistoryDefinition,
-    file_history_observation: fn() -> &'static ui_core::history_mode::HistoryDefinition,
+    folder_history_observation: fn() -> &'static ui_core::history_mode::HistoryDefinition,
 }
 
 /// [`AppHooks::new_resource`] — the context, and what the launch named.
@@ -642,12 +628,14 @@ type NewResource = fn(
 
 /// [`AppHooks::open`] — the context, who edits, whether it is a capture and
 /// whether the launch created the record.
-type OpenRoot = fn(
-    &mut ProcessContext,
-    Editing,
-    bool,
-    bool,
-) -> Result<Result<Box<dyn ui_core::widget::AppWidget>, String>, LaunchError>;
+/// The window's root, and the parts its History lists with the window's document.
+type OpenedRoot = (
+    Box<dyn ui_core::widget::AppWidget>,
+    Rc<dyn ui_core::history_mode::HistoryParts>,
+);
+
+type OpenRoot =
+    fn(&mut ProcessContext, Editing, bool, bool) -> Result<Result<OpenedRoot, String>, LaunchError>;
 
 struct Hooks<A>(std::marker::PhantomData<A>);
 
@@ -661,7 +649,6 @@ impl<A: ResourceApp> Hooks<A> {
         label: <A::Resource as Resource>::LABEL,
         behaviour: A::BEHAVIOUR,
         document_history: A::DOCUMENT_HISTORY,
-        file_history: A::FILE_HISTORY,
         folder_history: A::FOLDER_HISTORY,
         #[cfg(tilo_native_runner)]
         private_windows: A::PRIVATE_WINDOWS,
@@ -681,7 +668,7 @@ impl<A: ResourceApp> Hooks<A> {
         opening: A::opening,
         action_registry: action_registry::<A>,
         history: super::preview::history_definition::<A>,
-        file_history_observation: super::preview::file_history_observation::<A>,
+        folder_history_observation: super::preview::folder_history_observation::<A>,
     };
 }
 
@@ -1157,7 +1144,7 @@ fn open_root<A: ResourceApp>(
     editing: Editing,
     capture: bool,
     created: bool,
-) -> Result<Result<Box<dyn ui_core::widget::AppWidget>, String>, LaunchError> {
+) -> Result<Result<OpenedRoot, String>, LaunchError> {
     if let Err(reason) = A::import_resource(context) {
         return Ok(Err(reason));
     }
@@ -1196,7 +1183,8 @@ fn open_root<A: ResourceApp>(
             }
         }
     }
-    Ok(Ok(root.into_widget()))
+    let parts = Rc::new(super::history::ChainHistory(Rc::downgrade(&root.storage)));
+    Ok(Ok((root.into_widget(), parts)))
 }
 
 /// The component of a window shown before its record ([`ResourceApp::opening`]): it shows
@@ -1333,8 +1321,6 @@ fn create_component(
 struct Starting {
     /// The recording the launch opened, when it replays one.
     replay: Option<tilo_resource::recording::Recording>,
-    /// The record's file-time History, when the app keeps one.
-    files: Option<FileHistorySource>,
     /// The folder the window's History lists, when the app declares one: filled once the
     /// root's storage is open.
     folder: Option<ui_core::history_mode::folder::FolderHistorySource>,
@@ -1375,7 +1361,6 @@ fn start_resource(
         None => {}
     }
     let capture = context.capture().is_some();
-    let files = app.file_history.map(|_| FileHistorySource::default());
     let folder = app
         .folder_history
         .map(|_| ui_core::history_mode::folder::FolderHistorySource::default());
@@ -1415,12 +1400,11 @@ fn start_resource(
             shows: Some(context.window_shows()),
         })
         .opening_with(opener)
-        .showing_file_history(
-            files
+        .showing_folder_history(
+            folder
                 .clone()
-                .map(|source| (source, (app.file_history_observation)())),
-        )
-        .showing_folder_history(folder.clone().map(|source| (source, (app.history)())));
+                .map(|source| (source, (app.folder_history_observation)())),
+        );
     let editing = Editing::Live {
         permissions: context.live_permissions(),
         me: context.author().clone(),
@@ -1428,7 +1412,6 @@ fn start_resource(
     };
     Ok(Starting {
         replay,
-        files,
         folder,
         editing,
         created,
@@ -1445,26 +1428,25 @@ fn window(
 ) -> Result<AppComponent, LaunchError> {
     let Starting {
         replay,
-        files,
         folder,
         editing,
         created,
         capture,
     } = starting;
-    let root = match (app.open)(&mut context, editing, capture, created)? {
-        Ok(root) => root,
+    let (root, parts) = match (app.open)(&mut context, editing, capture, created)? {
+        Ok(opened) => opened,
         Err(reason) => return Ok(unopened(app, context, &reason)),
     };
     let mut component = AppComponent::new(context, root, (app.action_registry)());
     component.set_behaviour(app.behaviour);
     if app.document_history {
         let history = (app.history)();
-        match (files, folder) {
-            (_, Some(folder)) => component.register_document_folder_history(history, folder),
-            (Some(files), None) => component.register_document_and_file_history(history, files),
-            (None, None) => component.register_document_history(history),
+        match folder {
+            Some(folder) => component.register_document_folder_history(history, folder),
+            None => component.register_document_history(history),
         }
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        component.list_parts_in_history(&parts);
     }
     // A replay opens at the recording's first step: the state the window
     // showed when the recording starts.

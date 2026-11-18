@@ -459,7 +459,9 @@ tilo_test_env::scenario! {
                 uuid::Uuid::nil()
             ))))
             .unwrap(),
-            r#"{"version":1,"message":{"Observe":{"invocation":"00000000-0000-0000-0000-000000000000"}}}"#
+            format!(
+                r#"{{"version":{REMOTE_ACTIONS_VERSION},"message":{{"Observe":{{"invocation":"00000000-0000-0000-0000-000000000000"}}}}}}"#
+            )
         );
     }
 }

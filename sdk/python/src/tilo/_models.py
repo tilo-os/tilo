@@ -296,6 +296,10 @@ class Row:
 
     path: str
     name: str = ""
+    id: str | None = None
+    """The resource's own id, which names it whatever else is titled the same."""
+    key: str | None = None
+    """The app's stable key for it, the name its actions answer it by."""
     label: str = ""
     kind: str = ""
     has_children: bool = False
@@ -323,6 +327,8 @@ class Row:
         return cls(
             path=str(raw.get("path") or ""),
             name=str(raw.get("name") or ""),
+            id=_text(raw.get("id")),
+            key=_text(raw.get("key")),
             label=str(raw.get("label") or ""),
             kind=kind,
             has_children=bool(raw.get("has_children")),

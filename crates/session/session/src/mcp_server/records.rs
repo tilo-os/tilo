@@ -4,9 +4,9 @@
 
 use std::sync::Arc;
 
-use tilo_action_broker::collab_app_broker::AppBrokerState;
 use tilo_actions::remote::{ActionCallError, Caller};
 use tilo_lock::MutexRecover as _;
+use tilo_workspace_service::apps::collab_app_broker::AppBrokerState;
 
 use super::{ApiAsk, SessionServices, WAIT, unanswered};
 

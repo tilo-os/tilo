@@ -32,6 +32,8 @@ mod mentions;
 mod motion;
 #[path = "narrow.rs"]
 mod narrow;
+#[path = "open_by.rs"]
+mod open_by;
 mod settle;
 mod support;
 #[path = "views.rs"]

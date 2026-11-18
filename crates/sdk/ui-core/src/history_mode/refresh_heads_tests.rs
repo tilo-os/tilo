@@ -36,6 +36,7 @@ static UNVERSIONED_DEFINITION: HistoryDefinition = HistoryDefinition {
 struct BoundFixture {
     component: AppComponent,
     binding: CallbackBinding,
+    parts: Option<std::rc::Rc<dyn crate::history_mode::HistoryParts>>,
     _host: ProbeHarness,
 }
 impl BoundFixture {
@@ -59,6 +60,7 @@ impl BoundFixture {
         Self {
             component,
             binding,
+            parts: None,
             _host: host,
         }
     }
@@ -69,6 +71,10 @@ impl BoundFixture {
             HistoryOwner::component(self.binding.clone()),
         )
         .unwrap();
+        let source = match &self.parts {
+            Some(parts) => source.with_parts(std::rc::Rc::clone(parts)),
+            None => source,
+        };
         HistoryHost::new(
             HistoryRegistration::new(&DEFINITION, vec![source]).unwrap(),
             outer,
@@ -272,6 +278,7 @@ tilo_test_env::scenario! {
             scope: "document",
             owner,
             resource,
+            parts: None,
         };
         assert_eq!(
             source.document(&outer()).err(),
@@ -460,4 +467,112 @@ fn refresh_heads_allocation_growth_independent_of_real_graph_size_in_all_documen
         failures.is_empty(),
         "content-dependent refresh allocation/owned clones: {failures:#?}"
     );
+}
+
+/// Documents kept beside the owned one, as a chain's parts are.
+struct Parts(std::rc::Rc<std::cell::RefCell<Vec<AutoCommit>>>);
+impl crate::history_mode::HistoryParts for Parts {
+    fn heads(&self) -> Vec<automerge::ChangeHash> {
+        self.0
+            .borrow()
+            .iter()
+            .flat_map(AutoCommit::base_heads)
+            .collect()
+    }
+    fn documents(&self) -> Vec<AutoCommit> {
+        self.0.borrow().clone()
+    }
+}
+
+/// A change made at `seconds` past the epoch.
+fn typed_at(document: &mut AutoCommit, seconds: i64) {
+    document
+        .put(ROOT, "body", format!("typed at {seconds}"))
+        .unwrap();
+    document.commit_with(automerge::transaction::CommitOptions::default().with_time(seconds));
+}
+
+#[test]
+fn history_lists_the_parts_beside_the_document_in_time_order_a_page_at_a_time() {
+    let mut fixture = BoundFixture::new();
+    let outer = outer();
+    let mut part = AutoCommit::new();
+    let typed = crate::history_mode::HISTORY_PAGE + 50;
+    for second in 1..=typed {
+        typed_at(&mut part, i64::try_from(second).unwrap());
+    }
+    let parts = std::rc::Rc::new(std::cell::RefCell::new(vec![part]));
+    fixture.parts = Some(std::rc::Rc::new(Parts(std::rc::Rc::clone(&parts))));
+    let mut history = fixture.history(&outer);
+    assert!(history.request_open());
+    history.refresh(&outer);
+    let listed = history.timeline.entries().to_vec();
+    assert_eq!(
+        listed.len(),
+        crate::history_mode::HISTORY_PAGE,
+        "one page of the parts' typing"
+    );
+    assert!(
+        listed
+            .windows(2)
+            .all(|pair| pair[0].timestamp <= pair[1].timestamp),
+        "listed in time order"
+    );
+    assert!(
+        history
+            .controller
+            .as_ref()
+            .is_some_and(crate::history_mode::HistoryController::has_earlier)
+    );
+    let own: Vec<_> = crate::history_source::HistorySource::new()
+        .entries(
+            &mut HistoryOwner::component(fixture.binding.clone())
+                .document(&outer)
+                .unwrap(),
+        )
+        .into_iter()
+        .map(|entry| entry.id)
+        .collect();
+    assert!(!own.is_empty());
+
+    // Typing in a part shows on the next refresh.
+    assert!(!history.needs_refresh(&outer, 900.0));
+    typed_at(&mut parts.borrow_mut()[0], i64::MAX / 2_000);
+    assert!(history.needs_refresh(&outer, 900.0));
+    history.refresh(&outer);
+    let newest = parts.borrow()[0].clone().get_heads()[0];
+    assert_eq!(
+        history.timeline.entries().last().unwrap().id,
+        crate::history_source::entry_id_from_hash(&newest.to_string())
+    );
+
+    // A part's change has no version of the document to preview: choosing it leaves the
+    // timeline as it was, and History settles.
+    history.timeline.set_selection(Some((0, 0)));
+    history.refresh(&outer);
+    history.refresh(&outer);
+    assert!(history.timeline_selection().is_empty());
+    assert!(!history.needs_refresh(&outer, 900.0));
+
+    // An earlier page lists the rest.
+    history.commands.borrow_mut().push_back(Command::Earlier);
+    history.refresh(&outer);
+    let all: Vec<_> = history
+        .timeline
+        .entries()
+        .iter()
+        .map(|entry| entry.id)
+        .collect();
+    assert_eq!(all.len(), typed + 1 + own.len());
+    assert!(
+        own.iter().all(|id| all.contains(id)),
+        "the document's own changes are listed too"
+    );
+    assert!(
+        !history
+            .controller
+            .as_ref()
+            .is_some_and(crate::history_mode::HistoryController::has_earlier)
+    );
+    fixture.close();
 }

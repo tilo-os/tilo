@@ -56,7 +56,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         ca-certificates \
         iproute \
         NetworkManager \
+        NetworkManager-wifi \
         tpm2-tools \
+        wpa_supplicant \
         curl grep gzip libcap passt sed shadow-utils skopeo tar util-linux xfsprogs \
     && dnf clean all \
     && installed="$(rpm -qa --qf '%{NAME}\n')" \
@@ -174,6 +176,21 @@ COPY os/usr/lib/dracut/modules.d/92tilo-sibling-unlock /usr/lib/dracut/modules.d
 # TPM keyslot is sealed to, and what early boot verifies the prediction against.
 COPY keys/tpm2-pcr-signing.public.pem /usr/share/tilo/tpm2-pcr-signing.public.pem
 RUN install -d -m 0755 /usr/share/tilo/pcr-predictions
+
+# ---- Initramfs ---------------------------------------------------------------
+# The kernel has to open this machine's root before there is a userspace, and the
+# only place that can happen is an initramfs built with the unlock module in it.
+# dracut runs here, from the desktop image's own script, with the module list a
+# headless machine has: the crypt stack, the unlock chain, and the sibling
+# factor's network, without the greeter and the splash. bootc install copies this
+# initramfs into the installed machine's boot entries.
+COPY os/scripts/build-initramfs.sh os/scripts/verify-board-initramfs.py /usr/local/bin/
+RUN chmod 0755 /usr/local/bin/build-initramfs.sh /usr/local/bin/verify-board-initramfs.py \
+    && set -- /usr/lib/modules/*/vmlinuz \
+    && [ "$#" -eq 1 ] && [ -f "$1" ] \
+    && kver="$(basename "$(dirname "$1")")" \
+    && TILO_INITRAMFS_MODULES="crypt systemd-cryptsetup tpm2-tss tilo-rollback tilo-sibling-unlock" \
+       bash /usr/local/bin/build-initramfs.sh "$kver"
 RUN chmod 0755 /usr/libexec/tilo-hosted-prepare /usr/libexec/tilo-hosted-serve \
         /usr/libexec/tilo-server-health /usr/libexec/tilo-server-update-window \
         /usr/libexec/tilo-server-update-apply \
@@ -262,12 +279,19 @@ COPY docs/recovery.md docs/app-model/environments.md /usr/share/doc/tilo/
 # release image.
 RUN install -d -m 0755 /usr/lib/tilo && echo server > /usr/lib/tilo/image-flavour
 
-# The first-boot script consumes /etc/tilo/enrollment-token.txt (a
-# base32-Crockford EnrollmentToken minted on the operator's primary
-# device by the imager app) and mints a device keypair + persists
-# a device cert once the LAN mdns discovery hands back the signed
-# cert. Baked into the ISO by `tilo-installer` — the sample stub
-# here is overwritten at install time.
+# The enrollment methods this image offers, in the one place an image declares
+# them. A server has no one at it to confirm a device it found, so it enrolls
+# with the token made for it or with the code it shows for a device of the
+# person's to approve; local-network pairing is a desktop's way in.
+RUN printf '# Tilo Server: the token made for this machine, or the short code it\n# shows for a device of yours to approve.\ntoken\ncode\n' \
+        > /usr/lib/tilo/enrollment-methods
+
+# The first-boot script runs the one enrollment every image runs:
+# `tilo-enroll enroll` spends the token in /etc/tilo/enrollment-token.txt (a
+# base32-Crockford token minted on the operator's primary device by the imager
+# app) and persists a device cert, or shows a code a device of theirs approves
+# when no token was put there. Baked into the ISO by `tilo-installer` — the
+# sample stub here is overwritten at install time.
 RUN mkdir -p /etc/tilo \
     && echo "# Replace with a base32-Crockford enrollment token minted by your primary device." \
         > /etc/tilo/enrollment-token.txt

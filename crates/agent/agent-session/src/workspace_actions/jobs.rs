@@ -18,6 +18,7 @@ impl Job {
             | Self::Content { workspace_id, .. }
             | Self::ContentGet { workspace_id, .. }
             | Self::ContentLink { workspace_id, .. }
+            | Self::ReadDocument { workspace_id, .. }
             | Self::Search { workspace_id, .. }
             | Self::Changes { workspace_id, .. }
             | Self::Invocations { workspace_id, .. }
@@ -25,7 +26,6 @@ impl Job {
             | Self::Arrived { workspace_id, .. }
             | Self::Joined(workspace_id)
             | Self::Forget(workspace_id)
-            | Self::NotesFolder(workspace_id)
             | Self::Rename(workspace_id, _) => *workspace_id,
             Self::Ran(ended) => ended.workspace_id,
         }

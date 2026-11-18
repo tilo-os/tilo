@@ -36,11 +36,10 @@ filesystem = [
     "dep:tilo-automerge",
     "dep:tilo-automerge-isolate",
     "dep:tilo-doc",
-    "dep:tilo-doc-codecs",
     "dep:tilo-content",
-    "dep:tilo-content-device",
     "dep:collab-types",
     "dep:tilo-action-policy",
+    "dep:tilo-actions",
     "dep:fs-protocol",
     "dep:ed25519-dalek",
     "dep:tilo-thumbnail",
@@ -123,11 +122,10 @@ tilo-automerge = { workspace = true, optional = true }
 tilo-automerge-isolate = { version = "0.1.0", path = "../../doc/tilo-automerge-isolate", optional = true }
 tilo-doc = { version = "0.1.0", path = "../../doc/tilo-doc", optional = true }
 tilo-content = { version = "0.1.0", path = "../content", optional = true }
-# The daemon's own document content: the device store when it was handed one.
-tilo-content-device = { version = "0.1.0", path = "../content-device", optional = true }
-tilo-doc-codecs = { version = "0.1.0", path = "../../doc/tilo-doc-codecs", optional = true, default-features = false, features = ["markdown", "html", "rtf", "docx", "odt"] }
 collab-types = { version = "0.1.0", path = "../../collab/collab-types", optional = true }
 tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy", optional = true }
+# A change of the tree names the file action it is and who made it, as every resource's does.
+tilo-actions = { version = "0.1.0", path = "../../collab/actions", optional = true }
 fs-protocol = { version = "0.1.0", path = "../fs-protocol", optional = true }
 getrandom = { workspace = true, optional = true }
 ed25519-dalek = { workspace = true, optional = true }
@@ -190,7 +188,8 @@ tilo-identity-client = { version = "0.1.0", path = "../../runtime/tilo-identity-
 key-group = { version = "0.1.0", path = "../../collab/key-group", optional = true }
 
 [dev-dependencies]
-fs-protocol = { version = "0.1.0", path = "../fs-protocol", features = ["documents"] }
+tilo-content-device = { version = "0.1.0", path = "../content-device" }
+fs-protocol = { version = "0.1.0", path = "../fs-protocol" }
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 image = { workspace = true, features = ["png"] }
 # The idle endpoint tests' relay is a loopback one no test shares.

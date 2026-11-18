@@ -239,8 +239,12 @@ fn ask(
             show_picked_tab(state, fed, &tab);
         }
         sheet::WorkspaceSettingsEffect::DismissNotice => dismiss_notice(state, fed),
-        // Closing is the sheet's own.
-        sheet::WorkspaceSettingsEffect::Close => {}
+        // Closing is the sheet's own. The servers keeping a workspace are
+        // chosen over the workspace's own server API, from a page; a
+        // desktop's sheet offers none.
+        sheet::WorkspaceSettingsEffect::Close
+        | sheet::WorkspaceSettingsEffect::AddServer { .. }
+        | sheet::WorkspaceSettingsEffect::RemoveServer { .. } => {}
         sheet::WorkspaceSettingsEffect::AddAgent { .. }
         | sheet::WorkspaceSettingsEffect::RemoveAgent { .. }
         | sheet::WorkspaceSettingsEffect::SetAgentModel { .. }
@@ -790,6 +794,9 @@ fn general(
             description: t("workspace-settings-devices-local"),
         },
         device_rows: devices.iter().map(device_row).collect(),
+        // Which servers keep a workspace is chosen over the workspace's own
+        // server API; a desktop's sheet shows none.
+        servers: None,
         move_labels: [
             t("workspace-settings-move-earlier"),
             t("workspace-settings-move-later"),

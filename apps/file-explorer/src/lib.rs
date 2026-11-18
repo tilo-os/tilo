@@ -55,10 +55,6 @@ pub mod fileops;
 pub mod files_app;
 #[cfg(feature = "desktop")]
 pub mod folder_counts;
-#[cfg(feature = "desktop")]
-pub mod framework_history;
-#[cfg(feature = "desktop")]
-pub mod history_control;
 pub mod i18n;
 #[cfg(feature = "desktop")]
 pub mod identity_directory;

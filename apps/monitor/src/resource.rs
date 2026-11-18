@@ -559,9 +559,9 @@ mod tests {
     ui::action_contract_tests! {
         seed: ui::automerge::AutoCommit::new(),
         registry: {
-            let mut registry = ui::tilo_actions::ActionRegistry::new();
-            <Monitor as ui::tilo_resource::Resource>::register(&mut registry);
-            registry
+            ui::tilo_actions::ActionRegistry::with(
+                ui::tilo_resource::group::register::<Monitor>,
+            )
         },
         resources: |_| TestApp::<MonitorShell>::new().unwrap().harness().resources(),
         palette: ["Refresh processes", "Show process details", "Copy PID", "End process"],

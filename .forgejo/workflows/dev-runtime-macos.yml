@@ -36,7 +36,7 @@ on:
       - "crates/collab/neighbour-wire/**"
       - "crates/collab/reference/**"
       - "crates/collab/threshold-identity/**"
-      - "crates/collab/tilo-action-broker/**"
+      - "crates/server/tilo-workspace-service/**"
       - "crates/collab/tilo-identity-ceremony/**"
       - "crates/collab/tilo-live/**"
       - "crates/collab/tilo-peer-state/**"

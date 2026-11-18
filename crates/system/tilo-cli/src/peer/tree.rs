@@ -555,7 +555,7 @@ impl Sync {
         let merged = tokio::task::spawn_blocking(move || {
             let mut namespace = namespace.lock_recover();
             namespace
-                .take_records(records)
+                .take_documents(records)
                 .map(|()| namespace.listed_records())
                 .map_err(|error| error.to_string())
         })
@@ -919,7 +919,7 @@ mod tests {
             )
             .unwrap();
         laptop
-            .take_records(
+            .take_documents(
                 founded
                     .iter()
                     .map(|(chunk, (bytes, _))| (*chunk, bytes.clone()))
@@ -941,7 +941,7 @@ mod tests {
         .unwrap();
         let writes = laptop.document_writes(&known);
         assert!(!writes.is_empty());
-        host.take_records(writes.into_iter().map(|w| (w.chunk, w.changes)).collect())
+        host.take_documents(writes.into_iter().map(|w| (w.chunk, w.changes)).collect())
             .unwrap();
         for name in ["contract.txt", "handbook.md.txt"] {
             assert!(

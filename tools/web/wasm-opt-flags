@@ -10,6 +10,9 @@
 -Oz
 --enable-bulk-memory
 --enable-nontrapping-float-to-int
+# The modules are compiled with `+simd128` (.cargo/config.toml): binaryen
+# refuses to read SIMD instructions it was not told to enable.
+--enable-simd
 # The split modules keep the name section the splitter read until it is gone
 # with the rest of the debug information, and a producer section buys the page
 # nothing.

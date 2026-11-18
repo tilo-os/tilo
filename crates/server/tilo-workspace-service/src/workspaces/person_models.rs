@@ -28,7 +28,7 @@ use agent_provider_config::{
 use serde_json::Value;
 use tilo_actions::remote::person_models::{
     self, AddModel, AddPreset, ListedModels, ListingProblem, ModelProviders, ProviderView,
-    SetAssignment, SetAssignments, SetDefault, SetKey,
+    SetAssignment, SetAssignments, SetDefault, SetKey, SetReasoning,
 };
 use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 use tilo_net::proxy::host::{
@@ -124,6 +124,10 @@ impl Workspaces {
             person_models::SET_ASSIGNMENTS => {
                 let choosing: SetAssignments = argument(request, "a model choice")?;
                 answer(&set_assignments(&root, choosing))
+            }
+            person_models::SET_REASONING => {
+                let setting: SetReasoning = argument(request, "a thinking level to keep")?;
+                answer(&set_reasoning(&root, &setting))
             }
             _ => return Err(ActionCallError::UnknownAction),
         };
@@ -477,6 +481,56 @@ fn add_model(root: &Path, adding: &AddModel) -> Result<ProviderView, String> {
         profile.models.push(ModelDescriptor::named(id));
         profile.models.sort_by(|a, b| a.id.cmp(&b.id));
     }
+    let profile = profile.clone();
+    save_provider_config(root, &config)?;
+    Ok(view_of(&profile, &credentials(root)?))
+}
+
+/// Keep how hard `setting`'s provider is asked to think, or with no level,
+/// leave it to the provider again. The level is the person's own to choose:
+/// nothing else writes it, and where none is kept the provider is told
+/// nothing. A provider is told in the field it takes a level in; one spoken
+/// to in a way that has no such field here says so and keeps nothing.
+fn set_reasoning(root: &Path, setting: &SetReasoning) -> Result<ProviderView, String> {
+    use agent_provider_config::{REASONING_EFFORTS, ReasoningParam, ReasoningSetting};
+
+    let mut config = provider_config(root);
+    let profile = config
+        .profiles
+        .iter_mut()
+        .find(|profile| profile.id == setting.provider)
+        .ok_or_else(not_kept)?;
+    profile.reasoning = match setting.effort.as_deref().map(str::trim) {
+        None => None,
+        Some(effort) => {
+            if !REASONING_EFFORTS.contains(&effort) {
+                return Err(format!(
+                    "A thinking level is one of {}",
+                    REASONING_EFFORTS.join(", ")
+                ));
+            }
+            if profile.protocol != agent_provider_config::ProviderProtocol::OpenAiCompatible {
+                return Err(
+                    "A thinking level cannot be chosen for this provider yet: it is told to OpenAI-compatible providers only"
+                        .into(),
+                );
+            }
+            // The field a provider already takes its level in stays; a first
+            // choice goes where the provider documents it.
+            let router = Preset::OPENROUTER.endpoint().trim_end_matches('/');
+            let param = match profile.reasoning.as_ref().map(|kept| kept.param) {
+                Some(param) if param != ReasoningParam::Omit => param,
+                _ if profile.endpoint.trim().trim_end_matches('/') == router => {
+                    ReasoningParam::ReasoningObject
+                }
+                _ => ReasoningParam::ReasoningEffort,
+            };
+            Some(ReasoningSetting {
+                param,
+                effort: effort.to_owned(),
+            })
+        }
+    };
     let profile = profile.clone();
     save_provider_config(root, &config)?;
     Ok(view_of(&profile, &credentials(root)?))

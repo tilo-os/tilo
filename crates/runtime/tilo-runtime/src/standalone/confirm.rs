@@ -1,7 +1,7 @@
 //! The person's confirmation, at this device, of what an agent does for
 //! them: the runtime's native prompt, answered for that one action.
 
-use tilo_action_broker::app_actions::{
+use tilo_workspace_service::apps::app_actions::{
     AppActionAnswer, AppActionConsentPrompter, AppActionConsentRequest,
 };
 use tokio::sync::oneshot;
@@ -9,7 +9,7 @@ use tokio::sync::oneshot;
 /// Put to `person` in the runtime's native prompt what their agent asks to
 /// confirm, through `broker`'s app actions; an app's name is read from `apps`.
 pub(super) fn ask_the_person(
-    broker: &tilo_action_broker::collab_broker::BrokerHandle,
+    broker: &tilo_workspace_service::apps::collab_broker::BrokerHandle,
     person: &str,
     apps: &std::sync::Arc<crate::apps::Apps>,
 ) {

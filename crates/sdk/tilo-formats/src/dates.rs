@@ -321,6 +321,43 @@ pub fn month_day_year(day: Date, words: &dyn Words) -> String {
     )
 }
 
+/// The **sentence date** style: a calendar day as text that names it in a sentence reads it —
+/// what a program writes when it interpolates a day (`"due {d}"`) and what a notice's body says.
+/// This year's day is its month and day (`Jun 29`), another year's the full date
+/// (`Jun 29, 2025`), as the person's language writes them. Unlike [`day_fact`] nothing judges how
+/// far off the day is: a sentence that files it under "overdue" or "today" says so in its own
+/// words.
+///
+/// `today` is the person's own day.
+#[must_use]
+pub fn sentence_date(day: Date, today: Date, words: &dyn Words) -> String {
+    if day.year() == today.year() {
+        month_day(day, words)
+    } else {
+        month_day_year(day, words)
+    }
+}
+
+/// The **sentence moment** style: a moment as text that names it in a sentence reads it, in the
+/// person's zone: this year's day with its time of day (`Jun 29, 6:00 PM`), another year's with
+/// the year (`Jun 29, 2025, 6:00 PM`), both as their language writes them. A person who chose a
+/// numeric or worded date style reads the date in it too (`29.06.2026, 18:00`): that style has no
+/// year-less shape to fall back on.
+#[must_use]
+pub fn sentence_moment(
+    formats: RegionFormats,
+    at: DateTime,
+    today: Date,
+    words: &dyn Words,
+) -> String {
+    match formats.date {
+        DateStyle::Language if at.year() == today.year() => month_day_time(formats, at, words),
+        DateStyle::Language | DateStyle::Long | DateStyle::Iso | DateStyle::Us | DateStyle::Eu => {
+            timestamp(formats, at, words)
+        }
+    }
+}
+
 /// A day without its year and a time of day, for a list of recent moments: `Jun 30, 14:05` in
 /// English, `30. Jun 14:05` in German. The year is left out because the list says which year it
 /// covers.

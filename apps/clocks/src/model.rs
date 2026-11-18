@@ -85,7 +85,7 @@ fn valid_label(label: &str) -> Result<(), Refusal> {
 impl WorldClock {
     fn valid(&self) -> Result<(), Refusal> {
         valid_label(&self.city)?;
-        if jiff_tzdb::get(&self.timezone.0).is_none() {
+        if tilo_recurrence::zone::canonical(&self.timezone.0).is_none() {
             return Err(Refusal::new(format!(
                 "`{}` is not a time zone",
                 self.timezone.0

@@ -65,24 +65,13 @@ impl crate::Session {
                 crate::fs_authority::device_key(),
             ));
         }
-        let Some(captures) = self
-            .desktop
-            .as_ref()
-            .and_then(|desktop| desktop.portal())
-            .map(|portal| portal.captures().clone())
-        else {
+        let Some(portal) = self.desktop.as_ref().and_then(|desktop| desktop.portal()) else {
             return;
         };
-        let now = tilo_clock::unix_now();
-        let ended = captures.keep_only(|app, workspace, kind| {
-            crate::capture_grants::still_allowed(
-                &tree,
-                &self.shared.person,
-                app,
-                workspace,
-                kind,
-                now,
-            )
+        let grants = portal.consents().grants().clone();
+        let now = tilo_clock::unix_now_ms();
+        let ended = portal.captures().keep_only(|app, workspace, kind| {
+            crate::capture_grants::still_allowed(&tree, &grants, app, workspace, kind, now)
         });
         if ended > 0 {
             tracing::debug!(ended, "captures ended: the session no longer allows them");

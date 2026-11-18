@@ -31,7 +31,7 @@ pub use agents::{
 };
 pub use apps::{AppRow, Apps};
 pub use emoji::{Emoji, EmojiPane, Notice, Picture};
-pub use general::{Device, General, Group};
+pub use general::{Device, General, Group, Server, Servers};
 pub use people::{Decision, Holder, Offers, People, Person, RoleChoice};
 pub use permissions::{Choice, Composer, Holders, Permission, Permissions};
 
@@ -83,6 +83,18 @@ pub enum WorkspaceSettingsEffect {
     Move {
         #[param("-1 for earlier, 1 for later")]
         step: i32,
+    },
+    /// Have another server keep the workspace as well, by its site
+    #[effect(attended)]
+    AddServer {
+        #[param("The other server's site, like https://tilo.sh")]
+        origin: String,
+    },
+    /// Have a server keep the workspace no more
+    #[effect(attended)]
+    RemoveServer {
+        #[param("The server, by its device key in the list")]
+        server: String,
     },
     /// Take this workspace off your device's desktop, leaving it to the
     /// people in it
@@ -340,6 +352,8 @@ struct Drawn {
     new_agent: LocalState<String>,
     new_model: LocalState<String>,
     limit: LocalState<String>,
+    /// The site another server is added by, as typed.
+    server_origin: LocalState<String>,
     local: LocalState<Local>,
 }
 
@@ -444,6 +458,7 @@ impl WorkspaceSettingsState {
                 new_agent: LocalState::new(String::new()),
                 new_model: LocalState::new(String::new()),
                 limit: LocalState::new(String::new()),
+                server_origin: LocalState::new(String::new()),
                 local: LocalState::new(Local::default()),
             })
             .clone();
@@ -454,6 +469,7 @@ impl WorkspaceSettingsState {
             new_agent: drawn.new_agent,
             new_model: drawn.new_model,
             limit: drawn.limit,
+            server_origin: drawn.server_origin,
             local: drawn.local,
             state: Some(self.clone()),
         };
@@ -515,6 +531,7 @@ impl ResourceApp for WorkspaceSettingsApp {
         let new_agent = cx.local(String::new());
         let new_model = cx.local(String::new());
         let limit = cx.local(String::new());
+        let server_origin = cx.local(String::new());
         let shown = cx.local(initial);
         let staged = cx.fixture::<Local>().map(|local| (*local).clone());
         let local = cx.local(staged.unwrap_or_default());
@@ -538,6 +555,7 @@ impl ResourceApp for WorkspaceSettingsApp {
             new_agent,
             new_model,
             limit,
+            server_origin,
             local: local.clone(),
             state,
         };
@@ -745,6 +763,8 @@ struct Parts {
     new_model: LocalState<String>,
     /// What an agent may spend a day as its keeper typed it.
     limit: LocalState<String>,
+    /// The site another server is added by, as typed.
+    server_origin: LocalState<String>,
     /// What the sheet keeps to itself while it is up.
     local: LocalState<Local>,
     state: Option<WorkspaceSettingsState>,
@@ -797,6 +817,21 @@ impl Parts {
             dollars: typed.trim().to_owned(),
         });
         self.limit.set(String::new());
+    }
+
+    /// Ask for the site another server is added by to have it keep the
+    /// workspace too, as pressing Add or Enter takes it: empty asks nothing,
+    /// leaving the field as it was.
+    fn ask_server_origin(&self) {
+        let origin = self.server_origin.get();
+        let origin = origin.trim();
+        if origin.is_empty() {
+            return;
+        }
+        self.ask(WorkspaceSettingsEffect::AddServer {
+            origin: origin.to_owned(),
+        });
+        self.server_origin.set(String::new());
     }
 
     fn show_tab(&self, tab: Tab) {

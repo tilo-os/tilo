@@ -17,13 +17,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tilo_action_broker::services::{
-    ApplicationServices, AudioOutputServices, BrowserServiceSessionServices,
-    DisplayControlServices, DriveServices, FileClipboardServices, LauncherServices,
-    NearbyTransferServices, ProcessServices, PublishedResources, RealtimeServices,
-    ShortcutLibraryServices, SpeakerServices, WifiContinuityServices, WorkspaceControlServices,
-    WorkspaceGrants, WorkspaceMemberships,
-};
 use tilo_broker_core::services::{
     ContentStoreServices, DocumentChangeServices, DocumentIndexChanges, KeyboardShortcutServices,
     LegacyWorkspaceProjection, LocalPersonServices, OwnDeviceActions, SearchIndexServices,
@@ -31,6 +24,13 @@ use tilo_broker_core::services::{
 };
 use tilo_broker_core::steps::{ContinuationServices, HostStepServices};
 use tilo_workspace_keys::KeyProvider;
+use tilo_workspace_service::apps::services::{
+    ApplicationServices, AudioOutputServices, BrowserServiceSessionServices,
+    DisplayControlServices, DriveServices, FileClipboardServices, LauncherServices,
+    NearbyTransferServices, ProcessServices, PublishedResources, RealtimeServices,
+    ShortcutLibraryServices, SpeakerServices, WifiContinuityServices, WorkspaceControlServices,
+    WorkspaceGrants, WorkspaceMemberships,
+};
 
 /// What this session serves of one service.
 pub(crate) enum BrokerService<T> {
@@ -108,14 +108,14 @@ macro_rules! broker_services {
 }
 
 broker_services! {
-    approved_checks: Arc<dyn tilo_action_broker::collab_app_broker::ApprovedCheckServices>,
-    committed_documents: Arc<dyn tilo_action_broker::services::NativeDocumentReads>,
-    native_media: Arc<dyn tilo_action_broker::services::NativeMediaServices>,
+    approved_checks: Arc<dyn tilo_workspace_service::apps::collab_app_broker::ApprovedCheckServices>,
+    committed_documents: Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads>,
+    native_media: Arc<dyn tilo_workspace_service::apps::services::NativeMediaServices>,
     audio_output: Arc<dyn AudioOutputServices>,
     workspace_memberships: Arc<dyn WorkspaceMemberships>,
     agents: Arc<dyn tilo_broker_core::services::AgentRoster>,
     agent_sessions: Arc<dyn tilo_broker_core::services::AgentSessions>,
-    native_certificates: Arc<dyn tilo_action_broker::certificate_authority::CertificateAuthority>,
+    native_certificates: Arc<dyn tilo_workspace_service::apps::certificate_authority::CertificateAuthority>,
     local_person: Arc<dyn LocalPersonServices>,
     resource_changes: Arc<dyn DocumentChangeServices>,
     legacy_workspace: Arc<dyn LegacyWorkspaceProjection>,
@@ -145,22 +145,22 @@ broker_services! {
     app_resource_kinds: tilo_broker_core::access::AppResourceKindsResolver,
     workspace_grants: Arc<dyn WorkspaceGrants>,
     launchable_catalogue: PathBuf,
-    document_content: Arc<tilo_action_broker::document_content::RouteContent>,
+    document_content: Arc<tilo_workspace_service::apps::document_content::RouteContent>,
     group_keys: KeyProvider,
     action_offload: Arc<dyn tilo_actions::offload::ActionOffload>,
     own_device: Arc<dyn OwnDeviceActions>,
     workspace_nodes: Arc<dyn WorkspaceNodeActions>,
     personal: tilo_peer_state::PersonalSync,
-    hosted_workspaces: Arc<dyn tilo_action_broker::services::HostedWorkspaces>,
+    hosted_workspaces: Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>,
 }
 
 /// The records this session reads outside their apps, from the engine that holds its workspaces.
 pub(crate) fn document_reads(
     engine: Option<&Arc<crate::engine::Engine>>,
-) -> BrokerService<Arc<dyn tilo_action_broker::services::NativeDocumentReads>> {
+) -> BrokerService<Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads>> {
     BrokerService::when(engine.map(|engine| {
         Arc::new(crate::resource_reads::Records::new(Arc::clone(engine)))
-            as Arc<dyn tilo_action_broker::services::NativeDocumentReads>
+            as Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads>
     }))
 }
 

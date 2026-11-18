@@ -2,6 +2,12 @@
 //! choices and restore data in
 //! (`org.freedesktop.impl.portal.PermissionStore`).
 //!
+//! Which app may use a device of this machine (the camera, the microphone)
+//! is not kept here: those entries are a view of the person's device answers
+//! ([`DeviceGrants`]), so what the frontend reads is what every other prompt
+//! and the person's other devices read, and taking an answer back anywhere
+//! takes it back here.
+//!
 //! Which app may read the microphone, where a dialog was, what an app was
 //! granted: those are one person's decisions about the apps installed on
 //! this device, so the store is user-private state beside the compositor's
@@ -24,6 +30,25 @@ use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{OwnedValue, Str};
 
 use crate::Portal;
+use collab_types::caps::DeviceCap;
+use tilo_action_policy::{Answer, Lifetime};
+use tilo_peer_state::DeviceGrants;
+
+/// The frontend's table of device permissions.
+const DEVICES_TABLE: &str = "devices";
+/// What the frontend writes for an app it allowed, and one it refused.
+const YES: &str = "yes";
+const NO: &str = "no";
+
+/// The device entry `id` of `table` is about, when it is one.
+fn device_of(table: &str, id: &str) -> Option<DeviceCap> {
+    if table != DEVICES_TABLE {
+        return None;
+    }
+    [DeviceCap::Camera, DeviceCap::Microphone]
+        .into_iter()
+        .find(|device| device.name() == id)
+}
 
 const MAX_TABLE: usize = 96;
 const MAX_ID: usize = 512;
@@ -86,6 +111,7 @@ type ChangedEntry = (HashMap<String, Vec<String>>, OwnedValue);
 pub struct PermissionStore {
     state: Arc<Mutex<StoreFile>>,
     path: Option<Arc<PathBuf>>,
+    devices: DeviceGrants,
 }
 
 impl PermissionStore {
@@ -99,7 +125,64 @@ impl PermissionStore {
         Self {
             state: Arc::new(Mutex::new(state)),
             path: path.map(Arc::new),
+            devices: DeviceGrants::unkept(),
         }
+    }
+
+    /// The same, answering its device entries from `devices`.
+    #[must_use]
+    pub fn answering(mut self, devices: DeviceGrants) -> Self {
+        self.devices = devices;
+        self
+    }
+
+    /// The apps the person answered for `device` on this device, as the frontend spells them.
+    fn device_permissions(&self, device: DeviceCap) -> BTreeMap<String, Vec<String>> {
+        self.devices
+            .kept()
+            .into_iter()
+            .filter(|kept| kept.this_device && kept.answer.cap == device)
+            .map(|kept| {
+                let word = if kept.answer.answer == Answer::Allow {
+                    YES
+                } else {
+                    NO
+                };
+                (kept.answer.app, vec![word.to_owned()])
+            })
+            .collect()
+    }
+
+    /// Keep what the frontend answered for `app` of `device` as the person's answer.
+    fn answer_device(
+        &self,
+        device: DeviceCap,
+        app: &str,
+        permissions: &[String],
+    ) -> zbus::fdo::Result<()> {
+        let answer = if permissions.iter().any(|word| word == YES) {
+            Answer::Allow
+        } else {
+            Answer::Deny
+        };
+        self.devices
+            .answer(app, device, answer, Lifetime::UntilRevoked)
+            .map_err(|error| failed(&format!("cannot keep the answer: {error}")))
+    }
+
+    /// Take back what `app` was answered of `device` on this device.
+    fn revoke_device(&self, device: DeviceCap, app: &str) -> zbus::fdo::Result<bool> {
+        self.devices
+            .revoke_here(app, device)
+            .map_err(|error| failed(&format!("cannot take the answer back: {error}")))
+    }
+
+    /// `entry` with its permissions read from the person's answers when it is a device's.
+    fn viewed(&self, table: &str, id: &str, mut entry: StoredEntry) -> StoredEntry {
+        if let Some(device) = device_of(table, id) {
+            entry.permissions = self.device_permissions(device);
+        }
+        entry
     }
 
     /// Entry `id` of `table`: its permissions and its value.
@@ -114,10 +197,11 @@ impl PermissionStore {
             .entries
             .get(table)
             .and_then(|records| records.get(id))
+            .cloned()
+            .or_else(|| device_of(table, id).map(|_| StoredEntry::default()))
             .ok_or_else(|| failed("permission-store entry does not exist"))?;
-        let changed = changed_of(entry);
         drop(state);
-        Ok(changed)
+        Ok(changed_of(&self.viewed(table, id, entry)))
     }
 
     /// Write entry `id` of `table` whole: its permissions and its value.
@@ -136,9 +220,19 @@ impl PermissionStore {
     ) -> zbus::fdo::Result<ChangedEntry> {
         valid_key(table, MAX_TABLE, "table")?;
         valid_key(id, MAX_ID, "id")?;
-        let permissions = checked_permissions(permissions)?;
+        let mut permissions = checked_permissions(permissions)?;
         let data = StoredValue::from_value(data)?;
-        self.with_mutation(|state| {
+        if let Some(device) = device_of(table, id) {
+            for app in self.device_permissions(device).keys() {
+                if !permissions.contains_key(app) {
+                    self.revoke_device(device, app)?;
+                }
+            }
+            for (app, words) in std::mem::take(&mut permissions) {
+                self.answer_device(device, &app, &words)?;
+            }
+        }
+        let viewed = self.with_mutation(|state| {
             let records = state.entries.entry(table.to_owned()).or_default();
             if !records.contains_key(id) {
                 if !create {
@@ -150,8 +244,9 @@ impl PermissionStore {
             }
             let entry = StoredEntry { permissions, data };
             records.insert(id.to_owned(), entry.clone());
-            Ok(changed_of(&entry))
-        })
+            Ok(entry)
+        })?;
+        Ok(changed_of(&self.viewed(table, id, viewed)))
     }
 
     /// Remove entry `id` from `table`, which is dropped with its last entry.
@@ -161,6 +256,27 @@ impl PermissionStore {
     pub fn delete(&self, table: &str, id: &str) -> zbus::fdo::Result<ChangedEntry> {
         valid_key(table, MAX_TABLE, "table")?;
         valid_key(id, MAX_ID, "id")?;
+        if let Some(device) = device_of(table, id) {
+            let answered = self.device_permissions(device);
+            for app in answered.keys() {
+                self.revoke_device(device, app)?;
+            }
+            let data = self
+                .state
+                .lock_recover()
+                .entries
+                .get_mut(table)
+                .and_then(|entries| entries.remove(id))
+                .unwrap_or_default()
+                .data;
+            if answered.is_empty() && data == StoredValue::default() {
+                return Err(failed("permission-store entry does not exist"));
+            }
+            return Ok(changed_of(&StoredEntry {
+                permissions: answered,
+                data,
+            }));
+        }
         self.with_mutation(|state| {
             let entry = state
                 .entries
@@ -229,6 +345,10 @@ impl PermissionStore {
         valid_key(id, MAX_ID, "id")?;
         valid_key(app, MAX_APP, "application id")?;
         let permissions = checked_permission_list(permissions)?;
+        if let Some(device) = device_of(table, id) {
+            self.answer_device(device, app, &permissions)?;
+            return self.lookup(table, id);
+        }
         self.with_mutation(|state| {
             let records = state.entries.entry(table.to_owned()).or_default();
             if !records.contains_key(id) {
@@ -261,6 +381,12 @@ impl PermissionStore {
         valid_key(table, MAX_TABLE, "table")?;
         valid_key(id, MAX_ID, "id")?;
         valid_key(app, MAX_APP, "application id")?;
+        if let Some(device) = device_of(table, id) {
+            if !self.revoke_device(device, app)? {
+                return Err(failed("permission-store permission does not exist"));
+            }
+            return self.lookup(table, id);
+        }
         self.with_mutation(|state| {
             let entry = state
                 .entries
@@ -288,6 +414,12 @@ impl PermissionStore {
         valid_key(table, MAX_TABLE, "table")?;
         valid_key(id, MAX_ID, "id")?;
         valid_key(app, MAX_APP, "application id")?;
+        if let Some(device) = device_of(table, id) {
+            return self
+                .device_permissions(device)
+                .remove(app)
+                .ok_or_else(|| failed("permission-store permission does not exist"));
+        }
         self.state
             .lock_recover()
             .entries
@@ -713,5 +845,38 @@ mod tests {
             );
             assert!(store.list("documents").unwrap().is_empty());
         }
+    }
+
+    #[test]
+    fn the_frontends_camera_answer_is_the_persons_device_answer() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let path = dir.path().join("permissions.json");
+        let grants = DeviceGrants::unkept();
+        let store = PermissionStore::load(Some(path.clone())).answering(grants.clone());
+        store
+            .set_permission(
+                "devices",
+                true,
+                "camera",
+                "org.example.App",
+                vec![YES.to_owned()],
+            )
+            .expect("the frontend's answer is taken");
+        assert_eq!(
+            grants.decide("org.example.App", DeviceCap::Camera, Answer::Allow),
+            Answer::Allow,
+            "the camera answer decides as every other device answer does"
+        );
+        assert!(
+            std::fs::read_to_string(&path).map_or(true, |kept| !kept.contains("org.example.App")),
+            "no table on this device keeps it"
+        );
+        store
+            .delete_permission("devices", "camera", "org.example.App")
+            .expect("the frontend takes it back");
+        assert_eq!(
+            grants.decide("org.example.App", DeviceCap::Camera, Answer::Allow),
+            Answer::Ask
+        );
     }
 }

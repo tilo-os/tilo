@@ -19,7 +19,7 @@ static MAILBOX: LazyLock<ResourceSpec> = LazyLock::new(|| {
 pub fn account_settings() -> Option<ActionBinding<String>> {
     let effect = MailEffect::AccountSettings;
     let spec = MAILBOX.actions.iter().find(|spec| spec.id == effect.id())?;
-    ActionBinding::new(&MAILBOX, spec, |_section: String| serde_json::Map::new()).ok()
+    ActionBinding::new(&*MAILBOX, spec, |_section: String| serde_json::Map::new()).ok()
 }
 
 #[cfg(test)]

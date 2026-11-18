@@ -45,9 +45,20 @@ tempfile.workspace = true
 tilo-net = { workspace = true, features = ["blocking"] }
 # The stored RRULE spelling and the time-zone names a calendar keeps.
 tilo-recurrence = { version = "0.1.0", path = "../../sdk/tilo-recurrence" }
+# Whole-or-not-at-all writes of the entries the inbox keeps.
+tilo-files = { path = "../tilo-files" }
 url.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
+
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+# The system's own lookup of the familiar folders (`xdg-user-dir`, the Windows shell).
+bounded-command = { path = "../../system/bounded-command" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tilo-paths.workspace = true
+# The key a Chromium-family browser keeps its `v11` passwords under, in the system keyring.
+tilo-secrets = { path = "../tilo-secrets" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

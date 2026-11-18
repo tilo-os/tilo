@@ -12,7 +12,7 @@ use super::*;
 use std::sync::Mutex;
 use tilo_actions::remote::{person_accounts, person_vault};
 use tilo_server::{
-    workspace_agents::HostAgents,
+    workspace_agents::HostAgents as Agents,
     workspaces::{
         Workspaces,
         person_model::{
@@ -106,7 +106,7 @@ pub(super) struct Hosted {
     pub(super) page: Browser,
     pub(super) root: SigningKey,
     pub(super) browser: crate::support::Device,
-    pub(super) agents: HostAgents,
+    pub(super) agents: Agents,
     /// The person's model, scripted, and everything it was sent.
     pub(super) model: Arc<ScriptedProvider>,
     /// What the mail servers' stand-in was asked to sign in with.
@@ -198,7 +198,7 @@ impl Hosted {
                 .push(format!("{account} with {password}"));
             Ok("signed in".into())
         });
-        let agents = HostAgents::new(workspaces.clone(), actions.clone(), None).placing(browsers);
+        let agents = Agents::new(workspaces.clone(), actions.clone(), None).placing(browsers);
         Self {
             server: Box::new(server),
             actions,
@@ -671,3 +671,7 @@ mod turn_browser;
 /// The same server, person and assistant, sending the workspace's Browser window to an address.
 #[path = "hosted_turn_pages.rs"]
 mod turn_pages;
+
+/// The same server, person and assistant, signing a mail account in from its address alone.
+#[path = "hosted_mail_connect.rs"]
+mod mail_connect;

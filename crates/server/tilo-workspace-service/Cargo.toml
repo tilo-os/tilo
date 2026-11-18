@@ -3,7 +3,7 @@ name = "tilo-workspace-service"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
-description = "The workspace service every Tilo device runs and the server embeds: workspace governance, the member session stack, and the retained store beneath it."
+description = "The workspace service every Tilo device runs and the server embeds: workspace governance, the member session stack, the retained store beneath it, and on a device the apps it serves."
 license = "MIT OR Apache-2.0"
 
 [lib]
@@ -13,13 +13,16 @@ path = "src/lib.rs"
 [features]
 # The fixtures the service's tests and its embedders' tests build on: a
 # certified test service and the devices around it, plus the store's test hooks.
-test-support = ["tilo-server-store/test-support"]
+test-support = ["tilo-server-store/test-support", "dep:tilo-test-env"]
 # Agents on the host: workspaces keep apps' confined replicas and hand their
 # records' channel keys to pages.
 agents = ["web", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:ui", "dep:chat", "dep:calendar", "dep:tilo-model-gateway"]
 # Pages reach the host: it follows the records its members write sealed and
 # opens them with the channels' keys it holds as a key holder.
 web = []
+
+# A device serves its apps: their wire, launch, actions, invocation journal and consent.
+apps = ["dep:app-cli", "dep:futures", "dep:launcher", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:runtime-collab", "dep:runtime-identity", "dep:runtime-portal", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "dep:tilo-broker-core", "dep:tilo-identity", "dep:tilo-paths", "dep:tilo-rt", "dep:tilo-workspace-keys", "dep:ui", "dep:wire-frame", "dep:zeroize", "postcard/alloc", "tilo-files/json"]
 
 [dependencies]
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
@@ -79,6 +82,27 @@ tilo-automation = { path = "../../collab/automation" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", optional = true }
 tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 
+# The apps a device serves ([features] apps).
+zeroize = { workspace = true, optional = true }
+runtime-portal = { path = "../../runtime/runtime-portal", optional = true }
+tilo-paths = { workspace = true, optional = true }
+tilo-advisory-lock = { path = "../../system/advisory-lock", optional = true }
+wire-frame = { path = "../../system/wire-frame", features = ["tokio"], optional = true }
+launcher = { path = "../../packaging/launcher", optional = true }
+tilo-app-package = { path = "../../packaging/tilo-app-package", optional = true }
+parking_lot = { workspace = true, optional = true }
+runtime-identity = { package = "tilo-identity-client", path = "../../runtime/tilo-identity-client", optional = true }
+registry-types = { path = "../../packaging/registry-types", optional = true }
+app-cli = { path = "../../packaging/app-cli", optional = true }
+reqwest = { workspace = true, features = ["blocking", "json"], optional = true }
+tilo-rt = { workspace = true, optional = true }
+futures = { workspace = true, default-features = true, optional = true }
+runtime-collab = { path = "../../runtime/runtime-collab", features = ["settings-host"], optional = true }
+tilo-identity = { path = "../../runtime/tilo-identity", optional = true }
+tilo-broker-core = { path = "../../collab/broker-core", optional = true }
+tilo-workspace-keys = { path = "../../collab/workspace-keys", optional = true }
+tilo-test-env = { path = "../../dev/test-env", optional = true }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
@@ -98,11 +122,14 @@ tilo-mail-session = { path = "../../platform/mail-session" }
 # The one request a person's model providers make from here: a provider's own
 # list of models, asked with the key the vault keeps, through the client the
 # fetch proxy guards its own requests with.
-tilo-net = { path = "../../platform/tilo-net", features = ["http", "proxy-host"] }
+tilo-net = { path = "../../platform/tilo-net", features = ["http", "proxy-host", "blocking"] }
 # What the agents on this server learned about a person: the type the list
 # is kept as, and the verbs that change it.
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-workspace-agent = { path = "../../platform/tilo-workspace-agent" }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"], optional = true }
 
 [dev-dependencies]
 # A dispatcher that answers as an app's own host: what a device's action service asks
@@ -127,5 +154,26 @@ tilo-server-store = { path = "../tilo-server-store", features = ["test-support"]
 chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 
+# The apps the device serves, tested against.
+tilo-workspace-keys = { path = "../../collab/workspace-keys", features = ["test-support"] }
+runtime-identity-host = { package = "runtime-identity", path = "../../runtime/runtime-identity" }
+registry-server = { path = "../../packaging/registry-server" }
+rcgen = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
+word-processor = { path = "../../../apps/word-processor" }
+tilo-resource = { path = "../../sdk/tilo-resource" }
+settings = { path = "../../../apps/settings" }
+store = { path = "../../../apps/store" }
+app-framework = { package = "tilo-app", path = "../../sdk/tilo-app" }
+
 [lints]
 workspace = true
+
+# The person's store reaching their other devices is served by the apps module.
+[[test]]
+name = "personal_links"
+required-features = ["apps"]

@@ -3176,7 +3176,7 @@ impl<K: Clone + Eq + Hash> Default for {type_name}Config<K> {{
 /// list's own placeholder, and failed rows show why. The concrete
 /// return type preserves `VirtualList` activation, notification, measurement,
 /// scrolling, selection, and reorder methods for app-specific configuration.
-pub fn {module_name}<M: ListModel>(
+pub fn {module_name}<M: ListModel + 'static>(
     id: &str,
     model: M,
     config: &{type_name}Config<M::Key>,

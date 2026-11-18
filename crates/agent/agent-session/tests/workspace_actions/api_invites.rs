@@ -321,3 +321,81 @@ async fn an_owners_key_adds_an_owner_by_key_whose_key_brings_people_in() {
     .await;
     assert_eq!(by_agent["status"], "failed", "{by_agent}");
 }
+
+/// An owner's key moves a member to another role through the action API,
+/// and an editor's key removes nobody.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_owners_key_moves_a_member_and_an_editors_removes_nobody() {
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    let key = approved_key(&on_server, &ada, &page, "Ada's laptop").await;
+    let mut ada_mcp = Mcp {
+        api: &api,
+        path: "/mcp".into(),
+        token: key,
+        session: None,
+    };
+    let (status, init) = ada_mcp.initialize().await;
+    assert_eq!(status, 200, "{init}");
+    let made = ada_mcp
+        .did("account/workspaces#create", json!({"name": "Studio"}))
+        .await;
+    let workspace = made["workspace"]["id"].as_str().unwrap().to_owned();
+    let here = Some(workspace.as_str());
+    let row = |answer: &Value, person: &str| {
+        answer["result"]["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["member"]["person"] == person)
+            .cloned()
+    };
+
+    let (grace, _) = tilo_user_identity::UserIdentity::generate("Grace", 1);
+    let grace_hex = hex::encode(grace.verifying_key().to_bytes());
+    let (hal, _) = tilo_user_identity::UserIdentity::generate("Hal", 1);
+    let hal_hex = hex::encode(hal.verifying_key().to_bytes());
+    for person in [&grace_hex, &hal_hex] {
+        let added = members(
+            &mut ada_mcp,
+            here,
+            "workspace/members#add",
+            json!({"person": person, "role": "editor"}),
+        )
+        .await;
+        assert_eq!(added["status"], "ok", "{added}");
+    }
+
+    let moved = members(
+        &mut ada_mcp,
+        here,
+        "workspace/members#role",
+        json!({"person": hal_hex, "role": "viewer"}),
+    )
+    .await;
+    assert_eq!(moved["status"], "ok", "{moved}");
+    let hal_row = row(&moved, &hal_hex).unwrap_or_else(|| panic!("Hal has a row in {moved}"));
+    assert_eq!(hal_row["role"], "viewer", "{moved}");
+
+    // An editor removes nobody.
+    let grace_page = enrol(&grace, "Grace's browser", DeviceCapabilities::member());
+    let grace_key = approved_key(&on_server, &grace, &grace_page, "Grace's laptop").await;
+    let mut grace_mcp = Mcp {
+        api: &api,
+        path: "/mcp".into(),
+        token: grace_key,
+        session: None,
+    };
+    let (status, init) = grace_mcp.initialize().await;
+    assert_eq!(status, 200, "{init}");
+    let refused = members(
+        &mut grace_mcp,
+        here,
+        "workspace/members#remove",
+        json!({"person": hal_hex}),
+    )
+    .await;
+    assert_eq!(refused["status"], "failed", "{refused}");
+}

@@ -336,3 +336,38 @@ fn new_issues_that_do_not_fit_the_newest_part_start_the_next_together() {
     undo(&mut app, 1);
     assert_eq!(held(&app).len(), before, "the three were one step");
 }
+
+/// The list answers the issues it made: each of its ids and the address it
+/// is published under, so a caller needs neither a read nor a split address
+/// to name them.
+#[test]
+fn a_list_answers_the_issues_it_made() {
+    let mut app = open();
+    let output = app
+        .call_on_output(
+            &chain(),
+            "create-many",
+            json!({ "issues": [{"title": "a"}, {"title": "b"}] }),
+        )
+        .expect("the issues are made")
+        .expect("the list answered at once");
+    let made = output
+        .value
+        .as_ref()
+        .and_then(|value| value.get("made"))
+        .and_then(Value::as_array)
+        .expect("the answer names what it made");
+    let held = held(&app);
+    let ids: Vec<String> = held.ids().iter().map(ToString::to_string).collect();
+    assert_eq!(made.len(), 2, "{made:?}");
+    for row in made {
+        let id = row["id"].as_str().unwrap_or_else(|| panic!("{row}"));
+        assert!(
+            ids.iter().any(|held| held == id),
+            "{row} is not held: {ids:?}"
+        );
+        let address = row["address"].as_str().unwrap_or_else(|| panic!("{row}"));
+        assert!(address.ends_with(id), "{row}");
+    }
+    assert_eq!(output.resources.len(), 2, "{:?}", output.resources);
+}

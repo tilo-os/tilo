@@ -18,11 +18,12 @@ use std::rc::Rc;
 use tilo_resource::{ActionKey, Binds, Resource};
 use ui_core::LocalState;
 use ui_core::icons::Icon;
+use ui_core::peniko::Color;
 use ui_core::presence::PresenceCtx;
 use ui_core::tokens::PresenceHue;
 use ui_core::widget::arrange::Stack as Arranged;
 use ui_core::widget::mention_picker::{MentionCandidate, merged_roster};
-use ui_core::widget::{Button, ButtonRole, Element, Tone};
+use ui_core::widget::{Button, ButtonRole, Chip, Element, Tone};
 
 use super::ViewCx;
 use tilo_resource::MemberId;
@@ -80,10 +81,24 @@ impl Actor {
         }
     }
 
+    /// The id a face takes its photograph from.
+    #[must_use]
+    pub fn identity(&self) -> &str {
+        self.member.as_ref().map_or(&self.name, MemberId::id)
+    }
+
     /// Whether they are an agent of the workspace, not a person in it.
     #[must_use]
     pub fn agent(&self) -> bool {
         self.member.as_ref().is_some_and(MemberId::is_agent)
+    }
+
+    /// The chip a view shows `self` as: their face, as every face is drawn, beside the name
+    /// they go by.
+    #[must_use]
+    pub fn chip(&self) -> Chip {
+        let (red, green, blue) = ui_core::presence::identity_rgb(self.hue);
+        Chip::new(self.name.clone()).with_face(self.person(), Color::from_rgb8(red, green, blue))
     }
 
     /// Them as a face shows them ([`ui_core::widget::AvatarFace::of`]); someone outside the
@@ -235,7 +250,7 @@ impl People {
             names: presence
                 .names
                 .keys()
-                .map(|user| (user.clone(), presence.display_name(user)))
+                .map(|user| (user.clone(), presence.chip_name(user)))
                 .collect(),
             hues: presence
                 .names
@@ -382,7 +397,14 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                             .showing_choice(),
                     ),
                 };
-                let chip = chip.with_accessible_name(&format!("{label}: {name}"));
+                // What a reader hears keeps the kind in words: the agent mark beside the name is
+                // not something a screen reader can see.
+                let spoken = if agent {
+                    ui_core::history_source::agent_spoken_label(&name)
+                } else {
+                    name
+                };
+                let chip = chip.with_accessible_name(&format!("{label}: {spoken}"));
                 let chip = if agent { chip.tone(Tone::Info) } else { chip };
                 Box::new(chip.with_popover(choices)) as Element
             })
@@ -489,6 +511,30 @@ mod tests {
             assert!(people.follow(&presence));
             assert_eq!(people.name(&me), "Ada (1)");
             assert_eq!(people.name(&peer), "ada (2)");
+        }
+
+        // What someone is, a chip says with their face or an agent's own mark, never by joining
+        // the kind into the name. A line of text with no face keeps the kind in its words.
+        phase an_agents_chip_reads_its_name_and_its_mark_says_agent;
+        {
+            let me = MemberId::person("me-id");
+            let agent = MemberId::agent("planner");
+            let people = People::new(Some(&me));
+            let mut presence = PresenceCtx::default();
+            presence.set_self_member(me, "Ada");
+            presence.set_display_name(agent.clone(), "Planner");
+            assert!(people.follow(&presence));
+            assert_eq!(
+                people.name(&agent),
+                "Planner",
+                "the chip's name is the agent's own: its mark already says agent"
+            );
+            assert!(people.actor_of(&agent).agent(), "the chip carries the mark");
+            assert_eq!(
+                presence.display_name(&agent),
+                "Planner · Agent",
+                "a line of text with no face beside it still names the kind"
+            );
         }
     }
 }

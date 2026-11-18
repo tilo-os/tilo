@@ -124,7 +124,8 @@ fn session(socket: &Path, person: &Person) -> Session {
 
 /// The channel key of Settings' record in the workspace.
 fn channel() -> String {
-    tilo_action_broker::route::CrdtRoute::record(SETTINGS, WORKSPACE, RECORD).channel_key()
+    tilo_workspace_service::apps::route::CrdtRoute::record(SETTINGS, WORKSPACE, RECORD)
+        .channel_key()
 }
 
 /// An app connected to the session's app wire as Settings in the workspace, as the launcher hands it

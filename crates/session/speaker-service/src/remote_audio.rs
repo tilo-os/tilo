@@ -36,18 +36,20 @@ use media::sync_playout::{
 };
 use rand_core::Rng;
 
-use tilo_device_fabric::PhysicalGamepadBinding;
-use tilo_device_fabric::clock::{ClockSyncFailure, ClockSyncState, PeerPlayoutClock};
-use tilo_device_fabric::clock::{FabricClockSync, fabric_peer_clock, hold_fabric_clock_sync};
-use tilo_device_fabric::link::{FabricLink, PersonalFabricSendError};
-use tilo_device_fabric::{
+use tilo_lock::MutexRecover as _;
+use tilo_network_actor::fabric::DeviceId;
+use tilo_network_actor::fabric::PhysicalGamepadBinding;
+use tilo_network_actor::fabric::clock::{ClockSyncFailure, ClockSyncState, PeerPlayoutClock};
+use tilo_network_actor::fabric::clock::{
+    FabricClockSync, fabric_peer_clock, hold_fabric_clock_sync,
+};
+use tilo_network_actor::fabric::link::{FabricLink, PersonalFabricSendError};
+use tilo_network_actor::fabric::{
     MAX_REMOTE_AUDIO_FRAME_BYTES, MAX_REMOTE_AUDIO_SESSIONS, PersonalFabricAction,
     PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS, REMOTE_AUDIO_FRAME_SAMPLES,
     REMOTE_AUDIO_GROUP_LATENCY_NS, REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_FRAME_BYTES,
     REMOTE_AUDIO_SAMPLE_RATE_HZ, remote_audio_media_ns,
 };
-use tilo_lock::MutexRecover as _;
-use tilo_network_actor::fabric::DeviceId;
 
 const PENDING_TTL: Duration = Duration::from_secs(30);
 /// How long a source waits for the target's consent decision. Longer than
@@ -256,7 +258,7 @@ impl GroupPlayback {
     pub fn new(
         sink_serial: u32,
         role: ChannelRole,
-        trim: &tilo_device_fabric::speaker_group::SpeakerTrim,
+        trim: &tilo_network_actor::fabric::speaker_group::SpeakerTrim,
     ) -> Self {
         Self {
             sink_serial,
@@ -1204,7 +1206,7 @@ pub fn request(
             LocalAudioSelection::System => crate::i18n::t("remote-audio-all-system-audio"),
             LocalAudioSelection::Application { label, .. } => label.clone(),
         };
-        let session_id = tilo_device_fabric::random::nonzero::<16>();
+        let session_id = tilo_network_actor::fabric::nonzero::<16>();
         let now = Instant::now();
         state.outbound.insert(
             session_id,
@@ -1264,7 +1266,7 @@ pub fn authorize(
         .pending
         .remove(&session_id)
         .ok_or_else(|| crate::i18n::t("remote-audio-error-request-expired"))?;
-    let authorization = approved.then(tilo_device_fabric::random::nonzero::<16>);
+    let authorization = approved.then(tilo_network_actor::fabric::nonzero::<16>);
     if let Some(authorization) = authorization {
         let playback = match start_playback(
             media::pw_stream::native_streams(),
@@ -2087,7 +2089,7 @@ impl PcmCapture {
 )]
 mod tests {
     use super::*;
-    use tilo_device_fabric::clock::{fabric_monotonic_us, with_fabric_clock};
+    use tilo_network_actor::fabric::clock::{fabric_monotonic_us, with_fabric_clock};
 
     fn binding(session: &str) -> PhysicalGamepadBinding {
         PhysicalGamepadBinding {
@@ -2153,9 +2155,9 @@ mod tests {
     }
 
     impl FabricLink for CountingLink {
-        fn device_fabric(&self) -> tilo_device_fabric::DeviceFabric {
+        fn device_fabric(&self) -> tilo_network_actor::fabric::DeviceFabric {
             self.cloned.set(self.cloned.get() + 1);
-            tilo_device_fabric::DeviceFabric::default()
+            tilo_network_actor::fabric::DeviceFabric::default()
         }
         fn online_device_ids(&self) -> BTreeSet<DeviceId> {
             self.borrowed.set(self.borrowed.get() + 1);
@@ -2167,7 +2169,7 @@ mod tests {
         fn try_send_personal_fabric_action(
             &self,
             _: &DeviceId,
-            _: tilo_device_fabric::PersonalFabricAction,
+            _: tilo_network_actor::fabric::PersonalFabricAction,
         ) -> Result<[u8; 16], PersonalFabricSendError> {
             self.sent.set(self.sent.get() + 1);
             Err(PersonalFabricSendError::Rejected("offline".into()))
@@ -2939,7 +2941,7 @@ mod tests {
             core.answer(nonce, sent_us, replied_us.saturating_sub(1), replied_us)
         })
         .expect("a probe is answered while Media continuity is on");
-        assert!(tilo_device_fabric::clock::arrived(
+        assert!(tilo_network_actor::fabric::clock::arrived(
             &CountingLink::default(),
             &source,
             &reply,

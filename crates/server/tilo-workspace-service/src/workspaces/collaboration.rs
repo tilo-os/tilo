@@ -248,10 +248,20 @@ impl Workspaces {
     /// The name `governed` shows for the person `device` belongs to, where
     /// they chose one an invitation can carry.
     fn member_name(&self, governed: &GovernedWorkspace, device: &DeviceCert) -> Option<String> {
+        self.member_name_by_root(governed, device.user_public_key)
+    }
+
+    /// The name `governed` shows for the person whose root is `root`, where
+    /// they chose one an invitation can carry.
+    pub(super) fn member_name_by_root(
+        &self,
+        governed: &GovernedWorkspace,
+        root: [u8; 32],
+    ) -> Option<String> {
         self.people(governed)
             .members
             .into_iter()
-            .find(|member| member.root() == Some(device.user_public_key) && !member.removed)
+            .find(|member| member.root() == Some(root) && !member.removed)
             .map(|member| member.name.trim().to_owned())
             .filter(|name| {
                 !name.is_empty()

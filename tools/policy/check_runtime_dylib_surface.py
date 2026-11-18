@@ -112,7 +112,7 @@ ENGINES = {
     "tilo-dav": "the WebDAV/CalDAV client, whose calendar sign-in reaches account credentials, which "
                 "Calendar and Settings load from libtilo_accounts_engine.so",
     "tilo-timezone-engine": "the time-zone database's engine library (libtilo_timezone_engine.so)",
-    "chrono-tz": "the time-zone database, which Calendar and Clocks load from "
+    "jiff-tzdb": "the time-zone database, which Calendar and Clocks load from "
                  "libtilo_timezone_engine.so",
     "tilo-contact-directory-engine": "the contact directory's engine library "
                                      "(libtilo_contact_directory_engine.so)",

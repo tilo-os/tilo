@@ -14,15 +14,17 @@ pub use ui_core::history_source::verbs::{
 
 /// A history edit of `R`'s document: `R`'s own registry is the only decoder
 /// for its recorded compensation. Wire context never installs a decoder or
-/// a caller.
-pub(crate) struct ResourceHistoryEdit<R> {
+/// a caller. A host holding `R`'s documents outside a window (the tree of a
+/// workspace's files, where it is kept) applies its history with this too.
+pub struct ResourceHistoryEdit<R> {
     edit: HistoryEdit,
     resource: std::marker::PhantomData<fn() -> R>,
 }
 
 impl<R> ResourceHistoryEdit<R> {
     /// `edit` as `R`'s history applies it.
-    pub(crate) const fn new(edit: HistoryEdit) -> Self {
+    #[must_use]
+    pub const fn new(edit: HistoryEdit) -> Self {
         Self {
             edit,
             resource: std::marker::PhantomData,
@@ -102,6 +104,30 @@ pub(crate) fn result(
     patches: &[Patch],
 ) -> Option<serde_json::Value> {
     ui_core::history_source::verbs::result(action, doc, patches, &ThreadWords)
+}
+
+/// The parts of the chains a window's views opened, as its History lists them with the window's
+/// document.
+pub(crate) struct ChainHistory(pub(crate) std::rc::Weak<super::settings::ViewStorage>);
+
+impl ui_core::history_mode::HistoryParts for ChainHistory {
+    fn heads(&self) -> Vec<ChangeHash> {
+        self.0
+            .upgrade()
+            .map(|storage| {
+                storage
+                    .read_chain_parts(&ui_core::automerge::transaction::Transactable::base_heads)
+                    .concat()
+            })
+            .unwrap_or_default()
+    }
+
+    fn documents(&self) -> Vec<AutoCommit> {
+        self.0
+            .upgrade()
+            .map(|storage| storage.read_chain_parts(&AutoCommit::clone))
+            .unwrap_or_default()
+    }
 }
 
 /// The history lists views follow ([`ViewCx::history`](super::ViewCx::history)),

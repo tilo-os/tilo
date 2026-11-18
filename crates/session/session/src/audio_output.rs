@@ -15,7 +15,7 @@ use media::audio_output::{CHANNELS, MAX_SAMPLES, RATE};
 use media::pw_stream::{AudioStreams, PlaybackConfig, PlaybackSource, PlaybackStream};
 use media::sync_playout::ChannelRole;
 use runtime_collab::audio_output::{Command, Snapshot};
-use tilo_action_broker::services::{
+use tilo_workspace_service::apps::services::{
     AudioOutputFuture, AudioOutputServices, NativeMediaRequestContext,
 };
 

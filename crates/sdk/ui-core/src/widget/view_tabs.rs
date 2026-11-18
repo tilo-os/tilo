@@ -213,6 +213,27 @@ mod tests {
             assert_eq!(chosen.get(), Some(3));
         }
 
+        phase arrows_move_the_showing_tab_and_report_it;
+        {
+            use crate::synthetic_input::named_key;
+            use winit::keyboard::NamedKey;
+            let chosen = std::rc::Rc::new(std::cell::Cell::new(None));
+            let seen = std::rc::Rc::clone(&chosen);
+            let mut tabs = tabs().on_view("request-tabs", move |index| seen.set(Some(index)));
+            tabs.apply_layout_external(vello::kurbo::Rect::new(0.0, 0.0, 400.0, 34.0));
+            crate::widget::Widget::set_focus(&mut tabs, true);
+            crate::testing::dispatch(&mut tabs, &named_key(NamedKey::ArrowRight));
+            assert_eq!(tabs.selected(), 2, "the next tab shows");
+            assert_eq!(chosen.get(), Some(2), "and its choice reaches the handler");
+            crate::testing::dispatch(&mut tabs, &named_key(NamedKey::ArrowLeft));
+            crate::testing::dispatch(&mut tabs, &named_key(NamedKey::ArrowLeft));
+            assert_eq!(tabs.selected(), 0, "and back again");
+            crate::testing::dispatch(&mut tabs, &named_key(NamedKey::Home));
+            assert_eq!(tabs.selected(), 0);
+            crate::testing::dispatch(&mut tabs, &named_key(NamedKey::End));
+            assert_eq!(tabs.selected(), 3, "End shows the last");
+        }
+
         phase a_hand_placed_strip_names_where_each_tab_stands;
         {
             let theme = crate::theme::Theme::dark();

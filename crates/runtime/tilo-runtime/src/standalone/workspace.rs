@@ -8,11 +8,11 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
 };
-use tilo_action_broker::services::{
-    LegacyWorkspaceProjection, WorkspaceAuthority, WorkspaceGrants,
-};
 use tilo_desktop_model::{IdMinter, Layout, Strip, StripId, Workspace, WorkspaceId};
 use tilo_identity::broker::WorkspaceMembership;
+use tilo_workspace_service::apps::services::{
+    LegacyWorkspaceProjection, WorkspaceAuthority, WorkspaceGrants,
+};
 
 /// The desktop session's workspace file. Read, never written, here: its
 /// native authority fields belong to that host.
@@ -201,9 +201,9 @@ impl WorkspaceGrants for ProfileGrants {
 
     fn record(
         &self,
-        request: &tilo_action_broker::app_actions::AppActionConsentRequest,
+        request: &tilo_workspace_service::apps::app_actions::AppActionConsentRequest,
         grant: tilo_action_policy::Grant,
-    ) -> tilo_action_broker::services::GrantRecording {
+    ) -> tilo_workspace_service::apps::services::GrantRecording {
         let recorded = self
             .record_here(request, grant)
             .ok_or_else(|| "this workspace could not record the grant".to_owned());
@@ -222,7 +222,7 @@ impl ProfileGrants {
     /// not govern the workspace or its policy refuses the grant.
     fn record_here(
         &self,
-        request: &tilo_action_broker::app_actions::AppActionConsentRequest,
+        request: &tilo_workspace_service::apps::app_actions::AppActionConsentRequest,
         grant: tilo_action_policy::Grant,
     ) -> Option<String> {
         if !self.workspace.governs() {

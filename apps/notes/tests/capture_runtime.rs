@@ -307,6 +307,12 @@ fn accessible_block_text_edits_and_grapheme_selection_use_the_canonical_history_
     drop(live);
     let f = f.reopen();
     f.store.try_open_resource(&checkout).unwrap();
+    f.store
+        .try_open_resource(&ui::resource::DocumentCheckout::new(
+            f.part(),
+            ui::resource::ResourceType::new(<notes::PagePart as ui::tilo_resource::Resource>::KIND),
+        ))
+        .unwrap();
     let reopened = f
         .store
         .read(&f.part(), |doc| read::page_block_snapshots(doc, f.child))

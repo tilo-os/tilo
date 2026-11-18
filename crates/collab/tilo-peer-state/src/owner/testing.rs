@@ -101,25 +101,19 @@ pub fn start_resource(
         .unwrap();
 }
 
-/// Found `name` on `owner` as `certificate`'s device, naming its own host.
-pub async fn founded(
+/// A new workspace `owner` holds as `certificate`'s device, its person its owner: the workspace's
+/// governor signs with the device's own key, as the device's own workspace service does for a
+/// workspace it founds, and admits the device as its member.
+///
+/// # Errors
+/// The governor refused the device.
+pub fn founded(
     owner: &NativeWorkspaceOwner,
-    name: &str,
     certificate: &DeviceCert,
     key: &SigningKey,
-    now: SystemTime,
 ) -> Result<WorkspaceId, String> {
     let workspace = WorkspaceId::new();
-    owner
-        .create_workspace(
-            workspace,
-            name,
-            certificate,
-            key,
-            Some(&own_host_hint_here(workspace, certificate, key)),
-            now,
-        )
-        .await?;
+    enroll_interactive_governor_in(owner, key, certificate, &workspace.to_string())?;
     Ok(workspace)
 }
 
@@ -211,8 +205,8 @@ pub fn enroll_into(
         return Err("empty governor supplied seeded application records".into());
     }
     owner
-        .install(&finalize(intent, pending, bootstrap).unwrap(), now)
-        .unwrap();
+        .install(&finalize(intent, pending, bootstrap)?, now)
+        .map_err(|error| error.to_string())?;
     Ok(governor)
 }
 pub fn certificate(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {

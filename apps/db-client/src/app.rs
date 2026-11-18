@@ -825,12 +825,7 @@ impl Store {
         if let Some(label) = self.live_job_label() {
             rows.push(LiveRow::new("database.job", "database.job", label));
         }
-        rows.extend(
-            self.search_index
-                .rows()
-                .into_iter()
-                .map(LiveRow::from_resource),
-        );
+        rows.extend(self.search_index.rows());
         rows
     }
 
@@ -839,7 +834,7 @@ impl Store {
     }
 
     pub(crate) fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.search_index.resource(id).map(LiveRow::from_resource)
+        self.search_index.resource(id)
     }
 
     fn live_job_label(&self) -> Option<String> {

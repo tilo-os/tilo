@@ -566,9 +566,12 @@ impl JoinLog {
                 // key, never a name. Where no name is known they are signed
                 // unnamed, and a surface showing the invitation names them
                 // its own way, from their profile or in plain words. A key of
-                // theirs is no name of theirs to write here. The issuer
-                // asking for itself is nobody's name.
-                (administrator.user_public_key != grant.issuer.user_public_key).then(|| Inviter {
+                // theirs is no name of theirs to write here. Only the device
+                // that issues the invitation for the workspace itself asks
+                // for nobody: the issuer asking for itself is nobody's name.
+                // Any other device is a person's, also one of the person the
+                // issuer belongs to: their own key asking names them.
+                (administrator.device_public_key != key.device_public_key()).then(|| Inviter {
                     user_public_key: administrator.user_public_key,
                     name: request.inviter_name.clone().unwrap_or_default(),
                 }),

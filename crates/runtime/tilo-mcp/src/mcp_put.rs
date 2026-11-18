@@ -6,28 +6,37 @@
 //!
 //! The session owns its open uploads: when it ends they are dropped, and a
 //! dropped upload stores nothing.
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 use tilo_actions::remote::{
-    ActionCallError, CONTENT_PUTS_UNAVAILABLE, ContentPut, MAX_CONTENT_PUT_CHUNK,
-    MAX_OPEN_CONTENT_PUTS,
+    ActionCallError, CONTENT_PUTS_UNAVAILABLE, ContentPut, ContentPuts, MAX_CONTENT_PUT_AHEAD,
+    MAX_CONTENT_PUT_CHUNK, MAX_HAVE_HASHES, MAX_OPEN_CONTENT_PUTS, MAX_PUT_MANY_BYTES,
 };
 use tilo_lock::MutexRecover as _;
 
-use super::{ActionProvider, Deserialize, McpServer, Surface, Value, json, parse, tool_result};
+use super::{ActionProvider, Deserialize, McpServer, Value, json, parse};
 
 /// The longest base64 text of a chunk within [`MAX_CONTENT_PUT_CHUNK`].
 const MAX_CHUNK_TEXT: usize = MAX_CONTENT_PUT_CHUNK.div_ceil(3) * 4;
+
+/// The most raw bytes one many-files call takes: a few steps of
+/// [`MAX_PUT_MANY_BYTES`], under the request body a caller can send.
+const MAX_MANY_BYTES: usize = MAX_PUT_MANY_BYTES * 2;
+
+/// The most hashes one call asks about.
+const MAX_HASHES: usize = MAX_HAVE_HASHES * 4;
 
 /// The put tools' names.
 const BEGIN: &str = "tilo_put_begin";
 const APPEND: &str = "tilo_put_append";
 const FINISH: &str = "tilo_put_finish";
+const MANY: &str = "tilo_put_many";
+const HAVE: &str = "tilo_put_have";
 
 pub(super) fn is_put_tool(name: &str) -> bool {
-    matches!(name, BEGIN | APPEND | FINISH)
+    matches!(name, BEGIN | APPEND | FINISH | MANY | HAVE)
 }
 
 /// The put tools, offered where the host has a content store.
@@ -43,7 +52,7 @@ pub(super) fn tool_definitions() -> Vec<Value> {
         ),
         (
             APPEND,
-            "Append the next chunk of an upload: offset is the bytes sent so far; chunk is base64 of at most 524288 bytes.",
+            "Append a chunk of an upload: offset is where its bytes belong (chunks may be sent several ahead of the bytes the upload holds, and arrive in any order); chunk is base64 of at most 524288 bytes.",
             json!({"upload":integer,"offset":integer,"chunk":{"type":"string"}}),
             json!(["upload", "offset", "chunk"]),
         ),
@@ -52,6 +61,18 @@ pub(super) fn tool_definitions() -> Vec<Value> {
             "Finish an upload; answers its tilo.content:<hash> reference.",
             json!({"upload":integer}),
             json!(["upload"]),
+        ),
+        (
+            MANY,
+            "Store several small files whole in one call, each base64; answers each one's tilo.content:<hash> reference in order.",
+            json!({"files":{"type":"array","items":{"type":"string"}}}),
+            json!(["files"]),
+        ),
+        (
+            HAVE,
+            "Which of these content hashes (lowercase BLAKE3 hex) the workspace already holds, in order.",
+            json!({"hashes":{"type":"array","items":{"type":"string"}}}),
+            json!(["hashes"]),
         ),
     ]
     .into_iter()
@@ -68,7 +89,78 @@ pub(super) fn tool_definitions() -> Vec<Value> {
 
 /// An open upload; `None` once finished. Each call holds it while it works,
 /// so a finish waits for an append still running.
-type Open = Arc<Mutex<Option<Box<dyn ContentPut>>>>;
+type Open = Arc<Mutex<Option<Upload>>>;
+
+/// One upload in progress: its store-side put, and the chunks that arrived
+/// ahead of the bytes it holds, waiting for the gap before them to fill.
+struct Upload {
+    put: Box<dyn ContentPut>,
+    /// Chunks accepted ahead of `put.written()`, by offset, each landing
+    /// within [`MAX_CONTENT_PUT_AHEAD`] of it and overlapping no other.
+    ahead: BTreeMap<u64, Vec<u8>>,
+}
+
+impl Upload {
+    /// Accept `chunk` at `offset`: append it now when it continues the bytes
+    /// held, hold it when it lands within the window ahead of them, and
+    /// refuse it when it overlaps bytes the upload holds already or lands
+    /// past the window. Answers the bytes held contiguously from the start,
+    /// so pieces sent several at a time over a slow link cost that link one
+    /// round trip per window, not per piece.
+    fn accept(&mut self, offset: u64, chunk: &[u8]) -> Result<u64, ActionCallError> {
+        let (written, size) = (self.put.written(), self.put.size());
+        let end = offset.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
+        if end > size {
+            return Err(ActionCallError::InvalidRequest {
+                reason: format!("the upload began with {size} bytes"),
+            });
+        }
+        if offset < written {
+            return Err(ActionCallError::InvalidRequest {
+                reason: format!("the upload has {written} bytes: append at offset {written}"),
+            });
+        }
+        if offset > written {
+            let window = written.saturating_add(MAX_CONTENT_PUT_AHEAD as u64);
+            if end > window {
+                return Err(ActionCallError::InvalidRequest {
+                    reason: format!(
+                        "that chunk lands {end} bytes in: at most \
+                         {MAX_CONTENT_PUT_AHEAD} bytes ahead of the {written} the upload holds"
+                    ),
+                });
+            }
+        }
+        // The held chunks are disjoint: the last one starting before `end`
+        // is the only one that can reach into this chunk's bytes.
+        if self
+            .ahead
+            .range(..end)
+            .next_back()
+            .is_some_and(|(at, held)| at.saturating_add(held.len() as u64) > offset)
+        {
+            return Err(ActionCallError::InvalidRequest {
+                reason: format!("the upload already holds those bytes: append at offset {written}"),
+            });
+        }
+        if offset > written {
+            self.ahead.insert(offset, chunk.to_vec());
+            return Ok(written);
+        }
+        let after = self.put.append(offset, chunk)?;
+        self.drain(after)
+    }
+
+    /// Append the chunks held from `written` on, as far as they reach
+    /// contiguously; answers the bytes held after them.
+    fn drain(&mut self, written: u64) -> Result<u64, ActionCallError> {
+        let mut at = written;
+        while let Some(piece) = self.ahead.remove(&at) {
+            at = self.put.append(at, &piece)?;
+        }
+        Ok(at)
+    }
+}
 
 /// A session's open uploads, by the id it was given for each.
 #[derive(Default)]
@@ -97,6 +189,18 @@ struct FinishArgs {
     upload: u64,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManyArgs {
+    files: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HaveArgs {
+    hashes: Vec<String>,
+}
+
 /// A host's refusal in its own words.
 fn refusal(error: ActionCallError) -> String {
     match error {
@@ -123,25 +227,72 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 Ok(args) => self.put_finish(args).await,
                 Err(error) => Err(error),
             },
+            MANY => match parse(args) {
+                Ok(args) => self.put_many(args).await,
+                Err(error) => Err(error),
+            },
+            HAVE => match parse(args) {
+                Ok(args) => self.put_have(args).await,
+                Err(error) => Err(error),
+            },
             _ => Err("Unknown tool".to_owned()),
         };
-        match self.surface {
-            Surface::Classic => tool_result(result),
-            Surface::Agent => {
-                let (text, failed) = match result {
-                    Ok(value) => (value.to_string(), false),
-                    Err(message) => (message, true),
-                };
-                json!({"content":[{"type":"text","text":text}],"isError":failed})
-            }
+        let (text, failed) = match result {
+            Ok(value) => (value.to_string(), false),
+            Err(message) => (message, true),
+        };
+        json!({"content":[{"type":"text","text":text}],"isError":failed})
+    }
+
+    /// The session's content puts, when its workspace keeps any.
+    fn puts(&self) -> Result<std::sync::Arc<dyn ContentPuts>, String> {
+        self.host()
+            .content_puts()
+            .ok_or_else(|| CONTENT_PUTS_UNAVAILABLE.to_owned())
+    }
+
+    async fn put_many(&self, args: ManyArgs) -> Result<Value, String> {
+        let puts = self.puts()?;
+        if args.files.is_empty() {
+            return Err("give at least one file".into());
         }
+        let mut files = Vec::with_capacity(args.files.len());
+        let mut total = 0_usize;
+        for text in args.files {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(text.as_bytes())
+                .map_err(|_| "each file must be base64".to_owned())?;
+            total = total.saturating_add(bytes.len());
+            if total > MAX_MANY_BYTES {
+                return Err(format!(
+                    "one call stores at most {MAX_MANY_BYTES} bytes of files"
+                ));
+            }
+            files.push(bytes);
+        }
+        let caller = self.caller();
+        let contents = tokio::task::spawn_blocking(move || puts.put_many(&caller, &files))
+            .await
+            .map_err(|_| "the files could not be stored".to_owned())?
+            .map_err(refusal)?;
+        Ok(json!({"contents": contents}))
+    }
+
+    async fn put_have(&self, args: HaveArgs) -> Result<Value, String> {
+        let puts = self.puts()?;
+        if args.hashes.len() > MAX_HASHES {
+            return Err(format!("one call asks about at most {MAX_HASHES} hashes"));
+        }
+        let caller = self.caller();
+        let present = tokio::task::spawn_blocking(move || puts.have(&caller, &args.hashes))
+            .await
+            .map_err(|_| "the workspace could not be asked what it holds".to_owned())?
+            .map_err(refusal)?;
+        Ok(json!({"have": present}))
     }
 
     async fn put_begin(&self, args: BeginArgs) -> Result<Value, String> {
-        let puts = self
-            .host()
-            .content_puts()
-            .ok_or_else(|| CONTENT_PUTS_UNAVAILABLE.to_owned())?;
+        let puts = self.puts()?;
         if self.uploads.lock_recover().open.len() >= MAX_OPEN_CONTENT_PUTS {
             return Err(format!(
                 "this session already has {MAX_OPEN_CONTENT_PUTS} uploads open: finish one first"
@@ -167,7 +318,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
         uploads.last = uploads.last.saturating_add(1);
         let id = uploads.last;
-        uploads.open.insert(id, Arc::new(Mutex::new(Some(begun))));
+        uploads.open.insert(
+            id,
+            Arc::new(Mutex::new(Some(Upload {
+                put: begun,
+                ahead: BTreeMap::new(),
+            }))),
+        );
         drop(uploads);
         Ok(id)
     }
@@ -199,8 +356,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             let mut slot = upload.lock_recover();
             let appended = match slot.as_mut() {
                 Some(open) => open
-                    .append(offset, &chunk)
-                    .map(|written| (written, open.size())),
+                    .accept(offset, &chunk)
+                    .map(|written| (written, open.put.size())),
                 None => Err(ActionCallError::InvalidRequest {
                     reason: format!("no upload {id} is open in this session"),
                 }),
@@ -231,19 +388,19 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             };
             let open = upload.as_ref().ok_or_else(gone)?;
             // Short of its size, the upload stays open to be completed.
-            if open.written() != open.size() {
+            if open.put.written() != open.put.size() {
                 return Err(ActionCallError::InvalidRequest {
                     reason: format!(
                         "the upload has {} of {} bytes: append the rest at offset {}",
-                        open.written(),
-                        open.size(),
-                        open.written()
+                        open.put.written(),
+                        open.put.size(),
+                        open.put.written()
                     ),
                 });
             }
             let taken = upload.take().ok_or_else(gone)?;
             drop(upload);
-            taken.finish()
+            taken.put.finish()
         })
         .await;
         let ended = slot.lock_recover().is_none();

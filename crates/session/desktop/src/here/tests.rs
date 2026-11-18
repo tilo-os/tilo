@@ -177,6 +177,11 @@ tilo_test_env::scenario! {
                 changes: 8,
                 worked: String::new(),
                 workspace: Some("Storefront".into()),
+                work: Some(SessionWork {
+                    app: "so.tilo.notes".into(),
+                    document: "note".into(),
+                    resource: "note".into(),
+                }),
             }),
             "its newest run, counting the two changes of each of its four record edits and not the \
          command"
@@ -1331,6 +1336,7 @@ fn session_summary(session: &str, changes: usize, worked: &str) -> SessionSummar
         changes,
         worked: worked.into(),
         workspace: Some("Workspace".into()),
+        work: None,
     }
 }
 
@@ -1353,6 +1359,72 @@ tilo_test_env::scenario! {
         let from = notice.from.expect("it is from the agent");
         assert!(from.agent, "the agent's square face, in its client's tint");
         assert_eq!(from.identity, "claude");
+    }
+
+    phase a_finished_notice_opens_what_the_session_worked_not_an_empty_card;
+    // The person choosing the notice lands on the work: the issue an issue turn worked, the
+    // conversation a chat turn answered — as its app, document and resource, never only the
+    // agent's card.
+    {
+        let mut told = std::collections::BTreeSet::new();
+        let mut session = session_summary("session-1", 3, "Commented on Plan the launch");
+        session.work = Some(SessionWork {
+            app: "so.tilo.tasks".into(),
+            document: "tasks.issues:part-1".into(),
+            resource: "tasks.issues:issues/plan".into(),
+        });
+        let notice = finished_notice(&finished_agent("planner"), Some(&session), &mut told)
+            .expect("a session that changed resources is told");
+        let (action, label) = notice
+            .actions
+            .first()
+            .expect("the work is what it offers first");
+        assert_eq!(
+            worked_place(action),
+            Some((
+                "so.tilo.tasks",
+                "tasks.issues:part-1",
+                "tasks.issues:issues/plan"
+            )),
+            "the notice leads to the issue the session worked"
+        );
+        assert_eq!(label.as_str(), "Open in Tasks");
+        let mut chat = session_summary("session-2", 1, "Answered in Chat");
+        chat.work = Some(SessionWork {
+            app: "so.tilo.chat".into(),
+            document: "chat.part:0".into(),
+            resource: "chat.part:messages/turn".into(),
+        });
+        let notice = finished_notice(&finished_agent("planner"), Some(&chat), &mut told)
+            .expect("the chat turn is told");
+        assert_eq!(
+            worked_place(&notice.actions[0].0),
+            Some((
+                "so.tilo.chat",
+                "chat.part:0",
+                "chat.part:messages/turn"
+            )),
+            "the notice leads to the conversation the session answered"
+        );
+        // The agent's card stays one choice away, and a session that names no work offers only
+        // it.
+        assert!(
+            notice
+                .actions
+                .iter()
+                .any(|(action, _)| action.starts_with(AGENT_CARD_ACTION)),
+            "its card is still offered"
+        );
+        assert!(!notice.actions.is_empty());
+        let mut card_only = session_summary("session-3", 1, "Edited a note");
+        card_only.work = None;
+        let notice = finished_notice(&finished_agent("planner"), Some(&card_only), &mut told)
+            .expect("the session is told");
+        assert_eq!(
+            notice.actions.first().map(|(action, _)| action.starts_with(AGENT_CARD_ACTION)),
+            Some(true),
+            "without a resource to open, the card is the one choice"
+        );
     }
 
     phase one_run_is_told_once_and_a_run_of_no_changes_not_at_all;

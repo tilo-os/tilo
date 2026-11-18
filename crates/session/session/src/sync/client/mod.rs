@@ -57,18 +57,20 @@ use crate::platform::fabric::{Continuity, SessionFabric};
 #[cfg(target_os = "linux")]
 use crate::workspace_keys::KeyLink;
 #[cfg(target_os = "linux")]
-use tilo_action_broker::document_content::ContentSources;
-#[cfg(target_os = "linux")]
 use tilo_endpoint_reachability::{Need, Reachability};
 #[cfg(target_os = "linux")]
 use tilo_identity::identity_store::DeviceIdentity;
 #[cfg(target_os = "linux")]
 use tilo_network_actor::{WorkspaceId, native_ingress};
+#[cfg(target_os = "linux")]
+use tilo_workspace_service::apps::document_content::ContentSources;
 
 #[cfg(target_os = "linux")]
 mod adopt;
 #[cfg(target_os = "linux")]
 mod network;
+#[cfg(target_os = "linux")]
+mod own_service;
 
 #[cfg(target_os = "linux")]
 pub(crate) use network::Reached;
@@ -116,29 +118,6 @@ fn attach_bound(
     link.inspect(|link| link.attach(Arc::new(outbox)));
     live.as_ref()
         .map(|live| Arc::new(live.saying()) as Arc<dyn SayPresence>)
-}
-
-/// Name each change of the relays this device answers through in the records of the workspaces it
-/// hosts ([`tilo_endpoint_reachability::follow`]): what a workspace says of its own host, and the
-/// address a link made later carries, is where the device answers now.
-#[cfg(target_os = "linux")]
-fn follow_own_address(
-    endpoint: Option<&iroh::Endpoint>,
-    engine: Option<Arc<Engine>>,
-) -> Option<tokio::task::AbortHandle> {
-    let endpoint = endpoint?;
-    Some(tilo_endpoint_reachability::follow(
-        endpoint,
-        tilo_rt::app().handle(),
-        move |addr| {
-            let naming = engine.clone();
-            async move {
-                if let Some(engine) = naming {
-                    engine.name_own_hosts(&addr);
-                }
-            }
-        },
-    ))
 }
 
 /// One window stream's message as it reached this device: another member's shared window, or a
@@ -1298,11 +1277,6 @@ pub struct Client {
     /// The thread running the peer actor, stopped when this drops.
     #[cfg(target_os = "linux")]
     thread: Option<std::thread::JoinHandle<()>>,
-    /// What follows the relays this device answers through
-    /// ([`tilo_endpoint_reachability::follow`]), aborted with it: it holds the endpoint's address
-    /// watcher, which keeps the endpoint's socket open until it goes.
-    #[cfg(target_os = "linux")]
-    own_address: Option<tokio::task::AbortHandle>,
     /// Where this device was given and reached its hosts ([`live_session::Reached`]).
     #[cfg(target_os = "linux")]
     reached: network::Reached,
@@ -1328,9 +1302,6 @@ impl Drop for Client {
         {
             // The live sessions dial through this endpoint: they end before it does,
             // and before the thread that holds it joins.
-            if let Some(following) = self.own_address.take() {
-                following.abort();
-            }
             self.hosting.local.live.borrow_mut().take();
             let _ = self.outgoing.send(Cmd::Stop);
             if let Some(thread) = self.thread.take() {
@@ -1382,7 +1353,7 @@ impl Client {
         entry: Entry,
         engine: Option<Arc<Engine>>,
         questions: Option<tilo_service::Questions>,
-        mut beside: tilo_network_actor::local_host::Protocols,
+        mut beside: tilo_network_actor::own_service::Protocols,
         documents: Option<PeerDocuments>,
     ) -> std::io::Result<Self> {
         let (identity, wake) = (entry.identity, entry.wake);
@@ -1447,7 +1418,6 @@ impl Client {
                 );
             })?;
         let (publisher, endpoint, reachability) = wait_for_bound(&bound)?;
-        let own_address = follow_own_address(endpoint_handle.get(), engine.clone());
         let saying = attach_bound(&mut live, link.as_ref(), link_outbox, endpoint_handle.get());
         let inner = SessionClient::over(
             Transport {
@@ -1483,7 +1453,6 @@ impl Client {
             hosting,
             outgoing,
             thread: Some(thread),
-            own_address,
             reached,
         };
         // The person's other devices are heard from the start, so a list one of them published is
@@ -1525,7 +1494,6 @@ impl Client {
             #[cfg(target_os = "linux")]
             thread: None,
             #[cfg(target_os = "linux")]
-            own_address: None,
             #[cfg(target_os = "linux")]
             reached: network::Reached::default(),
         }
@@ -1589,7 +1557,6 @@ impl Client {
             hosting,
             outgoing: outbox,
             thread: None,
-            own_address: None,
             reached: network::Reached::default(),
         };
         for host in hosts {
@@ -1841,27 +1808,6 @@ impl Client {
         self.inner.endpoint()
     }
 
-    /// Where a link this device hands out names it, as whoever redeems it dials: its address once
-    /// it is reached through a relay. An invitation goes to someone who may be behind any network,
-    /// so the relays wake for it and the answer waits until the endpoint is connected to one
-    /// ([`tilo_endpoint_reachability::Reachability::reached_addr`]): an address signed before then
-    /// names only this device's own network, and reaches nobody there. A device holding no relays
-    /// back names the address it has. The wait runs where the answer is awaited, never on the loop.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn invitation_addr(
-        &self,
-    ) -> impl std::future::Future<Output = EndpointAddr> + Send + use<> {
-        let reachability = self.hosting.local.reachability.borrow().clone();
-        let reached = reachability.reached_addr("an invitation is this device's to hand out");
-        let own = self.endpoint_addr();
-        async move {
-            match reached {
-                Some(reached) => reached.await,
-                None => own,
-            }
-        }
-    }
-
     /// Hand the workspace check the session this session shows: whose workspaces' policies hold every
     /// member's messages to what the workspace grants them.
     #[cfg(target_os = "linux")]
@@ -1925,20 +1871,6 @@ impl Client {
             .commands
             .send(HostCmd::Enter(Box::new(request)))
             .map_err(|_| "the peer network is gone".to_owned())
-    }
-
-    /// Say this person's workspaces to their other devices, each with where this device's are
-    /// hosted, so a device that opens one enters it at its host.
-    #[cfg(target_os = "linux")]
-    pub fn tell_personal(&self, update: &tilo_user_identity::DirectoryUpdate) {
-        let hosts = self
-            .hosting
-            .local
-            .engine
-            .as_ref()
-            .map(|engine| engine.host_hints())
-            .unwrap_or_default();
-        self.inner.tell_personal(update, hosts);
     }
 
     /// Dial one of the person's own devices, whose address this session was told: the session
@@ -2296,9 +2228,9 @@ fn endpoint_for(
 #[cfg(target_os = "linux")]
 pub struct PeerDocuments {
     channels: Arc<std::sync::Mutex<tilo_broker_core::collab_core::BrokerChannels>>,
-    fanout: Arc<tilo_action_broker::collab_broker::FanoutState>,
+    fanout: Arc<tilo_workspace_service::apps::collab_broker::FanoutState>,
     /// What search reads again of a record a peer wrote.
-    changes: Option<Arc<dyn tilo_action_broker::services::DocumentIndexChanges>>,
+    changes: Option<Arc<dyn tilo_workspace_service::apps::services::DocumentIndexChanges>>,
     /// What wakes a read waiting for a record this device held none of until it lands.
     arrivals: Option<Arc<tilo_session_client::Arrivals>>,
 }
@@ -2310,8 +2242,8 @@ impl PeerDocuments {
     #[must_use]
     pub fn new(
         channels: Arc<std::sync::Mutex<tilo_broker_core::collab_core::BrokerChannels>>,
-        fanout: Arc<tilo_action_broker::collab_broker::FanoutState>,
-        changes: Option<Arc<dyn tilo_action_broker::services::DocumentIndexChanges>>,
+        fanout: Arc<tilo_workspace_service::apps::collab_broker::FanoutState>,
+        changes: Option<Arc<dyn tilo_workspace_service::apps::services::DocumentIndexChanges>>,
         arrivals: Option<Arc<tilo_session_client::Arrivals>>,
     ) -> Self {
         Self {
@@ -2335,10 +2267,10 @@ impl PeerDocuments {
     /// session wrote into the engine itself.
     pub(crate) fn deliver_write(&self, workspace: &str, write: tilo_peer_state::owner::AppWrite) {
         let (app, record) = (write.app_id.clone(), write.document_id.clone());
-        tilo_action_broker::collab_inbound::deliver(
+        tilo_workspace_service::apps::collab_inbound::deliver(
             &self.channels,
             &self.fanout,
-            tilo_action_broker::collab_inbound::RemoteDocument {
+            tilo_workspace_service::apps::collab_inbound::RemoteDocument {
                 app_id: write.app_id,
                 cluster_id: write.cluster_id,
                 document_id: write.document_id,

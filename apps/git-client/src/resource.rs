@@ -484,9 +484,9 @@ mod tests {
     ui::action_contract_tests! {
         seed: ui::automerge::AutoCommit::new(),
         registry: {
-            let mut registry = ui::tilo_actions::ActionRegistry::new();
-            <GitClient as ui::tilo_resource::Resource>::register(&mut registry);
-            registry
+            ui::tilo_actions::ActionRegistry::with(
+                ui::tilo_resource::group::register::<GitClient>,
+            )
         },
         resources: |_| TestApp::<GitClientShell>::capture(Some("history")).unwrap().harness().resources(),
         palette: ["Fetch remote", "Open commit"],

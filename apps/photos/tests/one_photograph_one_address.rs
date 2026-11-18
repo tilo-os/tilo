@@ -109,9 +109,7 @@ impl Session {
                     .expect("an object"),
             )
             .map_err(|error| api::ApiError::InvalidArguments(error.to_string()))?;
-        let mut registry = ActionRegistry::new();
-        PhotoLibrary::register(&mut registry);
-        registry
+        ActionRegistry::with(ui::tilo_resource::group::register::<PhotoLibrary>)
             .decode(&encoded)
             .expect("the app's own registry decodes what its own tree encoded")
             .apply(&mut self.doc)

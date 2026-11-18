@@ -895,15 +895,26 @@ impl PermissionContext {
             return self.permitted_resource(app_id, resource);
         }
         let decider = self.action_decider_on(app_id, record);
-        keep_permitted(resource, &|kind, id, action| {
-            decider.permits(kind, id, action)
-        })
+        keep_permitted(
+            resource,
+            &|kind, id, action| decider.permits(kind, id, action),
+            self.lists_refused(),
+        )
+    }
+
+    /// Whether what the actor is denied is listed to it as not allowed rather than left out: an
+    /// agent's, on a resource it may otherwise act on, so it hears that it is refused, and where
+    /// that is changed, rather than that there is no such action. A person's controls show only
+    /// what they may do.
+    fn lists_refused(&self) -> bool {
+        self.access.acting.is_agent()
     }
 
     /// `resource`, published by the app `app_id`, as the actor may reach
     /// it: the actions it may perform (allowed or asking first), and the
-    /// nested resources that keep any. Denied is absent, never merely
-    /// marked. `None` when nothing is left.
+    /// nested resources that keep any. Denied is absent, or for an agent
+    /// marked not allowed beside what it may do there ([`Self::lists_refused`]).
+    /// `None` when nothing is left.
     pub fn permitted_resource(
         &self,
         app_id: &str,
@@ -912,13 +923,16 @@ impl PermissionContext {
         // A host action authority decides some nodes from a member access it
         // samples per action: ask action by action.
         if self.action_authority.is_some() {
-            return keep_permitted(resource, &|kind, id, action| {
-                self.permits_action(app_id, kind, id, action)
-            });
+            return keep_permitted(
+                resource,
+                &|kind, id, action| self.permits_action(app_id, kind, id, action),
+                self.lists_refused(),
+            );
         }
         // Otherwise one authority decides every action of the tree. An
         // unavailable clock refuses them all, as each verdict would.
-        self.published_answers(|answers| answers.keep_permitted(app_id, resource))
+        let refused = self.lists_refused();
+        self.published_answers(|answers| answers.keep_permitted(app_id, resource, refused))
             .ok()
             .flatten()
     }
@@ -1080,16 +1094,17 @@ impl PublishedAnswers<'_> {
         &self,
         app_id: &str,
         mut resource: tilo_actions::ResourceSpec,
+        refused: bool,
     ) -> Option<tilo_actions::ResourceSpec> {
         let mut node = self.resource(app_id, &resource.kind, resource.id.as_str());
-        resource.retain_actions(|action| {
+        sift_actions(&mut resource, refused, |action| {
             let need = action.contract.need();
             self.action(&mut node, need.field.as_deref(), &action.id, &need) != Answer::Deny
         });
         resource.children = resource
             .children
             .into_iter()
-            .filter_map(|child| self.keep_permitted(app_id, child))
+            .filter_map(|child| self.keep_permitted(app_id, child, refused))
             .collect();
         (!resource.actions.is_empty() || !resource.children.is_empty()).then_some(resource)
     }
@@ -1101,16 +1116,40 @@ impl PublishedAnswers<'_> {
 fn keep_permitted(
     mut resource: tilo_actions::ResourceSpec,
     permits: &dyn Fn(&str, &str, &tilo_actions::ActionSpec) -> bool,
+    refused: bool,
 ) -> Option<tilo_actions::ResourceSpec> {
     let id = resource.id.as_str().to_owned();
     let kind = resource.kind.clone();
-    resource.retain_actions(|action| permits(&kind, &id, action));
+    sift_actions(&mut resource, refused, |action| permits(&kind, &id, action));
     resource.children = resource
         .children
         .into_iter()
-        .filter_map(|child| keep_permitted(child, permits))
+        .filter_map(|child| keep_permitted(child, permits, refused))
         .collect();
     (!resource.actions.is_empty() || !resource.children.is_empty()).then_some(resource)
+}
+
+/// `resource`'s actions as `permits` decides them: the denied ones taken out, or, where
+/// `refused` lists them ([`PermissionContext::lists_refused`]) and the resource keeps any action
+/// the actor may take, kept and marked not allowed
+/// ([`tilo_actions::Availability::not_allowed`]). A resource the actor may take nothing on
+/// discloses none of its actions.
+fn sift_actions(
+    resource: &mut tilo_actions::ResourceSpec,
+    refused: bool,
+    mut permits: impl FnMut(&tilo_actions::ActionSpec) -> bool,
+) {
+    let allowed: Vec<bool> = resource.actions.iter().map(&mut permits).collect();
+    if refused && allowed.iter().any(|allowed| *allowed) {
+        for (action, allowed) in resource.actions.iter_mut().zip(allowed) {
+            if !allowed {
+                action.type_mut().contract.availability = tilo_actions::Availability::not_allowed();
+            }
+        }
+    } else {
+        let mut allowed = allowed.into_iter();
+        resource.retain_actions(|_| allowed.next().unwrap_or(false));
+    }
 }
 
 /// The permissions a host shares with what it hosts (an app, its components,
@@ -1432,6 +1471,58 @@ mod own_resource_tests {
                 .is_some()
         );
         assert!(viewer.permitted_resource("so.tilo.mail", mailbox).is_none());
+    }
+
+    /// An agent is shown what it is denied as not allowed, beside what it may do on the same
+    /// resource, so it hears that it is refused rather than that there is no such action, here by
+    /// the workspace's own rule (its person may only read), as by its person's settings for it; a
+    /// person's controls show only what they may do, and a resource the agent may do nothing on
+    /// discloses nothing.
+    #[test]
+    fn an_agent_is_listed_what_it_is_denied_as_not_allowed() {
+        let person = crate::permissions::MemberId::person("ad".repeat(32));
+        let mut read =
+            ActionSpec::operation("read", "Read", OperationKind::View, "t.read", &()).unwrap();
+        read.type_mut().contract.kind = ActionKind::Read;
+        let mut edit =
+            ActionSpec::operation("edit", "Edit", OperationKind::Effect, "t.edit", &()).unwrap();
+        edit.type_mut().contract.kind = ActionKind::Undoable;
+        let note = tilo_actions::ResourceSpec::new("notes.page", "page:1", "Plan")
+            .with_action(read)
+            .with_action(edit.clone());
+        let viewer = PermissionContext::member(&person, Role::Viewer);
+        let shown = viewer
+            .permitted_resource("so.tilo.notes", note.clone())
+            .expect("the viewer reads it");
+        assert!(shown.actions.iter().all(|action| action.id != "edit"));
+        // Its agent, which the person lets read and change: their own role still denies changes.
+        let agent = viewer.clone().acting_as(
+            policy::Actor::Member(crate::permissions::MemberId::agent("scribe")),
+            vec![policy::Grant::new(
+                "scribe-notes",
+                policy::Grantee::agent("scribe"),
+                TreePath::workspace(LOCAL_WORKSPACE),
+                policy::KindSet::READ_UNDOABLE,
+                Answer::Allow,
+                policy::Grantee::person(person.id()),
+            )],
+        );
+        let listed = agent
+            .permitted_resource("so.tilo.notes", note)
+            .expect("the agent reads it");
+        let edit_listed = listed
+            .actions
+            .iter()
+            .find(|action| action.id == "edit")
+            .expect("listed to the agent");
+        assert!(edit_listed.contract.availability.refusal().is_some());
+        let only_edit =
+            tilo_actions::ResourceSpec::new("notes.page", "page:2", "Secret").with_action(edit);
+        assert!(
+            agent
+                .permitted_resource("so.tilo.notes", only_edit)
+                .is_none()
+        );
     }
 }
 

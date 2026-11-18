@@ -477,7 +477,6 @@ mod tests {
     use iroh::protocol::Router;
     use iroh::{Endpoint, RelayMode, SecretKey};
     use neighbour_wire::offer::{Decline, Power, Rank, Route, Work};
-    use tilo_action_broker::document_content::ContentState;
     use tilo_actions::offload::{OffloadRequest, Offloaded};
     use tilo_actions::remote::{
         InvokeArgument, TestProvider, application_action_target, application_provider, own_device,
@@ -488,6 +487,7 @@ mod tests {
     use tilo_network_actor::{DeviceIdentity, RecordContentDelivery};
     use tilo_peer_state::owner::testing::{self, governor::TestGovernor};
     use tilo_user_identity::DeviceCert;
+    use tilo_workspace_service::apps::document_content::ContentState;
 
     use super::*;
     use crate::sync::Cmd;

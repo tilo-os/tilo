@@ -402,7 +402,8 @@ fn runs_of(
 ) -> Vec<(tilo_actions::WorkGroup, Option<tilo_actions::Actor>)> {
     page.pump();
     // The document and every document its app keeps beside it (the parts
-    // Notes keeps its notes in), each read on its own.
+    // Notes keeps its notes in), each read on its own. A change that
+    // continues the one before it carries the entry it continues.
     let mut groups = Vec::new();
     for (_, changes) in page
         .documents
@@ -413,11 +414,11 @@ fn runs_of(
         for (_, bytes) in changes {
             let _ = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes);
         }
+        let mut entries = tilo_actions::EntryReader::default();
         groups.extend(
             doc.get_changes(&[])
                 .iter()
-                .filter_map(|change| change.message())
-                .filter_map(tilo_actions::ActionContext::from_change_message)
+                .filter_map(|change| entries.read(change.actor_id(), change.message()))
                 .filter_map(|context| {
                     let by = context.invoker.map(|invoker| invoker.acting.by);
                     context.group.map(|group| (group, by))
@@ -878,7 +879,6 @@ async fn an_agent_through_tilo_mcp_is_seen_once_as_the_hosts_run() {
         host.cert.device_public_key,
     );
     let server = tilo_mcp::McpServer::new(actions, WORKSPACE.into(), person)
-        .with_surface(tilo_mcp::Surface::Agent)
         .with_agent_session("session-codex");
     let listed = super::hosted_documents::tool(&server, "tilo_ls", serde_json::json!({})).await;
     assert!(listed.contains("notes"), "{listed}");
@@ -968,7 +968,6 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
         host.cert.device_public_key,
     );
     let server = tilo_mcp::McpServer::new(actions, cluster.clone(), person)
-        .with_surface(tilo_mcp::Surface::Agent)
         .with_agent_session("session-guest");
     let listed = super::hosted_documents::tool(&server, "tilo_ls", serde_json::json!({})).await;
 

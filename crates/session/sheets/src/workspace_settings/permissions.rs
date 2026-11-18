@@ -392,8 +392,8 @@ pub(super) fn sample() -> Permissions {
             nobody: "There is no one to give a permission to yet.".to_owned(),
             what: "What it allows".to_owned(),
             permissions: vec![
-                choice("camera", "Use the camera"),
-                choice("microphone", "Use the microphone"),
+                choice("network", "Network access"),
+                choice("read-files", "Read the workspace's files"),
                 choice("edit-files", "Edit the workspace's files"),
             ],
             how_long: "For how long".to_owned(),

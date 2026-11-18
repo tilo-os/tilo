@@ -19,7 +19,9 @@ pub enum Mark {
         hash: [u8; 32],
         size: u64,
     },
-    /// A document, by the digest of its export in its legacy format.
+    /// What a baseline wrote for a file the tree once kept as a document. No file is one
+    /// now, so no path reads as it: the next pass sees such a path as changed and takes the
+    /// file as it is.
     Document {
         digest: [u8; 32],
     },

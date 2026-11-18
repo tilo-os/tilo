@@ -103,6 +103,9 @@ pub(super) struct Notes {
     /// as a record's host lists its items: a note is then several rows of the notebook's
     /// level, and a page may end between them.
     placed: Arc<Mutex<bool>>,
+    /// The action the agent's permissions deny it, listed to it as not allowed, as the
+    /// workspace lists one its person's settings for it deny.
+    refuses: Arc<Mutex<Option<&'static str>>>,
 }
 
 /// What a workspace answers about its installed apps.
@@ -165,7 +168,14 @@ impl Notes {
             links: Arc::default(),
             level_page: Arc::default(),
             placed: Arc::default(),
+            refuses: Arc::default(),
         }
+    }
+
+    /// The same Notes, its action `action` denied to the agent: listed as not allowed.
+    fn refusing(self, action: &'static str) -> Self {
+        *self.refuses.lock().unwrap() = Some(action);
+        self
     }
 
     /// The same live Notes, each note's actions listed in the notebook's level.
@@ -457,7 +467,14 @@ impl Notes {
                     description: Some(format!("{title}. Longer explanation that is not listed.")),
                     locus: tilo_actions::ExecutionLocus::ClientLocal,
                     kind: operation,
-                    contract: tilo_actions::ActionContract::default(),
+                    contract: tilo_actions::ActionContract {
+                        availability: if *self.refuses.lock().unwrap() == Some(name) {
+                            tilo_actions::Availability::not_allowed()
+                        } else {
+                            tilo_actions::Availability::Available
+                        },
+                        ..tilo_actions::ActionContract::default()
+                    },
                     input: tilo_actions::InputSpec::None,
                     params,
                     view: None,
@@ -1248,15 +1265,17 @@ fn an_agent_is_offered_nine_small_tools_and_no_classic_ones() {
         );
         let size = serde_json::to_string(tools).unwrap().len();
         assert!(size < 5_000, "the tool list is {size} bytes");
-        let classic = McpServer::new(host.clone(), "workspace".into(), "owner".into())
+        // One tool set: a session that names no surface offers the agent's.
+        let other = McpServer::new(host.clone(), "workspace".into(), "owner".into())
             .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
             .await
             .unwrap();
-        let classic = serde_json::to_string(&classic["result"]["tools"])
-            .unwrap()
-            .len();
-        assert!(size < classic, "{size} against {classic}");
-        // An agent's session answers no classic tool; a classic session no agent tool.
+        assert_eq!(
+            serde_json::to_value(tools).unwrap(),
+            other["result"]["tools"],
+            "one tool set"
+        );
+        // The old tool is not one of them.
         let refused = agent(&host)
             .handle(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tilo_query","arguments":{}}}))
             .await
@@ -1377,9 +1396,10 @@ tilo_test_env::scenario! {
                 text,
                 "apps\nnotes  Notes  running\nsheets  Sheets  installed"
             );
+            // Listing it starts it without a window, as one of its actions would.
             let (text, _) = tool(&agent(&host), "tilo_ls", json!({"path": "sheets"})).await;
             assert!(
-                text.contains("installed but not running") && !text.contains("may not open"),
+                text.starts_with("sheets  (so.tilo.sheets)\n") && !text.contains("may not open"),
                 "{text}"
             );
             let (text, _) = tool(&agent(&host), "tilo_do", json!({"path": "sheets#open"})).await;
@@ -1401,7 +1421,7 @@ tilo_test_env::scenario! {
         run(async {
             let (text, failed) = tool(&agent(&host), "tilo_ls", json!({"path": "spreadsheets"})).await;
             assert!(
-                !failed && text.contains("installed but not running"),
+                !failed && text.starts_with("spreadsheets  (so.tilo.sheets)\n"),
                 "{text}"
             );
             let (text, failed) = tool(
@@ -1441,10 +1461,11 @@ tilo_test_env::scenario! {
         let host = Notes::new(false);
         run(async {
             let server = agent(&host);
+            // Listing it starts it without a window and lists what it holds.
             let (text, failed) = tool(&server, "tilo_ls", json!({"path": "notes"})).await;
             assert!(!failed, "{text}");
             assert!(
-                text.contains("installed but not running") && text.contains("notes#open"),
+                text.starts_with("notes  (so.tilo.notes)\n") && text.contains("Todo/  notes.page"),
                 "{text}"
             );
             let (text, failed) = tool(&server, "tilo_do", json!({"path": "notes#open"})).await;
@@ -1475,18 +1496,28 @@ tilo_test_env::scenario! {
                         .all(|request| request.target.address.action != "open")
                 );
             }
-            // Not the app's own action on an app that is not running.
-            let host = Notes::new(false);
+            // An action on a resource inside an app that is not running starts the app the
+            // same way, without a window, and is then done on that resource.
+            let notes = Notes::new(false);
             let (text, failed) = tool(
-                &agent(&host),
+                &agent(&notes),
                 "tilo_do",
-                json!({"path": "notes/Todo#rename"}),
+                json!({"path": "notes/Todo#rename", "args": {"title": "Errands"}}),
             )
             .await;
-            assert!(
-                failed && text.contains("installed but not running"),
-                "{text}"
+            assert!(!failed, "{text}");
+            let asked = notes.invoked.lock().unwrap().clone();
+            assert_eq!(
+                asked
+                    .iter()
+                    .map(|request| request.target.address.action.as_str())
+                    .collect::<Vec<_>>()
+                    .first()
+                    .copied(),
+                Some("start")
             );
+            assert!(asked.iter().any(|request| request.target.address.action == "rename"));
+            assert!(asked.iter().all(|request| request.target.address.action != "open"));
         });
     }
 }
@@ -1498,18 +1529,12 @@ tilo_test_env::scenario! {
     )]
     fn the_agents_tools_answer_typed_when_a_call_asks;
 
-    phase a_busy_host_answers_rate_limited_with_its_wait;
-    // A host busy with the person's changes ran nothing: a typed call is told
-    // `rate_limited` with the wait the host said, so the caller asks again then.
+    phase a_host_that_does_not_serve_yet_answers_typed;
+    // A host that is not serving yet, or did not answer, ran nothing: a typed
+    // call is told the code so the caller asks again by it.
     {
         run(async {
             let busy = Notes::new(true);
-            *busy.unreachable.lock().unwrap() =
-                Some(ActionCallError::Busy { retry_after_ms: 480 });
-            let (typed, failed) = answer(&agent(&busy), "tilo_find", json!({"query": "notes"})).await;
-            assert!(failed, "{typed}");
-            assert_eq!(typed["error"]["code"], "rate_limited", "{typed}");
-            assert_eq!(typed["error"]["retry_after_ms"], 480, "{typed}");
             let left = ActionCallError::Unavailable { reason: "left".into() };
             for (error, code) in [
                 (ActionCallError::NotReady, "not_ready"),
@@ -2046,8 +2071,8 @@ tilo_test_env::scenario! {
 
     phase a_structured_read_is_the_typed_answer_the_markdown_read_renders;
     // A program reads the same resource the markdown read renders, typed: its
-    // fields as the app typed them, what it holds as children with the path
-    // each reads by, and the app's own paging; at the same cost.
+    // fields as the app typed them, the surface an app publishes, and the app's
+    // own paging; at the same cost.
     {
         let host = Notes::new(true);
         // A note: its fields, typed.
@@ -2077,32 +2102,19 @@ tilo_test_env::scenario! {
             "the markdown read renders these fields"
         );
 
-        // The app: what it holds, each with the path that reads it.
+        // The app: the surface it publishes, which types are read from, and
+        // the list of what it holds underneath.
         let (_, _, listing) = work_of(&host, "tilo_read", &json!({"path": "notes"}));
-        let (app, _, _) = structured_read(&host, "notes", None);
-        let children = app["children"].as_array().unwrap();
-        assert_eq!(children.len(), 2, "{app:#}");
-        assert_eq!(children[0]["list"], "pages");
-        assert_eq!(children[0]["name"], "Todo");
-        assert_eq!(children[0]["item"], TODO);
-        for child in children {
-            let line = format!(
-                "  {}  ({})",
-                child["name"].as_str().unwrap(),
-                child["item"].as_str().unwrap()
-            );
-            assert!(
-                listing.contains(&line),
-                "the listing renders each child: {listing}"
-            );
-        }
         assert!(
-            app["fields"].get("pages").is_none(),
-            "children are not fields too: {app:#}"
+            listing.contains("  Todo  (notes.page:"),
+            "the listing renders each child: {listing}"
         );
+        let (app, _, _) = structured_read(&host, "notes", None);
+        assert_eq!(app["kind"], "app", "{app:#}");
+        let surface = app["surface"].as_str().expect("an app answers its surface");
+        assert!(surface.contains("notes.page"), "{surface}");
         // A child's path is a ref the other tools take: it reads that note.
-        let path = children[0]["path"].as_str().unwrap();
-        let (child, _, _) = structured_read(&host, path, None);
+        let (child, _, _) = structured_read(&host, "notes/Todo", None);
         assert_eq!(child["fields"]["title"], "Todo", "{child:#}");
 
         // Paging is the app's own: the cursor it gave, passed back, reads the rest.
@@ -2413,6 +2425,27 @@ tilo_test_env::scenario! {
             assert!(!text.contains("delete, slow"), "no wall of names: {text}");
             let (text, failed) = tool(&agent(&host), "tilo_do", json!({"path": "notes/Todo"})).await;
             assert!(failed && text.contains("name the action"), "{text}");
+            // An action its permissions deny the agent is refused as not allowed, with where
+            // that is changed: never as one the app does not have, and nothing is invoked.
+            let notes = Notes::new(true).refusing("rename");
+            let (text, failed) = tool(
+                &agent(&notes),
+                "tilo_do",
+                json!({"path": "notes/Todo#rename", "args": {"title": "Done"}}),
+            )
+            .await;
+            assert!(failed, "{text}");
+            assert!(
+                text.contains("not_permitted") && text.contains("under Agents"),
+                "{text}"
+            );
+            assert!(!text.contains("has no action"), "{text}");
+            assert!(notes.invoked.lock().unwrap().is_empty(), "nothing was invoked");
+            let (text, _) = tool(&agent(&notes), "tilo_ls", json!({"path": "notes/Todo"})).await;
+            assert!(
+                text.contains("rename") && text.contains("not allowed"),
+                "the listing shows it, refused: {text}"
+            );
         });
     }
 
@@ -2866,54 +2899,8 @@ fn tilolang_kind(host: &Notes) -> Notes {
     live
 }
 
-/// A tool call that asks for typed answers, with `meta` merged into
-/// `so.tilo.mcp`: its `structuredContent`, and whether it is an error.
-async fn typed<H: ActionProvider + Send + Sync + 'static>(
-    server: &McpServer<H>,
-    name: &str,
-    arguments: Value,
-    meta: Value,
-) -> (Value, bool) {
-    let reply = server
-        .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
-            "params":{"name":name,"arguments":arguments,
-                "_meta":{"so.tilo.mcp":{"structured":true,"invocation":meta}}}}))
-        .await
-        .unwrap();
-    let result = &reply["result"];
-    let structured = result["structuredContent"].clone();
-    assert!(
-        structured.is_object(),
-        "{name} answered no typed value: {reply}"
-    );
-    assert_eq!(
-        result["content"][0]["text"].as_str(),
-        Some(structured.to_string().as_str()),
-        "the text beside it is the same answer"
-    );
-    (structured, result["isError"].as_bool().unwrap_or_default())
-}
-
-/// The same, for a call that names no run.
-pub(super) async fn answer<H: ActionProvider + Send + Sync + 'static>(
-    server: &McpServer<H>,
-    name: &str,
-    arguments: Value,
-) -> (Value, bool) {
-    let reply = server
-        .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
-            "params":{"name":name,"arguments":arguments,
-                "_meta":{"so.tilo.mcp":{"structured":true}}}}))
-        .await
-        .unwrap();
-    let result = &reply["result"];
-    let structured = result["structuredContent"].clone();
-    assert!(
-        structured.is_object(),
-        "{name} answered no typed value: {reply}"
-    );
-    (structured, result["isError"].as_bool().unwrap_or_default())
-}
+pub(super) use typed_calls::answer;
+use typed_calls::typed;
 
 #[path = "mcp_agent_flux_tests.rs"]
 mod flux;
@@ -2931,9 +2918,41 @@ mod outside;
 mod runs;
 #[path = "mcp_status_tests.rs"]
 mod status;
+#[path = "mcp_agent_typed_calls_tests.rs"]
+mod typed_calls;
 #[path = "mcp_agent_view_tests.rs"]
 mod viewing;
 
 #[cfg(test)]
 #[path = "mcp_agent_address_tests.rs"]
 mod address_tests;
+
+/// A listing says each item by its title; where two titles read the same, the
+/// id of each says which is which.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_pages_of_one_title_are_told_apart_by_the_id_beside_it() {
+    let notes = Notes::new(true);
+    let pages = [notes.id(TODO), notes.id(SHOP)];
+    let rows: Vec<CatalogueRow> = notes
+        .rows("1")
+        .into_iter()
+        .map(|mut row| {
+            if pages.contains(&row.resource.id) {
+                row.resource.label = "Todo".into();
+                if let Some(action) = row.action.as_mut() {
+                    action.resource_label = "Todo".into();
+                }
+            }
+            row
+        })
+        .collect();
+    *notes.published_kinds.lock().unwrap() = Some(rows);
+    let (text, failed) = tool(&agent(&notes), "tilo_ls", json!({"path": "notes"})).await;
+    assert!(!failed, "{text}");
+    for page in &pages {
+        assert!(
+            text.lines().any(|line| line.contains(page.as_str())),
+            "{page} is not in\n{text}"
+        );
+    }
+}

@@ -1141,10 +1141,10 @@ tilo_test_env::scenario! {
             store.record_private_action(&checkout.id, evidence),
             Err("record has no private durable writer".into())
         );
-        let _loan = store.0.borrow_mut();
+        let _loan = store.set_mut();
         assert_eq!(
             store.private_actions(&checkout.id).unwrap_err(),
-            "record store is busy"
+            "resource store is busy"
         );
     }
 

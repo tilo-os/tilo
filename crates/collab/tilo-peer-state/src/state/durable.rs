@@ -15,8 +15,10 @@ use crate::NeighbourMsg;
 #[cfg(test)]
 use automerge::{ReadDoc as _, transaction::Transactable as _};
 
-/// The durable layout this build writes and reads.
-pub const DURABLE_VERSION: u32 = 8;
+/// The durable layout this build writes and reads. A change to what is
+/// stored bumps this: a build refuses state of another version by name
+/// rather than reading it as this one's.
+pub const DURABLE_VERSION: u32 = 9;
 
 /// A replica's durable state. `exact` is the exact admission index, present
 /// once the replica selects exact admissions; `sealed` holds each encrypted
@@ -43,10 +45,28 @@ impl<'a> Durable<'a> {
     fn read(bytes: &'a [u8], workspace: &str) -> Result<Self, String> {
         let (version, _) = postcard::take_from_bytes::<u32>(bytes).map_err(err)?;
         if version != DURABLE_VERSION {
-            return Err(format!("unsupported durable version {version}"));
+            return Err(if version < DURABLE_VERSION {
+                format!(
+                    "this state is from an older format (version {version}, and this build \
+                     reads version {DURABLE_VERSION}): start fresh with a new state directory"
+                )
+            } else {
+                format!(
+                    "this state is from a newer format (version {version}, and this build \
+                     reads version {DURABLE_VERSION}): run a newer build, or start fresh with a \
+                     new state directory"
+                )
+            });
         }
-        let (durable, tail): (Self, _) = postcard::take_from_bytes(bytes)
-            .map_err(|error| format!("durable state version {version}: {error}"))?;
+        // Bytes of this version that do not decode are of another layout that
+        // called itself this version: said plainly, never as a decode's words
+        // alone.
+        let (durable, tail): (Self, _) = postcard::take_from_bytes(bytes).map_err(|error| {
+            format!(
+                "this state cannot be read by this build (it may be from another format): \
+                 {error}. Start fresh with a new state directory"
+            )
+        })?;
         if !tail.is_empty() {
             return Err("trailing bytes after durable state".into());
         }

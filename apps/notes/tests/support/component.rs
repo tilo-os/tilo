@@ -301,6 +301,36 @@ pub fn apply_to(
     notes::read::apply_in_part(doc, &notes::Notebook::default(), action)
 }
 
+/// Type `edit` into `page`'s body in the part keeping it, as the window's
+/// person did: attributed to them, one committed step of the part.
+pub fn type_body_as_person(
+    f: &NotebookFixture,
+    page: notes::PageId,
+    edit: &tilo_document::RichTextAction,
+) {
+    let action = notes::actions::edit_body_action(page, edit.clone());
+    let encoded = notes::actions::encode(&action);
+    let part = f.part();
+    f.store
+        .with_history(&part, |doc, _| {
+            let context = tilo_actions::ActionContext::for_resource(
+                notes::part::chain_resource(),
+                <notes::PagePart as ui::tilo_resource::Resource>::KIND,
+                <notes::PagePart as ui::tilo_resource::Resource>::LABEL,
+            )
+            .with_app(canonical::PACKAGE, "Notes")
+            .with_invoker(tilo_actions::ActionInvoker::member(f.author.clone()))
+            .in_gesture(Some(tilo_actions::ActionId::new()));
+            let writer = ui::bound_dispatch::document_writer(
+                &tilo_actions::Actor::member(f.author.clone()),
+                doc,
+            );
+            tilo_actions::apply_local_with_context(doc, &action, encoded, Some(&writer), context)
+                .unwrap();
+        })
+        .unwrap();
+}
+
 /// Apply one rich-text edit to `page`'s body.
 pub fn edit_page_body(
     doc: &mut automerge::AutoCommit,
@@ -492,6 +522,11 @@ impl BoundNotes {
             outer,
         }
     }
+    /// Write `edit` into `part`, the note's own document, as the editor's
+    /// unfinished typing transaction: applied while the admitted editor is
+    /// the caller, and left for the store to land.
+    /// Write `edit` while the admitted editor is the caller: what a window
+    /// writes before its save lands.
     pub fn pending_edit(
         &mut self,
         edit: impl FnOnce(&mut automerge::AutoCommit),

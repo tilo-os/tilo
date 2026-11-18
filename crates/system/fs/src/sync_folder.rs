@@ -287,13 +287,6 @@ impl SyncFolder {
             let path = names.join("/");
             let mark = if entry.dir {
                 Mark::Dir
-            } else if self.fs.document_at(rel(&path)) {
-                match self.fs.read_path(rel(&path)) {
-                    Ok(bytes) => Mark::Document {
-                        digest: *blake3::hash(&bytes).as_bytes(),
-                    },
-                    Err(_) => continue,
-                }
             } else {
                 match entry.hash {
                     Some(hash) => Mark::Content {
@@ -319,10 +312,6 @@ impl SyncFolder {
         let entry = self.fs.entry_at(rel(path))?;
         let mark = if entry.dir {
             Mark::Dir
-        } else if self.fs.document_at(rel(path)) {
-            Mark::Document {
-                digest: *blake3::hash(&self.fs.read_path(rel(path)).ok()?).as_bytes(),
-            }
         } else {
             entry.hash.map_or(Mark::Empty, |hash| Mark::Content {
                 hash: *hash.as_bytes(),

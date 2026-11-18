@@ -96,12 +96,12 @@ tilo_test_env::scenario! {
             .unwrap();
         for expected in ["reveal", "forget-recent"] {
             assert!(
-                published.actions.iter().any(|action| action.id == expected),
+                published.operations().iter().any(|action| action.id == expected),
                 "Recent's {expected} must be available through the resource api"
             );
             assert_eq!(
                 published
-                    .actions
+                    .operations()
                     .iter()
                     .find(|action| action.id == expected)
                     .unwrap()

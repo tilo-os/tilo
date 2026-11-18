@@ -85,9 +85,6 @@ files-residency-metadata-only = nur Metadaten
 files-residency-partly-local = teilweise lokal ({ $bytes } Byte)
 files-residency-local = lokal ({ $bytes } Byte)
 files-property-on-device = Auf diesem Gerät: { $state }
-files-property-history = Verlauf: { $versions } { $versions ->
-    [one] Version
-   *[other] Versionen
 }, { $conflicts } offene { $conflicts ->
     [one] Konflikt
    *[other] Konflikte
@@ -154,40 +151,6 @@ files-import-local-destination = Ein einmaliger Import benötigt einen lokalen Z
 
 ## Verlauf und Konfliktlösung
 files-version-history = Versionsverlauf…
-files-restore-previous = Vorherige Version wiederherstellen
-files-resolve-keep-current = { $conflict } lösen: Aktuelle behalten
-files-resolve-use-other = { $conflict } lösen: Andere verwenden (Gerät { $device })
-files-conflict-resolved = Gelöst
-files-strategy-keep-current = Aktuelle behalten
-files-strategy-use-other = Andere verwenden
-files-strategy-keep-both = Beide behalten
-files-strategy-merge = Zusammenführen
-files-history-change-pending = Eine Verlaufsänderung wird bereits ausgeführt
-files-select-file-with-history = Zuerst eine kollaborative Datei mit Verlauf auswählen
-files-keeping-current = Die aktuelle Version wird beibehalten…
-files-applying-other = Die andere Version wird angewendet…
-files-merging-versions = Nicht überlappende Änderungen werden sicher zusammengeführt…
-files-merge-review-menu = Zusammenführung prüfen
-files-merge-review-title = Zusammenführung von { $name } prüfen
-files-merge-review-checking = Die beiden Versionen werden verglichen …
-files-merge-review-checking-detail = Währenddessen ändert sich nichts.
-files-merge-review-safe = Sicher zusammenführbar
-files-merge-review-needs-review = Prüfung nötig. Es wird nichts zusammengeführt.
-files-merge-review-unavailable = Die Versionen lassen sich gerade nicht vergleichen. Aktualisiere die Datei und vergleiche sie im Versionsverlauf.
-files-merge-review-no-apply = Behalte beide oder wähle eine, nachdem du sie verglichen hast.
-files-merge-review-incoming = Eingehende Version von Gerät { $device }
-files-merge-review-undo = Du kannst danach jede frühere Version wiederherstellen, ohne spätere Arbeit zu verlieren.
-files-merge-apply-safe = Sichere Zusammenführung anwenden
-files-merge-apply-safe-detail = Wird nur angewendet, wenn beide Versionen noch vollständig erhalten bleiben.
-files-conflict-resolved-signed = Konflikt gelöst
-files-history-change-saved = Verlaufsänderung gespeichert
-files-history-action-created = Erstellt
-files-history-action-edited = Bearbeitet
-files-history-action-renamed = Umbenannt
-files-history-action-moved = Verschoben
-files-history-action-deleted = Gelöscht
-files-history-action-conflict-resolved = Konflikt gelöst
-files-history-action-restored = Wiederhergestellt
 
 ## Barrierefreier kollaborativer Status
 files-a11y-transfer-failed = Übertragung fehlgeschlagen
@@ -204,14 +167,9 @@ files-a11y-kept-offline = Offline verfügbar gehalten
 files-a11y-replica-unknown = Kopien auf anderen Geräten unbekannt
 files-a11y-durably-replicated = Auf anderen Geräten gespeichert
 files-a11y-not-durably-replicated = Noch nicht auf anderen Geräten gespeichert
-files-a11y-version-conflict = Hat einen Versionskonflikt
 
 ## Dienst- und Empfangsfehler/status
 files-open-terminal-failed = Terminal konnte nicht geöffnet werden: { $error }
-files-conflict-strategy-unsupported = Diese Konfliktstrategie wird von Dateien noch nicht unterstützt
-files-conflict-encode-failed = Konfliktanfrage konnte nicht kodiert werden
-files-conflict-request-too-large = Dieser Konflikt lässt sich hier nicht lösen. Versuch es im Versionsverlauf.
-files-conflict-resolve-failed = Konflikt konnte nicht gelöst werden: { $error }
 
 ## Anwendungsrahmen und Navigation
 files-app-title = Dateien
@@ -509,7 +467,6 @@ file-explorer-import-mounted = Unabhängige bearbeitbare Kopien in { $folder } e
 ## Hinweise
 files-notice-undo = Rückgängig
 files-notice-open-with = Öffnen mit …
-files-notice-open-history = Versionsverlauf öffnen
 files-menu-undo = Rückgängig
 files-open-failed = „{ $name }“ konnte nicht geöffnet werden
 files-new-folder-failed-title = Der Ordner konnte nicht erstellt werden

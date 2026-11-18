@@ -206,9 +206,7 @@ impl NativeWorkspaceOwner {
             let _turn = self.0.mutation.lock();
             let candidate = self.view(workspace)?;
             let device = candidate.device().clone();
-            let hosted_here = candidate.record.hosted_here();
-            let ((kept, changes), record) = candidate.change(|live, record| {
-                let before = live.workspace_heads().unwrap_or_default();
+            let (kept, record) = candidate.change(|live, record| {
                 let mut kept = false;
                 let mut unkept = Vec::new();
                 for (message, report) in &heard {
@@ -242,18 +240,10 @@ impl NativeWorkspaceOwner {
                         .checked_add(1)
                         .ok_or("native owner generation exhausted")?;
                 }
-                // The verdicts as changes of the workspace document: what a device that hosts
-                // the workspace hands the members linked to it, its writer among them.
-                let changes = if kept {
-                    live.workspace_changes_since(&before)
-                } else {
-                    Vec::new()
-                };
-                Ok((kept, changes))
+                Ok(kept)
             })?;
             if kept {
                 self.publish_document(workspace, &candidate, record, None)?;
-                self.0.governance_kept_here(workspace, hosted_here, changes);
             }
             Ok(())
         })
@@ -467,7 +457,6 @@ impl NativeWorkspaceOwner {
         let changed = candidate.change(|live, stored| {
             let ready = numbered(live, workspace, device, writes, signed, now)?;
             let mut taken = Vec::new();
-            let mut carried = Vec::new();
             let mut fresh = false;
             for request in ready {
                 let outgoing = publication::prepare(&request)?;
@@ -482,8 +471,7 @@ impl NativeWorkspaceOwner {
                 };
                 match live.lookup_exact_local_document(app, document, envelope, now) {
                     Ok(Some(_)) => {
-                        if !stored.hosted_here()
-                            && !publication::has_exact(stored, &outgoing, store)?
+                        if !publication::has_exact(stored, &outgoing, store)?
                             && !publication::retry_covered(live, stored, &outgoing)?
                         {
                             return Err(
@@ -514,15 +502,6 @@ impl NativeWorkspaceOwner {
                 if !live.sealed_history_takes(app, document, envelope) {
                     full = Some((app.clone(), document.clone()));
                     return Err("sealed record history is full".into());
-                }
-                // A workspace this device hosts queues nothing for a host to take: its members
-                // linked here hear the commit now, and one linked later catches up on it as the
-                // link starts.
-                if stored.device == stored.workspace_host {
-                    carried.push(
-                        postcard::from_bytes::<NeighbourMsg>(&outgoing)
-                            .map_err(|error| error.to_string())?,
-                    );
                 }
                 publication::append_local(stored, outgoing)?;
                 if let Err(declined) = Self::admit_local_write(live, app, document, envelope, now) {
@@ -581,9 +560,9 @@ impl NativeWorkspaceOwner {
                     ))
                 })
                 .collect::<Result<Vec<_>, String>>()?;
-            Ok((committed, carried))
+            Ok(committed)
         });
-        let ((committed, carried), stored) = changed.map_err(|error| match (full, waiting) {
+        let (committed, stored) = changed.map_err(|error| match (full, waiting) {
             (Some((app, record)), _) => WriteRefusal::HistoryFull { app, record },
             (None, Some(refusal)) => refusal,
             (None, None) => WriteRefusal::Refused(error),
@@ -591,9 +570,6 @@ impl NativeWorkspaceOwner {
         if stored.generation != candidate.generation() {
             // One durable publication for every write the turn took.
             self.publish_document(workspace, candidate, stored, None)?;
-        }
-        for message in carried {
-            self.0.kept_here(workspace, &message);
         }
         Ok(committed)
     }

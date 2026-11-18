@@ -35,6 +35,10 @@ public struct Person: Identifiable, Hashable, Sendable {
 public enum Session: Equatable, Sendable {
     /// Nobody is signed in on this device. The window shows the way in.
     case signedOut
+    /// Nobody is signed in on this device any more: the workspace it was let into is no longer
+    /// on its site, which was set up again since, or the workspace was deleted. The window
+    /// shows the way in and says so, until the device is paired again.
+    case reset
     /// A link was taken, and Tilo asks before anything else: whose devices this one would join
     /// and which server adds it. The window shows what Tilo says and goes on only when the
     /// person presses.
@@ -57,12 +61,16 @@ public struct PairingAsk: Equatable, Sendable {
     /// What going on is called, and what stopping is called.
     public var go: String
     public var stop: String
+    /// The site this app pairs with, its address in full. The card says it under Tilo's own
+    /// sentences, whoever handed the link. Empty where nothing knows it.
+    public var site: String
 
-    public init(heading: String, said: [String], go: String, stop: String) {
+    public init(heading: String, said: [String], go: String, stop: String, site: String = "") {
         self.heading = heading
         self.said = said
         self.go = go
         self.stop = stop
+        self.site = site
     }
 }
 

@@ -434,6 +434,47 @@ fn denial(
     }
 }
 
+/// The workspace's answer for `op`, which the person `actor_key`'s device is
+/// about to sign, on the document `app_id`/`document_id`: a change an agent of
+/// the person's made is decided as that agent, bounded by the person, as every
+/// receiver decides it.
+fn decide_written(
+    workspace: &Workspace,
+    actor_key: &str,
+    (app_id, document_id): (&str, &str),
+    op: &collab_types::SignedOp,
+) -> Result<collab_types::Receipt, collab_types::ReceiptRefusal> {
+    let record = collab_types::WrittenDocument {
+        workspace: &workspace.policy.workspace,
+        app: app_id,
+        document: document_id,
+    };
+    let access = std::cell::OnceCell::new();
+    let allows = |invoker: Option<&tilo_action_policy::Acting>,
+                  node: &tilo_action_policy::TreePath,
+                  kind| match invoker {
+        None => workspace.answer_at(actor_key, node, kind, unix_now()) == Answer::Allow,
+        Some(invoker) => {
+            let access = access.get_or_init(|| {
+                tilo_action_policy::MemberAccess::person(workspace.policy.clone(), actor_key)
+            });
+            access.invoked_by(invoker).answer(
+                node,
+                kind,
+                &tilo_desktop_model::context_at(unix_now()),
+            ) == Answer::Allow
+        }
+    };
+    collab_types::decide_op(
+        op,
+        &record,
+        None,
+        None,
+        &collab_types::Surfaces::process(),
+        &allows,
+    )
+}
+
 /// Validate the entire unsigned document envelope before lending it the
 /// certified device signature. The app cannot turn this into a generic
 /// signing oracle: workspace/app are fixed by the launch handshake, artifact
@@ -515,21 +556,11 @@ fn sign_collaboration_op(
     let actor_key = hex::encode(profile.user_public_key);
     let decided = read_workspace(tree, bound_workspace, |workspace| {
         workspace.role_of(&actor_key)?;
-        let record = collab_types::WrittenDocument {
-            workspace: &workspace.policy.workspace,
-            app: app_id,
-            document: document_id,
-        };
-        let allows = |node: &tilo_action_policy::TreePath, kind| {
-            workspace.answer_at(&actor_key, node, kind, unix_now()) == Answer::Allow
-        };
-        Some(collab_types::decide_op(
+        Some(decide_written(
+            workspace,
+            &actor_key,
+            (app_id, document_id),
             &op,
-            &record,
-            None,
-            None,
-            &collab_types::Surfaces::process(),
-            &allows,
         ))
     });
     let decided = match decided {

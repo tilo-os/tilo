@@ -43,9 +43,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage,
-    RemoteActionTarget, pending,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ChangeFeed, ChangePage,
+    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
+    RemoteActionMessage, RemoteActionTarget, WatchScope, pending,
 };
 use tilo_actions::{InvocationId, InvocationUpdate, api::ActionAddress};
 use tilo_agent_session::model::PlanTurns;
@@ -82,6 +82,7 @@ mod going;
 mod issue_work;
 mod learned;
 mod mail;
+mod mail_connect;
 mod skills;
 mod steps;
 mod sub_agents;
@@ -419,9 +420,44 @@ impl ActionProvider for WorkspaceActionProvider {
             })
     }
 
+    /// The next time what a watch of the caller's workspace follows may have changed: the
+    /// workspace's own service holds that wait, answered by a write landing in its replica of
+    /// the resources, whoever wrote it, and by who is in the workspace moving with its
+    /// governance. A watch of a turn on this server is woken by a person's edit or message and
+    /// by another agent's change, not only by its own invocations.
+    fn changed(&self, caller: &Caller, scope: WatchScope) -> Option<Pending<()>> {
+        // Either answer is the same to a watch: what it follows is read again, and a refusal is
+        // told by that read. A service that answers nothing at all is not running, and the
+        // watch waits its own deadline instead of on a wake that would come at once for ever.
+        self.actions
+            .serve(
+                self.workspace,
+                caller,
+                RemoteActionMessage::ChangedRequest {
+                    correlation: 0,
+                    scope,
+                },
+            )
+            .map(|answer| answer.map(|_| ()))
+    }
+
+    /// One document of the workspace, read as every reader of it is answered: the same read a
+    /// person's device answers, from what the workspace's service holds.
+    fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
+        let reads: Arc<dyn tilo_actions::remote::ResourceReads> = Arc::new(self.actions.clone());
+        Some(reads)
+    }
+
     /// The workspace's own search, asked as whoever calls it: what an agent's `find` answers
     /// with on this server.
     fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
+        Some(Arc::new(self.clone()))
+    }
+
+    /// The workspace's own feed of its resources' changes, asked as whoever calls it: what a
+    /// watch of the whole workspace reads on this server, and only what that caller may read
+    /// of them.
+    fn change_feed(&self) -> Option<Arc<dyn ChangeFeed>> {
         Some(Arc::new(self.clone()))
     }
 }
@@ -461,6 +497,30 @@ impl tilo_actions::remote::ResourceSearch for WorkspaceActionProvider {
         )
         .map(|answer| match answer {
             RemoteActionMessage::SearchResponse { result, .. } => result,
+            _ => Err(unavailable()),
+        })
+    }
+}
+
+/// What a watch of the whole workspace reads on this server: every change to everything its
+/// workspace holds, as the service that keeps it saw it, for the caller its tools act as. The
+/// service answers only what that caller may read, so an agent is told of a person's edit or a
+/// bot's change in what it reads, and of nothing in what its rules keep from it.
+impl ChangeFeed for WorkspaceActionProvider {
+    fn since(
+        &self,
+        caller: &Caller,
+        after: Option<&str>,
+    ) -> Pending<Result<ChangePage, ActionCallError>> {
+        self.serve(
+            caller,
+            RemoteActionMessage::ChangesRequest {
+                correlation: 0,
+                after: after.map(str::to_owned),
+            },
+        )
+        .map(|answer| match answer {
+            RemoteActionMessage::ChangesResponse { result, .. } => result,
             _ => Err(unavailable()),
         })
     }
@@ -1204,6 +1264,11 @@ impl HostAgents {
             calendar_connect::TurnConnects::for_turn(&self.workspaces, turn, &scope.reply(turn))
                 .await;
         scope.provider = scope.provider.answering(connects);
+        // What signs a mail account in from its address alone: the same asking, for mail.
+        let signs_in =
+            mail_connect::TurnMailConnects::for_turn(&self.workspaces, turn, &scope.reply(turn))
+                .await;
+        scope.provider = scope.provider.answering(signs_in);
         // Its open of Browser, whose window this server places where it has a machine for one.
         let browser =
             turn_browser::TurnBrowser::for_turn(self.browsers.clone(), &scope.reply(turn));
@@ -1395,6 +1460,20 @@ impl HostAgents {
             Some((task, before)) => task.ended_as(outcome, cost, clock.elapsed(), before).await,
             None => outcome,
         };
+        // An answer is logged where the model gives it; a turn that ends any other way says
+        // so here, or the log reads as if it were still going.
+        match &outcome {
+            Outcome::Answered(_) => {}
+            Outcome::Stopped(why) => {
+                tracing::info!(agent = %turn.agent.id.0, cost, %why, "an agent on the workspace's server stopped");
+            }
+            Outcome::Failed(why) => {
+                tracing::warn!(agent = %turn.agent.id.0, cost, %why, "an agent on the workspace's server could not go on");
+            }
+            Outcome::Cancelled => {
+                tracing::info!(agent = %turn.agent.id.0, cost, "an agent on the workspace's server was stopped by its person");
+            }
+        }
         if cost > 0 {
             self.charge(workspace, sub_agents::payer(&turn), &day, cost)
                 .await;
@@ -2374,6 +2453,7 @@ async fn ask_model(
             later(TURN_TIME),
             false,
             &mut |event| match event {
+                StreamEvent::ReasoningDelta { text } => wrote.thought(&text),
                 StreamEvent::TextDelta { text } => wrote.push(&text),
                 // The call broke off and may be asked again: what comes then stands below.
                 StreamEvent::Failed { .. } => wrote.broke_off(),
@@ -2457,8 +2537,11 @@ async fn run_calls(
         // What the step costs is said in the log when it ends ([`steps`]).
         let mut step = steps::Step::begin(&call.name, (nth, of), noting);
         if noting == steps::Note::Before {
+            // Waited for, as it always was: handed on, it would stand in front of the tool's
+            // own action on the workspace's thread, inside what the tool waits for that action.
             unsaid = None;
-            step.notes(|| reply.notes(&call.name));
+            reply.doing(&call.name).await;
+            step.noted();
         }
         // What the turn keeps about its keeper is carried out here; every other
         // tool is the agent tools'.
@@ -2478,12 +2561,16 @@ async fn run_calls(
         }
         noted = Some(call.name.clone());
         step.say(content.len(), is_error);
+        // What it asked is logged with a refusal, so the call can be made again by hand; every
+        // call's whole answer only at debug, where what a tool showed it can be looked up.
+        let asked: String = call.input.to_string().chars().take(LOGGED_CHARS).collect();
         if is_error {
             let said: String = content.chars().take(LOGGED_CHARS).collect();
-            tracing::info!(tool = %call.name, %said, "a tool of an agent on the workspace's server was refused or failed");
+            tracing::info!(tool = %call.name, %asked, %said, "a tool of an agent on the workspace's server was refused or failed");
         } else {
             tracing::info!(tool = %call.name, "an agent on the workspace's server used a tool");
         }
+        tracing::debug!(tool = %call.name, %asked, answered = %content, "what a tool of an agent on the workspace's server answered");
         results.push(Content::ToolResult(ToolResult {
             call_id: call.id.clone(),
             content,

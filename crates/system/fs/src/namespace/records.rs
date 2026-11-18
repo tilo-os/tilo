@@ -183,7 +183,7 @@ impl Namespace {
     }
 
     /// Take in the tree's records as [`Self::save`] keeps them, as a mount joins the tree its
-    /// workspace keeps ([`Self::take_records`]), and return what resolving them changed.
+    /// workspace keeps ([`Self::take_documents`]), and return what resolving them changed.
     pub fn adopt_or_merge_remote_and_resolve(
         &mut self,
         data: &[u8],
@@ -192,7 +192,7 @@ impl Namespace {
         for (_, doc) in self.doc.each_mut() {
             let _ = doc.save_incremental();
         }
-        self.take_records(records)?;
+        self.take_documents(records)?;
         Ok(self.save_incremental())
     }
 
@@ -207,20 +207,20 @@ impl Namespace {
     ///
     /// # Errors
     /// A record does not load; what loaded before it is kept.
-    pub fn take_records(
+    pub fn take_documents(
         &mut self,
         records: Vec<(TreeChunk, Vec<u8>)>,
     ) -> Result<(), automerge::AutomergeError> {
-        self.take_records_touching(records).map(drop)
+        self.take_documents_touching(records).map(drop)
     }
 
-    /// [`Self::take_records`], answering the nodes the records touched: what a follower of the
+    /// [`Self::take_documents`], answering the nodes the records touched: what a follower of the
     /// tree reads again, rather than every node. A namespace that adopted the tree's own record
     /// answers every node.
     ///
     /// # Errors
     /// A record does not load; what loaded before it is kept.
-    pub fn take_records_touching(
+    pub fn take_documents_touching(
         &mut self,
         records: Vec<(TreeChunk, Vec<u8>)>,
     ) -> Result<HashSet<String>, automerge::AutomergeError> {
@@ -279,7 +279,7 @@ impl Namespace {
             .is_some_and(|doc| doc.has_change(hash))
     }
 
-    /// Take in the records `records` ([`Self::take_records`]) and answer what settling them wrote,
+    /// Take in the records `records` ([`Self::take_documents`]) and answer what settling them wrote,
     /// one write per record: this device's own changes repairing a conflict the records brought,
     /// which go out on their own so every holder of the tree settles it alike. Empty when nothing
     /// needed settling.
@@ -289,12 +289,12 @@ impl Namespace {
     ///
     /// # Errors
     /// A record does not load; what loaded before it is kept.
-    pub fn take_records_and_resolve(
+    pub fn take_documents_and_resolve(
         &mut self,
         records: Vec<(TreeChunk, Vec<u8>)>,
     ) -> Result<Vec<ResourceWrite>, automerge::AutomergeError> {
         let before = self.record_heads();
-        self.take_records(records)?;
+        self.take_documents(records)?;
         let actor = self.doc.index().get_actor().clone();
         let mut writes = Vec::new();
         for (chunk, doc) in self.doc.each_mut() {
@@ -437,6 +437,70 @@ impl Namespace {
             }
         }
         Ok(touched)
+    }
+
+    /// The changes the call `invocation` made to the tree, each with the chunk it is in, oldest
+    /// first: one step of whoever made it, which an undo takes back in every document of the
+    /// tree it wrote, as the step of a chunked app document is.
+    pub fn changes_of_invocation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+    ) -> Vec<(TreeChunk, automerge::ChangeHash)> {
+        let mut changes: Vec<(i64, TreeChunk, automerge::ChangeHash)> = Vec::new();
+        for (chunk, doc) in self.doc.each_mut() {
+            doc.commit_named();
+            for change in doc.committed_document().get_changes_meta(&[]) {
+                if change
+                    .message
+                    .as_deref()
+                    .and_then(tilo_actions::ActionContext::from_change_message)
+                    .is_some_and(|context| context.source_invocation == Some(invocation))
+                {
+                    changes.push((change.timestamp, chunk, change.hash));
+                }
+            }
+        }
+        changes.sort_unstable_by_key(|(time, chunk, _)| (*time, *chunk));
+        changes
+            .into_iter()
+            .map(|(_, chunk, hash)| (chunk, hash))
+            .collect()
+    }
+
+    /// Apply `action` (a history verb: undo, redo, restore) to the document of chunk `chunk` as
+    /// one change written with `context`, through the executor every resource's actions go
+    /// through, and bring what the namespace reads of the tree up to date with what it moved.
+    ///
+    /// # Errors
+    /// The namespace holds no such chunk, or the action refused.
+    pub fn apply_history(
+        &mut self,
+        chunk: TreeChunk,
+        (action, encoded): (&dyn tilo_actions::Action, tilo_actions::EncodedAction),
+        context: tilo_actions::ActionContext,
+    ) -> Result<(), tilo_actions::ActionError> {
+        let nodes = self.doc.chunk(chunk).map(|held| held.nodes.clone());
+        let doc = self
+            .doc
+            .doc_mut(chunk)
+            .ok_or_else(|| tilo_actions::ActionError::Refused(format!("no chunk {chunk}")))?;
+        doc.commit_named();
+        let actor = doc.get_actor().to_bytes().to_vec();
+        doc.arm_patches();
+        let applied =
+            tilo_actions::apply_local_with_context(doc, action, encoded, Some(&actor), context);
+        let patches = doc.take_patches();
+        doc.disarm_patches();
+        applied?;
+        let touched = match &nodes {
+            Some(nodes) => patched_nodes(nodes, &patches),
+            None => HashSet::from([ROOT_ID.to_string()]),
+        };
+        for id in &touched {
+            self.doc.locate(chunk, id);
+        }
+        self.index_after_apply(&touched);
+        Ok(())
     }
 
     /// Whether this namespace holds a tree of its own, rather than only the empty maps a

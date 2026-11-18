@@ -1382,8 +1382,8 @@ impl GitClientState {
         use ui::tilo_resource::Effect as _;
         let (row, effect) = self.effect_for_hit(hit)?;
         if let Some(row) = row {
-            let published = self.working_tree_row(&row)?.into_resource();
-            ui::tilo_actions::ActionBinding::unit_for(&published, effect.id()).ok()
+            let row = self.working_tree_row(&row)?;
+            ui::tilo_actions::ActionBinding::unit_for(&row, effect.id()).ok()
         } else {
             self.control_actions.as_ref()?.effect(&effect)
         }

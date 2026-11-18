@@ -123,7 +123,7 @@ pub use certification::{
 pub use clock::wait_for_wall_clock;
 pub use clock::{CertificateClockError, WallClockWait};
 pub use directory::{
-    CommunityState, DirectoryError, DirectoryUpdate, WorkspaceDirectory, WorkspaceId, WorkspaceMeta,
+    CommunityState, DirectoryError, WorkspaceDirectory, WorkspaceId, WorkspaceMeta,
 };
 pub use endpoint_delegation::{
     ENDPOINT_DELEGATION_PREIMAGE_TAG, EndpointDelegation, EndpointDelegationError,
@@ -310,8 +310,6 @@ mod tests {
             assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG, b"tilo-enrollment-v2\0");
             assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG.len(), 19);
 
-            assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG, b"tilo-dir-delta-v1\0");
-            assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG.len(), 18);
 
             assert_eq!(
                 approval::APPROVAL_REQUEST_TAG,

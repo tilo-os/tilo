@@ -34,13 +34,55 @@ impl WorkspaceService {
         action: &str,
         arguments: Map<String, Value>,
     ) -> Result<Value, String> {
-        let invoke = InvokeRequest {
-            invocation: tilo_actions::InvocationId::new(),
+        self.ask(
+            caller,
             // The provider is named: no catalogue lists it.
-            target: RemoteActionTarget {
+            RemoteActionTarget {
                 provider: HOST_ACTIONS_PROVIDER.to_owned(),
                 address: ActionAddress::new(HOST_WORKSPACES_RESOURCE.to_owned(), action),
             },
+            arguments,
+        )
+        .await
+    }
+
+    /// Ask `workspace`'s governance action `action` with `arguments`, as
+    /// `caller`, one of the workspace's member devices on this device, in
+    /// process: what a member asks the workspace's holder over a session,
+    /// decided by the same rules.
+    ///
+    /// # Errors
+    /// The workspace refused or failed the action, or dropped it.
+    pub async fn ask_workspace(
+        &self,
+        caller: &DeviceCert,
+        workspace: &str,
+        action: &str,
+        arguments: Map<String, Value>,
+    ) -> Result<Value, String> {
+        self.ask(
+            caller,
+            RemoteActionTarget {
+                provider: tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
+                address: ActionAddress::new(
+                    tilo_actions::remote::workspace_governance_resource(workspace),
+                    action,
+                ),
+            },
+            arguments,
+        )
+        .await
+    }
+
+    async fn ask(
+        &self,
+        caller: &DeviceCert,
+        target: RemoteActionTarget,
+        arguments: Map<String, Value>,
+    ) -> Result<Value, String> {
+        let invoke = InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target,
             argument: InvokeArgument::Json(arguments),
             context: None,
             confirmation: None,
@@ -56,18 +98,18 @@ impl WorkspaceService {
                 caller,
                 RemoteActionMessage::Invoke(invoke),
             )
-            .ok_or("this host does not answer its own operations")?;
+            .ok_or("this workspace service does not answer in process")?;
         match pending.await {
             Some(RemoteActionMessage::Receipt(receipt)) => match receipt.status {
                 ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
-                ReceiptStatus::Rejected { error } => Err(format!("the host refused: {error}")),
+                ReceiptStatus::Rejected { error } => Err(format!("refused: {error}")),
                 ReceiptStatus::Failed { error } => Err(error.message),
                 ReceiptStatus::Accepted | ReceiptStatus::Cancelled { .. } => {
-                    Err("the host did not finish the request".into())
+                    Err("the request did not finish".into())
                 }
             },
-            Some(_) => Err("the host answered with something else".into()),
-            None => Err("the host dropped the request".into()),
+            Some(_) => Err("the workspace service answered with something else".into()),
+            None => Err("the workspace service dropped the request".into()),
         }
     }
 

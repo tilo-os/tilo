@@ -36,8 +36,6 @@ use std::collections::HashSet;
 use std::io::{self, BufRead as _, Write as _};
 use std::time::{Duration, Instant};
 
-use tilo_action_broker::collab_app_broker::{AppBrokerState, ExecutionStatus};
-use tilo_action_broker::services::HostedWorkspaces;
 use tilo_actions::remote::browser::{MARK, Report, SEND_HELD};
 use tilo_actions::remote::environment_device;
 use tilo_actions::remote::linux_apps::{self, AppLaunch};
@@ -47,6 +45,8 @@ use tilo_actions::remote::{
 };
 use tilo_actions::selection::logical_resource_id;
 use tilo_server_protocol::hosted::Material;
+use tilo_workspace_service::apps::collab_app_broker::{AppBrokerState, ExecutionStatus};
+use tilo_workspace_service::apps::services::HostedWorkspaces;
 
 use crate::Shared;
 use crate::app_wire::AppWire;
@@ -1744,11 +1744,12 @@ mod tests {
         app: &str,
         workspace: &str,
         live: bool,
-    ) -> tilo_action_broker::collab_app_broker::PublishedSurface {
-        tilo_action_broker::collab_app_broker::PublishedSurface {
+    ) -> tilo_workspace_service::apps::collab_app_broker::PublishedSurface {
+        tilo_workspace_service::apps::collab_app_broker::PublishedSurface {
             peer_id,
             app_id: app.to_owned(),
-            route: tilo_action_broker::route::CrdtRoute::app(app, workspace).on_resource(SHOWN),
+            route: tilo_workspace_service::apps::route::CrdtRoute::app(app, workspace)
+                .on_resource(SHOWN),
             actions: Vec::new(),
             live,
         }

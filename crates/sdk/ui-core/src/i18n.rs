@@ -1707,6 +1707,20 @@ macro_rules! embedded_catalog {
 mod tests {
     use super::*;
 
+    /// One line Fluent cannot read refuses the whole catalogue, and every toolkit label then
+    /// shows as its key: each language the toolkit ships parses whole.
+    #[test]
+    fn every_toolkit_catalogue_parses_whole() {
+        for (locale, text) in [
+            ("en-US", include_str!("../locales/en-US.ftl")),
+            ("de-DE", include_str!("../locales/de-DE.ftl")),
+        ] {
+            if let Err((_, errors)) = FluentResource::try_new(text.to_owned()) {
+                panic!("the {locale} toolkit catalogue does not parse: {errors:?}");
+            }
+        }
+    }
+
     /// A catalogue embeds only its source; its other languages come from the language packs, here the
     /// crate's own `locales/` directory.
     #[test]

@@ -350,6 +350,10 @@ impl super::App {
         if outer {
             crate::widget::note_layout_moved();
         }
+        // A part built for what arrived (a query's answer) is a new tree
+        // though no model state moved: what it declares is read from it
+        // from now on, before anything publishes.
+        self.forget_replaced_widgets();
         if !updated {
             return false;
         }

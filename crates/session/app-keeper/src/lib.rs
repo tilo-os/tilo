@@ -942,18 +942,14 @@ impl Data {
 
 /// Write the app's process to `<dir>/app` ([`wire::AppProcess`]), whole or not at all.
 fn write_app(dir: &Path, pid: u32, started_at: u64) -> io::Result<()> {
-    let partial = dir.join(".app.partial");
-    std::fs::write(
-        &partial,
-        serde_json::to_vec(&wire::AppProcess { pid, started_at })?,
-    )?;
-    std::fs::rename(partial, dir.join("app"))
+    tilo_files::native::atomic::write(
+        &dir.join("app"),
+        &serde_json::to_vec(&wire::AppProcess { pid, started_at })?,
+    )
 }
 
 fn write_ended(dir: &Path, end: End) -> io::Result<()> {
-    let partial = dir.join(".ended.partial");
-    std::fs::write(&partial, serde_json::to_vec(&end)?)?;
-    std::fs::rename(partial, dir.join("ended"))
+    tilo_files::native::atomic::write(&dir.join("ended"), &serde_json::to_vec(&end)?)
 }
 
 /// One pending connection, without waiting.

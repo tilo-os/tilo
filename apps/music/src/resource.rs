@@ -437,11 +437,12 @@ mod tests {
 
     #[test]
     fn recommendations_preferences_are_addressable_on_an_empty_library() {
-        let resource = crate::recommendations::resource_by_id(
+        let resource = crate::recommendations::row_by_id(
             &Library::default(),
             "music.recommendation-preferences:library",
         )
-        .expect("recommendation inputs must be available without any music or account");
+        .expect("recommendation inputs must be available without any music or account")
+        .into_resource();
         assert_eq!(resource.kind, "music.recommendation-preferences");
     }
 

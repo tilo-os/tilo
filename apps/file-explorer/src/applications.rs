@@ -73,7 +73,6 @@ pub fn app_entry(app: &AppEntry) -> Entry {
         content_hash: None,
         document_id: None,
         availability: None,
-        history: None,
         rich_metadata: None,
         observed: None,
         app: Some(AppFacts {

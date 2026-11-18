@@ -5,13 +5,13 @@
 //! offers (renaming a feed or a folder, moving a feed, folding a folder), and
 //! the methods below are the operations that are more than setting a field.
 //! What a subscription brought in grows without bound and is kept in parts
-//! beside it ([`crate::part::ArticlePart`]): an article is read, starred and
+//! beside it ([`crate::article_list::ArticleList`]): an article is read, starred and
 //! tagged through the chain's own actions, and the tags a part's articles
 //! carry are published there as places that reveal what they label.
 //!
 //! Refreshing and OPML import/export change nothing by themselves: they are
 //! the reader's [`FeedsEffect`]s, whose results reach the resources as verbs
-//! (what a refresh fetched lands through [`crate::part::ArticlePart::receive`]
+//! (what a refresh fetched lands through [`crate::article_list::ArticleList::receive`]
 //! and the subscription it fed is noted by [`Library::note_feed`]). How
 //! articles read (text size, face, paper) is the person's
 //! [`ReadSettings`](crate::model::ReadSettings), a personal
@@ -24,8 +24,8 @@ use ui::tilo_resource::Invoke;
 use ui::tilo_resource::{self, ActionCx, Effect, Id, NonBlank, Refusal, resource};
 use ui::widget::Element;
 
+use crate::article_list::ArticleList;
 use crate::model::{Feed, Filter, Folder, Library, Outline};
-use crate::part::ArticlePart;
 
 /// How many tags a part of the articles publishes as places.
 pub const MAX_TAG_PLACES: usize = 32;
@@ -79,7 +79,7 @@ impl Library {
     ///
     /// Removes the subscription. What it brought in is not shown and does not
     /// count from then on; the window takes the room back through the parts
-    /// it holds ([`ArticlePart::forget_feed`]), and an undo that brings the
+    /// it holds ([`ArticleList::forget_feed`]), and an undo that brings the
     /// subscription back shows them again.
     #[action(destructive, item = feeds)]
     pub fn unsubscribe(&mut self, feed: &Id) -> Result<(), Refusal> {
@@ -130,7 +130,7 @@ impl Library {
     /// feed gives itself, and the certificate a Gemini server presented the
     /// first time. Content from the feed, not anyone's edit: no undo takes it
     /// back. The articles it brought land in the parts beside the library
-    /// ([`ArticlePart::receive`]).
+    /// ([`ArticleList::receive`]).
     #[action(external, audience = "agents", item = feeds)]
     pub fn note_feed(
         &mut self,
@@ -268,7 +268,7 @@ impl ResourceApp for FeedsShell {
 
     /// The articles, kept in parts beside the library.
     fn resources(resources: &mut ui::framework::Resources<'_>) {
-        resources.chain::<ArticlePart>();
+        resources.chain::<ArticleList>();
     }
 
     #[cfg(feature = "samples")]

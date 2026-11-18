@@ -85,22 +85,12 @@ impl QuickFS {
         Ok(workspace)
     }
 
-    /// How `ino`'s content is restored, from record metadata alone. A
-    /// namespace-held document has no checked restore route yet: restoring it
-    /// needs its CRDT heads recorded with each version.
+    /// How `ino`'s content is restored, from record metadata alone.
     pub(super) fn restore_kind(
         namespace: &Namespace,
         ino: u64,
     ) -> Result<DocumentContentKind, Outcome> {
-        match DocumentContentKind::of(namespace, ino).ok_or(Outcome::NotVisible)? {
-            DocumentContentKind::NamespaceDocument { codec } => Err(Outcome::UnsupportedOwner {
-                mapping: format!(
-                    "document codec {}: no checked content-owner restore route",
-                    codec.chars().take(64).collect::<String>()
-                ),
-            }),
-            kind => Ok(kind),
-        }
+        DocumentContentKind::of(namespace, ino).ok_or(Outcome::NotVisible)
     }
 
     /// The bytes that restore a serialized document to `selected`, whose

@@ -8,7 +8,7 @@
 //! Ctrl+K and agents do.
 
 use crate::account_editor::CATALOG;
-use crate::part::{Book, ContactPart};
+use crate::contact_cards::{Book, ContactCards};
 use crate::resource::Contacts;
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -219,11 +219,11 @@ pub struct ContactsApp {
     presented: Option<Rc<Book>>,
     /// The chain the contacts are kept in: what the window writes through
     /// and takes back from.
-    pub(crate) chain: Option<ui::framework::Chain<ContactPart>>,
+    pub(crate) chain: Option<ui::framework::Chain<ContactCards>>,
     /// The book's own dispatcher: what its effects are invoked through.
     dispatcher: Option<Dispatcher<Contacts>>,
     /// The chain's dispatcher: what the contacts are written through.
-    writing: Option<Dispatcher<ContactPart>>,
+    writing: Option<Dispatcher<ContactCards>>,
     pub(crate) jobs: Option<Jobs<Contacts>>,
     pub(crate) account_editor: Option<crate::account_editor::Editor>,
     account_pane: Option<Element>,
@@ -296,7 +296,7 @@ impl ContactsApp {
     fn try_perform_action(
         &self,
         _doc: &mut ui::widget::Edits<'_>,
-        invoke: Invoke<ContactPart>,
+        invoke: Invoke<ContactCards>,
     ) -> Result<(), ui::tilo_actions::ActionError> {
         self.submit(invoke)
             .map_err(ui::tilo_actions::ActionError::Refused)
@@ -344,7 +344,7 @@ impl ContactsApp {
     }
 
     /// The chain the contacts are written through.
-    pub(crate) fn attach_writing(&mut self, writing: Dispatcher<ContactPart>) {
+    pub(crate) fn attach_writing(&mut self, writing: Dispatcher<ContactCards>) {
         self.writing = Some(writing);
     }
 
@@ -353,7 +353,7 @@ impl ContactsApp {
     pub(crate) fn watch(
         &mut self,
         book: Option<LocalState<Rc<Book>>>,
-        chain: Option<ui::framework::Chain<ContactPart>>,
+        chain: Option<ui::framework::Chain<ContactCards>>,
     ) {
         self.book = book;
         self.chain = chain;
@@ -522,7 +522,7 @@ impl ContactsApp {
         self.show_toast(format!("Couldn't save contact: {}", refusal.reason));
     }
 
-    fn submit(&self, invoke: Invoke<ContactPart>) -> Result<(), String> {
+    fn submit(&self, invoke: Invoke<ContactCards>) -> Result<(), String> {
         let Some(dispatcher) = &self.writing else {
             return Err("the address book is not open".into());
         };
@@ -844,9 +844,9 @@ impl ContactsApp {
             let c = form.draft.clone();
             let id = c.id;
             let saved = if form.is_new {
-                self.try_perform_action(doc, ContactPart::add(&c))
+                self.try_perform_action(doc, ContactCards::add(&c))
             } else {
-                match ContactPart::save(&form.base, &c) {
+                match ContactCards::save(&form.base, &c) {
                     Some(invoke) => self.try_perform_action(doc, invoke),
                     None if self.store.contact(id).is_none() => Err(
                         ui::tilo_actions::ActionError::Refused("no such contact".into()),
@@ -895,7 +895,7 @@ impl ContactsApp {
         let Some(favorite) = self.store.contact(id).map(|contact| !contact.favorite) else {
             return false;
         };
-        let edit = Invoke::edit(&ContactPart::favorite(id, favorite))
+        let edit = Invoke::edit(&ContactCards::favorite(id, favorite))
             .map_err(|error| ui::tilo_actions::ActionError::Refused(error.to_string()));
         match edit.and_then(|edit| self.try_perform_action(doc, edit)) {
             Ok(()) => {
@@ -935,7 +935,7 @@ impl ContactsApp {
         if import_as_new {
             let mut contact = conflict.incoming;
             contact.id = uuid::Uuid::new_v4();
-            self.try_perform_action(doc, ContactPart::add(&contact))
+            self.try_perform_action(doc, ContactCards::add(&contact))
                 .map_err(|error| error.to_string())?;
             self.show_toast("Imported as a new contact");
         } else {
@@ -1040,7 +1040,7 @@ impl ContactsApp {
             return;
         }
         let name = self.store.contact(id).map(Contact::display_name);
-        if let Err(error) = dispatcher.submit_gesture(doc, ContactPart::delete(id)) {
+        if let Err(error) = dispatcher.submit_gesture(doc, ContactCards::delete(id)) {
             self.refresh_book();
             self.show_toast(format!("Couldn't change the address book: {error}"));
             return;

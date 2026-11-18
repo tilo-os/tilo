@@ -1330,7 +1330,10 @@ impl Core {
                     // It stopped to make a call: what it wrote until then is a change of its
                     // own, kept while the call runs. Its journal answers those writes when it
                     // goes on, so they are made once, and the call's change stands on them.
-                    if let Some(change) = change {
+                    // The action is not done, so this step keeps no migration or trigger mark:
+                    // the change it ends with does.
+                    if let Some(mut change) = change {
+                        change.note.unfinished = true;
                         self.commit_segment(&journal.invoker, *change)?;
                     }
                     Ok(Attempted::Suspended { journal })

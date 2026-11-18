@@ -12,7 +12,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use tilo_action_broker::collab_app_broker::AppBrokerState;
+use tilo_workspace_service::apps::collab_app_broker::AppBrokerState;
 
 use crate::mcp_server::{Host as SessionApi, SessionServices, person_tasks};
 

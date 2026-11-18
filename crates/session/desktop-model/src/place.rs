@@ -200,6 +200,7 @@ mod tests {
             person: PERSON,
             opened_by: Some(OpenedBy {
                 run: "agent-session:7".into(),
+                agent: "scribe".into(),
                 label: "Scribe".into(),
                 title: "File the receipts".into(),
             }),

@@ -1096,14 +1096,7 @@ impl StatePublisher {
         {
             return Ok(());
         }
-        let frame = LiveFrame::new(
-            &runtime,
-            &envelope,
-            &budget,
-            fanned,
-            self.source.as_ref(),
-            self.host,
-        );
+        let frame = LiveFrame::new(&runtime, &envelope, &budget, fanned, self.host);
         LiveFanout {
             frame: &frame,
             source: self.source.as_ref(),

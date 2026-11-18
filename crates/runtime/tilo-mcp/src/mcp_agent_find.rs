@@ -4,6 +4,29 @@
 use super::*;
 use tilo_actions::remote::Within;
 
+/// What one name asked of one level of one app's directory: the app's provider, the parent and
+/// the name.
+type Asked = (String, String, String);
+
+/// What one find has read of the apps' directories, kept while it names its hits: each app's
+/// levels apart, and what each name asked of a level answered. A search answers many rows of
+/// one conversation, and the steps from each of them up to its app are the same steps, so each
+/// is asked once.
+#[derive(Default)]
+pub(super) struct Reads {
+    /// The levels read, by the provider that publishes them.
+    levels: HashMap<String, Levels>,
+    /// What a level answered a name, by what was asked.
+    named: HashMap<Asked, Option<Level>>,
+}
+
+impl Reads {
+    /// The levels read of what `provider` publishes.
+    fn of(&mut self, provider: &str) -> &mut Levels {
+        self.levels.entry(provider.to_owned()).or_default()
+    }
+}
+
 /// One hit as a typed answer carries it: the path it reads at, what it is, what it is called,
 /// the action it offers and, where it says so, when it was written.
 fn hit_row(path: &str, kind: &str, hit: &Found) -> Value {
@@ -29,6 +52,24 @@ fn nothing_matches(query: &str) -> String {
     )
 }
 
+/// A path written as what a person types to name a resource (an issue's
+/// `#12`), split into that name and what follows it: `None` for a path that
+/// begins with anything else. The name goes up to the next unescaped `#`, which
+/// starts an action as it does after any other address.
+pub(super) fn split_reference(path: &str) -> Option<(&str, &str)> {
+    let text = path.trim();
+    let rest = text.strip_prefix('#')?;
+    let end = rest
+        .char_indices()
+        .find(|(at, character)| {
+            *character == '#'
+                && (*at == 0 || rest.as_bytes().get(at.saturating_sub(1)) != Some(&b'\\'))
+        })
+        .map_or(text.len(), |(at, _)| at.saturating_add(1));
+    let (reference, after) = text.split_at(end);
+    (!reference.trim_matches('#').trim().is_empty()).then_some((reference.trim(), after))
+}
+
 /// `reply`, saying first that it carries content from outside the person's own data. A find
 /// that names a file of the workspace's folder answers its name and its path, which whoever
 /// put it there wrote: data to reason about, as what the file says is, never an instruction.
@@ -37,6 +78,64 @@ fn naming_files(reply: Reply) -> Reply {
 }
 
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
+    /// What the workspace's search finds for `needle`, asked as whoever calls it: said plainly
+    /// when this device keeps no search, never answered with a ranking of its own.
+    async fn searched(&self, needle: &str, within: &Within) -> Result<Vec<Found>, Failure> {
+        let Some(search) = self.host.resource_search() else {
+            return Err(
+                "this host keeps no search of its workspace: list an app's directory instead \
+                 (tilo_ls names the apps)"
+                    .into(),
+            );
+        };
+        let found = search
+            .find_within(&self.caller, needle, within)
+            .await
+            .ok_or("the host's search stopped answering")??;
+        Ok(found)
+    }
+
+    /// `path` as the address the tools list the resource at, when it is
+    /// written as the reference a person types (`#12`), or ends in the number
+    /// a listing shows an item by (`tasks/Issues/1`, the `#1` a person reads):
+    /// what the workspace's search finds for it, named by the path `tilo_ls`
+    /// writes. Any other path is itself.
+    pub(super) async fn expand_reference(&self, path: &str) -> Result<String, Failure> {
+        let (reference, after, numbered) = match split_reference(path) {
+            Some((reference, after)) => (reference.to_owned(), after.to_owned(), false),
+            None => match path.trim().rsplit_once('/') {
+                Some((_, last)) if last.chars().all(|character| character.is_ascii_digit()) => {
+                    (format!("#{last}"), String::new(), true)
+                }
+                _ => return Ok(path.to_owned()),
+            },
+        };
+        let found = self.searched(&reference, &Within::default()).await?;
+        let (_, running) = self.providers().await?;
+        let mut reads = Reads::default();
+        for hit in &found {
+            if hit.kind == tilo_actions::remote::FOUND_FILE {
+                continue;
+            }
+            if let Some((path, _)) = self
+                .locate(hit.app.as_deref(), hit, &running, &mut reads)
+                .await
+            {
+                return Ok(format!("{path}{after}"));
+            }
+        }
+        // A number that names nothing is not an address of its own: the path
+        // stands, and the read it is of says what it finds.
+        if numbered {
+            return Ok(path.to_owned());
+        }
+        Err(format!(
+            "no resource of the workspace reads as {reference}; tilo_ls lists the apps and what \
+             they hold, and tilo_find looks for a word in them"
+        )
+        .into())
+    }
+
     /// What the workspace holds, by the host's own search: on a desktop the
     /// one search it runs, the palette's ranking and `place_found`'s, so a
     /// text an agent asks for answers what the person sees, in the person's
@@ -58,17 +157,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             return Err("query needs a word to look for".into());
         }
         let limit = args.limit.unwrap_or(FIND_HITS).clamp(1, 100);
-        let Some(search) = self.host.resource_search() else {
-            return Err(
-                "this host keeps no search of its workspace: list an app's directory instead \
-                 (tilo_ls names the apps)"
-                    .into(),
-            );
-        };
-        let found = search
-            .find_within(&self.caller, &words, &within)
-            .await
-            .ok_or("the host's search stopped answering")??;
+        let found = self.searched(&words, &within).await?;
         if found.is_empty() {
             return Ok(Reply::ok(nothing_matches(&args.query)));
         }
@@ -90,7 +179,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // Every directory this find reads once, for all the hits that name it: a search answers
         // many rows from one app's directory, and reading it again for each of them is what an
         // agent's find spends its time on.
-        let mut levels = Levels::new();
+        let mut reads = Reads::default();
         let mut lines: Vec<String> = Vec::new();
         let mut hits: Vec<Value> = Vec::new();
         for hit in &found {
@@ -112,8 +201,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 }
                 continue;
             }
-            let Some((line, path, kind)) =
-                self.found_line(hit, &running, &forms, &mut levels).await
+            let Some((line, path, kind)) = self.found_line(hit, &running, &forms, &mut reads).await
             else {
                 continue;
             };
@@ -250,10 +338,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         found: &Found,
         running: &[(String, Value)],
         forms: &ProgramForms,
-        levels: &mut Levels,
+        reads: &mut Reads,
     ) -> Option<(String, String, String)> {
         let located = self
-            .locate(found.app.as_deref(), found, running, levels)
+            .locate(found.app.as_deref(), found, running, reads)
             .await;
         // No directory of an app this workspace lists holds it (a setting's
         // page, a file): a path `tilo_ls` cannot read names nothing, so the
@@ -293,7 +381,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         hint: Option<&str>,
         found: &Found,
         running: &[(String, Value)],
-        levels: &mut Levels,
+        reads: &mut Reads,
     ) -> Option<(String, String)> {
         // Only the apps `tilo_ls` lists, by the name it lists them by: a
         // path it cannot read names nothing. The app the search said the row
@@ -330,7 +418,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         {
             let (name, provider) = providers.remove(at);
             let several = providers.iter().any(|(other, _)| *other == name);
-            let (path, kind) = self.ls_path(&provider, found, levels).await?;
+            let (path, kind) = self.ls_path(&provider, found, reads).await?;
             let app = if several {
                 format!("{name}@{provider}")
             } else {
@@ -339,7 +427,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             return Some((format!("{app}/{path}"), kind));
         }
         for (name, provider) in providers {
-            let Some((path, kind)) = self.ls_path(&provider, found, levels).await else {
+            let Some((path, kind)) = self.ls_path(&provider, found, reads).await else {
                 continue;
             };
             return Some((format!("{name}/{path}"), kind));
@@ -347,7 +435,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         None
     }
 
-    /// The app's other records, where it keeps one per file (a PDF each): a line and a row for
+    /// The app's other documents, where it keeps one per file (a PDF each): a line and a row
     /// each, by the path that names it (`pdf-viewer@record:…`) and what it holds. Listing the
     /// app shows the record it acts in; these are the rest, so none of them goes unseen.
     pub(super) async fn other_resources(
@@ -418,27 +506,29 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         &self,
         provider: &str,
         found: &Found,
-        levels: &mut Levels,
+        reads: &mut Reads,
     ) -> Option<(String, String)> {
-        let node = self.find_node(provider, found, levels).await?;
+        let node = self.find_node(provider, found, reads).await?;
         let kind = node.kind.clone();
         // The name of each step from the hit up, best last.
         let mut names: Vec<String> = Vec::new();
         let mut here = node;
         for _ in 0..DEEP_READS {
+            // A row the app publishes at its own top level is named there,
+            // however deep its resource also nests it: the shortest address is
+            // the one the app's own listing writes.
+            let Ok(top) = self.level(provider, "", reads.of(provider)).await else {
+                return None;
+            };
+            if top.children.iter().any(|node| node.id == here.id) {
+                names.push(here.found_name(&top.children));
+                break;
+            }
             let parent = here.parent.clone();
             if parent.is_empty() {
-                // At the app's root: the top level names it there. A row the
-                // top level does not list (a body published beside its note)
-                // hangs under the container that feeds it, found by the key
-                // its own key extends.
-                let Ok(top) = self.level(provider, "", levels).await else {
-                    return None;
-                };
-                if top.children.iter().any(|node| node.id == here.id) {
-                    names.push(here.found_name(&top.children));
-                    break;
-                }
+                // A row the top level does not list (a body published beside
+                // its note) hangs under the container that feeds it, found by
+                // the key its own key extends.
                 // A field published beside its record (a note's body) hangs
                 // under the record that publishes it: the note is asked for
                 // the field's own name, one lookup.
@@ -450,7 +540,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     .filter(|node| node.container)
                     .take(ROOT_PEEK)
                 {
-                    let got = self.named(provider, &container.id, &field).await;
+                    let got = self
+                        .named_once(provider, &container.id, &field, reads)
+                        .await;
                     let Ok(Some(at)) = got else {
                         continue;
                     };
@@ -470,7 +562,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             // Asked by the name the row goes by: the rows holding it, not
             // the whole level, whose size the container's contents decide.
             let Ok(level) = self
-                .level_named(provider, &parent, here.label.trim(), levels)
+                .level_named(provider, &parent, here.label.trim(), reads)
                 .await
             else {
                 return None;
@@ -497,7 +589,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             let Some(holder) = holder else {
                 // Not a row of this level: the top level lists it, and
                 // names `here` in the level the parent read.
-                let Ok(top) = self.level(provider, "", levels).await else {
+                let Ok(top) = self.level(provider, "", reads.of(provider)).await else {
                     return None;
                 };
                 let top_holder = top.children.iter().find(|node| node.id == parent).cloned();
@@ -509,7 +601,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     // `parent` is an id, not a name a program types a type with: it is found
                     // by the id alone, so no program form is read into it.
                     None => self
-                        .deep(provider, &parent, None, levels, None)
+                        .deep(provider, &parent, None, reads.of(provider), None)
                         .await
                         .ok()
                         .flatten(),
@@ -519,7 +611,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 // it holds this row alone.
                 if let Some(owner) = top_holder {
                     let held = self
-                        .level_named(provider, &owner.id, here.label.trim(), levels)
+                        .level_named(provider, &owner.id, here.label.trim(), reads)
                         .await
                         .unwrap_or_else(|_| level.clone());
                     let mut siblings = held.children.clone();
@@ -536,7 +628,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             // a field labelled with its record's title is told apart from
             // the record, and falls back to its own key's name (`body`).
             let held = self
-                .level_named(provider, &holder.id, here.label.trim(), levels)
+                .level_named(provider, &holder.id, here.label.trim(), reads)
                 .await
                 .unwrap_or_else(|_| level.clone());
             let mut siblings = held.children.clone();
@@ -556,12 +648,34 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         provider: &str,
         parent: &str,
         name: &str,
-        levels: &mut Levels,
+        reads: &mut Reads,
     ) -> Result<Level, String> {
-        if let Ok(Some(named)) = self.named(provider, parent, name).await {
+        if let Ok(Some(named)) = self.named_once(provider, parent, name, reads).await {
             return Ok(named);
         }
-        self.level(provider, parent, levels).await
+        self.level(provider, parent, reads.of(provider)).await
+    }
+
+    /// [`Self::named`], asked once in one find: the same name under the same parent of the same
+    /// app is the same answer for every hit whose path passes it.
+    async fn named_once(
+        &self,
+        provider: &str,
+        parent: &str,
+        name: &str,
+        reads: &mut Reads,
+    ) -> Result<Option<Level>, String> {
+        let asked: Asked = (
+            provider.to_owned(),
+            parent.to_owned(),
+            name.trim().to_owned(),
+        );
+        if let Some(answered) = reads.named.get(&asked) {
+            return Ok(answered.clone());
+        }
+        let answered = self.named(provider, parent, name).await?;
+        reads.named.insert(asked, answered.clone());
+        Ok(answered)
     }
 
     /// The directory row `found` names: the row whose id it carries, or the
@@ -571,11 +685,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         &self,
         provider: &str,
         found: &Found,
-        levels: &mut Levels,
+        reads: &mut Reads,
     ) -> Option<Node> {
-        let mut own = Levels::new();
-        let levels = if levels.is_empty() { &mut own } else { levels };
-        let Ok(top) = self.level(provider, "", levels).await else {
+        let Ok(top) = self.level(provider, "", reads.of(provider)).await else {
             return None;
         };
         let key = bound_key(&found.resource);
@@ -587,9 +699,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .flatten();
         // Asked at the app's top by the name the search gave it: a host that
         // publishes more rows than one listing reads (a workspace's records)
-        // still answers what a name names, and the row may be past the page.
-        for name in asked.iter().chain([&found.label]) {
-            let Ok(Some(at)) = self.named(provider, "", name).await else {
+        // still answers what a name names, and the row may be past the page. A top level that
+        // was read whole holds every row a name can name there, and is looked through below
+        // by the same rule: only a level the read stopped in is asked. A bound id is asked as
+        // before, since its field's row is looked for under what holds it first.
+        let asks_top = key.is_some() || top.unread();
+        for name in asked.iter().chain([&found.label]).filter(|_| asks_top) {
+            let Ok(Some(at)) = self.named_once(provider, "", name, reads).await else {
                 continue;
             };
             if let Some(node) = at
@@ -637,13 +753,15 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             let field = field.to_owned();
             for container in &containers {
                 for name in [&found.label, &field] {
-                    let Ok(Some(at)) = self.named(provider, &container.id, name).await else {
+                    let Ok(Some(at)) = self.named_once(provider, &container.id, name, reads).await
+                    else {
                         continue;
                     };
                     let Some(holder) = at.children.iter().find(|node| node.container) else {
                         continue;
                     };
-                    let Ok(held) = self.level(provider, &holder.id, levels).await else {
+                    let Ok(held) = self.level(provider, &holder.id, reads.of(provider)).await
+                    else {
                         continue;
                     };
                     if let Some(node) = held.children.iter().find(|node| node.key == *key) {
@@ -666,7 +784,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
         // The resource can hang below the row its id extends: a mailbox is
         // under its account, not under the app's root.
-        self.under_rows(provider, found, asked.as_deref(), &containers, levels)
+        self.under_rows(provider, found, asked.as_deref(), &containers, reads)
             .await
     }
 
@@ -682,7 +800,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         found: &Found,
         asked: Option<&str>,
         starts: &[&Node],
-        levels: &mut Levels,
+        reads: &mut Reads,
     ) -> Option<Node> {
         let key = bound_key(&found.resource);
         let mut frontier: Vec<Node> = starts.iter().map(|node| (*node).clone()).collect();
@@ -703,7 +821,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     .into_iter()
                     .chain(std::iter::once(found.label.as_str()))
                 {
-                    let Ok(Some(inside)) = self.named(provider, &container.id, name).await else {
+                    let Ok(Some(inside)) =
+                        self.named_once(provider, &container.id, name, reads).await
+                    else {
                         continue;
                     };
                     if let Some(node) = inside
@@ -717,7 +837,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 // A bound field's row is a child of the container itself,
                 // named by the key the bound id spells. Only a bound id: a
                 // plain resource is a row the level above named.
-                let Ok(level) = self.level(provider, &container.id, levels).await else {
+                let Ok(level) = self
+                    .level(provider, &container.id, reads.of(provider))
+                    .await
+                else {
                     continue;
                 };
                 // A row the container's level lists is a row the resource

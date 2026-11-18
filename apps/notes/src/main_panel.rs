@@ -906,6 +906,9 @@ impl MainPanel {
         if self.origin != origin {
             self.origin = origin;
             self.header.set_provenance(self.origin.clone());
+            // The dates say "moved here" for a note written elsewhere first,
+            // so the line under the header is reworded with the source.
+            self.refresh_captions();
             self.header_changed();
         }
     }
@@ -956,7 +959,7 @@ impl MainPanel {
                 .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
                 .to_zoned(jiff::tz::TimeZone::system())
         });
-        lines.extend(self.dates.labels_at(&now));
+        lines.extend(self.dates.labels_at(&now, self.origin.is_some()));
         lines
     }
 

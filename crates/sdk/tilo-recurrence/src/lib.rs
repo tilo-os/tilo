@@ -15,14 +15,12 @@
 //! * [`Repeat`] is the small preset set a picker cycles through ("Every
 //!   week", …) and the canonical rule text for each.
 //!
-//! Expansion itself is the [`rrule`] crate's: this crate owns the stored text
-//! and asks that engine for the dates, so a series agrees with every other
-//! RFC 5545 implementation instead of with a second engine of our own. The one
-//! thing the engine cannot do is start a query in the middle of a series — it
-//! always expands from `DTSTART` — so [`Rule`] moves a rule without day
-//! filters forward by whole periods and hands the engine what is left of its
-//! `COUNT`: a monthly view of a series seeded in 1996 costs its window, not
-//! the thirty years before it.
+//! Expansion follows RFC 5545: each period of the rule's frequency keeps the
+//! days its `BYDAY` and `BYMONTHDAY` allow, and `COUNT` counts them from
+//! `DTSTART`. [`Rule`] moves a rule without day filters forward by whole
+//! periods and starts there with what is left of its `COUNT`: a monthly view
+//! of a series seeded in 1996 costs its window, not the thirty years before
+//! it.
 //!
 //! Occurrences keep their authored wall time: [`zone`] resolves a wall time to
 //! an instant with one cross-device policy — a fold takes the earlier instant,
@@ -41,7 +39,6 @@ use std::ops::ControlFlow;
 
 use jiff::Timestamp;
 use jiff::civil::{Date, DateTime, Weekday};
-use rrule::RRuleSet;
 
 pub use zone::{Resolution, canonical_zone, normalize_wall, wall_instant, wall_to_utc};
 
@@ -58,7 +55,7 @@ const SKIPPED_PERIODS: usize = 32;
 
 #[cfg(test)]
 thread_local! {
-    /// The dates [`Rule`] has taken from the engine on this thread, so window
+    /// The dates [`Rule`] has expanded on this thread, so window
     /// expansion's cost can be pinned to the window it was asked for.
     static DATES_TAKEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
@@ -135,7 +132,8 @@ impl Rule {
     /// dates.
     ///
     /// Returns `None` when a part is present that this crate cannot expand
-    /// exactly (`SECONDLY`, `BYSETPOS`, an ordinal `BYDAY` such as `-1FR`, …).
+    /// exactly (`SECONDLY`, `BYSETPOS`, an ordinal `BYDAY` such as `-1FR`, …)
+    /// or that RFC 5545 does not allow (`BYMONTHDAY` in a weekly rule).
     /// Refusing is deliberate: silently dropping a limit the author wrote
     /// would show occurrences the rule does not have.
     #[must_use]
@@ -179,8 +177,13 @@ impl Rule {
                 _ => return None,
             }
         }
+        let freq = freq?;
+        // RFC 5545 gives `BYMONTHDAY` no meaning in a weekly rule.
+        if freq == Freq::Weekly && !by_month_day.is_empty() {
+            return None;
+        }
         Some(
-            Self::new(freq?)
+            Self::new(freq)
                 .with_interval(interval)
                 .with_by_day(by_day)
                 .with_month_days(by_month_day)
@@ -343,14 +346,8 @@ impl Rule {
         let Some((start, count)) = self.skip_to(seed, from) else {
             return out;
         };
-        walk(self.engine(start, count, true), from, |date| {
-            if date > last {
-                return ControlFlow::Break(());
-            }
+        self.walk(start, count, true, from, last, |date| {
             out.push(date);
-            if date == last {
-                return ControlFlow::Break(());
-            }
             ControlFlow::Continue(())
         });
         out
@@ -369,10 +366,8 @@ impl Rule {
         }
         let (start, count) = self.skip_to(seed, date)?;
         let mut found = None;
-        walk(self.engine(start, count, true), date, |day| {
-            if day <= last {
-                found = Some(day);
-            }
+        self.walk(start, count, true, date, last, |day| {
+            found = Some(day);
             ControlFlow::Break(())
         });
         found
@@ -417,8 +412,8 @@ impl Rule {
     ///
     /// Arithmetic for the presets a picker writes, so a counted series stays
     /// as cheap to show as an unbounded one however old it is; a rule with
-    /// `BYDAY` or `BYMONTHDAY` filters of its own is counted by the engine,
-    /// whose filters do not divide into the frequency's steps.
+    /// `BYDAY` or `BYMONTHDAY` filters of its own is counted by walking it,
+    /// as its filters do not divide into the frequency's steps.
     #[must_use]
     pub fn count_before(&self, seed: Date, date: Date) -> u64 {
         if date <= seed {
@@ -426,7 +421,7 @@ impl Rule {
         }
         if !self.by_day.is_empty() || !self.by_month_day.is_empty() {
             let mut count = 0_u64;
-            walk(self.engine(seed, None, false), seed, |day| {
+            self.walk(seed, None, false, seed, date, |day| {
                 if day >= date {
                     return ControlFlow::Break(());
                 }
@@ -457,8 +452,8 @@ impl Rule {
     ///
     /// A rule without day filters steps forward by whole periods, so a counted
     /// series costs its window rather than the years since its seed. A
-    /// filtered rule ("every weekday") keeps its seed, whose dates the engine
-    /// has to walk to apply the filter.
+    /// filtered rule ("every weekday") keeps its seed, whose dates have to be
+    /// walked to apply the filter.
     fn skip_to(&self, seed: Date, from: Date) -> Option<(Date, Option<u32>)> {
         if from <= seed || !self.by_day.is_empty() || !self.by_month_day.is_empty() {
             return Some((seed, self.count));
@@ -500,67 +495,117 @@ impl Rule {
         }
     }
 
-    /// The set this rule expands to from `seed`, as RFC 5545's engine sees it.
+    /// Applies `visit` to the rule's dates from `seed` that fall on or after
+    /// `from`, in order, until it asks to stop or the series passes `end`.
     ///
     /// `count` stands in for [`Rule::count`], so a skip-ahead hands over what
-    /// is left of it. Without `limits` the engine drops `UNTIL` and the
-    /// exclusions, which is how counting the authored dates sees them.
-    fn engine(&self, seed: Date, count: Option<u32>, limits: bool) -> Option<RRuleSet> {
-        // The engine reads the rule as RFC 5545 text: midnight UTC on each
-        // date, and RFC 5545's default `WKST`, which is the week every counted
-        // series here is counted from.
-        let mut text = format!(
-            "DTSTART:{}T000000Z\nRRULE:FREQ={};INTERVAL={};WKST=MO",
-            seed.strftime("%Y%m%d"),
-            self.freq.as_rrule(),
-            self.interval(),
-        );
-        if !self.by_day.is_empty() {
-            let codes: Vec<&str> = self.by_day.iter().map(|day| weekday_code(*day)).collect();
-            let _ = write!(text, ";BYDAY={}", codes.join(","));
-        }
-        if !self.by_month_day.is_empty() {
-            let days: Vec<String> = self.by_month_day.iter().map(i8::to_string).collect();
-            let _ = write!(text, ";BYMONTHDAY={}", days.join(","));
-        }
-        if let Some(count) = count {
-            let _ = write!(text, ";COUNT={count}");
-        }
-        if limits && let Some(until) = self.until {
-            let _ = write!(text, ";UNTIL={}T000000Z", until.strftime("%Y%m%d"));
-        }
-        if limits && !self.exdates.is_empty() {
-            let dates: Vec<String> = self
-                .exdates
-                .iter()
-                .map(|date| format!("{}T000000Z", date.strftime("%Y%m%d")))
-                .collect();
-            let _ = write!(text, "\nEXDATE:{}", dates.join(","));
-        }
-        // A rule that matches nothing would otherwise expand for ever; the
-        // engine's own limit ends it instead.
-        Some(text.parse::<RRuleSet>().ok()?.limit())
-    }
-}
-
-/// Applies `visit` to the dates `set` yields from `from` on, in order, until it
-/// asks to stop.
-fn walk(set: Option<RRuleSet>, from: Date, mut visit: impl FnMut(Date) -> ControlFlow<()>) {
-    let Some(set) = set else {
-        return;
-    };
-    for at in &set {
-        #[cfg(test)]
-        DATES_TAKEN.with(|taken| taken.set(taken.get().saturating_add(1)));
-        let Some(date) = Timestamp::from_second(at.timestamp())
-            .ok()
-            .map(|at| at.to_zoned(jiff::tz::TimeZone::UTC).date())
-        else {
-            return;
+    /// is left of it. Without `limits` it ignores `UNTIL` and the exclusions,
+    /// which is how counting the authored dates sees them.
+    fn walk(
+        &self,
+        seed: Date,
+        count: Option<u32>,
+        limits: bool,
+        from: Date,
+        end: Date,
+        mut visit: impl FnMut(Date) -> ControlFlow<()>,
+    ) {
+        let end = match self.until {
+            Some(until) if limits => until.min(end),
+            _ => end,
         };
-        if date >= from && visit(date).is_break() {
-            return;
+        let mut left = count;
+        for period in 0_i64.. {
+            let Some((first, last)) = self.period(seed, period) else {
+                return;
+            };
+            if first > end {
+                return;
+            }
+            let mut day = first;
+            loop {
+                if day >= seed && self.fires_on(seed, day) {
+                    #[cfg(test)]
+                    DATES_TAKEN.with(|taken| taken.set(taken.get().saturating_add(1)));
+                    if day > end || left == Some(0) {
+                        return;
+                    }
+                    left = left.map(|left| left.saturating_sub(1));
+                    let excluded = limits && self.exdates.binary_search(&day).is_ok();
+                    if day >= from && !excluded && visit(day).is_break() {
+                        return;
+                    }
+                }
+                if day >= last {
+                    break;
+                }
+                let Ok(next) = day.tomorrow() else {
+                    return;
+                };
+                day = next;
+            }
         }
+    }
+
+    /// The first and last day of the rule's `index`th period from `seed`: a
+    /// day, a week from Monday (RFC 5545's default `WKST`), a month or a year,
+    /// `INTERVAL` of them apart.
+    fn period(&self, seed: Date, index: i64) -> Option<(Date, Date)> {
+        let step = index.checked_mul(i64::from(self.interval()))?;
+        let span = jiff::Span::new();
+        match self.freq {
+            Freq::Daily => {
+                let day = seed.checked_add(span.try_days(step).ok()?).ok()?;
+                Some((day, day))
+            }
+            Freq::Weekly => {
+                let monday = seed
+                    .checked_sub(span.days(seed.weekday().to_monday_zero_offset()))
+                    .ok()?;
+                let first = monday
+                    .checked_add(span.try_days(step.checked_mul(7)?).ok()?)
+                    .ok()?;
+                Some((first, first.checked_add(span.days(6)).ok()?))
+            }
+            Freq::Monthly => {
+                let first = seed
+                    .first_of_month()
+                    .checked_add(span.try_months(step).ok()?)
+                    .ok()?;
+                Some((first, first.last_of_month()))
+            }
+            Freq::Yearly => {
+                let first = seed
+                    .first_of_year()
+                    .checked_add(span.try_years(step).ok()?)
+                    .ok()?;
+                Some((first, first.last_of_year()))
+            }
+        }
+    }
+
+    /// Whether a day of a period is one of the rule's dates. Without day
+    /// filters a rule keeps the seed's weekday, day of the month, or month and
+    /// day, as RFC 5545 takes them from `DTSTART`.
+    fn fires_on(&self, seed: Date, day: Date) -> bool {
+        if self.by_day.is_empty() && self.by_month_day.is_empty() {
+            return match self.freq {
+                Freq::Daily => true,
+                Freq::Weekly => day.weekday() == seed.weekday(),
+                Freq::Monthly => day.day() == seed.day(),
+                Freq::Yearly => (day.month(), day.day()) == (seed.month(), seed.day()),
+            };
+        }
+        let from_end = day
+            .day()
+            .saturating_sub(day.days_in_month())
+            .saturating_sub(1);
+        (self.by_day.is_empty() || self.by_day.contains(&day.weekday()))
+            && (self.by_month_day.is_empty()
+                || self
+                    .by_month_day
+                    .iter()
+                    .any(|month_day| *month_day == day.day() || *month_day == from_end))
     }
 }
 
@@ -1089,7 +1134,7 @@ mod tests {
     fn count_before_matches_the_dates_the_rule_walks() {
         // A counted series must know how many dates came before the window
         // without walking them, so the skip-ahead can spend them; this checks
-        // that arithmetic against the dates the engine produces.
+        // that arithmetic against the dates the rule walks.
         let cases = [
             ("FREQ=DAILY", date(2026, 6, 1)),
             ("FREQ=DAILY;INTERVAL=3", date(2026, 6, 1)),
@@ -1145,7 +1190,7 @@ mod tests {
         assert_eq!(young.len(), 6);
         assert_eq!(old, young);
         assert_eq!(old_cost, young_cost, "the window, not the age");
-        assert_eq!(young_cost, 42, "one date taken per day asked");
+        assert_eq!(young_cost, 6, "one date taken per date shown");
 
         // The skip-ahead only moves where expansion starts: the dates in the
         // window are the ones the series itself produces there.
@@ -1161,13 +1206,8 @@ mod tests {
         ] {
             let rule = parse(text);
             let mut made_from_the_seed = Vec::new();
-            walk(rule.engine(seed, rule.count(), true), seed, |day| {
-                if day > to {
-                    return ControlFlow::Break(());
-                }
-                if day >= from {
-                    made_from_the_seed.push(day);
-                }
+            rule.walk(seed, rule.count(), true, from, to, |day| {
+                made_from_the_seed.push(day);
                 ControlFlow::Continue(())
             });
             assert_eq!(
@@ -1182,15 +1222,15 @@ mod tests {
         // Asking the old series for its next date lands in the window too.
         let next = date(2026, 9, 30);
         let mut from_the_seed = None;
-        walk(
-            weekly.engine(date(1996, 6, 3), weekly.count(), true),
+        weekly.walk(
             date(1996, 6, 3),
+            weekly.count(),
+            true,
+            next,
+            date(2030, 1, 1),
             |day| {
-                if day >= next {
-                    from_the_seed = Some(day);
-                    return ControlFlow::Break(());
-                }
-                ControlFlow::Continue(())
+                from_the_seed = Some(day);
+                ControlFlow::Break(())
             },
         );
         assert_eq!(
@@ -1271,6 +1311,209 @@ mod tests {
             floating
                 .iter()
                 .all(|occurrence| occurrence.instant.is_none())
+        );
+    }
+
+    fn days(year: i16, month: i8, list: &[i8]) -> Vec<Date> {
+        list.iter().map(|day| date(year, month, *day)).collect()
+    }
+
+    /// Each rule's dates from its seed up to a date, against the dates RFC
+    /// 5545 section 3.8.5.3 lists for it.
+    fn expands_as_the_rfc_lists(cases: Vec<(&str, Date, Date, Vec<Date>)>) {
+        for (text, seed, to, expected) in cases {
+            assert_eq!(
+                parse(text).occurrences(seed, seed, to),
+                expected,
+                "{text} from {seed}"
+            );
+        }
+    }
+
+    /// The daily and weekly examples of RFC 5545 whose parts this crate
+    /// expands. `UNTIL` is the last date in the series' own zone.
+    #[test]
+    fn rfc_5545_daily_and_weekly_examples() {
+        expands_as_the_rfc_lists(vec![
+            (
+                "FREQ=DAILY;COUNT=10",
+                date(1997, 9, 2),
+                date(1997, 12, 31),
+                days(1997, 9, &[2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
+            ),
+            (
+                "FREQ=DAILY;INTERVAL=2",
+                date(1997, 9, 2),
+                date(1997, 10, 2),
+                [
+                    days(
+                        1997,
+                        9,
+                        &[2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30],
+                    ),
+                    days(1997, 10, &[2]),
+                ]
+                .concat(),
+            ),
+            (
+                "FREQ=DAILY;INTERVAL=10;COUNT=5",
+                date(1997, 9, 2),
+                date(1997, 12, 31),
+                [days(1997, 9, &[2, 12, 22]), days(1997, 10, &[2, 12])].concat(),
+            ),
+            (
+                "FREQ=WEEKLY;COUNT=10",
+                date(1997, 9, 2),
+                date(1997, 12, 31),
+                [
+                    days(1997, 9, &[2, 9, 16, 23, 30]),
+                    days(1997, 10, &[7, 14, 21, 28]),
+                    days(1997, 11, &[4]),
+                ]
+                .concat(),
+            ),
+            (
+                "FREQ=WEEKLY;COUNT=10;BYDAY=TU,TH",
+                date(1997, 9, 2),
+                date(1997, 12, 31),
+                [
+                    days(1997, 9, &[2, 4, 9, 11, 16, 18, 23, 25, 30]),
+                    days(1997, 10, &[2]),
+                ]
+                .concat(),
+            ),
+            (
+                "FREQ=WEEKLY;INTERVAL=2;UNTIL=19971223;BYDAY=MO,WE,FR",
+                date(1997, 9, 1),
+                date(1998, 12, 31),
+                [
+                    days(1997, 9, &[1, 3, 5, 15, 17, 19, 29]),
+                    days(1997, 10, &[1, 3, 13, 15, 17, 27, 29, 31]),
+                    days(1997, 11, &[10, 12, 14, 24, 26, 28]),
+                    days(1997, 12, &[8, 10, 12, 22]),
+                ]
+                .concat(),
+            ),
+            (
+                "FREQ=WEEKLY;INTERVAL=2;COUNT=8;BYDAY=TU,TH",
+                date(1997, 9, 2),
+                date(1997, 12, 31),
+                [
+                    days(1997, 9, &[2, 4, 16, 18, 30]),
+                    days(1997, 10, &[2, 14, 16]),
+                ]
+                .concat(),
+            ),
+        ]);
+
+        for (text, len) in [
+            ("FREQ=DAILY;UNTIL=19971223", 113),
+            ("FREQ=WEEKLY;UNTIL=19971223", 17),
+        ] {
+            let dates =
+                parse(text).occurrences(date(1997, 9, 2), date(1997, 9, 2), date(1998, 12, 31));
+            assert_eq!(dates.len(), len, "{text}");
+            assert_eq!(dates.first(), Some(&date(1997, 9, 2)), "{text}");
+            assert_eq!(dates.last(), Some(&date(1997, 12, 23)), "{text}");
+        }
+    }
+
+    /// The monthly examples of RFC 5545 whose parts this crate expands.
+    #[test]
+    fn rfc_5545_monthly_examples() {
+        expands_as_the_rfc_lists(vec![
+            (
+                "FREQ=MONTHLY;BYMONTHDAY=-3",
+                date(1997, 9, 28),
+                date(1998, 2, 28),
+                vec![
+                    date(1997, 9, 28),
+                    date(1997, 10, 29),
+                    date(1997, 11, 28),
+                    date(1997, 12, 29),
+                    date(1998, 1, 29),
+                    date(1998, 2, 26),
+                ],
+            ),
+            (
+                "FREQ=MONTHLY;COUNT=10;BYMONTHDAY=2,15",
+                date(1997, 9, 2),
+                date(1998, 12, 31),
+                [
+                    days(1997, 9, &[2, 15]),
+                    days(1997, 10, &[2, 15]),
+                    days(1997, 11, &[2, 15]),
+                    days(1997, 12, &[2, 15]),
+                    days(1998, 1, &[2, 15]),
+                ]
+                .concat(),
+            ),
+            (
+                "FREQ=MONTHLY;COUNT=10;BYMONTHDAY=1,-1",
+                date(1997, 9, 30),
+                date(1998, 12, 31),
+                [
+                    days(1997, 9, &[30]),
+                    days(1997, 10, &[1, 31]),
+                    days(1997, 11, &[1, 30]),
+                    days(1997, 12, &[1, 31]),
+                    days(1998, 1, &[1, 31]),
+                    days(1998, 2, &[1]),
+                ]
+                .concat(),
+            ),
+            (
+                "FREQ=MONTHLY;INTERVAL=18;COUNT=10;BYMONTHDAY=10,11,12,13,14,15",
+                date(1997, 9, 10),
+                date(2001, 12, 31),
+                [
+                    days(1997, 9, &[10, 11, 12, 13, 14, 15]),
+                    days(1999, 3, &[10, 11, 12, 13]),
+                ]
+                .concat(),
+            ),
+            (
+                "FREQ=MONTHLY;INTERVAL=2;BYDAY=TU",
+                date(1997, 9, 2),
+                date(1998, 3, 31),
+                [
+                    days(1997, 9, &[2, 9, 16, 23, 30]),
+                    days(1997, 11, &[4, 11, 18, 25]),
+                    days(1998, 1, &[6, 13, 20, 27]),
+                    days(1998, 3, &[3, 10, 17, 24, 31]),
+                ]
+                .concat(),
+            ),
+            (
+                "FREQ=MONTHLY;BYDAY=FR;BYMONTHDAY=13;EXDATE=19970902",
+                date(1997, 9, 2),
+                date(2000, 12, 31),
+                vec![
+                    date(1998, 2, 13),
+                    date(1998, 3, 13),
+                    date(1998, 11, 13),
+                    date(1999, 8, 13),
+                    date(2000, 10, 13),
+                ],
+            ),
+        ]);
+
+        // The first Saturday that follows the first Sunday of the month.
+        let saturdays = parse("FREQ=MONTHLY;BYDAY=SA;BYMONTHDAY=7,8,9,10,11,12,13");
+        assert_eq!(
+            saturdays.occurrences(date(1997, 9, 13), date(1997, 9, 13), date(1998, 6, 30)),
+            vec![
+                date(1997, 9, 13),
+                date(1997, 10, 11),
+                date(1997, 11, 8),
+                date(1997, 12, 13),
+                date(1998, 1, 10),
+                date(1998, 2, 7),
+                date(1998, 3, 7),
+                date(1998, 4, 11),
+                date(1998, 5, 9),
+                date(1998, 6, 13),
+            ]
         );
     }
 }

@@ -127,6 +127,9 @@ impl WorkspaceDocuments {
     pub(crate) fn landed(&mut self, route: &DocumentRoute) {
         self.landings = self.landings.wrapping_add(1);
         self.arrived.insert(route.clone(), self.landings);
+        // What search answers with is read again from the document as it stands now: the write
+        // landed, so the entries kept at the old revision describe a document that is gone.
+        self.entries.remove(route);
     }
 
     /// The workspace's id.
@@ -137,6 +140,34 @@ impl WorkspaceDocuments {
     /// How many writes landed in the workspace: a revision of it as a whole.
     pub(crate) const fn landings(&self) -> u64 {
         self.landings
+    }
+
+    /// Whether what search finds in the document at `route` is kept: a query answers from it
+    /// without opening the document at all.
+    pub(crate) fn indexed(&self, route: &DocumentRoute) -> bool {
+        self.entries.contains_key(route)
+    }
+
+    /// What search finds in the document at `route`, as its app last told it.
+    pub(crate) fn kept_entries(&self, route: &DocumentRoute) -> Option<Arc<[IndexEntry]>> {
+        self.entries
+            .get(route)
+            .map(|(_, entries)| Arc::clone(entries))
+    }
+
+    /// Up to `limit` of the workspace's documents search keeps no entries for: the warm pass
+    /// reads them when nothing else is asked of this thread, so a query never has to.
+    pub(crate) fn unindexed(&self, limit: usize) -> Vec<DocumentRoute> {
+        self.routes()
+            .into_iter()
+            .filter(|route| !self.indexed(route))
+            .take(limit)
+            .collect()
+    }
+
+    /// Whether any of the workspace's documents waits to be read for the index.
+    pub(crate) fn has_unindexed(&self) -> bool {
+        self.routes().into_iter().any(|route| !self.indexed(&route))
     }
 
     /// The records of the workspace not held open.
@@ -223,26 +254,40 @@ impl WorkspaceDocuments {
         })
     }
 
-    /// `read` of the record at `route` (`T` kept in `slot`), again only once
+    /// `read` of the record at `route` (`T` kept in `field`), again only once
     /// it changed since. `None` for a record the replica does not hold or
     /// cannot open yet.
     fn cached<T: Clone>(
         &mut self,
         route: &DocumentRoute,
-        slot: fn(&mut Self) -> &mut Read<T>,
+        field: fn(&mut Self) -> &mut Read<T>,
         read: impl FnOnce(Vec<u8>) -> T,
     ) -> Option<T> {
-        let known = slot(self).get(route).map(|(revision, _)| *revision);
+        self.cached_telling(route, field, read)
+            .map(|(value, _)| value)
+    }
+
+    /// [`Self::cached`], saying whether the document was opened for it: `false` when what is
+    /// kept answered without reading it at all.
+    fn cached_telling<T: Clone>(
+        &mut self,
+        route: &DocumentRoute,
+        field: fn(&mut Self) -> &mut Read<T>,
+        read: impl FnOnce(Vec<u8>) -> T,
+    ) -> Option<(T, bool)> {
+        let known = field(self).get(route).map(|(revision, _)| *revision);
         match self
             .engine
             .record_since(&route.cluster_id, &route.app_id, &route.document, known)
         {
             Ok(Some((bytes, revision))) => {
                 let value = read(bytes);
-                slot(self).insert(route.clone(), (revision, value.clone()));
-                Some(value)
+                field(self).insert(route.clone(), (revision, value.clone()));
+                Some((value, true))
             }
-            Ok(None) => slot(self).get(route).map(|(_, value)| value.clone()),
+            Ok(None) => field(self)
+                .get(route)
+                .map(|(_, value)| (value.clone(), false)),
             Err(error) => {
                 tracing::debug!(%error, record = %route.document, "agent: a record does not read");
                 None
@@ -270,15 +315,16 @@ impl WorkspaceDocuments {
         .flatten()
     }
 
-    /// What search finds in the record at `route`, as `read` finds it in the
-    /// record's saved document: the entries its app publishes to the search
-    /// index. Read once per change of the record.
+    /// What search finds in the document at `route`, as `read` finds it in
+    /// what was saved of it: the entries its app publishes to the search
+    /// index. Read once per change of it, and whether it was opened for this
+    /// answer.
     pub(crate) fn entries(
         &mut self,
         route: &DocumentRoute,
         read: impl FnOnce(Vec<u8>) -> Result<Vec<IndexEntry>, String>,
-    ) -> Option<Arc<[IndexEntry]>> {
-        self.cached(
+    ) -> (Option<Arc<[IndexEntry]>>, bool) {
+        self.cached_telling(
             route,
             |records| &mut records.entries,
             |bytes| {
@@ -290,6 +336,7 @@ impl WorkspaceDocuments {
                     .into()
             },
         )
+        .map_or((None, false), |(entries, read)| (Some(entries), read))
     }
 
     fn read_texts(&mut self, reading: Reading) -> &mut HashMap<DocumentRoute, (Stamp, Arc<str>)> {

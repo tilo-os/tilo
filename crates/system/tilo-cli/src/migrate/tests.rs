@@ -8,7 +8,7 @@ use anyhow::Result;
 use serde_json::Value;
 
 use super::state::{Journal, Place, RunState};
-use super::workspace::{Answer, Call, Run, Status, Workspace};
+use super::workspace::{Answer, Call, Invocation, Status, Workspace};
 use super::{Lander, Stopped, thunderbird};
 
 /// A workspace that keeps every action it is asked, and every upload.
@@ -19,7 +19,7 @@ struct Recorded {
 }
 
 impl Workspace for Recorded {
-    fn act(&mut self, run: &Run, action: &str, args: Value) -> Result<Answer> {
+    fn act(&mut self, run: &Invocation, action: &str, args: Value) -> Result<Answer> {
         self.actions.push((run.id.clone(), action.to_owned(), args));
         Ok(Answer::of(None))
     }
@@ -50,7 +50,7 @@ fn run_once(home: &Path, place: &Place, workspace: &mut dyn Workspace) -> Result
     let mut journal = place.journal(thunderbird::SOURCE)?;
     journal.brought.clear();
     journal.already_there = 0;
-    let run = Run {
+    let run = Invocation {
         id: "run-1".into(),
         title: thunderbird::summary(&review),
     };
@@ -60,7 +60,7 @@ fn run_once(home: &Path, place: &Place, workspace: &mut dyn Workspace) -> Result
             workspace,
             opened: std::collections::BTreeSet::new(),
             landing_in: None,
-            run: &run,
+            invocation: &run,
             journal: &mut journal,
             place,
             source: thunderbird::SOURCE,
@@ -81,7 +81,7 @@ fn run_once(home: &Path, place: &Place, workspace: &mut dyn Workspace) -> Result
 struct HoldsMail(Recorded);
 
 impl Workspace for HoldsMail {
-    fn act(&mut self, run: &Run, action: &str, args: Value) -> Result<Answer> {
+    fn act(&mut self, run: &Invocation, action: &str, args: Value) -> Result<Answer> {
         if action == "mail/mail.mailbox#deliver-message" {
             self.0
                 .actions
@@ -399,13 +399,16 @@ fn a_step_that_waits_for_its_person_answers_pending_not_failed() {
 
     let waiting = Call::of(&serde_json::json!({
         "status": "failed",
-        "error": {"code": "rate_limited", "message": "busy", "retry_after_ms": 40},
+        "error": {"code": "not_ready", "message": "the workspace is not serving yet"},
     }))
     .unwrap();
     assert_eq!(waiting.status, Status::Failed);
     let error = waiting.error.unwrap();
-    assert_eq!(error.code(), "rate_limited");
-    assert!(error.asks_again(), "a busy workspace is asked again");
+    assert_eq!(error.code(), "not_ready");
+    assert!(
+        error.asks_again(),
+        "a workspace not serving yet is asked again"
+    );
 
     let already = Call::of(&serde_json::json!({
         "status": "failed",

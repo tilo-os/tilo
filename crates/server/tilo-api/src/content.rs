@@ -13,11 +13,17 @@
 //! whole — and the piece that completes it answers the content. An upload a
 //! lost connection cut stays open: the next `PUT` continues it, and `GET
 //! …/uploads/{upload}` says where it stands.
+//!
+//! The server sends an upload's bytes into the workspace in groups of pieces
+//! at once, so the link between them costs one round trip per group rather
+//! than one per piece: what limits a file's upload is the link's bandwidth or
+//! the workspace's disk, not its latency.
 
 use crate::lock;
 use crate::session::Session;
 use crate::v1::errors::ApiError;
 use base64::Engine as _;
+use futures_util::StreamExt as _;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -28,8 +34,11 @@ use std::time::{Duration, Instant};
 pub const MAX_CONTENT_BYTES: usize = 64 * 1024 * 1024;
 /// The most raw bytes one `tilo_put_append` carries.
 const CHUNK: usize = 512 * 1024;
+/// How many of an upload's pieces are on the wire at once: a slow link costs
+/// one round trip per group of these instead of per piece.
+const IN_FLIGHT: usize = 8;
 /// The most of an incoming piece the server holds before sending it on.
-pub(crate) const PIECE: usize = CHUNK;
+pub(crate) const PIECE: usize = CHUNK * IN_FLIGHT;
 /// How long an upload nothing is sent to stays open.
 const OPEN_FOR: Duration = Duration::from_secs(6 * 60 * 60);
 /// How many uploads one server keeps open at once; past it, the one left
@@ -115,7 +124,12 @@ pub(crate) async fn put(session: &Session, workspace: &str, body: &[u8]) -> Resu
 }
 
 /// Send `chunk` at `offset` to `upload` in `workspace`, in the pieces one
-/// `tilo_put_append` carries; answers the bytes the workspace accepted.
+/// `tilo_put_append` carries, a group at a time: the link is kept busy rather
+/// than waiting an answer for each piece. The workspace accepts pieces ahead
+/// of the bytes it holds within a bounded window and appends them as the gap
+/// fills, so pieces may arrive in any order; a group is awaited whole before
+/// the next is sent, so the pieces on the wire never land past that window.
+/// Answers the highest contiguous count of bytes the workspace holds.
 async fn send(
     session: &Session,
     workspace: &str,
@@ -124,22 +138,68 @@ async fn send(
     chunk: &[u8],
 ) -> Result<u64, String> {
     let mut written = offset;
-    for piece in chunk.chunks(CHUNK) {
-        let appended = session
-            .call_in(
-                workspace,
-                "tilo_put_append",
-                json!({
-                    "upload": upload,
-                    "offset": written,
-                    "chunk": base64::engine::general_purpose::STANDARD.encode(piece),
-                }),
+    let mut at = offset;
+    let mut group = Vec::with_capacity(IN_FLIGHT);
+    for (index, piece) in chunk.chunks(CHUNK).enumerate() {
+        group.push((at, index.saturating_mul(CHUNK), piece.len()));
+        at = at.saturating_add(piece.len() as u64);
+        if group.len() == IN_FLIGHT {
+            written = written.max(
+                send_group(
+                    session,
+                    workspace,
+                    upload,
+                    chunk,
+                    std::mem::take(&mut group),
+                )
+                .await?,
+            );
+        }
+    }
+    if !group.is_empty() {
+        written = written.max(send_group(session, workspace, upload, chunk, group).await?);
+    }
+    Ok(written)
+}
+
+/// [`send`]'s group of pieces, sent at once: the highest contiguous count
+/// of bytes the workspace holds after them.
+async fn send_group(
+    session: &Session,
+    workspace: &str,
+    upload: &Value,
+    chunk: &[u8],
+    group: Vec<(u64, usize, usize)>,
+) -> Result<u64, String> {
+    let answers: Vec<Result<u64, String>> = futures_util::stream::iter(group)
+        .map(|(at, from, len)| async move {
+            let piece = chunk
+                .get(from..from.saturating_add(len))
+                .unwrap_or_default();
+            let appended = session
+                .call_in(
+                    workspace,
+                    "tilo_put_append",
+                    json!({
+                        "upload": upload,
+                        "offset": at,
+                        "chunk": base64::engine::general_purpose::STANDARD.encode(piece),
+                    }),
+                )
+                .await?;
+            let written = answer(&appended, "written")?;
+            Ok::<_, String>(
+                written
+                    .as_u64()
+                    .unwrap_or_else(|| at.saturating_add(len as u64)),
             )
-            .await?;
-        let accepted = answer(&appended, "written")?;
-        written = accepted
-            .as_u64()
-            .unwrap_or_else(|| written.saturating_add(piece.len() as u64));
+        })
+        .buffer_unordered(IN_FLIGHT)
+        .collect()
+        .await;
+    let mut written = 0;
+    for answer in answers {
+        written = written.max(answer?);
     }
     Ok(written)
 }

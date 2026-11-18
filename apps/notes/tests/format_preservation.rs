@@ -204,8 +204,8 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
         live.key("Enter");
         assert_eq!(
             revision(&f, &checkout),
-            before_commit + 2,
-            "the typed command closes, then the conversion"
+            before_commit + 1,
+            "the conversion is a step of its own after the typed command"
         );
         let page = f.child;
         let verify = |doc: &automerge::AutoCommit| {
@@ -296,7 +296,7 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
         notes::metadata::register_messages();
         let now = local(2026, 6, 30, 10, 42, 0);
         assert!(
-            NoteDates::default().labels_at(&now).is_empty(),
+            NoteDates::default().labels_at(&now, false).is_empty(),
             "a note with no known date shows no header placeholder"
         );
         assert_eq!(
@@ -310,7 +310,7 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
             created: None,
             edited: Some(edited.timestamp().as_second()),
         };
-        let lines = edited_only.labels_at(&now);
+        let lines = edited_only.labels_at(&now, false);
         assert_eq!(lines, vec!["Edited Nov 17, 2023".to_string()]);
         let both = NoteDates {
             created: Some(created.timestamp().as_second()),
@@ -323,7 +323,7 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
                 .iter()
                 .all(|label| label.contains("Nov 14, 2023, ") || label.contains("Nov 17, 2023, "))
         );
-        let lines = both.labels_at(&now);
+        let lines = both.labels_at(&now, false);
         assert_eq!(
             lines,
             vec!["Created Nov 14, 2023, edited Nov 17, 2023".to_string()],
@@ -341,7 +341,7 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
             edited: Some(now.timestamp().as_second()),
         };
         assert_eq!(
-            today.labels_at(&now),
+            today.labels_at(&now, false),
             vec!["Created today at 10:42 AM".to_string()]
         );
     }

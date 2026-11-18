@@ -26,7 +26,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use fs_protocol::files::{FIRST_TREE_CHUNK, TreeChunk};
+use fs_protocol::files::TreeChunk;
 use fs_protocol::tree::{FILES_APP, TREE_KIND, Tree, TreeChunks, chunk_document_id, listed_chunks};
 use tilo_desktop_search::Held;
 use tilo_desktop_search::providers::tree::{TreeFile, TreeFiles};
@@ -187,15 +187,10 @@ impl WorkspaceFiles {
             return;
         };
         if read.heads != heads {
-            let Some(mut tree) = Self::tree_held(&index, &chunks) else {
+            let Some(tree) = Self::tree_held(&index, &chunks) else {
                 return;
             };
-            let kept = self.keep_documents(&chunks, &mut tree);
-            // Walks again next frame while the code that writes them is on its
-            // way; a fetch that failed leaves the files found by name alone.
-            if kept || !DOCUMENT_FILES.fetching() {
-                read.heads = heads;
-            }
+            read.heads = heads;
             read.files = fs_protocol::tree::live_files(&tree)
                 .into_iter()
                 .filter(|file| file.node.kind == fs_protocol::files::FileNodeKind::File)
@@ -233,44 +228,6 @@ impl WorkspaceFiles {
                 Words::Coming => {}
             }
         }
-    }
-}
-
-impl WorkspaceFiles {
-    /// Name each text document of `tree` (a `.md`, an `.odt`, whose content
-    /// the tree holds as a document of its own) by its file's hash: the file is
-    /// written from the chunk's record into the page's content, so a search
-    /// reads its words and opens it as it does any other file. Whether every
-    /// one was written: `false` while the code that writes them is still to
-    /// come.
-    fn keep_documents(&self, chunks: &Chunks, tree: &mut Tree) -> bool {
-        let documents: Vec<(String, TreeChunk)> = tree
-            .nodes
-            .iter()
-            .filter(|(_, node)| node.hash.is_none() && node.codec.is_some())
-            .map(|(id, node)| {
-                (
-                    id.clone(),
-                    node.document_id.map_or(FIRST_TREE_CHUNK, |id| id.chunk()),
-                )
-            })
-            .collect();
-        for (id, chunk) in documents {
-            let Some(files) = DOCUMENT_FILES.get() else {
-                return false;
-            };
-            // A document is written from the record of the chunk that holds its node.
-            let Some(record) = chunks.get(&chunk) else {
-                continue;
-            };
-            let Some(hash) = (files.write)(record.as_ref(), &id, &self.content) else {
-                continue;
-            };
-            if let Some(node) = tree.nodes.get_mut(&id) {
-                node.hash = Some(hash);
-            }
-        }
-        true
     }
 }
 
@@ -330,43 +287,6 @@ pub fn builtin_pdf_words() -> PdfWords {
 ui::lazy_code! {
     /// The code that reads a PDF's words.
     pub static PDF_WORDS: PdfWords = builtin_pdf_words, feature = "deferred-pdf-words";
-}
-
-/// The code that writes a file the tree keeps as a document (a `.md`, an
-/// `.odt`) into the page's content, so a search reads its words and an app
-/// opens it as any other file: the codecs that read them are large, and only a
-/// workspace holding one needs them, so the browser desktop fetches it as its
-/// own module the first time the tree names one (`deferred-document-files`;
-/// linked otherwise).
-#[derive(Clone, Copy)]
-pub struct DocumentFiles {
-    write: fn(&StoredResource, &str, &tilo_content::ContentStore) -> Option<String>,
-}
-
-/// The document writer this build links.
-#[must_use]
-pub fn builtin_document_files() -> DocumentFiles {
-    DocumentFiles {
-        write: write_document,
-    }
-}
-
-ui::lazy_code! {
-    /// The code that writes a tree's document into the page's content.
-    pub static DOCUMENT_FILES: DocumentFiles = builtin_document_files,
-        feature = "deferred-document-files";
-}
-
-/// `id`'s file as the content store keeps it, by the hash it was written under.
-fn write_document(
-    record: &StoredResource,
-    id: &str,
-    content: &tilo_content::ContentStore,
-) -> Option<String> {
-    let file = record
-        .read(|doc| fs_protocol::tree::document_file(doc, id, content))
-        .flatten()?;
-    content.put(&file).ok()
 }
 
 /// A PDF's pages' words, through the engine the viewer draws with.

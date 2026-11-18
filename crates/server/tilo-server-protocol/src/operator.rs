@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 /// Version of this protocol, announced in [`OperatorEvent::Started`].
 ///
 /// 16 leaves which hosts hold a workspace to its owners' own actions (`tilo
-/// workspace hosts add` and `remove`); 15 leaves bringing people in to the
-/// workspace's own actions (`tilo members add` and `tilo members invite`,
+/// workspace servers add` and `remove`); 15 leaves bringing people in to the
+/// workspace's own actions (`tilo workspace people add` and `tilo workspace people invite`,
 /// which its owners and administrators ask with their keys): the operator
 /// names its first owner at start. A reader of another version decodes no
 /// line of this.

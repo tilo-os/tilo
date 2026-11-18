@@ -315,13 +315,13 @@ fn search_finds_the_subscriptions_and_their_folders() {
 
 /// Where the articles' actions are published: the chain of their parts.
 fn chain() -> String {
-    ui::resource::chain_resource_id(&crate::part::chain())
+    ui::resource::chain_resource_id(&crate::article_list::chain())
 }
 
 /// The articles the window's parts keep, with the subscriptions the library
 /// has, held for as long as the parts are.
-fn held(app: &TestApp<FeedsShell>) -> (Vec<(u64, std::rc::Rc<ArticlePart>)>, Library) {
-    (app.chain_parts::<ArticlePart>(), app.state())
+fn held(app: &TestApp<FeedsShell>) -> (Vec<(u64, std::rc::Rc<ArticleList>)>, Library) {
+    (app.chain_parts::<ArticleList>(), app.state())
 }
 
 /// The app opened over the sample library, its articles staged into the parts
@@ -561,7 +561,7 @@ fn the_reader_edits_through_the_framework_api() {
         .expect("the parts");
     let state = app.state();
     let parts = chain.parts();
-    let articles = crate::part::Articles::of(&parts, &state);
+    let articles = crate::article_list::Articles::of(&parts, &state);
     assert_eq!(articles.total_unread(), 0, "every article is read");
 
     // The palette's prompt subscribes; a blank one adds nothing.
@@ -616,7 +616,7 @@ fn an_agent_edits_and_opens_items_one_call_each() {
     let mut app = sample_app();
     let article = {
         let held = held(&app);
-        crate::part::Articles::of(&held.0, &held.1)
+        crate::article_list::Articles::of(&held.0, &held.1)
             .articles_for(&Filter::All)
             .into_iter()
             .find(|article| !article.starred)
@@ -624,7 +624,7 @@ fn an_agent_edits_and_opens_items_one_call_each() {
             .unwrap()
     };
     let feed = app.state().feeds.ids().next().unwrap().clone();
-    let paths = ArticlePart::paths().articles.item(&article);
+    let paths = ArticleList::paths().articles.item(&article);
     for edit in [
         paths.starred.set(true),
         paths.tags.insert(&"later".to_owned()),
@@ -634,7 +634,7 @@ fn an_agent_edits_and_opens_items_one_call_each() {
     }
     {
         let held = held(&app);
-        let shown = crate::part::Articles::of(&held.0, &held.1);
+        let shown = crate::article_list::Articles::of(&held.0, &held.1);
         let changed = shown.article(&article).unwrap();
         assert!(changed.starred);
         assert!(changed.tags.contains(&"later".to_owned()));
@@ -644,7 +644,7 @@ fn an_agent_edits_and_opens_items_one_call_each() {
         .unwrap();
     let held = held(&app);
     assert_eq!(
-        crate::part::Articles::of(&held.0, &held.1).unread_for_feed(&feed),
+        crate::article_list::Articles::of(&held.0, &held.1).unread_for_feed(&feed),
         0
     );
 
@@ -853,13 +853,13 @@ fn history_entries_render_as_the_apps_sentences() {
     .unwrap();
     let engines = {
         let held = held(&app);
-        crate::part::Articles::of(&held.0, &held.1)
+        crate::article_list::Articles::of(&held.0, &held.1)
             .iter()
             .find(|(_, article)| article.title == "Engines")
             .map(|(id, _)| id.clone())
             .unwrap()
     };
-    let article = ArticlePart::paths().articles.item(&engines);
+    let article = ArticleList::paths().articles.item(&engines);
     let subscription = Library::paths().feeds.item(&feed);
     // The article is the parts': its reads, stars and tags go through the
     // chain. The subscription and the folder are the library's.

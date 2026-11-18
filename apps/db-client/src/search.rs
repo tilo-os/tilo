@@ -3,7 +3,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use ui::tilo_actions::ResourceSpec;
+use ui::framework::LiveRow;
+use ui::tilo_actions::Exports as _;
 use ui::tilo_resource::{Effect, SearchEntry};
 use uuid::Uuid;
 
@@ -22,7 +23,7 @@ fn kind() -> String {
 struct IndexState {
     revision: Option<String>,
     entries: Vec<SearchEntry>,
-    resources: HashMap<String, ResourceSpec>,
+    resources: HashMap<String, LiveRow>,
     /// The most recent rejected rebuild. Keep the last known-good snapshot
     /// available, but never make a failed index refresh invisible to the app.
     last_error: Option<String>,
@@ -53,7 +54,7 @@ impl DbSearchIndex {
 fn index_active_catalog(
     session: &Session,
     rows: &mut Vec<(String, SearchEntry)>,
-    resources: &mut HashMap<String, ResourceSpec>,
+    resources: &mut HashMap<String, LiveRow>,
 ) {
     let Some(connection) = session.active_connection().filter(|_| session.connected) else {
         return;
@@ -68,7 +69,7 @@ fn index_database_and_schema(
     session: &Session,
     connection: &crate::model::ConnectionProfile,
     rows: &mut Vec<(String, SearchEntry)>,
-    resources: &mut HashMap<String, ResourceSpec>,
+    resources: &mut HashMap<String, LiveRow>,
 ) {
     let connection_id = &connection.id.to_string();
     let database_name = if connection.database.is_empty() {
@@ -80,8 +81,8 @@ fn index_database_and_schema(
     let focus = DbEffect::FocusDatabase {
         connection: connection.id,
     };
-    let database = ResourceSpec::new(&database_id, "database.database", &database_name)
-        .with_action(focus.bound());
+    let database =
+        LiveRow::new(&database_id, "database.database", &database_name).operation(focus.bound());
     index_resource(
         rows,
         resources,
@@ -96,8 +97,8 @@ fn index_database_and_schema(
             connection: connection.id,
             schema: schema.name.clone(),
         };
-        let schema_resource = ResourceSpec::new(&schema_id, "database.schema", &schema.name)
-            .with_action(focus.bound());
+        let schema_resource =
+            LiveRow::new(&schema_id, "database.schema", &schema.name).operation(focus.bound());
         index_resource(
             rows,
             resources,
@@ -120,14 +121,20 @@ fn index_relation(
     schema: &crate::model::SchemaInfo,
     relation: &crate::model::TableInfo,
     rows: &mut Vec<(String, SearchEntry)>,
-    resources: &mut HashMap<String, ResourceSpec>,
+    resources: &mut HashMap<String, LiveRow>,
 ) {
     let connection_id = &connection.to_string();
     let relation_id =
         catalog_resource_id("relation", &[connection_id, &schema.name, &relation.name]);
     let result =
         hit(&relation.name, &relation_id).subtitled(format!("{}.{}", schema.name, relation.name));
-    let resource = ResourceSpec::new(
+    let browse = DbEffect::Browse {
+        connection,
+        schema: schema.name.clone(),
+        table: relation.name.clone(),
+    }
+    .bound();
+    let resource = LiveRow::new(
         &relation_id,
         match relation.kind {
             crate::model::RelationKind::Table => "database.table",
@@ -135,18 +142,11 @@ fn index_relation(
         },
         &relation.name,
     )
-    .with_action(
-        DbEffect::Browse {
-            connection,
-            schema: schema.name.clone(),
-            table: relation.name.clone(),
-        }
-        .bound(),
-    );
+    .operation(browse.clone());
     index_resource(
         rows,
         resources,
-        resource.clone(),
+        resource,
         "browse",
         format!("{} {} {:?}", schema.name, relation.name, relation.kind),
         result,
@@ -164,8 +164,8 @@ fn index_relation(
                 ("table", text(&relation.name)),
             ],
         ));
-        let mut column_resource = ResourceSpec::new(&column_id, "database.column", &column.name);
-        column_resource.actions.clone_from(&resource.actions);
+        let column_resource =
+            LiveRow::new(&column_id, "database.column", &column.name).operation(browse.clone());
         index_resource(
             rows,
             resources,
@@ -184,7 +184,7 @@ fn index_current_result(
     session: &Session,
     connection: Uuid,
     rows: &mut Vec<(String, SearchEntry)>,
-    resources: &mut HashMap<String, ResourceSpec>,
+    resources: &mut HashMap<String, LiveRow>,
 ) {
     let result_id = catalog_resource_id(
         "query-result",
@@ -201,11 +201,11 @@ fn index_current_result(
             generation,
         };
         let mut result_resource =
-            ResourceSpec::new(&result_id, "database.query-result", result.message())
-                .with_action(read.bound().reads_document())
-                .with_action(show.bound());
+            LiveRow::new(&result_id, "database.query-result", result.message())
+                .operation(show.bound())
+                .operation(read.bound().reads_document());
         if result.is_select {
-            result_resource = result_resource.with_action(
+            result_resource = result_resource.operation(
                 DbEffect::ExportCsv {
                     connection,
                     generation,
@@ -227,18 +227,18 @@ fn index_current_result(
 fn index_transactions(
     connection: Uuid,
     rows: &mut Vec<(String, SearchEntry)>,
-    resources: &mut HashMap<String, ResourceSpec>,
+    resources: &mut HashMap<String, LiveRow>,
 ) {
     let transaction_id = catalog_resource_id("transaction", &[&connection.to_string()]);
     let begin = DbEffect::Begin { connection };
-    let transaction = ResourceSpec::new(
+    let transaction = LiveRow::new(
         &transaction_id,
         "database.transaction",
         t("db-search-transaction"),
     )
-    .with_action(begin.bound())
-    .with_action(DbEffect::Commit { connection }.bound())
-    .with_action(DbEffect::Rollback { connection }.bound());
+    .operation(begin.bound())
+    .operation(DbEffect::Commit { connection }.bound())
+    .operation(DbEffect::Rollback { connection }.bound());
     index_resource(
         rows,
         resources,
@@ -253,13 +253,13 @@ fn index_query_history(
     session: &Session,
     connection: &crate::model::ConnectionProfile,
     rows: &mut Vec<(String, SearchEntry)>,
-    resources: &mut HashMap<String, ResourceSpec>,
+    resources: &mut HashMap<String, LiveRow>,
 ) {
     let connection_id = &connection.id.to_string();
     let history_id = catalog_resource_id("query-history", &[connection_id]);
     resources.insert(
         history_id.clone(),
-        ResourceSpec::new(
+        LiveRow::new(
             &history_id,
             "database.query-history",
             t("db-search-query-history"),
@@ -285,8 +285,8 @@ fn index_query_history(
             connection: connection.id,
             generation: entry.generation,
         };
-        let history_entry = ResourceSpec::new(&entry_id, "database.query-history-entry", &title)
-            .with_action(rerun.bound());
+        let history_entry = LiveRow::new(&entry_id, "database.query-history-entry", &title)
+            .operation(rerun.bound());
         index_resource(
             rows,
             resources,
@@ -302,7 +302,7 @@ fn apply_catalog_snapshot(
     state: &Arc<RwLock<IndexState>>,
     revision: String,
     rows: Vec<(String, SearchEntry)>,
-    resources: HashMap<String, ResourceSpec>,
+    resources: HashMap<String, LiveRow>,
 ) -> Result<(), String> {
     let mut seen = std::collections::HashSet::new();
     if let Some((duplicate, _)) = rows.iter().find(|(id, _)| !seen.insert(id.as_str())) {
@@ -324,7 +324,7 @@ impl DbSearchIndex {
     pub fn opened(&self, anchor: &str) -> Option<DbEffect> {
         let resource = self.resource(anchor)?;
         let encoded = resource
-            .actions
+            .operations()
             .first()?
             .build_json(&serde_json::Map::new())
             .ok()?;
@@ -339,7 +339,7 @@ impl DbSearchIndex {
     /// The bounded top of the live catalog: the open database and its
     /// schemas, the current result, the transaction controls and the query
     /// history. Tables, columns and history entries resolve by id.
-    pub fn rows(&self) -> Vec<ResourceSpec> {
+    pub fn rows(&self) -> Vec<LiveRow> {
         const TOP: &[&str] = &[
             "database.database",
             "database.schema",
@@ -347,19 +347,19 @@ impl DbSearchIndex {
             "database.transaction",
             "database.query-history",
         ];
-        let mut rows: Vec<ResourceSpec> = self
+        let mut rows: Vec<LiveRow> = self
             .state
             .read_recover()
             .resources
             .values()
-            .filter(|resource| TOP.contains(&resource.kind.as_str()))
+            .filter(|row| TOP.contains(&row.exported().kind.as_str()))
             .cloned()
             .collect();
-        rows.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
+        rows.sort_by(|a, b| a.id().cmp(b.id()));
         rows
     }
 
-    pub fn resource(&self, id: &str) -> Option<ResourceSpec> {
+    pub fn resource(&self, id: &str) -> Option<LiveRow> {
         self.state.read_recover().resources.get(id).cloned()
     }
 
@@ -377,23 +377,21 @@ fn hit(title: impl Into<String>, id: &str) -> SearchEntry {
 
 fn index_resource(
     rows: &mut Vec<(String, SearchEntry)>,
-    resources: &mut HashMap<String, ResourceSpec>,
-    resource: ResourceSpec,
+    resources: &mut HashMap<String, LiveRow>,
+    resource: LiveRow,
     action_id: &str,
     search_text: impl Into<String>,
     mut entry: SearchEntry,
 ) {
-    let mut resource = resource;
-    let opens = resource
-        .actions
-        .iter()
-        .position(|action| action.id == action_id);
-    debug_assert!(opens.is_some());
-    if let Some(at) = opens {
-        let action = resource.actions.remove(at);
-        resource.actions.insert(0, action);
-    }
-    let id = resource.id.as_str().to_string();
+    // The first operation is the one a catalogue hit invokes.
+    debug_assert_eq!(
+        resource
+            .operations()
+            .first()
+            .map(|action| action.id.as_str()),
+        Some(action_id)
+    );
+    let id = resource.id().to_string();
     entry.text = search_text.into();
     rows.push((id.clone(), entry));
     resources.insert(id, resource);
@@ -477,7 +475,7 @@ mod tests {
             .expect("the live row of the hit's anchor resolves");
         let opened = index.opened(&result.action_id).expect("the hit opens");
         assert_eq!(
-            resource.actions[0].id,
+            resource.operations()[0].id,
             opened.id(),
             "the hit opens with an action its row publishes"
         );
@@ -624,7 +622,7 @@ mod tests {
                 for action in expected_actions {
                     assert!(
                         resource
-                            .actions
+                            .operations()
                             .iter()
                             .any(|published| published.id == *action),
                         "{title} keeps its {action} action after canonical resolution"

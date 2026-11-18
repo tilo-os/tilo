@@ -140,18 +140,18 @@ class RuntimeSurfaceTests(unittest.TestCase):
         tree = CLEAN.replace(
             "4serde v1.0.228\n",
             "4serde v1.0.228\n2account-credentials v0.1.0 (/repo/crates/system/account-credentials)\n"
-            "2chrono-tz v0.10.4\n",
+            "2jiff-tzdb v0.1.10\n",
         ).replace(
             "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0store",
             "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n"
             "1account-credentials v0.1.0 (/repo/crates/system/account-credentials) (*)\n"
-            "1chrono-tz v0.10.4 (*)\n0store",
+            "1jiff-tzdb v0.1.10 (*)\n0store",
         )
         found = checker.violations(tree, ["notes", "store"], TARGET)
         self.assertEqual(len(found), 2, found)
         self.assertIn("reaches account-credentials", found[0])
         self.assertIn("libtilo_accounts_engine.so", found[0])
-        self.assertIn("reaches chrono-tz", found[1])
+        self.assertIn("reaches jiff-tzdb", found[1])
         self.assertIn("libtilo_timezone_engine.so", found[1])
 
     def _with_runtime_crates(self, *crates: str) -> str:

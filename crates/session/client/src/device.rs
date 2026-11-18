@@ -905,17 +905,12 @@ impl DeviceRefusal {
     pub const NOT_ADMITTED: &'static str = "not_admitted";
     /// The device holds no certificate it could enter with, and no root to certify it.
     pub const NO_CERTIFICATE: &'static str = "no_certificate";
-    /// The host is busy with this person's changes: nothing ran, and the same request works
-    /// once [`Self::retry_after_ms`] passed.
-    pub const RATE_LIMITED: &'static str = "rate_limited";
 
-    /// The host's refusal `error`, its typed refusal read off it where it carries one. A host
-    /// too busy to take the action reads as [`Self::RATE_LIMITED`], with the wait it said.
+    /// The host's refusal `error`, its typed refusal read off it where it carries one.
     #[must_use]
     pub fn of(error: &ActionCallError) -> Self {
         match error {
             ActionCallError::Refused { reason } => Self::said(error.code(), reason),
-            ActionCallError::Busy { retry_after_ms } => Self::rate_limited(*retry_after_ms),
             other => Self::plain(other),
         }
     }
@@ -926,19 +921,6 @@ impl DeviceRefusal {
             message: error.to_string(),
             refusal: None,
             retry_after_ms: None,
-            entry: None,
-        }
-    }
-
-    /// The host is busy with this person's changes; the same request works in `retry_after_ms`.
-    #[must_use]
-    pub fn rate_limited(retry_after_ms: u64) -> Self {
-        Self {
-            code: Self::RATE_LIMITED.to_owned(),
-            message: "the host takes this person's changes more slowly; wait and try again"
-                .to_owned(),
-            refusal: None,
-            retry_after_ms: Some(retry_after_ms),
             entry: None,
         }
     }
@@ -1018,7 +1000,6 @@ impl From<CertifyError> for DeviceRefusal {
                 retry_after_ms: None,
                 entry: None,
             },
-            CertifyError::RateLimited { retry_after_ms } => Self::rate_limited(retry_after_ms),
             other => Self::unanswered(&other.to_string()),
         }
     }
@@ -1029,10 +1010,6 @@ impl From<DeviceRefusal> for CertifyError {
     fn from(refusal: DeviceRefusal) -> Self {
         if refusal.code == DeviceRefusal::UNANSWERED {
             Self::Request(refusal.message)
-        } else if refusal.code == DeviceRefusal::RATE_LIMITED {
-            Self::RateLimited {
-                retry_after_ms: refusal.retry_after_ms.unwrap_or(1000),
-            }
         } else {
             Self::Denied(refusal.message)
         }
@@ -1092,25 +1069,8 @@ mod tests {
             assert_eq!(failed.refusal, Some(too_many()));
         }
 
-        phase a_busy_host_reads_as_rate_limited_with_its_wait_through_any_entry;
+        phase any_other_unavailability_stays_as_it_was;
         {
-            let busy = ActionCallError::Busy { retry_after_ms: 480 };
-            let refused = DeviceRefusal::of(&busy);
-            assert_eq!(refused.code, DeviceRefusal::RATE_LIMITED);
-            assert_eq!(refused.retry_after_ms, Some(480));
-            // Through an entry's certification error and back, it stays what it is.
-            let entry = CertifyError::from(refused.clone());
-            assert!(
-                matches!(
-                    entry,
-                    CertifyError::RateLimited {
-                        retry_after_ms: 480
-                    }
-                ),
-                "{entry}"
-            );
-            assert_eq!(DeviceRefusal::from(entry), refused);
-            // Any other unavailability stays as it was.
             let offline = DeviceRefusal::of(&ActionCallError::Unavailable {
                 reason: "offline: the device left".into(),
             });

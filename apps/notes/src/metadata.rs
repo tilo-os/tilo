@@ -79,18 +79,30 @@ pub struct NoteDates {
 impl NoteDates {
     /// The dates as the one line the note header shows, in the local time
     /// zone, read against `now`. A date the history does not know is left
-    /// out; a note with no known date shows nothing.
-    pub fn labels_at(self, now: &jiff::Zoned) -> Vec<String> {
+    /// out; a note with no known date shows nothing. `moved` for a note
+    /// written elsewhere first: its creation here is when it arrived, and the
+    /// line says so rather than naming the day it was written there (which
+    /// the header's provenance row shows).
+    pub fn labels_at(self, now: &jiff::Zoned, moved: bool) -> Vec<String> {
         let created = self.created.map(|seconds| when(seconds, now));
         let edited = self.edited.map(|seconds| when(seconds, now));
         let line = match (created, edited) {
             (Some(created), Some(edited)) if created != edited => crate::metadata::CATALOG.t_args(
-                "notes-dates",
+                if moved {
+                    "notes-moved-dates"
+                } else {
+                    "notes-dates"
+                },
                 &[("created", created.into()), ("edited", edited.into())],
             ),
-            (Some(date), _) => {
-                crate::metadata::CATALOG.t_args("notes-created-date", &[("date", date.into())])
-            }
+            (Some(date), _) => crate::metadata::CATALOG.t_args(
+                if moved {
+                    "notes-moved-date"
+                } else {
+                    "notes-created-date"
+                },
+                &[("date", date.into())],
+            ),
             (None, Some(date)) => {
                 crate::metadata::CATALOG.t_args("notes-edited-date", &[("date", date.into())])
             }
@@ -277,6 +289,33 @@ mod tests {
             dates.display_labels_in(true, &jiff::tz::TimeZone::fixed(jiff::tz::offset(-5)));
         assert!(compact[0].contains("Oct 3, 2026"), "{compact:?}");
     }
+    /// A note written elsewhere first says when it arrived here, and its
+    /// provenance row says when it was written there: the header never shows
+    /// two days without saying which is which.
+    #[test]
+    fn a_moved_notes_dates_say_it_arrived_here() {
+        register_messages();
+        let now = jiff::Timestamp::from_second(1_791_086_040)
+            .unwrap()
+            .to_zoned(jiff::tz::TimeZone::UTC);
+        let arrived = now.timestamp().as_second();
+        let dates = NoteDates {
+            created: Some(arrived),
+            edited: Some(arrived),
+        };
+        let moved = dates.labels_at(&now, true);
+        assert_eq!(moved.len(), 1);
+        assert!(
+            moved[0].starts_with("Moved here "),
+            "a moved note's creation here is when it arrived: {moved:?}"
+        );
+        let here = dates.labels_at(&now, false);
+        assert!(
+            here[0].starts_with("Created "),
+            "a note written here is created here: {here:?}"
+        );
+    }
+
     /// A page's reactions pick from the whole Unicode catalogue: loading the
     /// app's messages hands the toolkit's picker the catalogue this build
     /// carries.
@@ -388,8 +427,9 @@ mod tests {
                         edited: Some(envelope.timestamp),
                     }
                 );
-                let mut registry = tilo_actions::ActionRegistry::new();
-                <crate::PagePart as ui::tilo_resource::Resource>::register(&mut registry);
+                let registry = tilo_actions::ActionRegistry::with(
+                    ui::tilo_resource::group::register::<crate::PagePart>,
+                );
                 tilo_actions::replay(&mut peer, &envelope, &registry).unwrap();
                 let mut peer_index = NoteDateIndex::default();
                 peer_index.sync(&peer, Some(page));

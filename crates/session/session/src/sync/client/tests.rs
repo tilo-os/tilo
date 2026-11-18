@@ -50,27 +50,6 @@ fn certified(user: u8, device_seed: u8, label: &str) -> (DeviceCert, SigningKey)
     (cert, this)
 }
 
-/// A device's workspace list for `workspace` , signed by that device.
-fn list_of(
-    device: &DeviceCert,
-    signing: &SigningKey,
-    workspace: &str,
-) -> tilo_user_identity::DirectoryUpdate {
-    let mut directory = tilo_user_identity::WorkspaceDirectory::new(
-        device.user_public_key,
-        device.device_public_key,
-    );
-    let workspace = ModelWorkspaceId::parse(workspace).expect("a workspace id");
-    directory
-        .add_workspace(workspace, "Session")
-        .expect("a listed workspace");
-    let update = directory
-        .signed_snapshot(signing, tilo_clock::unix_now_ns())
-        .expect("a signed list");
-    assert_eq!(update.author_device_public_key, device.device_public_key);
-    update
-}
-
 /// A session in `WORKSPACE` with no transport, and what it would have said.
 fn session(label: &str, user: Option<u8>) -> (Client, tokio::sync::mpsc::UnboundedReceiver<Cmd>) {
     let own = OwnPresence {
@@ -159,25 +138,6 @@ fn root(seed: u8) -> [u8; 32] {
     ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
         .verifying_key()
         .to_bytes()
-}
-
-/// Where a device of the person `user` is reached for a workspace, as it signed it: `opaque` says
-/// which address.
-fn host_hint(
-    user: u8,
-    device_seed: u8,
-    opaque: &str,
-) -> (DeviceCert, tilo_peer_state::join::TransportHint) {
-    let (cert, key) = certified(user, device_seed, "The host");
-    let hint = tilo_peer_state::join::sign_transport_hint(
-        tilo_peer_state::join::TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1,
-        opaque,
-        cert.clone(),
-        key.verifying_key().to_bytes(),
-        &key,
-    )
-    .expect("a host signs its own address");
-    (cert, hint)
 }
 
 fn person(seed: u8) -> String {
@@ -277,45 +237,6 @@ tilo_test_env::scenario! {
             here[0].device, "Phone",
             "and its certificate says which device"
         );
-    }
-
-    phase a_device_of_the_person_coming_up_owes_it_the_list;
-    {
-        let (sync, _said) = session("Session", Some(0x04));
-        assert!(
-            !sync.sibling_arrived(),
-            "no device of the person said anything yet"
-        );
-        sync.hear(Event::Sibling {
-            peer: device(0x11),
-            certs: Vec::new(),
-            revocations: Vec::new(),
-        });
-        // The pass that hears it tells the list; the next one has nothing new to say, so a device that
-        // stayed up is not told it again on every pass.
-        assert!(
-            sync.sibling_arrived(),
-            "a device that just came up has not heard it"
-        );
-        assert!(!sync.sibling_arrived());
-    }
-
-    phase a_list_is_kept_only_from_the_device_that_said_it;
-    {
-        let (laptop, laptop_key) = certified(0x04, 0x11, "Laptop");
-        let (phone, _) = certified(0x04, 0x12, "Phone");
-        let by_laptop = list_of(&laptop, &laptop_key, WORKSPACE);
-
-        let kept = tilo_session_client::client::author_of(&[phone.clone(), laptop.clone()], &by_laptop)
-            .expect("the laptop's own list is the laptop's");
-        assert_eq!(kept.device_public_key, laptop.device_public_key);
-
-        // Someone else's device, and a list the laptop's session carried but another device signed:
-        // neither says the laptop said it.
-        let (stranger, _) = certified(0x55, 0x13, "Stranger");
-        assert!(tilo_session_client::client::author_of(&[stranger], &by_laptop).is_none());
-        assert!(tilo_session_client::client::author_of(&[phone], &by_laptop).is_none());
-        assert!(tilo_session_client::client::author_of(&[], &by_laptop).is_none());
     }
 }
 
@@ -1041,56 +962,6 @@ tilo_test_env::scenario! {
         assert!(matches!(sent(&mut said)[0], Cmd::Leave(ws) if ws == topic(WORKSPACE)));
     }
 
-    phase a_device_of_the_person_says_where_its_workspaces_are_reached;
-    {
-        let (sync, _said) = session("Session", Some(0x04));
-        let sync = sync.taking_part_as(&person(0x04));
-        assert!(
-            sync.host_hint(WORKSPACE).is_none(),
-            "no device of the person said where a workspace is reached yet"
-        );
-        let (cert, hint) = host_hint(0x04, 0x21, "one address");
-        sync.hear(Event::SiblingMsg {
-            peer: device(0x11),
-            msg: Box::new(NeighbourMsg::PersonalHosts {
-                user_public_key: root(0x04),
-                hosts: vec![neighbour_wire::PersonalHost {
-                    workspace: WORKSPACE.to_owned(),
-                    hint: postcard::to_stdvec(&hint).expect("a signed address"),
-                }],
-            }),
-        });
-        let kept = sync
-            .host_hint(WORKSPACE)
-            .expect("the device's address for the workspace is kept");
-        assert_eq!(kept, hint);
-        assert!(
-            kept.host.device_public_key == cert.device_public_key,
-            "it is the device's own answer"
-        );
-    }
-
-    phase another_persons_host_hints_are_not_where_this_persons_workspaces_are;
-    {
-        let (sync, _said) = session("Session", Some(0x04));
-        let sync = sync.taking_part_as(&person(0x04));
-        let (_, hint) = host_hint(0x05, 0x22, "someone else's address");
-        sync.hear(Event::SiblingMsg {
-            peer: device(0x12),
-            msg: Box::new(NeighbourMsg::PersonalHosts {
-                user_public_key: root(0x05),
-                hosts: vec![neighbour_wire::PersonalHost {
-                    workspace: WORKSPACE.to_owned(),
-                    hint: postcard::to_stdvec(&hint).expect("a signed address"),
-                }],
-            }),
-        });
-        assert!(
-            sync.host_hint(WORKSPACE).is_none(),
-            "another person's workspaces are theirs to enter, never this person's"
-        );
-    }
-
     phase where_i_am_is_said_with_the_rest_of_the_word_and_only_when_it_moves;
     // Where this person is on their shell — the tile they point at and their shell — is said with the
     // rest of their word, and only what moved is said again: a shell at rest publishes nothing.
@@ -1787,7 +1658,7 @@ tilo_test_env::scenario! {
         });
 
         // The work reaches this device's apps too, as the presence the window on its record draws.
-        let fanout = std::sync::Arc::new(tilo_action_broker::collab_broker::FanoutState::new());
+        let fanout = std::sync::Arc::new(tilo_workspace_service::apps::collab_broker::FanoutState::new());
         let carets = crate::carets::Carets::new(std::sync::Arc::clone(&fanout), std::sync::Arc::new(|| {}));
         let handed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = std::sync::Arc::clone(&handed);

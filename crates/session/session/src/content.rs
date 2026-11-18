@@ -2,7 +2,7 @@
 //! on this device beside the workspace's records, and carried to the workspace's
 //! other devices on the topic the records travel.
 //! A record holds the address of its binaries, never the bytes. The
-//! [broker's service](tilo_action_broker::document_content) keeps the rules: content
+//! [broker's service](tilo_workspace_service::apps::document_content) keeps the rules: content
 //! is verified against its address, possessing an address never grants access to
 //! it, and nothing arrives unasked. This module supplies what a session adds:
 //! [`Shelf`], a store under the session's state, a directory per workspace and app,
@@ -20,10 +20,6 @@ use std::time::Duration;
 
 use iroh::EndpointId;
 use neighbour_wire::{NeighbourMsg, peer_handle};
-use tilo_action_broker::document_content::{
-    ContentPeer, ContentPeers, ContentPiece, ContentScope, ContentShelf, ContentSources,
-    ContentState, MAX_CONTENT_BYTES, RouteContent,
-};
 use tilo_broker_core::route::CrdtRoute;
 use tilo_broker_core::services::{CONTENT_PUT_SCOPE, ContentSink, ContentStoreServices};
 use tilo_content::{ContentStore, hash_bytes};
@@ -31,6 +27,10 @@ use tilo_desktop_model::WorkspaceId as ModelWorkspaceId;
 use tilo_lock::MutexRecover as _;
 use tilo_network_actor::{RecordContentDelivery, WorkspaceId};
 use tilo_runtime::offload::{BindError, BlobScope, MediaFuture, WorkspaceMedia};
+use tilo_workspace_service::apps::document_content::{
+    ContentPeer, ContentPeers, ContentPiece, ContentScope, ContentShelf, ContentSources,
+    ContentState, MAX_CONTENT_BYTES, RouteContent,
+};
 
 use crate::sync::{Cmd, HostOutbox};
 

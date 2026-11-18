@@ -69,6 +69,17 @@ export interface Resource {
 export type Surface = string | { surface?: string | null } | null;
 
 /** `read_form_fields` or `readFormFields` as an action id: `read-form-fields`. */
+/**
+ * A reference to an item an earlier item of the same `many` call makes:
+ * `{"$made": {"member": 0, "item": 0}}`, by the item's place in the call and
+ * which of the ids it made (usually 0, as a create makes one). The call fills
+ * the reference with that id as it applies, and the change keeps the
+ * reference, so every device resolves it the same.
+ */
+export function made(member: number, item = 0): Record<string, Record<string, number>> {
+  return { $made: { member, item } };
+}
+
 export function kebab(name: string): string {
   let out = "";
   for (let index = 0; index < name.length; index += 1) {
@@ -310,6 +321,11 @@ class ResourceImpl {
    * same invocation group: History lists it once and one undo takes it back.
    * An empty list
    * sends nothing. Answers each call's answer.
+   *
+   * An item names one an earlier item of the same call makes with
+   * {@link made}, e.g. `{ title: "Child", parent: made(0) }` for the second
+   * item of a parent-then-child list: the server fills in the id the first
+   * item got as the call applies.
    */
   async many(action: string, items: Record<string, unknown>[]): Promise<ActionAnswer[]> {
     const members = items.map((args) => ({ action, args }));

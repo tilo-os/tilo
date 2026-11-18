@@ -1309,6 +1309,27 @@ impl Checker<'_> {
                 }
             }
         }
+        // A type the package declares no default view of: opening one of its resources shows the
+        // platform's page of its fields, and the app cannot say what that page should hold.
+        if view_id.is_empty()
+            && key.app == self.env.app
+            && !self
+                .env
+                .default_views
+                .iter()
+                .any(|(declared, _)| *declared == key)
+        {
+            self.err(
+                "E141",
+                target.value.span,
+                format!(
+                    "`{}` declares no default view, so opening one of its resources shows the \
+                     platform's page of its fields; add `default view <view> for {0}`, or open a \
+                     view of it here (`open(r, view: <view>)`)",
+                    key.name
+                ),
+            );
+        }
         Ex::host(Imp::ActOpen, vec![r, Ex::str(&view_id), front], Ty::Action)
     }
 
@@ -2727,6 +2748,9 @@ impl Checker<'_> {
                 self.reads(crate::effects::Effect::Time, span, "`clock`");
                 Ex::host(Imp::TimeClock, vec![r], Ty::Text)
             }
+            // A day or a moment as a machine reads it (`2026-06-29`, `2026-06-29T16:00:00Z`): the
+            // stored text, which sorts in time order and parses back with `Date` or `Time`.
+            (Ty::Date | Ty::Time, "iso") if args.is_empty() => r.typed(Ty::Text),
             // A length of time as the seconds it is, which is how a record keeps one.
             (Ty::Duration, "seconds") if args.is_empty() => r.typed(Ty::Int),
             (Ty::Actor, "name") if args.is_empty() => Ex::host(Imp::ActorName, vec![r], Ty::Text),

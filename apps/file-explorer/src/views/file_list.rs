@@ -21,7 +21,6 @@ use super::file_view::{
 };
 use crate::i18n::t;
 use crate::model::{Entry, SortBy, SortOrder, human_size};
-use ui::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
 
 pub(super) struct RowContext {
     scale: f64,
@@ -247,7 +246,7 @@ fn paint_name_cell(
     let body = theme.text(TextRole::Body);
     let avail = (cell.x1 - pad - name_x).max(0.0);
     let label = truncate(tr, &row.entry.name, &body, avail);
-    let (label_w, line_h) = tr.measure_style(&label, None, &body);
+    let (_, line_h) = tr.measure_style(&label, None, &body);
     let text_y = cell.y0 + (cell.height() - f64::from(line_h)) / 2.0;
     tr.draw_style(
         scene,
@@ -257,21 +256,6 @@ fn paint_name_cell(
         None,
         &body,
     );
-    if row.entry.is_conflict() {
-        let side = f64::from(tokens.metrics.icon_sm);
-        let x = name_x + f64::from(label_w) + f64::from(tokens.spacing.s2);
-        if x + side <= cell.x1 - pad {
-            let y = cell.y0 + (cell.height() - side) / 2.0;
-            draw_icon(
-                scene,
-                transform,
-                Rect::new(x, y, x + side, y + side),
-                Icon::TriangleAlert,
-                tokens.colors.semantic.warning,
-                LUCIDE_DEFAULT_STROKE_PX,
-            );
-        }
-    }
 }
 
 impl ListSlot {

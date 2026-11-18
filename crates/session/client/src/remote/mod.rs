@@ -474,25 +474,22 @@ impl Waiting {
                 correlation,
                 result,
             } => {
-                if let Some(asked) = self.changes.remove(&correlation) {
-                    give.push(giving(asked, result));
-                }
+                let asked = self.changes.remove(&correlation);
+                give.extend(asked.map(|asked| giving(asked, result)));
             }
             RemoteActionMessage::ChangedResponse {
                 correlation,
                 result,
             } => {
-                if let Some(asked) = self.watched.remove(&correlation) {
-                    give.push(giving(asked, result));
-                }
+                let asked = self.watched.remove(&correlation);
+                give.extend(asked.map(|asked| giving(asked, result)));
             }
             RemoteActionMessage::SurfaceResponse {
                 correlation,
                 result,
             } => {
-                if let Some(asked) = self.surfaces.remove(&correlation) {
-                    give.push(giving(asked, result));
-                }
+                let asked = self.surfaces.remove(&correlation);
+                give.extend(asked.map(|asked| giving(asked, result)));
             }
             _ => {}
         }

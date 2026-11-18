@@ -34,7 +34,9 @@ mod tests {
             AutoCommit::new()
         },
         registry: {
-            ui::tilo_actions::ActionRegistry::with(Containers::register)
+            ui::tilo_actions::ActionRegistry::with(
+                ui::tilo_resource::group::register::<Containers>,
+            )
         },
         resources: |doc| published(doc),
         palette: ["Open web-frontend", "Open postgres"],

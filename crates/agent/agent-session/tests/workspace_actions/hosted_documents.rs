@@ -22,7 +22,7 @@
 use super::*;
 use serde_json::{Value, json};
 use tilo_desktop_search::Source as _;
-use tilo_mcp::{McpServer, Surface};
+use tilo_mcp::McpServer;
 use tilo_session_client::remote::SessionActions;
 
 /// The apps the agent works in.
@@ -391,7 +391,6 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
         WORKSPACE.into(),
         person,
     )
-    .with_surface(Surface::Agent)
     .with_agent_session(INVOCATION);
 
     // 1. The applicant's files go into the workspace.

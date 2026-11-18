@@ -618,6 +618,9 @@ pub struct Autocomplete {
     id: String,
     input: TextInput,
     suggester: Option<Suggester>,
+    /// The suggestions the view offered: what typing narrows when no [`Suggester`] computes
+    /// them, so a fixed list obeys the same search a computed one does.
+    offered: Vec<Suggestion>,
     list: SuggestionList,
     open: bool,
     rect: Rect,
@@ -636,8 +639,9 @@ impl Autocomplete {
     pub fn with_input(input: TextInput) -> Self {
         Self {
             id: String::new(),
-            input: input.with_kind(TextInputKind::Search),
+            input: input.with_kind(TextInputKind::Search).with_clear_button(),
             suggester: None,
+            offered: Vec::new(),
             list: SuggestionList::new(),
             open: false,
             rect: Rect::ZERO,
@@ -709,7 +713,8 @@ impl Autocomplete {
     /// For hosts that compute suggestions reactively rather than through a
     /// [`Suggester`]. Re-clamps the highlight and clears any status line.
     pub fn set_suggestions(&mut self, suggestions: Vec<Suggestion>) {
-        self.list.set_rows(suggestions);
+        self.offered = suggestions;
+        self.refilter();
     }
 
     /// For reactive/async hosts filling suggestions or a status line that
@@ -833,10 +838,31 @@ impl Autocomplete {
     }
 
     fn recompute(&mut self) {
+        self.refilter();
+    }
+
+    /// The rows the list offers for what is typed: what the [`Suggester`] computes, or the view's
+    /// own list narrowed to the words the field holds.
+    fn refilter(&mut self) {
         if let Some(f) = &self.suggester {
             let suggestions = f(self.input.value());
             self.list.set_rows(suggestions);
+            return;
         }
+        let query = self.input.value().trim().to_lowercase();
+        let rows = if query.is_empty() {
+            self.offered.clone()
+        } else {
+            self.offered
+                .iter()
+                .filter(|suggestion| {
+                    suggestion.label.to_lowercase().contains(&query)
+                        || suggestion.value.to_lowercase().contains(&query)
+                })
+                .cloned()
+                .collect()
+        };
+        self.list.set_rows(rows);
     }
 
     fn accept(&mut self, value: String) {
@@ -983,13 +1009,15 @@ impl Widget for Autocomplete {
             .list
             .rows()
             .iter()
-            .filter(|suggestion| suggestion.is_pickable())
-            .map(|suggestion| {
+            .enumerate()
+            .filter(|(_, suggestion)| suggestion.is_pickable())
+            .map(|(index, suggestion)| {
                 let key =
                     crate::a11y::hash_key(&("autocomplete-suggestion", suggestion.value.as_str()));
                 // The rows are published under the widget's own route namespace.
                 let namespace = self.test_id().unwrap_or("autocomplete");
                 let option = ControlOption::new(suggestion.label.clone())
+                    .selected(self.list.highlight() == Some(index))
                     .with_target(crate::composition::keyed_target(namespace, &[key]));
                 let detail = suggestion
                     .detail
@@ -1774,4 +1802,41 @@ mod tests {
             );
         }
     }
+}
+
+/// A list the view offers narrows as the field is typed, exactly as a computed one does: the
+/// dropdown closes when nothing matches and every row returns when the field is cleared.
+#[test]
+fn a_view_offered_list_narrows_as_text_is_typed() {
+    use crate::synthetic_input::char_key;
+    use crate::testing::dispatch;
+
+    let mut ac = Autocomplete::new().with_id("recipient");
+    ac.set_suggestions(vec![
+        Suggestion::labelled("ada@example.com", "Ada"),
+        Suggestion::labelled("bo@example.com", "Bo"),
+    ]);
+    ac.apply_layout_external(vello::kurbo::Rect::new(0.0, 0.0, 300.0, 34.0));
+    ac.begin_edit();
+    for ch in "bo".chars() {
+        dispatch(&mut ac, &char_key(&ch.to_string()));
+    }
+    let values: Vec<&str> = ac.suggestions().iter().map(|s| s.value.as_str()).collect();
+    assert_eq!(
+        values,
+        ["bo@example.com"],
+        "the view's own list is searched"
+    );
+    assert!(ac.is_open());
+    for ch in "zzz".chars() {
+        dispatch(&mut ac, &char_key(&ch.to_string()));
+    }
+    assert!(ac.suggestions().is_empty(), "nothing matches");
+    assert!(!ac.is_open(), "and the dropdown closes");
+    ac.set_text("");
+    ac.set_suggestions(vec![
+        Suggestion::labelled("ada@example.com", "Ada"),
+        Suggestion::labelled("bo@example.com", "Bo"),
+    ]);
+    assert_eq!(ac.suggestions().len(), 2, "an empty field offers them all");
 }

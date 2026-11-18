@@ -43,6 +43,7 @@ pub(crate) fn register() {
     snippets_split::register();
     speed_test_split::register();
     tasks_split::register();
+    terminal_split::register();
     themes_split::register();
     totp_split::register();
     tube_split::register();
@@ -1260,6 +1261,40 @@ mod tasks_split {
 
     pub(super) fn register() {
         registry::defer_arriving(APP, "Tasks", SkeletonShape::Ground, open);
+    }
+}
+
+mod terminal_split {
+    use std::ffi::c_void;
+
+    use ui::application::ApplicationDefinition;
+    use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
+
+    use crate::split::Callback;
+    use tilo_app_id::apps::TERMINAL as APP;
+
+    #[link(wasm_import_module = "./__wasm_split.js")]
+    #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
+    unsafe extern "C" {
+        #[link_name = "__wasm_split_load_terminal_08180fabba6e7efc_definition"]
+        fn load(callback: Callback, data: *const c_void);
+        #[link_name = "__wasm_split_00___terminal___00_import_08180fabba6e7efc_definition"]
+        fn definition() -> *const ApplicationDefinition;
+    }
+
+    #[unsafe(export_name = "__wasm_split_00___terminal___00_export_08180fabba6e7efc_definition")]
+    #[allow(improper_ctypes_definitions, reason = "called only from Rust")]
+    extern "C" fn export() -> *const ApplicationDefinition {
+        terminal::definition()
+    }
+
+    fn open() -> Loading {
+        Box::pin(crate::split::definition(load, definition))
+    }
+
+    pub(super) fn register() {
+        registry::defer_arriving(APP, "Terminal", SkeletonShape::Ground, open);
     }
 }
 

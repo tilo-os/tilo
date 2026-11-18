@@ -87,7 +87,7 @@ x86_64 = 720896
 aarch64 = 720896
 
 [apps."so.tilo.calendar"]
-x86_64 = 2818048
+x86_64 = 2752512
 aarch64 = 2031616
 
 [apps."so.tilo.camera"]

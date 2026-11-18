@@ -3,6 +3,7 @@ use super::*;
 use crate::personal_bookmark_view::{self as view, ViewRequest};
 use crate::personal_bookmarks::{PersonalBookmarkState, PersonalBookmarks};
 use std::rc::Rc;
+use ui::framework::LiveRow;
 use ui::tilo_resource::Effect as _;
 use ui::widget::Element;
 
@@ -119,9 +120,9 @@ impl BrowserWidget {
     pub(super) fn personal_bookmark_body(&self, theme: &Theme) -> Element {
         let state = Rc::clone(&self.personal_bookmarks);
         let bindings: view::Bindings = Rc::new(move |request| {
-            let resource = request_resource(&state, request)?;
-            let action = resource.actions.first()?;
-            ActionBinding::unit_for(&resource, &action.id).ok()
+            let row = request_resource(&state, request)?;
+            let action = row.operations().first()?;
+            ActionBinding::unit_for(&row, &action.id).ok()
         });
         let labels = view::LocalizedLabels {
             back: CATALOG.t("browser-personal-bookmarks-back"),
@@ -169,13 +170,13 @@ impl BrowserWidget {
         }
         personal
     }
-    pub(super) fn personal_bookmark_resources(&self) -> ResourceSpec {
-        let mut root = ResourceSpec::new(
+    pub(super) fn personal_bookmark_resources(&self) -> LiveRow {
+        let mut root = LiveRow::new(
             crate::personal_bookmarks::SCOPE,
             "browser.personal-bookmarks",
             crate::CATALOG.t("browser-resource-personal-bookmarks"),
         )
-        .with_action(
+        .operation(
             crate::effects::BrowserEffect::ImportPersonalBookmarks {
                 bundle: String::new(),
             }
@@ -185,120 +186,152 @@ impl BrowserWidget {
             bookmarks: &self.personal_bookmarks.bookmarks,
             imported_trees: &self.personal_bookmarks.imported_trees,
         };
+        // An entry of the page is one row: what its open and its removal ask
+        // are offered on the same row, once.
+        let mut seen: Vec<String> = Vec::new();
         for request in view::visible_requests(&state, &self.personal_bookmark_location) {
-            if let Some(resource) = request_resource(&self.personal_bookmarks, request) {
-                if let Some(existing) = root.children.iter_mut().find(|row| row.id == resource.id) {
-                    for action in resource.actions {
-                        if !existing.actions.iter().any(|have| have.id == action.id) {
-                            existing.actions.push(action);
-                        }
-                    }
-                } else {
-                    root = root.with_child(resource);
-                }
+            let Some(resource) = requested(&self.personal_bookmarks, &request) else {
+                continue;
+            };
+            if seen.iter().any(|id| id == resource.id()) {
+                continue;
             }
+            seen.push(resource.id().to_owned());
+            root = root.row(resource);
         }
-        for request in view::navigation_requests(
-            &view::ViewState {
-                bookmarks: &self.personal_bookmarks.bookmarks,
-                imported_trees: &self.personal_bookmarks.imported_trees,
-            },
-            &self.personal_bookmark_location,
-        ) {
+        for request in view::navigation_requests(&state, &self.personal_bookmark_location) {
             if let Some(resource) = request_resource(&self.personal_bookmarks, request) {
-                root = root.with_child(resource);
+                root = root.row(resource);
             }
         }
         root
     }
 }
+/// The whole row an entry of the page names: its open and its removal
+/// together, whether the request asks for either. `None` once the entry is
+/// gone, or for a request that names a route rather than an entry.
+fn requested(state: &PersonalBookmarkState, request: &ViewRequest) -> Option<LiveRow> {
+    use crate::personal_bookmarks::{flat_id, node_id};
+    let id = match request {
+        ViewRequest::Open { source, id } | ViewRequest::Remove { source, id } => {
+            node_id(source, id)
+        }
+        ViewRequest::FlatOpen { url } | ViewRequest::FlatRemove { url } => flat_id(url),
+        ViewRequest::Folder {
+            source,
+            id: Some(id),
+            offset: 0,
+        } => node_id(source, id),
+        ViewRequest::Folder { .. } | ViewRequest::Overview { .. } => return None,
+    };
+    crate::personal_bookmarks::resolve(state, &id)
+}
+/// The row `id` names, as the page offers it before what a control asks of
+/// it.
+fn named_row<'a>(
+    state: &'a PersonalBookmarkState,
+    id: &str,
+) -> Option<(crate::personal_bookmarks::Named<'a>, LiveRow)> {
+    let named = crate::personal_bookmarks::named(state, id)?;
+    let row = LiveRow::new(id, named.kind(), named.label());
+    Some((named, row))
+}
 pub(crate) fn request_resource(
     state: &PersonalBookmarkState,
     request: ViewRequest,
-) -> Option<ResourceSpec> {
-    let resource = match request {
+) -> Option<LiveRow> {
+    use crate::imported_folders::NodeKind;
+    use crate::personal_bookmarks::{Named, flat_id, node_id};
+    match request {
         ViewRequest::Open { source, id } => {
-            return crate::personal_bookmarks::resolve(
-                state,
-                &crate::personal_bookmarks::node_id(&source, &id),
-            )
-            .map(|mut r| {
-                r.actions.retain(|a| a.id == "open");
-                r
-            });
+            let (named, row) = named_row(state, &node_id(&source, &id))?;
+            match named {
+                Named::Placement(_, node) => match &node.kind {
+                    NodeKind::Bookmark { url } => {
+                        Some(row.effect(&crate::effects::BrowserEffect::Open { url: url.clone() }))
+                    }
+                    _ => None,
+                },
+                Named::Flat(_) => None,
+            }
         }
         ViewRequest::Remove { source, id } => {
-            return crate::personal_bookmarks::resolve(
-                state,
-                &crate::personal_bookmarks::node_id(&source, &id),
-            )
-            .map(|mut r| {
-                r.actions
-                    .retain(|a| a.id == "remove-personal-imported-node");
-                r
-            });
+            let (named, row) = named_row(state, &node_id(&source, &id))?;
+            match named {
+                Named::Placement(_, node) => Some(row.effect(
+                    &crate::effects::BrowserEffect::RemovePersonalImportedNode {
+                        source: blake3::Hash::from(source).to_hex().to_string(),
+                        id: node.id.clone(),
+                    },
+                )),
+                Named::Flat(_) => None,
+            }
         }
         ViewRequest::FlatOpen { url } => {
-            return crate::personal_bookmarks::resolve(
-                state,
-                &crate::personal_bookmarks::flat_id(&url),
-            )
-            .map(|mut r| {
-                r.actions.retain(|a| a.id == "open");
-                r
-            });
+            let (named, row) = named_row(state, &flat_id(&url))?;
+            match named {
+                Named::Flat(_) => Some(row.effect(&crate::effects::BrowserEffect::Open { url })),
+                Named::Placement(..) => None,
+            }
         }
         ViewRequest::FlatRemove { url } => {
-            return crate::personal_bookmarks::resolve(
-                state,
-                &crate::personal_bookmarks::flat_id(&url),
-            )
-            .map(|mut r| {
-                r.actions.retain(|a| a.id == "remove-personal-bookmark");
-                r
-            });
+            let (named, row) = named_row(state, &flat_id(&url))?;
+            match named {
+                Named::Flat(_) => {
+                    Some(row.effect(&crate::effects::BrowserEffect::RemovePersonalBookmark { url }))
+                }
+                Named::Placement(..) => None,
+            }
         }
         ViewRequest::Folder {
             source,
             id: Some(id),
             offset: 0,
         } => {
-            return crate::personal_bookmarks::resolve(
-                state,
-                &crate::personal_bookmarks::node_id(&source, &id),
-            )
-            .map(|mut r| {
-                r.actions
-                    .retain(|a| a.id == "show-personal-bookmark-folder");
-                r
-            });
+            let (named, row) = named_row(state, &node_id(&source, &id))?;
+            match named {
+                Named::Placement(_, node) if matches!(node.kind, NodeKind::Folder) => Some(
+                    row.effect(&crate::effects::BrowserEffect::ShowPersonalBookmarkFolder {
+                        source: blake3::Hash::from(source).to_hex().to_string(),
+                        id: Some(node.id.clone()),
+                        offset: 0,
+                    }),
+                ),
+                _ => None,
+            }
         }
         ViewRequest::Folder { source, id, offset } => {
-            crate::effects::BrowserEffect::ShowPersonalBookmarkFolder {
+            let effect = crate::effects::BrowserEffect::ShowPersonalBookmarkFolder {
                 source: blake3::Hash::from(source).to_hex().to_string(),
                 id,
                 offset: u32::try_from(offset).ok()?,
-            }
+            };
+            navigation_row(&effect)
         }
         ViewRequest::Overview { offset } => {
-            crate::effects::BrowserEffect::ShowPersonalBookmarkFolder {
+            let effect = crate::effects::BrowserEffect::ShowPersonalBookmarkFolder {
                 source: String::new(),
                 id: None,
                 offset: u32::try_from(offset).ok()?,
-            }
+            };
+            navigation_row(&effect)
         }
-    };
+    }
+}
+/// The route to another page of the personal bookmarks, named by the effect
+/// that takes it, so each page of the list is a row of its own.
+fn navigation_row(effect: &crate::effects::BrowserEffect) -> Option<LiveRow> {
     let id = format!(
         "{}.navigation:{}",
         crate::personal_bookmarks::SCOPE,
-        blake3::hash(&serde_json::to_vec(&resource.arguments()).ok()?).to_hex()
+        blake3::hash(&serde_json::to_vec(&effect.arguments()).ok()?).to_hex()
     );
     Some(
-        ResourceSpec::new(
+        LiveRow::new(
             id,
             "browser.personal-bookmark-navigation",
             crate::CATALOG.t("browser-resource-bookmark-navigation"),
         )
-        .with_action(resource.bound()),
+        .effect(effect),
     )
 }

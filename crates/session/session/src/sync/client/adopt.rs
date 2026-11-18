@@ -9,6 +9,39 @@ use tilo_network_actor::{DeviceIdentity, NetCmd, NetEvent};
 use crate::engine::Engine;
 use crate::sync::{Enrolling, Entering, REDEEM_WITHIN, SETTLE_WITHIN};
 use crate::workspace_keys::KeyLink;
+use tilo_network_actor::own_service::OwnService;
+
+/// Where `invitation` is redeemed: with this device's own workspace service in process when the
+/// invitation names it (an endpoint cannot dial itself), over the network otherwise.
+fn join_client(
+    endpoint: iroh::Endpoint,
+    own_service: Option<&OwnService>,
+    identity: &DeviceIdentity,
+    invitation: &str,
+) -> Result<tilo_peer_state::join_transport::WorkspaceJoinClient, String> {
+    let own = identity.device_cert.device_public_key;
+    let hosted_here = tilo_peer_state::join::decode_and_verify_invitation_text(
+        invitation,
+        None,
+        &tilo_user_identity::RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .is_ok_and(|verified| {
+        verified
+            .grant()
+            .transport
+            .iter()
+            .any(|hint| tilo_peer_state::owner::session::hosted_by(hint, &own))
+    });
+    if !hosted_here {
+        return Ok(tilo_peer_state::join_transport::WorkspaceJoinClient::new(
+            endpoint,
+        ));
+    }
+    own_service
+        .and_then(|service| service.join_client(own))
+        .ok_or_else(|| "this device's workspace service is not open".to_owned())
+}
 
 /// Come into the workspace the shell made for the join, through its entry or with an invitation: this
 /// device becomes a member of the workspace, takes in what it held before it arrived, and takes part
@@ -23,6 +56,7 @@ pub(super) async fn redeem(
     events: &tokio::sync::mpsc::Sender<NetEvent>,
     request: Enrolling,
     link: Option<&KeyLink>,
+    own_service: Option<&OwnService>,
 ) -> Result<(), tilo_session_client::EnrollFailure> {
     let topic = request.workspace_id;
     // Renewal precedes presentation: a device that slept past the end of its certificate joins with
@@ -81,7 +115,7 @@ pub(super) async fn redeem(
             return Ok(());
         }
     };
-    let client = tilo_peer_state::join_transport::WorkspaceJoinClient::new(endpoint);
+    let client = join_client(endpoint, own_service, &identity, &invitation)?;
     let enrollment = tokio::time::timeout(
         REDEEM_WITHIN,
         tilo_peer_state::owner::enroll::prepare_and_complete(
