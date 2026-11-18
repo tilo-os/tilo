@@ -2059,6 +2059,14 @@ extension TiloSource {
         guard let live = TiloLive.LiveThing(id: thing.id.value, title: thing.title, reference: thing.reference) else {
             return AnyView(EmptyView())
         }
-        return AnyView(TiloLiveView(live, on: stage, size: size))
+        return AnyView(TiloLiveView(live, on: stage, size: size, says: TiloSource.said))
+    }
+
+    /// What a live thing's place says where its thing is not shown, in the app's own sentences.
+    static func said(_ trouble: LiveStage.Trouble) -> String {
+        switch trouble {
+        case .notOffered: AssistantWords.viewNotOffered.said
+        case .notShown: AssistantWords.liveNotShown.said
+        }
     }
 }
