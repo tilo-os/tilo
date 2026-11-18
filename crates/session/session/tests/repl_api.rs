@@ -82,11 +82,18 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Api, note: &st
             && Api::param(&place, "x")["required"] == false,
         "it takes the resource as a value, and may go without the rest: {place}"
     );
-    // A resource that is a value goes by a reference, as a program's answers name it.
-    let (found, failed) = repl.run(session, "find(notes.Note)");
-    assert!(!failed, "{found}");
-    let reference = found
-        .lines()
+    // A resource that is a value goes by a reference, as a program's answers name it: the lines
+    // the model reads carry each resource's reference, its title beside it.
+    let found = repl.program_answer(session, "find(notes.Note)");
+    assert!(found["status"] != "failed", "{found}");
+    let output = found["output"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    let reference = output
+        .iter()
         .find(|line| line.contains(&format!("\"{NOTE_TITLE}\"")))
         .and_then(|line| line.split_whitespace().next())
         .unwrap_or_else(|| panic!("the note goes by a reference: {found}"))
