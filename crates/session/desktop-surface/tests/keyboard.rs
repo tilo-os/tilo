@@ -1461,10 +1461,11 @@ fn a_windows_search_finds_what_the_session_holds_for_its_app() {
     );
 }
 
-/// A window group's new tab asks which application to show there: the applications, not the rest of
-/// the shell, and the one chosen opens as a tab of that window group.
+/// A window group's new tab searches the workspace as the main box does: the applications to show
+/// there and what the workspace's own search holds, and an application chosen opens as a tab of
+/// that window group.
 #[test]
-fn a_window_groups_new_tab_lists_the_applications_and_opens_the_one_chosen_there() {
+fn a_window_groups_new_tab_searches_the_workspace_and_opens_the_app_chosen_there() {
     let mut shell = Shell::one_window(2, 450);
     let host = shell.with_host();
     let before = shell.windows();
@@ -1475,8 +1476,8 @@ fn a_window_groups_new_tab_lists_the_applications_and_opens_the_one_chosen_there
     shell.settle_search();
     assert!(shell.handle.search_open());
     assert!(
-        host.scopes.borrow().is_empty(),
-        "the applications are the shell's own, not the host's: {:?}",
+        matches!(host.scopes.borrow().as_slice(), [Scope::WindowGroup(_)]),
+        "the workspace's own search answers the new tab too: {:?}",
         host.scopes.borrow()
     );
     let (_, rows) = shell.handle.search_rows();
@@ -1484,10 +1485,15 @@ fn a_window_groups_new_tab_lists_the_applications_and_opens_the_one_chosen_there
         rows.iter().any(|row| row.title == "Notes"),
         "what a new tab may show: {rows:?}"
     );
+    shell.type_search("quarterly");
+    let (_, rows) = shell.handle.search_rows();
     assert!(
-        rows.iter().all(|row| row.title != "Quarterly plan"),
-        "and nothing the shell's host holds: {rows:?}"
+        rows.iter().any(|row| row.title == "Quarterly plan"),
+        "and what the workspace's own search holds: {rows:?}"
     );
+    for _ in "quarterly".chars() {
+        shell.key_search(NamedKey::Backspace);
+    }
     shell.type_search("notes");
     shell.key_search(NamedKey::Enter);
     let after = shell.windows();
