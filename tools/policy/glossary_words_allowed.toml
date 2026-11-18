@@ -1159,3 +1159,8 @@ paths = [
     "apps/remote-model/locales/en-US.ftl",
     "apps/remote-model/locales/de-DE.ftl",
 ]
+
+[[allow]]
+reason = "The model gateway's module of its wire types, named by the program it backs, not a Tilo concept."
+words = ["host"]
+identifiers = ["host_backend"]

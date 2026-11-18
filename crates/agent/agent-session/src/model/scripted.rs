@@ -117,6 +117,7 @@ mod tests {
     #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 
     use super::*;
+    use tilo_model_gateway::host_backend::protocol::ToolChoice;
 
     fn asking(task: &str) -> ModelRequest {
         ModelRequest {
@@ -125,7 +126,7 @@ mod tests {
                 Message::text(Role::User, task),
             ],
             tools: Vec::new(),
-            tool_choice: Default::default(),
+            tool_choice: ToolChoice::default(),
             max_output_tokens: 1_024,
         }
     }
