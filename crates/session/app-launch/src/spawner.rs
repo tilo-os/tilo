@@ -240,11 +240,20 @@ pub struct Handed {
     pub latency_sensitive: bool,
 }
 
-/// A kept launch whose network is filtered: the control socket its proxy answers on, and the app
-/// and workspace whose grants decide what it reaches.
+/// A kept launch whose filtered network a desktop serves: the control socket a sandboxed
+/// program's proxy answers on, or the file a Windows appliance presentation keeps for the
+/// desktop that adopts it, and the app and workspace whose grants decide what it reaches.
 #[cfg(target_os = "linux")]
 pub struct KeptNetwork {
-    pub control: PathBuf,
+    /// The launch's keeper directory, where its network lives.
+    pub dir: PathBuf,
+    /// The control socket of a sandboxed program's proxy, when its launch serves one.
+    pub control: Option<PathBuf>,
+    /// The launch keeps a Windows appliance presentation's egress: its listener lived in the
+    /// desktop that started it, and a desktop that adopts it serves it again.
+    pub appliance: bool,
+    /// This session took the launch back after a restart.
+    pub adopted: bool,
     pub app: String,
     pub workspace: String,
 }
@@ -325,18 +334,28 @@ impl Spawner {
         displays
     }
 
-    /// The network proxy of each kept launch that has one, with the app and the workspace whose
-    /// grants decide the policy it enforces.
+    /// The network of each kept launch that has one, with the app and the workspace whose grants
+    /// decide the policy it enforces.
     #[cfg(target_os = "linux")]
     pub fn kept_networks(&self) -> Vec<KeptNetwork> {
         running(&self.running)
             .values()
             .filter_map(|app| {
                 let kept = app.kept.as_ref()?;
-                let control = kept.network_control()?;
+                let control = kept.network_control();
+                let appliance = kept
+                    .dir
+                    .join(launcher::egress_proxy::APPLIANCE_NETWORK)
+                    .is_file();
+                if control.is_none() && !appliance {
+                    return None;
+                }
                 let launch = crate::kept::written_launch(&kept.dir)?;
                 Some(KeptNetwork {
+                    dir: kept.dir.clone(),
                     control,
+                    appliance,
+                    adopted: kept.adopted(),
                     app: launch.app,
                     workspace: launch.workspace,
                 })
@@ -878,6 +897,7 @@ impl Spawner {
             return None;
         }
         let kept = crate::kept::Kept::new(dir.to_path_buf(), launch.service);
+        kept.take_back();
         if let Err(error) = kept.greeted(&control, keeper) {
             tracing::warn!(target: tilo_startup_metrics::KEPT_APPS_TARGET, app = %launch.app, %error, "not adopted: its keeper cannot be written to");
             return None;

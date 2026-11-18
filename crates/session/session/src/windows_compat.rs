@@ -54,6 +54,12 @@ pub struct Display {
     /// What each kept program's network proxy was last told to allow, by its control socket, so
     /// only a change is sent and a grant taken back cuts the connections it allowed.
     networks: Mutex<std::collections::BTreeMap<PathBuf, SentPolicy>>,
+    /// The filtered egress this desktop serves for the Windows appliance presentations it
+    /// adopted: their listener lived in the desktop that started them.
+    vm_networks: compat_service::VmNetworkLeases,
+    /// What the adopted presentations' egress was last served with, so a pass that changes
+    /// nothing neither reads their files nor touches their listeners.
+    vm_networks_served: Mutex<Vec<(PathBuf, Vec<String>)>>,
 }
 
 /// How a saved tab's Windows program is found: ready to start, still waiting for the service to
@@ -217,6 +223,21 @@ impl Display {
                 }
             }
         }
+    }
+
+    /// Serve the filtered egress of the adopted Windows appliance presentations in `wanted` —
+    /// each launch's keeper directory and the names its workspace grants it now — and of nothing
+    /// else: a launch that is gone, or a grant taken back, leaves its guest offline rather than
+    /// unfiltered.
+    pub(crate) fn adopt_vm_networks(&self, wanted: Vec<(PathBuf, Vec<String>)>) {
+        {
+            let mut served = self.vm_networks_served.lock_recover();
+            if *served == wanted {
+                return;
+            }
+            served.clone_from(&wanted);
+        }
+        self.vm_networks.adopt(wanted);
     }
 
     /// Keep what `control`'s proxy was last told: the policy it took, or that one it did not.

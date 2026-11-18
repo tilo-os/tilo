@@ -142,6 +142,9 @@ pub(crate) struct Kept {
     described: AtomicBool,
     /// The run let go of the launch for an in-place restart: its watcher stops quietly.
     released: AtomicBool,
+    /// This session took the launch back after a restart: what the desktop that started it
+    /// served for the launch — its filtered network — is this one's to serve again.
+    adopted: AtomicBool,
     /// A desktop was handed to the keeper in this run.
     attached: AtomicBool,
     /// What the keeper was last told of where each window stands, by tag.
@@ -166,6 +169,7 @@ impl Kept {
             keeper: AtomicU32::new(0),
             described: AtomicBool::new(false),
             released: AtomicBool::new(false),
+            adopted: AtomicBool::new(false),
             attached: AtomicBool::new(false),
             placed: Mutex::new(std::collections::HashMap::new()),
             x11: Mutex::new(None),
@@ -184,6 +188,7 @@ impl Kept {
             keeper: AtomicU32::new(outdated.keeper),
             described: AtomicBool::new(false),
             released: AtomicBool::new(false),
+            adopted: AtomicBool::new(true),
             attached: AtomicBool::new(true),
             placed: Mutex::new(std::collections::HashMap::new()),
             x11: Mutex::new(None),
@@ -291,7 +296,18 @@ impl Kept {
         self.released.load(Ordering::Acquire)
     }
 
-    /// Let go of the keeper without touching it: the next run takes it back.
+    /// Whether this session took the launch back after a restart, rather than starting it.
+    pub(crate) fn adopted(&self) -> bool {
+        self.adopted.load(Ordering::Acquire)
+    }
+
+    /// The launch was taken back after a restart: what its first desktop served for it may have
+    /// gone with that desktop.
+    pub(crate) fn take_back(&self) {
+        self.adopted.store(true, Ordering::Release);
+    }
+
+    /// Let go of the keeper without touching it: the next desktop takes it back.
     pub(crate) fn release(&self) {
         self.released.store(true, Ordering::Release);
         let control = self.control.lock_recover().take();

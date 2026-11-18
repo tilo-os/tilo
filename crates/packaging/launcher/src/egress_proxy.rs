@@ -34,6 +34,11 @@ pub const RELAY_PORT: u16 = 9050;
 /// Where the proxy socket is bind-mounted inside the sandbox.
 pub const SANDBOX_PROXY_PATH: &str = "/run/tilo/net/proxy.sock";
 
+/// The name of the file a Windows appliance presentation keeps in its launch's keeper
+/// directory: the guest's endpoint and token, from which the desktop that adopts the launch after
+/// a restart serves its egress again.
+pub const APPLIANCE_NETWORK: &str = "appliance-network";
+
 /// Host-side path the proxy listens on.
 pub fn proxy_socket_path(runtime: &Path, launcher_pid: u32) -> PathBuf {
     runtime.join(format!("tilo/net/{launcher_pid}.sock"))

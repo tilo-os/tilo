@@ -362,12 +362,15 @@ impl Presenter {
 
     /// Present `command` as `shown` says until it ends, with a private audio
     /// graph that carries a source only for `microphone`, on an X11 display of
-    /// the keeper's when `x11`.
+    /// the keeper's when `x11`. `network`, when the guest was given one, is
+    /// kept in the launch's keeper directory for the desktop that adopts the
+    /// program after a restart to serve egress again.
     fn present(
         &self,
         shown: &windows_vm::Shown<'_>,
         microphone: bool,
         x11: bool,
+        network: Option<&windows_vm::GuestNetworkBinding>,
         command: windows_vm::CommandRequest,
         failed: fn(Option<i32>, String) -> windows_vm::RemoteAppError,
     ) -> Result<windows_vm::RemoteAppProcess, windows_vm::RemoteAppError> {
@@ -386,6 +389,7 @@ impl Presenter {
             })
             .transpose()
             .map_err(|error| failed(None, error))?;
+        let keeper_dir = kept.as_ref().map(|kept| kept.display().runtime_dir.clone());
         let display = match &kept {
             Some(kept) => kept.display().clone(),
             None => self
@@ -393,8 +397,20 @@ impl Presenter {
                 .display_for(shown.workspace_id)
                 .map_err(|error| failed(None, error))?,
         };
+        // Written before the program starts, so a desktop that restarts in place at any moment
+        // after it is running finds the guest's endpoint and token to serve its egress again.
+        if let (Some(dir), Some(network)) = (&keeper_dir, network)
+            && let Err(error) = network.persist(dir)
+        {
+            tracing::warn!(dir = %dir.display(), %error, "a Windows appliance program's filtered network is not kept for the next desktop");
+        }
+        let forget_network = || {
+            if let (Some(dir), Some(_)) = (&keeper_dir, network) {
+                windows_vm::GuestNetworkBinding::forget(dir);
+            }
+        };
         let sequence = self.next.fetch_add(1, Ordering::Relaxed);
-        let graph = (self.prepare_audio_graph)(
+        let graph = match (self.prepare_audio_graph)(
             display.runtime_dir.join("tilo-windows-vm").join(format!(
                 "{}-{}-{sequence}",
                 self.kind,
@@ -402,8 +418,13 @@ impl Presenter {
             )),
             display.uid,
             microphone,
-        )
-        .map_err(|error| failed(None, format!("private audio setup failed: {error}")))?;
+        ) {
+            Ok(graph) => graph,
+            Err(error) => {
+                forget_network();
+                return Err(failed(None, format!("private audio setup failed: {error}")));
+            }
+        };
         let ended = self
             .command(&graph, &display, command)
             .and_then(|command| match kept {
@@ -413,7 +434,13 @@ impl Presenter {
             .and_then(|program| program.wait())
             .map_err(|error| failed(None, error.to_string()));
         graph.remove();
-        let ended = ended?;
+        let ended = match ended {
+            Ok(ended) => ended,
+            Err(error) => {
+                forget_network();
+                return Err(error);
+            }
+        };
         if !ended.success {
             return Err(failed(ended.exit_code, String::new()));
         }
@@ -530,10 +557,14 @@ impl windows_vm::RemoteAppLauncher for AudioIsolatedRailLauncher {
             .with_binary(&self.binary)
             .command(guest, brokered)?;
         // FreeRDP's RAIL client is an X11 program: the keeper serves it a display of its own.
-        self.presenter
-            .present(shown, brokered.microphone, true, command, |code, stderr| {
-                windows_vm::RemoteAppError::FreeRdp { code, stderr }
-            })
+        self.presenter.present(
+            shown,
+            brokered.microphone,
+            true,
+            brokered.network_binding.as_ref(),
+            command,
+            |code, stderr| windows_vm::RemoteAppError::FreeRdp { code, stderr },
+        )
     }
 }
 
@@ -554,8 +585,9 @@ impl windows_vm::RemoteAppLauncher for AudioIsolatedSpiceLauncher {
         brokered: &windows_vm::BrokeredLaunch,
     ) -> Result<windows_vm::RemoteAppProcess, windows_vm::RemoteAppError> {
         let command = windows_vm::AppFocusedSpiceLauncher::new().command(guest, brokered)?;
+        // The app-focused SPICE fallback carries no egress: the guest is given no network.
         self.presenter
-            .present(shown, false, false, command, |code, stderr| {
+            .present(shown, false, false, None, command, |code, stderr| {
                 windows_vm::RemoteAppError::Spice { code, stderr }
             })
     }

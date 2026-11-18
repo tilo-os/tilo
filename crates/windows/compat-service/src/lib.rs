@@ -30,6 +30,7 @@ mod session;
 mod store;
 mod translated;
 mod vm_adapter;
+mod vm_network;
 
 pub use assembly::{Assembly, LazyVmDelegate, SessionSide, serve};
 pub use catalogue::{
@@ -78,3 +79,4 @@ pub use vm_adapter::{
     LiveVmDelegate, PortalRailPortalAuthority, RAIL_PRESENTER, SharedSessionCapabilityBroker,
     VmPortalAuthority, VmSharedSessionTracker, vm_app_id, vm_entry_id,
 };
+pub use vm_network::VmNetworkLeases;
