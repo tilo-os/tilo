@@ -595,12 +595,23 @@ impl ResultSpec {
             Self::None | Self::Job if declared.is_none() => Ok(()),
             Self::None => Err("action declared no result but returned one".into()),
             // An absent value is `null`: a result its schema lets be null may be
-            // left out by an executor with nothing to report.
-            Self::Json { schema } => match declared {
-                Some(value) => crate::params::validate_schema(&value, schema),
-                None => crate::params::validate_schema(&serde_json::Value::Null, schema)
-                    .map_err(|_| "action did not return its declared JSON result".to_string()),
-            },
+            // left out by an executor with nothing to report. An answer whose
+            // every field is what the write made ([`MADE_FIELDS`]) declared no
+            // field of its own, and is the empty answer the action returned.
+            Self::Json { schema } => {
+                let declared = declared.or_else(|| {
+                    output
+                        .value
+                        .as_ref()
+                        .filter(|value| value.is_object())
+                        .map(|_| serde_json::Value::Object(serde_json::Map::new()))
+                });
+                match declared {
+                    Some(value) => crate::params::validate_schema(&value, schema),
+                    None => crate::params::validate_schema(&serde_json::Value::Null, schema)
+                        .map_err(|_| "action did not return its declared JSON result".to_string()),
+                }
+            }
             Self::Resource { resource_kind }
                 if !output.resources.is_empty()
                     && output.resources.iter().all(|address| {
@@ -1340,6 +1351,29 @@ mod tests {
                 })
                 .is_err(),
             "a result an action did not declare is still refused"
+        );
+        // A verb that answers what it made (`#[action(answers)]`) declares an
+        // object result, and answering only the text it wrote made no field of
+        // its own: it is the empty answer, not a missing one.
+        let object = serde_json::json!({"type": "object"});
+        assert!(
+            ResultSpec::Json {
+                schema: object.clone()
+            }
+            .validate(&crate::ActionOutput {
+                value: Some(serde_json::json!({
+                    "wrote": {"region": "body", "ranges": []},
+                })),
+                resources: Vec::new(),
+            })
+            .is_ok(),
+            "an answer of what the write made declares an empty object"
+        );
+        assert!(
+            ResultSpec::Json { schema: object }
+                .validate(&crate::ActionOutput::default())
+                .is_err(),
+            "an action that answered nothing declared no result"
         );
     }
 
