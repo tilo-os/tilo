@@ -624,7 +624,7 @@ impl ContentBackend for DirBackend {
     /// does, and the index, its generation and each shard directory are
     /// written once for the whole set instead of once per item.
     fn put_many(&self, items: &[(&[u8], &str)]) -> Vec<Result<Stored, ContentError>> {
-        let started = std::time::Instant::now();
+        let started = tilo_clock::now();
         let mut outcomes: Vec<Option<Result<Stored, ContentError>>> =
             (0..items.len()).map(|_| None).collect();
         let mut received: Vec<(usize, PathBuf, String, usize)> = Vec::new();
