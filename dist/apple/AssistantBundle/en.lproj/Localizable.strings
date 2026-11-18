@@ -53,6 +53,12 @@
 "needs-model" = "A provider is linked. Choose the model your assistant answers on.";
 "choose-model" = "Choose a model";
 "answers-on" = "Your assistant answers on {model}";
+"another-key" = "Use another key for {name}";
+"link-another" = "Link another provider";
+"another-key-step" = "Type another key of your own for {name} below. It takes the place of the key your vault keeps for {name}.";
+"another-provider-step" = "Choose a provider and type your own key for it below.";
+"use-key" = "Use this key for {name}";
+"key-taken" = "The key is in your vault. Your assistant answers on the model you chose, and you can change it here.";
 "started-by-main" = "started {time} by the main agent";
 "started-by-you" = "started {time} by you";
 "cannot-read-main" = "it cannot read the main chat";

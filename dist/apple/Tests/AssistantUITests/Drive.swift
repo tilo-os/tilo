@@ -466,6 +466,7 @@ final class Recording: AssistantSource, @unchecked Sendable {
     func supervision() -> AsyncStream<Supervision> { inner.supervision() }
     func setAssistantOn(_ on: Bool) async throws { note("setAssistantOn(\(on))"); try await inner.setAssistantOn(on) }
     func models() async throws -> [ModelChoice] { note("models()"); return try await inner.models() }
+    func providers() async throws -> [ProviderChoice] { note("providers()"); return try await inner.providers() }
     func choose(_ model: ModelChoice.ID, for work: WorkKind) async throws { note("choose(\(model), \(work.rawValue))"); try await inner.choose(model, for: work) }
     func forget(_ learned: Supervision.Learned.ID) async throws { note("forget(\(learned))"); try await inner.forget(learned) }
     func register(_ address: PushAddress) async { note("register()"); await inner.register(address) }

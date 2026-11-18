@@ -44,6 +44,16 @@ public struct SupervisionView: View {
                             ForEach(model.models) { choice in
                                 Button("\(choice.name) · \(choice.provider)") { model.choose(choice.id) }
                             }
+                            // Under the models, the ways back to the provider step: another key for a
+                            // provider that is linked, another provider. Each leads to the main chat,
+                            // where the app's one protected field is.
+                            let ways = model.keyWays
+                            if !ways.isEmpty {
+                                Divider()
+                                ForEach(ways) { way in
+                                    Button(way.words) { model.take(way) }
+                                }
+                            }
                         } label: {
                             Text(AssistantWords.change.said).font(.tilo(14, .medium)).foregroundStyle(Token.asst)
                         }

@@ -174,21 +174,34 @@ struct SetupStep: View {
             case .needsProvider(let providers):
                 ProviderCard(providers: providers) { offered = $0 }
             case .needsModel(let models):
-                ModelCard(models: models)
+                if let step = model.keyStep { back(to: step) } else { ModelCard(models: models) }
             case .unknown, .ready:
-                if !offered.isEmpty { ModelCard(models: offered) }
+                if let step = model.keyStep {
+                    back(to: step)
+                } else if !offered.isEmpty {
+                    ModelCard(models: offered, answers: model.supervision.model)
+                }
             }
         }
         .onChange(of: model.conversation(.main).items.count) { offered = [] }
+    }
+
+    /// The provider step as a person comes back to it from the assistant view, with the
+    /// provider they asked for picked. A step asked for anew begins anew.
+    private func back(to step: AssistantModel.KeyStep) -> some View {
+        ProviderCard(providers: step.providers, picked: step.picked, again: true) { offered = $0 }.id(step.picked)
     }
 }
 
 /// The provider step: no provider is linked, so the main chat says so and offers the step. The
 /// person picks a provider and types a key of their own into the protected field, the same one
 /// a secret is typed into. What is typed lives in this view alone until the button hands it to
-/// their vault; the app has no other field for a key.
+/// their vault; the app has no other field for a key. A person who linked a provider comes back
+/// to this same step from the assistant view, for another key or another provider.
 struct ProviderCard: View {
     let providers: [ProviderChoice]
+    /// Whether the person came back to the step: a provider is linked, and the step can be put away.
+    let again: Bool
     /// Called with the models that can be chosen once the provider is linked.
     let linked: ([ModelChoice]) -> Void
     @Environment(AssistantModel.self) private var model
@@ -196,9 +209,30 @@ struct ProviderCard: View {
     @State private var typed = ""
     @State private var linking = false
 
+    init(providers: [ProviderChoice], picked: ProviderChoice.ID? = nil, again: Bool = false, linked: @escaping ([ModelChoice]) -> Void) {
+        self.providers = providers
+        self.again = again
+        self.linked = linked
+        _picked = State(initialValue: picked)
+    }
+
+    /// What the step says over its box. At the first start: that no provider is linked. To a
+    /// person who came back: that the key typed takes the place of the one kept, or that a
+    /// provider is to be chosen.
+    static func says(of provider: ProviderChoice?, again: Bool) -> String {
+        guard again, let provider else { return AssistantWords.needsProvider.said }
+        return provider.isLinked ? AssistantWords.anotherKeyStep.said(["name": provider.name]) : AssistantWords.anotherProviderStep.said
+    }
+
+    /// What the step's button says: the provider is linked, or a linked one is given this key.
+    static func button(for provider: ProviderChoice) -> String {
+        (provider.isLinked ? AssistantWords.useKey : AssistantWords.linkProvider).said(["name": provider.name])
+    }
+
     var body: some View {
-        Bubble { MarkdownText(text: AssistantWords.needsProvider.said) }
-        if let provider = providers.first(where: { $0.id == picked }) ?? providers.first {
+        let provider = providers.first(where: { $0.id == picked }) ?? providers.first
+        Bubble { MarkdownText(text: ProviderCard.says(of: provider, again: again)) }
+        if let provider {
             CardBox(name: provider.name, note: AssistantWords.keptInVault.said) {
                 if providers.count > 1 {
                     Flow(spacing: 8, lineSpacing: 8) {
@@ -215,9 +249,19 @@ struct ProviderCard: View {
                     }
                 }
                 ProtectedField(typed: $typed, label: AssistantWords.providerKey.said(["name": provider.name])) { link(provider) }
-                Button(AssistantWords.linkProvider.said(["name": provider.name])) { link(provider) }
-                    .buttonStyle(BoxButtonStyle(isMain: true))
-                    .disabled(typed.isEmpty || linking)
+                Flow(spacing: 8, lineSpacing: 8) {
+                    Button(ProviderCard.button(for: provider)) { link(provider) }
+                        .buttonStyle(BoxButtonStyle(isMain: true))
+                        .disabled(typed.isEmpty || linking)
+                    if again {
+                        // Nothing that was typed outlives the step.
+                        Button(AssistantWords.notNow.said) {
+                            typed = ""
+                            model.putAwayKeyStep()
+                        }
+                        .buttonStyle(BoxButtonStyle())
+                    }
+                }
                 Fine(words: AssistantWords.secretFine.said)
             }
             .onDisappear { typed = "" }
@@ -241,6 +285,9 @@ struct ProviderCard: View {
 /// on. They are the ones the person's server listed; nothing here names a model.
 struct ModelCard: View {
     let models: [ModelChoice]
+    /// The model the main chat answers on already, by its name, where the person came back to
+    /// the provider step: their choice stands, and they can change it here.
+    var answers: String?
     @Environment(AssistantModel.self) private var model
     @State private var chosen: ModelChoice?
 
@@ -262,9 +309,10 @@ struct ModelCard: View {
 
     var body: some View {
         let providers = ModelCard.providers(of: models)
-        Bubble { MarkdownText(text: AssistantWords.needsModel.said) }
+        let named = chosen?.name ?? answers
+        Bubble { MarkdownText(text: (answers == nil ? AssistantWords.needsModel : AssistantWords.keyTaken).said) }
         CardBox(name: AssistantWords.model.said, note: ModelCard.note(chosen: chosen, among: models)) {
-            if let chosen { Settled(words: AssistantWords.answersOn.said(["model": chosen.name])) }
+            if let named { Settled(words: AssistantWords.answersOn.said(["model": named])) }
             Menu {
                 if providers.count > 1 {
                     // Models of several providers stand under their provider's name.
@@ -277,7 +325,7 @@ struct ModelCard: View {
                     ForEach(models) { pick($0) }
                 }
             } label: {
-                Text((chosen == nil ? AssistantWords.chooseModel : AssistantWords.change).said)
+                Text((named == nil ? AssistantWords.chooseModel : AssistantWords.change).said)
                     .font(.tilo(14, .medium)).foregroundStyle(Token.asst)
             }
             .menuStyle(.button)

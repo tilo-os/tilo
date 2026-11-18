@@ -339,6 +339,15 @@ lists are offered, and the one chosen answers and works in the main chat. The se
 no list of the providers it links by name yet, so the four names its `add-preset` knows are
 written in `TiloSource`.
 
+**The way back to the key.** Once a provider has its key the step is gone from the main chat,
+and the assistant view's Model line leads back to it: under the models its menu offers "Use
+another key for NAME" for each linked provider and "Link another provider" where one is left
+(`AssistantModel.keyWays`, from `AssistantSource.providers()`). Either shows the same step in
+the main chat again with that provider picked (`AssistantModel.keyStep`); the app grows no
+second field for a key. A key typed for a linked provider takes the place of the one their
+server keeps (`set-key`; the provider is not added again), the model step follows, and the
+model the person chose stands. Not now puts the step away.
+
 **What Tilo asks before it pairs.** Tilo's page asks "Add this device?" before it asks
 anyone to let the device in, and says whose devices it would join and which server adds it.
 The engine tells the app the page's own sentences and its own words for the two ways on

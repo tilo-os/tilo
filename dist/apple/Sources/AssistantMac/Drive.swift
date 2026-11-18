@@ -29,6 +29,10 @@ import WebKit
 ///   {"do": "keep", "request": "…", "file": "…"}       as the protected field keeps what was typed
 ///   {"do": "link", "preset": "…", "file": "…"}       as the provider step's protected field links a provider;
 ///                                                    with "model" the provider's default model is set as well
+///   {"do": "another-key", "provider": "…"}            as "Use another key for NAME" under the assistant view's Model
+///                                                    line: the provider step stands in the main chat again, and
+///                                                    "link" with that provider as its preset types the new key
+///   {"do": "link-another"}   {"do": "not-now"}        as "Link another provider" there, and as Not now under the step
 ///   {"do": "event", "name": "…", "when": "…", "instruction": "…"}   something that comes at a time
 ///   {"do": "stop"}                                    stop the answer that is being written
 ///   {"do": "saw", "item": "…"}                        as opening a piece from its notification does
@@ -213,6 +217,20 @@ final class AssistantDrive {
                         "automations": .number(Double(model.automations.count)), "models": .number(Double(model.models.count)),
                         "model": model.supervision.model.map(JSON.string) ?? .null,
                         "logins": .number(Double(model.supervision.logins.count))])
+        // What the assistant view's Model line offers under the models, and whether the provider
+        // step stands in the main chat again.
+        once("ways", .array(model.keyWays.map { way -> JSON in
+            switch way {
+            case .anotherKey(let provider): return ["way": "another-key", "provider": .string(provider.id.value), "says": .string(way.words)]
+            case .anotherProvider: return ["way": "link-another", "says": .string(way.words)]
+            }
+        }))
+        if let step = model.keyStep {
+            once("keyStep", ["is": "shown", "picked": .string(step.picked.value),
+                             "providers": .array(step.providers.map { ["id": .string($0.id.value), "linked": .bool($0.isLinked)] })])
+        } else {
+            once("keyStep", ["is": "away"])
+        }
         once("comes", .array(model.automations.map { coming in
             ["title": .string(coming.title), "when": .string(coming.summary), "on": .bool(coming.isOn),
              "next": coming.next.map { .number($0.timeIntervalSince1970) } ?? .null]
@@ -347,6 +365,22 @@ final class AssistantDrive {
             guard let chosen = step["model"]?.string else { AssistantDrive.say(["error": "choose takes model"]); return }
             model.choose(.init(chosen))
             AssistantDrive.say(["asked": "choose"])
+        case "another-key":
+            // As the Model line's "Use another key for NAME": one of the ways the model offers there.
+            guard let provider = step["provider"]?.string else { AssistantDrive.say(["error": "another-key takes provider"]); return }
+            let offered = model.keyWays.first { way in
+                if case .anotherKey(let linked) = way { linked.id.value == provider } else { false }
+            }
+            guard let way = offered else { AssistantDrive.say(["error": "no other key is offered for this provider"]); return }
+            model.take(way)
+            AssistantDrive.say(["asked": "another-key"])
+        case "link-another":
+            guard model.keyWays.contains(.anotherProvider) else { AssistantDrive.say(["error": "no other provider is offered"]); return }
+            model.take(.anotherProvider)
+            AssistantDrive.say(["asked": "link-another"])
+        case "not-now":
+            model.putAwayKeyStep()
+            AssistantDrive.say(["asked": "not-now"])
         case "stop":
             model.stopAnswering(in: .main)
             AssistantDrive.say(["asked": "stop"])
