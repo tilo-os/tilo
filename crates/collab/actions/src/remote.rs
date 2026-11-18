@@ -1042,11 +1042,6 @@ pub enum RemoteActionMessage {
         invocation: InvocationId,
         result: Result<(), ActionCallError>,
     },
-    /// Retired: records are read through the record API ([`Self::ResourceRead`]). Kept in
-    /// place because the variants after it are encoded by position.
-    RetiredResourceRequest,
-    /// Retired with [`Self::RetiredResourceRequest`].
-    RetiredResourceResponse,
     /// Ask the person, on one of their own devices ([`ConfirmationQuestion`]).
     ConfirmationRequest {
         correlation: u64,
@@ -1056,19 +1051,6 @@ pub enum RemoteActionMessage {
     ConfirmationResponse {
         correlation: u64,
         result: Result<ConfirmationReply, ActionCallError>,
-    },
-    /// Retired: the reading of a resource is a session resource, read over
-    /// the session's services as any app reads one. Kept in place because
-    /// the variants after it are encoded by position.
-    RetiredResourceWatch {
-        /// What the resource is called, as its actions are addressed.
-        resource: String,
-    },
-    /// Retired: what answered [`Self::RetiredResourceWatch`]. Kept in place
-    /// with it.
-    RetiredResourceReading {
-        resource: String,
-        reading: Option<String>,
     },
     /// What the surface offers changed: the page it lists now, sent without
     /// being asked, so the provider that placed it reads what the surface can do
@@ -1490,13 +1472,9 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
         | RemoteActionMessage::CancelResponse { .. }
-        | RemoteActionMessage::RetiredResourceRequest
-        | RemoteActionMessage::RetiredResourceResponse
         | RemoteActionMessage::ResourceReading { .. }
         | RemoteActionMessage::FeedbackResponse { .. }
         | RemoteActionMessage::ConfirmationResponse { .. }
-        | RemoteActionMessage::RetiredResourceWatch { .. }
-        | RemoteActionMessage::RetiredResourceReading { .. }
         | RemoteActionMessage::ContentPutResponse { .. }
         | RemoteActionMessage::ContentGetResponse { .. }
         | RemoteActionMessage::ContentLinkResponse { .. }

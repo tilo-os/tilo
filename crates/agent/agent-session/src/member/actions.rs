@@ -229,15 +229,11 @@ impl AgentMember {
             | RemoteActionMessage::ContentLinkResponse { .. }
             | RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::ResourceReading { .. }
-            | RemoteActionMessage::RetiredResourceRequest
-            | RemoteActionMessage::RetiredResourceResponse
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
             | RemoteActionMessage::ConfirmationResponse { .. }
             | RemoteActionMessage::ConfirmResponse { .. }
-            | RemoteActionMessage::RetiredResourceWatch { .. }
-            | RemoteActionMessage::RetiredResourceReading { .. }
             | RemoteActionMessage::SearchResponse { .. }
             | RemoteActionMessage::ChangesResponse { .. }
             | RemoteActionMessage::ChangedResponse { .. }

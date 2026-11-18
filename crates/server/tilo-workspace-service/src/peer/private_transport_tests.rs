@@ -1017,7 +1017,7 @@ async fn a_device_presence_frame_rearms_its_live_checkpoint() {
         &browser,
         &session,
         &[id],
-        Envelope::RetiredPresence {
+        Envelope::Presence {
             workspace_id: id,
             payload: vec![9, 9],
         },
@@ -1047,14 +1047,14 @@ async fn a_device_presence_frame_rearms_its_live_checkpoint() {
         &browser,
         &session,
         &[id],
-        Envelope::RetiredPresence {
+        Envelope::Presence {
             workspace_id: id,
             payload: forged.encode().unwrap(),
         },
     )
     .await
     .unwrap();
-    let Envelope::RetiredPresence { payload, .. } = native_rx.try_recv().unwrap() else {
+    let Envelope::Presence { payload, .. } = native_rx.try_recv().unwrap() else {
         panic!("expected forwarded presence");
     };
     let observed = crate::AttributedPresence::decode(&payload).unwrap();
@@ -1113,7 +1113,7 @@ async fn heartbeat_is_answered_while_the_writer_waits_on_the_workspace() {
     // for it, as it waits for a slow store under it.
     let held = workspace.lock().await;
     outbound
-        .send(Envelope::RetiredPresence {
+        .send(Envelope::Presence {
             workspace_id: id,
             payload: vec![1],
         })
@@ -1243,45 +1243,6 @@ async fn heartbeat_keeps_progress_during_unrelated_workspace_admission() {
     for task in tasks {
         task.abort();
         let _ = task.await;
-    }
-}
-
-/// A build that still opens the retired private action queue ends its session
-/// instead of having its frames read as state.
-#[tokio::test]
-async fn a_retired_private_action_frame_ends_the_session() {
-    let (root, user) = UserIdentity::generate("old build", 1);
-    let (source, _) = certified_device(&root, user.public_key, "source");
-    let registry = Arc::new(AsyncMutex::new(HashMap::new()));
-    let (client, server) = tokio::io::duplex(1 << 16);
-    let (server_read, server_write) = tokio::io::split(server);
-    let session = tokio::spawn(run_peer_stream(
-        source.clone(),
-        server_read,
-        server_write,
-        peer_context(registry, user.public_key, &source.cert),
-        std::future::pending::<()>(),
-    ));
-    // Every retired frame keeps its discriminant, so an old build's frame
-    // still decodes; this is the first of them, framed as an old build wrote
-    // it.
-    let (_, mut write) = tokio::io::split(client);
-    write
-        .write_all(
-            &tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::RetiredEnableActions)
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let ended = tilo_test_env::within("the session to end", session)
-        .await
-        .expect("a retired frame's session outcome");
-    match ended {
-        Err(PeerError::Protocol(reason)) => assert!(
-            reason.contains("action frames are not served"),
-            "a retired frame is refused as unserved, got {reason}"
-        ),
-        other => panic!("a retired private action frame ended the session as {other:?}"),
     }
 }
 

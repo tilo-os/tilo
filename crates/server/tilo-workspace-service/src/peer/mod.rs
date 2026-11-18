@@ -76,9 +76,9 @@ use admin::handle_workspaces;
 use agent_session::handle_agent_session;
 use commit::{commit_run_key, handle_commit, handle_commit_run, over_storage};
 use compaction::handle_compaction;
+use dispatch::handle_envelope;
 #[cfg(test)]
 use dispatch::handle_inbound_frame;
-use dispatch::{handle_envelope, unserved_private};
 pub use fetch::FetchGrants;
 use hello::handle_host_hello;
 use live::{

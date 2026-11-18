@@ -456,3 +456,17 @@ reason = "the raw-body plan request had no caller left once every model turn wen
 file = "crates/agent/provider-config/src/management.rs"
 enum = "CredentialStatus"
 reason = "an unbound provider key is no longer read or adopted, so there is no state left to report; the status is JSON (renamed by a snake_case name) on a live socket between an app and its gateway, which ship together, and nothing keeps it, so a person with an old unbound key enters it again"
+[[break]]
+file = "crates/server/tilo-server-protocol/src/transport.rs"
+enum = "Envelope"
+reason = "the live-frame and who-is-here tombstones go, and the live session's join and member notices take their names where they stood: presence, live frames and who is here are the workspace's live session. The peer protocol version is bumped from 55 to 56 with the removal and `previous-peer-frames.txt` moves to it, so a device at another version admits nothing from this one"
+
+[[break]]
+file = "crates/server/tilo-delivery-protocol/src/transport_v2.rs"
+enum = "EnvelopeV2"
+reason = "the ten private action-connection frames went with the broker that opened them; a device's actions ride its own connection now. Postcard fails to decode one where it stood, which ends the session, and the peer protocol version is bumped from 55 to 56 with the removal, so a device at another version admits nothing from this one"
+
+[[break]]
+file = "crates/collab/actions/src/remote.rs"
+enum = "RemoteActionMessage"
+reason = "the record-request and record-watch frames went with the record API they served, and the variants after them move up; the remote-action envelope version is bumped from 1 to 2 with the removal, so the server refuses an older endpoint's frame as undeliverable instead of forwarding it to be read at the wrong positions"

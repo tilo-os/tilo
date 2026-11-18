@@ -90,18 +90,15 @@ async fn commits_are_acknowledged_and_live_joins_are_announced() {
     // Live: a and b join, c only subscribes. The joiner learns who is
     // already there, and they learn it joined.
     a_client
-        .send(Envelope::RetiredLiveJoin { workspace_id: WS })
+        .send(Envelope::LiveJoin { workspace_id: WS })
         .unwrap();
     b_client
-        .send(Envelope::RetiredLiveJoin { workspace_id: WS })
+        .send(Envelope::LiveJoin { workspace_id: WS })
         .unwrap();
-    let joined = next(&a_client, |env| {
-        matches!(env, Envelope::RetiredLiveMember { .. })
-    })
-    .await;
+    let joined = next(&a_client, |env| matches!(env, Envelope::LiveMember { .. })).await;
     assert_eq!(
         joined,
-        Envelope::RetiredLiveMember {
+        Envelope::LiveMember {
             workspace_id: WS,
             device_public_key: b.device_pubkey(),
             active: true,
@@ -114,10 +111,10 @@ async fn commits_are_acknowledged_and_live_joins_are_announced() {
     assert!(matches!(
         next(&a_client, |env| matches!(
             env,
-            Envelope::RetiredLiveMember { .. }
+            Envelope::LiveMember { .. }
         ))
         .await,
-        Envelope::RetiredLiveMember {
+        Envelope::LiveMember {
             device_public_key,
             active: false,
             ..
@@ -128,7 +125,7 @@ async fn commits_are_acknowledged_and_live_joins_are_announced() {
         loop {
             if let Some(env) = c_client.recv().await {
                 assert!(
-                    !matches!(env, Envelope::RetiredLiveMember { .. }),
+                    !matches!(env, Envelope::LiveMember { .. }),
                     "a subscriber that never joined the live session hears no membership"
                 );
             }

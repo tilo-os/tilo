@@ -27,7 +27,7 @@
 //!
 //! [`Envelope::Delta`] carries an `author_device_public_key`, so a
 //! document delta is attributed to its publisher for free. But
-//! [`Envelope::RetiredPresence`] has **no** author slot — the host fans the
+//! [`Envelope::Presence`] has **no** author slot — the host fans the
 //! opaque bytes out without inspecting or stamping them. So presence
 //! attribution has to ride *inside* the payload: [`ServerCoeditSession::publish_presence`]
 //! wraps the toolkit body in an [`AttributedPresence`] carrying the
@@ -226,7 +226,7 @@ impl ServerCoeditSession {
     /// Returns [`CoeditError::Disconnected`] if the connection is gone.
     pub fn live_join(&self) -> Result<(), CoeditError> {
         self.client
-            .send(Envelope::RetiredLiveJoin {
+            .send(Envelope::LiveJoin {
                 workspace_id: self.workspace_id,
             })
             .map_err(|_| CoeditError::Disconnected)
@@ -363,7 +363,7 @@ impl ServerCoeditSession {
     }
 
     /// Publish an ephemeral presence payload — the toolkit `Presence`
-    /// path. Rides an `Envelope::RetiredPresence`, so it is fanned out but
+    /// path. Rides an `Envelope::Presence`, so it is fanned out but
     /// never persisted.
     ///
     /// `payload` is the opaque toolkit presence body; this method stamps
@@ -384,7 +384,7 @@ impl ServerCoeditSession {
         };
         let encoded = wrapped.encode().map_err(CoeditError::Encode)?;
         self.client
-            .send(Envelope::RetiredPresence {
+            .send(Envelope::Presence {
                 workspace_id: self.workspace_id,
                 payload: encoded,
             })
@@ -520,7 +520,7 @@ impl ServerCoeditSession {
             );
             if matches!(&envelope,
                 Envelope::Delta { workspace_id, .. }
-                | Envelope::RetiredPresence { workspace_id, .. }
+                | Envelope::Presence { workspace_id, .. }
                 | Envelope::Ready { workspace_id, .. }
                 if *workspace_id != self.workspace_id)
             {
@@ -548,7 +548,7 @@ impl ServerCoeditSession {
                         None => {}
                     }
                 }
-                Envelope::RetiredPresence { payload, .. } => {
+                Envelope::Presence { payload, .. } => {
                     // Presence rides an author-stamped wrapper (the host
                     // envelope has no author of its own). A non-co-edit
                     // presence frame won't decode — skip it rather than
@@ -579,7 +579,7 @@ impl ServerCoeditSession {
                         documents_when_opened,
                     });
                 }
-                envelope @ (Envelope::RetiredLiveMember { .. }
+                envelope @ (Envelope::LiveMember { .. }
                 | Envelope::DocumentOpened { .. }
                 | Envelope::VoiceCallResult { .. }
                 | Envelope::VoiceGranted { .. }
@@ -642,7 +642,7 @@ impl ServerCoeditSession {
     /// `None` for another workspace's.
     fn workspace_news(&self, envelope: Envelope) -> Option<Inbound> {
         match envelope {
-            Envelope::RetiredLiveMember {
+            Envelope::LiveMember {
                 workspace_id,
                 device_public_key,
                 active,
@@ -851,7 +851,7 @@ mod tests {
                 .encode()
                 .unwrap(),
             },
-            Envelope::RetiredPresence {
+            Envelope::Presence {
                 workspace_id: WorkspaceId::from_u128(42),
                 payload: AttributedPresence {
                     author: [3; 32],

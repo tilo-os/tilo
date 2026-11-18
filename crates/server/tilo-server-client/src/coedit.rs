@@ -1,6 +1,6 @@
 //! The co-edit payloads the toolkit's collaboration layer exchanges through
 //! the workspace host: [`CoeditPayload`] inside an `Envelope::Delta`,
-//! [`AttributedPresence`] inside an `Envelope::RetiredPresence`, and the
+//! [`AttributedPresence`] inside an `Envelope::Presence`, and the
 //! [`Inbound`] events a session surfaces. Browser and native peers share
 //! these; the relay session that speaks them over iroh
 //! (`tilo_server_session::coedit::ServerCoeditSession`) lives in
@@ -108,7 +108,7 @@ pub fn retention_view(bytes: &[u8]) -> Option<([u8; 32], RetentionKind, &[u8])> 
 
 /// Presence body wrapper that carries author attribution.
 ///
-/// `Envelope::RetiredPresence` has no author field — the host forwards the
+/// `Envelope::Presence` has no author field — the host forwards the
 /// opaque body. The publisher wraps its device public key around toolkit
 /// presence `body`; the governing server stamps device attribution from the
 /// authenticated publishing connection before forwarding. The receiver recovers it
@@ -125,7 +125,7 @@ pub struct AttributedPresence {
 }
 
 impl AttributedPresence {
-    /// Encode for carriage inside an `Envelope::RetiredPresence`.
+    /// Encode for carriage inside an `Envelope::Presence`.
     ///
     /// # Errors
     ///

@@ -572,14 +572,10 @@ impl WorkspaceActions {
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
             | RemoteActionMessage::ResourceReading { .. }
-            | RemoteActionMessage::RetiredResourceRequest
-            | RemoteActionMessage::RetiredResourceResponse
             | RemoteActionMessage::ConfirmationRequest { .. }
             | RemoteActionMessage::ConfirmationResponse { .. }
             | RemoteActionMessage::Confirm { .. }
             | RemoteActionMessage::ConfirmResponse { .. }
-            | RemoteActionMessage::RetiredResourceWatch { .. }
-            | RemoteActionMessage::RetiredResourceReading { .. }
             | RemoteActionMessage::ContentPutResponse { .. }
             | RemoteActionMessage::ContentGetResponse { .. }
             | RemoteActionMessage::ContentLinkResponse { .. }

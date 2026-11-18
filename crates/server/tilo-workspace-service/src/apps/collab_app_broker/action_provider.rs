@@ -730,7 +730,6 @@ impl AppBrokerState {
             | RemoteActionMessage::Confirm { .. }
             // A retired verb: nothing asks for a reading this way, and
             // nothing is answered.
-            | RemoteActionMessage::RetiredResourceWatch { .. }
             // An application puts content through its own store, not into or out of another
             // device's workspace over this api.
             | RemoteActionMessage::ContentPutRequest { .. }
@@ -746,13 +745,10 @@ impl AppBrokerState {
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
-            | RemoteActionMessage::RetiredResourceRequest
-            | RemoteActionMessage::RetiredResourceResponse
             | RemoteActionMessage::ResourceReading { .. }
             | RemoteActionMessage::FeedbackResponse { .. }
             | RemoteActionMessage::ConfirmationResponse { .. }
             | RemoteActionMessage::ConfirmResponse { .. }
-            | RemoteActionMessage::RetiredResourceReading { .. }
             | RemoteActionMessage::ContentPutResponse { .. }
             | RemoteActionMessage::ContentGetResponse { .. }
             | RemoteActionMessage::ContentLinkResponse { .. }

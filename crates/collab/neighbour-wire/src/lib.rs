@@ -47,7 +47,7 @@ use serde::{Deserialize, Serialize};
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
-pub const PEER_PROTOCOL_VERSION: u32 = 55;
+pub const PEER_PROTOCOL_VERSION: u32 = 56;
 
 /// The oldest peer version this build still works with: the one before
 /// [`PEER_PROTOCOL_VERSION`] when this build reads and writes the frames of
@@ -56,7 +56,7 @@ pub const PEER_PROTOCOL_VERSION: u32 = 55;
 /// version wrote are kept beside `tilo-server-protocol`
 /// (`previous/peer-v<N>.txt`), and its test fails a build that reads or
 /// writes them differently.
-pub const OLDEST_PEER_PROTOCOL_VERSION: u32 = 54;
+pub const OLDEST_PEER_PROTOCOL_VERSION: u32 = 56;
 
 /// Whether a device at peer version `theirs` and this one work together:
 /// the same version, the one before when this build still speaks it
@@ -1559,7 +1559,7 @@ mod tests {
             "identity hello",
             concat!(
                 // The variant index and the sender's peer protocol version.
-                "0b37",
+                "0b38",
                 "01010101010101010101010101010101010101010101010101010101010101",
                 "0102020202020202020202020202020202020202020202020202020202020202",
                 "02064c6170746f70010000000a00400303030303030303030303030303030303",

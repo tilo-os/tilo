@@ -110,12 +110,11 @@ pub enum HostError {
 pub type Protocols = Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>;
 
 /// The ALPNs a workspace service answers on.
-const HOST_ALPNS: [&[u8]; 5] = [
+const HOST_ALPNS: [&[u8]; 4] = [
     ALPN,
     tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN,
     tilo_peer_state::actions::ACTIONS_ALPN,
     tilo_peer_state::direct::DIRECT_ALPN,
-    tilo_peer_state::direct::DIRECT_ALPN_V2,
 ];
 
 /// A host's session stack: its workspaces, the handshake that admits their
@@ -470,11 +469,6 @@ fn host_handlers(
         // link a device runs for itself: the dial names its workspace first.
         (
             tilo_peer_state::direct::DIRECT_ALPN,
-            Arc::new(workspaces.direct()) as Arc<dyn DynProtocolHandler>,
-        ),
-        // A member of an older build, which dials the link before writes were answered.
-        (
-            tilo_peer_state::direct::DIRECT_ALPN_V2,
             Arc::new(workspaces.direct()) as Arc<dyn DynProtocolHandler>,
         ),
     ]

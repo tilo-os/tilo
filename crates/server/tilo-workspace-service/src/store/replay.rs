@@ -578,7 +578,7 @@ fn frame_payload(bytes: &[u8]) -> &[u8] {
 fn heap_bytes(envelope: &Envelope) -> usize {
     match envelope {
         Envelope::Delta { delta, .. } => delta.capacity(),
-        Envelope::RetiredPresence { payload, .. } => payload.capacity(),
+        Envelope::Presence { payload, .. } => payload.capacity(),
         Envelope::PeerServerHello { hosted_workspaces } => {
             hosted_workspaces.capacity().saturating_mul(8)
         }

@@ -198,7 +198,7 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         Envelope::Subscribe { workspace_id }
         | Envelope::Unsubscribe { workspace_id }
         | Envelope::Delta { workspace_id, .. }
-        | Envelope::RetiredPresence { workspace_id, .. }
+        | Envelope::Presence { workspace_id, .. }
         | Envelope::Ready { workspace_id, .. }
         | Envelope::NotAuthorised { workspace_id, .. }
         | Envelope::SyncRequest { workspace_id, .. }
@@ -210,10 +210,9 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::Committed { workspace_id, .. }
         | Envelope::CommitRefused { workspace_id, .. }
         | Envelope::ChangeRefused { workspace_id, .. }
-        | Envelope::RetiredLiveJoin { workspace_id }
+        | Envelope::LiveJoin { workspace_id }
         | Envelope::LiveLeave { workspace_id }
-        | Envelope::RetiredLive { workspace_id, .. }
-        | Envelope::RetiredLiveMember { workspace_id, .. }
+        | Envelope::LiveMember { workspace_id, .. }
         | Envelope::SubscribeFrom { workspace_id, .. }
         | Envelope::Position { workspace_id, .. }
         | Envelope::CompactVolunteer { workspace_id }
@@ -241,8 +240,6 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::HostAction { .. }
         | Envelope::WorkspacesRequest { .. }
         | Envelope::WorkspacesReply { .. }
-        | Envelope::RetiredHereRequest { .. }
-        | Envelope::RetiredHereReply { .. }
         | Envelope::AgentSession { .. }
         | Envelope::AgentSessionAnswer { .. }
         | Envelope::AgentSessionStopped
