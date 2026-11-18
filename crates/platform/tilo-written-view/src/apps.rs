@@ -195,10 +195,16 @@ fn normal(meta: &PackageMeta, ty: &str, json: &Json) -> Json {
     if let Some(name) = ty.strip_prefix("enum ") {
         return case(meta, name, json);
     }
+    // A type the app names as the language names one of its own is written with its app
+    // before it (`catalogue`), and is the type of that name all the same.
+    let own = ty
+        .strip_prefix(meta.app.as_str())
+        .and_then(|rest| rest.strip_prefix('.'))
+        .unwrap_or(ty);
     let (Some(declared), Json::Object(held)) = (
         meta.types
             .iter()
-            .find(|declared| declared.id == ty || declared.name == ty),
+            .find(|declared| declared.id == ty || declared.name == own),
         json,
     ) else {
         return json.clone();
