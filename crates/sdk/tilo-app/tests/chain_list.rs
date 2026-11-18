@@ -323,11 +323,11 @@ tilo_test_env::scenario! {
 /// (Three lines fill a part: all of these land in the head.)
 #[test]
 fn a_write_while_its_part_is_on_its_way_lands_once_the_part_arrived() {
-    let _parts = small_parts();
     use durable_store::{DurableStore as _, MemoryStore, StorageKey};
     use std::cell::RefCell;
 
     const APP: &str = "so.tilo.test-chain-log";
+    let _parts = small_parts();
     let written = |text: &str| LogPart::WRITE.with(log_part::Write { text: text.into() });
     let theirs = Rc::new(MemoryStore::new());
     let writer = device_keeping(&theirs);
@@ -493,12 +493,12 @@ fn a_write_waiting_for_its_part_outlives_a_restart() {
 /// the workspace's own first part, which is still there and still everyone's.
 #[test]
 fn a_native_window_waits_for_the_workspaces_newest_part_and_founds_no_part_of_its_own() {
-    let _parts = small_parts();
     use durable_store::{DurableStore as _, MemoryStore, StorageKey};
     use tilo_app::collaboration::CollaborationManager;
     use tilo_app::collaboration::native_initial::NativeConstruction;
 
     const APP: &str = "so.tilo.test-chain-log";
+    let _parts = small_parts();
     let written = |text: &str| LogPart::WRITE.with(log_part::Write { text: text.into() });
     let workspace = uuid::Uuid::new_v4().to_string();
 

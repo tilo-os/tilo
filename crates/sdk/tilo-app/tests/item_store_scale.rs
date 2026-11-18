@@ -108,10 +108,10 @@ fn chain() -> (ResourceStore, Chain<Entries>) {
 /// Add `count` entries, a batch of them per call.
 fn add(chain: &Chain<Entries>, from: usize, count: usize) {
     const BATCH: usize = 500;
-    let mut at = from;
-    while at < from + count {
-        let batch = BATCH.min(from + count - at);
-        let entries = (at..at + batch)
+    let end = from.saturating_add(count);
+    for at in (from..end).step_by(BATCH) {
+        let last = at.saturating_add(BATCH).min(end);
+        let entries = (at..last)
             .map(|n| NewEntry {
                 text: format!("entry {n}: a line of what was bought, and for whom"),
                 amount: i64::try_from(n).unwrap(),
@@ -120,7 +120,6 @@ fn add(chain: &Chain<Entries>, from: usize, count: usize) {
         chain
             .invoke(&Entries::ADD.with(entries::Add { entries }))
             .unwrap();
-        at += batch;
     }
 }
 
@@ -155,13 +154,13 @@ fn change_bytes(
         })
         .collect();
     change();
-    let mut bytes = 0;
-    let mut written = 0;
+    let mut bytes: usize = 0;
+    let mut written: usize = 0;
     for (id, frontier) in parts.iter().zip(&mut frontiers) {
         let (changes, _) = store.replication_delta(id, frontier).unwrap();
         if !changes.is_empty() {
-            written += 1;
-            bytes += changes.len();
+            written = written.saturating_add(1);
+            bytes = bytes.saturating_add(changes.len());
         }
     }
     (bytes, written)
@@ -176,7 +175,7 @@ struct Measured {
 }
 
 fn per(total: Duration, count: u32) -> Duration {
-    total / count
+    total.checked_div(count).unwrap_or_default()
 }
 
 fn measure(store: &ResourceStore, chain: &Chain<Entries>, items: usize) -> Measured {
@@ -194,7 +193,11 @@ fn measure(store: &ResourceStore, chain: &Chain<Entries>, items: usize) -> Measu
 
     // A change to an item of the oldest part, and one of the newest.
     let mut edit_bytes = 0;
-    for id in [&ids[1], &ids[items - 2]] {
+    let oldest = ids.get(1).expect("the oldest part holds a second item");
+    let newest = ids
+        .get(items.saturating_sub(2))
+        .expect("the newest part holds a second item from its end");
+    for id in [oldest, newest] {
         let (bytes, written) = change_bytes(store, chain, || {
             chain
                 .invoke(&Entries::SAY.with(entries::Say {
@@ -213,8 +216,12 @@ fn measure(store: &ResourceStore, chain: &Chain<Entries>, items: usize) -> Measu
     }
 
     // Finding items by id, spread over the whole chain.
-    let probes: Vec<&Id> = ids.iter().step_by((items / 200).max(1)).collect();
-    let _ = chain.find(probes[0]);
+    let probes: Vec<&Id> = ids
+        .iter()
+        .step_by(items.checked_div(200).unwrap_or(0).max(1))
+        .collect();
+    let first_probe = probes.first().expect("a chain of items has a probe");
+    let _ = chain.find(first_probe);
     let started = Instant::now();
     for id in &probes {
         assert!(chain.find(id).is_some());
@@ -226,13 +233,17 @@ fn measure(store: &ResourceStore, chain: &Chain<Entries>, items: usize) -> Measu
     let started = Instant::now();
     for _ in 0..rounds {
         let first = chain.read(&serde_json::json!({ "pageSize": 50 })).unwrap();
-        let cursor = first["nextCursor"].as_str().unwrap().to_owned();
+        let cursor = first
+            .get("nextCursor")
+            .and_then(serde_json::Value::as_str)
+            .expect("a page names the cursor of the one after it")
+            .to_owned();
         let next = chain
             .read(&serde_json::json!({ "pageSize": 50, "cursor": cursor }))
             .unwrap();
         assert!(next.get("nextCursor").is_some(), "{next}");
     }
-    let page = per(started.elapsed(), rounds * 2);
+    let page = per(started.elapsed(), rounds.saturating_mul(2));
 
     Measured {
         items,
