@@ -82,6 +82,93 @@ fn public_v6(address: Ipv6Addr) -> bool {
     !reserved && (s0 & 0xe000) == 0x2000
 }
 
+/// Resolves a name to its addresses: the shape of a client's lookup
+/// ([`crate::Lookup`]) and of the fetch proxy's, so one value serves them all.
+#[cfg(not(target_family = "wasm"))]
+pub type Lookup = std::sync::Arc<
+    dyn Fn(String) -> std::pin::Pin<Box<dyn Future<Output = std::io::Result<Vec<IpAddr>>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// Why a name is not connected to: an address it answered with is not on the
+/// public internet.
+#[cfg(not(target_family = "wasm"))]
+#[derive(Debug)]
+pub struct NotPublic {
+    /// The name that was looked up.
+    pub name: String,
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl std::fmt::Display for NotPublic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} answers with an address of this machine or its network",
+            self.name
+        )
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl std::error::Error for NotPublic {}
+
+/// The addresses to connect to for `name`: one look-up, every address it
+/// answered with judged ([`is_public`]), and all of them handed back or none.
+/// A caller connects to exactly these and looks nothing up again, so no
+/// second look-up, which might answer otherwise, lies between the judging and
+/// the connection. A name that answers with a public and an own address is
+/// refused whole, since a connection might take either. A name that is itself
+/// an address is judged as that address and is never looked up.
+///
+/// # Errors
+/// The look-up's own failure; `NotFound` for a name that answers with
+/// nothing; and for a name that is refused an error that holds
+/// [`NotPublic`], which [`not_public`] tells apart.
+#[cfg(not(target_family = "wasm"))]
+pub async fn public_addresses(lookup: &Lookup, name: &str) -> std::io::Result<Vec<IpAddr>> {
+    let literal = name
+        .strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(name);
+    let addresses = match literal.parse::<IpAddr>() {
+        Ok(address) => vec![address],
+        Err(_) => lookup(name.to_owned()).await?,
+    };
+    if addresses.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("{name} does not resolve"),
+        ));
+    }
+    if addresses.iter().any(|address| !is_public(*address)) {
+        return Err(std::io::Error::other(NotPublic {
+            name: name.to_owned(),
+        }));
+    }
+    Ok(addresses)
+}
+
+/// `lookup`, answering a name only as [`public_addresses`] does: the lookup
+/// of a connection that reaches the public internet and nothing else.
+#[cfg(not(target_family = "wasm"))]
+#[must_use]
+pub fn public_only(lookup: Lookup) -> Lookup {
+    std::sync::Arc::new(move |name: String| {
+        let lookup = std::sync::Arc::clone(&lookup);
+        Box::pin(async move { public_addresses(&lookup, &name).await })
+    })
+}
+
+/// Whether `error` is the refusal of [`public_addresses`], not a look-up
+/// that failed.
+#[cfg(not(target_family = "wasm"))]
+#[must_use]
+pub fn not_public(error: &std::io::Error) -> bool {
+    error.get_ref().is_some_and(|inner| inner.is::<NotPublic>())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,5 +256,76 @@ mod tests {
         ] {
             assert!(is_public(public.parse().unwrap()), "{public} is public");
         }
+    }
+
+    /// A name is connected to only where every address it answered with is
+    /// public: one look-up, all of its addresses handed back or none, and a
+    /// refusal told apart from a look-up that failed.
+    #[cfg(not(target_family = "wasm"))]
+    #[allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
+    #[tokio::test]
+    async fn a_name_is_connected_to_only_where_every_address_it_answers_with_is_public() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let asked = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&asked);
+        let lookup: Lookup = Arc::new(
+            move |name: String| -> std::pin::Pin<
+                Box<dyn Future<Output = std::io::Result<Vec<IpAddr>>> + Send>,
+            > {
+                counted.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async move {
+                    let answer = |addresses: &[&str]| -> Vec<IpAddr> {
+                        addresses
+                            .iter()
+                            .map(|address| address.parse().unwrap())
+                            .collect()
+                    };
+                    match name.as_str() {
+                        "public.example" => Ok(answer(&["93.184.216.34", "2606:2800:220:1::1"])),
+                        "both.example" => Ok(answer(&["93.184.216.34", "10.0.0.7"])),
+                        "own.example" => Ok(answer(&["::ffff:127.0.0.1"])),
+                        "nothing.example" => Ok(Vec::new()),
+                        _ => Err(std::io::Error::other("the resolver is down")),
+                    }
+                })
+            },
+        );
+
+        let public = public_addresses(&lookup, "public.example").await.unwrap();
+        assert_eq!(public.len(), 2, "every address of the one answer");
+        assert_eq!(asked.load(Ordering::SeqCst), 1, "one look-up");
+        for name in ["both.example", "own.example"] {
+            let refused = public_addresses(&lookup, name).await.unwrap_err();
+            assert!(not_public(&refused), "{name}: {refused}");
+        }
+        let nothing = public_addresses(&lookup, "nothing.example")
+            .await
+            .unwrap_err();
+        assert_eq!(nothing.kind(), std::io::ErrorKind::NotFound);
+        assert!(!not_public(&nothing));
+        let failed = public_addresses(&lookup, "down.example").await.unwrap_err();
+        assert!(!not_public(&failed), "a look-up that failed is no refusal");
+
+        // The lookup a connection is given answers the same.
+        let only = public_only(Arc::clone(&lookup));
+        assert_eq!(only("public.example".to_owned()).await.unwrap(), public);
+        let refused = only("both.example".to_owned()).await.unwrap_err();
+        assert!(not_public(&refused), "{refused}");
+        assert_eq!(asked.load(Ordering::SeqCst), 7, "one look-up a call");
+
+        // A name that is itself an address is judged as that address.
+        let written = public_addresses(&lookup, "93.184.216.34").await.unwrap();
+        assert_eq!(written, ["93.184.216.34".parse::<IpAddr>().unwrap()]);
+        for own in ["10.0.0.5", "[::1]", "::ffff:127.0.0.1"] {
+            let refused = public_addresses(&lookup, own).await.unwrap_err();
+            assert!(not_public(&refused), "{own}: {refused}");
+        }
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            7,
+            "an address written out is never looked up"
+        );
     }
 }

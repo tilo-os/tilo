@@ -105,7 +105,11 @@ impl reqwest::dns::Resolve for Looked {
                 Err(error) => {
                     return Err(match error.downcast::<RefusedLookup>() {
                         Ok(refused) => Box::new(refused) as Failure,
-                        Err(error) => Box::new(error) as Failure,
+                        // The one judge's refusal of a name is a refusal too.
+                        Err(error) => match error.downcast::<crate::address::NotPublic>() {
+                            Ok(refused) => Box::new(RefusedLookup(refused.to_string())) as Failure,
+                            Err(error) => Box::new(error) as Failure,
+                        },
                     });
                 }
             };
