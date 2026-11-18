@@ -18,205 +18,116 @@ d-xttl6aec = Stage
 
 d-44yujnht = Reactions
 
-d-5cf5i2l7 = Basics
-    .doc = The everyday parts of a window: navigation, text and buttons, chips, a card of facts, an empty state and a page of a stack.
-    .noun = { $count ->
-        [one] basic
-       *[other] basics
-    }
-
-d-phmalltz = Title
-
-d-322be7qf = Note
-
-d-4cquroaf = Owner
-    .doc = Who looks after the basics.
-
-d-aimcpxqu = Updated
-    .doc = When the basics last changed.
-
-d-5cf5i2l7-filter-owner = Owner
-
-d-5cf5i2l7-filter-updated = Updated
-
-d-oulybdah = Backlog
-    .doc = The team's items as a list, with the composer a conversation has at its foot.
-    .noun = { $count ->
-        [one] backlog
-       *[other] backlogs
-    }
-
-d-ykafo7qj = Title
-
-d-ks6wodcv = Items
-
-d-crrlhv3r = Draft
-
-d-knnd7epb = Release
-    .doc = The team's items on a board, a list per stage.
-    .noun = { $count ->
-        [one] release
-       *[other] releases
-    }
-
-d-uhteb2qc = Title
-
-d-x6hy4icv = Items
-
 d-x3epwv5u = Gallery
-    .doc = The gallery: a window of every group.
+    .doc = The everyday parts of a window: navigation, text and buttons, chips, a card of facts, an
     .noun = { $count ->
         [one] gallery
        *[other] galleries
     }
 
-d-eii5srqb = Basics
+d-cbwtcaei = Basics note
+    .doc = The note the basics' text input writes.
 
-d-6p3of4rd = Backlogs
+d-kwuh65ek = Controls title
+    .doc = The report the controls' page edits: every control there writes one of these.
 
-d-wpni7xxp = Releases
+d-gfaekx4h = Controls by email
 
-d-qi3nkvcl = Feedback
+d-wqgo62si = Controls repeating
 
-d-kzg3iceh = Data
+d-ljvsyqet = Controls locked
+    .doc = Whether the workspace holds the report locked, which nobody here can change.
 
-d-2fyvr737 = Controls
+d-4a4siddd = Controls margin
 
-d-vm3casub = Media
+d-3aihctss = Controls share
 
-d-aia654wv = Places
+d-bfnlu2pr = Controls room
 
-d-t7ydaknu = Chrome
+d-5rd763gr = Controls urgency
 
-d-cq3vrgd7 = Customs
+d-tov7hrtu = Controls owner
 
-d-lhci3noh = Controls
-    .doc = The controls a form is made of: boxes and switches, a number, a choice from a short list, a person, a strip of choices, tabs, a day and a time, a colour, a shortcut, a completion, a picture choice, a row of controls, and a link.
-    .noun = { $count ->
-        [one] control
-       *[other] controls
-    }
+d-pwg7s3ul = Controls reviewer
 
-d-6as2vdpa = Title
+d-jg35gcbg = Controls starts
 
-d-yykr4gsy = By email
-    .doc = Whether the report goes by email.
+d-ncm2bwon = Controls clock
 
-d-ueet4dqw = Repeating
-    .doc = Whether it repeats.
+d-hy2q7by2 = Controls ends
 
-d-hje3rno5 = Locked
-    .doc = Whether the workspace holds it locked, which nobody here can change.
+d-izjturst = Controls accent
 
-d-ivx3pet3 = Margin
-    .doc = The margin round the report, in pixels.
+d-jggqxsf4 = Controls shortcut
 
-d-lvaal6xy = Share
-    .doc = How much of the time it runs.
+d-icvcwg6u = Controls recipient
 
-d-rzo2wdf2 = Room
-    .doc = The room it is in.
+d-socb2mg5 = Controls note
 
-d-tfraxdz4 = Urgency
-    .doc = How soon the report is due.
+d-jxnozq52 = Controls notes
 
-d-cb2aj7ey = Owner
-    .doc = Who looks after the report.
+d-h42gcfal = Controls signed
 
-d-rkns6vsj = Reviewer
-    .doc = Who reviews it, nobody picked yet.
+d-fqnths44 = Controls background
 
-d-u6zwjsis = Starts
-    .doc = The day it starts.
+d-6fezt7u6 = Controls lettering
 
-d-rmra563g = Clock
-    .doc = The time of day it starts.
+d-5fbblehc = Backlog items
+    .doc = The backlog's items, and the line being written at its foot.
 
-d-pj6a5wgb = Ends
-    .doc = The day it ends, which may be none.
+d-rbbe5kqg = Backlog draft
 
-d-qauqkwot = Accent
-    .doc = The accent the report wears.
+d-frzefp4n = Release items
+    .doc = The release's items, one list per stage.
 
-d-ii5w5nej = Shortcut
-    .doc = The key it opens with.
+d-upmpqtnv = Data rows
+    .doc = The data page's collections: a table's rows, a tree's nodes, a conversation's lines, a grid's cards and a document's changes.
 
-d-lnvof4vo = Recipient
-    .doc = Who it goes to, typed.
+d-oj2bybhm = Data files
 
-d-pmwcb6eh = Note
-    .doc = A note beside the report's title, typed.
+d-emr3i6eu = Data messages
 
-d-4xgrystj = Notes
-    .doc = The report's longer notes: a field that wraps and grows.
+d-6jhjiv7f = Data cards
 
-d-guhixmds = Signed
-    .doc = Who signed it, which the workspace keeps.
+d-a3frzqb4 = Data changes
 
-d-an7amte4 = Background
-    .doc = Whether the background layer shows.
+d-mo2q5faz = Media photos
+    .doc = The media page's library, how far its player stands, and the line being written.
 
-d-6mugp36y = Lettering
-    .doc = Whether the text layer shows.
+d-qd46u3ke = Media at
 
-d-lhci3noh-filter-by_email = By email
+d-3tdz6w5q = Media source
 
-d-lhci3noh-filter-repeating = Repeating
+d-wivzmqm3 = Chrome apps
+    .doc = The shell page's dock items.
 
-d-lhci3noh-filter-locked = Locked
+d-x3epwv5u-filter-controls_by_email = Controls by email
 
-d-lhci3noh-filter-margin = Margin
+d-x3epwv5u-filter-controls_repeating = Controls repeating
 
-d-lhci3noh-filter-share = Share
+d-x3epwv5u-filter-controls_locked = Controls locked
 
-d-lhci3noh-filter-urgency = Urgency
+d-x3epwv5u-filter-controls_margin = Controls margin
 
-d-lhci3noh-filter-owner = Owner
+d-x3epwv5u-filter-controls_share = Controls share
 
-d-lhci3noh-filter-reviewer = Reviewer
+d-x3epwv5u-filter-controls_urgency = Controls urgency
 
-d-lhci3noh-filter-starts = Starts
+d-x3epwv5u-filter-controls_owner = Controls owner
 
-d-lhci3noh-filter-clock = Clock
+d-x3epwv5u-filter-controls_reviewer = Controls reviewer
 
-d-lhci3noh-filter-ends = Ends
+d-x3epwv5u-filter-controls_starts = Controls starts
 
-d-lhci3noh-filter-background = Background
+d-x3epwv5u-filter-controls_clock = Controls clock
 
-d-lhci3noh-filter-lettering = Lettering
+d-x3epwv5u-filter-controls_ends = Controls ends
 
-d-cdq37gtx = Custom
-    .doc = Components an app makes its own, a step further at each section: a view of its own that a caller fills like a component, the pace a change plays at, shapes drawn with the theme's inks and type, and the charts and graphs the toolkit draws from values.
-    .noun = { $count ->
-        [one] custom
-       *[other] customs
-    }
+d-x3epwv5u-filter-controls_background = Controls background
 
-d-qfb7dxgw = Title
+d-x3epwv5u-filter-controls_lettering = Controls lettering
 
-d-pprp6hfn = Data
-    .doc = The data views: a table of columns and rows, a tree of nodes, a conversation, a grid of cards and the history of a document, each reading a collection of the app's own.
-    .noun = { $count ->
-        [one] data
-       *[other] data
-    }
-
-d-4ypxqojm = Title
-
-d-gkbniaqt = Rows
-    .doc = The rows of the table: each an item with what its columns read.
-
-d-4j7qef6f = Files
-    .doc = The files of the tree, each naming its parent by its key.
-
-d-ft4q2k7a = Messages
-    .doc = The messages of the conversation, oldest first.
-
-d-arnwswe6 = Cards
-    .doc = The cards of the grid.
-
-d-y47rcahj = Changes
-    .doc = The changes of the document, oldest first.
+d-x3epwv5u-filter-media_at = Media at
 
 d-7y5fd5tj = Row
     .doc = One row of the table: what its columns read.
@@ -306,55 +217,6 @@ d-e4daczuq = At
 
 d-4cntcc2v-filter-at = At
 
-d-oepvsx65 = Feedback
-    .doc = How things are going: badges and banners, progress and gauges, stats, the facts of a thing, a path, a toolbar, rows that open in place, and what is still loading.
-    .noun = { $count ->
-        [one] feedback
-       *[other] feedback
-    }
-
-d-2pxvl4zz = Title
-
-d-bafspfun = Owner
-    .doc = Who is syncing the files.
-
-d-oepvsx65-filter-owner = Owner
-
-d-rnok2vxj = Places
-    .doc = What the gallery holds of a canvas: places at points on a surface that pans and zooms.
-    .noun = { $count ->
-        [one] place
-       *[other] places
-    }
-
-d-4wbrhgfm = Title
-
-d-exu5jg4p = Media
-    .doc = What the gallery holds of media and surfaces: pictures, a playing band, a video, a library of cards, a code a scanner reads, a drop zone, a page preview and rail, a code editor, a line of text, the window's own surfaces (a modal, a popover, a floating panel) and a page shown live.
-    .noun = { $count ->
-        [one] media
-       *[other] media
-    }
-
-d-m4bxkjt2 = Title
-
-d-nooncpvq = Photo
-    .doc = A picture's address: its bytes, carried in the address itself.
-
-d-deflwyrv = Photos
-    .doc = The photos of the library, in the order they were taken.
-
-d-qxsbcwcn = At
-    .doc = How far into the video the player is, in seconds.
-
-d-7n6qkvce = Code
-    .doc = The code a scanner reads.
-
-d-o2brvdoa = Source
-    .doc = The source being written.
-
-d-exu5jg4p-filter-at = At
-
 d-36wloal6 = Photo
     .doc = One photo of the library: what it shows, where, and its picture, carried in its address.
     .noun = { $count ->
@@ -372,23 +234,6 @@ d-lb2wi6nq = Tall
     .doc = Taken standing: taller than it is wide.
 
 d-36wloal6-filter-tall = Tall
-
-d-wb23plj7 = Shell parts
-    .doc = The parts the shell is made of, as a view places them: a bar or a dock's body, a run of items a person reorders by dragging one, a view picked up and dragged to another, the target that takes it, and the divider a conversation marks its first unread line with.
-    .noun = { $count ->
-        [one] shell part
-       *[other] shell parts
-    }
-
-d-f6btt2yz = Title
-
-d-y2iftasi = Apps
-    .doc = What the dock's items stand for: the apps pinned to it.
-
-d-35htarhp = Owner
-    .doc = Who is at the apps' tabs.
-
-d-wb23plj7-filter-owner = Owner
 
 # refined
 d-uuewf2cr = Pinned
@@ -467,12 +312,6 @@ d-czoytffw-last = Last
 
 d-czoytffw-change = Change
 
-d-iuku5llk = Seed
-    .doc = A gallery that has never been opened opens filled: the platform applies this once, on the gallery's first start, as it applies every migration.
-
-d-dfbggpjv = Show examples
-    .doc = What the gallery shows the day it is opened with nothing in it: one document of every group, the same shape the scenarios stage for a check, so a person meets the components rather than an empty window.
-
 d-eqcr4df3 = Picture from
     .doc = A page shown in a picture, from the first to the last.
 
@@ -513,13 +352,6 @@ d-avk7hywt-last = Last
 
 d-avk7hywt-p = P
 
-d-bpfjiepq = Note media
-    .doc = Note the collection a card opened, in the page's answer.
-
-d-bpfjiepq-last = Last
-
-d-bpfjiepq-m = M
-
 d-gv3ymzbk = Mark moved
     .doc = Note the item moved, in the window's last answer.
 
@@ -552,7 +384,8 @@ d-5l4lnfd6 = Page title
 d-wjo4okew = Gallery
     .w-gallery = Gallery
     .w-more = More
-    .w-show-the-examples = Show the examples
+    .w-copy-link = Copy link
+    .w-settings = Settings
     .w-everyday-parts = Everyday parts
     .w-basics = Basics
     .w-controls = Controls
@@ -568,8 +401,6 @@ d-wjo4okew = Gallery
     .w-shell-parts = Shell parts
     .w-your-own = Your own
     .w-charts-and-views = Charts and views
-    .w-the-examples-are-not-loaded = The examples are not loaded
-    .w-every-group-is-here-fill-them = Every group is here; fill them with the values an app gives its components.
 
 d-7chkyi44 = Basics
     .w-text-rich-text-and-a-quote = Text, rich text and a quote, buttons, chips, a card of facts and an empty state.
@@ -835,6 +666,7 @@ d-5cczuoub = Feedback
     .w-the-shape-of-what-is-still = The shape of what is still loading, so nothing jumps when it arrives.
 
 d-irl4ws35 = Places
+    .w-places = Places
     .w-notes = Notes
     .w-a-place-on-the-canvas = A place on the canvas.
     .w-tasks = Tasks

@@ -1,21 +1,3 @@
-/// What the gallery holds of media and surfaces: pictures, a playing band, a video, a library
-/// of cards, a code a scanner reads, a drop zone, a page preview and rail, a code editor, a
-/// line of text, the window's own surfaces (a modal, a popover, a floating panel) and a page
-/// shown live.
-type Media {
-    title: Text
-    /// A picture's address: its bytes, carried in the address itself.
-    photo: Text
-    /// The photos of the library, in the order they were taken.
-    photos: Collection<Photo>
-    /// How far into the video the player is, in seconds.
-    at: Float
-    /// The code a scanner reads.
-    code: Text
-    /// The source being written.
-    source: Text
-}
-
 /// One photo of the library: what it shows, where, and its picture, carried in its address.
 type Photo {
     title: Text
@@ -30,7 +12,7 @@ action picture_from(first: Int) {
 }
 
 /// The media page: each kind in a section of its own.
-view media(m: Media) {
+view media(g: Gallery) {
     state last: Text = ""
     state ask: Bool = false
     ui.Text(
@@ -41,7 +23,7 @@ view media(m: Media) {
     stack(max: 72rem, gap: .section) {
         part("Image", "A picture at its own shape, as wide as the column lets it be.") {
             grid(columns: 2) {
-                ui.Image(m.photo, alt: "Hills at dawn, the sun low over the last ridge")
+                ui.Image(photo(), alt: "Hills at dawn, the sun low over the last ridge")
             }
         }
         part(
@@ -49,9 +31,9 @@ view media(m: Media) {
             "How a picture fills a box of another shape: whole, covering it, or stretched.",
         ) {
             row(gap: .related) {
-                ui.Image(m.photo, alt: "Hills at dawn, whole", fit: .contain, aspect: 1.0, fill)
-                ui.Image(m.photo, alt: "Hills at dawn, covering", fit: .cover, aspect: 1.0, fill)
-                ui.Image(m.photo, alt: "Hills at dawn, stretched", fit: .fill, aspect: 1.0, fill)
+                ui.Image(photo(), alt: "Hills at dawn, whole", fit: .contain, aspect: 1.0, fill)
+                ui.Image(photo(), alt: "Hills at dawn, covering", fit: .cover, aspect: 1.0, fill)
+                ui.Image(photo(), alt: "Hills at dawn, stretched", fit: .fill, aspect: 1.0, fill)
             }
         }
         part(
@@ -59,13 +41,13 @@ view media(m: Media) {
             "A picture to look at closely: scroll to zoom at the pointer, drag to pan.",
         ) {
             grid(columns: 2) {
-                ui.ImageViewer(m.photo, alt: "Hills at dawn, to zoom", aspect: 1.5)
+                ui.ImageViewer(photo(), alt: "Hills at dawn, to zoom", aspect: 1.5)
             }
         }
         part("Crop editor", "The part of a picture to keep, by its corners.") {
             grid(columns: 2) {
                 ui.ImageCropEditor(
-                    m.photo,
+                    photo(),
                     left: 0.1,
                     top: 0.1,
                     right: 0.9,
@@ -79,19 +61,19 @@ view media(m: Media) {
             "A library in equal columns: covers, albums, places, with a line or two under each.",
         ) {
             ui.MediaGrid(size: .small) {
-                for p in m.photos {
+                for p in g.media_photos {
                     ui.MediaCard(p, title: p.title, picture: p.picture, meta: [p.place]) {
                         on activate: note_photo(last, p)
                     }
                 }
-                ui.MediaCard(m, title: "Imports", icon: .folder, meta: ["Today", "3 files"]) {
-                    on activate: note_media(last, m)
+                ui.MediaCard(g, title: "Imports", icon: .folder, meta: ["Today", "3 files"]) {
+                    on activate: set(last, "Opened Imports")
                 }
             }
         }
         part("Justified photos", "Photos at their own shape, in rows that span the width.") {
             ui.MediaGrid(justified: true) {
-                for p in m.photos {
+                for p in g.media_photos {
                     ui.MediaCard(
                         p,
                         picture: p.picture,
@@ -109,9 +91,9 @@ view media(m: Media) {
             ui.MediaTransport(
                 title: "Low Light",
                 subtitle: "Hanna Berg",
-                art: m.photo,
+                art: photo(),
                 playing: true,
-                position: m.at,
+                position: g.media_at,
                 duration: 180.0,
                 volume: 0.6,
                 shuffle: false,
@@ -123,21 +105,21 @@ view media(m: Media) {
                 on act_previous: set(last, "Previous")
                 on act_next: set(last, "Next")
                 on act_mute: set(last, "Mute")
-                on act_seek(place: Float): seek_to(m, place)
+                on act_seek(place: Float): seek_to(g, place)
             }
             ui.VideoPlayer(
                 title: "Hills at dawn, a timelapse",
-                poster: m.photo,
+                poster: photo(),
                 playing: false,
                 duration: 60.0,
             ) {
-                on seek(place: Float): seek_to(m, place)
+                on seek(place: Float): seek_to(g, place)
             }
         }
         part("Code and drop zone", "A code a camera reads, and a place a person drops files on.") {
             row(gap: .related) {
-                ui.QrCode(m.code, alt: "Pairing code")
-                ui.QrCode(m.code, secret: true)
+                ui.QrCode("tilo://invite/gallery", alt: "Pairing code")
+                ui.QrCode("tilo://invite/gallery", secret: true)
             }
             ui.DropZone("Drop files to import", message: "Any file up to 50 MB", icon: .upload) {
                 on drop(files: List<Text>): mark_files(last, files)
@@ -162,12 +144,12 @@ view media(m: Media) {
         }
         part("Code editor and text line", "Source with its colours, and one line of rich text.") {
             ui.CodeEditor(
-                bind: m.source,
+                bind: g.media_source,
                 language: .tilolang,
                 min_lines: 4,
                 placeholder: "Write a view",
             )
-            ui.RichTextLine(bind: m.source, placeholder: "A line of text", role: .body) {
+            ui.RichTextLine(bind: g.media_source, placeholder: "A line of text", role: .body) {
                 on enter(at: Int): mark_page(last, at)
             }
         }
@@ -228,8 +210,8 @@ action mark_files(last: Text, files: List<Text>) {
 }
 
 /// Move the song to a place in it, as a share of its length.
-action seek_to(m: Media, place: Float) {
-    m.at = place * 180.0
+action seek_to(g: Gallery, place: Float) {
+    g.media_at = place * 180.0
 }
 
 /// The picture the gallery carries in its own source, so a page shows an image with no file to
@@ -243,25 +225,12 @@ action note_photo(last: Text, p: Photo) {
     last = "Opened {p.title}"
 }
 
-/// Note the collection a card opened, in the page's answer.
-action note_media(last: Text, m: Media) {
-    last = "Opened {m.title}"
-}
-
-/// The media group: a library of photos the gallery carries itself, each in its address.
+/// The media group, with a library of photos the gallery carries itself, each in its address.
 scenario "media" {
     let g = root Gallery
-    let m = g.media.insert(
-        Media(
-            title: "Media",
-            photo: photo(),
-            at: 12.0,
-            code: "tilo://invite/gallery",
-            source: "text(\"Hills at dawn\")",
-        ),
-    )
-    m.photos.insert(Photo(title: "Dawn", place: "Black Forest", picture: m.photo))
-    m.photos.insert(Photo(title: "Blue hour", place: "Lake Constance", picture: photo()))
-    m.photos.insert(Photo(title: "Dunes", place: "Erg Chebbi", picture: photo()))
-    m.photos.insert(Photo(title: "Pines in fog", place: "Harz", picture: photo(), tall: true))
+    g.media_source = "text(\"Hills at dawn\")"
+    g.media_photos.insert(Photo(title: "Dawn", place: "Black Forest", picture: photo()))
+    g.media_photos.insert(Photo(title: "Blue hour", place: "Lake Constance", picture: photo()))
+    g.media_photos.insert(Photo(title: "Dunes", place: "Erg Chebbi", picture: photo()))
+    g.media_photos.insert(Photo(title: "Pines in fog", place: "Harz", picture: photo(), tall: true))
 }

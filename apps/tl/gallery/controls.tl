@@ -10,57 +10,9 @@ enum Urgency {
     high (icon: .flag, tone: .warning)
 }
 
-/// The controls a form is made of: boxes and switches, a number, a choice from a short list, a
-/// person, a strip of choices, tabs, a day and a time, a colour, a shortcut, a completion, a
-/// picture choice, a row of controls, and a link. Each is bound to a real field of the document,
-/// so a change made in the window is the document's.
-type Controls {
-    title: Text
-    /// Whether the report goes by email.
-    by_email: Bool = false
-    /// Whether it repeats.
-    repeating: Bool = false
-    /// Whether the workspace holds it locked, which nobody here can change.
-    locked: Bool = true
-    /// The margin round the report, in pixels.
-    margin: Float = 12.0
-    /// How much of the time it runs.
-    share: Float = 0.6
-    /// The room it is in.
-    room: Text = "Studio"
-    /// How soon the report is due.
-    urgency: Urgency = .none
-    /// Who looks after the report.
-    owner: Option<Actor> = .none
-    /// Who reviews it, nobody picked yet.
-    reviewer: Option<Actor> = .none
-    /// The day it starts.
-    starts: Date = Date("2026-11-03")
-    /// The time of day it starts.
-    clock: Time = Time("2026-11-03T09:30:00Z")
-    /// The day it ends, which may be none.
-    ends: Option<Date> = .none
-    /// The accent the report wears.
-    accent: Text = "#3a7bd5"
-    /// The key it opens with.
-    shortcut: Text = "Ctrl+K"
-    /// Who it goes to, typed.
-    recipient: Text = ""
-    /// A note beside the report's title, typed.
-    note: Text = ""
-    /// The report's longer notes: a field that wraps and grows.
-    notes: Text = ""
-    /// Who signed it, which the workspace keeps.
-    signed: Text = "Ada Lovelace"
-    /// Whether the background layer shows.
-    background: Bool = true
-    /// Whether the text layer shows.
-    lettering: Bool = true
-}
-
 /// The controls' page: each kind in a section of its own, each in the states a person meets it
 /// in. Every value is the document's or the page's own, so each control can be played with.
-view controls(c: Controls) {
+view controls(g: Gallery) {
     state cadence: Int = 1
     state showing: Int = 0
     state step: Int = 1
@@ -74,16 +26,20 @@ view controls(c: Controls) {
     )
     stack(max: 44rem, gap: .section) {
         ui.Section("Boxes and switches") {
-            ui.Checkbox(bind: c.by_email, label: "Send by email")
-            ui.Checkbox(bind: c.locked, label: "Keep a copy, as the workspace asks", enabled: false)
-            ui.Toggle(bind: c.repeating, label: "Repeat weekly")
-            ui.Toggle(bind: c.locked, label: "Locked by the workspace", enabled: false)
+            ui.Checkbox(bind: g.controls_by_email, label: "Send by email")
+            ui.Checkbox(
+                bind: g.controls_locked,
+                label: "Keep a copy, as the workspace asks",
+                enabled: false,
+            )
+            ui.Toggle(bind: g.controls_repeating, label: "Repeat weekly")
+            ui.Toggle(bind: g.controls_locked, label: "Locked by the workspace", enabled: false)
         }
         ui.Section("Numbers") {
             form {
                 field("Margin") {
                     ui.NumberInput(
-                        bind: c.margin,
+                        bind: g.controls_margin,
                         label: "Margin",
                         min: 0.0,
                         max: 64.0,
@@ -93,7 +49,7 @@ view controls(c: Controls) {
                 }
                 field("Share of the time") {
                     ui.Slider(
-                        bind: c.share,
+                        bind: g.controls_share,
                         label: "Share of the time",
                         step: 0.05,
                         shows_value: true,
@@ -101,7 +57,7 @@ view controls(c: Controls) {
                 }
                 field("Margin, locked") {
                     ui.NumberInput(
-                        bind: c.margin,
+                        bind: g.controls_margin,
                         label: "Margin, locked",
                         min: 0.0,
                         max: 64.0,
@@ -115,13 +71,13 @@ view controls(c: Controls) {
             form {
                 field("Room") {
                     ui.Dropdown(
-                        bind: c.room,
+                        bind: g.controls_room,
                         options: ["Studio", "Gallery", "Annex"],
                         placeholder: "Choose a room",
                     )
                 }
                 field("Urgency") {
-                    ui.EnumField(bind: c.urgency, label: "Urgency")
+                    ui.EnumField(bind: g.controls_urgency, label: "Urgency")
                 }
                 field("Repeats") {
                     ui.ToggleGroup(selected: cadence, label: "Repeats") {
@@ -144,10 +100,18 @@ view controls(c: Controls) {
         ui.Section("People") {
             form {
                 field("Owner") {
-                    ui.PersonField(bind: c.owner, people: workspace.members, me: workspace.me)
+                    ui.PersonField(
+                        bind: g.controls_owner,
+                        people: workspace.members,
+                        me: workspace.me,
+                    )
                 }
                 field("Reviewer") {
-                    ui.PersonField(bind: c.reviewer, people: workspace.members, me: workspace.me)
+                    ui.PersonField(
+                        bind: g.controls_reviewer,
+                        people: workspace.members,
+                        me: workspace.me,
+                    )
                 }
             }
         }
@@ -159,20 +123,24 @@ view controls(c: Controls) {
         ui.Section("Days and times") {
             form {
                 field("Starts") {
-                    ui.DateField(bind: c.starts, label: "Starts", optional: false)
+                    ui.DateField(bind: g.controls_starts, label: "Starts", optional: false)
                 }
                 field("Ends") {
-                    ui.DateField(bind: c.ends, label: "Ends", optional: true)
+                    ui.DateField(bind: g.controls_ends, label: "Ends", optional: true)
                 }
                 field("At") {
-                    ui.TimeField(bind: c.clock)
+                    ui.TimeField(bind: g.controls_clock)
                 }
             }
-            ui.DatePicker(bind: c.starts, label: "Starts")
-            ui.TimePicker(bind: c.clock, label: "At")
+            ui.DatePicker(bind: g.controls_starts, label: "Starts")
+            ui.TimePicker(bind: g.controls_clock, label: "At")
         }
         ui.Section("Colours") {
-            ui.ColorPicker(bind: c.accent, swatches: ["#3a7bd5", "#d55a3a", "#3ad57b"], columns: 3)
+            ui.ColorPicker(
+                bind: g.controls_accent,
+                swatches: ["#3a7bd5", "#d55a3a", "#3ad57b"],
+                columns: 3,
+            )
             ui.ColorSwatchPicker(
                 swatches: ["#3a7bd5", "#d55a3a", "#3ad57b", "#d5c23a"],
                 columns: 4,
@@ -185,25 +153,33 @@ view controls(c: Controls) {
         ui.Section("Text") {
             form {
                 field("Title") {
-                    ui.EditableLabel(bind: c.title, label: "Title")
+                    ui.EditableLabel(bind: g.controls_title, label: "Title")
                 }
                 field("Open with") {
-                    ui.ShortcutRecorder(bind: c.shortcut, default: "Ctrl+K", label: "Open with")
+                    ui.ShortcutRecorder(
+                        bind: g.controls_shortcut,
+                        default: "Ctrl+K",
+                        label: "Open with",
+                    )
                 }
                 field("Send to") {
-                    ui.Autocomplete(bind: c.recipient, placeholder: "Name or address") {
+                    ui.Autocomplete(bind: g.controls_recipient, placeholder: "Name or address") {
                         ui.Suggestion("ada@example.com", label: "Ada")
                         ui.Suggestion("bo@example.com", label: "Bo")
                     }
                 }
                 field("Note", help: "Shown with the title.") {
-                    ui.TextInput(bind: c.note, placeholder: "A note for the team")
+                    ui.TextInput(bind: g.controls_note, placeholder: "A note for the team")
                 }
                 field("Notes") {
-                    ui.TextInput(bind: c.notes, lines: 3, placeholder: "Anything else worth saying")
+                    ui.TextInput(
+                        bind: g.controls_notes,
+                        lines: 3,
+                        placeholder: "Anything else worth saying",
+                    )
                 }
                 field("Signed") {
-                    ui.TextInput(bind: c.signed, enabled: false)
+                    ui.TextInput(bind: g.controls_signed, enabled: false)
                 }
             }
             ui.Link("https://tilo.sh", label: "Read about Tilo")
@@ -212,13 +188,13 @@ view controls(c: Controls) {
             ui.ControlRow(label: "Background", selected: layer == 0) {
                 ui.Text("Background")
                 spacer
-                ui.Toggle(bind: c.background)
+                ui.Toggle(bind: g.controls_background)
                 on choose: set(layer, 0)
             }
             ui.ControlRow(label: "Lettering", selected: layer == 1) {
                 ui.Text("Lettering")
                 spacer
-                ui.Toggle(bind: c.lettering)
+                ui.Toggle(bind: g.controls_lettering)
                 on choose: set(layer, 1)
             }
         }
@@ -233,11 +209,10 @@ view controls(c: Controls) {
     }
 }
 
-/// The controls' group, with a report a week from starting.
+/// The controls' page, with a report a week from starting, looked after by Mia.
 scenario "controls" {
     let g = root Gallery
-    let mia = person("Mia")
-    g.controls.insert(
-        Controls(title: "Controls", starts: 2026-11-03, clock: 2026-11-03T09:30Z, owner: mia),
-    )
+    g.controls_owner = .some(person("Mia"))
+    g.controls_starts = 2026-11-03
+    g.controls_clock = 2026-11-03T09:30Z
 }

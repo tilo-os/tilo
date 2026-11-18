@@ -1,13 +1,5 @@
-/// How things are going: badges and banners, progress and gauges, stats, the facts of a thing,
-/// a path, a toolbar, rows that open in place, and what is still loading.
-type Feedback {
-    title: Text
-    /// Who is syncing the files.
-    owner: Option<Actor>
-}
-
 /// The feedback page: each kind in a section of its own.
-view feedback(f: Feedback) {
+view feedback(g: Gallery) {
     state last: Text = ""
     ui.Text(
         "Banners, badges, progress and numbers, the facts of a thing, and what is still loading.",
@@ -48,7 +40,7 @@ view feedback(f: Feedback) {
                     on activate: set(last, "Release")
                 }
             }
-            ui.ObjectHeader("Release 4.2", caption: "Ships Friday", who: f.owner)
+            ui.ObjectHeader("Release 4.2", caption: "Ships Friday", who: workspace.me)
         }
         part(
             "Banner",
@@ -92,7 +84,7 @@ view feedback(f: Feedback) {
                 ui.SignalMeter(.good)
                 ui.Spinner("Syncing")
             }
-            ui.StatusLine("Syncing 3 files", status: .active, who: f.owner)
+            ui.StatusLine("Syncing 3 files", status: .active, who: workspace.me)
         }
         part(
             "Text stack and facts",
@@ -196,6 +188,5 @@ view feedback(f: Feedback) {
 
 /// The feedback group, the person looking syncing the files.
 scenario "feedback" {
-    let g = root Gallery
-    g.feedback.insert(Feedback(title: "Feedback", owner: invoker))
+    root Gallery
 }

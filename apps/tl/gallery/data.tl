@@ -1,19 +1,3 @@
-/// The data views: a table of columns and rows, a tree of nodes, a conversation, a grid of cards
-/// and the history of a document, each reading a collection of the app's own.
-type Data {
-    title: Text
-    /// The rows of the table: each an item with what its columns read.
-    rows: Collection<Row>
-    /// The files of the tree, each naming its parent by its key.
-    files: Collection<Node>
-    /// The messages of the conversation, oldest first.
-    messages: Collection<Message>
-    /// The cards of the grid.
-    cards: Collection<Card>
-    /// The changes of the document, oldest first.
-    changes: Collection<Change>
-}
-
 /// One row of the table: what its columns read.
 type Row {
     title: Text
@@ -54,7 +38,7 @@ type Change {
 }
 
 /// The data page: each data view as an app places it, over the page's collection.
-view data(d: Data) {
+view data(g: Gallery) {
     state last: Text = ""
     ui.Text(
         "Tables, trees, conversations, cards and history, each reading a collection of the app's own.",
@@ -72,7 +56,7 @@ view data(d: Data) {
                     ui.DataTableColumn("State")
                     ui.DataTableColumn("Size", kind: .numeric)
                 }
-                for x in d.rows {
+                for x in g.data_rows {
                     ui.DataTableRow(x) {
                         cells: {
                             ui.DataTableCell("Name", value: x.title)
@@ -93,7 +77,7 @@ view data(d: Data) {
             row {
                 stack(max: 22rem, fill) {
                     ui.TreeView(name: "Project", fill: false, hide_root: true) {
-                        for f in d.files {
+                        for f in g.data_files {
                             ui.TreeViewNode(f, f.title, parent: f.parent, branch: f.folder) {
                                 row: {
                                     ui.TreeViewRow(
@@ -114,7 +98,7 @@ view data(d: Data) {
             "Each line on its own side, a run of one person's under their name once, a divider where the day changes.",
         ) {
             ui.ConversationList(name: "Conversation with Ada") {
-                for m in d.messages {
+                for m in g.data_messages {
                     if m.mine {
                         ui.ConversationEntry(m, m.body, time: m.at, outgoing: true, delivery: .read)
                     } else {
@@ -125,7 +109,7 @@ view data(d: Data) {
         }
         part("Card grid", "Collections as cards in columns, as many as the width holds.") {
             ui.CardGrid(name: "Collections") {
-                for c in d.cards {
+                for c in g.data_cards {
                     ui.CardGridCard(c, title: c.title, count: c.count) {
                         on activate: opened_card(last, c)
                         ui.Text(
@@ -142,7 +126,7 @@ view data(d: Data) {
             "What happened to a document, newest first, each change open to revert.",
         ) {
             ui.ActivityTimeline(newest_first: true) {
-                for c in d.changes {
+                for c in g.data_changes {
                     ui.ActivityEntry(c, c.summary, time: c.at, kind: .details)
                 }
                 on revert(x: Change): reverted(last, x)
@@ -155,17 +139,16 @@ view data(d: Data) {
 /// The data group, over a release a team is working on.
 scenario "data" {
     let g = root Gallery
-    let d = g.data.insert(Data(title: "Data"))
-    d.rows.insert(Row(title: "Readme.md", state: "Edited", size: 1204))
-    d.rows.insert(Row(title: "release.toml", state: "New", size: 312))
-    d.rows.insert(Row(title: "notes.txt", state: "Locked", size: 48))
-    let project = d.files.insert(Node(title: "Project", folder: true))
-    let src = d.files.insert(Node(title: "src", parent: project, folder: true, size: 0))
-    d.files.insert(Node(title: "main.rs", parent: src, folder: false, size: 880))
-    d.files.insert(Node(title: "board.rs", parent: src, folder: false, size: 2416))
-    let docs = d.files.insert(Node(title: "docs", parent: project, folder: true, size: 0))
-    d.files.insert(Node(title: "release-notes.md", parent: docs, folder: false, size: 1204))
-    d.messages.insert(
+    g.data_rows.insert(Row(title: "Readme.md", state: "Edited", size: 1204))
+    g.data_rows.insert(Row(title: "release.toml", state: "New", size: 312))
+    g.data_rows.insert(Row(title: "notes.txt", state: "Locked", size: 48))
+    let project = g.data_files.insert(Node(title: "Project", folder: true))
+    let src = g.data_files.insert(Node(title: "src", parent: project, folder: true, size: 0))
+    g.data_files.insert(Node(title: "main.rs", parent: src, folder: false, size: 880))
+    g.data_files.insert(Node(title: "board.rs", parent: src, folder: false, size: 2416))
+    let docs = g.data_files.insert(Node(title: "docs", parent: project, folder: true, size: 0))
+    g.data_files.insert(Node(title: "release-notes.md", parent: docs, folder: false, size: 1204))
+    g.data_messages.insert(
         Message(
             title: "a",
             from: "Ada",
@@ -174,7 +157,7 @@ scenario "data" {
             mine: false,
         ),
     )
-    d.messages.insert(
+    g.data_messages.insert(
         Message(
             title: "b",
             from: "Sam",
@@ -183,7 +166,7 @@ scenario "data" {
             mine: true,
         ),
     )
-    d.messages.insert(
+    g.data_messages.insert(
         Message(
             title: "c",
             from: "Sam",
@@ -192,7 +175,7 @@ scenario "data" {
             mine: true,
         ),
     )
-    d.messages.insert(
+    g.data_messages.insert(
         Message(
             title: "d",
             from: "Ada",
@@ -201,16 +184,16 @@ scenario "data" {
             mine: false,
         ),
     )
-    d.messages.insert(
+    g.data_messages.insert(
         Message(title: "e", from: "Sam", body: "Shipping now.", at: 2026-06-30T08:46Z, mine: true),
     )
-    d.cards.insert(Card(title: "Design", count: 12))
-    d.cards.insert(Card(title: "Engineering", count: 34))
-    d.cards.insert(Card(title: "Support", count: 7))
-    d.changes.insert(
+    g.data_cards.insert(Card(title: "Design", count: 12))
+    g.data_cards.insert(Card(title: "Engineering", count: 34))
+    g.data_cards.insert(Card(title: "Support", count: 7))
+    g.data_changes.insert(
         Change(title: "a", who: "Ada", summary: "Rewrote the summary", at: 2026-06-30T08:42Z),
     )
-    d.changes.insert(
+    g.data_changes.insert(
         Change(title: "b", who: "Sam", summary: "Moved to Done", at: 2026-06-30T09:10Z),
     )
 }
