@@ -105,7 +105,7 @@ async fn a_write_one_workspace_holds_keeps_no_other_workspaces_write_from_being_
 
     // The change that waits is not confirmed, nor is the session as a whole: both were asked
     // before a later write here, which is confirmed again.
-    let own = page.barrier_for(&[there.clone()]).unwrap();
+    let own = page.barrier_for(std::slice::from_ref(&there)).unwrap();
     let whole = page.barrier().unwrap();
     page.write(here, &write(&mut note, "third")).unwrap();
     within(
