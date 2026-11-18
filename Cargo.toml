@@ -105,6 +105,7 @@ members = [
     "apps/api-tester",
     "apps/api-tester-model",
     "apps/assistant",
+    "apps/assistant-model",
     "apps/backups",
     "apps/browser",
     "apps/calculator",
