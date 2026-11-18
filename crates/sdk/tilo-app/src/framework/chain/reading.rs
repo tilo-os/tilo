@@ -273,3 +273,22 @@ impl ChainState {
         self.core.read(part.table, &held, &read, &prepare, &hidden)
     }
 }
+
+impl super::Chains {
+    /// `read` of every part the chains hold, each chain's oldest first.
+    pub(crate) fn read_parts<T>(
+        &self,
+        read: &dyn Fn(&ui_core::automerge::AutoCommit) -> T,
+    ) -> Vec<T> {
+        let held: Vec<std::rc::Rc<super::ChainState>> =
+            self.held.borrow().values().cloned().collect();
+        let mut read_parts = Vec::new();
+        for chain in &held {
+            let core = &chain.core;
+            for index in core.parts.borrow().keys() {
+                read_parts.extend(core.workspace.store.read(&core.chain.part(*index), read));
+            }
+        }
+        read_parts
+    }
+}

@@ -628,12 +628,14 @@ type NewResource = fn(
 
 /// [`AppHooks::open`] — the context, who edits, whether it is a capture and
 /// whether the launch created the record.
-type OpenRoot = fn(
-    &mut ProcessContext,
-    Editing,
-    bool,
-    bool,
-) -> Result<Result<Box<dyn ui_core::widget::AppWidget>, String>, LaunchError>;
+/// The window's root, and the parts its History lists with the window's document.
+type OpenedRoot = (
+    Box<dyn ui_core::widget::AppWidget>,
+    Rc<dyn ui_core::history_mode::HistoryParts>,
+);
+
+type OpenRoot =
+    fn(&mut ProcessContext, Editing, bool, bool) -> Result<Result<OpenedRoot, String>, LaunchError>;
 
 struct Hooks<A>(std::marker::PhantomData<A>);
 
@@ -1142,7 +1144,7 @@ fn open_root<A: ResourceApp>(
     editing: Editing,
     capture: bool,
     created: bool,
-) -> Result<Result<Box<dyn ui_core::widget::AppWidget>, String>, LaunchError> {
+) -> Result<Result<OpenedRoot, String>, LaunchError> {
     if let Err(reason) = A::import_resource(context) {
         return Ok(Err(reason));
     }
@@ -1181,7 +1183,8 @@ fn open_root<A: ResourceApp>(
             }
         }
     }
-    Ok(Ok(root.into_widget()))
+    let parts = Rc::new(super::history::ChainHistory(Rc::downgrade(&root.storage)));
+    Ok(Ok((root.into_widget(), parts)))
 }
 
 /// The component of a window shown before its record ([`ResourceApp::opening`]): it shows
@@ -1430,8 +1433,8 @@ fn window(
         created,
         capture,
     } = starting;
-    let root = match (app.open)(&mut context, editing, capture, created)? {
-        Ok(root) => root,
+    let (root, parts) = match (app.open)(&mut context, editing, capture, created)? {
+        Ok(opened) => opened,
         Err(reason) => return Ok(unopened(app, context, &reason)),
     };
     let mut component = AppComponent::new(context, root, (app.action_registry)());
@@ -1443,6 +1446,7 @@ fn window(
             None => component.register_document_history(history),
         }
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        component.list_parts_in_history(&parts);
     }
     // A replay opens at the recording's first step: the state the window
     // showed when the recording starts.

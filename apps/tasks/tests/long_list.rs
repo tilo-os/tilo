@@ -197,3 +197,26 @@ fn press_view(app: &mut TestApp<App>, name: &str) {
     });
     let _ = harness.poll_frame();
 }
+
+/// History lists the issues' changes, kept in the tracker's parts, with the tracker's own: a page
+/// of the newest, and the rest a page at a time.
+#[test]
+fn history_lists_the_issues_changes_a_page_at_a_time() {
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<App>::for_person("ada").expect("open");
+    for at in 0..=ui::history_mode::HISTORY_PAGE {
+        app.call_on(
+            &chain(),
+            "create",
+            json!({ "title": format!("Issue {at}") }),
+        )
+        .expect("create");
+    }
+    app.settle();
+    let harness = app.harness();
+    harness.open_history().expect("History opens");
+    assert!(harness.targets().contains_key("activity_timeline"));
+    assert!(harness.targets().contains_key("history-earlier"));
+    harness.click_named("history-earlier").unwrap();
+    assert!(!harness.targets().contains_key("history-earlier"));
+}

@@ -77,6 +77,8 @@ pub enum HistorySourceRegistration {
         scope: &'static str,
         owner: super::HistoryOwner,
         resource: HistoryResource,
+        /// The documents kept beside it whose changes are listed with its own.
+        parts: Option<std::rc::Rc<dyn super::HistoryParts>>,
     },
     Unversioned {
         scope: &'static str,
@@ -95,7 +97,24 @@ impl HistorySourceRegistration {
             scope,
             owner,
             resource,
+            parts: None,
         })
+    }
+    /// List the changes of `parts` with the owned document's own. A source that owns no document
+    /// keeps none.
+    #[must_use]
+    pub fn with_parts(mut self, chain: std::rc::Rc<dyn super::HistoryParts>) -> Self {
+        if let Self::OwnedDocument { parts, .. } = &mut self {
+            *parts = Some(chain);
+        }
+        self
+    }
+    /// The documents whose changes are listed with the owned document's own.
+    pub(crate) fn parts(&self) -> Option<std::rc::Rc<dyn super::HistoryParts>> {
+        match self {
+            Self::OwnedDocument { parts, .. } => parts.clone(),
+            _ => None,
+        }
     }
     pub(crate) fn scope(&self) -> &'static str {
         match self {

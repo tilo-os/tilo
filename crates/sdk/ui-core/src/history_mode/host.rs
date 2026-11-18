@@ -326,7 +326,8 @@ impl HistoryHost {
         let controller = match source {
             HistorySourceRegistration::HostDocument { resource, .. }
             | HistorySourceRegistration::OwnedDocument { resource, .. } => Some(
-                HistoryController::unprojected(resource.clone(), source.committed_heads(doc)?),
+                HistoryController::unprojected(resource.clone(), source.committed_heads(doc)?)
+                    .with_parts(source.parts()),
             ),
             HistorySourceRegistration::Unversioned { .. }
             | HistorySourceRegistration::FolderFiles { .. } => None,
@@ -1304,6 +1305,7 @@ impl HistoryHost {
         self.open
             && self.controller.as_ref().is_some_and(|controller| {
                 super::sorted_heads(heads) != controller.observed_live_heads
+                    || controller.parts_moved()
             })
     }
     /// Whether every document this surface answers for is a hosted component's (or the host's own),
@@ -1443,10 +1445,10 @@ impl HistoryHost {
                             HistorySourceRegistration::HostDocument { resource, .. }
                             | HistorySourceRegistration::OwnedDocument { resource, .. } => {
                                 if let Ok(heads) = self.source().committed_heads(doc) {
-                                    self.controller = Some(HistoryController::unprojected(
-                                        resource.clone(),
-                                        heads,
-                                    ));
+                                    self.controller = Some(
+                                        HistoryController::unprojected(resource.clone(), heads)
+                                            .with_parts(self.source().parts()),
+                                    );
                                 }
                             }
                             HistorySourceRegistration::Unversioned { reason, .. } => {
@@ -1486,10 +1488,13 @@ impl HistoryHost {
             && let Some(controller) = &mut self.controller
         {
             let _ = controller.refresh(document);
-            if selected != self.selected
-                && !selected.is_empty()
-                && controller.select(document, &selected).is_ok()
-            {
+            let choosing = selected != self.selected && !selected.is_empty();
+            let shown = choosing && controller.select(document, &selected).is_ok();
+            if choosing && !shown {
+                // A change of a document kept beside this one has no version of this one to show.
+                self.commands.borrow_mut().push_back(Command::Now);
+            }
+            if shown {
                 self.review = None;
                 self.review_request = None;
                 self.selected = selected;
