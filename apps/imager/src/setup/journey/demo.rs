@@ -247,12 +247,10 @@ mod tests {
                     advance(&mut app);
                 }
                 if destination == "another" {
-                    assert_eq!(
-                        state(&mut app)["page"],
-                        "method",
-                        "{destination}/{identity}"
-                    );
-                    advance(&mut app);
+                    for page in ["method", "machine"] {
+                        assert_eq!(state(&mut app)["page"], page, "{destination}/{identity}");
+                        advance(&mut app);
+                    }
                 }
                 assert_eq!(state(&mut app)["page"], "review");
                 advance(&mut app);

@@ -200,7 +200,7 @@ fn live_another_new_identity_prepares_before_your_data_and_review() {
     app.effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
     wait(&mut app, |value| value["page"] == "storage");
-    for page in ["storage", "method"] {
+    for page in ["storage", "method", "machine"] {
         assert_eq!(state(&mut app)["page"], page);
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
