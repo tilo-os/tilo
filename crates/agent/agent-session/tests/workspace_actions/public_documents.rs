@@ -654,7 +654,7 @@ async fn every_paragraph_a_visitors_agent_was_told_it_wrote_reaches_their_open_n
     }
     // Their open notes follow the parts the notes are kept in, as a window
     // asks for them: by the chain's head.
-    browser.follow_chain(NOTES, notes::part::chain().chain_head().as_str());
+    browser.follow_chain(NOTES, notes::note_list::chain().chain_head().as_str());
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let seen = page_paragraphs(&mut browser, "Launch notes");

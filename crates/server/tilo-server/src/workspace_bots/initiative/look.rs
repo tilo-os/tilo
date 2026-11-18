@@ -191,9 +191,10 @@ pub(super) async fn gather(
         let tasks_part = app == TASKS
             && ui::resource::DocumentId::parse(&document)
                 .and_then(|id| id.chain_part())
-                .is_some_and(|(chain, _)| chain == tasks::part::chain());
+                .is_some_and(|(chain, _)| chain == tasks::issue_list::chain());
         if tasks_part
-            && let Ok(part) = crate::workspace_bots::opened::<tasks::part::IssuePart>(&mut doc)
+            && let Ok(part) =
+                crate::workspace_bots::opened::<tasks::issue_list::IssueList>(&mut doc)
         {
             tasks_in(
                 part.issues.iter(),

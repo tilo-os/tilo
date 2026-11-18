@@ -36,10 +36,10 @@ use vello::kurbo::{Point, Rect};
 
 use crate::app::{ChatApp, Hit};
 use crate::chat::ShareAccess;
-use crate::messages::chat_part;
+use crate::messages::chat_messages;
 use crate::model::Message;
 use crate::paint::{line_in, line_of};
-use crate::parts::ChatPart;
+use crate::parts::ChatMessages;
 
 /// The miniature's proportions: a window's, wider than tall.
 pub(crate) const ASPECT: f64 = 16.0 / 10.0;
@@ -694,7 +694,7 @@ impl ChatApp {
         }
         self.apply_part(
             doc,
-            ChatPart::SET_SHARE_ACCESS.with(chat_part::SetShareAccess {
+            ChatMessages::SET_SHARE_ACCESS.with(chat_messages::SetShareAccess {
                 message: ui::tilo_resource::Id::from_raw(message),
                 access,
             }),
@@ -712,7 +712,7 @@ impl ChatApp {
         }
         self.apply_part(
             doc,
-            ChatPart::STOP_SHARING.with(chat_part::StopSharing {
+            ChatMessages::STOP_SHARING.with(chat_messages::StopSharing {
                 message: ui::tilo_resource::Id::from_raw(message),
             }),
         );
@@ -750,7 +750,7 @@ impl ChatApp {
         };
         self.try_apply_part(
             doc,
-            ChatPart::SHARE_WINDOW.with(chat_part::ShareWindow {
+            ChatMessages::SHARE_WINDOW.with(chat_messages::ShareWindow {
                 channel: ui::tilo_resource::Id::from_raw(self.active_channel.clone()),
                 attached: tilo_reference::ResourceAt {
                     app: window.app.clone(),
@@ -885,7 +885,7 @@ impl ChatApp {
             if seen != Some(open) && stored != open {
                 self.apply_part(
                     doc,
-                    ChatPart::SHARE_OPEN.with(chat_part::ShareOpen {
+                    ChatMessages::SHARE_OPEN.with(chat_messages::ShareOpen {
                         message: ui::tilo_resource::Id::from_raw(message),
                         open,
                     }),

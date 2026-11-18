@@ -20,7 +20,7 @@ mod common;
 use common::{chain, held};
 use serde_json::{Value, json};
 use tasks::model::{Issue, Status, issue_resource};
-use tasks::{App, IssuePart};
+use tasks::{App, IssueList};
 use ui::prelude::*;
 
 fn open() -> TestApp<App> {
@@ -407,9 +407,12 @@ fn several_issues_in_one_call_are_what_their_caller_may_do_one_at_a_time() {
 #[test]
 fn a_group_reaches_issues_kept_in_two_parts_and_is_refused_for_both() {
     ui::i18n::I18nManager::init("en-US");
-    let before = tasks::part::PART_ISSUES - 1;
+    // Parts of 500 issues, and the first one full: what is made next
+    // starts the second.
+    let _parts = ui::framework::PartLimits::scoped(500, usize::MAX);
+    let before = 500;
     let mut app = TestApp::<App>::drive(&format!("issues-{before}")).expect("open");
-    // Three more issues than the first part has room for start the next.
+    // The first part is full: three more issues start the next.
     app.call_on(
         &chain(),
         "create-many",
@@ -420,7 +423,7 @@ fn a_group_reaches_issues_kept_in_two_parts_and_is_refused_for_both() {
         ] }),
     )
     .expect("the issues are made");
-    let parts = app.chain_parts::<IssuePart>();
+    let parts = app.chain_parts::<IssueList>();
     assert_eq!(parts.len(), 2);
 
     // One call changes an issue of each part.

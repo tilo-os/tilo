@@ -141,7 +141,7 @@ pub struct ChatApp {
         u64,
         (
             std::rc::Rc<Vec<Message>>,
-            std::rc::Rc<crate::parts::ChatPart>,
+            std::rc::Rc<crate::parts::ChatMessages>,
         ),
     >,
     /// Top-level messages each channel has in each part held, as that part's
@@ -443,19 +443,21 @@ pub struct ChatApp {
     /// ([`crate::parts`]): what the window reads them from and posts, edits
     /// and reacts through. `None` where the window has none (a past
     /// version).
-    pub(crate) chain: Option<ui::framework::Chain<crate::parts::ChatPart>>,
+    pub(crate) chain: Option<ui::framework::Chain<crate::parts::ChatMessages>>,
     /// Where the window stands reading back through the chain's parts.
     pub(crate) scrollback: crate::scrollback::Scrollback,
     /// The chain's revision the window last read its messages at.
     pub(crate) chain_seen: Option<u64>,
     /// The first part a screenshot scenario starts with, until written:
     /// messages by several people under the ids the scenario names.
-    pub(crate) staged_start: Option<crate::parts::ChatPart>,
+    pub(crate) staged_start: Option<crate::parts::ChatMessages>,
     /// A screenshot scenario's messages still to stage, each with who
     /// wrote it: staged once the workspace's documents take a write (a frame's
     /// read of the resource holds them).
-    pub(crate) staged_parts:
-        std::collections::VecDeque<(MemberId, ui::tilo_resource::Invoke<crate::parts::ChatPart>)>,
+    pub(crate) staged_parts: std::collections::VecDeque<(
+        MemberId,
+        ui::tilo_resource::Invoke<crate::parts::ChatMessages>,
+    )>,
     /// The scenario those messages are of.
     #[cfg(feature = "samples")]
     pub(crate) staged_scenario: Option<String>,
@@ -480,7 +482,7 @@ pub struct ChatApp {
     pub(crate) dispatched: std::cell::RefCell<Vec<crate::chat::ChatAction>>,
     /// Every verb on the chat's messages an affordance applied, likewise.
     #[cfg(test)]
-    pub(crate) dispatched_parts: std::cell::RefCell<Vec<crate::messages::ChatPartAction>>,
+    pub(crate) dispatched_parts: std::cell::RefCell<Vec<crate::messages::ChatMessagesAction>>,
 
     // Persistence (None for ephemeral / `--shots` instances).
 
@@ -1065,7 +1067,7 @@ impl ChatApp {
     pub(crate) fn apply_part(
         &self,
         doc: &mut ui::widget::Edits<'_>,
-        submit: impl ui::framework::Submit<crate::parts::ChatPart>,
+        submit: impl ui::framework::Submit<crate::parts::ChatMessages>,
     ) {
         // A refusal changes nothing; the dispatcher reports it.
         let _ = self.try_apply_part(doc, submit);
@@ -1075,7 +1077,7 @@ impl ChatApp {
     pub(crate) fn try_apply_part(
         &self,
         doc: &mut ui::widget::Edits<'_>,
-        submit: impl ui::framework::Submit<crate::parts::ChatPart>,
+        submit: impl ui::framework::Submit<crate::parts::ChatMessages>,
     ) -> Result<(), String> {
         let chain = self
             .chain
@@ -1097,7 +1099,10 @@ impl ChatApp {
 
     /// Submit a verb on the chat's messages to the API, applied after this
     /// pass: from a pass that only reads the document.
-    pub(crate) fn submit_part(&self, submit: impl ui::framework::Submit<crate::parts::ChatPart>) {
+    pub(crate) fn submit_part(
+        &self,
+        submit: impl ui::framework::Submit<crate::parts::ChatMessages>,
+    ) {
         let Some(chain) = &self.chain else {
             return;
         };
@@ -1220,14 +1225,14 @@ impl ChatApp {
         &self,
         msg: &str,
         emoji: &str,
-    ) -> ui::tilo_resource::Edit<crate::parts::ChatPart> {
-        use crate::parts::ChatPart;
+    ) -> ui::tilo_resource::Edit<crate::parts::ChatMessages> {
+        use crate::parts::ChatMessages;
         let reacting = self.message(msg).is_some_and(|m| {
             m.reactions
                 .iter()
                 .any(|r| r.emoji == emoji && r.includes(&self.me.id))
         });
-        let reactions = ChatPart::paths()
+        let reactions = ChatMessages::paths()
             .messages
             .item(&ui::tilo_resource::Id::from_raw(msg))
             .reactions;

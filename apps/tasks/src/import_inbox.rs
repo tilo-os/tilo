@@ -16,8 +16,8 @@ use ui::application::ProcessContext;
 use ui::framework::Chain;
 use ui::tilo_resource::{Id, Invoke, NonBlank, Origin};
 
+use crate::issue_list::{IssueList, Issues, issue_list};
 use crate::model::{Status, Tracker};
-use crate::part::{IssuePart, Issues, issue_part};
 
 const INBOX: &str = "personal-data-incoming/issues";
 const VERSION: u64 = 1;
@@ -67,7 +67,7 @@ pub(crate) fn import(context: &ProcessContext) -> Result<(), String> {
     // The issues go into the parts beside the tracker, through their own
     // verbs, as the window would carry them out.
     let chain =
-        Chain::<IssuePart>::detached_in(context.records().clone(), crate::APP_ID, &author, || {
+        Chain::<IssueList>::detached_in(context.records().clone(), crate::APP_ID, &author, || {
             Rc::new(Tracker::default())
         })
         .ok_or_else(|| "the tracker's issues cannot be opened".to_owned())?;
@@ -94,7 +94,7 @@ fn texts(value: &Value, name: &str) -> Vec<String> {
 }
 
 /// The tracker's issues by their source page.
-fn by_page(chain: &Chain<IssuePart>) -> BTreeMap<String, Id> {
+fn by_page(chain: &Chain<IssueList>) -> BTreeMap<String, Id> {
     let parts = chain.parts();
     Issues::of(&parts)
         .iter()
@@ -103,7 +103,7 @@ fn by_page(chain: &Chain<IssuePart>) -> BTreeMap<String, Id> {
 }
 
 /// Carry `invoke` out on the issues.
-fn invoke(chain: &Chain<IssuePart>, invoke: &Invoke<IssuePart>) -> Result<(), String> {
+fn invoke(chain: &Chain<IssueList>, invoke: &Invoke<IssueList>) -> Result<(), String> {
     chain
         .invoke(invoke)
         .map(drop)
@@ -111,7 +111,7 @@ fn invoke(chain: &Chain<IssuePart>, invoke: &Invoke<IssuePart>) -> Result<(), St
 }
 
 /// Add the `entries` the tracker does not hold yet.
-pub(crate) fn apply(chain: &Chain<IssuePart>, entries: &[Value]) -> Result<bool, String> {
+pub(crate) fn apply(chain: &Chain<IssueList>, entries: &[Value]) -> Result<bool, String> {
     let held = by_page(chain);
     let fresh: Vec<&Value> = entries
         .iter()
@@ -132,7 +132,7 @@ pub(crate) fn apply(chain: &Chain<IssuePart>, entries: &[Value]) -> Result<bool,
         let status = serde_json::from_value::<Status>(entry["status"].clone()).ok();
         invoke(
             chain,
-            &IssuePart::CREATE.with(crate::model::NewIssue {
+            &IssueList::CREATE.with(crate::model::NewIssue {
                 body: Some(text(entry, "body").trim().to_owned()),
                 status,
                 assignee: entry
@@ -164,7 +164,7 @@ pub(crate) fn apply(chain: &Chain<IssuePart>, entries: &[Value]) -> Result<bool,
 /// Give the new `issue` what `entry` holds beyond its fields: labels, thread, parent and the
 /// issues it relates to, found among `issues` by their source pages.
 fn fill(
-    chain: &Chain<IssuePart>,
+    chain: &Chain<IssueList>,
     entry: &Value,
     issue: &Id,
     issues: &BTreeMap<String, Id>,
@@ -174,7 +174,7 @@ fn fill(
         if let Some(label) = NonBlank::parse(&label) {
             invoke(
                 chain,
-                &IssuePart::ADD_LABEL.with(issue_part::AddLabel {
+                &IssueList::ADD_LABEL.with(issue_list::AddLabel {
                     issue: issue.clone(),
                     label,
                 }),
@@ -198,7 +198,7 @@ fn fill(
         if let Some(said) = NonBlank::parse(&said) {
             invoke(
                 chain,
-                &IssuePart::COMMENT.with(issue_part::Comment {
+                &IssueList::COMMENT.with(issue_list::Comment {
                     issue: issue.clone(),
                     text: said,
                     origin: origin(
@@ -220,7 +220,7 @@ fn fill(
     {
         invoke(
             chain,
-            &IssuePart::MOVE_UNDER.with(issue_part::MoveUnder {
+            &IssueList::MOVE_UNDER.with(issue_list::MoveUnder {
                 issue: issue.clone(),
                 parent: Some(ui::tilo_resource::items::Ref::from(parent.clone())),
             }),
@@ -245,7 +245,7 @@ fn fill(
             );
         invoke(
             chain,
-            &IssuePart::LINK.with(issue_part::Link {
+            &IssueList::LINK.with(issue_list::Link {
                 issue: issue.clone(),
                 app,
                 kind: ISSUE_KIND.to_owned(),
@@ -352,7 +352,7 @@ mod tests {
                 }),
             ),
         ];
-        let chain = Chain::<IssuePart>::detached(
+        let chain = Chain::<IssueList>::detached(
             crate::APP_ID,
             &ui::tilo_resource::MemberId::person("ada"),
             || Rc::new(Tracker::default()),

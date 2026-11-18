@@ -91,13 +91,14 @@ impl RustApps {
                 video.title.clone(),
             ),
         };
-        let invoke =
-            chat::parts::ChatPart::SHARE_RESOURCE.with(chat::messages::chat_part::ShareResource {
+        let invoke = chat::parts::ChatMessages::SHARE_RESOURCE.with(
+            chat::messages::chat_messages::ShareResource {
                 channel: tilo_resource::Id::from_raw(CHAT_SHORT_CHANNEL),
                 attached: at,
                 text: Some("Worth a watch".to_owned()),
                 mentions: None,
-            });
+            },
+        );
         let _ = self
             .chat
             .apply_part_as(&tilo_resource::MemberId::person(chat::model::ME), invoke);

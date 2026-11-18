@@ -9,19 +9,25 @@ use std::rc::Rc;
 
 use ui::tilo_resource::{Id, Invoke, NonBlank, Replica, Resource as _};
 
+use crate::issue_list::{IssueList, Issues, issue_list};
 use crate::model::{Issue, NewIssue, Status, Tracker, tracker};
-use crate::part::{IssuePart, Issues, PART_ISSUES, issue_part};
+use ui::framework::PartLimits;
+
+/// Issues a part holds in these tests before the next one starts: fewer
+/// than the framework's, so a few hundred issues show what thousands would.
+pub(crate) const PART_ISSUES: usize = 500;
 
 /// A tracker and its parts as one device holds them: every action goes to
-/// the part the chain sends it to, read against the tracker and the parts
+/// the part the framework places it in, read against the tracker and the parts
 /// held, as a window carries it out.
 pub(crate) struct Board {
     pub(crate) tracker: Replica<Tracker>,
-    parts: Vec<(u64, Replica<IssuePart>)>,
+    parts: Vec<(u64, Replica<IssueList>)>,
     /// Each part's state as last written, as a window follows them.
-    states: Vec<(u64, Rc<IssuePart>)>,
+    states: Vec<(u64, Rc<IssueList>)>,
     author: String,
     now_ms: i64,
+    _limits: PartLimits,
 }
 
 impl Board {
@@ -34,10 +40,11 @@ impl Board {
             states: Vec::new(),
             author: author.to_owned(),
             now_ms: 1_000,
+            _limits: PartLimits::scoped(PART_ISSUES, usize::MAX),
         }
     }
 
-    pub(crate) fn states(&self) -> Vec<(u64, Rc<IssuePart>)> {
+    pub(crate) fn states(&self) -> Vec<(u64, Rc<IssueList>)> {
         self.states.clone()
     }
 
@@ -59,16 +66,16 @@ impl Board {
         }
     }
 
-    fn part(&mut self, index: u64) -> &mut Replica<IssuePart> {
+    fn part(&mut self, index: u64) -> &mut Replica<IssueList> {
         if !self.parts.iter().any(|(held, _)| *held == index) {
             let carried = self
                 .parts
                 .last()
-                .map(|(_, part)| crate::part::carried(&part.state().unwrap()));
-            let mut part = Replica::<IssuePart>::new().as_author(&self.author);
+                .map(|(_, part)| crate::issue_list::carried(&part.state().unwrap()));
+            let mut part = Replica::<IssueList>::new().as_author(&self.author);
             part.set_now_ms(self.now_ms);
             if let Some(before) = carried {
-                part.apply(IssuePart::START.with(issue_part::Start { before }))
+                part.apply(IssueList::START.with(issue_list::Start { before }))
                     .unwrap();
             }
             self.parts.push((index, part));
@@ -81,11 +88,11 @@ impl Board {
             .1
     }
 
-    pub(crate) fn apply(&mut self, invoke: impl Into<Invoke<IssuePart>>) -> Result<u64, String> {
+    pub(crate) fn apply(&mut self, invoke: impl Into<Invoke<IssueList>>) -> Result<u64, String> {
         let mut action = invoke.into().build(self.now_ms)?;
         let parts = self.states();
-        crate::part::prepare(&mut action, &self.tracker.state().unwrap(), &parts)?;
-        let index = crate::part::part_for(&action, &parts)?;
+        crate::issue_list::prepare(&mut action, &self.tracker.state().unwrap(), &parts)?;
+        let index = ui::framework::placed::<IssueList>(&action, &parts);
         self.part(index)
             .apply_action(&action)
             .map_err(|error| error.to_string())?;
@@ -94,7 +101,7 @@ impl Board {
     }
 
     pub(crate) fn create(&mut self, title: &str, parent: Option<Id>) -> Id {
-        self.apply(IssuePart::CREATE.with(NewIssue {
+        self.apply(IssueList::CREATE.with(NewIssue {
             parent: parent.map(ui::tilo_resource::items::Ref::from),
             ..NewIssue::titled(nb(title))
         }))
@@ -145,7 +152,7 @@ fn issues_are_numbered_nested_and_never_under_themselves() {
     assert_eq!(Issues::of(&parts).progress(&parent), (0, 1));
     assert!(
         board
-            .apply(IssuePart::MOVE_UNDER.with(issue_part::MoveUnder {
+            .apply(IssueList::MOVE_UNDER.with(issue_list::MoveUnder {
                 issue: parent.clone(),
                 parent: Some(ui::tilo_resource::items::Ref::from(child.clone())),
             }))
@@ -154,7 +161,7 @@ fn issues_are_numbered_nested_and_never_under_themselves() {
     );
     assert!(
         board
-            .apply(IssuePart::CREATE.with(NewIssue {
+            .apply(IssueList::CREATE.with(NewIssue {
                 parent: Some(ui::tilo_resource::items::Ref::from("gone")),
                 ..NewIssue::titled(nb("Orphan"))
             }))
@@ -163,7 +170,7 @@ fn issues_are_numbered_nested_and_never_under_themselves() {
     );
     // Deleting the parent leaves its sub-issue at the top level.
     board
-        .apply(IssuePart::DELETE.with(issue_part::Delete { issue: parent }))
+        .apply(IssueList::DELETE.with(issue_list::Delete { issue: parent }))
         .unwrap();
     let parts = board.states();
     let issues = Issues::of(&parts);
@@ -176,7 +183,7 @@ fn a_full_part_starts_the_next_and_numbers_go_on_across_them() {
     let mut board = Board::new("ada");
     for index in 0..=PART_ISSUES {
         board
-            .apply(IssuePart::CREATE.with(NewIssue::titled(nb(&format!("Issue {index}")))))
+            .apply(IssueList::CREATE.with(NewIssue::titled(nb(&format!("Issue {index}")))))
             .unwrap();
     }
     assert_eq!(
@@ -201,7 +208,7 @@ fn a_full_part_starts_the_next_and_numbers_go_on_across_them() {
     let first = board.id_of("Issue 0");
     assert_eq!(
         board
-            .apply(IssuePart::MOVE_UNDER.with(issue_part::MoveUnder {
+            .apply(IssueList::MOVE_UNDER.with(issue_list::MoveUnder {
                 issue: last.clone(),
                 parent: Some(ui::tilo_resource::items::Ref::from(first.clone())),
             }))
@@ -210,7 +217,7 @@ fn a_full_part_starts_the_next_and_numbers_go_on_across_them() {
     );
     assert_eq!(
         board
-            .apply(IssuePart::RENAME.with(issue_part::Rename {
+            .apply(IssueList::RENAME.with(issue_list::Rename {
                 issue: first.clone(),
                 title: nb("First"),
             }))
@@ -223,7 +230,7 @@ fn a_full_part_starts_the_next_and_numbers_go_on_across_them() {
     assert!(issues.is_under(&last, &first));
     assert!(
         board
-            .apply(IssuePart::MOVE_UNDER.with(issue_part::MoveUnder {
+            .apply(IssueList::MOVE_UNDER.with(issue_list::MoveUnder {
                 issue: first,
                 parent: Some(ui::tilo_resource::items::Ref::from(last)),
             }))
@@ -256,7 +263,7 @@ fn placing_on_the_board_sets_status_and_order_in_one_step() {
     let one = board.id_of("One");
     let three = board.id_of("Three");
     board
-        .apply(IssuePart::PLACE.with(issue_part::Place {
+        .apply(IssueList::PLACE.with(issue_list::Place {
             issue: three.clone(),
             status: Status::Todo,
             before: Some(ui::tilo_resource::items::Ref::from(one)),
@@ -266,7 +273,7 @@ fn placing_on_the_board_sets_status_and_order_in_one_step() {
     assert_eq!(board.titles(), ["Three", "One", "Two"]);
     assert_eq!(board.issue(&three).unwrap().status, Status::Todo);
     board
-        .apply(IssuePart::PLACE.with(issue_part::Place {
+        .apply(IssueList::PLACE.with(issue_list::Place {
             issue: three.clone(),
             status: Status::Done,
             before: None,
@@ -297,7 +304,7 @@ fn a_project_holds_its_tasks_and_a_deleted_one_holds_none() {
         .map(|(id, _)| id.clone())
         .unwrap();
     board
-        .apply(IssuePart::CREATE.with(NewIssue {
+        .apply(IssueList::CREATE.with(NewIssue {
             project: Some(ui::tilo_resource::items::Ref::from(launch.clone())),
             ..NewIssue::titled(nb("Write the post"))
         }))
@@ -309,7 +316,7 @@ fn a_project_holds_its_tasks_and_a_deleted_one_holds_none() {
     );
     assert!(
         board
-            .apply(IssuePart::SET_PROJECT.with(issue_part::SetProject {
+            .apply(IssueList::SET_PROJECT.with(issue_list::SetProject {
                 issue: post.clone(),
                 project: Some(ui::tilo_resource::items::Ref::from("nope")),
                 goal: None,
@@ -344,7 +351,7 @@ fn every_part_action_publishes_what_it_reads() {
             .iter()
             .any(|child| child.id.as_str() == crate::model::issue_resource(&board.id_of("One")))
     );
-    assert_eq!(IssuePart::KIND, crate::model::ISSUES_KIND);
+    assert_eq!(IssueList::KIND, crate::model::ISSUES_KIND);
 }
 
 /// What one more change costs a tracker does not grow with the issues it
@@ -366,7 +373,7 @@ fn a_change_costs_the_same_in_a_tracker_ten_times_the_size() {
             let part = board.part(index);
             let end = count.min((made / PART_ISSUES + 1) * PART_ISSUES);
             for at in made..end {
-                part.apply(IssuePart::CREATE.with(NewIssue {
+                part.apply(IssueList::CREATE.with(NewIssue {
                     body: Some(format!("Issue {at}: what it is about, a line or two.")),
                     rank: Some(format!("{at:08}")),
                     ..NewIssue::titled(nb(&format!("Issue {at}")))
@@ -383,7 +390,7 @@ fn a_change_costs_the_same_in_a_tracker_ten_times_the_size() {
         let first = board.id_of("Issue 0");
         let began = std::time::Instant::now();
         let index = board
-            .apply(IssuePart::COMMENT.with(issue_part::Comment {
+            .apply(IssueList::COMMENT.with(issue_list::Comment {
                 issue: first,
                 text: nb("Looked at it"),
                 origin: None,
@@ -428,15 +435,15 @@ fn a_change_costs_the_same_in_a_tracker_ten_times_the_size() {
 fn giving_an_issue_to_an_agent_asks_it_until_it_answers() {
     use ui::tilo_resource::MemberId;
     let asks =
-        |part: &Replica<IssuePart>| crate::model::agent_asks(part.state().unwrap().issues.iter());
-    let mut ada = Replica::<IssuePart>::new().as_author("ada");
+        |part: &Replica<IssueList>| crate::model::agent_asks(part.state().unwrap().issues.iter());
+    let mut ada = Replica::<IssueList>::new().as_author("ada");
     ada.set_now_ms(1_000);
-    ada.apply(IssuePart::CREATE.with(NewIssue::titled(nb("Plan the launch"))))
+    ada.apply(IssueList::CREATE.with(NewIssue::titled(nb("Plan the launch"))))
         .unwrap();
     let issue = ada.state().unwrap().issues.iter().next().unwrap().0.clone();
     assert!(asks(&ada).is_empty(), "nobody asked yet");
 
-    ada.apply(IssuePart::ASSIGN.with(issue_part::Assign {
+    ada.apply(IssueList::ASSIGN.with(issue_list::Assign {
         issue: issue.clone(),
         assignee: Some("agent:claude".into()),
     }))
@@ -454,7 +461,7 @@ fn giving_an_issue_to_an_agent_asks_it_until_it_answers() {
     let mut agent = ada.fork().as_agent_for("claude", "ada");
     agent.set_now_ms(2_000);
     agent
-        .apply(IssuePart::COMMENT.with(issue_part::Comment {
+        .apply(IssueList::COMMENT.with(issue_list::Comment {
             issue: issue.clone(),
             text: nb("The plan is in the launch note"),
             origin: None,
@@ -464,7 +471,7 @@ fn giving_an_issue_to_an_agent_asks_it_until_it_answers() {
     assert!(asks(&ada).is_empty(), "its message answers the ask");
 
     ada.set_now_ms(3_000);
-    ada.apply(IssuePart::COMMENT.with(issue_part::Comment {
+    ada.apply(IssueList::COMMENT.with(issue_list::Comment {
         issue: issue.clone(),
         text: nb("Add the press list too"),
         origin: None,
@@ -479,7 +486,7 @@ fn giving_an_issue_to_an_agent_asks_it_until_it_answers() {
     assert_eq!(asked[0].words, "Add the press list too");
 
     // Given to a person, it asks no agent.
-    ada.apply(IssuePart::ASSIGN.with(issue_part::Assign {
+    ada.apply(IssueList::ASSIGN.with(issue_list::Assign {
         issue,
         assignee: Some(crate::model::person_assignee("jane").0),
     }))
@@ -500,7 +507,7 @@ fn an_issue_and_a_project_are_named_by_their_names() {
         .unwrap();
     // An issue that works towards the project by the name it is read under.
     board
-        .apply(IssuePart::CREATE.with(NewIssue {
+        .apply(IssueList::CREATE.with(NewIssue {
             project: Some(Ref::from("Launch")),
             ..NewIssue::titled(nb("Write the post"))
         }))
@@ -517,7 +524,7 @@ fn an_issue_and_a_project_are_named_by_their_names() {
     );
     // A project nothing is called says what there is, never that it went away.
     let why = board
-        .apply(IssuePart::CREATE.with(NewIssue {
+        .apply(IssueList::CREATE.with(NewIssue {
             project: Some(Ref::from("Nowhere")),
             ..NewIssue::titled(nb("Lost"))
         }))
@@ -526,7 +533,7 @@ fn an_issue_and_a_project_are_named_by_their_names() {
     assert!(why.contains("Launch"), "what there is follows: {why}");
     // An issue's parent is named the same way, by the title it is read under.
     board
-        .apply(IssuePart::CREATE.with(NewIssue {
+        .apply(IssueList::CREATE.with(NewIssue {
             parent: Some(Ref::from("Write the post")),
             ..NewIssue::titled(nb("Reply"))
         }))
@@ -543,7 +550,7 @@ fn an_issue_and_a_project_are_named_by_their_names() {
     );
     // A parent nothing is called says the issues there are.
     let why = board
-        .apply(IssuePart::CREATE.with(NewIssue {
+        .apply(IssueList::CREATE.with(NewIssue {
             parent: Some(Ref::from("Nothing")),
             ..NewIssue::titled(nb("Orphan"))
         }))
@@ -562,21 +569,21 @@ fn an_issue_is_named_by_its_title_its_number_or_its_id() {
     let id = board.id_of("Write the post");
     // By the title it is read under, wherever its part is.
     board
-        .apply(IssuePart::RENAME.with(issue_part::Rename {
+        .apply(IssueList::RENAME.with(issue_list::Rename {
             issue: Id::from_raw("Write the post"),
             title: nb("Write it"),
         }))
         .unwrap();
     // By the number it reads as.
     board
-        .apply(IssuePart::RENAME.with(issue_part::Rename {
+        .apply(IssueList::RENAME.with(issue_list::Rename {
             issue: Id::from_raw("#1"),
             title: nb("Write the post"),
         }))
         .unwrap();
     // And by its id, which no rename changes.
     board
-        .apply(IssuePart::RENAME.with(issue_part::Rename {
+        .apply(IssueList::RENAME.with(issue_list::Rename {
             issue: id,
             title: nb("Ship it"),
         }))
@@ -584,7 +591,7 @@ fn an_issue_is_named_by_its_title_its_number_or_its_id() {
     assert_eq!(board.titles(), ["Ship it"]);
     // A reference to no issue says which there are.
     let why = board
-        .apply(IssuePart::RENAME.with(issue_part::Rename {
+        .apply(IssueList::RENAME.with(issue_list::Rename {
             issue: Id::from_raw("Nothing"),
             title: nb("Never"),
         }))
@@ -599,8 +606,8 @@ const DAY_MS: i64 = 86_400_000;
 /// What long work on an issue is tested with: the person who gives it, the
 /// agent it is given to, and the issue.
 struct Task {
-    ada: Replica<IssuePart>,
-    agent: Replica<IssuePart>,
+    ada: Replica<IssueList>,
+    agent: Replica<IssueList>,
     issue: Id,
 }
 
@@ -608,9 +615,9 @@ impl Task {
     /// Ada files "Write the market analysis" and gives it to the agent
     /// `claude` at 1 000 ms; the agent holds the same document.
     fn given() -> Self {
-        let mut ada = Replica::<IssuePart>::new().as_author("ada");
+        let mut ada = Replica::<IssueList>::new().as_author("ada");
         ada.set_now_ms(1_000);
-        ada.apply(IssuePart::CREATE.with(NewIssue {
+        ada.apply(IssueList::CREATE.with(NewIssue {
             assignee: Some("agent:claude".into()),
             ..NewIssue::titled(nb("Write the market analysis"))
         }))
@@ -624,7 +631,7 @@ impl Task {
     fn agent_does(
         &mut self,
         now_ms: i64,
-        invoke: impl Into<Invoke<IssuePart>>,
+        invoke: impl Into<Invoke<IssueList>>,
     ) -> Result<(), String> {
         self.ada.sync_with(&mut self.agent).unwrap();
         self.agent.set_now_ms(now_ms);
@@ -640,7 +647,7 @@ impl Task {
     fn ada_does(
         &mut self,
         now_ms: i64,
-        invoke: impl Into<Invoke<IssuePart>>,
+        invoke: impl Into<Invoke<IssueList>>,
     ) -> Result<(), String> {
         self.ada.sync_with(&mut self.agent).unwrap();
         self.ada.set_now_ms(now_ms);
@@ -654,7 +661,7 @@ impl Task {
         let issue = self.issue.clone();
         self.agent_does(
             now_ms,
-            IssuePart::COMMENT.with(issue_part::Comment {
+            IssueList::COMMENT.with(issue_list::Comment {
                 issue,
                 text: nb(text),
                 origin: None,
@@ -667,7 +674,7 @@ impl Task {
         let issue = self.issue.clone();
         self.agent_does(
             now_ms,
-            IssuePart::SESSION_BEGAN.with(issue_part::SessionBegan { issue }),
+            IssueList::SESSION_BEGAN.with(issue_list::SessionBegan { issue }),
         )
         .unwrap();
     }
@@ -676,7 +683,7 @@ impl Task {
         let issue = self.issue.clone();
         self.agent_does(
             now_ms,
-            IssuePart::SESSION_ENDED.with(issue_part::SessionEnded {
+            IssueList::SESSION_ENDED.with(issue_list::SessionEnded {
                 issue,
                 cost_micros,
                 worked_ms,
@@ -733,7 +740,7 @@ fn a_task_that_waits_is_asked_again_by_what_it_waited_for_or_by_its_deadline() {
         let issue = task.issue.clone();
         task.agent_does(
             2_100,
-            IssuePart::PLACE.with(issue_part::Place {
+            IssueList::PLACE.with(issue_list::Place {
                 issue: issue.clone(),
                 status: Status::InProgress,
                 before: None,
@@ -743,7 +750,7 @@ fn a_task_that_waits_is_asked_again_by_what_it_waited_for_or_by_its_deadline() {
         .unwrap();
         task.agent_does(
             2_200,
-            IssuePart::WAIT.with(issue_part::Wait {
+            IssueList::WAIT.with(issue_list::Wait {
                 issue,
                 waits: vec![reply_wait()],
                 until_ms: until,
@@ -770,7 +777,7 @@ fn a_task_that_waits_is_asked_again_by_what_it_waited_for_or_by_its_deadline() {
     let issue = task.issue.clone();
     task.agent_does(
         2_000 + DAY_MS,
-        IssuePart::RESUME.with(issue_part::Resume {
+        IssueList::RESUME.with(issue_list::Resume {
             issue,
             cause: nb("the supplier replied"),
         }),
@@ -830,7 +837,7 @@ fn a_task_whose_worker_was_lost_is_asked_again_then_stops_and_never_reads_as_don
     let issue = task.issue.clone();
     task.agent_does(
         2_100,
-        IssuePart::WAIT.with(issue_part::Wait {
+        IssueList::WAIT.with(issue_list::Wait {
             issue,
             waits: vec![reply_wait()],
             until_ms: 9_000,
@@ -855,7 +862,7 @@ fn a_task_whose_worker_was_lost_is_asked_again_then_stops_and_never_reads_as_don
     assert!(task.work().lost >= MOST_LOST_SESSIONS);
     task.agent_does(
         3_000,
-        IssuePart::STOP.with(issue_part::Stop {
+        IssueList::STOP.with(issue_list::Stop {
             issue: issue.clone(),
             why: StoppedWhy::LostWorker,
             words: nb("I stopped: my work on this was interrupted three times."),
@@ -875,7 +882,7 @@ fn a_task_whose_worker_was_lost_is_asked_again_then_stops_and_never_reads_as_don
     // Whatever its status is set to, it does not read as done.
     task.agent_does(
         3_500,
-        IssuePart::PLACE.with(issue_part::Place {
+        IssueList::PLACE.with(issue_list::Place {
             issue: issue.clone(),
             status: Status::Done,
             before: None,
@@ -886,7 +893,7 @@ fn a_task_whose_worker_was_lost_is_asked_again_then_stops_and_never_reads_as_don
     assert!(matches!(task.task_state(), TaskState::Stopped { .. }));
     task.agent_does(
         3_600,
-        IssuePart::PLACE.with(issue_part::Place {
+        IssueList::PLACE.with(issue_list::Place {
             issue: issue.clone(),
             status: Status::InProgress,
             before: None,
@@ -898,7 +905,7 @@ fn a_task_whose_worker_was_lost_is_asked_again_then_stops_and_never_reads_as_don
     // Its person says something new: it is asked again and works again.
     task.ada_does(
         5_000,
-        IssuePart::COMMENT.with(issue_part::Comment {
+        IssueList::COMMENT.with(issue_list::Comment {
             issue,
             text: nb("Try again"),
             origin: None,
@@ -920,7 +927,7 @@ fn a_spent_budget_stops_a_task_until_its_person_raises_it() {
     let mut task = Task::given();
     let issue = task.issue.clone();
     let budget = |money_micros: Option<u64>, time_ms: Option<u64>| {
-        IssuePart::SET_BUDGET.with(issue_part::SetBudget {
+        IssueList::SET_BUDGET.with(issue_list::SetBudget {
             issue: issue.clone(),
             money_micros,
             time_ms,
@@ -954,7 +961,7 @@ fn a_spent_budget_stops_a_task_until_its_person_raises_it() {
     assert_eq!(task.work().used_up(), Some(StoppedWhy::Budget));
     task.agent_does(
         2_600,
-        IssuePart::STOP.with(issue_part::Stop {
+        IssueList::STOP.with(issue_list::Stop {
             issue: issue.clone(),
             why: StoppedWhy::Budget,
             words: nb("I stopped: this task's budget of $2.00 is spent."),
@@ -977,7 +984,7 @@ fn a_spent_budget_stops_a_task_until_its_person_raises_it() {
     );
 
     let resume = || {
-        IssuePart::RESUME.with(issue_part::Resume {
+        IssueList::RESUME.with(issue_list::Resume {
             issue: issue.clone(),
             cause: nb("go on"),
         })
@@ -1001,12 +1008,12 @@ fn a_spent_budget_stops_a_task_until_its_person_raises_it() {
 fn an_agent_gives_an_issue_for_its_person_and_what_it_filed_itself_waits_for_them() {
     use ui::tilo_resource::MemberId;
     let asks =
-        |part: &Replica<IssuePart>| crate::model::agent_asks(part.state().unwrap().issues.iter());
-    let mut ada = Replica::<IssuePart>::new().as_author("ada");
+        |part: &Replica<IssueList>| crate::model::agent_asks(part.state().unwrap().issues.iter());
+    let mut ada = Replica::<IssueList>::new().as_author("ada");
     let mut agent = ada.fork().as_agent_for("claude", "ada");
     agent.set_now_ms(1_000);
     agent
-        .apply(IssuePart::CREATE.with(NewIssue {
+        .apply(IssueList::CREATE.with(NewIssue {
             assignee: Some("agent:claude".into()),
             ..NewIssue::titled(nb("Look at the renewal dates"))
         }))
@@ -1028,7 +1035,7 @@ fn an_agent_gives_an_issue_for_its_person_and_what_it_filed_itself_waits_for_the
     // The nod: its person gives it to the agent it is with.
     let mut ada = agent.fork().as_author("ada");
     ada.set_now_ms(2_000);
-    ada.apply(IssuePart::ASSIGN.with(issue_part::Assign {
+    ada.apply(IssueList::ASSIGN.with(issue_list::Assign {
         issue: proposal.clone(),
         assignee: Some("agent:claude".into()),
     }))
@@ -1038,7 +1045,7 @@ fn an_agent_gives_an_issue_for_its_person_and_what_it_filed_itself_waits_for_the
     assert_eq!(asked[0].person, MemberId::person("ada"));
     // Giving it again asks nothing new.
     ada.set_now_ms(3_000);
-    ada.apply(IssuePart::ASSIGN.with(issue_part::Assign {
+    ada.apply(IssueList::ASSIGN.with(issue_list::Assign {
         issue: proposal,
         assignee: Some("agent:claude".into()),
     }))
@@ -1046,10 +1053,10 @@ fn an_agent_gives_an_issue_for_its_person_and_what_it_filed_itself_waits_for_the
     assert_eq!(asks(&ada)[0].cause, "assigned-2000");
 
     // The agent hands a piece on: the other agent works on it for the same person.
-    let mut agent = Replica::<IssuePart>::new().as_agent_for("claude", "ada");
+    let mut agent = Replica::<IssueList>::new().as_agent_for("claude", "ada");
     agent.set_now_ms(1_000);
     agent
-        .apply(IssuePart::CREATE.with(NewIssue::titled(nb("Read the price pages"))))
+        .apply(IssueList::CREATE.with(NewIssue::titled(nb("Read the price pages"))))
         .unwrap();
     let piece = agent
         .state()
@@ -1061,7 +1068,7 @@ fn an_agent_gives_an_issue_for_its_person_and_what_it_filed_itself_waits_for_the
         .0
         .clone();
     agent
-        .apply(IssuePart::ASSIGN.with(issue_part::Assign {
+        .apply(IssueList::ASSIGN.with(issue_list::Assign {
             issue: piece,
             assignee: Some("agent:scout".into()),
         }))
@@ -1072,9 +1079,9 @@ fn an_agent_gives_an_issue_for_its_person_and_what_it_filed_itself_waits_for_the
     assert_eq!(asked[0].person, MemberId::person("ada"));
 
     // An agent that acts for nobody gives nobody's work to anyone.
-    let mut lone = Replica::<IssuePart>::new().as_member(MemberId::agent("lone"));
+    let mut lone = Replica::<IssueList>::new().as_member(MemberId::agent("lone"));
     lone.set_now_ms(1_000);
-    lone.apply(IssuePart::CREATE.with(NewIssue::titled(nb("Nobody's"))))
+    lone.apply(IssueList::CREATE.with(NewIssue::titled(nb("Nobody's"))))
         .unwrap();
     let issue = lone
         .state()
@@ -1085,7 +1092,7 @@ fn an_agent_gives_an_issue_for_its_person_and_what_it_filed_itself_waits_for_the
         .unwrap()
         .0
         .clone();
-    lone.apply(IssuePart::ASSIGN.with(issue_part::Assign {
+    lone.apply(IssueList::ASSIGN.with(issue_list::Assign {
         issue,
         assignee: Some("agent:scout".into()),
     }))
@@ -1101,7 +1108,7 @@ fn sessions_are_the_assigned_agents_and_a_closed_issue_neither_waits_nor_stops()
     let mut task = Task::given();
     let issue = task.issue.clone();
     let began = || {
-        IssuePart::SESSION_BEGAN.with(issue_part::SessionBegan {
+        IssueList::SESSION_BEGAN.with(issue_list::SessionBegan {
             issue: issue.clone(),
         })
     };
@@ -1115,7 +1122,7 @@ fn sessions_are_the_assigned_agents_and_a_closed_issue_neither_waits_nor_stops()
 
     task.agent_does(
         1_200,
-        IssuePart::SET_PLACE.with(issue_part::SetPlace {
+        IssueList::SET_PLACE.with(issue_list::SetPlace {
             issue: issue.clone(),
             folder: " Tasks / 1 Write the market analysis ".into(),
             note: Some("notes.notebook.pages/pages/7f".into()),
@@ -1128,7 +1135,7 @@ fn sessions_are_the_assigned_agents_and_a_closed_issue_neither_waits_nor_stops()
     assert!(
         task.agent_does(
             1_250,
-            IssuePart::SET_PLACE.with(issue_part::SetPlace {
+            IssueList::SET_PLACE.with(issue_list::SetPlace {
                 issue: issue.clone(),
                 folder: "../outside".into(),
                 note: None,
@@ -1138,7 +1145,7 @@ fn sessions_are_the_assigned_agents_and_a_closed_issue_neither_waits_nor_stops()
         "a place is a folder of the workspace"
     );
     let wait = |until_ms: i64| {
-        IssuePart::WAIT.with(issue_part::Wait {
+        IssueList::WAIT.with(issue_list::Wait {
             issue: issue.clone(),
             waits: Vec::new(),
             until_ms,
@@ -1149,7 +1156,7 @@ fn sessions_are_the_assigned_agents_and_a_closed_issue_neither_waits_nor_stops()
 
     task.ada_does(
         1_400,
-        IssuePart::PLACE.with(issue_part::Place {
+        IssueList::PLACE.with(issue_list::Place {
             issue: issue.clone(),
             status: Status::Done,
             before: None,
@@ -1162,7 +1169,7 @@ fn sessions_are_the_assigned_agents_and_a_closed_issue_neither_waits_nor_stops()
     assert!(
         task.ada_does(
             1_600,
-            IssuePart::STOP.with(issue_part::Stop {
+            IssueList::STOP.with(issue_list::Stop {
                 issue,
                 why: StoppedWhy::Person,
                 words: nb("Not needed any more"),
@@ -1217,7 +1224,7 @@ fn the_kept_issues_read_only_what_changed_and_read_as_the_parts_do() {
     let mut board = Board::new("ada");
     let mut kept = Issues::default();
     let follow = |board: &Board, kept: &mut Issues| -> Vec<u64> {
-        let parts: Rc<[(u64, Rc<IssuePart>)]> = board.states().into();
+        let parts: Rc<[(u64, Rc<IssueList>)]> = board.states().into();
         let before = kept.revision();
         kept.sync(&parts);
         assert_eq!(
@@ -1248,7 +1255,7 @@ fn the_kept_issues_read_only_what_changed_and_read_as_the_parts_do() {
 
     // One change touches that issue, and its parent whose progress moved.
     board
-        .apply(IssuePart::PLACE.with(issue_part::Place {
+        .apply(IssueList::PLACE.with(issue_list::Place {
             issue: ids[4].clone(),
             status: Status::Done,
             before: None,
@@ -1258,13 +1265,13 @@ fn the_kept_issues_read_only_what_changed_and_read_as_the_parts_do() {
     assert_eq!(follow(&board, &mut kept), vec![1, 5]);
 
     board
-        .apply(IssuePart::ADD_LABEL.with(issue_part::AddLabel {
+        .apply(IssueList::ADD_LABEL.with(issue_list::AddLabel {
             issue: ids[600].clone(),
             label: nb("launch"),
         }))
         .unwrap();
     board
-        .apply(IssuePart::ASSIGN.with(issue_part::Assign {
+        .apply(IssueList::ASSIGN.with(issue_list::Assign {
             issue: ids[1_050].clone(),
             assignee: Some("agent:claude".to_owned()),
         }))
@@ -1274,14 +1281,14 @@ fn the_kept_issues_read_only_what_changed_and_read_as_the_parts_do() {
     // A parent moved under another, a parent deleted (its sub-issues stand at
     // the top until they are moved), an issue made in the newest part.
     board
-        .apply(IssuePart::MOVE_UNDER.with(issue_part::MoveUnder {
+        .apply(IssueList::MOVE_UNDER.with(issue_list::MoveUnder {
             issue: ids[20].clone(),
             parent: Some(ui::tilo_resource::items::Ref::from(&ids[1_090])),
         }))
         .unwrap();
     follow(&board, &mut kept);
     board
-        .apply(IssuePart::DELETE.with(issue_part::Delete {
+        .apply(IssueList::DELETE.with(issue_list::Delete {
             issue: ids[30].clone(),
         }))
         .unwrap();
@@ -1304,7 +1311,7 @@ fn an_automation_tells_only_the_task_that_waits_for_it_to_go_on() {
     let issue = task.issue.clone();
     task.agent_does(
         2_000,
-        IssuePart::WAIT.with(issue_part::Wait {
+        IssueList::WAIT.with(issue_list::Wait {
             issue: issue.clone(),
             waits: vec![reply_wait()],
             until_ms: 2_000 + 2 * DAY_MS,
@@ -1328,7 +1335,7 @@ fn an_automation_tells_only_the_task_that_waits_for_it_to_go_on() {
     // Told to go on, it waits no more: the automation coming again tells nothing.
     task.ada_does(
         3_000,
-        IssuePart::RESUME.with(issue_part::Resume {
+        IssueList::RESUME.with(issue_list::Resume {
             issue,
             cause: nb("the supplier replied"),
         }),
@@ -1338,8 +1345,8 @@ fn an_automation_tells_only_the_task_that_waits_for_it_to_go_on() {
 }
 
 /// Say how many of `issue`'s pieces are in work at once.
-fn pieces_at_once(issue: &Id, at_once: Option<u64>) -> impl Into<Invoke<IssuePart>> {
-    IssuePart::SET_PIECES_AT_ONCE.with(issue_part::SetPiecesAtOnce {
+fn pieces_at_once(issue: &Id, at_once: Option<u64>) -> impl Into<Invoke<IssueList>> {
+    IssueList::SET_PIECES_AT_ONCE.with(issue_list::SetPiecesAtOnce {
         issue: issue.clone(),
         at_once,
     })
@@ -1356,7 +1363,7 @@ fn in_three_pieces() -> (Task, Vec<Id>) {
     for (at, title) in [(1_200, "North"), (1_201, "South"), (1_202, "West")] {
         task.ada_does(
             at,
-            IssuePart::CREATE.with(NewIssue {
+            IssueList::CREATE.with(NewIssue {
                 assignee: Some("agent:claude".into()),
                 parent: Some(ui::tilo_resource::items::Ref::from(whole.clone())),
                 ..NewIssue::titled(nb(title))
@@ -1371,7 +1378,7 @@ fn in_three_pieces() -> (Task, Vec<Id>) {
         .unwrap();
     task.agent_does(
         1_400,
-        IssuePart::WAIT.with(issue_part::Wait {
+        IssueList::WAIT.with(issue_list::Wait {
             issue: whole,
             waits: vec![WaitFor {
                 kind: WaitKind::Pieces,
@@ -1430,12 +1437,12 @@ fn pieces_are_begun_so_many_at_once_and_their_issue_goes_on_when_they_are_throug
             .collect()
     };
     let began = |issue: &Id| {
-        IssuePart::SESSION_BEGAN.with(issue_part::SessionBegan {
+        IssueList::SESSION_BEGAN.with(issue_list::SessionBegan {
             issue: issue.clone(),
         })
     };
     let placed = |issue: &Id, status| {
-        IssuePart::PLACE.with(issue_part::Place {
+        IssueList::PLACE.with(issue_list::Place {
             issue: issue.clone(),
             status,
             before: None,
@@ -1449,7 +1456,7 @@ fn pieces_are_begun_so_many_at_once_and_their_issue_goes_on_when_they_are_throug
         vec![(pieces[0].clone(), Asked::Assigned)]
     );
     task.agent_does(2_100, began(&pieces[0])).unwrap();
-    let said = IssuePart::COMMENT.with(issue_part::Comment {
+    let said = IssueList::COMMENT.with(issue_list::Comment {
         issue: pieces[0].clone(),
         text: nb("I am on it."),
         origin: None,
@@ -1465,7 +1472,7 @@ fn pieces_are_begun_so_many_at_once_and_their_issue_goes_on_when_they_are_throug
         vec![(pieces[1].clone(), Asked::Assigned)]
     );
     task.agent_does(2_500, began(&pieces[1])).unwrap();
-    let stopped = IssuePart::STOP.with(issue_part::Stop {
+    let stopped = IssueList::STOP.with(issue_list::Stop {
         issue: pieces[1].clone(),
         why: StoppedWhy::Failed,
         words: nb("I could not reach the site."),

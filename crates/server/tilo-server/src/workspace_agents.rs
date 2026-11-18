@@ -855,7 +855,7 @@ impl HostAgents {
                 continue;
             }
             let Some(part) = self
-                .read::<chat::parts::ChatPart>(workspace, CHAT, record)
+                .read::<chat::parts::ChatMessages>(workspace, CHAT, record)
                 .await?
             else {
                 continue;
@@ -950,7 +950,7 @@ impl HostAgents {
             if app != TASKS
                 || ui::resource::DocumentId::parse(record)
                     .and_then(|id| id.chain_part())
-                    .is_none_or(|(chain, _)| chain != tasks::part::chain())
+                    .is_none_or(|(chain, _)| chain != tasks::issue_list::chain())
             {
                 continue;
             }
@@ -968,7 +968,7 @@ impl HostAgents {
         let mut parts = Vec::new();
         for (document, bytes) in kept {
             let mut doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
-            let part = crate::workspace_bots::opened::<tasks::part::IssuePart>(&mut doc)?;
+            let part = crate::workspace_bots::opened::<tasks::issue_list::IssueList>(&mut doc)?;
             parts.push((document, part));
         }
         let asks = tasks_model::agent_asks_at(
@@ -1115,7 +1115,7 @@ impl HostAgents {
             return false;
         };
         match self
-            .read::<chat::parts::ChatPart>(workspace, CHAT, part)
+            .read::<chat::parts::ChatMessages>(workspace, CHAT, part)
             .await
         {
             Ok(Some(held)) => chat::summons::left_begun(&held, message, &turn.agent.id.0, *attempt),
@@ -1294,7 +1294,7 @@ impl HostAgents {
         // Only what a session needs of the issue is taken from its document: an issue's rich
         // text does not travel between threads, and this turn does.
         let kept = self
-            .read::<tasks::part::IssuePart>(workspace, TASKS, &document)
+            .read::<tasks::issue_list::IssueList>(workspace, TASKS, &document)
             .await
             .ok()
             .flatten()
@@ -1680,7 +1680,7 @@ impl Reply {
         arguments.insert("message".into(), json!(message));
         arguments.insert("source".into(), source.clone());
         arguments.insert("reads".into(), reads.clone());
-        let resource = format!("{}/messages/{message}", chat::parts::ChatPart::KIND);
+        let resource = format!("{}/messages/{message}", chat::parts::ChatMessages::KIND);
         match invoke_named(
             &self.provider,
             &self.caller,
@@ -1717,7 +1717,7 @@ impl Reply {
         if let Some(say) = say.map(str::trim).filter(|say| !say.is_empty()) {
             arguments.insert("say".into(), json!(say));
         }
-        let resource = format!("{}/messages/{message}", chat::parts::ChatPart::KIND);
+        let resource = format!("{}/messages/{message}", chat::parts::ChatMessages::KIND);
         if let Err(error) = invoke_named(
             &self.provider,
             &self.caller,

@@ -5,8 +5,8 @@
 //! list, one undo step. A card opens its issue; its status changes there
 //! too, so nothing needs a pointer.
 
+use crate::issue_list::{IssueList, Issues, issue_list};
 use crate::model::{Issue, Status, Tracker};
-use crate::part::{IssuePart, Issues, issue_part};
 use ui::prelude::*;
 use ui::widget::{Badge, Board, BoardDrop, Card};
 
@@ -103,8 +103,8 @@ fn lists(
     }
     // A drop is the `place` action: one gesture, one undo step, confirmed
     // and permitted like the same move made anywhere else.
-    let place = IssuePart::PLACE.try_map(move |drop: BoardDrop| {
-        Some(issue_part::Place {
+    let place = IssueList::PLACE.try_map(move |drop: BoardDrop| {
+        Some(issue_list::Place {
             issue: Id::from_raw(drop.card),
             status: status_of(&drop.list)?,
             before: drop

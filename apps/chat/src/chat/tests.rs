@@ -3,8 +3,8 @@ use ui::tilo_actions::ApiError;
 use ui::tilo_resource::{Id, Invoke, Replica, Resource};
 
 use super::*;
-use crate::messages::{Messages, NewMessage, chat_part};
-use crate::parts::ChatPart;
+use crate::messages::{Messages, NewMessage, chat_messages};
+use crate::parts::ChatMessages;
 
 pub(super) const ADA: &str = "u_ada";
 const BO: &str = "u_bo";
@@ -34,14 +34,14 @@ pub(super) fn workspace() -> Replica<Chat> {
 /// record where they are invoked, as the window's chain reads them.
 pub(super) struct Talk {
     pub(super) chat: Replica<Chat>,
-    pub(super) part: Replica<ChatPart>,
+    pub(super) part: Replica<ChatMessages>,
     now_ms: i64,
 }
 
 impl Talk {
     pub(super) fn new() -> Self {
         let chat = workspace();
-        let mut part = Replica::<ChatPart>::new().as_author(ADA);
+        let mut part = Replica::<ChatMessages>::new().as_author(ADA);
         part.set_now_ms(1_000_000);
         Self {
             chat,
@@ -76,13 +76,13 @@ impl Talk {
     }
 
     /// Apply a verb or field edit on the messages, as the person confirming it would.
-    pub(super) fn apply(&mut self, invoke: Invoke<ChatPart>) -> Result<(), ApiError> {
+    pub(super) fn apply(&mut self, invoke: Invoke<ChatMessages>) -> Result<(), ApiError> {
         use ui::framework::{Chained as _, Submit as _};
         let invoke = invoke.into_invoke().map_err(ApiError::InvalidArguments)?;
         let mut action = invoke
             .build(self.now_ms)
             .map_err(ApiError::InvalidArguments)?;
-        ChatPart::prepare(
+        ChatMessages::prepare(
             &mut action,
             &self.chat.state().unwrap(),
             &[],
@@ -115,7 +115,7 @@ impl Talk {
     }
 }
 
-pub(super) fn post(text: &str) -> Invoke<ChatPart> {
+pub(super) fn post(text: &str) -> Invoke<ChatMessages> {
     post_to("c_chat", text)
 }
 
@@ -157,7 +157,7 @@ tilo_test_env::scenario! {
     {
         let mut ada = Talk::new();
         ada.set_now_ms(1_234_000);
-        ada.apply(ChatPart::POST.with(chat_part::Post {
+        ada.apply(ChatMessages::POST.with(chat_messages::Post {
             message: NewMessage {
                 written: Some(5),
                 ..post_fields("c_chat", "from the past")
@@ -178,7 +178,7 @@ tilo_test_env::scenario! {
         let message = ada.said("mine");
         let mut bo = ada.fork_as(BO);
         assert!(
-            bo.apply(ChatPart::EDIT_MESSAGE.with(chat_part::EditMessage {
+            bo.apply(ChatMessages::EDIT_MESSAGE.with(chat_messages::EditMessage {
                 message: message.clone(),
                 text: "yours now".into(),
                 body: None,
@@ -188,14 +188,14 @@ tilo_test_env::scenario! {
             "nobody edits another's message"
         );
         assert!(
-            bo.apply(ChatPart::DELETE_MESSAGE.with(chat_part::DeleteMessage {
+            bo.apply(ChatMessages::DELETE_MESSAGE.with(chat_messages::DeleteMessage {
                 message: message.clone(),
             }))
             .is_err(),
             "nobody deletes another's message"
         );
         assert_eq!(bo.messages().len(), 1);
-        bo.apply(ChatPart::REMOVE_MESSAGE.with(chat_part::RemoveMessage { message }))
+        bo.apply(ChatMessages::REMOVE_MESSAGE.with(chat_messages::RemoveMessage { message }))
             .unwrap();
         assert!(bo.messages().is_empty());
     }
@@ -203,7 +203,7 @@ tilo_test_env::scenario! {
     phase removing_a_message_sits_under_the_moderation_node;
     {
         let field = |id: &str| {
-            ChatPart::declarations()
+            ChatMessages::declarations()
                 .into_iter()
                 .find(|decl| decl.id == id)
                 .map(|decl| decl.field)
@@ -314,8 +314,8 @@ tilo_test_env::scenario! {
     }
 }
 
-fn reply(parent: &Id, text: &str) -> Invoke<ChatPart> {
-    ChatPart::POST.with(chat_part::Post {
+fn reply(parent: &Id, text: &str) -> Invoke<ChatMessages> {
+    ChatMessages::POST.with(chat_messages::Post {
         message: NewMessage {
             channel: id("c_chat"),
             text: text.into(),
@@ -338,8 +338,8 @@ fn workspace_channels(chat: &Chat) -> Vec<(String, String, ChannelKind)> {
         .collect()
 }
 
-fn post_to(channel: &str, text: &str) -> Invoke<ChatPart> {
-    ChatPart::POST.with(chat_part::Post {
+fn post_to(channel: &str, text: &str) -> Invoke<ChatMessages> {
+    ChatMessages::POST.with(chat_messages::Post {
         message: post_fields(channel, text),
     })
 }
@@ -409,7 +409,7 @@ tilo_test_env::scenario! {
         let mut talk = Talk::new();
         talk.apply(post("pin me")).unwrap();
         let message = talk.said("pin me");
-        talk.apply(ChatPart::PIN.with(chat_part::Pin {
+        talk.apply(ChatMessages::PIN.with(chat_messages::Pin {
             message: message.clone(),
             pinned: true,
         }))
@@ -438,7 +438,7 @@ tilo_test_env::scenario! {
             ("lobby", "Say hi")
         );
         assert!(chat.channels.get(&id("c_voice")).unwrap().archived);
-        let messages = ChatPart::paths().messages.item(&message);
+        let messages = ChatMessages::paths().messages.item(&message);
         for edit in [
             messages.text.set("rewritten".into()),
             messages.pinned.set(false),
@@ -461,7 +461,7 @@ tilo_test_env::scenario! {
             0,
             "I never said this".into(),
         );
-        let insert = ChatPart::paths()
+        let insert = ChatMessages::paths()
             .messages
             .insert_as(&id("m_forged"), 0, &forged);
         assert!(talk.part.apply(Invoke::edit(&insert).unwrap()).is_err());
@@ -473,8 +473,8 @@ tilo_test_env::scenario! {
             MemberId::person(ADA)
         );
         for edit in [
-            ChatPart::paths().messages.remove(&said),
-            ChatPart::paths().messages.move_to(&said, 0),
+            ChatMessages::paths().messages.remove(&said),
+            ChatMessages::paths().messages.move_to(&said, 0),
         ] {
             assert!(talk.part.apply(Invoke::edit(&edit).unwrap()).is_err());
         }
@@ -514,10 +514,10 @@ tilo_test_env::scenario! {
         let message = talk.said("the deck is up");
         let mut children = <Chat as ui::tilo_resource::Resource>::children(&talk.chat.state().unwrap());
         let part = talk.part.state().unwrap();
-        children.extend(<ChatPart as ui::tilo_resource::Resource>::children(&part));
+        children.extend(<ChatMessages as ui::tilo_resource::Resource>::children(&part));
         let item = |field: &str, raw: &Id| {
             let wanted = if field == "messages" {
-                ui::tilo_resource::items::item_resource_id::<ChatPart>(field, raw)
+                ui::tilo_resource::items::item_resource_id::<ChatMessages>(field, raw)
             } else {
                 ui::tilo_resource::items::item_resource_id::<Chat>(field, raw)
             };
@@ -1082,8 +1082,8 @@ fn stored_value(doc: &automerge::AutoCommit, field: &str, id: &str) -> automerge
 }
 
 /// The reactions of `message`, the path reacting edits it at.
-fn reaction(message: &Id) -> ui::tilo_resource::Path<ChatPart, ui::tilo_resource::Reactions> {
-    ChatPart::paths().messages.item(message).reactions
+fn reaction(message: &Id) -> ui::tilo_resource::Path<ChatMessages, ui::tilo_resource::Reactions> {
+    ChatMessages::paths().messages.item(message).reactions
 }
 
 /// Who reacted in `group`, first first.
@@ -1244,7 +1244,7 @@ tilo_test_env::scenario! {
         let message = ada.said("teh plan");
         ada.set_now_ms(20_000);
         let edit = |text: &str| {
-            ChatPart::EDIT_MESSAGE.with(chat_part::EditMessage {
+            ChatMessages::EDIT_MESSAGE.with(chat_messages::EditMessage {
                 message: message.clone(),
                 text: text.into(),
                 body: None,
@@ -1265,13 +1265,13 @@ tilo_test_env::scenario! {
             "an unchanged edit records nothing"
         );
         assert_eq!(row.mentions.len(), 1, "the edit's mentions are resolved");
-        ada.apply(ChatPart::DELETE_MESSAGE.with(chat_part::DeleteMessage {
+        ada.apply(ChatMessages::DELETE_MESSAGE.with(chat_messages::DeleteMessage {
             message: message.clone(),
         }))
         .unwrap();
         assert!(ada.messages().is_empty());
         assert!(
-            ada.apply(ChatPart::DELETE_MESSAGE.with(chat_part::DeleteMessage { message }))
+            ada.apply(ChatMessages::DELETE_MESSAGE.with(chat_messages::DeleteMessage { message }))
                 .is_err()
         );
     }
@@ -1284,7 +1284,7 @@ tilo_test_env::scenario! {
         ada.apply(post("short")).unwrap();
         let message = ada.said("short");
         let edit = |text: String| {
-            ChatPart::EDIT_MESSAGE.with(chat_part::EditMessage {
+            ChatMessages::EDIT_MESSAGE.with(chat_messages::EditMessage {
                 message: message.clone(),
                 text,
                 body: None,
@@ -1312,7 +1312,7 @@ tilo_test_env::scenario! {
         let summons = ada.said("@Tide chart the revenue");
         let mut agent = ada.fork_as_member(MemberId::agent("tide"));
         let work = |state: &str, outcome: &str| {
-            ChatPart::RECORD_WORK.with(chat_part::RecordWork {
+            ChatMessages::RECORD_WORK.with(chat_messages::RecordWork {
                 message: summons.clone(),
                 work: WorkUpdate {
                     state: state.into(),
@@ -1355,7 +1355,7 @@ tilo_test_env::scenario! {
         assert_eq!(chat.message_rows(&held, "c_chat").len(), 2);
         assert!(
             agent
-                .apply(ChatPart::RECORD_WORK.with(chat_part::RecordWork {
+                .apply(ChatMessages::RECORD_WORK.with(chat_messages::RecordWork {
                     message: summons,
                     work: WorkUpdate {
                         state: "dancing".into(),
@@ -1386,7 +1386,7 @@ tilo_test_env::scenario! {
         let mut answer = ada.part.fork().as_agent_for("tide", ADA);
         answer
             .apply(
-                ChatPart::RECORD_WORK.with(crate::messages::chat_part::RecordWork {
+                ChatMessages::RECORD_WORK.with(crate::messages::chat_messages::RecordWork {
                     message: summons.clone(),
                     work: crate::chat::WorkUpdate {
                         state: "provider_failed".into(),
@@ -1406,7 +1406,7 @@ tilo_test_env::scenario! {
             ada.part.state().unwrap().messages.get(&first).is_some(),
             "the agent wrote the reply the person gives up on"
         );
-        ada.apply(ChatPart::RETRY.with(crate::messages::chat_part::Retry {
+        ada.apply(ChatMessages::RETRY.with(crate::messages::chat_messages::Retry {
             message: summons.clone(),
             reply: first.clone(),
         }))
@@ -1430,7 +1430,7 @@ tilo_test_env::scenario! {
         );
         // A stale press (the same reply again, a step run twice) asks nothing: the message is in a
         // later attempt now.
-        ada.apply(ChatPart::RETRY.with(crate::messages::chat_part::Retry {
+        ada.apply(ChatMessages::RETRY.with(crate::messages::chat_messages::Retry {
             message: summons.clone(),
             reply: first,
         }))
@@ -1486,7 +1486,7 @@ tilo_test_env::scenario! {
         );
         assert!(ada.apply(post_to("c_gone", "hello")).is_err());
         assert!(
-            ada.apply(ChatPart::POST.with(chat_part::Post {
+            ada.apply(ChatMessages::POST.with(chat_messages::Post {
                 message: NewMessage {
                     channel: id("c_chat"),
                     text: "look".into(),
@@ -1521,7 +1521,7 @@ tilo_test_env::scenario! {
 
         ada.apply(post("The plan")).unwrap();
         let parent = ada.said("The plan");
-        ada.apply(ChatPart::DELETE_MESSAGE.with(chat_part::DeleteMessage {
+        ada.apply(ChatMessages::DELETE_MESSAGE.with(chat_messages::DeleteMessage {
             message: parent.clone(),
         }))
         .unwrap();
@@ -1536,7 +1536,7 @@ tilo_test_env::scenario! {
     {
         let mut ada = Talk::new();
         let blob = "ab".repeat(32);
-        ada.apply(ChatPart::POST.with(chat_part::Post {
+        ada.apply(ChatMessages::POST.with(chat_messages::Post {
             message: NewMessage {
                 channel: id("c_chat"),
                 text: String::new(),
@@ -1591,7 +1591,7 @@ tilo_test_env::scenario! {
             crate::chat::valid_attached(&attached),
             "a published resource address is a bounded address"
         );
-        ada.apply(ChatPart::POST.with(chat_part::Post {
+        ada.apply(ChatMessages::POST.with(chat_messages::Post {
             message: NewMessage {
                 channel: id("c_chat"),
                 text: "what is left?".into(),
@@ -1645,7 +1645,7 @@ tilo_test_env::scenario! {
             start: u64::try_from(start).expect("an offset"),
             end: u64::try_from(end).expect("an offset"),
         };
-        ada.apply(ChatPart::POST.with(chat_part::Post {
+        ada.apply(ChatMessages::POST.with(chat_messages::Post {
             message: NewMessage {
                 channel: id("c_chat"),
                 text: "so the summer is the flat one".into(),
@@ -1700,7 +1700,7 @@ tilo_test_env::scenario! {
         };
         for (start, end) in [(0, 500), (5, 2), (3, 3)] {
             assert!(
-                ada.apply(ChatPart::POST.with(chat_part::Post {
+                ada.apply(ChatMessages::POST.with(chat_messages::Post {
                     message: NewMessage {
                         channel: id("c_chat"),
                         text: "an answer".into(),
@@ -1721,7 +1721,7 @@ tilo_test_env::scenario! {
         ada.apply(post("n\u{e9}")).unwrap();
         let accented = ada.said("n\u{e9}");
         assert!(
-            ada.apply(ChatPart::POST.with(chat_part::Post {
+            ada.apply(ChatMessages::POST.with(chat_messages::Post {
                 message: NewMessage {
                     channel: id("c_chat"),
                     text: "an answer".into(),
@@ -1752,7 +1752,7 @@ tilo_test_env::scenario! {
 
 #[test]
 fn a_moved_message_shows_its_author_there_at_its_time_and_stays_the_movers() {
-    let mut part = Replica::<ChatPart>::new()
+    let mut part = Replica::<ChatMessages>::new()
         .as_agent_for("grant-a8a42b74", ADA)
         .named("Company mover");
     part.set_now_ms(1_900_000_000_000);
@@ -1765,7 +1765,7 @@ fn a_moved_message_shows_its_author_there_at_its_time_and_stays_the_movers() {
         created_ms: Some(1_741_000_000_000),
         updated_ms: None,
     };
-    part.apply(ChatPart::POST.with(chat_part::Post {
+    part.apply(ChatMessages::POST.with(chat_messages::Post {
         message: NewMessage {
             origin: Some(origin.clone()),
             ..post_fields("general", "From before")

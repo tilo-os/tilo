@@ -12,8 +12,8 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 
 use chat::demo::Workspace;
 use chat::drafts::ChatDrafts;
-use chat::messages::chat_part;
-use chat::parts::ChatPart;
+use chat::messages::chat_messages;
+use chat::parts::ChatMessages;
 use ui::tilo_resource::{Id, Invoke, MemberId, NonBlank, Replica};
 use ui::tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
 
@@ -213,7 +213,7 @@ fn a_deleted_message_is_not_found() {
     workspace
         .apply_part_as(
             &MemberId::person("u_aria"),
-            ChatPart::DELETE_MESSAGE.with(chat_part::DeleteMessage {
+            ChatMessages::DELETE_MESSAGE.with(chat_messages::DeleteMessage {
                 message: Id::from_raw(posted),
             }),
         )

@@ -21,7 +21,7 @@ use ui::tilo_resource::Id;
 use ui::tilo_workspace_agent::learned::Learned;
 
 use crate::chat::{Chat, Message, Summary, member_slot};
-use crate::parts::ChatPart;
+use crate::parts::ChatMessages;
 
 /// The most of the last stretch a turn is told as written, in bytes, all messages together.
 pub const STRETCH_BYTES: usize = 12 * 1024;
@@ -60,7 +60,7 @@ pub struct Told {
 #[must_use]
 pub fn told(
     chat: &Chat,
-    part: &ChatPart,
+    part: &ChatMessages,
     learned: Option<&Learned>,
     conversation: &Id,
     turn: &Id,
@@ -302,7 +302,7 @@ mod tests {
     /// the agent's runtime writes to it, and the newest part of the messages.
     struct Thread {
         chat: Replica<Chat>,
-        part: ChatPart,
+        part: ChatMessages,
         clock: i64,
         said: Vec<(Id, String)>,
         /// What was learned about the person, when the test keeps any.
@@ -313,7 +313,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 chat: Replica::<Chat>::new().as_member(agent()),
-                part: ChatPart::default(),
+                part: ChatMessages::default(),
                 clock: 1_000,
                 said: Vec::new(),
                 learned: None,
@@ -601,7 +601,7 @@ mod tests {
     #[test]
     fn an_agent_only_named_in_a_channel_is_asked_for_no_summary() {
         let channel = Id::from_raw(crate::chat::CHAT_CHANNEL);
-        let mut part = ChatPart::default();
+        let mut part = ChatMessages::default();
         let long = "a long line in the channel ".repeat(40);
         for n in 0..40_i64 {
             let said = Message::new(channel.clone(), me(), 1_000 + n, format!("{n}: {long}"));

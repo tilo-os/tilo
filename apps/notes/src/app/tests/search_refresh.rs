@@ -148,7 +148,7 @@ fn replacing_the_notes_drops_their_search_and_backlink_rows() {
     );
     // A peer replaces the notes with a new, empty map.
     f.app
-        .replica_arrives(&crate::part::chain().part(0), |doc| {
+        .replica_arrives(&crate::note_list::chain().part(0), |doc| {
             let pages = ui::tilo_resource::Slot::Key(&automerge::ROOT, "pages");
             pages.remove(doc).unwrap();
             pages.object(doc, automerge::ObjType::Map).unwrap();

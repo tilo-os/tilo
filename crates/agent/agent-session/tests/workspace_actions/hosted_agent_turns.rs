@@ -183,13 +183,13 @@ pub(super) async fn file_issue(
         &service,
         &person,
         &route,
-        &ui::resource::chain_resource_id(&tasks::part::chain()),
+        &ui::resource::chain_resource_id(&tasks::issue_list::chain()),
         "create",
         arguments.as_object().unwrap().clone(),
     )
     .await
     .expect("the person files the issue");
-    tasks::part::chain().part(0).as_str().to_owned()
+    tasks::issue_list::chain().part(0).as_str().to_owned()
 }
 
 /// An issue worked on over many agent sessions: its place, its waits, its budget and the
@@ -202,13 +202,13 @@ pub(super) async fn tracker(
     workspaces: &tilo_server::workspaces::Workspaces,
     workspace: &str,
     record: &str,
-) -> tasks::part::IssuePart {
+) -> tasks::issue_list::IssueList {
     let bytes = workspaces
         .resource_document(workspace, TASKS, record)
         .await
         .unwrap()
         .unwrap();
-    tasks::part::IssuePart::read(&automerge::AutoCommit::load(&bytes).unwrap()).unwrap()
+    tasks::issue_list::IssueList::read(&automerge::AutoCommit::load(&bytes).unwrap()).unwrap()
 }
 
 /// A server's own model that must never be asked: a turn that reaches it failed the test.
@@ -376,7 +376,7 @@ async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked(
     make_agent(&page, &workspaces, &workspace, &person, None).await;
     let tasks_record =
         file_issue(&actions, &workspaces, &workspace, &root, (&host, &browser)).await;
-    let said = |answered: tasks::part::IssuePart| -> Vec<String> {
+    let said = |answered: tasks::issue_list::IssueList| -> Vec<String> {
         answered
             .issues
             .values()
@@ -620,13 +620,13 @@ async fn an_agent_on_the_host_stops_at_its_keepers_daily_limit() {
 pub(super) async fn conversation_part(
     workspaces: &tilo_server::workspaces::Workspaces,
     workspace: &str,
-) -> chat::parts::ChatPart {
+) -> chat::parts::ChatMessages {
     let saved = workspaces
         .resource_document(workspace, CHAT, chat::parts::part(0).as_str())
         .await
         .ok()
         .flatten();
-    saved.map_or_else(chat::parts::ChatPart::default, |saved| {
+    saved.map_or_else(chat::parts::ChatMessages::default, |saved| {
         chat::messages::read_part(&automerge::AutoCommit::load(&saved).unwrap())
     })
 }

@@ -21,7 +21,7 @@ fn an_agent_changes_notes_in_one_call_each_and_history_tells_what_it_did() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let agent = ActionInvoker::agent("claude").acting_for("ada");
-    let pages = notes::part::chain_resource();
+    let pages = notes::note_list::chain_resource();
     let kind = pages.as_str();
     let call = |app: &mut TestApp<NotesShell>, resource: &str, id: &str, args| {
         app.call_by(agent.clone(), resource, id, args)
@@ -36,7 +36,7 @@ fn an_agent_changes_notes_in_one_call_each_and_history_tells_what_it_did() {
     );
     let plan = note_titled(&app, "Plan");
     let item = notes::actions::page_resource_id(plan);
-    let body = notes::PagePart::paths()
+    let body = notes::NoteList::paths()
         .pages
         .item(&notes::notebook::page_id(plan))
         .body
@@ -135,12 +135,12 @@ fn a_note_made_for_someone_through_another_app_is_one_step_of_theirs() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     app.call_on(
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "new-note",
         serde_json::json!({ "title": "Groceries" }),
     )
     .unwrap();
-    let pages = notes::part::chain_resource();
+    let pages = notes::note_list::chain_resource();
     let kind = pages.as_str();
     let before = crate::framework_support::versions(&app).len();
     let agent = ActionInvoker::agent("scribe").acting_for("ada");

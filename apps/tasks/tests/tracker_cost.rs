@@ -279,16 +279,18 @@ fn where_a_project_stands_is_one_read() {
     caller.write(&chain(), "create-many", json!({ "issues": issues }));
 
     let listing = caller.read(&chain(), json!({}));
-    let rows = listing["issues"]
+    let rows: Vec<Value> = listing["issues"]
         .as_array()
         .expect("the listing names the issues")
-        .clone();
+        .iter()
+        .map(|entry| entry["value"].clone())
+        .collect();
     assert_eq!(rows.len(), ISSUES, "{listing}");
     let count = |holds: &dyn Fn(&Value) -> bool| rows.iter().filter(|row| holds(row)).count();
     assert_eq!(count(&|row| row["status"] == "in-progress"), TOP);
     assert_eq!(count(&|row| row["status"] == "backlog"), ISSUES - TOP);
-    assert_eq!(count(&|row| row.get("parent").is_some()), TOP * UNDER_EACH);
-    assert_eq!(count(&|row| row.get("due_ms").is_some()), TOP);
+    assert_eq!(count(&|row| !row["parent"].is_null()), TOP * UNDER_EACH);
+    assert_eq!(count(&|row| !row["due_ms"].is_null()), TOP);
     assert_eq!(count(&|row| row["area"]["label"] == "Launch"), ISSUES);
     assert_eq!(caller.reads, 1, "the listing says it all");
 

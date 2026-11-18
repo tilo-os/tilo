@@ -139,7 +139,7 @@ pub(super) fn published_message(page: &super::Replica, message: &str) -> (String
             }
         })
     }
-    let id = ui::tilo_resource::items::item_resource_id::<chat::parts::ChatPart>(
+    let id = ui::tilo_resource::items::item_resource_id::<chat::parts::ChatMessages>(
         "messages",
         &ui::tilo_resource::Id::from_raw(message),
     );
@@ -167,7 +167,7 @@ pub(super) fn notes_part_docs(
     engine: &tilo_session_client::engine::Engine,
     workspace: &str,
 ) -> Vec<(u64, automerge::AutoCommit)> {
-    let chain = notes::part::chain();
+    let chain = notes::note_list::chain();
     let mut parts: Vec<(u64, automerge::AutoCommit)> = engine
         .records(workspace)
         .unwrap_or_default()
@@ -190,11 +190,11 @@ pub(super) fn notes_part_docs(
 pub(super) fn notes_parts(
     engine: &tilo_session_client::engine::Engine,
     workspace: &str,
-) -> Vec<(u64, std::rc::Rc<notes::PagePart>)> {
+) -> Vec<(u64, std::rc::Rc<notes::NoteList>)> {
     notes_part_docs(engine, workspace)
         .into_iter()
         .filter_map(|(index, doc)| {
-            let part = <notes::PagePart as ui::tilo_resource::Resource>::read(&doc).ok()?;
+            let part = <notes::NoteList as ui::tilo_resource::Resource>::read(&doc).ok()?;
             Some((index, std::rc::Rc::new(part)))
         })
         .collect()

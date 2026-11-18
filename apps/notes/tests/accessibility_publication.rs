@@ -103,10 +103,10 @@ fn a_note_holding_among(app: &mut App, damage: &mut SurfaceDamage, text: &str, n
             None,
             &format!("Listed note {note}"),
         );
-        let invoke = ui::tilo_resource::Invoke::<notes::PagePart>::apply(&action)
+        let invoke = ui::tilo_resource::Invoke::<notes::NoteList>::apply(&action)
             .expect("creating a note is a notebook action");
         app.invoke_local_resource_action(
-            &invoke.address_on(notes::part::chain_resource()),
+            &invoke.address_on(notes::note_list::chain_resource()),
             &invoke.arguments,
         )
         .expect("the notebook takes the note");

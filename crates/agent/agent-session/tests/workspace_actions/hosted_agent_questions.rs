@@ -221,7 +221,7 @@ impl Hosted {
         &self,
         who: Who<'_>,
         at_ms: Option<i64>,
-        change: impl Into<ui::tilo_resource::Invoke<chat::parts::ChatPart>>,
+        change: impl Into<ui::tilo_resource::Invoke<chat::parts::ChatMessages>>,
     ) -> bool {
         let saved = self
             .workspaces
@@ -264,7 +264,7 @@ impl Hosted {
     /// `who` answers the question `message` asks with `answer`, at `at_ms`: whether the document
     /// took the answer.
     async fn answers(&self, who: Who<'_>, message: &Id, answer: &str, at_ms: Option<i64>) -> bool {
-        let answering = chat::messages::chat_part::AnswerQuestion {
+        let answering = chat::messages::chat_messages::AnswerQuestion {
             message: message.clone(),
             answer: answer.to_owned(),
             device: Some("browser".to_owned()),
@@ -273,7 +273,7 @@ impl Hosted {
         self.writes(
             who,
             at_ms,
-            chat::parts::ChatPart::ANSWER_QUESTION.with(answering),
+            chat::parts::ChatMessages::ANSWER_QUESTION.with(answering),
         )
         .await
     }
@@ -759,7 +759,7 @@ async fn an_answer_counts_only_as_the_persons_own_to_the_question_the_server_put
     let mut forged = real.clone();
     forged["always"]["action"]["action"] = serde_json::json!("purge");
     forged["always"]["on"] = serde_json::Value::Null;
-    let asking = chat::messages::chat_part::Ask {
+    let asking = chat::messages::chat_messages::Ask {
         channel: held.channel.clone(),
         text: NonBlank::parse("Please confirm so I can go on.").unwrap(),
         answers: Some(
@@ -781,7 +781,11 @@ async fn an_answer_counts_only_as_the_persons_own_to_the_question_the_server_put
     };
     assert!(
         hosted
-            .writes(Who::HerAgent, None, chat::parts::ChatPart::ASK.with(asking))
+            .writes(
+                Who::HerAgent,
+                None,
+                chat::parts::ChatMessages::ASK.with(asking)
+            )
             .await,
         "an agent may ask its person anything in words"
     );
@@ -1184,7 +1188,7 @@ async fn an_answer_wakes_its_asker_once_a_day_later_and_after_a_restart() {
 /// writes them, those words are the one thing that asks the agent: no second turn beside them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_question_taken_back_or_settled_wakes_nobody_and_the_persons_words_wake_once() {
-    use chat::messages::chat_part::{SettleQuestion, WithdrawQuestion};
+    use chat::messages::chat_messages::{SettleQuestion, WithdrawQuestion};
     let hosted = Hosted::start().await;
     let yes_or_no = [("yes", "Yes"), ("no", "No")];
 
@@ -1200,7 +1204,7 @@ async fn a_question_taken_back_or_settled_wakes_nobody_and_the_persons_words_wak
             .writes(
                 Who::HerAgent,
                 None,
-                chat::parts::ChatPart::WITHDRAW_QUESTION.with(WithdrawQuestion {
+                chat::parts::ChatMessages::WITHDRAW_QUESTION.with(WithdrawQuestion {
                     message: taken_back.clone(),
                     why: Some("It has left already.".to_owned()),
                 }),
@@ -1225,7 +1229,7 @@ async fn a_question_taken_back_or_settled_wakes_nobody_and_the_persons_words_wak
             .writes(
                 Who::HerAgent,
                 None,
-                chat::parts::ChatPart::SETTLE_QUESTION.with(SettleQuestion {
+                chat::parts::ChatMessages::SETTLE_QUESTION.with(SettleQuestion {
                     message: settled.clone(),
                     outcome: chat::question::DONE.to_owned(),
                     detail: None,
@@ -1357,7 +1361,7 @@ async fn a_persons_stop_takes_back_what_the_stopped_turn_asked() {
         &holder,
         &herself,
         &route,
-        &format!("{}/messages/{first}", chat::parts::ChatPart::KIND),
+        &format!("{}/messages/{first}", chat::parts::ChatMessages::KIND),
         "stop-agent",
         stopping.as_object().unwrap().clone(),
     )

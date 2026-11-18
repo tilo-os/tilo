@@ -37,7 +37,9 @@ fn arguments(value: Value) -> serde_json::Map<String, Value> {
 /// The address the mailbox's messages are published under, beside it.
 fn messages(mailbox: &ConfinedReplica) -> String {
     ui::resource::chain_resource_id(
-        &<mail::part::MessagePart as ui::framework::Chained>::chain_beside(mailbox.document_id()),
+        &<mail::message_states::MessageStates as ui::framework::Chained>::chain_beside(
+            mailbox.document_id(),
+        ),
     )
 }
 

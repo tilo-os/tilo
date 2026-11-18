@@ -2320,7 +2320,7 @@ mod tests {
         // The page links Notes, as its bundle does.
         let _ = notes::definition();
         // A hundred long notes, as a company's wiki moved in.
-        let mut notebook = tilo_resource::Replica::<notes::PagePart>::new();
+        let mut notebook = tilo_resource::Replica::<notes::NoteList>::new();
         let mut release = String::new();
         for at in 0..100 {
             let page = uuid::Uuid::new_v4();
@@ -2364,7 +2364,7 @@ mod tests {
                 durable_store::StorageKey::document(
                     NOTES_APP,
                     &workspace,
-                    notes::part::chain().part(0).storage_key(),
+                    notes::note_list::chain().part(0).storage_key(),
                 ),
                 notebook.save(),
             ),
@@ -2546,7 +2546,7 @@ mod tests {
         const NOTEBOOK: &str = "uuid:6d1c1f36-0000-4000-8000-0000000000bb";
         // The page links Notes, as its bundle does.
         let kind = notes::definition().resource_type.clone();
-        let mut notebook = tilo_resource::Replica::<notes::PagePart>::new();
+        let mut notebook = tilo_resource::Replica::<notes::NoteList>::new();
         let mut write = |title: &str, text: &str| {
             let page = uuid::Uuid::new_v4();
             notebook
@@ -2567,7 +2567,7 @@ mod tests {
         let mut index = automerge::AutoCommit::new();
         assert!(ui::resource::index::reference(&mut index, &record, &kind));
         // The notes are kept in the first part of their chain, which no index names.
-        let part = notes::part::chain().part(0);
+        let part = notes::note_list::chain().part(0);
         for (key, bytes) in [
             (
                 durable_store::StorageKey::workspace_index(NOTES_APP, workspace),

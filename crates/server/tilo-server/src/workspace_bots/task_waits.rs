@@ -12,7 +12,7 @@
 //! An automation of one person never tells a task given for another to go on, whatever id that
 //! task's wait names.
 
-use tasks::part::{IssuePart, issue_part};
+use tasks::issue_list::{IssueList, issue_list};
 
 use crate::workspaces::Workspaces;
 
@@ -60,7 +60,7 @@ pub(super) fn told(
 fn keeps_issues(document: &str) -> bool {
     ui::resource::DocumentId::parse(document)
         .and_then(|id| id.chain_part())
-        .is_some_and(|(chain, _)| chain == tasks::part::chain())
+        .is_some_and(|(chain, _)| chain == tasks::issue_list::chain())
 }
 
 /// What a task is told lets it go on: `words` on one line, cut to what such a line keeps.
@@ -101,7 +101,7 @@ async fn go_on(
         // Nothing of the part is kept while a task is told: an issue's rich text does not travel
         // between threads.
         let waiting = {
-            let part = super::opened::<IssuePart>(&mut doc)?;
+            let part = super::opened::<IssueList>(&mut doc)?;
             tasks_model::waiting_for(part.issues.iter(), person, automation)
         };
         for issue in waiting {
@@ -138,12 +138,12 @@ async fn resume(
             document,
             move |doc| {
                 let mut tracker =
-                    tilo_resource::Replica::<IssuePart>::from_doc(std::mem::take(doc))
+                    tilo_resource::Replica::<IssueList>::from_doc(std::mem::take(doc))
                         .as_author(&person)
                         .in_app(TASKS, "Tasks");
                 tracker.set_now_ms(now_ms);
                 let applied = tracker
-                    .apply(IssuePart::RESUME.with(issue_part::Resume { issue, cause }))
+                    .apply(IssueList::RESUME.with(issue_list::Resume { issue, cause }))
                     .map(drop)
                     .map_err(|error| error.to_string());
                 std::mem::swap(doc, tracker.doc_mut());

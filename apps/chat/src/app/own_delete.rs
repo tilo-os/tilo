@@ -11,7 +11,7 @@ impl ChatApp {
     pub(crate) fn try_apply_part_confirming(
         &self,
         doc: &mut ui::widget::Edits<'_>,
-        submit: impl ui::framework::Submit<crate::parts::ChatPart>,
+        submit: impl ui::framework::Submit<crate::parts::ChatMessages>,
     ) -> Result<(), String> {
         let chain = self
             .chain
@@ -41,8 +41,8 @@ impl ChatApp {
         let part = self.held_messages().part_of(&message);
         let deleted = self.try_apply_part_confirming(
             doc,
-            crate::parts::ChatPart::DELETE_MESSAGE.with(
-                crate::messages::chat_part::DeleteMessage {
+            crate::parts::ChatMessages::DELETE_MESSAGE.with(
+                crate::messages::chat_messages::DeleteMessage {
                     message: message.clone(),
                 },
             ),

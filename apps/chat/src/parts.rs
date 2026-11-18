@@ -4,7 +4,7 @@
 //! has a size limit, and a newcomer would be sent all of it. So the workspace's
 //! chat resource ([`crate::chat::Chat`]) keeps categories, channels, people,
 //! drafts and moderation, and its messages live in numbered part resources
-//! ([`ChatPart`]), each a resource of its own ([`part`]).
+//! ([`ChatMessages`]), each a resource of its own ([`part`]).
 //!
 //! - **Which part is current.** The part with the highest number a device
 //!   holds is the chain's head. A workspace's host replays a joining device the
@@ -12,17 +12,14 @@
 //!   (`neighbour_wire::document_sync`): a device opens it, through the normal
 //!   resource sync and the chat resource's grants, when someone scrolls back to
 //!   it.
-//! - **Where a post goes.** To the head, unless the head is full
-//!   ([`post_part`]): then to the next part. A part's id is the chain and its
-//!   number, so two writers that both start part `n + 1` start the same
-//!   resource, and their posts meet there.
-//! - **Where a change to a message goes.** To the part that holds the
-//!   message: an edit, a reaction, a reply in its thread, a report.
+//! - **Where a post goes.** The framework places each message
+//!   ([`ui::framework::Chained`]): a post with the newest, a reply, an edit,
+//!   a reaction or a report with the message it belongs to.
 //! - **Read marks** are positions in the chain ([`ReadMark`]), so they mean
 //!   the same whether or not a device holds the earlier parts.
 //! - **Counts of the parts before.** A part carries, for each part before
 //!   it, how many top-level messages each channel has there
-//!   ([`ChatPart::earlier`]): whoever starts it writes them from the part
+//!   ([`ChatMessages::earlier`]): whoever starts it writes them from the part
 //!   before, which they hold. A reader's unread counts reach back to their
 //!   mark through the head's, however many parts they were away for,
 //!   without holding those parts.
@@ -37,13 +34,6 @@ use ui::resource::DocumentId;
 use ui::tilo_resource::{self, Collection, Model};
 
 use crate::chat::Message;
-
-/// Posts a part holds before the next one starts.
-pub const PART_MESSAGES: usize = 2000;
-/// Message text, in bytes, a part holds before the next one starts: well
-/// under what one resource's snapshot may hold, so every part stays
-/// compactable whatever its posts say.
-pub const PART_TEXT_BYTES: usize = 1024 * 1024;
 
 /// The chain the chat's message parts belong to.
 #[must_use]
@@ -66,23 +56,11 @@ pub fn part_index(record: &DocumentId) -> Option<u64> {
         .map(|(_, index)| index)
 }
 
-/// The part a new post goes to, given the head (the highest part held), how
-/// many messages it holds and their text in bytes: the head, or the next
-/// part once the head is full.
-#[must_use]
-pub const fn post_part(head: u64, head_messages: usize, head_text_bytes: usize) -> u64 {
-    if head_messages >= PART_MESSAGES || head_text_bytes >= PART_TEXT_BYTES {
-        head.saturating_add(1)
-    } else {
-        head
-    }
-}
-
 /// One part of the chat's messages: every message posted while it was the
 /// head, oldest first, and everything done to them since (edits, reactions,
 /// replies in their threads, which stay with the message they answer).
 #[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct ChatPart {
+pub struct ChatMessages {
     /// The messages, oldest first: made, ordered and removed only by the
     /// part's actions. A post takes its author from whoever signed it; a
     /// generic insert could name anyone as a message's author, and a
@@ -91,14 +69,14 @@ pub struct ChatPart {
     pub messages: Collection<Message>,
     /// For each part before this one (by its number, in decimal), how many
     /// top-level messages each channel (by its id) has there, as whoever
-    /// started this part saw it (`crate::messages::ChatPart::carry_counts`).
+    /// started this part saw it (`crate::messages::ChatMessages::carry_counts`).
     /// A post that reached a part after the next one started is counted
     /// where that part is held: its own messages count, not this.
     #[model(readonly)]
     pub earlier: BTreeMap<String, BTreeMap<String, i64>>,
 }
 
-impl ChatPart {
+impl ChatMessages {
     /// How many top-level messages each channel has in this part, by
     /// channel id.
     #[must_use]
@@ -140,7 +118,7 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        /// Part ids, the part a post goes to, and the order of read marks.
+        /// Part ids and the order of read marks.
         /// Each case was a test of its own, on a fixture of its own; a failure
         /// names the cases that failed.
         fn parts_number_one_chain_and_posts_and_read_marks_move_along_it;
@@ -158,24 +136,6 @@ mod tests {
                     base: chain().as_str(),
                     index: 0
                 }
-            );
-        }
-
-        phase a_post_goes_to_the_next_part_once_the_head_is_full;
-        {
-            assert_eq!(post_part(4, PART_MESSAGES - 1, 0), 4);
-            assert_eq!(post_part(4, PART_MESSAGES, 0), 5);
-            assert_eq!(post_part(4, 10, PART_TEXT_BYTES), 5);
-            assert_eq!(post_part(4, 0, 0), 4, "an empty head takes the post");
-            assert_eq!(
-                post_part(4, 10, PART_TEXT_BYTES - 1),
-                4,
-                "one byte short of full"
-            );
-            assert_eq!(
-                post_part(u64::MAX, PART_MESSAGES, 0),
-                u64::MAX,
-                "the last part there can be has no next"
             );
         }
 

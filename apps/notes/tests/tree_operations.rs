@@ -9,12 +9,12 @@
 use std::rc::Rc;
 
 use notes::actions;
-use notes::{Notebook, PageId, PagePart, Pages, Workspace};
+use notes::{NoteList, Notebook, PageId, Pages, Workspace};
 use ui::framework::Chain;
 
 /// The notes as one window holds them, each action carried out as the window
 /// carries it out.
-fn notes() -> Chain<PagePart> {
+fn notes() -> Chain<NoteList> {
     Chain::detached(
         ui::apps::NOTES,
         &ui::tilo_resource::MemberId::person("tree-author"),
@@ -23,22 +23,22 @@ fn notes() -> Chain<PagePart> {
     .unwrap()
 }
 
-fn apply(notes: &Chain<PagePart>, action: &actions::Action) {
+fn apply(notes: &Chain<NoteList>, action: &actions::Action) {
     notes.apply(action).unwrap();
 }
 
-fn create(notes: &Chain<PagePart>, parent: Option<PageId>) -> PageId {
+fn create(notes: &Chain<NoteList>, parent: Option<PageId>) -> PageId {
     let id = PageId::new_v4();
     apply(notes, &actions::create_page_action(id, parent, "Untitled"));
     id
 }
 
-fn shown(notes: &Chain<PagePart>) -> Workspace {
+fn shown(notes: &Chain<NoteList>) -> Workspace {
     Workspace::of(&Notebook::default(), &notes.parts(), &Workspace::default())
 }
 
 /// Every note's parent is a note of the notebook.
-fn assert_valid(notes: &Chain<PagePart>) {
+fn assert_valid(notes: &Chain<NoteList>) {
     let workspace = shown(notes);
     let parts = notes.parts();
     let pages = Pages::of(&parts);

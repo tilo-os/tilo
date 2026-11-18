@@ -314,7 +314,7 @@ async fn a_member_lists_only_the_invocations_in_records_they_may_read_now() {
         &member,
         &request(
             &notes_provider,
-            ActionAddress::new(notes::part::chain_resource(), "new-note"),
+            ActionAddress::new(notes::note_list::chain_resource(), "new-note"),
             json(serde_json::json!({"title": "A note for all"})),
         ),
     );
@@ -518,7 +518,7 @@ async fn a_persons_own_change_is_one_invocation_also_after_a_restart() {
         &person,
         &request(
             &notes_provider,
-            ActionAddress::new(notes::part::chain_resource(), "new-note"),
+            ActionAddress::new(notes::note_list::chain_resource(), "new-note"),
             json(serde_json::json!({"title": "Grace's own note"})),
         ),
     );

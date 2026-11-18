@@ -5,17 +5,16 @@
 //! never differ in what they refuse or record. What an issue of the list can
 //! be refused for is checked here first, where every part is held, and
 //! refused naming the entry: a list is made whole or not at all. The issues
-//! go into one part together, so they are one step of its history: the newest
-//! part while it has room for all of them, else the next ([`part_for_new`]).
+//! are written together, so they are one step of history.
 
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use ui::tilo_resource::items::Ref;
 use ui::tilo_resource::{self, Origin, Refusal};
 
-use super::{Held, IssuePart, PART_ISSUES, PART_TEXT_BYTES};
+use super::Held;
 use crate::model::{ListedIssue, MAX_MANY, MAX_TITLE_CHARS, Tracker, checked_assignee};
+use ui::framework::PART_BYTES;
 
 /// Refuse a list that is empty, or longer than one call takes.
 pub(super) fn check_count(count: usize) -> Result<(), Refusal> {
@@ -151,22 +150,6 @@ fn list_text(issues: &[ListedIssue]) -> usize {
         .fold(0, usize::saturating_add)
 }
 
-/// The part a list of new issues goes to, whole: the newest part while it
-/// has room for all of them, else the next. A part that holds nothing yet
-/// takes any list.
-pub(super) fn part_for_new(issues: &[ListedIssue], parts: &[(u64, Rc<IssuePart>)]) -> u64 {
-    let Some((index, head)) = parts.last() else {
-        return 0;
-    };
-    let fits = head.issues.len().saturating_add(issues.len()) <= PART_ISSUES
-        && head.text_bytes().saturating_add(list_text(issues)) <= PART_TEXT_BYTES;
-    if fits || head.issues.is_empty() {
-        *index
-    } else {
-        index.saturating_add(1)
-    }
-}
-
 /// Check a list of new issues where it is invoked and fill in what each
 /// reads of the tracker: the issue it stands under when the tracker has it
 /// already, the project it works towards, and its place in the tracker's
@@ -178,7 +161,7 @@ pub(super) fn prepare_create(
 ) -> Result<(), String> {
     check_count(issues.len()).map_err(|refusal| refusal.to_string())?;
     nesting(issues).map_err(|refusal| refusal.to_string())?;
-    if list_text(issues) > PART_TEXT_BYTES {
+    if list_text(issues) > PART_BYTES {
         return Err(
             "This is more text than one step takes: give the issues in several calls".into(),
         );

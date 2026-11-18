@@ -17,9 +17,9 @@ use crate::app::{
     MenuAction, MenuTarget,
 };
 use crate::chat::chat;
-use crate::messages::{NewMessage, chat_part};
+use crate::messages::{NewMessage, chat_messages};
 use crate::model::{ChannelKind, Id};
-use crate::parts::ChatPart;
+use crate::parts::ChatMessages;
 use crate::resource::Chat;
 
 mod attachment_import;
@@ -1387,7 +1387,7 @@ impl ChatApp {
                     let pinned = self.message(&id).is_some_and(|m| m.pinned);
                     self.apply_part(
                         doc,
-                        ChatPart::PIN.with(chat_part::Pin {
+                        ChatMessages::PIN.with(chat_messages::Pin {
                             message: item(&id),
                             pinned: !pinned,
                         }),
@@ -1404,8 +1404,8 @@ impl ChatApp {
                         // A refusal changes nothing; the dispatcher reports it.
                         let _ = self.try_apply_part_confirming(
                             doc,
-                            ChatPart::REMOVE_MESSAGE
-                                .with(chat_part::RemoveMessage { message: item(&id) }),
+                            ChatMessages::REMOVE_MESSAGE
+                                .with(chat_messages::RemoveMessage { message: item(&id) }),
                         );
                     }
                 }
@@ -1794,7 +1794,7 @@ impl ChatApp {
         }
         self.apply_part(
             doc,
-            ChatPart::EDIT_MESSAGE.with(chat_part::EditMessage {
+            ChatMessages::EDIT_MESSAGE.with(chat_messages::EditMessage {
                 message: item(&id),
                 text,
                 body: Some(body),
@@ -2252,7 +2252,7 @@ impl ChatApp {
         } else {
             tilo_reference::StoredFile::File { name, blob, size }
         };
-        self.submit_part(ChatPart::POST.with(chat_part::Post {
+        self.submit_part(ChatMessages::POST.with(chat_messages::Post {
             message: NewMessage {
                 channel: item(&pending.channel),
                 text: String::new(),

@@ -273,7 +273,7 @@ impl Answers {
             }
             let read = (CHAT, document.as_str());
             let Ok(Some(part)) =
-                read_document::<chat::parts::ChatPart>(&self.workspaces, &ask.workspace, read)
+                read_document::<chat::parts::ChatMessages>(&self.workspaces, &ask.workspace, read)
                     .await
             else {
                 continue;

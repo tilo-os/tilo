@@ -3,7 +3,7 @@
 //!
 //! The mail itself stays with the engine and the server. What the reader did with each
 //! message, and what its server holds of that, is kept in parts beside the mailbox
-//! ([`crate::part`]), so a change costs one part however much mail there is. The mailbox
+//! ([`crate::message_states`]), so a change costs one part however much mail there is. The mailbox
 //! itself holds what does not grow with the mail: the folders the reader made, the drafts
 //! being written, the messages sent and not yet delivered, and the checks for new mail.
 
@@ -883,7 +883,7 @@ impl Mail {
     /// server what it does not hold yet, and forget what it no longer has
     /// to be told (an undo that took the change back first). What servers
     /// are owed of the messages is read off their parts
-    /// ([`crate::part::owed`]).
+    /// ([`crate::message_states::owed`]).
     fn queue(&mut self, _before: &Self, cx: &mut ActionCx) {
         let wanted = self.server_updates();
         let stale: Vec<Id> = self
@@ -994,7 +994,7 @@ impl Mail {
     }
 
     /// Each folder as a place, the drafts beneath Drafts. The messages are
-    /// published by their parts ([`crate::part::places`]).
+    /// published by their parts ([`crate::message_states::places`]).
     fn places(&self) -> Vec<Derived<Self>> {
         let mut places = Vec::new();
         for folder in Folder::ALL {
@@ -1163,7 +1163,9 @@ impl TestMail {
     /// Apply what the window asked of the mailbox's parts, as the session does
     /// after the frame (a destructive verb as once the person agreed), and
     /// answer every message the parts hold.
-    pub(crate) fn messages(st: &crate::state::MailState) -> std::rc::Rc<crate::part::MessagePart> {
+    pub(crate) fn messages(
+        st: &crate::state::MailState,
+    ) -> std::rc::Rc<crate::message_states::MessageStates> {
         if let Some(chain) = &st.chain {
             for action in chain
                 .dispatcher()
@@ -1197,8 +1199,10 @@ impl TestMail {
     /// Every message a test window's parts hold, as one.
     pub(crate) fn held_by(
         app: &ui::framework::testing::TestApp<MailShell>,
-    ) -> crate::part::MessagePart {
-        crate::part::MessagePart::of(&app.chain_parts::<crate::part::MessagePart>())
+    ) -> crate::message_states::MessageStates {
+        crate::message_states::MessageStates::of(
+            &app.chain_parts::<crate::message_states::MessageStates>(),
+        )
     }
 
     /// The messages as a test window publishes them, beside the mailbox.
@@ -1207,7 +1211,9 @@ impl TestMail {
     ) -> tilo_actions::ResourceSpec {
         fn find(resources: &[tilo_actions::ResourceSpec]) -> Option<&tilo_actions::ResourceSpec> {
             resources.iter().find_map(|resource| {
-                if resource.kind == <crate::part::MessagePart as tilo_resource::Resource>::KIND {
+                if resource.kind
+                    == <crate::message_states::MessageStates as tilo_resource::Resource>::KIND
+                {
                     Some(resource)
                 } else {
                     find(&resource.children)
@@ -1222,9 +1228,9 @@ impl TestMail {
 
     /// What a test window's parts owe the messages' servers.
     pub(crate) fn owed_by(app: &ui::framework::testing::TestApp<MailShell>) -> Vec<ServerUpdate> {
-        app.chain_parts::<crate::part::MessagePart>()
+        app.chain_parts::<crate::message_states::MessageStates>()
             .iter()
-            .flat_map(|(_, part)| crate::part::owed(part))
+            .flat_map(|(_, part)| crate::message_states::owed(part))
             .map(|(_, update)| update)
             .collect()
     }
@@ -1238,7 +1244,7 @@ impl TestMail {
                 chain
                     .parts()
                     .iter()
-                    .flat_map(|(_, part)| crate::part::owed(part))
+                    .flat_map(|(_, part)| crate::message_states::owed(part))
                     .map(|(_, update)| update)
                     .collect()
             })
@@ -1419,7 +1425,7 @@ impl ResourceApp for MailShell {
 
     /// The messages, kept in parts beside the person's mailbox.
     fn resources(resources: &mut ui::framework::Resources<'_>) {
-        resources.chain::<crate::part::MessagePart>();
+        resources.chain::<crate::message_states::MessageStates>();
     }
 
     /// Only a live window reaches mail servers and the account store; History
@@ -1834,7 +1840,7 @@ mod tests {
                 .as_ref()
                 .expect("the window keeps its messages in parts")
                 .parts();
-            let message = crate::part::places(&state, &parts)
+            let message = crate::message_states::places(&state, &parts)
                 .into_iter()
                 .next()
                 .expect("a message place beside the mailbox")
@@ -2021,7 +2027,7 @@ mod tests {
             phase every_api_reaches_the_server_through_the_document;
             {
                 use crate::actions::{IngestBaseline, ServerUpdate};
-                use crate::part::{MessagePart, message_part};
+                use crate::message_states::{MessageStates, message_states};
                 use ui::tilo_resource::Id;
 
                 ui::i18n::I18nManager::init("en-US");
@@ -2043,7 +2049,7 @@ mod tests {
                     locator: Some("launch@example.test".into()),
                     label: None,
                 };
-                app.chain_invoke(&MessagePart::INGEST.with(message_part::Ingest {
+                app.chain_invoke(&MessageStates::INGEST.with(message_states::Ingest {
                     messages: vec![fetched],
                 }))
                 .unwrap();
@@ -2054,7 +2060,7 @@ mod tests {
                 app.call_on(
                     messages.id.as_str(),
                     "field-edit",
-                    serde_json::json!({ "edit": MessagePart::star(&id, true) }),
+                    serde_json::json!({ "edit": MessageStates::star(&id, true) }),
                 )
                 .unwrap();
                 app.settle();
@@ -2071,7 +2077,7 @@ mod tests {
                 // Another member's change reaches the server the same way.
                 app.chain_invoke(
                     &ui::tilo_resource::Invoke::edit(
-                        &MessagePart::paths()
+                        &MessageStates::paths()
                             .messages
                             .item(&Id::from_raw(id))
                             .folder

@@ -1,6 +1,6 @@
 use super::*;
-use crate::messages::chat_part;
-use crate::parts::ChatPart;
+use crate::messages::chat_messages;
+use crate::parts::ChatMessages;
 use ui::tilo_resource::Id;
 
 #[test]
@@ -19,7 +19,7 @@ fn nonempty_replies_cannot_be_reused_and_oversized_output_creates_no_reply() {
             "x".repeat(crate::chat::MAX_MESSAGE_TEXT_BYTES + 1),
         ),
     ] {
-        let invoke = ChatPart::STREAM_OUTPUT.with(chat_part::StreamOutput {
+        let invoke = ChatMessages::STREAM_OUTPUT.with(chat_messages::StreamOutput {
             channel: Id::from_raw("c_crit"),
             reply: id.into(),
             name: None,

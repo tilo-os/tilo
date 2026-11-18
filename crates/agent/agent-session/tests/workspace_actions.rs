@@ -408,7 +408,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     assert_eq!(locator.provider, provider);
     for wanted in [
         ViewResourceQuery {
-            id: ui::tilo_resource::items::item_resource_id::<chat::parts::ChatPart>(
+            id: ui::tilo_resource::items::item_resource_id::<chat::parts::ChatMessages>(
                 "messages",
                 &ui::tilo_resource::Id::from_raw("missing"),
             ),

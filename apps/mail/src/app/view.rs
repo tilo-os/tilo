@@ -15,7 +15,7 @@ use ui::widget::Element;
 use super::{MailApp, Mailroom};
 use crate::actions::{MailCheck, MailEffect, Outgoing, ServerUpdate};
 use crate::i18n::CATALOG;
-use crate::part::MessagePart;
+use crate::message_states::MessageStates;
 use crate::resource::Mail;
 use crate::state::MailState;
 
@@ -54,7 +54,7 @@ fn carry_checks(cx: &ViewCx<Mail>, window: &mut MailApp) {
 /// are kept in, and carried out by a window that reaches the account's
 /// server; each confirmation lands in the part holding its message.
 fn carry_owed(cx: &ViewCx<Mail>, window: &MailApp) {
-    let Some(chain) = cx.chain::<MessagePart>() else {
+    let Some(chain) = cx.chain::<MessageStates>() else {
         return;
     };
     window.shared.borrow_mut().chain = Some(chain.clone());
@@ -62,7 +62,7 @@ fn carry_owed(cx: &ViewCx<Mail>, window: &MailApp) {
     let reaches = reaches(window);
     cx.owed(
         &chain,
-        crate::part::owed,
+        crate::message_states::owed,
         move |update: &ServerUpdate| reaches(update.account()),
         move |_, update: ServerUpdate, cx| {
             let reply = cx.reply();
@@ -407,7 +407,7 @@ impl Mailroom {
 
     pub(crate) fn synced_message(
         &self,
-        mail: &MessagePart,
+        mail: &MessageStates,
         item: &str,
     ) -> Option<crate::model::Message> {
         if let Some(held) = mail.held_shown(item) {
@@ -422,7 +422,7 @@ impl Mailroom {
 
     pub(crate) fn search_synced(
         &self,
-        mail: &MessagePart,
+        mail: &MessageStates,
         query: &crate::search::MessageQuery,
     ) -> serde_json::Value {
         let shared = self.shared.borrow();
@@ -459,7 +459,7 @@ impl Mailroom {
 
     pub(crate) fn attachment_content(
         &self,
-        mail: &MessagePart,
+        mail: &MessageStates,
         message: &str,
         index: usize,
     ) -> EffectAnswer {

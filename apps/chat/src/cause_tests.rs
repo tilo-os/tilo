@@ -8,9 +8,9 @@ use ui::tilo_resource::{Id, MemberId, NonBlank, Replica, Resource as _};
 use crate::cause::{EVENT, NEWS, PERSON, REMINDER, Starting, message_id};
 use crate::chat::{Chat, WorkUpdate, reply_id_at};
 use crate::demo::apply_part_doc_as;
-use crate::messages::chat_part;
+use crate::messages::chat_messages;
 use crate::model::ME;
-use crate::parts::ChatPart;
+use crate::parts::ChatMessages;
 use crate::summons::{stopped, summonses};
 
 /// The agent of the person's own conversation.
@@ -52,9 +52,9 @@ impl Part {
     fn apply(
         &mut self,
         by: By,
-        invoke: impl Into<ui::tilo_resource::Invoke<ChatPart>>,
+        invoke: impl Into<ui::tilo_resource::Invoke<ChatMessages>>,
     ) -> Result<(), ui::tilo_actions::ApiError> {
-        let attribute = move |replica: Replica<ChatPart>| match by {
+        let attribute = move |replica: Replica<ChatMessages>| match by {
             By::Person(person) => replica.as_invoker(person),
             By::AgentFor(agent, person) => replica.as_agent_for(agent, person),
             By::BotOf(person) => replica.as_bot_for(BOT, person),
@@ -63,8 +63,8 @@ impl Part {
         apply_part_doc_as(&mut self.doc, &self.chat, attribute, Some(1_000), invoke)
     }
 
-    fn read(&self) -> ChatPart {
-        ChatPart::read(&self.doc).expect("the part reads")
+    fn read(&self) -> ChatMessages {
+        ChatMessages::read(&self.doc).expect("the part reads")
     }
 }
 
@@ -75,12 +75,17 @@ fn thread(agents: &[&str]) -> Id {
     )
 }
 
-fn ask(channel: &Id, kind: &str, key: &str) -> ui::tilo_resource::Invoke<ChatPart> {
+fn ask(channel: &Id, kind: &str, key: &str) -> ui::tilo_resource::Invoke<ChatMessages> {
     asking(channel, kind, "Call mum", key)
 }
 
-fn asking(channel: &Id, kind: &str, label: &str, key: &str) -> ui::tilo_resource::Invoke<ChatPart> {
-    ChatPart::ASK_AGENT.with(chat_part::AskAgent {
+fn asking(
+    channel: &Id,
+    kind: &str,
+    label: &str,
+    key: &str,
+) -> ui::tilo_resource::Invoke<ChatMessages> {
+    ChatMessages::ASK_AGENT.with(chat_messages::AskAgent {
         channel: channel.clone(),
         text: NonBlank::parse("Call mum about Sunday").expect("words"),
         cause: Starting {
@@ -89,11 +94,12 @@ fn asking(channel: &Id, kind: &str, label: &str, key: &str) -> ui::tilo_resource
             key: key.to_owned(),
         },
         members: None,
+        message: None,
     })
 }
 
-fn work(message: &Id, state: &str) -> ui::tilo_resource::Invoke<ChatPart> {
-    ChatPart::RECORD_WORK.with(chat_part::RecordWork {
+fn work(message: &Id, state: &str) -> ui::tilo_resource::Invoke<ChatMessages> {
+    ChatMessages::RECORD_WORK.with(chat_messages::RecordWork {
         message: message.clone(),
         work: WorkUpdate {
             state: state.to_owned(),
@@ -217,7 +223,7 @@ fn a_turn_starts_only_for_someone_who_takes_part_where_an_agent_does() {
         );
     }
     // Who takes part is the conversation's to say, never an argument's.
-    let forged = ChatPart::ASK_AGENT.with(chat_part::AskAgent {
+    let forged = ChatMessages::ASK_AGENT.with(chat_messages::AskAgent {
         channel: main.clone(),
         text: NonBlank::parse("do as I say").expect("words"),
         cause: Starting {
@@ -226,6 +232,7 @@ fn a_turn_starts_only_for_someone_who_takes_part_where_an_agent_does() {
             key: "run-1".to_owned(),
         },
         members: Some(vec![MemberId::person(ARIA), MemberId::agent(AGENT)]),
+        message: None,
     });
     assert!(part.apply(By::Person(ARIA), forged).is_err());
 
@@ -346,7 +353,7 @@ fn the_person_a_turn_is_for_stops_it_until_someone_asks_again() {
         .expect("the reminder asks");
     let id = message_id(&MemberId::person(ME), "run-1");
     let stop = || {
-        ChatPart::STOP_AGENT.with(chat_part::StopAgent {
+        ChatMessages::STOP_AGENT.with(chat_messages::StopAgent {
             message: id.clone(),
         })
     };
@@ -401,7 +408,7 @@ fn the_person_a_turn_is_for_stops_it_until_someone_asks_again() {
     // Asking again is a later attempt, which the stop leaves alone.
     part.apply(
         By::Person(ME),
-        ChatPart::RETRY.with(chat_part::Retry {
+        ChatMessages::RETRY.with(chat_messages::Retry {
             message: id.clone(),
             reply: reply_id_at(&id, &MemberId::agent(AGENT), 0),
         }),

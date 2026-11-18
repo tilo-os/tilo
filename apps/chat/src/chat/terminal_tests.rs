@@ -1,8 +1,8 @@
 use super::tests::{Talk, id};
 use crate::agent_stream::{AgentFinish, AgentOutput, AgentStreamEvent};
-use crate::messages::chat_part;
+use crate::messages::chat_messages;
 use crate::model::AgentWorkState;
-use crate::parts::ChatPart;
+use crate::parts::ChatMessages;
 
 #[test]
 fn provider_terminal_state_and_accessibility_report_output_not_applied_actions() {
@@ -31,7 +31,7 @@ fn provider_terminal_state_and_accessibility_report_output_not_applied_actions()
         ] {
             replica
                 .apply(
-                    ChatPart::STREAM_OUTPUT.with(chat_part::StreamOutput {
+                    ChatMessages::STREAM_OUTPUT.with(chat_messages::StreamOutput {
                         channel: id("c_chat"),
                         reply: "terminal_reply".into(),
                         name: None,

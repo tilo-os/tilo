@@ -91,8 +91,8 @@ fn read_notebook(doc: &AutoCommit) -> Result<crate::Notebook, String> {
 /// their published actions, which the window's controls press.
 #[derive(Clone)]
 pub(crate) struct Notes {
-    pub(crate) chain: ui::framework::Chain<crate::part::PagePart>,
-    pub(crate) actions: ui::framework::Actions<crate::part::PagePart>,
+    pub(crate) chain: ui::framework::Chain<crate::note_list::NoteList>,
+    pub(crate) actions: ui::framework::Actions<crate::note_list::NoteList>,
 }
 /// Document heads, pending operations, selected page and tag filter.
 type CanonicalProjectionKey = (Vec<ChangeHash>, usize, Option<PageId>, Option<TagId>);
@@ -737,11 +737,11 @@ impl NotesApp {
     /// agent invokes are one action; a window whose notebook offers none (the
     /// person may not add notes) declares no button.
     fn page_tree_header_actions(
-        notes: Option<&ui::framework::Actions<crate::part::PagePart>>,
+        notes: Option<&ui::framework::Actions<crate::note_list::NoteList>>,
     ) -> Vec<ui::widget::Element> {
         let made = notes.and_then(|actions| {
-            actions.invocation(crate::part::PagePart::NEW_NOTE.with(
-                crate::part::page_part::NewNote {
+            actions.invocation(crate::note_list::NoteList::NEW_NOTE.with(
+                crate::note_list::note_list::NewNote {
                     title: crate::notebook::NO_TITLE.to_owned(),
                     parent: None,
                     note: None,
@@ -767,7 +767,7 @@ impl NotesApp {
     fn build_shell(
         columns: &Columns,
         header: &Rc<HeaderRequests>,
-        notebook: Option<&ui::framework::Actions<crate::part::PagePart>>,
+        notebook: Option<&ui::framework::Actions<crate::note_list::NoteList>>,
     ) -> NavShell {
         let actions = Self::content_header_actions(header);
         // Maximized, the header lives in the window's bar: the note has the
@@ -1087,7 +1087,7 @@ impl NotesApp {
             )),
             // Not hosted beside its parts: `doc` is either one part of the
             // notes, or the notebook before any of its parts arrived.
-            None => match <crate::part::PagePart as ui::tilo_resource::Resource>::read(doc) {
+            None => match <crate::note_list::NoteList as ui::tilo_resource::Resource>::read(doc) {
                 Ok(part) => Ok(Workspace::of(
                     &crate::Notebook::default(),
                     &[(0, Rc::new(part))],
@@ -1697,7 +1697,7 @@ impl NotesApp {
     #[doc(hidden)]
     pub fn invoke_notes_for_test(
         &self,
-        invoke: &ui::tilo_resource::Invoke<crate::part::PagePart>,
+        invoke: &ui::tilo_resource::Invoke<crate::note_list::NoteList>,
     ) -> Result<Option<u64>, String> {
         let notes = self
             .notes
@@ -1820,7 +1820,7 @@ impl NotesApp {
     pub(crate) fn adopt_resource_state(
         &mut self,
         state: &crate::Notebook,
-        parts: &[(u64, Rc<crate::part::PagePart>)],
+        parts: &[(u64, Rc<crate::note_list::NoteList>)],
     ) {
         self.projection_adopted = true;
         self.presented = true;
@@ -2945,9 +2945,9 @@ impl ui::widget::controls::ActionControls for NotesApp {
 /// The notebook action `address` names, when it makes a note this window opens.
 fn making_action(address: &ui::tilo_actions::ActionAddress) -> Option<&'static str> {
     [
-        crate::part::PagePart::NEW_NOTE.id(),
-        crate::part::PagePart::NEW_CHILD.id(),
-        crate::part::PagePart::DUPLICATE.id(),
+        crate::note_list::NoteList::NEW_NOTE.id(),
+        crate::note_list::NoteList::NEW_CHILD.id(),
+        crate::note_list::NoteList::DUPLICATE.id(),
     ]
     .into_iter()
     .find(|action| *action == address.action.as_str())

@@ -286,7 +286,7 @@ async fn a_fresh_page_opens_notes_and_reads_what_the_agent_wrote() {
         .send(Cmd::OpenDocumentAt(
             WorkspaceId::parse(&workspace).unwrap(),
             tilo_peer_state::document_frame::DocumentRoute {
-                document: notes::part::chain().chain_head().as_str().to_owned(),
+                document: notes::note_list::chain().chain_head().as_str().to_owned(),
                 ..ask.clone()
             },
         ))
@@ -330,11 +330,11 @@ async fn a_fresh_page_opens_notes_and_reads_what_the_agent_wrote() {
 fn note_body(reader: &Browser, workspace: &str, title: &str) -> Option<String> {
     let docs = super::resource_support::notes_part_docs(reader.peer.engine(), workspace);
     let (page, doc) = docs.iter().find_map(|(_, doc)| {
-        let part = <notes::PagePart as ui::tilo_resource::Resource>::read(doc).ok()?;
+        let part = <notes::NoteList as ui::tilo_resource::Resource>::read(doc).ok()?;
         let (id, _) = part.pages.iter().find(|(_, note)| note.title == title)?;
         Some((notes::notebook::page_of(id)?, doc))
     })?;
-    let body = notes::part::body_object(doc, page)?;
+    let body = notes::note_list::body_object(doc, page)?;
     let containers = tilo_doc::model::open(doc, &body).ok()?;
     let markdown = tilo_doc_codecs::provider_for_ext("md")?
         .export(

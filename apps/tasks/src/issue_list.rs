@@ -1,27 +1,18 @@
-//! The tracker's issues, kept in numbered parts beside the tracker.
+//! The tracker's issues: a collection the framework keeps beside the
+//! tracker, which decides where each issue is stored, so that a change to
+//! one issue of thousands costs that issue. The tracker's own document
+//! ([`crate::model::Tracker`]) keeps the projects and areas above them.
 //!
-//! One resource cannot hold every issue a workspace ever wrote at a cost that
-//! stays flat: every reader of a resource loads, verifies and diffs all of it,
-//! so a change to one issue of thousands would cost thousands. The issues
-//! live in a chain of [`IssuePart`] resources instead (`tilo_app`'s
-//! `Chained`), each holding up to [`PART_ISSUES`] issues or
-//! [`PART_TEXT_BYTES`] of their text; a change touches the one part that
-//! holds its issue. The tracker's own document ([`crate::model::Tracker`])
-//! keeps the projects and areas above them.
-//!
-//! - **Where a new issue goes.** To the newest part, unless it is full
-//!   ([`new_part`]): then to the next. Two writers starting the same part
-//!   start the same resource, so their issues meet there.
-//! - **Where a change goes.** To the part holding the issue it names.
-//! - **Numbers.** A part counts the issues made in it on top of the highest
-//!   number given before it started ([`IssuePart::before`]), which whoever
-//!   starts it carries over from the part before.
+//! - **Numbers.** Each part of issues counts the issues made in it on top
+//!   of the highest number given before it started ([`IssueList::before`]),
+//!   which the framework carries over as it starts the next one
+//!   ([`ui::framework::Chained::carry`]).
 //! - **Order.** Each issue carries its place in the tracker's order
 //!   ([`Issue::rank`]), set where it is made or placed from every issue held
-//!   there ([`Issues`]), so the list and the board read across parts.
-//! - **What reads across parts.** A sub-issue whose parent is gone stands at
-//!   the top level, and an issue whose project was deleted works towards
-//!   none: read so, never rewritten in other parts ([`Issues`]).
+//!   there ([`Issues`]), so the list and the board read across them all.
+//! - **What reads across the collection.** A sub-issue whose parent is gone
+//!   stands at the top level, and an issue whose project was deleted works
+//!   towards none: read so, never rewritten elsewhere ([`Issues`]).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
@@ -41,18 +32,10 @@ use crate::model::{
     checked_address, checked_assignee, checked_folder, checked_line, checked_waits,
 };
 
-/// Issues a part holds before the next one starts.
-pub const PART_ISSUES: usize = 500;
-
-/// Text, in bytes, a part's issues hold (titles, descriptions, threads)
-/// before the next one starts: what keeps one part, and so one change, cheap
-/// whatever its issues say.
-pub const PART_TEXT_BYTES: usize = 512 * 1024;
-
-/// One part of the tracker's issues: every issue made while it was the
-/// newest, and everything done to them since.
+/// The tracker's issues the engine keeps in one of its parts: every
+/// issue made while it was the newest, and everything done to them since.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct IssuePart {
+pub struct IssueList {
     /// Issues
     ///
     /// Each issue is a storage unit of its own.
@@ -68,29 +51,12 @@ pub struct IssuePart {
     pub numbers: Counter,
 }
 
-impl IssuePart {
+impl IssueList {
     /// The highest number this part gave, or the one before it started.
     #[must_use]
     pub fn last_number(&self) -> u64 {
         self.before
             .saturating_add(u64::try_from(self.numbers.get()).unwrap_or_default())
-    }
-
-    /// The text its issues hold, in bytes: titles, descriptions and threads.
-    #[must_use]
-    pub fn text_bytes(&self) -> usize {
-        self.issues
-            .values()
-            .map(|issue| {
-                issue
-                    .comments
-                    .values()
-                    .map(|message| message.text.len())
-                    .sum::<usize>()
-                    .saturating_add(issue.title.len())
-                    .saturating_add(issue.body.text().len())
-            })
-            .sum()
     }
 
     fn issue_mut(&mut self, issue: &Id) -> Result<&mut Issue, Refusal> {
@@ -179,25 +145,10 @@ impl IssuePart {
     }
 }
 
-/// The part a new issue goes to, given the newest part held (its number and
-/// state): that part, or the next once it is full.
-#[must_use]
-pub fn new_part(head: Option<(u64, &IssuePart)>) -> u64 {
-    match head {
-        None => 0,
-        Some((index, part))
-            if part.issues.len() >= PART_ISSUES || part.text_bytes() >= PART_TEXT_BYTES =>
-        {
-            index.saturating_add(1)
-        }
-        Some((index, _)) => index,
-    }
-}
-
 /// What part `part` hands the part after it:
 /// the number it starts counting from.
 #[must_use]
-pub fn carried(part: &IssuePart) -> u64 {
+pub fn carried(part: &IssueList) -> u64 {
     part.last_number()
 }
 
@@ -292,12 +243,12 @@ fn message_text(text: NonBlank) -> Result<String, Refusal> {
 
 #[resource(
     kind = "tasks.issues",
-    params = issue_part,
-    search = IssuePart::search,
+    params = issue_list,
+    search = IssueList::search,
     effects = crate::model::TasksEffect,
-    read_content = IssuePart::read_document
+    read_content = IssueList::read_document
 )]
-impl IssuePart {
+impl IssueList {
     /// Create an issue.
     ///
     /// An issue moved from another tracker keeps where it came from in
@@ -939,9 +890,9 @@ impl IssuePart {
 #[derive(Default)]
 pub struct Issues {
     /// The parts as last read, oldest first.
-    parts: Vec<(u64, Rc<IssuePart>)>,
+    parts: Vec<(u64, Rc<IssueList>)>,
     /// The slice they were read from, so reading the same parts again is free.
-    synced: Option<Parts<IssuePart>>,
+    synced: Option<Parts<IssueList>>,
     /// Each issue held: the part keeping it and what it was filed under.
     held: HashMap<Id, Filed>,
     /// Every issue in the tracker's order.
@@ -989,7 +940,7 @@ impl Issues {
     /// The issues `parts` keep, oldest part first. An issue two parts both
     /// claim (never written so, but read safely) is the newer part's.
     #[must_use]
-    pub fn of(parts: &[(u64, Rc<IssuePart>)]) -> Self {
+    pub fn of(parts: &[(u64, Rc<IssueList>)]) -> Self {
         let mut issues = Self::default();
         issues.read(parts);
         issues
@@ -997,7 +948,7 @@ impl Issues {
 
     /// Follow `parts`: what changed since the last parts read, and only that.
     /// Whether anything did.
-    pub fn sync(&mut self, parts: &Parts<IssuePart>) -> bool {
+    pub fn sync(&mut self, parts: &Parts<IssueList>) -> bool {
         if self
             .synced
             .as_ref()
@@ -1012,7 +963,7 @@ impl Issues {
 
     /// Whether `parts` are the parts last read.
     #[must_use]
-    pub fn follows(&self, parts: &Parts<IssuePart>) -> bool {
+    pub fn follows(&self, parts: &Parts<IssueList>) -> bool {
         self.synced
             .as_ref()
             .is_some_and(|synced| Rc::ptr_eq(synced, parts))
@@ -1024,9 +975,9 @@ impl Issues {
         self.revision
     }
 
-    fn read(&mut self, parts: &[(u64, Rc<IssuePart>)]) -> bool {
+    fn read(&mut self, parts: &[(u64, Rc<IssueList>)]) -> bool {
         let before = std::mem::replace(&mut self.parts, parts.to_vec());
-        let earlier: HashMap<u64, Rc<IssuePart>> = before.into_iter().collect();
+        let earlier: HashMap<u64, Rc<IssueList>> = before.into_iter().collect();
         let mut changed = false;
         self.touching = Vec::new();
         let now: std::collections::HashSet<u64> = parts.iter().map(|(index, _)| *index).collect();
@@ -1235,7 +1186,7 @@ impl Issues {
         true
     }
 
-    fn part(&self, index: u64) -> Option<&IssuePart> {
+    fn part(&self, index: u64) -> Option<&IssueList> {
         self.parts
             .iter()
             .find(|(held, _)| *held == index)
@@ -1431,7 +1382,7 @@ impl Issues {
 /// The issues the held parts keep, looked up part by part without reading
 /// them into one list: what an action checks where it is invoked, at a cost
 /// of the parts held, not of every issue sorted.
-struct Held<'a>(&'a [(u64, Rc<IssuePart>)]);
+struct Held<'a>(&'a [(u64, Rc<IssueList>)]);
 
 impl<'a> Held<'a> {
     fn get(&self, id: &Id) -> Option<&'a Issue> {
@@ -1525,11 +1476,11 @@ fn goal_named(tracker: &Tracker, project: &Ref) -> Result<Area, String> {
 /// # Errors
 /// Refuses as the action's verb would, had it every part.
 pub fn prepare(
-    action: &mut <IssuePart as tilo_resource::Resource>::Action,
+    action: &mut <IssueList as tilo_resource::Resource>::Action,
     tracker: &Tracker,
-    parts: &[(u64, Rc<IssuePart>)],
+    parts: &[(u64, Rc<IssueList>)],
 ) -> Result<(), String> {
-    use issue_part::{Create, MoveUnder, Place, SetProject};
+    use issue_list::{Create, MoveUnder, Place, SetProject};
     let held = Held(parts);
     // The issue an action names in its own parameter may be written as its
     // title, its number or an address too: it is resolved here, where every
@@ -1555,7 +1506,7 @@ pub fn prepare(
             .transpose()
     };
     match &mut action.operation {
-        IssuePartAction::Create(Create { issue }) => {
+        IssueListAction::Create(Create { issue }) => {
             if let Some(parent) = issue.parent.as_mut()
                 && let Some(id) = check_parent(Some(parent))?
             {
@@ -1564,7 +1515,7 @@ pub fn prepare(
             issue.goal = goal(issue.project.as_ref())?;
             issue.rank = Some(held.last_rank());
         }
-        IssuePartAction::MoveUnder(MoveUnder { issue, parent }) => {
+        IssueListAction::MoveUnder(MoveUnder { issue, parent }) => {
             let resolved = check_parent(parent.as_ref())?;
             if let Some(parent) = &resolved
                 && held.is_under(parent, issue)
@@ -1573,12 +1524,12 @@ pub fn prepare(
             }
             *parent = resolved.map(Ref::from);
         }
-        IssuePartAction::SetProject(SetProject {
+        IssueListAction::SetProject(SetProject {
             project, goal: to, ..
         }) => {
             *to = goal(project.as_ref())?;
         }
-        IssuePartAction::Place(Place {
+        IssueListAction::Place(Place {
             issue,
             before,
             rank,
@@ -1593,18 +1544,18 @@ pub fn prepare(
             );
             *before = named_before.map(Ref::from);
         }
-        IssuePartAction::CreateMany(listed) => {
+        IssueListAction::CreateMany(listed) => {
             many::prepare_create(&mut listed.issues, tracker, &held)?;
         }
         // What `assign` and `comment` refuse of their arguments is refused
         // here too, where every part is held, naming the issue: several of
         // them invoked as one group are then written to every part they
         // name or to none.
-        IssuePartAction::Assign(issue_part::Assign { issue, assignee }) => {
+        IssueListAction::Assign(issue_list::Assign { issue, assignee }) => {
             checked_assignee(assignee.clone())
                 .map_err(|refusal| format!("{}: {refusal}", held.reads_as(issue)))?;
         }
-        IssuePartAction::Comment(issue_part::Comment {
+        IssueListAction::Comment(issue_list::Comment {
             issue,
             text,
             origin,
@@ -1718,102 +1669,32 @@ fn reference_parts(reference: &str) -> Vec<String> {
     parts
 }
 
-/// The part `action` changes, given the parts held, oldest first: the one
-/// holding the issue it names, or for a new issue the newest part (or the
-/// next, once that is full).
-///
-/// # Errors
-/// Refuses an action naming an issue no part held here keeps.
-pub fn part_for(
-    action: &<IssuePart as tilo_resource::Resource>::Action,
-    parts: &[(u64, Rc<IssuePart>)],
-) -> Result<u64, String> {
-    let holding = |issue: &Id| {
-        parts
-            .iter()
-            .rev()
-            .find(|(_, part)| part.issues.contains(issue))
-            .map(|(index, _)| *index)
-            .ok_or_else(|| no_issue().to_string())
-    };
-    let newest = || new_part(parts.last().map(|(index, part)| (*index, &**part)));
-    match &action.operation {
-        IssuePartAction::Create(_) => Ok(newest()),
-        // A list of new issues stays together, so it is one step.
-        IssuePartAction::CreateMany(listed) => Ok(many::part_for_new(&listed.issues, parts)),
-        other => match item_of(other) {
-            Some(issue) => holding(issue),
-            None => Ok(parts.last().map_or(0, |(index, _)| *index)),
-        },
-    }
-}
-
-/// The issue a verb on one issue names.
-#[must_use]
 /// The issue `action` names in its own parameter, to resolve where every
-/// part is held ([`item_of`] for the id it then names).
-fn item_of_mut(action: &mut IssuePartAction) -> Option<&mut Id> {
-    use issue_part as verb;
+/// issue is held.
+fn item_of_mut(action: &mut IssueListAction) -> Option<&mut Id> {
+    use issue_list as verb;
     match action {
-        IssuePartAction::Rename(verb::Rename { issue, .. })
-        | IssuePartAction::MoveUnder(verb::MoveUnder { issue, .. })
-        | IssuePartAction::Assign(verb::Assign { issue, .. })
-        | IssuePartAction::SetProject(verb::SetProject { issue, .. })
-        | IssuePartAction::Attach(verb::Attach { issue, .. })
-        | IssuePartAction::Detach(verb::Detach { issue, .. })
-        | IssuePartAction::AddLabel(verb::AddLabel { issue, .. })
-        | IssuePartAction::Place(verb::Place { issue, .. })
-        | IssuePartAction::Comment(verb::Comment { issue, .. })
-        | IssuePartAction::Link(verb::Link { issue, .. })
-        | IssuePartAction::LinkNote(verb::LinkNote { issue, .. })
-        | IssuePartAction::Delete(verb::Delete { issue })
-        | IssuePartAction::Plan(verb::Plan { issue, .. })
-        | IssuePartAction::SetPlace(verb::SetPlace { issue, .. })
-        | IssuePartAction::Wait(verb::Wait { issue, .. })
-        | IssuePartAction::Resume(verb::Resume { issue, .. })
-        | IssuePartAction::SetBudget(verb::SetBudget { issue, .. })
-        | IssuePartAction::SetPiecesAtOnce(verb::SetPiecesAtOnce { issue, .. })
-        | IssuePartAction::SessionBegan(verb::SessionBegan { issue })
-        | IssuePartAction::SessionEnded(verb::SessionEnded { issue, .. })
-        | IssuePartAction::Stop(verb::Stop { issue, .. }) => Some(issue),
-        _ => None,
-    }
-}
-
-pub fn item_of(action: &IssuePartAction) -> Option<&Id> {
-    use issue_part as verb;
-    match action {
-        IssuePartAction::Rename(verb::Rename { issue, .. })
-        | IssuePartAction::MoveUnder(verb::MoveUnder { issue, .. })
-        | IssuePartAction::Assign(verb::Assign { issue, .. })
-        | IssuePartAction::SetProject(verb::SetProject { issue, .. })
-        | IssuePartAction::Attach(verb::Attach { issue, .. })
-        | IssuePartAction::Detach(verb::Detach { issue, .. })
-        | IssuePartAction::AddLabel(verb::AddLabel { issue, .. })
-        | IssuePartAction::Place(verb::Place { issue, .. })
-        | IssuePartAction::Comment(verb::Comment { issue, .. })
-        | IssuePartAction::Link(verb::Link { issue, .. })
-        | IssuePartAction::LinkNote(verb::LinkNote { issue, .. })
-        | IssuePartAction::Delete(verb::Delete { issue })
-        | IssuePartAction::Plan(verb::Plan { issue, .. })
-        | IssuePartAction::SetPlace(verb::SetPlace { issue, .. })
-        | IssuePartAction::Wait(verb::Wait { issue, .. })
-        | IssuePartAction::Resume(verb::Resume { issue, .. })
-        | IssuePartAction::SetBudget(verb::SetBudget { issue, .. })
-        | IssuePartAction::SetPiecesAtOnce(verb::SetPiecesAtOnce { issue, .. })
-        | IssuePartAction::SessionBegan(verb::SessionBegan { issue })
-        | IssuePartAction::SessionEnded(verb::SessionEnded { issue, .. })
-        | IssuePartAction::Stop(verb::Stop { issue, .. }) => Some(issue),
-        // A field edit of one issue (its title, its description) names it
-        // in its path.
-        IssuePartAction::FieldEdit(edit) => match edit.path() {
-            [
-                tilo_resource::Segment::Field(field),
-                tilo_resource::Segment::Item(issue),
-                ..,
-            ] if field == "issues" => Some(issue),
-            _ => None,
-        },
+        IssueListAction::Rename(verb::Rename { issue, .. })
+        | IssueListAction::MoveUnder(verb::MoveUnder { issue, .. })
+        | IssueListAction::Assign(verb::Assign { issue, .. })
+        | IssueListAction::SetProject(verb::SetProject { issue, .. })
+        | IssueListAction::Attach(verb::Attach { issue, .. })
+        | IssueListAction::Detach(verb::Detach { issue, .. })
+        | IssueListAction::AddLabel(verb::AddLabel { issue, .. })
+        | IssueListAction::Place(verb::Place { issue, .. })
+        | IssueListAction::Comment(verb::Comment { issue, .. })
+        | IssueListAction::Link(verb::Link { issue, .. })
+        | IssueListAction::LinkNote(verb::LinkNote { issue, .. })
+        | IssueListAction::Delete(verb::Delete { issue })
+        | IssueListAction::Plan(verb::Plan { issue, .. })
+        | IssueListAction::SetPlace(verb::SetPlace { issue, .. })
+        | IssueListAction::Wait(verb::Wait { issue, .. })
+        | IssueListAction::Resume(verb::Resume { issue, .. })
+        | IssueListAction::SetBudget(verb::SetBudget { issue, .. })
+        | IssueListAction::SetPiecesAtOnce(verb::SetPiecesAtOnce { issue, .. })
+        | IssueListAction::SessionBegan(verb::SessionBegan { issue })
+        | IssueListAction::SessionEnded(verb::SessionEnded { issue, .. })
+        | IssueListAction::Stop(verb::Stop { issue, .. }) => Some(issue),
         _ => None,
     }
 }
@@ -1830,15 +1711,11 @@ pub fn chain() -> ui::resource::DocumentId {
     ui::resource::DocumentId::derived("issues", &ui::resource::DocumentId::workspace_default())
 }
 
-impl ui::framework::Chained for IssuePart {
+impl ui::framework::Chained for IssueList {
     type Base = Tracker;
 
     fn chain() -> ui::resource::DocumentId {
         chain()
-    }
-
-    fn part_for(action: &Self::Action, parts: &[(u64, Rc<Self>)]) -> Option<Result<u64, String>> {
-        Some(part_for(action, parts))
     }
 
     fn prepare(
@@ -1851,7 +1728,7 @@ impl ui::framework::Chained for IssuePart {
     }
 
     fn carry(_previous: u64, part: &Self) -> Option<tilo_resource::Invoke<Self>> {
-        Some(Self::START.with(issue_part::Start {
+        Some(Self::START.with(issue_list::Start {
             before: carried(part),
         }))
     }
@@ -1859,8 +1736,6 @@ impl ui::framework::Chained for IssuePart {
     /// The list and the board show every issue, so a window holds every
     /// part; a part bounds what one change costs, not what is held.
     const HELD_WHOLE: bool = true;
-
-    const LISTED: &'static [&'static str] = listing::LISTED;
 
     fn prepare_read(
         filter: &mut serde_json::Map<String, serde_json::Value>,

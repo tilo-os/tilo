@@ -18,9 +18,9 @@ use ui::prelude::*;
 use ui::tilo_reference::ResourceRef;
 use ui::tilo_resource::{self, NonBlank};
 
+use crate::issue_list::IssueList;
 pub use crate::model::TasksEffect;
 use crate::model::{NOTES, Tracker};
-use crate::part::IssuePart;
 
 /// The kind of the resource that makes a note: the pages Notes keeps its
 /// notes in, published as one resource.
@@ -79,7 +79,7 @@ fn write_note(cx: &mut EffectCx<Tracker>, window: &crate::Window, issue: Id) -> 
             .ok_or_else(|| format!("`{note}` names no note"))?;
         let app = NonBlank::parse(NOTES).ok_or_else(|| "Notes has no app id".to_owned())?;
         let resource = NonBlank::parse(&note).ok_or_else(|| format!("`{note}` names no note"))?;
-        linking.submit(IssuePart::LINK.with((issue, app, kind, resource, title, None::<String>)));
+        linking.submit(IssueList::LINK.with((issue, app, kind, resource, title, None::<String>)));
         let _ = cx;
         Ok(Effected::value(json!({ "resource": note })))
     }))

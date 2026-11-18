@@ -80,14 +80,14 @@ pub fn entries<'a>(pages: impl Iterator<Item = (&'a Id, &'a Page)>) -> Vec<Searc
 mod tests {
     use super::*;
     use crate::model::PageId;
-    use crate::part::PagePart;
+    use crate::note_list::NoteList;
     use ui::search::SearchProvider;
     use ui::tilo_resource::{Invoke, Replica};
     use ui::widget::BlockContent;
 
     /// A notebook with three titled notes.
-    fn populated() -> (Replica<PagePart>, Vec<PageId>) {
-        let mut notebook = Replica::<PagePart>::new();
+    fn populated() -> (Replica<NoteList>, Vec<PageId>) {
+        let mut notebook = Replica::<NoteList>::new();
         let pages: Vec<PageId> = ["Grocery list", "Meeting notes", "Trip planning"]
             .into_iter()
             .map(|title| add(&mut notebook, title))
@@ -95,7 +95,7 @@ mod tests {
         (notebook, pages)
     }
 
-    fn add(notebook: &mut Replica<PagePart>, title: &str) -> PageId {
+    fn add(notebook: &mut Replica<NoteList>, title: &str) -> PageId {
         let id = PageId::new_v4();
         notebook
             .apply_action(&crate::actions::create_page_action(id, None, title))
@@ -104,7 +104,7 @@ mod tests {
     }
 
     /// `page`'s body made of paragraphs `texts`.
-    fn with_blocks(notebook: &mut Replica<PagePart>, page: PageId, texts: &[&str]) {
+    fn with_blocks(notebook: &mut Replica<NoteList>, page: PageId, texts: &[&str]) {
         let blocks: Vec<BlockContent> = texts
             .iter()
             .map(|text| BlockContent::paragraph("", *text))
@@ -114,8 +114,8 @@ mod tests {
             .unwrap();
     }
 
-    fn search(notebook: &Replica<PagePart>) -> impl SearchProvider + use<> {
-        ui::framework::testing::search_source::<PagePart>(notebook.state().unwrap().search())
+    fn search(notebook: &Replica<NoteList>) -> impl SearchProvider + use<> {
+        ui::framework::testing::search_source::<NoteList>(notebook.state().unwrap().search())
     }
 
     tilo_test_env::scenario! {
@@ -136,7 +136,7 @@ mod tests {
                 );
             }
             {
-                let mut notebook = Replica::<PagePart>::new();
+                let mut notebook = Replica::<NoteList>::new();
                 add(&mut notebook, "");
                 let hits = search(&notebook).search("untitled");
                 assert_eq!(
@@ -200,7 +200,7 @@ mod tests {
     fn a_note_nobody_named_reads_in_the_readers_own_language() {
         crate::metadata::CATALOG.ensure();
         CATALOG.set_locale("de");
-        let mut notebook = Replica::<PagePart>::new();
+        let mut notebook = Replica::<NoteList>::new();
         let id = add(&mut notebook, "");
         assert!(
             notebook

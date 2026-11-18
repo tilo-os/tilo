@@ -36,7 +36,7 @@ fn call(app: &mut App, resource: &str, id: &str, args: serde_json::Value) {
 
 /// Where the notes are published: what a note is made on.
 fn kind() -> String {
-    notes::part::chain_resource()
+    notes::note_list::chain_resource()
 }
 
 /// The published resource of note `page`.

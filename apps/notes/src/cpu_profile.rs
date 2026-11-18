@@ -73,8 +73,8 @@ pub(super) fn author(app: &mut App, actions: impl IntoIterator<Item = crate::act
 /// Apply a note's `action` through the notes' published chain, as a control
 /// or an agent addresses it.
 pub(super) fn invoke_page(app: &mut App, action: &crate::actions::Action) {
-    app.invoke_child::<crate::PagePart>(
-        &crate::part::chain_resource(),
+    app.invoke_child::<crate::NoteList>(
+        &crate::note_list::chain_resource(),
         ui::tilo_resource::Invoke::apply(action).unwrap(),
     )
     .unwrap();
@@ -83,11 +83,11 @@ pub(super) fn invoke_page(app: &mut App, action: &crate::actions::Action) {
 /// A note's `action` from another member, arriving in the part keeping its
 /// note as sync delivers it; no frame is drawn.
 pub(super) fn arrives(app: &mut App, action: &crate::actions::Action) {
-    let parts = app.chain_parts::<crate::PagePart>();
+    let parts = app.chain_parts::<crate::NoteList>();
     let mut action = action.clone();
-    crate::part::prepare(&mut action, &app.state(), &parts, None).unwrap();
-    let index = crate::part::part_for(&action, &parts).unwrap();
-    app.replica_arrives(&crate::part::chain().part(index), |doc| {
+    crate::note_list::prepare(&mut action, &app.state(), &parts, None).unwrap();
+    let index = ui::framework::placed::<crate::NoteList>(&action, &parts);
+    app.replica_arrives(&crate::note_list::chain().part(index), |doc| {
         tilo_actions::apply_local_by(
             doc,
             &action,
@@ -105,9 +105,9 @@ fn stored(app: &App) -> Vec<(Vec<automerge::ChangeHash>, usize)> {
     use automerge::transaction::Transactable as _;
     let read = |doc: &ui::tilo_resource::Doc| (doc.base_heads(), doc.pending_ops());
     let mut held = vec![app.read_document(read)];
-    for (index, _) in app.chain_parts::<crate::PagePart>() {
+    for (index, _) in app.chain_parts::<crate::NoteList>() {
         held.push(
-            app.read_document_of(&crate::part::chain().part(index), read)
+            app.read_document_of(&crate::note_list::chain().part(index), read)
                 .unwrap(),
         );
     }
@@ -116,7 +116,7 @@ fn stored(app: &App) -> Vec<(Vec<automerge::ChangeHash>, usize)> {
 
 /// Every note, in notebook order.
 fn listed(app: &App) -> Vec<crate::model::PageMeta> {
-    crate::read::workspace(&app.state(), &app.chain_parts::<crate::PagePart>())
+    crate::read::workspace(&app.state(), &app.chain_parts::<crate::NoteList>())
         .data
         .pages
 }
@@ -127,11 +127,11 @@ fn part_doc<T>(
     page: crate::PageId,
     read: impl FnOnce(&ui::tilo_resource::Doc) -> T,
 ) -> T {
-    let parts = app.chain_parts::<crate::PagePart>();
+    let parts = app.chain_parts::<crate::NoteList>();
     let index = crate::Pages::of(&parts)
         .part_of(&crate::notebook::page_id(page))
         .expect("a part keeps the note");
-    app.read_document_of(&crate::part::chain().part(index), read)
+    app.read_document_of(&crate::note_list::chain().part(index), read)
         .expect("the part is held")
 }
 
@@ -923,7 +923,7 @@ fn profile_search_and_read(app: &mut OwnedApp, notes: usize) {
             let began = ui::time::now();
             let (notebook, parts) =
                 ui::tilo_resource::profiling::measure("notebook_read.resource", || {
-                    (app.state(), app.chain_parts::<crate::PagePart>())
+                    (app.state(), app.chain_parts::<crate::NoteList>())
                 });
             let projected =
                 ui::tilo_resource::profiling::measure("notebook_read.workspace", || {

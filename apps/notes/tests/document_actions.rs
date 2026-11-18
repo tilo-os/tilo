@@ -64,7 +64,7 @@ fn an_agent_turns_the_todo_page_into_a_checklist_ticks_items_and_rewords_one() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     app.call_on(
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "new-note",
         json!({ "title": "Groceries" }),
     )
@@ -73,7 +73,7 @@ fn an_agent_turns_the_todo_page_into_a_checklist_ticks_items_and_rewords_one() {
     // A page with a title and a Markdown body.
     let created = call(
         &mut app,
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "create-page",
         json!({ "title": "Todo", "markdown": "# Todo\n\nbuy milk\n\nbuy eggs\n\ncall mum" }),
     );
@@ -216,7 +216,7 @@ fn a_bad_block_is_refused_by_name_and_writes_nothing() {
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let created = call(
         &mut app,
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "create-page",
         json!({ "title": "Todo", "markdown": "one" }),
     );
@@ -240,7 +240,7 @@ fn a_selection_in_a_note_is_shared_as_the_place_replace_range_edits() {
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let created = call(
         &mut app,
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "create-page",
         json!({ "title": "Ideas", "markdown": "# Ideas\nsee the search docs for xy\n\nlast line" }),
     );
@@ -341,7 +341,7 @@ fn a_selection_in_a_note_is_shared_as_the_place_replace_range_edits() {
 fn undo(app: &mut TestApp<NotesShell>) {
     call_quiet(
         app,
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "undo",
         json!({ "part": 0 }),
     );
@@ -380,7 +380,7 @@ fn an_agent_makes_converts_and_ticks_checklist_items_and_reads_them_back_in_orde
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let created = call(
         &mut app,
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "create-page",
         json!({ "title": "Errands", "markdown": "pack bags\n\nbook train\n\nwater plants" }),
     );
@@ -450,7 +450,7 @@ fn the_notebook_read_lists_sibling_notes_in_order_and_its_ids_move_them() {
     for title in ["Alpha", "Beta", "Gamma"] {
         call(
             &mut app,
-            &notes::part::chain_resource(),
+            &notes::note_list::chain_resource(),
             "create-page",
             json!({ "title": title }),
         );

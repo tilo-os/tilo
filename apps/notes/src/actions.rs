@@ -1,7 +1,7 @@
 //! What the window and tests build to change the notebook, and what the
 //! notebook's notes say in the editor's terms.
 //!
-//! A note's change is an action of the part keeping it ([`PagePart`]): a
+//! A note's change is an action of the part keeping it ([`NoteList`]): a
 //! field edit at a path (a body's rich-text op, a tag on a note) or one of
 //! its verbs, carried out through the chain of parts, which sends it to the
 //! part holding the note. A tag's is the [`Notebook`]'s. The builders here
@@ -19,12 +19,12 @@ use ui::widget::marks::{Mark, MarkSpan};
 use ui::widget::{BlockContent, BlockKind};
 
 use crate::model::{PageId, PageMeta, TagId};
+use crate::note_list::{NoteList, NoteListAction, note_list};
 use crate::notebook::{self, Notebook, NotebookAction, Page, Tag, page_id};
-use crate::part::{PagePart, PagePartAction, page_part};
 
 /// A note's action: a field edit or a verb of the part keeping it, stamped
 /// with when it was authored.
-pub type Action = <PagePart as Resource>::Action;
+pub type Action = <NoteList as Resource>::Action;
 
 /// The notebook's own action: a tag's.
 pub type TagAction = <Notebook as Resource>::Action;
@@ -129,7 +129,7 @@ pub(crate) fn find_text(
             .ok_or_else(|| "the note has no part".to_owned())?;
         let mut found = Err("the note's part is not held here".to_owned());
         read(part, &mut |doc| {
-            found = crate::part::body_object(doc, meta.id)
+            found = crate::note_list::body_object(doc, meta.id)
                 .ok_or_else(|| "the note has no body".to_owned())
                 .and_then(|body| tilo_document::block_actions::find_under(doc, &body, text, false));
         });
@@ -154,13 +154,13 @@ pub(crate) fn find_text(
 /// under the chain of parts.
 #[must_use]
 pub fn page_resource_id(page: PageId) -> String {
-    items::item_resource_id::<PagePart>("pages", &page_id(page))
+    items::item_resource_id::<NoteList>("pages", &page_id(page))
 }
 
 /// The note a published resource id names.
 #[must_use]
 pub fn page_of_resource(id: &str) -> Option<PageId> {
-    match items::item_of_resource::<PagePart>(id) {
+    match items::item_of_resource::<NoteList>(id) {
         Some(("pages", item)) => notebook::page_of(&item),
         _ => None,
     }
@@ -188,15 +188,15 @@ pub fn tag_resource_id(tag: TagId) -> String {
     items::item_resource_id::<Notebook>("tags", &page_id(tag))
 }
 
-fn stamped(operation: PagePartAction) -> Action {
+fn stamped(operation: NoteListAction) -> Action {
     Stamped {
         operation,
         now_ms: 0,
     }
 }
 
-fn edit(edit: ui::tilo_resource::Edit<PagePart>) -> Action {
-    stamped(PagePartAction::FieldEdit(edit))
+fn edit(edit: ui::tilo_resource::Edit<NoteList>) -> Action {
+    stamped(NoteListAction::FieldEdit(edit))
 }
 
 fn tag_edit(edit: ui::tilo_resource::Edit<Notebook>) -> TagAction {
@@ -216,7 +216,7 @@ fn tag_edit(edit: ui::tilo_resource::Edit<Notebook>) -> TagAction {
 )]
 #[must_use]
 pub fn encode(action: &Action) -> EncodedAction {
-    ui::tilo_resource::encode::<PagePart>(action).expect("a note's action serializes")
+    ui::tilo_resource::encode::<NoteList>(action).expect("a note's action serializes")
 }
 
 /// The wire form of the tag action `action`, for applying it to the
@@ -237,7 +237,7 @@ pub fn encode_tag(action: &TagAction) -> EncodedAction {
 /// window's New, which knows the id it opens next.
 #[must_use]
 pub fn create_page_action(id: PageId, parent: Option<PageId>, title: &str) -> Action {
-    stamped(PagePartAction::NewNote(page_part::NewNote {
+    stamped(NoteListAction::NewNote(note_list::NewNote {
         title: title.to_owned(),
         parent: parent.map(page_id),
         note: Some(page_id(id)),
@@ -256,7 +256,7 @@ pub fn create_page_action(id: PageId, parent: Option<PageId>, title: &str) -> Ac
 #[must_use]
 pub fn edit_body_action(page: PageId, op: impl std::borrow::Borrow<RichTextAction>) -> Action {
     edit(
-        PagePart::paths()
+        NoteList::paths()
             .pages
             .item(&page_id(page))
             .body
@@ -284,7 +284,7 @@ pub fn write_body_action(page: PageId, blocks: &[BlockContent]) -> Action {
 /// Rename note `page`; links to it read the new title.
 #[must_use]
 pub fn rename_page_action(page: PageId, title: &str) -> Action {
-    stamped(PagePartAction::Rename(page_part::Rename {
+    stamped(NoteListAction::Rename(note_list::Rename {
         page: page_id(page),
         title: title.to_owned(),
     }))
@@ -293,7 +293,7 @@ pub fn rename_page_action(page: PageId, title: &str) -> Action {
 /// Delete note `page` and every note under it.
 #[must_use]
 pub fn delete_page_action(page: PageId) -> Action {
-    stamped(PagePartAction::Delete(page_part::Delete {
+    stamped(NoteListAction::Delete(note_list::Delete {
         page: page_id(page),
     }))
 }
@@ -301,7 +301,7 @@ pub fn delete_page_action(page: PageId) -> Action {
 /// Put note `page` under `parent`, before `before` (last when none).
 #[must_use]
 pub fn move_page_action(page: PageId, parent: Option<PageId>, before: Option<PageId>) -> Action {
-    stamped(PagePartAction::MoveNote(page_part::MoveNote {
+    stamped(NoteListAction::MoveNote(note_list::MoveNote {
         page: page_id(page),
         parent: parent.map(page_id),
         before: before.map(page_id),
@@ -312,7 +312,7 @@ pub fn move_page_action(page: PageId, parent: Option<PageId>, before: Option<Pag
 /// Copy note `page` and every note under it, right after it.
 #[must_use]
 pub fn duplicate_action(page: PageId) -> Action {
-    stamped(PagePartAction::Duplicate(page_part::Duplicate {
+    stamped(NoteListAction::Duplicate(note_list::Duplicate {
         page: page_id(page),
         copies: None,
     }))
@@ -322,7 +322,7 @@ pub fn duplicate_action(page: PageId) -> Action {
 /// note `page`, described by `alt`.
 #[must_use]
 pub fn place_image_action(page: PageId, bytes: Vec<u8>, alt: Option<&str>) -> Action {
-    stamped(PagePartAction::PlaceImage(page_part::PlaceImage {
+    stamped(NoteListAction::PlaceImage(note_list::PlaceImage {
         page: page_id(page),
         bytes: Bytes::to_keep(bytes),
         alt: alt.map(str::to_owned),
@@ -332,7 +332,7 @@ pub fn place_image_action(page: PageId, bytes: Vec<u8>, alt: Option<&str>) -> Ac
 /// Keep the picture `bytes` with the notebook, for a body to show.
 #[must_use]
 pub fn keep_image_action(bytes: Vec<u8>) -> Action {
-    stamped(PagePartAction::KeepImage(page_part::KeepImage {
+    stamped(NoteListAction::KeepImage(note_list::KeepImage {
         bytes: Bytes::to_keep(bytes),
     }))
 }
@@ -345,7 +345,7 @@ pub fn show_image(
     picture: Bytes,
     show: impl std::borrow::Borrow<RichTextAction>,
 ) -> Action {
-    stamped(PagePartAction::ShowImage(page_part::ShowImage {
+    stamped(NoteListAction::ShowImage(note_list::ShowImage {
         page: page_id(page),
         bytes: picture,
         edit: show.borrow().clone(),
@@ -361,7 +361,7 @@ pub fn import_markdown_action(
     markdown: &str,
     images: Vec<Vec<u8>>,
 ) -> Action {
-    stamped(PagePartAction::ImportMarkdown(page_part::ImportMarkdown {
+    stamped(NoteListAction::ImportMarkdown(note_list::ImportMarkdown {
         title: title.to_owned(),
         markdown: markdown.to_owned(),
         images: images.into_iter().map(Bytes::to_keep).collect(),
@@ -396,7 +396,7 @@ pub fn delete_tag_action(id: TagId) -> TagAction {
 /// Give note `page` tag `tag`, or take it off.
 #[must_use]
 pub fn set_tag_assignment_action(page: PageId, tag: TagId, assigned: bool) -> Action {
-    let tags = PagePart::paths().pages.item(&page_id(page)).tags;
+    let tags = NoteList::paths().pages.item(&page_id(page)).tags;
     edit(if assigned {
         tags.insert(&page_id(tag))
     } else {

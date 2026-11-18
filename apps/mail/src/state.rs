@@ -23,8 +23,8 @@ use ui::framework::Dispatcher;
 
 use crate::actions::{IngestBaseline, ServerUpdate};
 use crate::engine::EngineRequest;
+use crate::message_states::MessageStates;
 use crate::model::{AccountConfig, Draft, Folder, Mailbox, MessageId, Thread};
-use crate::part::MessagePart;
 use crate::resource::{Mail, mailbox};
 use ui::framework::Submit;
 
@@ -296,14 +296,14 @@ pub struct MailState {
     pub(crate) dispatcher: Option<Dispatcher<Mail>>,
     /// The parts the messages are kept in, beside the mailbox: what the
     /// window writes a message's changes through.
-    pub(crate) chain: Option<ui::framework::Chain<MessagePart>>,
+    pub(crate) chain: Option<ui::framework::Chain<MessageStates>>,
     /// Every message the parts hold, as one, with the chain's revision it
     /// was read at: read again only once a part changed.
-    messages: std::cell::RefCell<Option<(u64, std::rc::Rc<MessagePart>)>>,
+    messages: std::cell::RefCell<Option<(u64, std::rc::Rc<MessageStates>)>>,
     /// The parts last shown on the loaded mail ([`Self::show_parts`]), and
     /// the content arrivals they were shown at.
     shown_parts: (
-        std::collections::BTreeMap<u64, std::rc::Rc<MessagePart>>,
+        std::collections::BTreeMap<u64, std::rc::Rc<MessageStates>>,
         Option<u64>,
     ),
 
@@ -400,7 +400,7 @@ impl MailState {
     pub fn new_sample(avatars: crate::avatars::Avatars) -> Self {
         let mut state = Self::from_fixture(&crate::sample::MailFixture::bundled(), avatars);
         state.dispatcher = Some(ui::framework::testing::dispatcher("so.tilo.mail"));
-        state.chain = crate::part::detached_chain();
+        state.chain = crate::message_states::detached_chain();
         state
     }
 
@@ -483,7 +483,7 @@ impl MailState {
     /// Every message the mailbox's parts hold, as one: what the window
     /// shows flags, folders and held mail by. Read again only once a part
     /// changed.
-    pub(crate) fn messages(&self) -> std::rc::Rc<MessagePart> {
+    pub(crate) fn messages(&self) -> std::rc::Rc<MessageStates> {
         let Some(chain) = &self.chain else {
             return std::rc::Rc::default();
         };
@@ -493,7 +493,7 @@ impl MailState {
         {
             return std::rc::Rc::clone(messages);
         }
-        let messages = std::rc::Rc::new(MessagePart::of(&chain.parts()));
+        let messages = std::rc::Rc::new(MessageStates::of(&chain.parts()));
         *self.messages.borrow_mut() = Some((revision, std::rc::Rc::clone(&messages)));
         messages
     }
@@ -543,7 +543,7 @@ impl MailState {
                 .rev()
                 .find_map(|(_, part)| part.messages.get(&key))
             {
-                crate::part::show_flags(&mut self.mailbox, id, state);
+                crate::message_states::show_flags(&mut self.mailbox, id, state);
             }
         }
         self.shown_parts = (shown, Some(arrivals));
@@ -558,7 +558,7 @@ impl MailState {
 
     /// Change messages in the parts that hold them, as the person's gesture;
     /// written once the frame is done.
-    pub(crate) fn submit_messages(&self, submit: impl Submit<MessagePart>) {
+    pub(crate) fn submit_messages(&self, submit: impl Submit<MessageStates>) {
         let Some(chain) = &self.chain else {
             return;
         };
@@ -577,8 +577,8 @@ impl MailState {
                 Mail::SERVER_APPLIED.with(mailbox::ServerApplied { update }),
             );
         } else {
-            self.submit_messages(MessagePart::SERVER_APPLIED.with(
-                crate::part::message_part::ServerApplied {
+            self.submit_messages(MessageStates::SERVER_APPLIED.with(
+                crate::message_states::message_states::ServerApplied {
                     updates: vec![update],
                 },
             ));
@@ -649,7 +649,7 @@ impl MailState {
 
     fn ingest(&self, _doc: &mut ui::widget::Edits<'_>, messages: Vec<IngestBaseline>) {
         self.submit_messages(
-            MessagePart::INGEST.with(crate::part::message_part::Ingest { messages }),
+            MessageStates::INGEST.with(crate::message_states::message_states::Ingest { messages }),
         );
     }
 
@@ -685,8 +685,8 @@ impl MailState {
 
     fn message_paths(
         id: MessageId,
-    ) -> <crate::resource::MessageState as ui::tilo_resource::Model>::Paths<MessagePart> {
-        MessagePart::paths()
+    ) -> <crate::resource::MessageState as ui::tilo_resource::Model>::Paths<MessageStates> {
+        MessageStates::paths()
             .messages
             .item(&ui::tilo_resource::Id::from_raw(id.to_string()))
     }
@@ -1083,8 +1083,8 @@ impl MailState {
                 for id in &ids {
                     self.mailbox.mark_read(*id, read);
                 }
-                self.submit_messages(MessagePart::MARK_READ.with(
-                    crate::part::message_part::MarkRead {
+                self.submit_messages(MessageStates::MARK_READ.with(
+                    crate::message_states::message_states::MarkRead {
                         messages: encoded_ids,
                         read,
                     },
@@ -1095,8 +1095,8 @@ impl MailState {
                 for id in &ids {
                     self.mailbox.move_to(*id, Folder::Archive);
                 }
-                self.submit_messages(MessagePart::ARCHIVE.with(
-                    crate::part::message_part::Archive {
+                self.submit_messages(MessageStates::ARCHIVE.with(
+                    crate::message_states::message_states::Archive {
                         messages: encoded_ids,
                     },
                 ));
@@ -1124,8 +1124,8 @@ impl MailState {
                     for id in &move_to_trash {
                         self.mailbox.move_to(*id, Folder::Trash);
                     }
-                    self.submit_messages(MessagePart::TRASH.with(
-                        crate::part::message_part::Trash {
+                    self.submit_messages(MessageStates::TRASH.with(
+                        crate::message_states::message_states::Trash {
                             messages: move_to_trash.iter().map(ToString::to_string).collect(),
                         },
                     ));
@@ -1141,9 +1141,11 @@ impl MailState {
                 for id in &ids {
                     self.mailbox.purge(*id);
                 }
-                self.submit_messages(MessagePart::PURGE.with(crate::part::message_part::Purge {
-                    messages: encoded_ids,
-                }));
+                self.submit_messages(MessageStates::PURGE.with(
+                    crate::message_states::message_states::Purge {
+                        messages: encoded_ids,
+                    },
+                ));
                 self.bulk_selection.clear();
                 self.reselect_after_remove(doc);
                 ids.len()
@@ -1208,12 +1210,12 @@ impl MailState {
         }
         self.register_loaded_target(doc, id);
         self.mailbox.mark_read(id, read);
-        self.submit_messages(
-            MessagePart::MARK_READ.with(crate::part::message_part::MarkRead {
+        self.submit_messages(MessageStates::MARK_READ.with(
+            crate::message_states::message_states::MarkRead {
                 messages: vec![id.to_string()],
                 read,
-            }),
-        );
+            },
+        ));
     }
 
     pub fn toggle_star(&mut self, doc: &mut ui::widget::Edits<'_>, id: MessageId) {
@@ -1285,8 +1287,8 @@ impl MailState {
                         ),
                     );
                 } else if purging {
-                    self.submit_messages(MessagePart::PURGE.with(
-                        crate::part::message_part::Purge {
+                    self.submit_messages(MessageStates::PURGE.with(
+                        crate::message_states::message_states::Purge {
                             messages: vec![id.to_string()],
                         },
                     ));
@@ -1372,7 +1374,7 @@ mod tests {
     }
 
     /// The window's parts, where its messages' changes are written.
-    fn parts(st: &MailState) -> &ui::framework::Chain<crate::part::MessagePart> {
+    fn parts(st: &MailState) -> &ui::framework::Chain<crate::message_states::MessageStates> {
         st.chain
             .as_ref()
             .expect("a test window keeps its messages in parts")

@@ -29,7 +29,7 @@ pub(crate) fn apply_part_at(
     workspace: &mut Workspace,
     author: &str,
     now_ms: i64,
-    invoke: Invoke<crate::parts::ChatPart>,
+    invoke: Invoke<crate::parts::ChatMessages>,
 ) -> Result<u64, ui::tilo_actions::ApiError> {
     workspace.apply_part_at(&ui::tilo_resource::MemberId::person(author), now_ms, invoke)
 }
@@ -39,7 +39,7 @@ pub(crate) fn apply_part_at(
 pub(crate) fn apply_part_as(
     workspace: &mut Workspace,
     author: &str,
-    invoke: Invoke<crate::parts::ChatPart>,
+    invoke: Invoke<crate::parts::ChatMessages>,
 ) -> Result<u64, ui::tilo_actions::ApiError> {
     workspace.apply_part_as(&ui::tilo_resource::MemberId::person(author), invoke)
 }
@@ -100,7 +100,7 @@ pub(crate) fn stored_messages(records: &ui::resource::ResourceStore) -> crate::m
             .filter_map(|index| {
                 let part = records
                     .read(&crate::parts::part(index), |doc| {
-                        crate::parts::ChatPart::read(doc).ok()
+                        crate::parts::ChatMessages::read(doc).ok()
                     })
                     .flatten()?;
                 Some((index, std::rc::Rc::new(part)))
@@ -163,7 +163,7 @@ pub(crate) fn chain() -> String {
 
 /// The id of the item the chain publishes for the message `id`.
 pub(crate) fn message_item(id: &str) -> String {
-    ui::tilo_resource::items::item_resource_id::<crate::parts::ChatPart>(
+    ui::tilo_resource::items::item_resource_id::<crate::parts::ChatMessages>(
         "messages",
         &Id::from_raw(id),
     )
@@ -251,8 +251,8 @@ pub(crate) fn agent_reply() -> String {
 pub(crate) fn record_work(
     summons: &str,
     work: &crate::model::AgentWork,
-) -> Invoke<crate::parts::ChatPart> {
-    crate::parts::ChatPart::RECORD_WORK.with(crate::messages::chat_part::RecordWork {
+) -> Invoke<crate::parts::ChatMessages> {
+    crate::parts::ChatMessages::RECORD_WORK.with(crate::messages::chat_messages::RecordWork {
         message: Id::from_raw(summons),
         work: work_update(work),
         say: None,

@@ -17,8 +17,8 @@ use ui::tilo_resource::{Id, Invoke};
 use crate::app::{ChatApp, Focus};
 use crate::chat::Chat;
 use crate::effects::{ChatEffect, item_row_id};
-use crate::messages::chat_part;
-use crate::parts::ChatPart;
+use crate::messages::chat_messages;
+use crate::parts::ChatMessages;
 
 impl ChatApp {
     /// The person `key` (their root key) names here, and the one conversation
@@ -94,7 +94,7 @@ impl ChatApp {
         }
     }
 
-    fn messages_chain(&self) -> Result<&ui::framework::Chain<ChatPart>, String> {
+    fn messages_chain(&self) -> Result<&ui::framework::Chain<ChatMessages>, String> {
         self.chain
             .as_ref()
             .ok_or_else(|| crate::i18n::t("chat-direct-unavailable"))
@@ -316,8 +316,8 @@ fn post(
     parent: Option<Id>,
     body: Option<Vec<tilo_document::ClipBlock>>,
     attachments: Vec<tilo_reference::Attached>,
-) -> Invoke<ChatPart> {
-    ChatPart::POST.with(chat_part::Post {
+) -> Invoke<ChatMessages> {
+    ChatMessages::POST.with(chat_messages::Post {
         message: crate::messages::NewMessage {
             channel: id.clone(),
             text: text.to_owned(),

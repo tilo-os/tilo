@@ -9,8 +9,9 @@ use ui::tilo_resource::MemberId;
 
 use crate::ChatShell;
 use crate::chat::{CHAT_CHANNEL, MAX_MESSAGE_TEXT_BYTES, chat};
-use crate::parts::{ChatPart, PART_TEXT_BYTES, ReadMark};
+use crate::parts::{ChatMessages, ReadMark};
 use crate::resource::Chat;
+use ui::framework::PART_BYTES as PART_TEXT_BYTES;
 
 type Window = TestApp<ChatShell>;
 
@@ -23,7 +24,7 @@ fn long_post(n: usize) -> String {
     line.repeat(MAX_MESSAGE_TEXT_BYTES / line.len())
 }
 
-fn chain_of(window: &mut Window) -> Chain<ChatPart> {
+fn chain_of(window: &mut Window) -> Chain<ChatMessages> {
     window
         .with_chat(|surface| surface.chain.clone())
         .flatten()

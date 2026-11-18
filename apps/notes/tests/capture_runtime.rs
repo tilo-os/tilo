@@ -310,7 +310,7 @@ fn accessible_block_text_edits_and_grapheme_selection_use_the_canonical_history_
     f.store
         .try_open_resource(&ui::resource::DocumentCheckout::new(
             f.part(),
-            ui::resource::ResourceType::new(<notes::PagePart as ui::tilo_resource::Resource>::KIND),
+            ui::resource::ResourceType::new(<notes::NoteList as ui::tilo_resource::Resource>::KIND),
         ))
         .unwrap();
     let reopened = f

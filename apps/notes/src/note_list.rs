@@ -1,28 +1,20 @@
-//! The notebook's notes, kept in numbered parts beside the notebook.
+//! The notebook's notes: a collection the framework keeps beside the
+//! notebook, which decides where each note is stored, so that an edit of one
+//! note of thousands costs that note. The notebook's own resource
+//! ([`Notebook`]) keeps the tags above them.
 //!
-//! One record cannot hold every note a workspace ever wrote at a cost that
-//! stays flat: every reader of a record loads, verifies and diffs all of it,
-//! so an edit of one note of thousands would cost thousands. The notes live
-//! in a chain of [`PagePart`] records instead (`tilo_app`'s `Chained`), each
-//! holding up to [`PART_PAGES`] notes or [`PART_TEXT_BYTES`] of their titles
-//! and bodies; an edit touches the one part that holds its note. The
-//! notebook's own record ([`Notebook`]) keeps the tags above them.
-//!
-//! - **Where a new note goes.** To the newest part, unless it is full
-//!   ([`new_part`]): then to the next. Two writers starting the same part
-//!   start the same record, so their notes meet there.
-//! - **Where a change goes.** To the part holding the note it names.
 //! - **Order.** Each note carries its place among the notes beside it
 //!   ([`Page::rank`]), set where it is made or moved from every note held
-//!   there ([`prepare`]), so the tree reads across parts.
-//! - **What reads across parts.** A note whose parent, or any note above
-//!   it, is gone is not shown, wherever notes are read ([`Pages`]); it comes
-//!   back when the delete is undone. A tag a note carries that the notebook
-//!   no longer names is not shown either. Neither is written into other
-//!   parts.
+//!   there ([`prepare`]), so the tree reads across them all.
+//! - **What reads across the collection.** A note whose parent, or any note
+//!   above it, is gone is not shown, wherever notes are read ([`Pages`]); it
+//!   comes back when the delete is undone. A tag a note carries that the
+//!   notebook no longer names is not shown either. Neither is written
+//!   anywhere else.
 //! - **What a change means elsewhere.** Renaming a note relabels the links to
-//!   it in every part holding one ([`spread`]), each part's change its own
-//!   step there.
+//!   it wherever one is kept ([`spread`]), each such change its own step.
+//! - **Copies and appends** are kept beside the note they copy or add to
+//!   ([`Chained::beside`](ui::framework::Chained::beside)).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
@@ -43,18 +35,10 @@ use crate::notebook::{
     page_id, page_of,
 };
 
-/// Notes a part holds before the next one starts.
-pub const PART_PAGES: usize = 200;
-
-/// Text, in bytes, a part's notes hold (titles and bodies) before the next
-/// one starts: what keeps one part, and so one edit, cheap whatever its
-/// notes say.
-pub const PART_TEXT_BYTES: usize = 512 * 1024;
-
-/// One part of the notebook's notes: every note made while it was the
-/// newest, and everything done to them since.
+/// The notebook's notes the engine keeps in one of its parts: every
+/// note made while it was the newest, and everything done to them since.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct PagePart {
+pub struct NoteList {
     /// Notes
     ///
     /// Each note is a storage unit of its own.
@@ -165,16 +149,7 @@ pub struct ImportedNote {
     pub images: Vec<Bytes>,
 }
 
-impl PagePart {
-    /// The text its notes hold, in bytes: titles and bodies.
-    #[must_use]
-    pub fn text_bytes(&self) -> usize {
-        self.pages
-            .values()
-            .map(|page| page.title.len().saturating_add(page.body.text().len()))
-            .sum()
-    }
-
+impl NoteList {
     fn page_mut(&mut self, page: &Id) -> Result<&mut Page, Refusal> {
         self.pages.get_mut(page).ok_or_else(no_page)
     }
@@ -311,21 +286,6 @@ fn relabel_ops(page: &Page, target: PageId, title: &str) -> Vec<RichTextAction> 
     ops
 }
 
-/// The part a new note goes to, given the newest part held (its number and
-/// state): that part, or the next once it is full.
-#[must_use]
-pub fn new_part(head: Option<(u64, &PagePart)>) -> u64 {
-    match head {
-        None => 0,
-        Some((index, part))
-            if part.pages.len() >= PART_PAGES || part.text_bytes() >= PART_TEXT_BYTES =>
-        {
-            index.saturating_add(1)
-        }
-        Some((index, _)) => index,
-    }
-}
-
 fn no_page() -> Refusal {
     Refusal::new("no such note")
 }
@@ -396,13 +356,13 @@ fn note_key(id: Id) -> Id {
 
 #[resource(
     kind = "notes.pages",
-    params = page_part,
-    search = PagePart::search,
-    read_content_in_doc = PagePart::read_note,
-    answer = PagePart::created_page,
+    params = note_list,
+    search = NoteList::search,
+    read_content_in_doc = NoteList::read_note,
+    answer = NoteList::created_page,
     effects = crate::effect::NotesEffect
 )]
-impl PagePart {
+impl NoteList {
     /// New note
     ///
     /// A note titled `title`, after the notes already under `parent` (a
@@ -1003,7 +963,7 @@ impl PagePart {
     }
 }
 
-impl PagePart {
+impl NoteList {
     /// Put `page` where `place` says.
     fn put(&mut self, page: &Id, place: Option<Placement>) -> Result<(), Refusal> {
         let place = placed(place)?;
@@ -1030,7 +990,7 @@ impl PagePart {
         // part read: a note-creating action costs what it does in a part of
         // ten notes in one of hundreds.
         let exists = |page: PageId| {
-            PagePart::paths()
+            NoteList::paths()
                 .pages
                 .item_path(&page_id(page))
                 .object(doc)
@@ -1056,7 +1016,7 @@ impl PagePart {
         }
         // A block action of a note's body answers the blocks it touched.
         if tilo_document::block_actions::ANSWERING.contains(&action) {
-            let pages = PagePart::paths().pages.object(doc)?;
+            let pages = NoteList::paths().pages.object(doc)?;
             return doc.keys(&pages).find_map(|key| {
                 let body = body_object(doc, page_of(&Id::from(key.as_str()))?)?;
                 let answer =
@@ -1084,7 +1044,7 @@ impl PagePart {
         // A copy of a note and those under it answers the copy of the note:
         // the one made whose parent was not made with it.
         if action == "duplicate" {
-            let part = <PagePart as tilo_resource::Resource>::read(doc).ok()?;
+            let part = <NoteList as tilo_resource::Resource>::read(doc).ok()?;
             return made
                 .iter()
                 .copied()
@@ -1159,7 +1119,7 @@ impl PagePart {
 #[must_use]
 pub fn page_object(doc: &tilo_resource::Doc, page: PageId) -> Option<automerge::ObjId> {
     use automerge::ReadDoc as _;
-    let pages = PagePart::paths().pages.object(doc)?;
+    let pages = NoteList::paths().pages.object(doc)?;
     match doc.get(&pages, page_id(page).as_str()) {
         Ok(Some((automerge::Value::Object(_), entry))) => Some(entry),
         _ => None,
@@ -1169,7 +1129,7 @@ pub fn page_object(doc: &tilo_resource::Doc, page: PageId) -> Option<automerge::
 /// The object note `page`'s body is kept in, in a part's `doc`.
 #[must_use]
 pub fn body_object(doc: &tilo_resource::Doc, page: PageId) -> Option<automerge::ObjId> {
-    PagePart::paths()
+    NoteList::paths()
         .pages
         .item(&page_id(page))
         .body
@@ -1204,7 +1164,7 @@ impl<'a> Pages<'a> {
     /// The notes `parts` keep, oldest part first. A note two parts both
     /// claim (never written so, but read safely) is the newer part's.
     #[must_use]
-    pub fn of(parts: &'a [(u64, Rc<PagePart>)]) -> Self {
+    pub fn of(parts: &'a [(u64, Rc<NoteList>)]) -> Self {
         let mut found: Found<'a> = HashMap::new();
         for (index, part) in parts {
             for (id, page) in part.pages.iter() {
@@ -1676,14 +1636,14 @@ fn copies_of(page: &Id, pages: &Pages<'_>) -> Result<Vec<PageCopy>, String> {
     reason = "one arm per verb that reads across parts"
 )]
 pub fn prepare(
-    action: &mut <PagePart as tilo_resource::Resource>::Action,
+    action: &mut <NoteList as tilo_resource::Resource>::Action,
     notebook: &Notebook,
-    parts: &[(u64, Rc<PagePart>)],
+    parts: &[(u64, Rc<NoteList>)],
     author: Option<&MemberId>,
 ) -> Result<(), String> {
-    use page_part as verb;
+    use note_list as verb;
     // A field edit reads nothing across parts: typing costs its part.
-    if matches!(&action.operation, PagePartAction::FieldEdit(_)) {
+    if matches!(&action.operation, NoteListAction::FieldEdit(_)) {
         return Ok(());
     }
     let pages = Pages::of(parts);
@@ -1708,16 +1668,16 @@ pub fn prepare(
         }
     };
     match &mut action.operation {
-        PagePartAction::NewNote(verb::NewNote { parent, rank, .. }) => {
+        NoteListAction::NewNote(verb::NewNote { parent, rank, .. }) => {
             let under = shown_parent(parent.as_ref())?;
             *rank = Some(pages.last_rank(under.as_ref()));
             *parent = under;
         }
-        PagePartAction::NewChild(verb::NewChild { page, rank, .. }) => {
+        NoteListAction::NewChild(verb::NewChild { page, rank, .. }) => {
             shown(page)?;
             *rank = Some(pages.last_rank(Some(page)));
         }
-        PagePartAction::CreatePage(verb::CreatePage {
+        NoteListAction::CreatePage(verb::CreatePage {
             markdown,
             rank,
             links,
@@ -1730,7 +1690,7 @@ pub fn prepare(
                 &pages,
             ));
         }
-        PagePartAction::ImportMarkdown(verb::ImportMarkdown {
+        NoteListAction::ImportMarkdown(verb::ImportMarkdown {
             markdown,
             note,
             path,
@@ -1749,7 +1709,7 @@ pub fn prepare(
                     .is_some_and(|note| parts.iter().any(|(_, part)| part.pages.contains(note))),
             });
         }
-        PagePartAction::ImportMarkdownFiles(verb::ImportMarkdownFiles {
+        NoteListAction::ImportMarkdownFiles(verb::ImportMarkdownFiles {
             files,
             ranks,
             links,
@@ -1768,7 +1728,7 @@ pub fn prepare(
             *ranks = Some(placed);
             *links = Some(found);
         }
-        PagePartAction::ImportNotes(verb::ImportNotes {
+        NoteListAction::ImportNotes(verb::ImportNotes {
             notes,
             ranks,
             links,
@@ -1786,7 +1746,7 @@ pub fn prepare(
             *ranks = Some(placed);
             *links = Some(found);
         }
-        PagePartAction::AppendToNote(verb::AppendToNote {
+        NoteListAction::AppendToNote(verb::AppendToNote {
             title,
             markdown,
             note,
@@ -1800,7 +1760,7 @@ pub fn prepare(
             *links = Some(links_of(markdown, page.path.as_deref(), &pages));
             *note = Some(id.clone());
         }
-        PagePartAction::WriteNote(verb::WriteNote {
+        NoteListAction::WriteNote(verb::WriteNote {
             page,
             markdown,
             links,
@@ -1808,7 +1768,7 @@ pub fn prepare(
             let path = pages.get(page).and_then(|page| page.path.clone());
             *links = Some(links_of(markdown, path.as_deref(), &pages));
         }
-        PagePartAction::MoveNote(verb::MoveNote {
+        NoteListAction::MoveNote(verb::MoveNote {
             page,
             parent,
             before,
@@ -1827,7 +1787,7 @@ pub fn prepare(
                 parent,
             });
         }
-        PagePartAction::MoveUp(verb::MoveUp { page, place }) => {
+        NoteListAction::MoveUp(verb::MoveUp { page, place }) => {
             let parent = pages.parent_of(page);
             let siblings: Vec<&Id> = pages.children(parent).map(|(id, _)| id).collect();
             let at = siblings
@@ -1843,7 +1803,7 @@ pub fn prepare(
                 parent: parent.cloned(),
             });
         }
-        PagePartAction::MoveDown(verb::MoveDown { page, place }) => {
+        NoteListAction::MoveDown(verb::MoveDown { page, place }) => {
             let parent = pages.parent_of(page);
             let siblings: Vec<&Id> = pages.children(parent).map(|(id, _)| id).collect();
             let at = siblings
@@ -1859,7 +1819,7 @@ pub fn prepare(
                 parent: parent.cloned(),
             });
         }
-        PagePartAction::Indent(verb::Indent { page, place }) => {
+        NoteListAction::Indent(verb::Indent { page, place }) => {
             let parent = pages.parent_of(page);
             let siblings: Vec<&Id> = pages.children(parent).map(|(id, _)| id).collect();
             let at = siblings
@@ -1875,7 +1835,7 @@ pub fn prepare(
                 parent: Some((*above).clone()),
             });
         }
-        PagePartAction::Outdent(verb::Outdent { page, place }) => {
+        NoteListAction::Outdent(verb::Outdent { page, place }) => {
             shown(page)?;
             let parent = pages
                 .parent_of(page)
@@ -1891,10 +1851,10 @@ pub fn prepare(
                 parent: grandparent.cloned(),
             });
         }
-        PagePartAction::Duplicate(verb::Duplicate { page, copies }) => {
+        NoteListAction::Duplicate(verb::Duplicate { page, copies }) => {
             *copies = Some(copies_of(page, &pages)?);
         }
-        PagePartAction::Tag(verb::Tag { page, name, tag }) => {
+        NoteListAction::Tag(verb::Tag { page, name, tag }) => {
             shown(page)?;
             let name = name.trim();
             *tag = Some(notebook.tag_named(name).ok_or_else(|| {
@@ -1906,86 +1866,15 @@ pub fn prepare(
     Ok(())
 }
 
-/// The part `action` changes, given the parts held, oldest first: the one
-/// holding the note it names, or for a new note the newest part (or the
-/// next, once that is full).
-///
-/// # Errors
-/// Refuses an action naming a note no part held here keeps.
-pub fn part_for(
-    action: &<PagePart as tilo_resource::Resource>::Action,
-    parts: &[(u64, Rc<PagePart>)],
-) -> Result<u64, String> {
-    use page_part as verb;
-    let holding = |page: &Id| {
-        parts
-            .iter()
-            .rev()
-            .find(|(_, part)| part.pages.contains(page))
-            .map(|(index, _)| *index)
-            .ok_or_else(|| no_page().to_string())
-    };
-    let newest = || new_part(parts.last().map(|(index, part)| (*index, &**part)));
-    match &action.operation {
-        PagePartAction::NewNote(_)
-        | PagePartAction::NewChild(_)
-        | PagePartAction::CreatePage(_)
-        | PagePartAction::ImportMarkdown(_)
-        | PagePartAction::ImportMarkdownFiles(_)
-        | PagePartAction::ImportNotes(_)
-        | PagePartAction::KeepImage(_) => Ok(newest()),
-        // The copies are kept beside the note copied, which the verb reads.
-        PagePartAction::Duplicate(verb::Duplicate { page, .. }) => holding(page),
-        PagePartAction::AppendToNote(verb::AppendToNote { note, .. }) => {
-            holding(note.as_ref().ok_or_else(|| no_page().to_string())?)
-        }
-        other => match item_of(other) {
-            Some(page) => holding(page),
-            None => Ok(parts.last().map_or(0, |(index, _)| *index)),
-        },
-    }
-}
-
-/// The note a verb on one note names.
-#[must_use]
-pub fn item_of(action: &PagePartAction) -> Option<&Id> {
-    use page_part as verb;
-    match action {
-        PagePartAction::Rename(verb::Rename { page, .. })
-        | PagePartAction::Delete(verb::Delete { page })
-        | PagePartAction::MoveNote(verb::MoveNote { page, .. })
-        | PagePartAction::MoveUp(verb::MoveUp { page, .. })
-        | PagePartAction::MoveDown(verb::MoveDown { page, .. })
-        | PagePartAction::Indent(verb::Indent { page, .. })
-        | PagePartAction::Outdent(verb::Outdent { page, .. })
-        | PagePartAction::Tag(verb::Tag { page, .. })
-        | PagePartAction::PlaceImage(verb::PlaceImage { page, .. })
-        | PagePartAction::ShowImage(verb::ShowImage { page, .. })
-        | PagePartAction::WriteNote(verb::WriteNote { page, .. }) => Some(page),
-        PagePartAction::AppendToNote(verb::AppendToNote { note, .. }) => note.as_ref(),
-        // A field edit of one note (its body, its tags, its reactions) names
-        // it in its path.
-        PagePartAction::FieldEdit(edit) => match edit.path() {
-            [
-                tilo_resource::Segment::Field(field),
-                tilo_resource::Segment::Item(page),
-                ..,
-            ] if field == "pages" => Some(page),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 /// What renaming a note writes into the other parts: the links to it
 /// relabelled in each part holding one.
 #[must_use]
 pub fn spread(
-    action: &<PagePart as tilo_resource::Resource>::Action,
+    action: &<NoteList as tilo_resource::Resource>::Action,
     index: u64,
-    parts: &[(u64, Rc<PagePart>)],
-) -> Vec<(u64, <PagePart as tilo_resource::Resource>::Action)> {
-    let PagePartAction::Rename(page_part::Rename { page, title }) = &action.operation else {
+    parts: &[(u64, Rc<NoteList>)],
+) -> Vec<(u64, <NoteList as tilo_resource::Resource>::Action)> {
+    let NoteListAction::Rename(note_list::Rename { page, title }) = &action.operation else {
         return Vec::new();
     };
     let Some(target) = page_of(page) else {
@@ -1998,7 +1887,7 @@ pub fn spread(
             (
                 *held,
                 tilo_resource::Stamped {
-                    operation: PagePartAction::RelabelLinks(page_part::RelabelLinks {
+                    operation: NoteListAction::RelabelLinks(note_list::RelabelLinks {
                         title: title.trim().to_owned(),
                         target: page.clone(),
                     }),
@@ -2012,20 +1901,20 @@ pub fn spread(
 /// The notes `parts` keep that are not shown, by the resources they are
 /// published as: each whose parent, or a note above it, is gone.
 #[must_use]
-pub fn hidden(parts: &[(u64, Rc<PagePart>)]) -> HashSet<String> {
+pub fn hidden(parts: &[(u64, Rc<NoteList>)]) -> HashSet<String> {
     let pages = Pages::of(parts);
     parts
         .iter()
         .flat_map(|(_, part)| part.pages.ids())
         .filter(|id| !pages.contains(id))
-        .map(|id| tilo_resource::items::item_resource_id::<PagePart>("pages", id))
+        .map(|id| tilo_resource::items::item_resource_id::<NoteList>("pages", id))
         .collect()
 }
 
 /// The pictures every held part keeps, by the digest the notes' bodies
 /// name them by.
 #[must_use]
-pub fn images(parts: &[(u64, Rc<PagePart>)]) -> Map<Bytes> {
+pub fn images(parts: &[(u64, Rc<NoteList>)]) -> Map<Bytes> {
     let mut images = Map::new();
     for (_, part) in parts {
         for (digest, picture) in part.images.iter() {
@@ -2048,15 +1937,20 @@ pub fn chain_resource() -> String {
     ui::resource::chain_resource_id(&chain())
 }
 
-impl ui::framework::Chained for PagePart {
+impl ui::framework::Chained for NoteList {
     type Base = Notebook;
 
     fn chain() -> ui::resource::DocumentId {
         chain()
     }
 
-    fn part_for(action: &Self::Action, parts: &[(u64, Rc<Self>)]) -> Option<Result<u64, String>> {
-        Some(part_for(action, parts))
+    /// An append is written beside the note it adds to, which it names
+    /// once it is invoked: its parameter, not its first.
+    fn beside(action: &Self::Action) -> Option<Id> {
+        match &action.operation {
+            NoteListAction::AppendToNote(note_list::AppendToNote { note, .. }) => note.clone(),
+            _ => None,
+        }
     }
 
     fn prepare(

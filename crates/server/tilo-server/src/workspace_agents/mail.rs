@@ -248,7 +248,8 @@ impl Sends {
             let Ok(mut held) = automerge::AutoCommit::load(&saved) else {
                 continue;
             };
-            let Ok(part) = crate::workspace_bots::opened::<chat::parts::ChatPart>(&mut held) else {
+            let Ok(part) = crate::workspace_bots::opened::<chat::parts::ChatMessages>(&mut held)
+            else {
                 continue;
             };
             for (_, message) in part.messages.iter() {

@@ -15,7 +15,7 @@ fn people_find_notes_actions_by_the_words_they_use() {
             .map(declaration_spec),
     );
     actions.extend(
-        <crate::part::PagePart>::declarations()
+        <crate::note_list::NoteList>::declarations()
             .iter()
             .map(declaration_spec),
     );

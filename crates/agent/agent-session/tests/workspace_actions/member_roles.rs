@@ -350,7 +350,7 @@ fn note_titles(browser: &mut Browser, notes: &DocumentRoute) -> Vec<String> {
     let mut titles = Vec::new();
     for index in 0.. {
         let part = DocumentRoute {
-            document: ::notes::part::chain().part(index).as_str().to_owned(),
+            document: ::notes::note_list::chain().part(index).as_str().to_owned(),
             ..notes.clone()
         };
         browser.pump();
@@ -361,7 +361,7 @@ fn note_titles(browser: &mut Browser, notes: &DocumentRoute) -> Vec<String> {
             browser
                 .mount(&part)
                 .read(|doc| {
-                    <::notes::PagePart as ui::tilo_resource::Resource>::read(doc)
+                    <::notes::NoteList as ui::tilo_resource::Resource>::read(doc)
                         .map(|held| {
                             held.pages
                                 .iter()
@@ -383,7 +383,7 @@ async fn titles_after(browser: &mut Browser, notes: &DocumentRoute, marker: &str
     let made = browser
         .invoke_settled(request(
             &provider,
-            ActionAddress::new(notes::part::chain_resource(), "new-note"),
+            ActionAddress::new(notes::note_list::chain_resource(), "new-note"),
             json(serde_json::json!({"title": marker})),
         ))
         .await;
@@ -495,7 +495,7 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
     let new_note = |title: &str| {
         request(
             &notes_provider,
-            ActionAddress::new(notes::part::chain_resource(), "new-note"),
+            ActionAddress::new(notes::note_list::chain_resource(), "new-note"),
             json(serde_json::json!({"title": title})),
         )
     };

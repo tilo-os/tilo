@@ -1,5 +1,5 @@
 //! The tracker: the projects and areas above a workspace's issues, which
-//! live in the parts beside it ([`crate::model::IssuePart`]).
+//! live in the parts beside it ([`crate::model::IssueList`]).
 
 use tilo_resource::{self, ActionCx, Collection, Id, Model, NonBlank, Refusal, resource};
 
@@ -7,7 +7,7 @@ use crate::model::tracker_area::{Kind, Person, TrackerArea};
 
 /// The projects and areas above a workspace's issues, and who is involved
 /// in each. The issues themselves are kept in parts beside it
-/// ([`crate::model::IssuePart`]), so a change to one costs that part.
+/// ([`crate::model::IssueList`]), so a change to one costs that part.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Tracker {
     /// Projects

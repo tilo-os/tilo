@@ -104,7 +104,7 @@ fn carried_by_the_server(question: &chat::question::Question) -> bool {
 /// question one of them asked that its person answered, that nobody settled
 /// or took back, and whose answer their own words do not follow.
 pub(super) fn answered_in(
-    part: &chat::parts::ChatPart,
+    part: &chat::parts::ChatMessages,
     agents: &BTreeMap<String, Agent>,
 ) -> Vec<Wake> {
     part.messages
@@ -156,7 +156,7 @@ pub(super) fn answered_in(
 
 /// The keys of the wakes `part` holds already: every cause that names a
 /// question.
-pub(super) fn woken_in(part: &chat::parts::ChatPart) -> impl Iterator<Item = String> + '_ {
+pub(super) fn woken_in(part: &chat::parts::ChatMessages) -> impl Iterator<Item = String> + '_ {
     part.messages.iter().filter_map(|(_, message)| {
         let key = &message.cause.as_ref()?.key.0;
         key.starts_with("question:").then(|| key.clone())

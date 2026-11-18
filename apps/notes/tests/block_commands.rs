@@ -219,8 +219,8 @@ fn duplicate_refuses_viewers_and_composition_then_converges_with_peer_text() {
     use ui::tilo_resource::Invoke;
     let mut app = TestApp::<notes::NotesShell>::new().unwrap();
     let page = notes::PageId::new_v4();
-    app.invoke_child::<notes::PagePart>(
-        &notes::part::chain_resource(),
+    app.invoke_child::<notes::NoteList>(
+        &notes::note_list::chain_resource(),
         Invoke::apply(&notes::actions::create_page_action(page, None, "Copy")).unwrap(),
     )
     .unwrap();

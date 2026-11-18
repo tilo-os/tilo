@@ -75,7 +75,7 @@ struct Opened {
     members: chat::projection::PeopleNames,
     chat: Option<WorkspaceResource<chat::Chat>>,
     /// The head of the messages' chain, and the part it holds here.
-    part: Option<(u64, WorkspaceResource<chat::parts::ChatPart>)>,
+    part: Option<(u64, WorkspaceResource<chat::parts::ChatMessages>)>,
 }
 
 impl Conversations {
@@ -232,12 +232,13 @@ impl Conversations {
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned);
         let summons = Id::from_raw(message);
-        let invoke =
-            chat::parts::ChatPart::RECORD_WORK.with(chat::messages::chat_part::RecordWork {
+        let invoke = chat::parts::ChatMessages::RECORD_WORK.with(
+            chat::messages::chat_messages::RecordWork {
                 message: summons.clone(),
                 work,
                 say,
-            });
+            },
+        );
         let open = self.open.borrow();
         for opened in open.values() {
             let Some((_, part)) = &opened.part else {
@@ -516,7 +517,7 @@ impl Conversations {
         person: &str,
     ) -> Option<(
         WorkspaceResource<chat::Chat>,
-        WorkspaceResource<chat::parts::ChatPart>,
+        WorkspaceResource<chat::parts::ChatMessages>,
     )> {
         let mut open = self.open.borrow_mut();
         let id = workspace.workspace.clone();
@@ -567,7 +568,7 @@ impl Conversations {
             .into_iter()
             .max()?;
         if opened.part.as_ref().map(|(held, _)| *held) != Some(head) {
-            let part = WorkspaceResource::<chat::parts::ChatPart>::open_at(
+            let part = WorkspaceResource::<chat::parts::ChatMessages>::open_at(
                 &opened.records,
                 CHAT_OWNER,
                 chat::parts::part(head).as_str(),
@@ -657,7 +658,7 @@ impl Conversations {
             let (Some(chat_record), Some((index, part))) = (&opened.chat, &opened.part) else {
                 continue;
             };
-            let held = chat::parts::ChatPart::clone(part.get().as_ref());
+            let held = chat::parts::ChatMessages::clone(part.get().as_ref());
             if !held
                 .messages
                 .iter()
@@ -831,7 +832,7 @@ impl tilo_service::Service for TurnSummonses {
             // agent's address *is* that answer's — derived from the summons and the agent
             // (`chat::chat::reply_id`) before either exists — so the summons's item carries
             // the verb from the moment the turn does, never only once Chat's window publishes
-            // the message. The item is Chat's own, published through `ChatPart`'s declaration,
+            // the message. The item is Chat's own, published through `ChatMessages`'s declaration,
             // and the verb runs on Chat's record: a verb reimplemented here would be a second
             // chat. It is unbound, as Chat's window's item is: the agent names the message whose
             // work it records, exactly as it does on a message's own item the window publishes.
@@ -1020,7 +1021,7 @@ fn message_of(resource: &str) -> Option<String> {
 /// same rule the pass reads turns by, so the item that records the work is offered exactly while
 /// the agent answers there: from the moment the turn exists, through every record it makes on the
 /// reply it is writing, and again when a failed reply was retried.
-fn summonses(chat: &chat::Chat, part: &chat::parts::ChatPart) -> Vec<Id> {
+fn summonses(chat: &chat::Chat, part: &chat::parts::ChatMessages) -> Vec<Id> {
     let mut out: Vec<Id> = Vec::new();
     for (id, message) in part.messages.iter() {
         if message.text.trim().is_empty() || chat::summons::asks_for(message).is_none() {
@@ -1069,12 +1070,12 @@ fn summonses(chat: &chat::Chat, part: &chat::parts::ChatPart) -> Vec<Id> {
 }
 
 /// The summons `id`, as Chat publishes a message's item: its id, its kind, its label, and Chat's
-/// own `record-work` — the declaration `ChatPart::RECORD_WORK` publishes, whose action type is
+/// own `record-work` — the declaration `ChatMessages::RECORD_WORK` publishes, whose action type is
 /// Chat's, unbound so the agent names the message it records the work of as it does on Chat's
 /// window's item. Built by [`tilo_resource::declaration_spec`], so the action an agent invokes is
 /// Chat's verb, not a copy of it.
 fn summons_item(id: &Id) -> tilo_actions::ResourceSpec {
-    let kind = chat::parts::ChatPart::KIND;
+    let kind = chat::parts::ChatMessages::KIND;
     let mut spec = tilo_actions::ResourceSpec::new(
         format!("{kind}/messages/{id}"),
         "chat.messages",
@@ -1086,7 +1087,7 @@ fn summons_item(id: &Id) -> tilo_actions::ResourceSpec {
         root: false,
     });
     spec.app_id = Some("chat".to_owned());
-    let declaration = tilo_resource::vocabulary::<chat::parts::ChatPart>()
+    let declaration = tilo_resource::vocabulary::<chat::parts::ChatMessages>()
         .declarations()
         .iter()
         .find(|declaration| declaration.id == RECORD_WORK)
@@ -1122,7 +1123,7 @@ fn summons_item(id: &Id) -> tilo_actions::ResourceSpec {
 fn turns(
     workspace: &str,
     chat: &chat::Chat,
-    part: &chat::parts::ChatPart,
+    part: &chat::parts::ChatMessages,
     person: &str,
     members: &chat::projection::PeopleNames,
     agent_instructions: &std::collections::HashMap<String, String>,
@@ -1258,7 +1259,7 @@ mod tests {
             "ask".to_owned(),
             message(MemberId::person(ME), "what do you know about me?", 100),
         ));
-        let mut head = chat::parts::ChatPart::default();
+        let mut head = chat::parts::ChatMessages::default();
         for (id, message) in said {
             head.messages.push(Id::from_raw(id), message);
         }
@@ -1334,7 +1335,7 @@ mod tests {
             .unwrap();
         let known = record.state().unwrap();
         let chat = workspace();
-        let mut head = chat::parts::ChatPart::default();
+        let mut head = chat::parts::ChatMessages::default();
         head.messages.push(
             Id::from_raw("ask".to_owned()),
             message(MemberId::person(ME), "what do you know about me?", 100),
@@ -1394,8 +1395,8 @@ mod tests {
     }
 
     /// The head part of the messages, holding `messages` .
-    fn part(messages: Vec<(&str, chat::chat::Message)>) -> chat::parts::ChatPart {
-        let mut part = chat::parts::ChatPart::default();
+    fn part(messages: Vec<(&str, chat::chat::Message)>) -> chat::parts::ChatMessages {
+        let mut part = chat::parts::ChatMessages::default();
         for (id, message) in messages {
             part.messages.push(Id::from_raw(id), message);
         }
@@ -1403,7 +1404,7 @@ mod tests {
     }
 
     /// The turns `chat` 's conversations give for the messages of `head` .
-    fn read(chat: &chat::Chat, head: &chat::parts::ChatPart) -> Vec<AgentTurn> {
+    fn read(chat: &chat::Chat, head: &chat::parts::ChatMessages) -> Vec<AgentTurn> {
         turns(
             "w1",
             chat,

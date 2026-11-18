@@ -175,7 +175,7 @@ pub fn new_note(driver: &mut ui::headless::FrameHarness, instance: u64, title: &
     invoke_with(
         driver,
         instance,
-        notes::part::chain_resource(),
+        notes::note_list::chain_resource(),
         "new-note",
         serde_json::json!({ "title": title }),
     );
@@ -225,7 +225,7 @@ pub fn replace_text_through(
                 .1
         })
         .unwrap();
-    let edit = notes::PagePart::paths()
+    let edit = notes::NoteList::paths()
         .pages
         .item(&notes::notebook::page_id(f.child))
         .body
@@ -240,7 +240,7 @@ pub fn replace_text_through(
     invoke_with(
         driver,
         instance,
-        notes::part::chain_resource(),
+        notes::note_list::chain_resource(),
         "field-edit",
         serde_json::json!({ "edit": edit }),
     );
@@ -253,7 +253,7 @@ pub fn assign_tag_through(
     page: notes::PageId,
     tag: uuid::Uuid,
 ) {
-    let edit = notes::PagePart::paths()
+    let edit = notes::NoteList::paths()
         .pages
         .item(&notes::notebook::page_id(page))
         .tags
@@ -261,7 +261,7 @@ pub fn assign_tag_through(
     invoke_with(
         driver,
         instance,
-        notes::part::chain_resource(),
+        notes::note_list::chain_resource(),
         "field-edit",
         serde_json::json!({ "edit": edit }),
     );
@@ -314,9 +314,9 @@ pub fn type_body_as_person(
     f.store
         .with_history(&part, |doc, _| {
             let context = tilo_actions::ActionContext::for_resource(
-                notes::part::chain_resource(),
-                <notes::PagePart as ui::tilo_resource::Resource>::KIND,
-                <notes::PagePart as ui::tilo_resource::Resource>::LABEL,
+                notes::note_list::chain_resource(),
+                <notes::NoteList as ui::tilo_resource::Resource>::KIND,
+                <notes::NoteList as ui::tilo_resource::Resource>::LABEL,
             )
             .with_app(canonical::PACKAGE, "Notes")
             .with_invoker(tilo_actions::ActionInvoker::member(f.author.clone()))

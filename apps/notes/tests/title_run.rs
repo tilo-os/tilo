@@ -35,7 +35,7 @@ fn retitle(app: &mut TestApp<NotesShell>, text: &str, at_ms: u64) {
 fn renames(app: &TestApp<NotesShell>) -> Vec<String> {
     // The notes, and their history, are kept in the first part.
     let mut doc = app
-        .peer_document_of(&notes::part::chain().part(0))
+        .peer_document_of(&notes::note_list::chain().part(0))
         .expect("the part is held");
     let rows = ui::history_source::HistorySource::new()
         .without_resource_genesis()

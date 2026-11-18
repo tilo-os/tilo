@@ -29,7 +29,7 @@ use serde_json::Value;
 use tilo_doc_codecs::safety::{ZipLimits, read_zip_parts};
 use ui::tilo_resource::Invoke;
 
-use crate::part::{ImportedNote, PagePart, page_part};
+use crate::note_list::{ImportedNote, NoteList, note_list};
 
 /// The most pages one import brings.
 pub const MAX_IMPORTED_PAGES: usize = 256;
@@ -86,8 +86,8 @@ pub fn pages(bytes: &[u8]) -> Result<Vec<ImportedPage>, String> {
 /// Each note's id is minted from the action's seed and the note's place in
 /// it, so every replica adds the same notes under the same ids.
 #[must_use]
-pub fn import_action(pages: &[ImportedPage]) -> Invoke<PagePart> {
-    PagePart::IMPORT_NOTES.with(page_part::ImportNotes {
+pub fn import_action(pages: &[ImportedPage]) -> Invoke<NoteList> {
+    NoteList::IMPORT_NOTES.with(note_list::ImportNotes {
         notes: pages
             .iter()
             .map(|page| ImportedNote {

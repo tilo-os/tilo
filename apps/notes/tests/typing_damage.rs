@@ -944,7 +944,7 @@ fn tagging_a_note_damages_its_header_not_the_app() {
                 move |app: &mut App, host: &mut Host| {
                     invoke_with(
                         app,
-                        &notes::PagePart::TAG.on(format!("notes.pages/pages/{page}")),
+                        &notes::NoteList::TAG.on(format!("notes.pages/pages/{page}")),
                         serde_json::json!({ "name": name }),
                     );
                     host.frames(app, 6);
@@ -965,7 +965,7 @@ fn tagging_a_note_damages_its_header_not_the_app() {
             let label = format!("{name}: removing a tag");
             let (removed, _) = measure(app, &mut host, &theme, &label, |app, host| {
                 let untag = ui::tilo_resource::Invoke::from(
-                    notes::PagePart::paths()
+                    notes::NoteList::paths()
                         .pages
                         .item(&ui::tilo_resource::Id::from(page.as_str()))
                         .tags
@@ -973,7 +973,7 @@ fn tagging_a_note_damages_its_header_not_the_app() {
                 );
                 invoke_with(
                     app,
-                    &untag.address_on(notes::part::chain_resource()),
+                    &untag.address_on(notes::note_list::chain_resource()),
                     serde_json::Value::Object(untag.arguments),
                 );
                 host.frames(app, 6);

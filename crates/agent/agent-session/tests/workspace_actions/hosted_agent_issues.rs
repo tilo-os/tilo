@@ -93,7 +93,7 @@ async fn file_in_page(
     window
         .invoke(
             &ActionAddress::new(
-                ui::resource::chain_resource_id(&tasks::part::chain()),
+                ui::resource::chain_resource_id(&tasks::issue_list::chain()),
                 "create",
             ),
             json!({"title": "Plan the launch", "assignee": format!("agent:{SCOUT}")})
@@ -114,7 +114,7 @@ async fn file_in_page(
     for (part, written) in window.take_document_mutations().unwrap() {
         page.peer.write(route(part.as_str()), &written).unwrap();
     }
-    let part = tasks::part::chain().part(0).as_str().to_owned();
+    let part = tasks::issue_list::chain().part(0).as_str().to_owned();
     let deadline = tilo_test_env::hang_deadline();
     while workspaces
         .resource_document(workspace, TASKS, &part)
@@ -163,7 +163,7 @@ async fn write_note(
         &service,
         &person,
         &route,
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "create-page",
         json!({"title": "Launch checklist"})
             .as_object()

@@ -39,8 +39,9 @@ const CHAT: &str = "so.tilo.chat";
 /// How deep into a document its entries are read: far below where an app keeps an item.
 const MOST_DEPTH: usize = 32;
 
-/// The field a chain's read names a row's item by.
-const ROW_ITEM: &str = "item";
+/// The fields a read's row names its item by: a listing's `item` address, or
+/// the `id` a collection's entry keeps it under (a chain's typed read).
+const ROW_NAMES: [&str; 2] = ["item", "id"];
 
 /// The key a stored item keeps its own id under, where it keeps one.
 const OWN_ID: &str = "id";
@@ -227,10 +228,12 @@ impl Kept {
     fn names_in(&self, row: &serde_json::Value) -> bool {
         match row {
             serde_json::Value::String(address) => self.names(address),
-            serde_json::Value::Object(fields) => fields
-                .get(ROW_ITEM)
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|address| self.names(address)),
+            serde_json::Value::Object(fields) => ROW_NAMES.iter().any(|key| {
+                fields
+                    .get(*key)
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|named| self.names(named))
+            }),
             _ => false,
         }
     }
@@ -413,8 +416,8 @@ mod tests {
         let output = ActionOutput {
             value: Some(serde_json::json!({
                 "messages": [
-                    {"item": "kind/messages/m-hers", "name": "words"},
-                    {"item": "kind/messages/m-open", "name": "m-hers"},
+                    {"id": "m-hers", "value": {"text": "words"}},
+                    {"id": "m-open", "value": {"text": "m-hers"}},
                 ],
                 "nextCursor": "0:2",
             })),
@@ -424,7 +427,7 @@ mod tests {
         assert_eq!(
             shown.value,
             Some(serde_json::json!({
-                "messages": [{"item": "kind/messages/m-open", "name": "m-hers"}],
+                "messages": [{"id": "m-open", "value": {"text": "m-hers"}}],
                 "nextCursor": "0:2",
             }))
         );

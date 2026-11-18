@@ -128,7 +128,7 @@ async fn stop_agent(
         caller,
         (
             chat::parts::part(0).as_str(),
-            &format!("{}/messages/{message}", chat::parts::ChatPart::KIND),
+            &format!("{}/messages/{message}", chat::parts::ChatMessages::KIND),
         ),
         "stop-agent",
         serde_json::json!({"message": message.as_str()}),

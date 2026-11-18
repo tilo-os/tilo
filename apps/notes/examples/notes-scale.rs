@@ -32,9 +32,9 @@
     reason = "a benchmark that writes its own ASCII notebook and stops at the first failure"
 )]
 
+use notes::note_list::note_list;
 use notes::notebook::{MarkdownFile, Notebook};
-use notes::part::page_part;
-use notes::{PagePart, Pages};
+use notes::{NoteList, Pages};
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -143,7 +143,7 @@ fn main() {
     let notes: usize = args.next().and_then(|a| a.parse().ok()).unwrap_or(100);
     let batch: usize = args.next().and_then(|a| a.parse().ok()).unwrap_or(1).max(1);
     let mut words = Words(7);
-    let chain = ui::framework::Chain::<PagePart>::detached(
+    let chain = ui::framework::Chain::<NoteList>::detached(
         ui::apps::NOTES,
         &ui::tilo_resource::MemberId::person("scale"),
         || Rc::new(Notebook::default()),
@@ -162,7 +162,7 @@ fn main() {
         written += files.len();
         chain
             .invoke(
-                &PagePart::IMPORT_MARKDOWN_FILES.with(page_part::ImportMarkdownFiles {
+                &NoteList::IMPORT_MARKDOWN_FILES.with(note_list::ImportMarkdownFiles {
                     files,
                     ranks: None,
                     links: None,

@@ -5,9 +5,10 @@ use std::collections::BTreeMap;
 
 use ui::framework::Chain;
 
-use super::{MessagePart, PART_MESSAGES, detached_chain, message_part, owed};
+use super::{MessageStates, detached_chain, message_states, owed};
 use crate::actions::{IngestBaseline, ServerUpdate};
 use crate::model::Folder;
+use ui::framework::PART_ITEMS as PART_MESSAGES;
 
 fn id(n: usize) -> String {
     format!("m{n:08}")
@@ -15,7 +16,7 @@ fn id(n: usize) -> String {
 
 /// A mailbox of `count` messages fetched from a server, arriving a page at
 /// a time as a sync brings them.
-fn mailbox(count: usize) -> Chain<MessagePart> {
+fn mailbox(count: usize) -> Chain<MessageStates> {
     let chain = detached_chain().expect("a chain in memory");
     let mut next = 0;
     while next < count {
@@ -31,7 +32,7 @@ fn mailbox(count: usize) -> Chain<MessagePart> {
             })
             .collect();
         chain
-            .invoke(&MessagePart::INGEST.with(message_part::Ingest { messages: page }))
+            .invoke(&MessageStates::INGEST.with(message_states::Ingest { messages: page }))
             .expect("a page of mail arrives");
         next += 2_000;
     }
@@ -39,7 +40,7 @@ fn mailbox(count: usize) -> Chain<MessagePart> {
 }
 
 /// Each part's changes as one document holds them, by part.
-fn heads(chain: &Chain<MessagePart>) -> BTreeMap<u64, Vec<ui::automerge::ChangeHash>> {
+fn heads(chain: &Chain<MessageStates>) -> BTreeMap<u64, Vec<ui::automerge::ChangeHash>> {
     chain
         .parts()
         .iter()
@@ -53,7 +54,7 @@ fn heads(chain: &Chain<MessagePart>) -> BTreeMap<u64, Vec<ui::automerge::ChangeH
 
 /// What `change` writes: the parts it changed, and the bytes of the changes
 /// it added to them.
-fn written(chain: &Chain<MessagePart>, change: impl FnOnce()) -> (Vec<u64>, usize) {
+fn written(chain: &Chain<MessageStates>, change: impl FnOnce()) -> (Vec<u64>, usize) {
     let before = heads(chain);
     change();
     let mut parts = Vec::new();
@@ -74,9 +75,9 @@ fn written(chain: &Chain<MessagePart>, change: impl FnOnce()) -> (Vec<u64>, usiz
     (parts, bytes)
 }
 
-fn mark_read(chain: &Chain<MessagePart>, ids: Vec<String>) {
+fn mark_read(chain: &Chain<MessageStates>, ids: Vec<String>) {
     chain
-        .invoke(&MessagePart::mark(ids, true))
+        .invoke(&MessageStates::mark(ids, true))
         .expect("marked read");
 }
 
@@ -121,20 +122,20 @@ fn costs_at(count: usize) -> usize {
     let thousand: Vec<String> = (start..start + 1_000).map(id).collect();
     let (archived, archive_bytes) = written(&chain, || {
         chain
-            .invoke(&MessagePart::ARCHIVE.with(message_part::Archive {
+            .invoke(&MessageStates::ARCHIVE.with(message_states::Archive {
                 messages: thousand.clone(),
             }))
             .expect("archived");
     });
     assert_eq!(archived, holding, "only the parts holding them");
-    let all = MessagePart::of(&chain.parts());
+    let all = MessageStates::of(&chain.parts());
     assert!(
         thousand
             .iter()
             .all(|id| all.message(id).is_some_and(|m| m.folder == Folder::Archive))
     );
     assert!(chain.undo_last(), "one undo step");
-    let all = MessagePart::of(&chain.parts());
+    let all = MessageStates::of(&chain.parts());
     assert!(
         thousand
             .iter()
@@ -182,7 +183,7 @@ fn a_fetch_fills_the_newest_part_and_starts_the_next() {
     // kept.
     let (written, _) = written(&chain, || {
         chain
-            .invoke(&MessagePart::INGEST.with(message_part::Ingest {
+            .invoke(&MessageStates::INGEST.with(message_states::Ingest {
                 messages: vec![IngestBaseline {
                     read: Some(true),
                     account: Some("me@example.test".into()),
@@ -209,7 +210,7 @@ fn a_confirmation_writes_only_the_part_holding_its_message() {
     let (parts, _) = written(&chain, || {
         chain
             .invoke(
-                &MessagePart::SERVER_APPLIED.with(message_part::ServerApplied {
+                &MessageStates::SERVER_APPLIED.with(message_states::ServerApplied {
                     updates: vec![update],
                 }),
             )

@@ -19,7 +19,7 @@ mod common;
 use common::{chain, held};
 use serde_json::{Value, json};
 use tasks::model::{Issue, Status, issue_resource};
-use tasks::{App, IssuePart};
+use tasks::{App, IssueList};
 use ui::prelude::*;
 
 const DAY_MS: i64 = 86_400_000;
@@ -288,13 +288,15 @@ fn a_list_of_new_issues_is_made_only_by_who_may_make_one() {
 #[test]
 fn new_issues_that_do_not_fit_the_newest_part_start_the_next_together() {
     ui::i18n::I18nManager::init("en-US");
-    let before = tasks::part::PART_ISSUES - 1;
+    // Parts of 500 issues, and the first one full: what is made next
+    // starts the second.
+    let _parts = ui::framework::PartLimits::scoped(500, usize::MAX);
+    let before = 500;
     let mut app = TestApp::<App>::drive(&format!("issues-{before}")).expect("open");
-    assert_eq!(app.chain_parts::<IssuePart>().len(), 1);
+    assert_eq!(app.chain_parts::<IssueList>().len(), 1);
 
-    // The newest part has room for one issue and the list has three: they
-    // start the next part together, numbered on from the part before, so
-    // the list is still one step.
+    // The newest part is full: the list starts the next part together,
+    // numbered on from the part before, so it is still one step.
     let made = app
         .call_on_output(
             &chain(),
@@ -307,7 +309,7 @@ fn new_issues_that_do_not_fit_the_newest_part_start_the_next_together() {
         )
         .expect("one call")
         .expect("the call answers");
-    let parts = app.chain_parts::<IssuePart>();
+    let parts = app.chain_parts::<IssueList>();
     assert_eq!(parts.len(), 2, "the list starts the next part");
     assert_eq!(
         parts[0].1.issues.len(),

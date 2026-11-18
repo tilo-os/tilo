@@ -10,8 +10,8 @@ use ui::framework::Chain;
 use ui::prelude::*;
 use ui::tilo_resource::NonBlank;
 
+use crate::issue_list::{IssueList, issue_list};
 use crate::model::Status;
-use crate::part::{IssuePart, issue_part};
 use crate::{Filter, Issues, Nav, Place, Tasks};
 
 /// What a capture's tracker holds as its window opens, staged by the
@@ -107,7 +107,7 @@ const ISSUES: [Sample; 6] = [
 ];
 
 /// Fill an empty tracker's issues with `scene`, as `person`'s changes.
-pub(crate) fn fill(scene: Scene, chain: &Chain<IssuePart>, person: &str) {
+pub(crate) fn fill(scene: Scene, chain: &Chain<IssueList>, person: &str) {
     if !chain.parts().is_empty() {
         return;
     }
@@ -120,7 +120,7 @@ pub(crate) fn fill(scene: Scene, chain: &Chain<IssuePart>, person: &str) {
 
 /// `count` issues: every tenth a parent, the nine after it its sub-issues,
 /// every seventh one done.
-fn long(chain: &Chain<IssuePart>, count: u64) {
+fn long(chain: &Chain<IssueList>, count: u64) {
     let mut parent: Option<Id> = None;
     for number in 1..=count {
         let title = format!("Issue number {number} of a long list");
@@ -133,7 +133,7 @@ fn long(chain: &Chain<IssuePart>, count: u64) {
         } else {
             Status::Todo
         };
-        let Ok(Some(part)) = chain.invoke(&IssuePart::CREATE.with(crate::model::NewIssue {
+        let Ok(Some(part)) = chain.invoke(&IssueList::CREATE.with(crate::model::NewIssue {
             status: Some(status),
             parent: if first {
                 None
@@ -161,7 +161,7 @@ fn long(chain: &Chain<IssuePart>, count: u64) {
 }
 
 /// The issue titled `title`, as the chain holds it now.
-fn made(chain: &Chain<IssuePart>, title: &str) -> Option<Id> {
+fn made(chain: &Chain<IssueList>, title: &str) -> Option<Id> {
     let parts = chain.parts();
     Issues::of(&parts)
         .iter()
@@ -170,7 +170,7 @@ fn made(chain: &Chain<IssuePart>, title: &str) -> Option<Id> {
 }
 
 /// A small launch's issues, the person's own changes.
-fn launch(chain: &Chain<IssuePart>, person: &str) {
+fn launch(chain: &Chain<IssueList>, person: &str) {
     for issue in &ISSUES {
         let assignee = if issue.mine {
             Some(crate::model::person_assignee(person).0)
@@ -183,7 +183,7 @@ fn launch(chain: &Chain<IssuePart>, person: &str) {
             continue;
         };
         if chain
-            .invoke(&IssuePart::CREATE.with(crate::model::NewIssue {
+            .invoke(&IssueList::CREATE.with(crate::model::NewIssue {
                 body: Some(format!("## Why\n\n{} before the launch.", issue.title)),
                 status: Some(issue.status),
                 assignee,
@@ -202,7 +202,7 @@ fn launch(chain: &Chain<IssuePart>, person: &str) {
                 issue.title
             ))
         {
-            let _ = chain.invoke(&IssuePart::COMMENT.with(issue_part::Comment {
+            let _ = chain.invoke(&IssueList::COMMENT.with(issue_list::Comment {
                 issue: id,
                 text,
                 origin: None,
@@ -214,13 +214,13 @@ fn launch(chain: &Chain<IssuePart>, person: &str) {
         ) else {
             continue;
         };
-        let _ = chain.invoke(&IssuePart::ADD_LABEL.with(issue_part::AddLabel { issue: id, label }));
+        let _ = chain.invoke(&IssueList::ADD_LABEL.with(issue_list::AddLabel { issue: id, label }));
     }
 }
 
 /// The issues a migration from Linear leaves: added through the import inbox, as opening
 /// Tasks after the migration adds them.
-fn migrated(chain: &Chain<IssuePart>, person: &str) {
+fn migrated(chain: &Chain<IssueList>, person: &str) {
     let page = |identifier: &str| format!("https://tracker.example/acme/issue/{identifier}");
     let issue = |identifier: &str, title: &str, status: &str, extra: serde_json::Value| {
         let mut entry = serde_json::json!({

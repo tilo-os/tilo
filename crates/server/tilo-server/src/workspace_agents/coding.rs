@@ -758,7 +758,7 @@ impl super::HostAgents {
             return (turn.request.clone(), None);
         };
         let Ok(Some(held)) = self
-            .read::<chat::parts::ChatPart>(workspace, CHAT, part)
+            .read::<chat::parts::ChatMessages>(workspace, CHAT, part)
             .await
         else {
             return (turn.request.clone(), None);

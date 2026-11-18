@@ -3,10 +3,10 @@
 //!
 //! [`Notebook`] is the record a workspace's notes hang off: the tags a note
 //! may carry. The notes themselves ([`Page`]) are kept in a chain of parts
-//! beside it ([`crate::part::PagePart`]), so an edit of one note costs the
+//! beside it ([`crate::note_list::NoteList`]), so an edit of one note costs the
 //! part holding it, not every note. A note's body is rich text, edited by
 //! field edits at its path in its part
-//! (`PagePart::paths().pages.item(&id).body.perform(&op)`); assigning or
+//! (`NoteList::paths().pages.item(&id).body.perform(&op)`); assigning or
 //! removing a tag is a field edit of the note's `tags`, renaming a tag one of
 //! the tag's `name`.
 
@@ -24,7 +24,7 @@ use ui::widget::marks::Mark;
 
 use crate::model::PageId;
 
-pub use crate::part::{body_object, page_object};
+pub use crate::note_list::{body_object, page_object};
 
 /// Largest image a note accepts. The side placing it keeps the bytes, sealed,
 /// in the content store, and the action adding it carries the reference
@@ -37,7 +37,7 @@ pub const MAX_ASSET_BYTES: usize = 1024 * 1024;
 pub const NO_TITLE: &str = "";
 
 /// The notebook: the tags its notes carry. The notes are kept in parts
-/// beside it ([`crate::part::PagePart`]).
+/// beside it ([`crate::note_list::NoteList`]).
 #[derive(Model, Default, Clone, Debug, PartialEq)]
 pub struct Notebook {
     /// Tags
@@ -262,7 +262,7 @@ pub fn note_and_anchor(id: &str) -> Option<(PageId, Option<&str>)> {
 }
 
 /// One Markdown file of a set imported together
-/// ([`crate::part::PagePart::import_markdown_files`]).
+/// ([`crate::note_list::NoteList::import_markdown_files`]).
 #[derive(
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, tilo_resource::JsonSchema,
 )]
@@ -311,7 +311,7 @@ impl MarkdownFile {
 }
 
 /// A notebook stored before version 3 kept its notes in the resource itself;
-/// they are kept in parts beside it now ([`crate::part::PagePart`]), and an
+/// they are kept in parts beside it now ([`crate::note_list::NoteList`]), and an
 /// older notebook is not carried over: it says so rather than opening
 /// empty.
 fn migrate_stored(_doc: &tilo_resource::Doc, from: u32) -> Result<(), tilo_resource::ModelError> {

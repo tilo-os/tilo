@@ -337,7 +337,7 @@ async fn a_task_keeps_its_place_waits_two_days_and_a_restarted_server_goes_on_fr
         &given.service(),
         &given.person(),
         &pages,
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "append-to-note",
         json!({"title": "#1 Plan the launch",
                "markdown": "The venue holds 300 people (source: the venue's own page)."})

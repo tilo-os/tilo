@@ -24,6 +24,11 @@ use ui::widget::BlockContent;
 use ui::widget::marks::{Mark, MarkSpan};
 
 use super::*;
+use ui::framework::PartLimits;
+
+/// Notes a part holds in these tests before the next one starts: few, so
+/// a couple of hundred notes show what thousands would.
+const PART_PAGES: usize = 200;
 use crate::model::PageId;
 use crate::notebook::tests::MATERIALIZED_BLOCKS;
 use crate::notebook::{
@@ -36,13 +41,14 @@ use crate::notebook::{
 /// held where it is invoked, as a window carries it out.
 pub(crate) struct Book {
     notebook: Replica<Notebook>,
-    parts: Vec<(u64, Replica<PagePart>)>,
+    parts: Vec<(u64, Replica<NoteList>)>,
     /// Who acts: what an action naming "mine" reads.
     author: Option<MemberId>,
     /// The part new notes go to, when the test places them rather than the
     /// chain's own rule: notes spread over parts without filling each.
     placing: Option<u64>,
     now_ms: i64,
+    _limits: PartLimits,
 }
 
 impl Book {
@@ -53,6 +59,7 @@ impl Book {
             author: None,
             placing: None,
             now_ms: 1_000,
+            _limits: PartLimits::scoped(PART_PAGES, usize::MAX),
         }
     }
 
@@ -66,7 +73,7 @@ impl Book {
     }
 
     /// The parts as they stand, oldest first.
-    pub(crate) fn states(&self) -> Vec<(u64, Rc<PagePart>)> {
+    pub(crate) fn states(&self) -> Vec<(u64, Rc<NoteList>)> {
         self.parts
             .iter()
             .map(|(index, part)| (*index, Rc::new(part.state().unwrap())))
@@ -75,8 +82,8 @@ impl Book {
 
     /// Every note of every part, as one part reads: what a test about notes
     /// that all fit one part asserts on.
-    fn merged(&self) -> PagePart {
-        let mut merged = PagePart::default();
+    fn merged(&self) -> NoteList {
+        let mut merged = NoteList::default();
         for (_, part) in self.states() {
             for (id, page) in part.pages.iter() {
                 merged.pages.push(id.clone(), page.clone());
@@ -93,9 +100,9 @@ impl Book {
     }
 
     /// Part `index`, started (empty) when nobody has.
-    fn part(&mut self, index: u64) -> &mut Replica<PagePart> {
+    fn part(&mut self, index: u64) -> &mut Replica<NoteList> {
         if !self.parts.iter().any(|(held, _)| *held == index) {
-            let mut part = Replica::<PagePart>::new();
+            let mut part = Replica::<NoteList>::new();
             if let Some(author) = &self.author {
                 part = part.as_member(author.clone());
             }
@@ -112,24 +119,24 @@ impl Book {
     }
 
     /// Carry `invoke` out as the chain does; the part it was written to.
-    fn apply(&mut self, invoke: impl Into<Invoke<PagePart>>) -> Result<u64, String> {
+    fn apply(&mut self, invoke: impl Into<Invoke<NoteList>>) -> Result<u64, String> {
         let action = invoke.into().build(self.now_ms)?;
         self.apply_action(&action)
     }
 
-    fn apply_action(&mut self, action: &<PagePart as Resource>::Action) -> Result<u64, String> {
+    fn apply_action(&mut self, action: &<NoteList as Resource>::Action) -> Result<u64, String> {
         let mut action = action.clone();
         let parts = self.states();
         prepare(&mut action, &self.tags(), &parts, self.author.as_ref())?;
         let index = match (self.placing, &action.operation) {
             (
                 Some(placing),
-                PagePartAction::NewNote(_)
-                | PagePartAction::NewChild(_)
-                | PagePartAction::CreatePage(_)
-                | PagePartAction::Duplicate(_),
+                NoteListAction::NewNote(_)
+                | NoteListAction::NewChild(_)
+                | NoteListAction::CreatePage(_)
+                | NoteListAction::Duplicate(_),
             ) => placing,
-            _ => part_for(&action, &parts)?,
+            _ => ui::framework::placed::<NoteList>(&action, &parts),
         };
         self.part(index)
             .apply_action(&action)
@@ -143,7 +150,7 @@ impl Book {
         Ok(index)
     }
 
-    fn edit(&mut self, edit: &Edit<PagePart>) -> Result<u64, String> {
+    fn edit(&mut self, edit: &Edit<NoteList>) -> Result<u64, String> {
         self.apply(Invoke::edit(edit).map_err(|error| error.to_string())?)
     }
 
@@ -165,6 +172,7 @@ impl Book {
             author: self.author.clone(),
             placing: None,
             now_ms: self.now_ms,
+            _limits: PartLimits::scoped(PART_PAGES, usize::MAX),
         }
     }
 
@@ -191,7 +199,7 @@ impl Book {
 /// A new note titled `title` under `parent`, through the verb.
 fn note(book: &mut Book, title: &str, parent: Option<&Id>) -> Id {
     let before: HashSet<Id> = book.merged().pages.ids().cloned().collect();
-    book.apply(PagePart::NEW_NOTE.with(page_part::NewNote {
+    book.apply(NoteList::NEW_NOTE.with(note_list::NewNote {
         title: title.to_owned(),
         parent: parent.cloned(),
         note: None,
@@ -229,7 +237,7 @@ fn texts(book: &Book, id: &Id) -> Vec<String> {
 
 fn write(book: &mut Book, id: &Id, blocks: &[BlockContent]) {
     let op = clips_op(blocks);
-    book.edit(&PagePart::paths().pages.item(id).body.perform(&op).unwrap())
+    book.edit(&NoteList::paths().pages.item(id).body.perform(&op).unwrap())
         .unwrap();
 }
 
@@ -237,22 +245,22 @@ fn uuid(id: &Id) -> PageId {
     page_of(id).expect("a note's id is a UUID")
 }
 
-fn move_up(page: &Id) -> Invoke<PagePart> {
-    PagePart::MOVE_UP.with(page_part::MoveUp {
+fn move_up(page: &Id) -> Invoke<NoteList> {
+    NoteList::MOVE_UP.with(note_list::MoveUp {
         page: page.clone(),
         place: None,
     })
 }
 
-fn move_down(page: &Id) -> Invoke<PagePart> {
-    PagePart::MOVE_DOWN.with(page_part::MoveDown {
+fn move_down(page: &Id) -> Invoke<NoteList> {
+    NoteList::MOVE_DOWN.with(note_list::MoveDown {
         page: page.clone(),
         place: None,
     })
 }
 
-fn move_note(page: &Id, parent: Option<&Id>, before: Option<&Id>) -> Invoke<PagePart> {
-    PagePart::MOVE_NOTE.with(page_part::MoveNote {
+fn move_note(page: &Id, parent: Option<&Id>, before: Option<&Id>) -> Invoke<NoteList> {
+    NoteList::MOVE_NOTE.with(note_list::MoveNote {
         page: page.clone(),
         parent: parent.cloned(),
         before: before.cloned(),
@@ -260,15 +268,15 @@ fn move_note(page: &Id, parent: Option<&Id>, before: Option<&Id>) -> Invoke<Page
     })
 }
 
-fn rename(page: &Id, title: &str) -> Invoke<PagePart> {
-    PagePart::RENAME.with(page_part::Rename {
+fn rename(page: &Id, title: &str) -> Invoke<NoteList> {
+    NoteList::RENAME.with(note_list::Rename {
         page: page.clone(),
         title: title.into(),
     })
 }
 
-fn import(title: &str, markdown: &str, note: Option<&Id>) -> Invoke<PagePart> {
-    PagePart::IMPORT_MARKDOWN.with(page_part::ImportMarkdown {
+fn import(title: &str, markdown: &str, note: Option<&Id>) -> Invoke<NoteList> {
+    NoteList::IMPORT_MARKDOWN.with(note_list::ImportMarkdown {
         title: title.into(),
         markdown: markdown.into(),
         images: Vec::new(),
@@ -312,7 +320,7 @@ tilo_test_env::scenario! {
             del: 0,
             ins: text.into(),
         };
-        let body = PagePart::paths().pages.item(&shared).body;
+        let body = NoteList::paths().pages.item(&shared).body;
         left.edit(&body.perform(&splice(0, "L ")).unwrap()).unwrap();
         right.edit(&body.perform(&splice(5, " R")).unwrap()).unwrap();
 
@@ -331,7 +339,7 @@ tilo_test_env::scenario! {
         let page_id = note(&mut book, "Photos", None);
         let mut png = vec![137, 80, 78, 71, 13, 10, 26, 10];
         png.extend_from_slice(&[0; 32]);
-        book.apply(PagePart::PLACE_IMAGE.with(page_part::PlaceImage {
+        book.apply(NoteList::PLACE_IMAGE.with(note_list::PlaceImage {
             page: page_id.clone(),
             bytes: Bytes::to_keep(png.clone()),
             alt: None,
@@ -350,7 +358,7 @@ tilo_test_env::scenario! {
             texts(&book, &page_id)
         );
         assert!(
-            book.apply(PagePart::PLACE_IMAGE.with(page_part::PlaceImage {
+            book.apply(NoteList::PLACE_IMAGE.with(note_list::PlaceImage {
                 page: page_id,
                 bytes: Bytes::to_keep(b"not a picture".to_vec()),
                 alt: None,
@@ -382,7 +390,7 @@ tilo_test_env::scenario! {
         }
         let state = book.states()[0].1.clone();
         let item = crate::actions::page_resource_id(uuid(&a));
-        let published = PagePart::child(&state, &item).expect("the note is published");
+        let published = NoteList::child(&state, &item).expect("the note is published");
         assert_eq!(published.label, "Alpha");
         for verb in [
             "rename",
@@ -414,12 +422,12 @@ tilo_test_env::scenario! {
         }
 
         let doc = book.part(0).doc().clone();
-        let whole = PagePart::read_content(&state, &doc, None).unwrap();
+        let whole = NoteList::read_content(&state, &doc, None).unwrap();
         assert_eq!(whole["pages"][0]["title"], "Alpha");
         assert_eq!(whole["pages"][0]["item"], item);
         // A note reads as Markdown, one line per block, each ending in the id
         // its body's block actions take.
-        let one = PagePart::read_content(&state, &doc, Some(&item)).unwrap();
+        let one = NoteList::read_content(&state, &doc, Some(&item)).unwrap();
         let lines: Vec<(&str, &str)> = one["markdown"]
             .as_str()
             .expect("the body as Markdown")
@@ -433,11 +441,11 @@ tilo_test_env::scenario! {
         // read as the same lines.
         let body = crate::actions::body_resource_id(uuid(&a));
         assert_eq!(one["body"], body.as_str());
-        let published_body = PagePart::child(&state, &body).expect("the body is published");
+        let published_body = NoteList::child(&state, &body).expect("the body is published");
         assert_eq!(published_body.kind, "tilo.rich-text");
-        let read_body = PagePart::read_content(&state, &doc, Some(&body)).unwrap();
+        let read_body = NoteList::read_content(&state, &doc, Some(&body)).unwrap();
         assert_eq!(read_body["markdown"], one["markdown"]);
-        assert!(PagePart::read_content(&state, &doc, Some("notes.pages/pages/gone")).is_err());
+        assert!(NoteList::read_content(&state, &doc, Some("notes.pages/pages/gone")).is_err());
 
         let hits = state.search();
         assert!(hits.iter().any(|hit| hit.title == "Alpha"));
@@ -477,7 +485,7 @@ tilo_test_env::scenario! {
             "rich": {"SpliceText": {"region": "Body", "block": block, "at": 0, "del": 0, "ins": "Read "}},
         });
         tilo_actions::validate_json_schema(&edit, &schema).expect("the edit fits the listing");
-        let edit: Edit<PagePart> = serde_json::from_value(edit).unwrap();
+        let edit: Edit<NoteList> = serde_json::from_value(edit).unwrap();
         book.edit(&edit).unwrap();
         assert_eq!(texts(&book, &id), ["Read the plan"]);
     }
@@ -521,7 +529,7 @@ tilo_test_env::scenario! {
         assert_eq!(children(&book, None), [c.clone(), a.clone(), b.clone()]);
 
         // Under another note, then out again right after it.
-        book.apply(PagePart::INDENT.with(page_part::Indent {
+        book.apply(NoteList::INDENT.with(note_list::Indent {
             page: b.clone(),
             place: None,
         }))
@@ -529,7 +537,7 @@ tilo_test_env::scenario! {
         assert_eq!(page(&book, &b).parent, Some(a.clone()), "under the note above");
         assert_eq!(children(&book, Some(&a)), [second, first.clone(), b.clone()]);
         let outdent = || {
-            PagePart::OUTDENT.with(page_part::Outdent {
+            NoteList::OUTDENT.with(note_list::Outdent {
                 page: b.clone(),
                 place: None,
             })
@@ -547,7 +555,7 @@ tilo_test_env::scenario! {
         }
         assert_eq!(page(&book, &a).parent, None);
         assert!(
-            book.apply(PagePart::NEW_NOTE.with(page_part::NewNote {
+            book.apply(NoteList::NEW_NOTE.with(note_list::NewNote {
                 title: "Orphan".into(),
                 parent: Some(Id::from("gone")),
                 note: None,
@@ -558,7 +566,7 @@ tilo_test_env::scenario! {
         );
 
         // Deleting a note deletes the notes under it, and nothing else.
-        book.apply(PagePart::DELETE.with(a.clone())).unwrap();
+        book.apply(NoteList::DELETE.with(a.clone())).unwrap();
         assert_eq!(children(&book, None), [c, b]);
         assert_eq!(book.merged().pages.len(), 2);
     }
@@ -570,7 +578,7 @@ tilo_test_env::scenario! {
         let mut book = Book::new();
         let a = note(&mut book, "A", None);
         let b = note(&mut book, "B", None);
-        let paths = PagePart::paths().pages.item(&a);
+        let paths = NoteList::paths().pages.item(&a);
         assert!(book.edit(&paths.title.replace("Hacked")).is_err());
         assert!(book.edit(&paths.parent.set(Some(b))).is_err());
         assert!(book.edit(&paths.rank.replace("0")).is_err());
@@ -601,12 +609,12 @@ tilo_test_env::scenario! {
         }))
         .unwrap();
         let release = book.tags().tag_named("Release").unwrap();
-        let tags = PagePart::paths().pages.item(&a).tags;
+        let tags = NoteList::paths().pages.item(&a).tags;
         book.edit(&tags.insert(&release)).unwrap();
         book.edit(&tags.insert(&release)).unwrap();
         assert_eq!(page(&book, &a).tags.len(), 1, "a tag is on a note once");
         let tag = |name: &str| {
-            PagePart::TAG.with(page_part::Tag {
+            NoteList::TAG.with(note_list::Tag {
                 page: b.clone(),
                 name: name.into(),
                 tag: None,
@@ -641,7 +649,7 @@ tilo_test_env::scenario! {
         let part = book_after.part(0);
         let after = part.heads();
         let created = part.doc_mut().diff(&before, &after);
-        let result = PagePart::created_page(part.doc(), "new-note", &created)
+        let result = NoteList::created_page(part.doc(), "new-note", &created)
             .expect("the answer names the new note");
         assert_eq!(result["page"], uuid(&id).to_string());
         assert_eq!(result["resource"], crate::actions::page_resource_id(uuid(&id)));
@@ -651,7 +659,7 @@ tilo_test_env::scenario! {
         let part = book_after.part(0);
         let after = part.heads();
         let renamed = part.doc_mut().diff(&before, &after);
-        assert_eq!(PagePart::created_page(part.doc(), "rename", &renamed), None);
+        assert_eq!(NoteList::created_page(part.doc(), "rename", &renamed), None);
     }
 }
 
@@ -687,7 +695,7 @@ tilo_test_env::scenario! {
     {
         let target = page_id(PageId::from_u128(1));
         let other = PageId::from_u128(300);
-        let mut seed = PagePart::default();
+        let mut seed = NoteList::default();
         for number in 1..=200 {
             let mut page = Page::titled(if number == 1 { "Old" } else { "Source" }, None);
             page.body = if number == 2 || number == 3 {
@@ -706,10 +714,10 @@ tilo_test_env::scenario! {
         }
         let mut doc = tilo_resource::Doc::new();
         seed.write_fields(&mut doc, &automerge::ROOT).unwrap();
-        tilo_resource::evolution::write_version(&mut doc, PagePart::VERSION).unwrap();
+        tilo_resource::evolution::write_version(&mut doc, NoteList::VERSION).unwrap();
         doc.commit();
         let mut book = Book::new();
-        book.parts.push((0, Replica::<PagePart>::from_doc(doc)));
+        book.parts.push((0, Replica::<NoteList>::from_doc(doc)));
         let before = book.merged();
         let mut tracker = tilo_resource::Tracker::new();
         tracker.start(book.part(0).doc_mut());
@@ -807,7 +815,7 @@ tilo_test_env::scenario! {
         ];
         write(&mut book, &source, &[linked]);
         write(&mut book, &grandchild, &[BlockContent::paragraph("", "deep")]);
-        book.apply(PagePart::DUPLICATE.with(page_part::Duplicate {
+        book.apply(NoteList::DUPLICATE.with(note_list::Duplicate {
             page: source.clone(),
             copies: None,
         }))
@@ -879,7 +887,7 @@ tilo_test_env::scenario! {
         assert_eq!(page(&book, &other).parent, Some(child));
         let refused = book.apply(move_note(&parent, Some(&other), None));
         assert!(refused.is_err(), "a note cannot go under its own descendant");
-        book.apply(PagePart::INDENT.with(page_part::Indent {
+        book.apply(NoteList::INDENT.with(note_list::Indent {
             page: parent.clone(),
             place: None,
         }))
@@ -898,7 +906,7 @@ tilo_test_env::scenario! {
         let deeper = note(&mut book, "Deeper", Some(&far));
         let kept = note(&mut book, "Kept", None);
         book.placing = None;
-        book.apply(PagePart::DELETE.with(parent.clone())).unwrap();
+        book.apply(NoteList::DELETE.with(parent.clone())).unwrap();
         assert!(!book.merged().pages.contains(&near), "deleted with it");
         assert!(book.merged().pages.contains(&far), "kept in its part");
         let parts = book.states();
@@ -919,7 +927,7 @@ tilo_test_env::scenario! {
 }
 
 /// The notes in the chain's head part as they stand.
-fn chain_titles(chain: &ui::framework::Chain<PagePart>) -> Vec<String> {
+fn chain_titles(chain: &ui::framework::Chain<NoteList>) -> Vec<String> {
     let parts = chain.parts();
     Pages::of(&parts)
         .iter()
@@ -929,7 +937,8 @@ fn chain_titles(chain: &ui::framework::Chain<PagePart>) -> Vec<String> {
 
 #[test]
 fn undoing_a_delete_brings_back_the_notes_under_it_kept_elsewhere() {
-    let chain = ui::framework::Chain::<PagePart>::detached(
+    let _parts = PartLimits::scoped(PART_PAGES, usize::MAX);
+    let chain = ui::framework::Chain::<NoteList>::detached(
         ui::apps::NOTES,
         &MemberId::person("ada"),
         || Rc::new(Notebook::default()),
@@ -937,7 +946,7 @@ fn undoing_a_delete_brings_back_the_notes_under_it_kept_elsewhere() {
     .unwrap();
     let make = |title: &str, parent: Option<&Id>| {
         chain
-            .invoke(&PagePart::NEW_NOTE.with(page_part::NewNote {
+            .invoke(&NoteList::NEW_NOTE.with(note_list::NewNote {
                 title: title.into(),
                 parent: parent.cloned(),
                 note: None,
@@ -963,7 +972,7 @@ fn undoing_a_delete_brings_back_the_notes_under_it_kept_elsewhere() {
     let child = id_of("Child");
 
     chain
-        .invoke(&PagePart::DELETE.with(parent.clone()))
+        .invoke(&NoteList::DELETE.with(parent.clone()))
         .unwrap();
     assert!(!chain_titles(&chain).contains(&"Child".to_owned()));
     chain.undo_in(0).unwrap();
@@ -976,14 +985,15 @@ fn undoing_a_delete_brings_back_the_notes_under_it_kept_elsewhere() {
 
 #[test]
 fn renaming_relabels_through_the_chain_in_another_part() {
-    let chain = ui::framework::Chain::<PagePart>::detached(
+    let _parts = PartLimits::scoped(PART_PAGES, usize::MAX);
+    let chain = ui::framework::Chain::<NoteList>::detached(
         ui::apps::NOTES,
         &MemberId::person("ada"),
         || Rc::new(Notebook::default()),
     )
     .unwrap();
     chain
-        .invoke(&PagePart::NEW_NOTE.with(page_part::NewNote {
+        .invoke(&NoteList::NEW_NOTE.with(note_list::NewNote {
             title: "Old".into(),
             parent: None,
             note: None,
@@ -993,7 +1003,7 @@ fn renaming_relabels_through_the_chain_in_another_part() {
     let target = Pages::of(&chain.parts()).iter().next().unwrap().0.clone();
     for filler in 1..PART_PAGES {
         chain
-            .invoke(&PagePart::NEW_NOTE.with(page_part::NewNote {
+            .invoke(&NoteList::NEW_NOTE.with(note_list::NewNote {
                 title: format!("Filler {filler}"),
                 parent: None,
                 note: None,
@@ -1002,7 +1012,7 @@ fn renaming_relabels_through_the_chain_in_another_part() {
             .unwrap();
     }
     chain
-        .invoke(&PagePart::CREATE_PAGE.with(page_part::CreatePage {
+        .invoke(&NoteList::CREATE_PAGE.with(note_list::CreatePage {
             title: NonBlank::parse("Source").unwrap(),
             markdown: Some("See [[Old]].".into()),
             origin: None,
@@ -1130,7 +1140,7 @@ fn titled(book: &Book, title: &str) -> Id {
 }
 
 fn create_page(book: &mut Book, title: &str, markdown: &str) -> Id {
-    book.apply(PagePart::CREATE_PAGE.with(page_part::CreatePage {
+    book.apply(NoteList::CREATE_PAGE.with(note_list::CreatePage {
         title: NonBlank::parse(title).unwrap(),
         markdown: Some(markdown.into()),
         origin: None,
@@ -1141,8 +1151,8 @@ fn create_page(book: &mut Book, title: &str, markdown: &str) -> Id {
     titled(book, title)
 }
 
-fn append(title: Option<&str>, markdown: &str) -> Invoke<PagePart> {
-    PagePart::APPEND_TO_NOTE.with(page_part::AppendToNote {
+fn append(title: Option<&str>, markdown: &str) -> Invoke<NoteList> {
+    NoteList::APPEND_TO_NOTE.with(note_list::AppendToNote {
         title: title.map(str::to_owned),
         markdown: markdown.into(),
         note: None,
@@ -1213,7 +1223,7 @@ fn appending_names_its_note_by_title_or_the_one_its_author_made() {
         refused.contains("you made"),
         "two of the author's notes: {refused}"
     );
-    book.apply(PagePart::DELETE.with(theirs)).unwrap();
+    book.apply(NoteList::DELETE.with(theirs)).unwrap();
     book.apply(append(None, "More")).unwrap();
     assert_eq!(texts(&book, &mine), ["Start", "More"]);
 }
@@ -1249,7 +1259,7 @@ fn files_imported_together_link_to_each_other_and_their_headings() {
         markdown: markdown.into(),
         origin: None,
     };
-    book.apply(PagePart::IMPORT_MARKDOWN_FILES.with(page_part::ImportMarkdownFiles {
+    book.apply(NoteList::IMPORT_MARKDOWN_FILES.with(note_list::ImportMarkdownFiles {
         files: vec![
             file(
                 "docs/intro.md",
@@ -1294,7 +1304,7 @@ fn files_imported_together_link_to_each_other_and_their_headings() {
     // A file imported later links to one imported before by its path, kept
     // in another part.
     book.placing = Some(1);
-    book.apply(PagePart::IMPORT_MARKDOWN.with(page_part::ImportMarkdown {
+    book.apply(NoteList::IMPORT_MARKDOWN.with(note_list::ImportMarkdown {
         title: "Later".into(),
         markdown: "Read the [setup](guide/setup.md).".into(),
         images: Vec::new(),
@@ -1331,7 +1341,7 @@ fn a_moved_note_keeps_its_origin_and_who_moved_it() {
         created_ms: Some(1_741_000_000_000),
         updated_ms: None,
     };
-    book.apply(PagePart::CREATE_PAGE.with(page_part::CreatePage {
+    book.apply(NoteList::CREATE_PAGE.with(note_list::CreatePage {
         title: NonBlank::parse("Handbook").unwrap(),
         markdown: Some("Welcome.".into()),
         origin: Some(origin.clone()),
@@ -1353,7 +1363,7 @@ fn every_part_action_publishes_what_it_reads() {
     let mut book = Book::new();
     create_page(&mut book, "One", "Text");
     let unstated =
-        ui::tilo_resource::schema_check::unstated_arguments::<PagePart>(&book.states()[0].1);
+        ui::tilo_resource::schema_check::unstated_arguments::<NoteList>(&book.states()[0].1);
     assert!(unstated.is_empty(), "{unstated:#?}");
 }
 
@@ -1434,7 +1444,7 @@ fn an_edit_costs_the_same_in_a_notebook_ten_times_the_size() {
                     None,
                     &format!("Note {at}"),
                 );
-                if let PagePartAction::NewNote(new) = &mut action.operation {
+                if let NoteListAction::NewNote(new) = &mut action.operation {
                     new.rank = Some(format!("{at:08}"));
                 }
                 part.apply_action(&action).unwrap();
@@ -1454,7 +1464,7 @@ fn an_edit_costs_the_same_in_a_notebook_ten_times_the_size() {
         let began = std::time::Instant::now();
         let index = book
             .edit(
-                &PagePart::paths()
+                &NoteList::paths()
                     .pages
                     .item(&first)
                     .body

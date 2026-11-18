@@ -1,6 +1,6 @@
 //! The notebook as the window shows it: every note's title and place in the
 //! tree, the tags, and what each note says, projected from the [`Notebook`]
-//! record and the parts its notes are kept in ([`PagePart`]), as the
+//! record and the parts its notes are kept in ([`NoteList`]), as the
 //! framework reads them. Pure logic, no IO, no rendering.
 //!
 //! Page and tag ids are the UUIDs their items are stored under, so a link,
@@ -13,8 +13,8 @@ use tilo_document::{ChangeCursor, RichTextState};
 use ui::tilo_resource::{Bytes, Map};
 use uuid::Uuid;
 
+use crate::note_list::{NoteList, Pages};
 use crate::notebook::{Notebook, page_of};
-use crate::part::{PagePart, Pages};
 
 /// Identifier for a single page. Stable across renames; every link and
 /// route names a note by it.
@@ -86,7 +86,7 @@ impl Workspace {
     /// after `previous`: a note whose body did not change keeps what
     /// `previous` read of it. A note under one that is gone is not shown.
     #[must_use]
-    pub fn of(notebook: &Notebook, parts: &[(u64, Rc<PagePart>)], previous: &Self) -> Self {
+    pub fn of(notebook: &Notebook, parts: &[(u64, Rc<NoteList>)], previous: &Self) -> Self {
         let shown = Pages::of(parts);
         let mut known = std::collections::HashSet::with_capacity(shown.len());
         let mut pages = Vec::with_capacity(shown.len());
@@ -136,7 +136,7 @@ impl Workspace {
         tag_assignments.sort_by_key(|edge| (edge.page, edge.tag));
         tag_assignments.dedup();
         let (bodies, body_cursors, changed) = project_bodies(&notes, previous);
-        let images = crate::part::images(parts);
+        let images = crate::note_list::images(parts);
         Self {
             data: WorkspaceData {
                 pages,
@@ -348,10 +348,10 @@ mod tests {
 
     use super::{PageId, Workspace};
     use crate::actions;
+    use crate::note_list::NoteList;
     use crate::notebook::Notebook;
-    use crate::part::PagePart;
 
-    fn note(part: &mut Replica<PagePart>, title: &str, text: &str) -> PageId {
+    fn note(part: &mut Replica<NoteList>, title: &str, text: &str) -> PageId {
         let page = PageId::new_v4();
         part.apply_action(&actions::create_page_action(page, None, title))
             .unwrap();
@@ -361,7 +361,7 @@ mod tests {
         page
     }
 
-    fn of(part: PagePart, previous: &Workspace) -> Workspace {
+    fn of(part: NoteList, previous: &Workspace) -> Workspace {
         Workspace::of(&Notebook::default(), &[(0, Rc::new(part))], previous)
     }
 
@@ -370,7 +370,7 @@ mod tests {
     /// whether the part was kept current in place or read afresh.
     #[test]
     fn projection_rereads_only_the_note_that_changed() {
-        let mut part = Replica::<PagePart>::new();
+        let mut part = Replica::<NoteList>::new();
         let kept = note(&mut part, "Kept", "Unchanged words");
         let edited = note(&mut part, "Edited", "Before");
         let first = of(part.live().unwrap().clone(), &Workspace::default());

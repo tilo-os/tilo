@@ -229,7 +229,7 @@ impl ChatApp {
     /// no others. A part's rows and its channels' counts are what the open
     /// channel, search, the unread badges and the mention scan project from.
     fn read_parts(&mut self) -> Vec<(u64, std::rc::Rc<Vec<Message>>)> {
-        let held: Vec<(u64, std::rc::Rc<crate::parts::ChatPart>)> = self
+        let held: Vec<(u64, std::rc::Rc<crate::parts::ChatMessages>)> = self
             .chain
             .as_ref()
             .map(ui::framework::Chain::parts)

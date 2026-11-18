@@ -235,7 +235,7 @@ impl TurnUses {
             Ask::Message { part, message, .. } => {
                 let held = self
                     .agents
-                    .read::<chat::parts::ChatPart>(&self.workspace, CHAT, part)
+                    .read::<chat::parts::ChatMessages>(&self.workspace, CHAT, part)
                     .await?
                     .ok_or("the conversation is not held here")?;
                 held.messages
@@ -338,7 +338,7 @@ fn asked(words: String) -> ActionFailure {
 /// carries the ask's id and shows anything else than this server asked is not
 /// it, and neither is one its agent did not write for that person.
 fn question_about<'a>(
-    parts: &'a [(String, chat::parts::ChatPart)],
+    parts: &'a [(String, chat::parts::ChatMessages)],
     ask: &OpenAsk,
 ) -> Option<(&'a str, String, &'a chat::question::Question)> {
     let (agent, person) = (
@@ -361,7 +361,7 @@ fn question_about<'a>(
 /// message carries the ask, and it was never edited. An agent may edit a
 /// message it wrote and may ask questions of its own, and neither is what its
 /// person was asked.
-fn as_asked(parts: &[(String, chat::parts::ChatPart)], ask: &OpenAsk) -> bool {
+fn as_asked(parts: &[(String, chat::parts::ChatMessages)], ask: &OpenAsk) -> bool {
     let (agent, person) = (
         MemberId::agent(ask.agent.clone()),
         MemberId::person(ask.person.clone()),
@@ -403,7 +403,7 @@ async fn settle(
     if let Some(told) = told {
         arguments.insert("detail".into(), json!(told));
     }
-    let resource = format!("{}/messages/{message}", chat::parts::ChatPart::KIND);
+    let resource = format!("{}/messages/{message}", chat::parts::ChatMessages::KIND);
     invoke_named(
         service,
         asker,
@@ -511,7 +511,7 @@ impl HostAgents {
     }
 
     /// Every part of the chat's messages `workspace` holds, by its document.
-    async fn chat_parts(&self, workspace: &str) -> Vec<(String, chat::parts::ChatPart)> {
+    async fn chat_parts(&self, workspace: &str) -> Vec<(String, chat::parts::ChatMessages)> {
         let routes = self
             .workspaces
             .document_routes(workspace)
@@ -526,7 +526,7 @@ impl HostAgents {
                 continue;
             }
             if let Ok(Some(part)) = self
-                .read::<chat::parts::ChatPart>(workspace, CHAT, &document)
+                .read::<chat::parts::ChatMessages>(workspace, CHAT, &document)
                 .await
             {
                 parts.push((document, part));

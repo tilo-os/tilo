@@ -13,8 +13,8 @@ fn with_page() -> (TestApp<NotesShell>, PageId) {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let page = PageId::new_v4();
-    app.invoke_child::<notes::PagePart>(
-        &notes::part::chain_resource(),
+    app.invoke_child::<notes::NoteList>(
+        &notes::note_list::chain_resource(),
         Invoke::apply(&create_page_action(page, None, "First")).unwrap(),
     )
     .unwrap();
@@ -80,7 +80,7 @@ fn importing_a_long_note_keeps_actions_usable_before_the_next_frame() {
     for index in 0..180 {
         writeln!(markdown, "Paragraph {index}: {paragraph}\n").unwrap();
     }
-    let invoke = Invoke::<notes::PagePart>::apply(&import_markdown_action(
+    let invoke = Invoke::<notes::NoteList>::apply(&import_markdown_action(
         Some(page),
         "Long note",
         &markdown,
@@ -89,7 +89,7 @@ fn importing_a_long_note_keeps_actions_usable_before_the_next_frame() {
     .unwrap();
     let address = BoundActionAddress {
         instance_id: app.harness().component_instance_id().unwrap(),
-        address: invoke.address_on(notes::part::chain_resource()),
+        address: invoke.address_on(notes::note_list::chain_resource()),
     };
     // The control socket may request publication between applying an action
     // and drawing the next frame. Deliberately do not relayout here.

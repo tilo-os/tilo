@@ -65,7 +65,7 @@ impl MailApp {
 
 /// What registering `message`, fetched or kept, tells the mailbox resource.
 pub(super) fn kept_baseline(
-    mail: &crate::part::MessagePart,
+    mail: &crate::message_states::MessageStates,
     message: &Message,
 ) -> Option<crate::actions::IngestBaseline> {
     if message.account.is_empty() {

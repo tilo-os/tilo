@@ -185,14 +185,14 @@ impl NotebookFixture {
             .unwrap_or_default();
         if !pages.is_empty() {
             let part = DocumentCheckout::new(
-                notes::part::chain().part(0),
-                ResourceType::new(<notes::PagePart as ui::tilo_resource::Resource>::KIND),
+                notes::note_list::chain().part(0),
+                ResourceType::new(<notes::NoteList as ui::tilo_resource::Resource>::KIND),
             );
             self.store
                 .reserve_resource(&part)
                 .unwrap()
                 .initialize(|doc| {
-                    <notes::PagePart as ui::tilo_resource::Resource>::initialize(doc)
+                    <notes::NoteList as ui::tilo_resource::Resource>::initialize(doc)
                         .map_err(|error| error.to_string())?;
                     for action in &pages {
                         notes::read::apply_in_part(doc, &notebook, action)?;
@@ -212,7 +212,7 @@ impl NotebookFixture {
         reason = "read beside the fixture's other records, as one of them"
     )]
     pub fn part(&self) -> DocumentId {
-        notes::part::chain().part(0)
+        notes::note_list::chain().part(0)
     }
 
     pub fn reopen(mut self) -> Self {

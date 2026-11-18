@@ -1,6 +1,6 @@
 //! Messages from outside the workspace, and a channel's transcript as content.
 //!
-//! `deliver-message` ([`crate::parts::ChatPart::deliver_message`]) adds a
+//! `deliver-message` ([`crate::parts::ChatMessages::deliver_message`]) adds a
 //! line someone wrote elsewhere (a seeded scenario, an import, an
 //! integration relaying it) shown under their name: the message stays the
 //! deliverer's, as a bridge's post does, so who put it in the workspace is never

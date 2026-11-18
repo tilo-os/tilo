@@ -30,8 +30,8 @@ fn app() -> TestApp<NotesShell> {
 
 fn with_page(app: &mut TestApp<NotesShell>) -> PageId {
     let page = PageId::new_v4();
-    app.invoke_child::<notes::PagePart>(
-        &notes::part::chain_resource(),
+    app.invoke_child::<notes::NoteList>(
+        &notes::note_list::chain_resource(),
         Invoke::apply(&notes::actions::create_page_action(page, None, "Trip")).unwrap(),
     )
     .unwrap();
@@ -40,7 +40,7 @@ fn with_page(app: &mut TestApp<NotesShell>) -> PageId {
 
 /// The one picture the notebook keeps.
 fn kept(app: &TestApp<NotesShell>) -> Bytes {
-    let images = notes::part::images(&crate::framework_support::parts(app));
+    let images = notes::note_list::images(&crate::framework_support::parts(app));
     let [(_, stored)] = images.iter().collect::<Vec<_>>()[..] else {
         panic!("one picture, got {}", images.len());
     };
@@ -51,7 +51,7 @@ fn kept(app: &TestApp<NotesShell>) -> Bytes {
 fn shown(app: &TestApp<NotesShell>) -> Vec<Vec<u8>> {
     let store = app.content();
     notes::notebook::image_snapshot(
-        &notes::part::images(&crate::framework_support::parts(app)),
+        &notes::note_list::images(&crate::framework_support::parts(app)),
         &store,
     )
     .into_values()
@@ -100,8 +100,8 @@ fn a_placed_picture_is_ciphertext_off_its_readers_and_every_member_opens_it() {
 
     // Alice places it from her window.
     alice
-        .invoke_child::<notes::PagePart>(
-            &notes::part::chain_resource(),
+        .invoke_child::<notes::NoteList>(
+            &notes::note_list::chain_resource(),
             Invoke::apply(&notes::actions::place_image_action(
                 page,
                 picture.clone(),

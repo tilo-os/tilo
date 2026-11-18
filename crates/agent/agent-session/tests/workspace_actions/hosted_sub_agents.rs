@@ -1095,7 +1095,7 @@ async fn a_sub_agent_writes_only_into_its_own_conversation() {
     // Every write of Chat's, as Chat itself states them, aimed at the main thread and at the
     // message in it.
     let [answer, question, words] = ui::tilo_workspace_agent::sub::OWN_WRITES;
-    let of_messages = writes_of::<chat::parts::ChatPart>();
+    let of_messages = writes_of::<chat::parts::ChatMessages>();
     let of_chat = writes_of::<chat::chat::Chat>();
     assert!(
         of_messages.len() >= 20

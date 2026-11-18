@@ -4,8 +4,8 @@
 use ui::tilo_resource::Id;
 
 use super::ChatApp;
-use crate::messages::{NewMessage, chat_part};
-use crate::parts::ChatPart;
+use crate::messages::{NewMessage, chat_messages};
+use crate::parts::ChatMessages;
 use crate::question::CHOICE;
 
 impl ChatApp {
@@ -42,7 +42,7 @@ impl ChatApp {
         let channel = m.channel.clone();
         let given = self.try_apply_part(
             doc,
-            ChatPart::ANSWER_QUESTION.with(chat_part::AnswerQuestion {
+            ChatMessages::ANSWER_QUESTION.with(chat_messages::AnswerQuestion {
                 message: Id::from_raw(message),
                 answer: answer.to_owned(),
                 device: self.answering_device(),
@@ -54,7 +54,7 @@ impl ChatApp {
         {
             self.apply_part(
                 doc,
-                ChatPart::POST.with(chat_part::Post {
+                ChatMessages::POST.with(chat_messages::Post {
                     message: NewMessage {
                         channel: Id::from_raw(channel),
                         text,

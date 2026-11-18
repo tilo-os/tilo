@@ -211,7 +211,7 @@ async fn a_post_costs_the_same_however_long_the_chat_has_run() {
     source
         .apply(&collab_types::DocumentMutation::Snapshot(chat_doc.save()))
         .unwrap();
-    let mut grown_part = chat::parts::ChatPart::default();
+    let mut grown_part = chat::parts::ChatMessages::default();
     for index in 0..HISTORY {
         grown_part.messages.push(
             ui::tilo_resource::Id::from_raw(format!("m{index}")),
@@ -229,7 +229,7 @@ async fn a_post_costs_the_same_however_long_the_chat_has_run() {
         .open("so.tilo.chat", &workspace.workspace)
         .unwrap();
     let base = std::rc::Rc::new(chat::demo::Workspace::of(chat_doc.clone()).read());
-    let chain = ui::framework::Chain::<chat::parts::ChatPart>::detached_in(
+    let chain = ui::framework::Chain::<chat::parts::ChatMessages>::detached_in(
         store,
         <chat::ChatShell as ui::framework::ResourceApp>::ID,
         &ui::tilo_resource::MemberId::person("ada"),

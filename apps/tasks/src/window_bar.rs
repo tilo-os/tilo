@@ -36,7 +36,7 @@ pub(crate) struct TasksWindow {
     /// The resource's actions, for the bar's own slots.
     dispatcher: Dispatcher<Tracker>,
     /// The issues' chain, whose writes the window's Undo takes back.
-    chain: Option<ui::framework::Chain<crate::IssuePart>>,
+    chain: Option<ui::framework::Chain<crate::IssueList>>,
     /// The bar as it was declared last: the press heard now names one of its
     /// slots, then the window declares the bar for what it shows now.
     bar: WindowBar<Tracker>,
@@ -48,7 +48,7 @@ impl TasksWindow {
         bar: WindowBar<Tracker>,
         nav: Nav,
         tasks: LocalState<Tasks>,
-        chain: Option<ui::framework::Chain<crate::IssuePart>>,
+        chain: Option<ui::framework::Chain<crate::IssueList>>,
         dialog: Element,
     ) -> Self {
         let link = shell.window_bar_link();
