@@ -113,7 +113,7 @@ fn turns(session: &Session) -> Vec<Turn> {
                 place.resource.clone(),
                 place.shown_as.clone(),
                 place.title.clone(),
-                place.name.clone(),
+                place.name,
                 (
                     strip.canvas_x,
                     strip.canvas_y,

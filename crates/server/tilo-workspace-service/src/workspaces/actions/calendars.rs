@@ -219,19 +219,23 @@ impl super::super::Workspaces {
 /// What connecting a calendar says of itself to whoever lists it.
 const CONNECT_ABOUT: &str = "Connect a calendar account of your person's on a calendar server \
      (CalDAV) at an https address, for reading only. Pass what they told you: the server's \
-     address, their user name there and a name for the account. Never ask for the password \
-     and never take one: this server asks your person for it in a protected field of your \
-     conversation with them, which you cannot read. The call ends at once, told that they \
-     are asked: tell them to type the password there, and do not make the call again. Once \
-     they typed it the account is connected, you are named for it and you are told which \
-     calendars it has. Nothing is ever written to that calendar server.";
+     address, their user name there and a name for the account. A server's bare name is \
+     taken as its https address, and where all they said is their mail address, pass that \
+     as the address: the calendar is looked for at the server its name ends in. Never ask \
+     for the password and never take one: this server asks your person for it in a \
+     protected field of your conversation with them, which you cannot read. The call ends \
+     at once, told that they are asked: tell them to type the password there, and do not \
+     make the call again. Once they typed it the account is connected, you are named for \
+     it and you are told which calendars it has. Nothing is ever written to that calendar \
+     server.";
 
 fn connect_params() -> Vec<ActionParam> {
     vec![
         ActionParam::required(
             "serverUrl",
             ParamType::Text,
-            "The calendar server's https address, as your person said it.",
+            "Where the calendar is, as your person said it: the server's https address, its \
+             bare name, or their mail address there when that is all they said.",
         ),
         ActionParam::required(
             "username",

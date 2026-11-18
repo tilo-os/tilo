@@ -171,6 +171,10 @@ because it boots the staged deployment that holds them.
 - `interface.toml` is written from the code, the way `tilo-app surface` writes
   an app's `surface.toml`: every type the interface carries, read from its
   sources with the serde attributes that shape the wire.
+  A list of words both sides hold alike though no type carries it is recorded
+  there too, a line a word (`words` in the file's header): the keywords a
+  declared shape may use travel inside a string, so the runtime interface
+  lists them, and a word added or gone needs a higher version.
   `tools/policy/check_interfaces.py` fails when the file, its version, the
   versions the image serves or an app's manifest differ from the code (`check`,
   in the pre-commit hook and the policy suite) and when the interface changed

@@ -1186,3 +1186,8 @@ paths = [
 reason = "The model gateway's module of its wire types, named by the program it backs, not a Tilo concept."
 words = ["host"]
 identifiers = ["host_backend"]
+
+[[allow]]
+reason = "The `host-info` crate's name: facts about the machine a program runs on, such as whether a process is alive."
+words = ["host"]
+identifiers = ["host_info"]

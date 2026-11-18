@@ -9,6 +9,23 @@ pub(crate) fn tool_definitions() -> &'static [Value] {
     &TOOLS
 }
 
+/// What `tilo_do` says of waiting where a call that names no wait is answered `pending`.
+const PENDING_BY_DEFAULT: &str = "past wait_ms (default 5000), `pending <id>` for tilo_status";
+/// What it says on a turn's own server, which holds such a call until its action has ended.
+const HELD_UNTIL_ENDED: &str = "a call is held until its action has ended, and answers `asked` at once where your person must allow it first; name wait_ms only for what is meant to keep going (a server started in a shell): past it, `pending <id>` for tilo_status";
+
+/// `tools` as a server tells them that holds a call until its action has ended.
+pub(crate) fn held_until_ended(tools: &mut [Value]) {
+    for tool in tools {
+        if let Some(description) = tool.get_mut("description")
+            && let Some(told) = description.as_str()
+            && told.contains(PENDING_BY_DEFAULT)
+        {
+            *description = told.replace(PENDING_BY_DEFAULT, HELD_UNTIL_ENDED).into();
+        }
+    }
+}
+
 fn tools() -> Vec<Value> {
     let string = json!({"type":"string"});
     let integer = json!({"type":"integer"});

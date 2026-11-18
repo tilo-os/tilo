@@ -474,6 +474,186 @@ async fn a_reminder_due_while_its_server_was_down_starts_its_turn_once_the_serve
     up.down().await;
 }
 
+/// What a server keeps under `dir` at this moment: every file with its length and when it was
+/// last written.
+fn kept_under(
+    dir: &std::path::Path,
+    files: &mut std::collections::BTreeMap<
+        std::path::PathBuf,
+        (u64, Option<std::time::SystemTime>),
+    >,
+) {
+    // A folder or a file removed since it was listed is not part of this state.
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        match entry.metadata() {
+            Ok(meta) if meta.is_dir() => kept_under(&entry.path(), files),
+            Ok(meta) => {
+                files.insert(entry.path(), (meta.len(), meta.modified().ok()));
+            }
+            Err(_) => {}
+        }
+    }
+}
+
+/// Copy what `from` holds into `to`.
+fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).into_iter().flatten().flatten() {
+        let target = to.join(entry.file_name());
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            copy_dir(&entry.path(), &target);
+        } else {
+            let _ = std::fs::copy(entry.path(), &target);
+        }
+    }
+}
+
+/// Copy what a server keeps under `from` into `to`, as a kill of its process at this moment
+/// leaves it on disk. Whether the copy is one moment's state: nothing under `from` was written,
+/// added or removed while it was taken.
+fn killed_into(from: &std::path::Path, to: &std::path::Path) -> bool {
+    let mut before = std::collections::BTreeMap::new();
+    kept_under(from, &mut before);
+    copy_dir(from, to);
+    let mut after = std::collections::BTreeMap::new();
+    kept_under(from, &mut after);
+    before == after
+}
+
+/// What a kill of a server's process left, the moment its assistant's turn was over: no stop of
+/// the server's was made, and the next start has what its disk held then.
+struct Killed {
+    root: SigningKey,
+    device: Device,
+    /// What the server's disk held at the kill.
+    state: tempfile::TempDir,
+    workspace: String,
+    /// The person's message, and the answer to it as they read it before the kill.
+    wish: Id,
+    said: chat::chat::Message,
+}
+
+impl Killed {
+    /// A person asks their assistant, it looks through the workspace and answers, and its turn
+    /// is over: the process is killed there.
+    async fn as_an_answer_ended() -> Self {
+        let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+        let device = enrol(&root, "tilo-sh", DeviceCapabilities::member());
+        let browser = enrol(&root, "browser", DeviceCapabilities::member());
+        let state = crate::support::scratch_dir();
+        let (up, workspace, page) = team_on(&root, (&device, &browser), state.path()).await;
+        let wish = write_to_agent(
+            &up.actions,
+            &up.workspaces,
+            &workspace,
+            (&root, &browser),
+            "What is due today?",
+        )
+        .await;
+        page.peer.close();
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let agents = up.agents(Some(waits(
+            vec![looks(), says("Nothing is due today.")],
+            usize::MAX,
+            &asked,
+            &Arc::new(Hold::default()),
+        )));
+        let turns = agents.turns(&workspace).await.unwrap();
+        assert_eq!(turns.len(), 1, "{turns:?}");
+        agents.answer(&workspace, &turns[0]).await.unwrap();
+
+        // The kill, here: what the disk holds at this moment is all the next start has.
+        let deadline = tilo_test_env::hang_deadline();
+        let killed = loop {
+            let killed = crate::support::scratch_dir();
+            if killed_into(state.path(), killed.path()) {
+                break killed;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "what the server keeps never stood still for a copy"
+            );
+        };
+        let said = ended(&up.workspaces, &workspace, &wish).await;
+        assert!(said.text.contains("Nothing is due today"), "{}", said.text);
+        assert!(
+            agents.turns(&workspace).await.unwrap().is_empty(),
+            "the turn was over before the kill"
+        );
+        drop(agents);
+        up.down().await;
+        Self {
+            root,
+            device,
+            state: killed,
+            workspace,
+            wish,
+            said,
+        }
+    }
+}
+
+/// Whatever a kill cut off, the server that starts asks its model for that turn at most once:
+/// what its model answers is taken, and nothing is owed for it again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn after_a_kill_a_start_asks_its_model_for_an_ended_turn_at_most_once() {
+    let killed = Killed::as_an_answer_ended().await;
+    let up = Up::on(&killed.root, &killed.device, killed.state.path()).await;
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let agents = up.agents(Some(waits(
+        vec![says("Nothing is due today.")],
+        usize::MAX,
+        &asked,
+        &Arc::new(Hold::default()),
+    )));
+    // What the server's own look does, three times over: it starts every turn that is owed.
+    for _ in 0..3 {
+        for turn in agents.turns(&killed.workspace).await.unwrap() {
+            agents.answer(&killed.workspace, &turn).await.unwrap();
+        }
+    }
+    let times = asked.lock().unwrap().len();
+    assert!(
+        times <= 1,
+        "its model was asked {times} times for a turn that was over before the kill"
+    );
+    drop(agents);
+    up.down().await;
+}
+
+/// The answer a person read before the kill is ended after the next start too, with its words
+/// and its steps, and nothing is owed that would say or do any of it a second time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_server_killed_as_an_answer_ended_starts_with_the_answer_ended_and_owes_no_turn() {
+    let killed = Killed::as_an_answer_ended().await;
+    let up = Up::on(&killed.root, &killed.device, killed.state.path()).await;
+    let part = conversation_part(&up.workspaces, &killed.workspace).await;
+    let reply = part
+        .messages
+        .get(&chat::chat::reply_id(&killed.wish, &MemberId::agent(SCOUT)));
+    assert!(
+        reply.is_some_and(|reply| !chat::summons::unanswered(Some(reply))),
+        "the answer its person read is ended after the start: {:?}",
+        reply.map(|reply| reply.work.clone())
+    );
+    let reply = reply.expect("the answer is there");
+    assert_eq!(reply.text, killed.said.text, "it says what it said");
+    let steps =
+        |reply: &chat::chat::Message| reply.work.as_ref().map_or(0, |work| work.trace.len());
+    assert_eq!(steps(reply), steps(&killed.said), "with the steps it took");
+    assert_eq!(
+        part.messages.len(),
+        2,
+        "their message and its answer, nothing else"
+    );
+    let owed = up.agents(None).turns(&killed.workspace).await.unwrap();
+    assert!(
+        owed.is_empty(),
+        "no turn is owed for a message that was answered: {owed:?}"
+    );
+    up.down().await;
+}
+
 /// How the result of an event is told to its person, where the event says.
 #[path = "hosted_event_told_as.rs"]
 mod told_as;

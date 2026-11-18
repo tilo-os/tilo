@@ -110,13 +110,16 @@ impl NavShell {
             self.structure_dirty = true;
             self.invalidate();
         }
-        let mut acted = floats_changed | self.requests.toggle.replace(false);
+        // What toggles the sidebar: the press on its toggle and a change of floating, as before.
+        // A notice asked for below is neither.
+        let toggles = floats_changed | self.requests.toggle.replace(false);
+        let mut acted = toggles;
         let toast = self.requests.toast.borrow_mut().take();
         if let Some((text, kind)) = toast {
             self.toast(text, kind);
             acted = true;
         }
-        if acted {
+        if toggles {
             self.toggle_sidebar();
         }
         if self.requests.back.replace(false) {

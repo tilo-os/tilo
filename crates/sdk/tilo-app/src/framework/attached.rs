@@ -93,9 +93,11 @@ pub struct AttachedView {
     /// action on a resource the frame already finds does not wait for it.
     unsettled: Cell<bool>,
     /// What the view has not laid out includes what reached it from
-    /// elsewhere (a peer's change, a part another device started, a new
-    /// member's access): what its records ask the workspace for is what a frame of
-    /// that makes of it.
+    /// elsewhere and may move what it asks the workspace for (a peer's
+    /// change to its own document, a part another device started, a new
+    /// member's access, the workspace's answer): what it asks for is what
+    /// a frame of that makes of it. A peer's change into a part the view
+    /// already holds is not among them ([`Self::merge_resource`]).
     merged: Cell<bool>,
     /// What the view published as last asked, while nothing it reads moved
     /// ([`Published`]): one call resolves a path, finds its chains and checks
@@ -1479,9 +1481,17 @@ impl AttachedView {
         self.awaited.borrow_mut().remove(record);
         self.take_up_kept();
         // A part opened here is new to the view even when the change merged
-        // into it is what it opened from.
-        if changed || opened {
+        // into it is what it opened from, and what the view asks the
+        // workspace for may move with it (a chain read whole asks for the
+        // parts before it): a frame says so before the view is asked. A
+        // change into a part the view already holds moves what that part
+        // holds and nothing the view asks for: it is laid out when the view
+        // is next read, as the view's own changes are, however often the
+        // view is asked what it wants meanwhile.
+        if opened {
             self.unsettle_merged();
+        } else if changed {
+            self.unsettle();
         }
         Ok(changed)
     }

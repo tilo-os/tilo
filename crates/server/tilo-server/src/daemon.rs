@@ -913,10 +913,20 @@ impl Server {
     /// queueing for store-and-forward. Deltas in that window are neither
     /// delivered nor queued. Closing the endpoint sends `CONNECTION_CLOSE`
     /// straight away, so peers drop the subscription and queue instead.
+    ///
+    /// What its workspaces took in of their members' writes is written
+    /// through to their files first
+    /// ([`crate::workspaces::Workspaces::keep_what_was_followed`]): that
+    /// write-through is deferred, so a server stopped without it would start
+    /// again on documents that lack what was written last, and owe a turn its
+    /// agent had already answered.
     pub async fn shutdown(mut self) {
         // Stop reconnecting first: the dial loop would otherwise open a
         // fresh connection while the endpoint is closing.
         lock_background_tasks(&self.background_tasks).clear();
+        if let Some(workspaces) = &self.workspaces {
+            workspaces.keep_what_was_followed().await;
+        }
         if let Err(error) = self.router.shutdown().await {
             tracing::debug!(%error, "server router shutdown task failed");
         }

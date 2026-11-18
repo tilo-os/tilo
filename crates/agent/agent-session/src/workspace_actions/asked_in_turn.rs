@@ -19,7 +19,13 @@
 //!
 //! Either way what is decided is what the system names: the app, the kind of
 //! resource, the action, the document and the resource in it
-//! ([`Asked`]). Nothing the agent wrote decides it.
+//! ([`Asked`](tilo_actions::remote::person_asking::Asked)). Nothing the agent
+//! wrote decides it.
+//!
+//! An always is for the action that asked, never for what carried it: an
+//! invocation that carries its resource's other actions is asked about by
+//! their names, offers no always, and goes ahead unasked only where the own
+//! always of each carried action that asks stands ([`super::carried`]).
 
 use super::bounded::About;
 use super::link::{AskedInTurn, AsksInConversation};
@@ -29,7 +35,6 @@ use super::{
     Worker,
 };
 use tilo_actions::InvocationUpdate;
-use tilo_actions::remote::person_asking::{ActionName, Asked, Thing, Words};
 use tilo_actions::remote::{InvocationReceipt, InvocationState, Pending, RemoteActionMessage};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_server_protocol::WorkspaceId;
@@ -78,6 +83,25 @@ fn failed(invocation: InvocationId, message: String) -> InvocationUpdate {
     }
 }
 
+/// How `invocation` ends once the question about it was put to its person in the
+/// conversation, or could not be (`put`): nothing ran either way, and it is told which.
+/// The end of a question that was put says so typed as well: its person is asked and their
+/// answer does it, which whoever words this end tells from one where nobody was asked.
+fn ended(invocation: InvocationId, put: Option<&Result<(), String>>) -> InvocationUpdate {
+    let message = match put {
+        Some(Ok(())) => ASKED_IN_CONVERSATION.to_owned(),
+        Some(Err(why)) => format!("{NOT_ASKED} ({why}), so nothing ran."),
+        None => format!("{NOT_ASKED}, so nothing ran."),
+    };
+    let mut update = failed(invocation, message);
+    if matches!(put, Some(Ok(())))
+        && let InvocationUpdate::Failed { error, .. } = &mut update
+    {
+        error.details = Some(tilo_actions::remote::person_asking::asked_detail());
+    }
+    update
+}
+
 /// Whether `outcome` is an invocation that waits for its person's answer.
 const fn waits(outcome: &Performed) -> bool {
     matches!(
@@ -86,38 +110,6 @@ const fn waits(outcome: &Performed) -> bool {
             ActionCallError::ConfirmationRequired { .. }
         ))
     )
-}
-
-/// What `caller` asks with `request` in `workspace`, by the names the system
-/// gave it, and those in the system's words: what a lasting permission of
-/// its person's covers, and what one is listed with. `None` for a caller
-/// that is no agent.
-fn asked(
-    caller: &Caller,
-    workspace: &str,
-    request: &InvokeRequest,
-    about: &About,
-) -> Option<(Asked, Words)> {
-    let agent = caller.acting().agent_id()?;
-    let asked = Asked {
-        workspace: workspace.to_owned(),
-        agent: agent.to_owned(),
-        action: ActionName {
-            provider: about.route.app_id.clone(),
-            kind: about.descriptor.resource_kind.clone(),
-            action: request.target.address.action.clone(),
-        },
-        on: Some(Thing {
-            document: about.route.document.clone(),
-            resource: request.target.address.resource.clone(),
-        }),
-    };
-    let words = Words {
-        action: about.descriptor.action_label.clone(),
-        on: about.record.clone(),
-        place: String::new(),
-    };
-    Some((asked, words))
 }
 
 impl Worker {
@@ -139,13 +131,13 @@ impl Worker {
         request: &InvokeRequest,
     ) -> Result<(Performed, Option<Unsaved>), InvocationReceipt> {
         let (mut outcome, mut unsaved, mut about) = self.performed(workspace_id, caller, request);
-        let mut stood = None;
+        let mut stood = Vec::new();
         if waits(&outcome)
             && let Some(waiting) = about.as_deref()
-            && let Some(permission) = self.stands_for(workspace_id, caller, request, waiting)
+            && let Some(permissions) = self.stands_for(workspace_id, caller, request, waiting)
         {
             (outcome, unsaved, about) = self.performed(workspace_id, caller, request);
-            stood = Some(permission);
+            stood = permissions;
         }
         if waits(&outcome)
             && let Some(about) = about
@@ -155,11 +147,12 @@ impl Worker {
         {
             return Err(receipt);
         }
-        if let Some(permission) = stood
-            && outcome.is_ok()
+        if outcome.is_ok()
             && let Some(link) = self.shared.link.get()
         {
-            link.permission_used(workspace_id, caller, &permission);
+            for permission in &stood {
+                link.permission_used(workspace_id, caller, permission);
+            }
         }
         Ok((outcome, unsaved))
     }
@@ -184,18 +177,21 @@ impl Worker {
         (outcome, unsaved, about)
     }
 
-    /// The lasting permission of the person `caller` acts for that covers
-    /// `request`, by its id, for an agent working inside a turn. With one
-    /// the server holds that person's answer for this invocation as it would
-    /// had they just allowed it: a token bound to the invocation, its target
-    /// and its arguments.
+    /// The lasting permissions of the person `caller` acts for that cover
+    /// `request`, by their ids, for an agent working inside a turn: the one
+    /// for the action itself, or, for an invocation that carries its
+    /// resource's other actions, the own one of every carried action that asks
+    /// by its own name ([`About::opened_by`]). With every one of them the
+    /// server holds that person's answer for this invocation as it would had
+    /// they just allowed it: a token bound to the invocation, its target and
+    /// its arguments. `None` where one of them does not stand.
     fn stands_for(
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
         about: &About,
-    ) -> Option<String> {
+    ) -> Option<Vec<String>> {
         caller.turn()?;
         self.bounded(caller)?;
         if request.confirmation.is_some() {
@@ -205,15 +201,20 @@ impl Worker {
             .workspaces
             .get(&workspace_id)
             .and_then(|workspace| workspace.cluster_id(workspace_id))?;
-        let (asked, _) = asked(caller, &workspace, request, about)?;
-        let permission = self
-            .shared
-            .link
-            .get()?
-            .stands(workspace_id, caller, &asked)?;
+        let agent = caller.acting().agent_id()?;
+        let opened_by = about.opened_by(agent, &workspace, request)?;
+        let link = self.shared.link.get()?;
+        let mut permissions = Vec::with_capacity(opened_by.len());
+        for asked in &opened_by {
+            permissions.push(link.stands(workspace_id, caller, asked)?);
+        }
+        // Nothing that stands opens nothing.
+        if permissions.is_empty() {
+            return None;
+        }
         let token = self.shared.token_for(workspace_id, caller, request)?;
         self.log().entries.get_mut(&request.invocation)?.approval = Some(token);
-        Some(permission)
+        Some(permissions)
     }
 
     /// Put `request`, which `caller` (an agent working inside a turn) asked
@@ -244,8 +245,8 @@ impl Worker {
             .workspaces
             .get(&workspace_id)
             .and_then(|workspace| workspace.cluster_id(workspace_id))?;
-        let (asked, words) = asked(caller, &workspace, request, about)?;
-        let draft = tilo_actions::Draft::render(&about.descriptor, &about.arguments);
+        let agent = caller.acting().agent_id()?;
+        let draft = about.draft();
         if draft
             .fields
             .iter()
@@ -274,8 +275,8 @@ impl Worker {
         let in_turn = AskedInTurn {
             request: request.clone(),
             draft,
-            asked,
-            words,
+            asked: about.always(agent, &workspace, request),
+            words: about.words(),
         };
         let Some(put) = conversations.ask(workspace_id, caller, in_turn) else {
             if let Some(entry) = self.log().entries.get_mut(&invocation) {
@@ -311,12 +312,7 @@ impl super::Shared {
     /// conversation, or could not be (`put`): either way the invocation ends
     /// here, told which, and nothing ran.
     fn asked_in_conversation(&self, invocation: InvocationId, put: Option<&Result<(), String>>) {
-        let message = match put {
-            Some(Ok(())) => ASKED_IN_CONVERSATION.to_owned(),
-            Some(Err(why)) => format!("{NOT_ASKED} ({why}), so nothing ran."),
-            None => format!("{NOT_ASKED}, so nothing ran."),
-        };
-        let update = failed(invocation, message);
+        let update = ended(invocation, put);
         if let Some(entry) = self.log.lock_recover().entries.get_mut(&invocation)
             && !entry.update.is_terminal()
         {
@@ -404,5 +400,35 @@ mod tests {
         assert_eq!(shortened(&draft_of(cut, false)), Some("To"));
         let flag = DraftValue::Flag { on: true };
         assert_eq!(shortened(&draft_of(flag, true)), None);
+    }
+
+    /// An invocation whose person was asked about it in the conversation ends with nothing
+    /// done, under the code of a confirmation that is required and in its own sentence, and
+    /// says, typed, that a question was put: its end is no failure of the action. Where no
+    /// question could be put it says no such thing.
+    #[test]
+    fn an_invocation_whose_person_was_asked_says_so_typed() {
+        use tilo_actions::remote::{CONFIRMATION_REQUIRED_CODE, person_asking};
+
+        let invocation = InvocationId::new();
+        let end = |put: Option<&Result<(), String>>| match ended(invocation, put) {
+            InvocationUpdate::Failed { error, .. } => error,
+            other => panic!("it ends with nothing done: {other:?}"),
+        };
+        let told = end(Some(&Ok(())));
+        assert_eq!(told.code, CONFIRMATION_REQUIRED_CODE);
+        assert_eq!(told.message, ASKED_IN_CONVERSATION);
+        assert!(person_asking::says_asked(told.details.as_ref()), "{told:?}");
+
+        let unput: Result<(), String> = Err("no conversation".to_owned());
+        for put in [Some(&unput), None] {
+            let told = end(put);
+            assert_eq!(told.code, CONFIRMATION_REQUIRED_CODE);
+            assert!(told.message.starts_with(NOT_ASKED), "{told:?}");
+            assert!(
+                !person_asking::says_asked(told.details.as_ref()),
+                "{told:?}"
+            );
+        }
     }
 }

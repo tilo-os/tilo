@@ -289,7 +289,7 @@ use mcp_agent_pick::{
     action_rank, is_program_form, named_beyond_its_start, only_by_id, pick, pick_action,
     pick_action_anywhere, published_on, rank, reads_action,
 };
-pub(super) use mcp_agent_tools::tool_definitions;
+pub(super) use mcp_agent_tools::{held_until_ended, tool_definitions};
 
 /// [`list_names`], or `none` for no names: an empty list reads as a
 /// sentence cut short.
@@ -2027,7 +2027,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             arguments,
             tilo_actions::InvocationId::new(),
             None,
-            std::time::Duration::from_millis(DEFAULT_WAIT_MS),
+            self.held_for(None),
             &mut None,
         ))
         .await?;

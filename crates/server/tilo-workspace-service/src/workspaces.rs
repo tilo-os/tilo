@@ -2774,7 +2774,7 @@ impl Workspaces {
     /// retains, but that replay takes a write only into a record the
     /// governor already holds: the record a member's write changed has to be
     /// on disk for a restart to serve it.
-    pub(crate) async fn keep_what_was_followed(&self) {
+    pub async fn keep_what_was_followed(&self) {
         let held = {
             let workspaces = self.inner.workspaces.lock().await;
             workspaces.values().cloned().collect::<Vec<_>>()

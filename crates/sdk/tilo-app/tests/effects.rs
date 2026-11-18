@@ -298,7 +298,7 @@ impl ResourceApp for MailApp {
                     },
                 ))
             }
-            MailEffect::Connect => Ok(Effected::done()),
+            MailEffect::Connect | MailEffect::ShowDrafts => Ok(Effected::done()),
             MailEffect::Stall => Ok(Effected::Pending),
             MailEffect::Receipt | MailEffect::ReadReceipt => Ok(deferred_receipt(cx)),
             MailEffect::Note { text } => {
@@ -309,7 +309,6 @@ impl ResourceApp for MailApp {
                 shown.set(true);
                 Ok(Effected::done())
             }
-            MailEffect::ShowDrafts => Ok(Effected::done()),
         })
         .status(move || {
             if reached.get() {

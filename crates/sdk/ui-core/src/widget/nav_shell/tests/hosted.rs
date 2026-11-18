@@ -546,6 +546,46 @@ fn a_hosted_shell_keeps_every_columns_header_in_its_own_row() {
     assert_eq!(pressed.get(), 1, "the press in the row runs the button");
 }
 
+/// A notice the app asks the window's bar to show says what an operation came to. It is no press
+/// on the sidebar's toggle: the sidebar stands as it stood, and nothing is kept as the person's
+/// choice for it, so it still stands after the window was narrow and is wide again.
+#[test]
+fn a_notice_asked_through_the_bar_leaves_the_sidebar_as_it_is() {
+    let shell = NavShell::new()
+        .with_window_toolbar()
+        .content_kind(ContentKind::Reading);
+    let link = shell.window_bar_link();
+    let shell = shell
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Probe::boxed("content").0);
+    let mut h = harness(shell, 1100, 760, Theme::dark());
+    settle(&mut h, 1100, 760);
+    assert_eq!(geometry(&h).sidebar, SidebarPlacement::Docked);
+    assert!(
+        h.root::<NavShell>().is_sidebar_open(),
+        "a wide window opens with its sidebar docked and open"
+    );
+
+    link.toast("Saved", crate::widget::toast::ToastKind::Success);
+    settle(&mut h, 1100, 760);
+    assert!(
+        h.root::<NavShell>().is_sidebar_open(),
+        "a notice is no press on the sidebar's toggle"
+    );
+    assert!(
+        child_rect(&h, "sidebar").is_some_and(|r| r.width() > 0.0),
+        "the sidebar stands where it stood"
+    );
+
+    settle(&mut h, 360, 760);
+    settle(&mut h, 1100, 760);
+    assert_eq!(geometry(&h).sidebar, SidebarPlacement::Docked);
+    assert!(
+        h.root::<NavShell>().is_sidebar_open(),
+        "nothing was kept as the person's choice for the wide window"
+    );
+}
+
 /// A conversation floated as a card beside the window it was sent from shows only itself: no
 /// list stands over it and the bar offers no toggle for one, whatever the app last remembered
 /// of its sidebar.
