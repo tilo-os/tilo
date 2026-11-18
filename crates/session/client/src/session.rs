@@ -539,9 +539,9 @@ struct Task {
     /// are held on: each waits for them to enter the outbox, then for the
     /// outbox as it stands then, in the workspaces it was asked for.
     held_barriers: Vec<outbound::Held>,
-    /// Why the workspace refused writes of each route that no barrier waited for when they were
-    /// let go: they left the device before the barrier that asks after them was called, and that
-    /// barrier completes with the refusal rather than as saved.
+    /// Why the workspace refused writes of each route that no barrier hearing that route waited
+    /// for when they were let go: they left the device before the barrier that asks after them was
+    /// called, and that barrier completes with the refusal rather than as saved.
     unheard_refusals: BTreeMap<DocumentRoute, String>,
     /// When the workspaces not yet admitted were subscribed (ms since the epoch).
     admission_since: Option<u64>,
@@ -1621,11 +1621,15 @@ impl Task {
                 true
             }
             Command::Client(Cmd::Barrier(done)) => {
-                self.barrier(done, None);
+                self.barrier(done, None, None);
                 true
             }
-            Command::Client(Cmd::BarrierOf(workspaces, done)) => {
-                self.barrier(done, Some(workspaces.into_iter().collect()));
+            Command::Client(Cmd::BarrierFor(routes, done)) => {
+                let workspaces = routes
+                    .iter()
+                    .filter_map(|route| route.workspace_id().ok())
+                    .collect();
+                self.barrier(done, Some(workspaces), Some(routes.into_iter().collect()));
                 true
             }
             Command::Client(Cmd::Presence(workspace_id, frames)) => {

@@ -99,16 +99,17 @@ pub trait Outbox: std::fmt::Debug + collab_types::signer::MaybeSendSync {
         Ok(receipt)
     }
 
-    /// [`Self::barrier`] for `workspaces` alone: a receipt that completes once every write said
-    /// before it to one of them is durable at its holder, or with the refusal that prevents it.
-    /// What this device still holds or owes in a workspace not named does not keep it waiting:
-    /// a session many workspaces share answers each for its own writes.
+    /// [`Self::barrier`] for the writes a caller made to `routes`: a receipt that completes once
+    /// every write said before it to their workspaces is durable at its holder, or with the
+    /// refusal of a write to one of `routes`. What this device still holds or owes in a workspace
+    /// not named does not keep it waiting, and the refusal of a write to another route is its own
+    /// caller's: a session many callers share answers each for its own writes.
     ///
     /// # Errors
     /// The transport is gone.
-    fn barrier_of(&self, workspaces: &[Topic]) -> Result<Receipt<Result<(), String>>, Closed> {
+    fn barrier_for(&self, routes: &[DocumentRoute]) -> Result<Receipt<Result<(), String>>, Closed> {
         let (answer, receipt) = answer();
-        self.send(Cmd::BarrierOf(workspaces.to_vec(), answer))?;
+        self.send(Cmd::BarrierFor(routes.to_vec(), answer))?;
         Ok(receipt)
     }
 
@@ -416,9 +417,9 @@ pub enum Cmd {
     KeepContent(Topic, std::sync::Arc<dyn crate::content::Kept>),
     /// Answer once every write said before this is durable at the host ([`Outbox::barrier`]).
     Barrier(Answer<Result<(), String>>),
-    /// Answer once every write said before this to one of these workspaces is durable at its
-    /// holder ([`Outbox::barrier_of`]).
-    BarrierOf(Vec<Topic>, Answer<Result<(), String>>),
+    /// Answer once every write said before this to these routes' workspaces is durable at its
+    /// holder, or with the refusal of a write to one of the routes ([`Outbox::barrier_for`]).
+    BarrierFor(Vec<DocumentRoute>, Answer<Result<(), String>>),
     /// Say these frames on the presence track of the workspace on the topic.
     Presence(Topic, Vec<collab_types::presence::Presence>),
     /// The host's word for a run it executes, on the workspace on the topic.

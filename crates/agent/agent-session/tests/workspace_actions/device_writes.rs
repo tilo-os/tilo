@@ -230,3 +230,79 @@ async fn a_group_whose_write_is_refused_is_answered_failed() {
         "the refusal says why: {many}"
     );
 }
+
+/// Two callers write to one workspace over one session: the workspace refuses
+/// one's change and takes the other's. Each is answered for its own write:
+/// the one taken as saved, even while the other's refusal is on its way, and
+/// the refused one as refused, even after the other was answered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn each_caller_hears_only_its_own_refusal() {
+    use automerge::transaction::Transactable as _;
+    let (owner, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let (viewer, _) = tilo_user_identity::UserIdentity::generate("Vic", 1);
+    let node = enrol(&owner, "node", DeviceCapabilities::member());
+    let viewer_device = enrol(&viewer, "page", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let hosted = start(&owner, &node, state.path()).await;
+    let workspace = hosted
+        .server
+        .workspaces()
+        .unwrap()
+        .create("Read here, kept own")
+        .await
+        .unwrap();
+    admit_person(
+        &hosted,
+        &node,
+        &workspace.workspace,
+        &viewer_device,
+        Role::Viewer,
+    )
+    .await;
+    let mut page = open_admitted_peer(&hosted, &viewer_device, &node, &workspace.workspace).await;
+
+    // One caller makes a new tasks resource, which a viewer may not; the
+    // other writes the viewer's own settings, which only they write.
+    let refused_route = page.create(TASKS);
+    let own = DocumentRoute {
+        app_id: "so.tilo.settings".into(),
+        cluster_id: workspace.workspace.clone(),
+        document: collab_types::OwnResource::new(
+            "settings.root",
+            viewer.verifying_key().to_bytes(),
+        )
+        .unwrap()
+        .document_id(),
+    };
+    let mut settings = automerge::AutoCommit::new();
+    settings.put(automerge::ROOT, "theme", "dark").unwrap();
+    page.peer
+        .write(
+            own.clone(),
+            &collab_types::DocumentMutation::Snapshot(settings.save()),
+        )
+        .unwrap();
+
+    let taken = page
+        .peer
+        .barrier_for(std::slice::from_ref(&own))
+        .unwrap()
+        .recv()
+        .unwrap();
+    assert_eq!(
+        taken,
+        Ok(()),
+        "the caller whose write was taken hears it saved"
+    );
+    let refused = page
+        .peer
+        .barrier_for(std::slice::from_ref(&refused_route))
+        .unwrap()
+        .recv()
+        .unwrap();
+    let refusal = refused.expect_err("the caller whose write was refused hears it refused");
+    assert!(
+        refusal.contains("not granted"),
+        "the refusal says why: {refusal}"
+    );
+}

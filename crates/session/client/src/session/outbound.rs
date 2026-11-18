@@ -21,18 +21,29 @@ const SIGNING_FAILED: &str = "signing-failed";
 /// The failures of writes that wait, held: gone once nothing is held.
 const HELD_CODES: &[&str] = &[RECORD_FULL, SIGNING_FAILED];
 
-/// The workspaces a barrier answers for ([`crate::Outbox::barrier_of`]): these alone, or every
+/// The workspaces a barrier answers for ([`crate::Outbox::barrier_for`]): these alone, or every
 /// one this session joined.
 pub(super) type Scope = Option<BTreeSet<WorkspaceId>>;
 
 /// A barrier waiting on what this device owes: the writes still unanswered of those it was
 /// asked about, the refusal one of them met, where its outcome goes, and the workspaces it
 /// answers for.
-pub(super) type Owed = (BTreeSet<[u8; 32]>, Option<String>, Completion, Scope);
+pub(super) type Owed = (BTreeSet<[u8; 32]>, Option<String>, Completion, Scope, Hears);
 
 /// A barrier called while frames were held: the routes they are held on, where its outcome goes,
-/// and the workspaces it answers for.
-pub(super) type Held = (BTreeSet<DocumentRoute>, Completion, Scope);
+/// the workspaces it answers for, and whose refusals it hears.
+pub(super) type Held = (BTreeSet<DocumentRoute>, Completion, Scope, Hears);
+
+/// The writes whose refusal a barrier answers with ([`crate::Outbox::barrier_for`]): those to
+/// these routes alone, the writes of whoever asked, or, with none named, every write of this
+/// session. A write another caller made to the same workspace keeps it waiting until it is
+/// answered, and its refusal is that caller's, not this barrier's.
+pub(super) type Hears = Option<BTreeSet<DocumentRoute>>;
+
+/// Whether a barrier that hears `hears` answers with the refusal of a write to `route`.
+fn hears(hears: Option<&BTreeSet<DocumentRoute>>, route: &DocumentRoute) -> bool {
+    hears.is_none_or(|routes| routes.contains(route))
+}
 
 /// Whether `route` is of a workspace `scope` answers for.
 fn within(scope: Option<&BTreeSet<WorkspaceId>>, route: &DocumentRoute) -> bool {
@@ -343,18 +354,18 @@ impl Task {
             .then(|| self.owed(None));
         let (waiting, done): (Vec<_>, Vec<_>) = std::mem::take(&mut self.barriers)
             .into_iter()
-            .map(|(mut left, refused, complete, scope)| {
+            .map(|(mut left, refused, complete, scope, heard)| {
                 let own = scope.as_ref().map(|named| self.owed(Some(named)));
                 if let Some(owed) = own.as_ref().or(every.as_ref())
                     && !left.is_subset(owed)
                 {
                     left.clone_from(owed);
                 }
-                (left, refused, complete, scope)
+                (left, refused, complete, scope, heard)
             })
             .partition(|(left, ..)| !left.is_empty());
         self.barriers = waiting;
-        for (_, refused, complete, _) in done {
+        for (_, refused, complete, ..) in done {
             let _ = complete.send(refused.map_or(Ok(()), Err));
         }
     }
@@ -364,7 +375,7 @@ impl Task {
     /// workspace still holds back or is owed then keeps nothing waiting here: a write that
     /// waits in one workspace, for its document or for its keys, says nothing about the
     /// others'.
-    pub(super) fn barrier(&mut self, done: Completion, scope: Scope) {
+    pub(super) fn barrier(&mut self, done: Completion, scope: Scope, heard: Hears) {
         let held: BTreeSet<DocumentRoute> = self
             .engine
             .held_writes()
@@ -373,12 +384,12 @@ impl Task {
             .filter(|route| within(scope.as_ref(), route))
             .cloned()
             .collect();
-        // A write the workspace refused before this barrier was called is one it asks after: it
-        // was said before, and it will never be saved.
+        // A write of its own the workspace refused before this barrier was called is one it asks
+        // after: it was said before, and it will never be saved.
         let unheard: Vec<DocumentRoute> = self
             .unheard_refusals
             .keys()
-            .filter(|route| within(scope.as_ref(), route))
+            .filter(|route| within(scope.as_ref(), route) && hears(heard.as_ref(), route))
             .cloned()
             .collect();
         let refused = unheard
@@ -388,9 +399,9 @@ impl Task {
         if let Some(refused) = refused {
             let _ = done.send(Err(refused));
         } else if held.is_empty() {
-            self.await_ownership(done, None, scope);
+            self.await_ownership(done, None, scope, heard);
         } else {
-            self.held_barriers.push((held, done, scope));
+            self.held_barriers.push((held, done, scope, heard));
         }
     }
 
@@ -402,12 +413,13 @@ impl Task {
         done: Completion,
         refused: Option<String>,
         scope: Scope,
+        heard: Hears,
     ) {
         let owed = self.owed(scope.as_ref());
         if owed.is_empty() {
             let _ = done.send(refused.map_or(Ok(()), Err));
         } else {
-            self.barriers.push((owed, refused, done, scope));
+            self.barriers.push((owed, refused, done, scope, heard));
         }
     }
 
@@ -450,29 +462,36 @@ impl Task {
 
     /// Move each held barrier whose routes hold nothing any more on to the
     /// outbox, which now carries what those routes held; one waiting on a
-    /// route whose writes were `refused` for good completes with why at once.
-    /// A refusal no held barrier waits for is kept
-    /// for the next barrier called on its workspace ([`Self::barrier`]): the
+    /// route whose writes were `refused` for good, and that hears that route's
+    /// refusals, completes with why at once. A refusal no held barrier hears is
+    /// kept for the next barrier that hears its route ([`Self::barrier`]): the
     /// write it refused was said before that barrier, and it is never saved.
     pub(super) fn release_barriers(&mut self, refused: &BTreeMap<DocumentRoute, String>) {
+        let heard_by = |(routes, _, _, heard): &Held| {
+            routes
+                .iter()
+                .find(|route| refused.contains_key(*route) && hears(heard.as_ref(), route))
+                .and_then(|route| refused.get(route))
+                .cloned()
+        };
         for (route, why) in refused {
             if !self
                 .held_barriers
                 .iter()
-                .any(|(routes, ..)| routes.contains(route))
+                .any(|(routes, _, _, heard)| routes.contains(route) && hears(heard.as_ref(), route))
             {
                 self.unheard_refusals.insert(route.clone(), why.clone());
             }
         }
-        // A barrier waiting on a refused route is answered with the refusal at once: whatever
-        // else it waits for, it can no longer complete as saved.
+        // A barrier waiting on a refused route of its own is answered with the refusal at once:
+        // whatever else it waits for, it can no longer complete as saved.
         let (heard, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.held_barriers)
             .into_iter()
-            .partition(|(routes, ..)| routes.iter().any(|route| refused.contains_key(route)));
+            .partition(|barrier| heard_by(barrier).is_some());
         self.held_barriers = waiting;
-        for (routes, done, _) in heard {
-            if let Some(why) = routes.iter().find_map(|route| refused.get(route)) {
-                let _ = done.send(Err(why.clone()));
+        for barrier in heard {
+            if let Some(why) = heard_by(&barrier) {
+                let _ = barrier.1.send(Err(why));
             }
         }
         let held = self.engine.held_writes().lock().clone();
@@ -480,8 +499,8 @@ impl Task {
             .into_iter()
             .partition(|(routes, ..)| routes.iter().any(|route| held.contains_key(route)));
         self.held_barriers = waiting;
-        for (_, done, scope) in released {
-            self.await_ownership(done, None, scope);
+        for (_, done, scope, heard) in released {
+            self.await_ownership(done, None, scope, heard);
         }
     }
 
@@ -591,24 +610,30 @@ impl Task {
             let mut heard = false;
             let (waiting, done): (Vec<_>, Vec<_>) = std::mem::take(&mut self.barriers)
                 .into_iter()
-                .map(|(mut owed, mut refused, complete, scope)| {
-                    if owed.remove(&id) {
+                .map(|(mut owed, mut refused, complete, scope, hearing)| {
+                    // A barrier owed a write of another caller's waits no more for it, and
+                    // its refusal is not this barrier's to answer with.
+                    if owed.remove(&id)
+                        && route
+                            .as_ref()
+                            .is_none_or(|route| hears(hearing.as_ref(), route))
+                    {
                         heard = true;
                         if refused.is_none() {
                             refused.clone_from(&refusal);
                         }
                     }
-                    (owed, refused, complete, scope)
+                    (owed, refused, complete, scope, hearing)
                 })
                 // One that heard a refusal is answered at once: it can no longer complete as
                 // saved, whatever else it waits for.
                 .partition(|(owed, refused, ..)| !owed.is_empty() && refused.is_none());
             self.barriers = waiting;
-            for (_, refused, complete, _) in done {
+            for (_, refused, complete, ..) in done {
                 let _ = complete.send(refused.map_or(Ok(()), Err));
             }
-            // Answered before anyone asked after it: the next barrier on its workspace hears it
-            // ([`Self::barrier`]), as one of a write the workspace refused before it was sent.
+            // Answered before its caller asked after it: the next barrier that hears its route
+            // does ([`Self::barrier`]), as one of a write the workspace refused before it was sent.
             if !heard && let (Some(route), Some(refusal)) = (route, refusal) {
                 self.unheard_refusals.insert(route, refusal);
             }
