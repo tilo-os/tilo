@@ -1472,22 +1472,45 @@ fn a_projects_page_offers_to_delete_it_and_undo_brings_it_back() {
     assert!(bar_menu_entry(&mut app, "Delete project").is_some());
 }
 
-/// An agent's comment, as its step lands, is drawn on its words in the issue's thread: the
-/// agent's caret there says what it did.
+/// An agent's rename and comment on the open issue, naming it by its title, are drawn where
+/// they land: its caret on the title says it renamed it, and on the comment's words in the
+/// thread that it wrote them.
 #[test]
-fn an_agents_comment_is_drawn_on_its_words_in_the_thread() {
+fn an_agents_rename_and_comment_are_drawn_on_the_issue_page() {
+    use ui::tilo_actions::{InteractionAnchor, InteractionPhase, InteractionTextRange, StepKind};
     let mut app = open();
     app.call_on(&chain(), "create", json!({ "title": "Book the hall" }))
         .expect("create");
     let issue = only(&app);
     app.call_on(&issue_resource(&issue), "open", json!({}))
         .expect("open the issue");
+    // The rename answers the text it wrote, though it named the issue by what it says.
+    let renamed = app
+        .call_on_finished(
+            &chain(),
+            "rename",
+            json!({ "issue": "Book the hall", "title": "Book hall 4" }),
+        )
+        .expect("rename");
+    let wrote = renamed.wrote().expect("it names what it wrote");
+    assert_eq!(
+        wrote,
+        InteractionAnchor::Text {
+            region: "title".into(),
+            ranges: vec![InteractionTextRange {
+                block: issue.as_str().to_owned(),
+                start: 0,
+                end: 11,
+            }],
+        },
+        "all of the title, in the issue's block"
+    );
     // The comment answers the comment it made, under its issue: where its step landed.
     let made = app
         .call_on_finished(
             &chain(),
             "comment",
-            json!({ "issue": issue.as_str(), "text": "Hall 4 is free" }),
+            json!({ "issue": "Book hall 4", "text": "Hall 4 is free" }),
         )
         .expect("comment")
         .resources;
@@ -1503,22 +1526,33 @@ fn an_agents_comment_is_drawn_on_its_words_in_the_thread() {
             comment.as_str()
         )]
     );
-    let mut event = ui::headless::agent_acting("tasks.tracker", "comment");
-    event.actor = ui::tilo_actions::Acting::agent("scribe");
-    event.phase = ui::tilo_actions::InteractionPhase::Committed;
-    event.action.step = Some(ui::tilo_actions::StepKind::Write);
-    event.anchor = ui::tilo_actions::InteractionAnchor::Text {
-        region: "comments".into(),
-        ranges: vec![ui::tilo_actions::InteractionTextRange {
-            block: format!("{}/{}", issue.as_str(), comment.as_str()),
-            start: 0,
-            end: 14,
-        }],
+    let step = |action: &str, step: StepKind, anchor: InteractionAnchor| {
+        let mut event = ui::headless::agent_acting("tasks.tracker", action);
+        event.actor = ui::tilo_actions::Acting::agent("scribe");
+        event.phase = InteractionPhase::Committed;
+        event.action.step = Some(step);
+        event.anchor = anchor;
+        event
     };
+    let mut rename = step("rename", StepKind::Edit, wrote);
+    rename.action.did = Some("renamed".into());
+    let said = step(
+        "comment",
+        StepKind::Write,
+        InteractionAnchor::Text {
+            region: "comments".into(),
+            ranges: vec![InteractionTextRange {
+                block: format!("{}/{}", issue.as_str(), comment.as_str()),
+                start: 0,
+                end: 14,
+            }],
+        },
+    );
     {
         let presence = app.harness().presence_mut();
         presence.set_display_name(ui::permissions::MemberId::agent("scribe"), "Scribe");
-        presence.apply_interaction(event).expect("it applies");
+        presence.apply_interaction(rename).expect("it applies");
+        presence.apply_interaction(said).expect("it applies");
     }
     app.settle();
     app.harness().render_rgba();
@@ -1529,6 +1563,10 @@ fn an_agents_comment_is_drawn_on_its_words_in_the_thread() {
         .into_iter()
         .map(|tag| tag.label)
         .collect();
+    assert!(
+        tags.contains(&"Scribe: renamed".to_owned()),
+        "its caret on the title: {tags:?}"
+    );
     assert!(
         tags.contains(&"Scribe: wrote".to_owned()),
         "its caret on the comment's words: {tags:?}"
