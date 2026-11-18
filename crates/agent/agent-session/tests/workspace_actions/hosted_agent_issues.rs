@@ -438,6 +438,67 @@ async fn works_on_its_issue(in_page: bool, public: bool) {
     .await;
     assert!(!failed, "a read of every field answers: {all}");
     assert!(all.contains("Plan the launch"), "{all}");
+    // An item of a chain reads whole by its own id, in the part the chain keeps it in.
+    let (item, failed) = tool(
+        &server,
+        "tilo_do",
+        json!({
+            "path": "tasks/Issues#read",
+            "args": {"item": path},
+            "wait_ms": 30_000,
+        }),
+    )
+    .await;
+    assert!(
+        !failed && item.contains("Plan the launch"),
+        "the issue reads as an item of its chain: {item}"
+    );
+    // The note's reference as a listing row carries it (its id alone) links it too, and a
+    // reference that lacks everything says what it needs and where to get it, all at once.
+    let note_id = tracker(workspaces, workspace, &part)
+        .await
+        .issues
+        .get(&issue)
+        .and_then(|now| {
+            now.links
+                .values()
+                .find(|link| link.label == "Launch checklist")
+                .map(|link| link.resource.clone())
+        })
+        .expect("the issue lists the note it links");
+    let (linked, failed) = tool(
+        &server,
+        "tilo_do",
+        json!({
+            "path": format!("{path}#link-note"),
+            "args": {
+                "issue": issue.as_str(),
+                "note": {"id": note_id},
+            },
+            "wait_ms": 30_000,
+        }),
+    )
+    .await;
+    assert!(!failed, "a reference by its id links the note: {linked}");
+    let (refused, failed) = tool(
+        &server,
+        "tilo_do",
+        json!({
+            "path": format!("{path}#link-note"),
+            "args": {"issue": issue.as_str(), "note": {"label": "Launch checklist"}},
+        }),
+    )
+    .await;
+    assert!(
+        failed,
+        "a reference that lacks its fields is refused: {refused}"
+    );
+    for needed in ["app", "kind", "id", "label", "tilo_ls"] {
+        assert!(
+            refused.contains(needed),
+            "the refusal names {needed} and where to get it: {refused}"
+        );
+    }
     // The number a listing shows an issue by is an address of its own.
     let (numbered, failed) = tool(
         &server,

@@ -342,7 +342,14 @@ fn read_arguments(
                     "kind": node.kind,
                     "label": node.label,
                 }),
-                _ => Value::String(node.key.clone()),
+                // A chain's read names its item by the address it is an item of the chain at,
+                // which is what a listing's row carries; a resource published under a bound id
+                // goes by the key its id carries.
+                _ => Value::String(if node.key == node.id {
+                    node.id.clone()
+                } else {
+                    node.key.clone()
+                }),
             },
         );
     }

@@ -95,25 +95,64 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             if !picks {
                 continue;
             }
-            let Some(path) = arguments
-                .get(param.name.as_ref())
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|path| !path.is_empty())
-                .map(str::to_owned)
-            else {
-                continue;
+            let value = match arguments.get(param.name.as_ref()) {
+                Some(value) if !value.is_null() => value.clone(),
+                _ => continue,
             };
-            let parsed = parse_path(&path).map_err(|why| format!("invalid_arguments: {why}"))?;
+            // A reference written whole is the caller's own; one written by its id alone,
+            // or as an address the tools list, is resolved as any address is.
+            let (address, missing, by_id) = match &value {
+                serde_json::Value::Object(fields) => match reference_missing(fields) {
+                    missing if missing.is_empty() => continue,
+                    missing => (
+                        fields
+                            .get("id")
+                            .or_else(|| fields.get("resource"))
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|id| !id.is_empty())
+                            .map(str::to_owned),
+                        missing,
+                        true,
+                    ),
+                },
+                serde_json::Value::String(text) => (
+                    Some(text.trim().to_owned()).filter(|text| !text.is_empty()),
+                    Vec::new(),
+                    false,
+                ),
+                _ => continue,
+            };
+            let Some(address) = address else {
+                return Err(reference_refusal(param.name.as_ref(), &missing, None).into());
+            };
+            // An id is the address an item is published under (`notes.pages/pages/<id>`), read
+            // as an address whole; a string is a path, as a listing writes one.
+            let parsed = if by_id {
+                ParsedPath {
+                    app: address.clone(),
+                    segments: Vec::new(),
+                    action: None,
+                }
+            } else {
+                match parse_path(&address) {
+                    Ok(parsed) => parsed,
+                    Err(why) => return Err(format!("invalid_arguments: {why}").into()),
+                }
+            };
             let resolved = match self.resolve(&parsed).await? {
                 (Ok(resolved), _) => resolved,
-                (Err(note), _) => return Err(format!("invalid_arguments: {note}").into()),
+                (Err(note), _) => {
+                    return Err(
+                        reference_refusal(param.name.as_ref(), &missing, Some(&note)).into(),
+                    );
+                }
             };
             let Some(node) = resolved.node.clone() else {
-                return Err(format!(
-                    "invalid_arguments: {path} names no resource; tilo_ls {} lists what there is \
-                     to name",
-                    resolved.path
+                return Err(reference_refusal(
+                    param.name.as_ref(),
+                    &missing,
+                    Some(&format!("{address} names no resource")),
                 )
                 .into());
             };
@@ -359,4 +398,37 @@ fn forms(schema: &Value) -> Vec<(String, Value)> {
         }
     }
     forms
+}
+
+/// What a resource reference an action takes is written with.
+const REFERENCE_FIELDS: [&str; 4] = ["app", "kind", "id", "label"];
+
+/// The properties of a resource reference `fields` leaves out or leaves empty.
+fn reference_missing(fields: &serde_json::Map<String, Value>) -> Vec<&'static str> {
+    REFERENCE_FIELDS
+        .iter()
+        .copied()
+        .filter(|name| {
+            fields
+                .get(*name)
+                .and_then(Value::as_str)
+                .is_none_or(|text| text.trim().is_empty())
+        })
+        .collect()
+}
+
+/// Why `name`, a parameter that picks a resource of the workspace, was not answered: what it
+/// lacks and where to get it, said whole in one refusal rather than one property at a time.
+fn reference_refusal(name: &str, missing: &[&str], why: Option<&str>) -> String {
+    let lacks = if missing.is_empty() {
+        "its app, kind, id and label".to_owned()
+    } else {
+        format!("its {}", missing.join(", "))
+    };
+    let why = why.map(|why| format!(" ({why})")).unwrap_or_default();
+    format!(
+        "invalid_arguments: `{name}` is a resource of the workspace: name it by the path \
+         `tilo_ls` lists it at (`notes/Launch checklist`), or as an object with its app, kind, id \
+         and label, as a listing's row carries them; what it lacks: {lacks}{why}"
+    )
 }

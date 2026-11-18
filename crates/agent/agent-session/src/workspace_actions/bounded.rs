@@ -881,15 +881,14 @@ impl Worker {
         // the record holds. An action whose change is refused leaves it
         // behind, and one not saved at once lets it go ([`Worker::saved`]),
         // so nothing unsaved is ever acted on.
-        let held = self
+        let mut held = self
             .bounded
             .remove(&key)
             .ok_or(Outcome::Rejected(ActionCallError::UnknownAction))?;
-        let app = &held.held.app;
         // What the caller's own view offers, asked for by address: the record
         // publishes to its owner what the caller may not run, which tells a
         // refused action from one that does not exist.
-        let Some(descriptor) = app.descriptor(&target.address) else {
+        let Some(descriptor) = held.held.app.descriptor(&target.address) else {
             return Err(Outcome::Rejected(
                 if self.publishes(&key.0, &target.address) {
                     ActionCallError::NotPermitted
@@ -914,13 +913,28 @@ impl Worker {
         let confirmed = approved(&self.shared.approvals, given, &binding);
         let context = super::caller_context(caller, request);
         let running = super::timing_start();
-        let output = match app.invoke_in(
-            context.as_ref(),
-            None,
-            &target.address,
-            &arguments,
-            confirmed,
-        ) {
+        let asked = |held: &BoundedReplica| {
+            held.held.app.invoke_in(
+                context.as_ref(),
+                None,
+                &target.address,
+                &arguments,
+                confirmed,
+            )
+        };
+        let mut tried = asked(&held);
+        // What the action named is held by a part of a chain this replica has
+        // not been handed (an issue in an older part than the head): the parts
+        // it wants are handed, and the action asked once more.
+        if matches!(tried, Err(ref error) if !matches!(error, tilo_actions::api::ApiError::ConfirmationRequired))
+        {
+            let before = held.held.parts.len();
+            super::catch_up::hand_all_parts(&key.0, &mut held.held, state);
+            if held.held.parts.len() > before {
+                tried = asked(&held);
+            }
+        }
+        let output = match tried {
             Ok(output) => output,
             Err(tilo_actions::api::ApiError::ConfirmationRequired) if given.is_some() => {
                 return Err(Outcome::Rejected(own_word_refused()));
@@ -932,6 +946,7 @@ impl Worker {
             Err(error) => return Err(super::api_outcome(&error)),
         };
         super::timing_done("bounded.call", running);
+        let app = &held.held.app;
         let left_at = app.presence().map(placed);
         let holder = key.0.clone();
         let taking = super::timing_start();

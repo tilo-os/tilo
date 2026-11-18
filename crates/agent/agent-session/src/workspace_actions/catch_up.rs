@@ -1,4 +1,4 @@
-//! A mounted record kept current: what the workspace holds of it merged in,
+//! A mounted document kept current: what the workspace holds of it merged in,
 //! only the changes after the heads it merged last.
 use super::{DocumentRoute, Mounted, Worker, WorkspaceId, WorkspaceState, reads};
 
@@ -243,5 +243,34 @@ impl Worker {
                     .map(|held| (route, held))
             })
             .collect()
+    }
+}
+
+/// The most parts of its app's chains [`hand_all_parts`] hands at once.
+const HOLD_PARTS: usize = 32;
+
+/// Hand `mounted` every part of its app's chains the workspace holds, up to [`HOLD_PARTS`] —
+/// what an action that named an item in a part its document was not handed (an issue read by its
+/// id, in an older part than the head) is asked again with.
+pub(super) fn hand_all_parts(
+    holder: &DocumentRoute,
+    mounted: &mut Mounted,
+    state: &WorkspaceState,
+) {
+    let mut handed = 0;
+    for route in &state.records {
+        if handed >= HOLD_PARTS
+            || route.app_id != holder.app_id
+            || route.cluster_id != holder.cluster_id
+        {
+            continue;
+        }
+        let is_part = ui::resource::DocumentId::parse(&route.document)
+            .is_some_and(|document| document.chain_part().is_some());
+        if !is_part || mounted.parts.contains_key(route) || mounted.foreign.contains(route) {
+            continue;
+        }
+        hold(route, mounted, state);
+        handed = handed.saturating_add(1);
     }
 }
