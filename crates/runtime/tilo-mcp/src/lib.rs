@@ -19,6 +19,7 @@ use images::{IMAGES, MAX_IMAGE_BYTES, MAX_IMAGES, image_mime};
 mod agent;
 #[path = "mcp_confirm.rs"]
 mod confirm;
+use confirm::{Admission, unanswered_admission};
 #[path = "mcp_content.rs"]
 mod content;
 #[path = "mcp_get.rs"]
@@ -2563,59 +2564,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     fn host(&self) -> &H {
         &self.host
     }
-    /// Start one invocation, reporting the host's refusal verbatim.
-    ///
-    /// The host answers once the admission is durable, which on a loaded
-    /// disk takes seconds. It is waited for as long as the call waits for
-    /// its outcome, and at least [`HOST_ANSWER_WAIT`]; an admission still
-    /// unanswered then goes on without this call, which says so.
-    async fn start(
-        &self,
-        request: InvokeRequest,
-        wait: std::time::Duration,
-        record: &mut Option<(tilo_actions::InvocationId, &RemoteActionTarget)>,
-    ) -> Result<Admission, BridgeError> {
-        // The workspace's own actions are admitted and started synchronously
-        // (a launch among them); an app's action is resolved on the broker's
-        // set and answers later.
-        let blocking = tilo_actions::remote::provider_workspace(&request.target.provider).is_some();
-        // What the answer will be read for is settled as the action starts,
-        // on the revision it starts at: whether it is a view or an effect is
-        // what decides if a picture it names is shown or left as an address.
-        // Asked here because the answer's own target carries the id a bound
-        // resource was issued under, which the host cannot resolve later. An
-        // action starting at no named revision is not asked: it must cost no
-        // read of the app's directory first, and an answer that says what ran
-        // (`agent.kind`) settles its class.
-        let asked = record
-            .take()
-            .filter(|_| !request.revision.as_deref().unwrap_or_default().is_empty());
-        let revision = request.revision.clone().unwrap_or_default();
-        let patience = wait.max(HOST_ANSWER_WAIT);
-        let Ok(answer) = tokio::time::timeout(
-            patience,
-            self.at_host(blocking, move |host, caller| host.invoke(caller, request)),
-        )
-        .await
-        else {
-            return Ok(Admission::Unanswered(patience));
-        };
-        if let Some((invocation, target)) = asked {
-            let effect = self.asked_effect(target, &revision).await;
-            self.remember_effect(invocation, effect);
-        }
-        let answer = answer.ok_or_else(|| BridgeError::from("Unavailable"))?;
-        // A receipt that admitted nothing is the host's refusal: there is no
-        // invocation to follow, and answering one as unknown would lose why.
-        if let Ok(receipt) = &answer
-            && let ReceiptStatus::Rejected { error } = &receipt.status
-        {
-            return Err(BridgeError::Host(error.clone()));
-        }
-        answer
-            .map(|_| Admission::Answered)
-            .map_err(BridgeError::Host)
-    }
     /// The context this session's invocations carry: its agent run, its
     /// actor, and the undo step of the tool call they are made in
     /// ([`STEP`]).
@@ -2712,31 +2660,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         )
     }
 }
-/// Whether the host answered an invocation's admission while the call
-/// waited for it.
-enum Admission {
-    /// Admitted: the invocation runs, and its outcome can be awaited.
-    Answered,
-    /// Not answered within this long; the admission goes on regardless.
-    Unanswered(std::time::Duration),
-}
-/// The answer to an invocation whose admission was not answered within
-/// `patience`. The same invocation id never runs twice, so invoking it again
-/// is safe and tells how the admission went.
-fn unanswered_admission(id: tilo_actions::InvocationId, patience: std::time::Duration) -> Value {
-    json!({
-        "invocation_id": id.0.to_string(),
-        "pending": format!(
-            "admission not answered within {} ms; tilo_invoke again with this invocation_id \
-             answers how it went (the same invocation_id never runs twice)",
-            patience.as_millis()
-        ),
-    })
-}
-/// How long the host may take at least to admit an invocation: one not
-/// admitted by then is answered as pending with its invocation id, to be
-/// invoked again.
-const HOST_ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 /// How long a catalogue query waits for its answer. A workspace's host
 /// reading a record whose keys are still on their way waits up to ten seconds
 /// for them, then refuses it rather than answer from half of it: the first

@@ -2604,3 +2604,7 @@ mod watch_tests;
 #[cfg(test)]
 #[path = "mcp_agent_publisher_tests.rs"]
 mod publisher_tests;
+
+#[cfg(test)]
+#[path = "mcp_lost_answer_tests.rs"]
+mod lost_answer_tests;
