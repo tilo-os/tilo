@@ -5105,6 +5105,16 @@ fn every_workspace_app_declares_what_it_uses_and_its_targets_provide_what_it_req
                 sites[0]
             ));
         }
+        // A declared name no capability answers, whatever platforms the app
+        // names: the per-target check below only sees the ones it does.
+        for name in &declared {
+            if tilo_caps::Capability::from_name(name).is_none() {
+                problems.push(format!(
+                    "{}: `{name}` is not a Tilo capability",
+                    app.display()
+                ));
+            }
+        }
         for platform in manifest.package.platforms() {
             let Some(target) = targets::Target::from_platform(platform.as_str()) else {
                 continue;

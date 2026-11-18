@@ -20,7 +20,7 @@ runtime  = "tilo-runtime/2026.07"
 x86_64 = "v3"
 aarch64 = "aarch64"
 
-# What the app's code uses (tools/policy/check_app_capabilities.py checks it).
+# What the app's code uses (tilo-app check holds the code to this list).
 [capabilities]
 optional = ["open-uri", "clipboard", "files.open", "files.save", "files.paths", "app-files", "threads", "media.decode", "camera", "microphone", "screen-capture", "gpu"]
 

@@ -36,7 +36,7 @@ aarch64 = "aarch64"
 required = ["presentation"]
 semantic-schema = "text-position-v1"
 
-# What the app's code uses (tools/policy/check_app_capabilities.py checks it).
+# What the app's code uses (tilo-app check holds the code to this list).
 [capabilities]
 required = ["files.paths"]
 optional = ["clipboard", "files.open", "files.save", "app-files", "threads", "processes"]

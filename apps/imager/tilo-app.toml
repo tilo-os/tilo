@@ -25,7 +25,7 @@ x86_64 = "v3"
 aarch64 = "aarch64"
 
 
-# What the app's code uses (tools/policy/check_app_capabilities.py checks it).
+# What the app's code uses (tilo-app check holds the code to this list).
 [capabilities]
 required = ["files.paths", "processes"]
 optional = ["files.open", "app-files", "network.http", "threads", "open-uri", "secrets", "clipboard"]

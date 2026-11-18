@@ -988,7 +988,7 @@ secrets = ["NPM_TOKEN", "PYPI_TOKEN"]
 
 [[check]]
 name = "sdk-policy"
-run = "python3 tools/policy/check_app_capabilities.py\npython3 -I tools/web/generate_web_desktop.py --check\npython3 -I tools/apps/generate_catalogue_fleet.py --check\npython3 -I tools/sdk/publish_check.py --report-only\n"
+run = "python3 -I tools/web/generate_web_desktop.py --check\npython3 -I tools/apps/generate_catalogue_fleet.py --check\npython3 -I tools/sdk/publish_check.py --report-only\n"
 fix = "python3 -I tools/web/generate_web_desktop.py && python3 -I tools/apps/generate_catalogue_fleet.py"
 
 [[check]]

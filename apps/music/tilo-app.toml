@@ -26,7 +26,7 @@ de = "Musik"
 x86_64 = "v3"
 aarch64 = "aarch64"
 
-# What the app's code uses (tools/policy/check_app_capabilities.py checks it).
+# What the app's code uses (tilo-app check holds the code to this list).
 [capabilities]
 optional = ["open-uri", "secrets", "files.open", "files.paths", "app-files", "network.http", "network.status", "threads", "media.decode", "media.session"]
 

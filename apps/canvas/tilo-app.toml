@@ -10,7 +10,7 @@ runtime = "tilo-runtime/2026.07"
 x86_64 = "v3"
 aarch64 = "aarch64"
 
-# What the app's code uses (tools/policy/check_app_capabilities.py checks it).
+# What the app's code uses (tilo-app check holds the code to this list).
 # Pictures an agent looks at or exports are kept in the app's content store;
 # an SVG or picture may be named by a path the sandbox lets it read, or
 # chosen in the file chooser. Artworks are opened and saved, and pictures
