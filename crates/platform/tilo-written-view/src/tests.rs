@@ -1,6 +1,8 @@
 //! A written view over a workspace: what it shows, that it follows the records it reads, and that
 //! what it does is decided before anything is sent.
 
+mod arrives;
+
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;

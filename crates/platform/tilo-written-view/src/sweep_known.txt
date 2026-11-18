@@ -3,17 +3,6 @@
 # The path is the field of the kind a view reads, then what stands inside it (`*` an item or an entry).
 # The app so.tilo.sweep is the sweep's own kind of every shape a surface declares, a field each.
 
-# CASE WITH A VALUE: an enum's case that carries a value traps the field that holds it.
-CASE WITH A VALUE | so.tilo.canvas | canvas.artwork | marks
-CASE WITH A VALUE | so.tilo.pdf-viewer | pdf.document | annotations
-CASE WITH A VALUE | so.tilo.pdf-viewer | pdf.document | comments
-CASE WITH A VALUE | so.tilo.sheets | sheets.workbook | comments
-CASE WITH A VALUE | so.tilo.shortcuts | shortcuts.workbench | drafts
-CASE WITH A VALUE | so.tilo.sweep | sweep.shapes | carrying_case
-CASE WITH A VALUE | so.tilo.sweep | sweep.shapes | list_case
-CASE WITH A VALUE | so.tilo.sweep | sweep.shapes | option_case
-CASE WITH A VALUE | so.tilo.word-processor | word-processor.document | comments
-
 # ACTOR: an actor traps the field that holds it: it is stored as one text of JSON and handed on as that text.
 ACTOR | so.tilo.chat | chat.messages | messages
 ACTOR | so.tilo.chat | chat.workspace | channels
@@ -21,13 +10,20 @@ ACTOR | so.tilo.chat | chat.workspace | feedback
 ACTOR | so.tilo.chat | chat.workspace | moderation
 ACTOR | so.tilo.code-editor | code_editor.project | terminal_panel
 ACTOR | so.tilo.notes | notes.pages | pages
+ACTOR | so.tilo.pdf-viewer | pdf.document | annotations
+ACTOR | so.tilo.pdf-viewer | pdf.document | comments
+ACTOR | so.tilo.sheets | sheets.workbook | comments
 ACTOR | so.tilo.sweep | sweep.shapes | actor
+ACTOR | so.tilo.sweep | sweep.shapes | carrying_case
 ACTOR | so.tilo.sweep | sweep.shapes | list_actor
+ACTOR | so.tilo.sweep | sweep.shapes | list_case
 ACTOR | so.tilo.sweep | sweep.shapes | option_actor
+ACTOR | so.tilo.sweep | sweep.shapes | option_case
 ACTOR | so.tilo.tasks | tasks.issues | issues
 ACTOR | so.tilo.terminal | terminal.history | remembered
 ACTOR | so.tilo.terminal | terminal.session | commands
 ACTOR | so.tilo.terminal | terminal.session | holder
+ACTOR | so.tilo.word-processor | word-processor.document | comments
 
 # MAP: a map traps the field that holds it: a reading's map is read by nothing.
 MAP | so.tilo.browser | browser.application | site_forms
@@ -41,6 +37,7 @@ MAP | so.tilo.browser | browser.personal-bookmarks | receipts
 MAP | so.tilo.calendar | calendar.calendar | remote
 MAP | so.tilo.calendar | calendar.calendar | sync_tokens
 MAP | so.tilo.calendar | tilo.accounts | active
+MAP | so.tilo.canvas | canvas.artwork | marks
 MAP | so.tilo.chat | chat.messages | earlier
 MAP | so.tilo.chat | chat.workspace | read
 MAP | so.tilo.chat | chat.workspace | summaries
@@ -62,6 +59,7 @@ MAP | so.tilo.messages | tilo.accounts | active
 MAP | so.tilo.music | music.library | albums
 MAP | so.tilo.music | music.library | artists
 MAP | so.tilo.music | music.library | tracks
+MAP | so.tilo.pdf-viewer | pdf.document | comments
 MAP | so.tilo.poker | so.tilo.poker.table | players
 MAP | so.tilo.settings | settings.default-apps | handlers
 MAP | so.tilo.settings | settings.input | paste_shortcuts
@@ -72,6 +70,7 @@ MAP | so.tilo.settings | settings.notifications | per_app
 MAP | so.tilo.settings | shell-views | bindings
 MAP | so.tilo.settings | shell-views | on_device
 MAP | so.tilo.settings | tilo.accounts | active
+MAP | so.tilo.sheets | sheets.workbook | comments
 MAP | so.tilo.store | store.catalog | reports
 MAP | so.tilo.sweep | sweep.shapes | map_float
 MAP | so.tilo.sweep | sweep.shapes | map_int
@@ -84,6 +83,7 @@ MAP | so.tilo.tube | tube.watch-history | positions
 MAP | so.tilo.tube | tube.watch-history | watched
 MAP | so.tilo.video-player | video-player.library | transports
 MAP | so.tilo.windows | windows.manager | routes
+MAP | so.tilo.word-processor | word-processor.document | comments
 
 # MAP OR RICH TEXT: a map that holds a rich text traps the field that holds it, as every map does.
 MAP OR RICH TEXT | so.tilo.calendar | calendar.calendar | notes
@@ -132,6 +132,8 @@ UNTYPED | so.tilo.messages | tilo.accounts | accounts.*.config
 UNTYPED | so.tilo.notes | notes.pages | images
 UNTYPED | so.tilo.notes | notes.pages | pages.*.reactions
 UNTYPED | so.tilo.pdf-viewer | pdf.document | adopted
+UNTYPED | so.tilo.pdf-viewer | pdf.document | annotations.*.color
+UNTYPED | so.tilo.pdf-viewer | pdf.document | annotations.*.mark
 UNTYPED | so.tilo.pdf-viewer | pdf.document | form_values
 UNTYPED | so.tilo.pdf-viewer | pdf.document | pages.*.imported
 UNTYPED | so.tilo.pdf-viewer | pdf.document | signatures.*.ink
@@ -168,11 +170,17 @@ UNTYPED | so.tilo.sheets | sheets.workbook | sheets.*.cells
 UNTYPED | so.tilo.shortcuts | shortcuts.workbench | drafts.*.inputs
 UNTYPED | so.tilo.shortcuts | shortcuts.workbench | drafts.*.output
 UNTYPED | so.tilo.shortcuts | shortcuts.workbench | drafts.*.steps.*.args
+UNTYPED | so.tilo.shortcuts | shortcuts.workbench | drafts.*.steps.*.head.ai.input
+UNTYPED | so.tilo.shortcuts | shortcuts.workbench | drafts.*.steps.*.head.ai.output
 UNTYPED | so.tilo.shortcuts | shortcuts.workbench | drafts.*.steps.*.head.ask.param
+UNTYPED | so.tilo.shortcuts | shortcuts.workbench | drafts.*.steps.*.head.for_each.items
 UNTYPED | so.tilo.shortcuts | shortcuts.workbench | drafts.*.steps.*.head.if.cond
 UNTYPED | so.tilo.shortcuts | shortcuts.workbench | drafts.*.steps.*.head.invoke.action
 UNTYPED | so.tilo.shortcuts | shortcuts.workbench | drafts.*.steps.*.head.invoke.appearance
 UNTYPED | so.tilo.shortcuts | shortcuts.workbench | drafts.*.steps.*.head.invoke.resource
+UNTYPED | so.tilo.shortcuts | shortcuts.workbench | drafts.*.steps.*.head.set_var.value
+UNTYPED | so.tilo.shortcuts | shortcuts.workbench | drafts.*.steps.*.head.task.allow
+UNTYPED | so.tilo.shortcuts | shortcuts.workbench | drafts.*.steps.*.head.task.output
 UNTYPED | so.tilo.shortcuts | shortcuts.workbench | drafts.*.steps.*.on_error
 UNTYPED | so.tilo.shortcuts | shortcuts.workbench | drafts.*.triggers
 UNTYPED | so.tilo.sweep | sweep.shapes | any
