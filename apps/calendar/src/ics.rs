@@ -1681,30 +1681,51 @@ mod tests {
 
         phase a_zoned_series_imports_to_the_days_rfc_5545_gives_it;
         {
+            let at = |date: &str, time: &str| -> Vec<DateTime> {
+                date.split(',')
+                    .map(|day| format!("{day}T{time}").parse().expect("valid date"))
+                    .collect()
+            };
             let series = [
-                "DTSTART;TZID=Europe/Berlin:20261014T090000\n\
+                (
+                    "DTSTART;TZID=Europe/Berlin:20261014T090000\n\
              RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;INTERVAL=2;COUNT=12\n\
              EXDATE;TZID=Europe/Berlin:20261016T090000",
-                "DTSTART;TZID=Europe/Berlin:20261014T090000\n\
+                    at(
+                        "2026-10-14,2026-10-15,2026-10-26,2026-10-27,2026-10-28,2026-10-29,\
+                         2026-10-30,2026-11-09,2026-11-10,2026-11-11,2026-11-12",
+                        "09:00",
+                    ),
+                ),
+                (
+                    "DTSTART;TZID=Europe/Berlin:20261014T090000\n\
              RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;INTERVAL=2;UNTIL=20261110T080000Z\n\
              EXDATE:20261027T080000Z",
-                "DTSTART;TZID=America/New_York:20260131T183000\n\
+                    at(
+                        "2026-10-14,2026-10-15,2026-10-16,2026-10-26,2026-10-28,2026-10-29,\
+                         2026-10-30,2026-11-09,2026-11-10",
+                        "09:00",
+                    ),
+                ),
+                (
+                    "DTSTART;TZID=America/New_York:20260131T183000\n\
              RRULE:FREQ=MONTHLY;COUNT=6",
-                "DTSTART;TZID=America/New_York:20240229T070000\n\
+                    at(
+                        "2026-01-31,2026-03-31,2026-05-31,2026-07-31,2026-08-31,2026-10-31",
+                        "18:30",
+                    ),
+                ),
+                (
+                    "DTSTART;TZID=America/New_York:20240229T070000\n\
              RRULE:FREQ=YEARLY;INTERVAL=1;UNTIL=20320301T000000Z",
+                    at("2024-02-29,2028-02-29,2032-02-29", "07:00"),
+                ),
             ];
             let (from, to) = (
                 Date::new(2024, 1, 1).expect("valid date"),
                 Date::new(2033, 1, 1).expect("valid date"),
             );
-            for lines in series {
-                let set: rrule::RRuleSet = lines.parse().expect("valid series");
-                let expected: Vec<DateTime> = set
-                    .all(u16::MAX)
-                    .dates
-                    .into_iter()
-                    .map(|at| at.naive_local().to_string().replace(' ', "T").parse().unwrap())
-                    .collect();
+            for (lines, expected) in series {
                 let payload = format!(
                     "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:series@example.com\r\nSUMMARY:Series\r\n{}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
                     lines.replace('\n', "\r\n")

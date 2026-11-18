@@ -65,10 +65,9 @@ pim-lines = { path = "../../crates/text/pim-lines" }
 
 [features]
 thin = ["dep:runtime-dylib"]
-# Reach the time-zone database, the recurrence expansion, the CalDAV client
-# (with the account credentials its sign-in reaches) and the contact directory
-# through their engine libraries in the runtime bundle
-# (libtilo_timezone_engine.so, libtilo_recurrence_engine.so,
+# Reach the time-zone database, the CalDAV client (with the account
+# credentials its sign-in reaches) and the contact directory through their
+# engine libraries in the runtime bundle (libtilo_timezone_engine.so,
 # libtilo_accounts_engine.so and libtilo_contact_directory_engine.so, under
 # crates/runtime/engines/) instead of the runtime. The release collection
 # enables it (dist/apps/app-collections.toml); a `thin` build without it
@@ -87,8 +86,6 @@ default = ["live"]
 live = ["tilo-dav/oauth"]
 
 [dev-dependencies]
-# The RFC 5545 reference recurrence expansion is checked against.
-rrule = "0.14"
 account-credentials = { path = "../../crates/system/account-credentials" }
 tilo-dav = { path = "../../crates/system/tilo-dav", default-features = false, features = ["test-support"] }
 # Reads the signed manifest's offers to check them against what the app publishes.

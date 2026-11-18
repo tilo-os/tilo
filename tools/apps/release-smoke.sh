@@ -218,7 +218,6 @@ engines() (
                "settings libtilo_accounts_engine.so via:libtilo_settings_engine.so" \
                "settings libtilo_settings_engine.so" \
                "calendar libtilo_timezone_engine.so --probe-timezone-engine" \
-               "calendar libtilo_recurrence_engine.so" \
                "calendar libtilo_accounts_engine.so" \
                "clocks libtilo_timezone_engine.so --probe-timezone-engine" \
                "contacts libtilo_contact_directory_engine.so --probe-contact-directory-engine" \

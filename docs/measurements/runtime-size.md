@@ -70,9 +70,7 @@ Music and Tube; account credentials with its OAuth client and cloud-storage
 providers, the IMAP client, and the WebDAV/CalDAV client whose calendar sign-in
 reaches ownership: `libtilo_accounts_engine.so` for Mail, Settings, Calendar,
 Imager and the Spotify engine; the time-zone database, jiff-tzdb:
-`libtilo_timezone_engine.so` for Calendar and Clocks; the recurrence expansion,
-rrule with the chrono-tz database it reads a rule through:
-`libtilo_recurrence_engine.so` for Calendar; the contact directory:
+`libtilo_timezone_engine.so` for Calendar and Clocks; the contact directory:
 `libtilo_contact_directory_engine.so` for Contacts, Mail and Messages; Tilo's
 PDF engine, tilo-pdf with the hayro rasteriser, the pdfium helper's client and
 PDF export: `libtilo_pdf_engine.so` for PDF Viewer, Files and Print Centre, which hand its first-page rasteriser to the thumbnailer every app

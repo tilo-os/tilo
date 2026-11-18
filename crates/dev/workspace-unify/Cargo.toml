@@ -905,7 +905,6 @@ doc = false
 "rquickjs-0_9_0" = { package = "rquickjs", version = "^0.9.0", default-features = false, features = ["default"] }
 "rquickjs-core-0_9_0" = { package = "rquickjs-core", version = "^0.9.0", default-features = false, features = ["default"] }
 "rquickjs-sys-0_9_0" = { package = "rquickjs-sys", version = "^0.9.0", default-features = false, features = [] }
-"rrule-0_14_0" = { package = "rrule", version = "^0.14.0", default-features = false, features = ["default"] }
 "rsa-0_10_0-rc_18" = { package = "rsa", version = "^0.10.0-rc.18", default-features = false, features = ["default", "encoding", "sha2", "std"] }
 "rsa-0_9_10" = { package = "rsa", version = "^0.9.10", default-features = false, features = ["default", "pem", "std", "u64_digit"] }
 "rten-0_27_0" = { package = "rten", version = "^0.27.0", default-features = false, features = ["onnx_format"] }
@@ -3516,7 +3515,6 @@ doc = false
 "rquickjs-0_9_0" = { package = "rquickjs", version = "^0.9.0", default-features = false, features = ["default"] }
 "rquickjs-core-0_9_0" = { package = "rquickjs-core", version = "^0.9.0", default-features = false, features = ["default"] }
 "rquickjs-sys-0_9_0" = { package = "rquickjs-sys", version = "^0.9.0", default-features = false, features = [] }
-"rrule-0_14_0" = { package = "rrule", version = "^0.14.0", default-features = false, features = ["default"] }
 "rsa-0_10_0-rc_18" = { package = "rsa", version = "^0.10.0-rc.18", default-features = false, features = ["default", "encoding", "sha2", "std"] }
 "rsa-0_9_10" = { package = "rsa", version = "^0.9.10", default-features = false, features = ["default", "pem", "std", "u64_digit"] }
 "rten-0_27_0" = { package = "rten", version = "^0.27.0", default-features = false, features = ["onnx_format"] }

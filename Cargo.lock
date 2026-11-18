@@ -1856,7 +1856,6 @@ dependencies = [
  "jiff",
  "mail",
  "pim-lines",
- "rrule",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -14152,19 +14151,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rrule"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "720acfb4980b9d8a6a430f6d7a11933e701ebbeba5eee39cc9d8c5f932aaff74"
-dependencies = [
- "chrono",
- "chrono-tz",
- "log",
- "regex",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "rsa"
 version = "0.9.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -21083,19 +21069,8 @@ version = "0.1.0"
 dependencies = [
  "jiff",
  "jiff-tzdb",
- "rrule",
- "tilo-recurrence-engine",
  "tilo-resource",
  "tilo-timezone-engine",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-recurrence-engine"
-version = "0.1.0"
-dependencies = [
- "rrule",
- "runtime-dylib",
  "workspace-hack",
 ]
 
@@ -28711,7 +28686,6 @@ dependencies = [
  "rquickjs",
  "rquickjs-core",
  "rquickjs-sys",
- "rrule",
  "rsa 0.10.0-rc.18",
  "rsa 0.9.10",
  "rten",

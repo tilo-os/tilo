@@ -400,7 +400,6 @@ members = [
     "crates/runtime/engines/mail",
     "crates/runtime/engines/archive",
     "crates/runtime/engines/paint",
-  "crates/runtime/engines/recurrence",
     "crates/runtime/engines/pdf",
     "crates/runtime/engines/settings",
     "crates/runtime/engines/theme-painter",
@@ -886,9 +885,6 @@ jiff = { version = "0.2.37", default-features = false, features = ["std", "serde
 # The IANA time-zone database, built in so every device resolves a named zone
 # the same way whatever zoneinfo its host has.
 jiff-tzdb = "0.1"
-# The RFC 5545 expansion Calendar reads a stored rule through, in its engine
-# library beside the runtime.
-rrule = "0.14"
 qcms = "0.3.0"
 walkdir = "2.5.0"
 # The one in-memory cache: fs, thumbnail and the app mount share it.
