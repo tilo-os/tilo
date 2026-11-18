@@ -157,7 +157,8 @@ pub struct SourceInventory {
     #[cfg(target_os = "linux")]
     original_ownership: Vec<Arc<original_ownership::OriginalOwnership>>,
     exclusions: Vec<PathBuf>,
-    /// Files the running setup keeps in this Home for itself.
+    /// Paths the running setup keeps in this Home for itself; a directory
+    /// excludes everything under it.
     running: Vec<PathBuf>,
 }
 
@@ -268,7 +269,7 @@ impl SourceInventory {
     #[cfg(target_os = "linux")]
     pub fn capture_portable_home(root: &Arc<PinnedDirectory>, home: &Path) -> io::Result<Self> {
         let mut inventory = Self::capture_home_policy(root, InstallerOwnership::review(home)?)?;
-        inventory.running = running_setup_files(home);
+        inventory.running = running_setup_paths(home);
         inventory.walk(root, Path::new(""), 0)?;
         Ok(inventory)
     }
@@ -286,7 +287,7 @@ impl SourceInventory {
             scratch.validate_excluded_source(root, &admitted.pin)?;
         }
         let mut inventory = Self::capture_home_policy(root, ownership)?;
-        inventory.running = running_setup_files(home);
+        inventory.running = running_setup_paths(home);
         inventory.facts = storage::Storage::with_scratch(scratch);
         inventory.walk_with_cancel(root, Path::new(""), 0, cancel)?;
         inventory.facts.finish(cancel)?;
@@ -318,8 +319,8 @@ impl SourceInventory {
         if self
             .exclusions
             .iter()
+            .chain(&self.running)
             .any(|excluded| path.starts_with(excluded))
-            || self.running.iter().any(|running| running == path)
         {
             return Ok(true);
         }
@@ -754,34 +755,35 @@ struct InstallerOwnership {
     stable: (u64, u32, u32, u32),
 }
 #[cfg(target_os = "linux")]
-/// The lock and socket of the settings profile the running setup holds.
+/// The settings profile the running setup holds in this Home: its documents,
+/// their locks and its socket, none of it the person's data.
 #[cfg(target_os = "linux")]
-fn running_setup_files(home: &Path) -> Vec<PathBuf> {
-    let Some(root) = tilo_settings_records::profile_root() else {
-        return Vec::new();
-    };
-    let records = tilo_settings_records::Records::of(&root);
-    let directory =
-        std::fs::canonicalize(records.dir()).unwrap_or_else(|_| records.dir().to_path_buf());
+fn running_setup_paths(home: &Path) -> Vec<PathBuf> {
     let home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
-    records
-        .runtime_files()
-        .iter()
-        .filter_map(|file| {
-            directory
-                .join(file.strip_prefix(records.dir()).ok()?)
-                .strip_prefix(&home)
-                .ok()
-                .map(Path::to_path_buf)
-        })
+    setup_profile_dir()
+        .and_then(|directory| directory.strip_prefix(&home).ok().map(Path::to_path_buf))
+        .filter(|relative| !relative.as_os_str().is_empty())
+        .into_iter()
         .collect()
 }
 
 #[cfg(target_os = "linux")]
 fn setup_settings_lock(home: &Path) -> Option<PathBuf> {
-    running_setup_files(home)
-        .into_iter()
-        .find(|file| file.ends_with(tilo_settings_records::LOCK_FILE))
+    let home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    setup_profile_dir()?
+        .join(tilo_settings_records::LOCK_FILE)
+        .strip_prefix(&home)
+        .ok()
+        .map(Path::to_path_buf)
+}
+
+#[cfg(target_os = "linux")]
+fn setup_profile_dir() -> Option<PathBuf> {
+    let root = tilo_settings_records::profile_root()?;
+    let directory = tilo_settings_records::Records::of(&root)
+        .dir()
+        .to_path_buf();
+    Some(std::fs::canonicalize(&directory).unwrap_or(directory))
 }
 
 /// A bounded path of plain names ending where the settings records keep it.
