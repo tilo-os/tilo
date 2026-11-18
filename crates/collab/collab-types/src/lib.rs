@@ -139,8 +139,8 @@ pub use personal::{
 };
 pub use receipt::{
     Allows, ChangeAuthor, Receipt, ReceiptRefusal, ReceiptSurface, SurfaceSource, Surfaces,
-    WrittenDocument, check_appearances, check_claims, check_claims_by_kind, claim_node, decide_op,
-    decide_op_pinned, written_node,
+    WrittenDocument, check_appearances, check_claims, check_claims_by_kind, check_opened,
+    claim_node, decide_op, decide_op_pinned, written_node,
 };
 pub use redaction::{
     MAX_REDACTION_REASON_BYTES, OpId, RedactRequest, RedactedMarker, RedactionError,

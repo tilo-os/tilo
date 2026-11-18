@@ -112,6 +112,29 @@ fn write_by(invoker: Option<&Acting>) -> crate::op::SignedOp {
     .with_surface(Some([1; 32]))
 }
 
+/// The same write sealed: a server and every device that has not opened it
+/// read only the claims its envelope carries, and `plaintext` is what a
+/// device opens it to.
+fn sealed(op: &crate::op::SignedOp) -> (crate::op::SignedOp, Vec<u8>) {
+    let plaintext = op.payload.clone();
+    let Ok(crate::op::DocumentMutation::Incremental(bytes)) =
+        crate::op::DocumentMutation::decode(&plaintext)
+    else {
+        panic!("a write is an incremental mutation");
+    };
+    let claims = crate::claim::claims_of(&crate::claim::parse_changes(&bytes).unwrap(), |_| {
+        vec![Vec::new()]
+    })
+    .unwrap();
+    let mut sealed = op.clone().with_claims(claims);
+    sealed.payload = vec![0; 16];
+    sealed.encryption = Some(crate::op::EncryptionMetadata::content_key(
+        1,
+        crate::ContentRetention::of_frame(&plaintext),
+    ));
+    (sealed, plaintext)
+}
+
 /// How a receiver decides `op` signed by the device `signer` is.
 fn received(op: &crate::op::SignedOp, signer: &MemberAccess) -> Result<Receipt, ReceiptRefusal> {
     let cx = Context::at_secs(1);
@@ -215,5 +238,53 @@ tilo_test_env::scenario! {
                 "{answered:?}: live {live:?}, received {receipt:?}"
             );
         }
+    }
+
+    phase a_sealed_write_is_decided_as_its_invoker_where_nobody_reads_it;
+    {
+        let (op, _) = sealed(&write_by(Some(&mount_agent())));
+        assert!(matches!(
+            received(&op, &person(&policy(Some(Answer::Deny)), "ada")),
+            Err(ReceiptRefusal::NotGranted { .. })
+        ));
+        assert_eq!(
+            received(&op, &person(&policy(Some(Answer::Allow)), "ada")),
+            Ok(Receipt::Admit)
+        );
+        // The claims survive the wire as signed.
+        let bytes = postcard::to_allocvec(&op).unwrap();
+        let back: crate::op::SignedOp = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(back.claims, op.claims);
+        assert!(op.claims.iter().all(|claim| claim.invoker.is_some()));
+        // The writer's live decision and the one of a device deciding the
+        // sealed op agree.
+        for answered in [None, Some(Answer::Deny), Some(Answer::Ask), Some(Answer::Allow)] {
+            let policy = policy(answered);
+            let live = MemberAccess::person(policy.clone(), "ada")
+                .as_acting(mount_agent().acting_for(Acting::person("ada")))
+                .unwrap()
+                .answer(&write_node(), ActionKind::Undoable, &Context::at_secs(1));
+            let receipt = received(&op, &person(&policy, "ada"));
+            assert_eq!(live == Answer::Allow, receipt == Ok(Receipt::Admit), "{answered:?}");
+        }
+    }
+
+    phase a_device_refuses_a_sealed_change_that_says_other_than_its_claim;
+    {
+        let (op, plaintext) = sealed(&write_by(Some(&mount_agent())));
+        assert_eq!(check_opened(&op, &plaintext), Ok(()));
+        // Claimed as the person's own, though the agent made it: decided as
+        // the person by whoever cannot read it, refused by whoever opens it.
+        let mut as_person = op.clone();
+        for claim in &mut as_person.claims {
+            claim.invoker = None;
+        }
+        assert!(matches!(
+            check_opened(&as_person, &plaintext),
+            Err(ReceiptRefusal::Misclaimed(_))
+        ));
+        let mut unclaimed = op;
+        unclaimed.claims.clear();
+        assert_eq!(check_opened(&unclaimed, &plaintext), Err(ReceiptRefusal::Unclaimed));
     }
 }

@@ -56,6 +56,7 @@ json_roots = ["Request", "Response", "ToolRequest", "ToolReply"]
 
 [opaque]
 Uuid = "uuid::Uuid: 16 bytes"
+Acting = "tilo_action_policy::Acting: who made a change, carried as the JSON text its history entry writes (ChangeClaim.invoker)"
 EntryName = "one native filename component, serialized as its raw bytes"
 
 [schema]
@@ -130,6 +131,7 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "ChangeClaim" = "struct deny_unknown_fields"
 "ChangeClaim.action" = "#1 ClaimedAction"
 "ChangeClaim.change" = "#0 [u8; 32]"
+"ChangeClaim.invoker" = "#3 Option<Acting> with=invoker_text"
 "ChangeClaim.units" = "#2 Vec<UnitPath>"
 "Changes" = "enum external"
 "Changes::Applications" = "#4 unit"

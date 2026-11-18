@@ -54,6 +54,7 @@ roots = ["Hello", "HelloAck", "HelloAck2", "HelloRefused", "EnvelopeV2", "Neighb
 
 [opaque]
 Uuid = "uuid::Uuid: 16 bytes"
+Acting = "tilo_action_policy::Acting: who made a change, carried as the JSON text its history entry writes (ChangeClaim.invoker)"
 Value = "serde_json::Value: any JSON value, carried as its text"
 RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-host vocabulary, carried as opaque postcard bytes and versioned by the server transport's remote-action envelope"
 
@@ -112,6 +113,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "ChangeClaim" = "struct deny_unknown_fields"
 "ChangeClaim.action" = "#1 ClaimedAction"
 "ChangeClaim.change" = "#0 [u8; 32]"
+"ChangeClaim.invoker" = "#3 Option<Acting> with=invoker_text"
 "ChangeClaim.units" = "#2 Vec<UnitPath>"
 "ClaimedAction" = "enum external"
 "ClaimedAction::Edit" = "#1 struct"

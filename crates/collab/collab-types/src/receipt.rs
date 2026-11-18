@@ -148,6 +148,10 @@ pub enum ReceiptRefusal {
     /// A change names no action.
     #[error("a change names no action: {0}")]
     Unnamed(String),
+    /// An opened sealed change does not say what its claim says: another
+    /// action, or another invoker.
+    #[error("a sealed change says other than its claim: {0}")]
+    Misclaimed(String),
     /// The change writes a unit its claim does not name.
     #[error("the change writes the unit {0}, which its claim does not name")]
     UnclaimedUnit(String),
@@ -303,28 +307,6 @@ pub fn check_claims(
     surface: Option<&dyn ReceiptSurface>,
     allows: &Allows<'_>,
 ) -> Result<Receipt, ReceiptRefusal> {
-    check_invoked_claims(
-        claims,
-        document,
-        (changes, written),
-        surface,
-        allows,
-        &|_| None,
-    )
-}
-
-/// Who made each change, by its hash, as far as the receiver read them.
-type InvokerOf<'a> = dyn Fn(&[u8; 32]) -> Option<Acting> + 'a;
-
-/// [`check_claims`], each change decided as who made it (`invoker_of`).
-fn check_invoked_claims(
-    claims: &[ChangeClaim],
-    document: &WrittenDocument<'_>,
-    (changes, written): (Option<&[[u8; 32]]>, Option<WrittenUnits<'_>>),
-    surface: Option<&dyn ReceiptSurface>,
-    allows: &Allows<'_>,
-    invoker_of: &InvokerOf<'_>,
-) -> Result<Receipt, ReceiptRefusal> {
     check_claimed_changes(claims, changes)?;
     let Some(surface) = surface else {
         return Ok(Receipt::Hold);
@@ -347,7 +329,6 @@ fn check_invoked_claims(
             })
         };
         let read = written.map(|written| written(&claim.change));
-        let invoker = invoker_of(&claim.change);
         // A history step or a framework change may touch any unit, and its
         // claim says so rather than naming the entries it queued: what it
         // really queued is left to the devices that open it, as for a
@@ -375,7 +356,7 @@ fn check_invoked_claims(
                 kind => kind,
             };
             let node = claim_node(document, surface, member);
-            if !allows(invoker.as_ref(), &node, kind) {
+            if !allows(claim.invoker.as_ref(), &node, kind) {
                 return Err(ReceiptRefusal::NotGranted {
                     node: node.to_string(),
                     kind,
@@ -575,6 +556,37 @@ pub fn check_appearances(
     Ok(())
 }
 
+/// Check a sealed op as the device that opened it (`plaintext`, its signed
+/// payload) reads it: every change it carries is claimed once, as the action
+/// and the invoker it names itself. The workspace decided the op by those
+/// claims without reading it, so a change that says otherwise is refused.
+/// Snapshots and segments carry no claims of their own to check here.
+///
+/// # Errors
+/// [`ReceiptRefusal::Unclaimed`] for changes the claims do not name exactly,
+/// [`ReceiptRefusal::Misclaimed`] for a claim its change contradicts.
+pub fn check_opened(op: &crate::op::SignedOp, plaintext: &[u8]) -> Result<(), ReceiptRefusal> {
+    let Ok(crate::DocumentFrame::Whole(crate::op::DocumentMutation::Incremental(bytes))) =
+        crate::DocumentFrame::decode(plaintext)
+    else {
+        return Ok(());
+    };
+    let changes = crate::claim::parse_changes(&bytes).map_err(|_| ReceiptRefusal::Unclaimed)?;
+    let hashes: Vec<[u8; 32]> = changes.iter().map(|change| change.hash().0).collect();
+    check_claimed_changes(&op.claims, Some(&hashes))?;
+    for change in &changes {
+        let read = ChangeClaim::of_change(change.hash().0, change.message(), Vec::new())
+            .map_err(|error| ReceiptRefusal::Unnamed(error.to_string()))?;
+        let claimed = op.claims.iter().find(|claim| claim.change == read.change);
+        if claimed
+            .is_none_or(|claimed| claimed.action != read.action || claimed.invoker != read.invoker)
+        {
+            return Err(ReceiptRefusal::Misclaimed(label(&read.action)));
+        }
+    }
+    Ok(())
+}
+
 /// [`decide_op`] for a record whose identity names `pinned`, the surface
 /// its changes are decided against: an op naming another surface is
 /// refused unless it is the change that names a new one for the record
@@ -645,11 +657,6 @@ pub fn decide_op_pinned(
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             let hashes: Vec<[u8; 32]> = changes.iter().map(|change| change.hash().0).collect();
-            // Who made each change, as it names them: what it is decided as.
-            let invokers: std::collections::BTreeMap<[u8; 32], Acting> = changes
-                .iter()
-                .filter_map(|change| Some((change.hash().0, crate::claim::invoker_of(change)?)))
-                .collect();
             if let Some(pinned) = pinned
                 && op.surface != Some(pinned)
                 && !claims
@@ -684,14 +691,7 @@ pub fn decide_op_pinned(
                 };
                 let read: Option<WrittenUnits<'_>> =
                     written.is_some().then_some(&read as WrittenUnits<'_>);
-                check_invoked_claims(
-                    &claims,
-                    document,
-                    (None, read),
-                    Some(&*surface),
-                    allows,
-                    &|hash| invokers.get(hash).cloned(),
-                )?;
+                check_claims(&claims, document, None, read, Some(&*surface), allows)?;
             }
             Ok(Receipt::Admit)
         }

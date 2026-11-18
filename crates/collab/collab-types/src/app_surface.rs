@@ -358,6 +358,7 @@ mod tests {
                 change: [7; 32],
                 action: group,
                 units: vec![Vec::new()],
+                invoker: None,
             }];
             let file = crate::surface::SurfaceFile::parse(FILE).unwrap();
             let receiver = crate::surface::KindSurface(file.resource(None).unwrap().clone());
