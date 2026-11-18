@@ -398,6 +398,19 @@ mod tests {
                 },
                 Some(read()),
             ),
+            (
+                NeighbourMsg::WriteRefusals {
+                    refusals: Vec::new(),
+                },
+                None,
+            ),
+            (
+                NeighbourMsg::MlsGovernanceWanted {
+                    workspace: WORKSPACE.into(),
+                    from_epoch: 0,
+                },
+                None,
+            ),
         ]
     }
 
@@ -413,7 +426,7 @@ mod tests {
             table.len(),
             "one message per variant, none repeated"
         );
-        assert_eq!(table.len(), 29, "every NeighbourMsg variant has an entry");
+        assert_eq!(table.len(), 27, "every NeighbourMsg variant has an entry");
         for (message, expected) in &table {
             assert_eq!(required_workspace_action(message), *expected, "{message:?}");
             // A retired generation is never admitted as a workspace's traffic.
