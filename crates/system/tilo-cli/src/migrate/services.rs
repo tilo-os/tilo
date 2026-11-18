@@ -35,8 +35,8 @@ pub const MAIL: &str = "mail";
 /// Where an email account joins the person's accounts (Mail's, which the person allows).
 const ADD_ACCOUNT: &str = "mail/mail.mailbox#add-account";
 
-const IMPORT_MARKDOWN: &str = "notes/notes.notebook#import-markdown";
-const MOVE_NOTE: &str = "notes/notes.notebook#move-note";
+const IMPORT_MARKDOWN: &str = "notes/notes.pages#import-markdown";
+const MOVE_NOTE: &str = "notes/notes.pages#move-note";
 const CREATE_ISSUE: &str = "tasks/tasks.issues#create";
 const CREATE_AREA: &str = "tasks/tasks.tracker#create-area";
 const SET_PROJECT: &str = "tasks/tasks.issues#set-project";
