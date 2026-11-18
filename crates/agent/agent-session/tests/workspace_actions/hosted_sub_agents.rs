@@ -13,6 +13,10 @@ use ui::tilo_workspace_agent::{Agent, NewSubAgent, Stands, workspace_agents};
 #[path = "hosted_coding_agents.rs"]
 mod hosted_coding_agents;
 
+/// Who ends a share an agent made for its person.
+#[path = "hosted_share_ends.rs"]
+mod share_ends;
+
 /// A model whose answer to each call is `play`'s. Every call is kept, in the order asked.
 struct Plays {
     play: Arc<dyn Fn(&ModelRequest) -> ModelResponse + Send + Sync>,
