@@ -718,7 +718,14 @@ impl Lexer<'_> {
             end += 1;
         }
         self.pos = end;
-        if end == start || self.bytes.get(end - 1) == Some(&b'.') || !self.step_follows() {
+        // Dots only belong to the document's name when the `/` of an item follows them; after an
+        // id they read a field of the resource. A `uuid:` document's id goes on past its colon.
+        let dotted = self
+            .bytes
+            .get(start..end)
+            .is_some_and(|s| s.contains(&b'.'));
+        let step = self.at(0) == Some(b'/') && self.step_follows();
+        if end == start || self.bytes.get(end - 1) == Some(&b'.') || (dotted && !step) {
             self.pos = start;
             self.id_chars();
         }
