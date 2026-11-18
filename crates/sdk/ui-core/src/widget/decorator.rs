@@ -197,6 +197,13 @@ macro_rules! decorator_trait {
         $(#[$impl_attr])*
         impl<T: Decorator> Widget for T {
             $($impl_items)*
+
+            /// What it shows, as its inner widget shows it: a decorator is its inner widget
+            /// plus what it adds.
+            fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+                Decorator::html(self, cx)
+            }
+
             $(
                 $(#[$ref_attr])*
                 fn $ref(&self, $($ref_arg: $ref_ty),*) $(-> $ref_ret)? {
@@ -261,6 +268,11 @@ macro_rules! decorator_trait {
 
                     impl<$d ($d generic)*> Widget for $d ty {
                         $($impl_items)*
+
+                        fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+                            Decorator::html(self, cx)
+                        }
+
                         $(
                             $(#[$ref_attr])*
                             fn $ref(&self, $($ref_arg: $ref_ty),*) $(-> $ref_ret)? {
