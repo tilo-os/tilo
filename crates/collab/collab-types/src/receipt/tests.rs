@@ -621,3 +621,141 @@ mod invoker_tests;
 
 #[path = "continuation_tests.rs"]
 mod continuation_tests;
+
+/// The surface of the chat's messages, published as a chain of parts.
+struct Messages;
+
+impl ReceiptSurface for Messages {
+    fn kind(&self) -> &'static str {
+        "chat.messages"
+    }
+    fn verb(&self, action: &str) -> Option<(ActionKind, Option<String>)> {
+        (action == "post").then_some((ActionKind::Undoable, None))
+    }
+    fn editable(&self, _: &[PathStep]) -> bool {
+        false
+    }
+    fn footprint(&self, _: &ClaimedAction) -> Vec<UnitPath> {
+        vec![Vec::new()]
+    }
+}
+
+const CHAT: &str = "so.tilo.chat";
+const CHAIN: &str = "tab:0000000000000001";
+const OTHER_CHAIN: &str = "tab:0000000000000002";
+
+fn post() -> ClaimedAction {
+    ClaimedAction::Verb {
+        action: ActionKey::new(CHAT, "chat.messages", "post"),
+        item: None,
+    }
+}
+
+fn posted(document: &str) -> WrittenDocument<'_> {
+    WrittenDocument {
+        workspace: WORKSPACE,
+        app: CHAT,
+        document,
+    }
+}
+
+/// Whether `person`, granted undoable changes on `granted`, may post `action`
+/// on `document`, as `check_claims` decides it.
+fn posts(
+    person: &str,
+    granted: &str,
+    document: &str,
+    action: ClaimedAction,
+) -> Result<Receipt, ReceiptRefusal> {
+    let grant = Grant::new(
+        "chain-grant",
+        Grantee::person(person),
+        TreePath::workspace(WORKSPACE)
+            .app(CHAT)
+            .kind("chat.messages")
+            .resource(granted),
+        KindSet::UNDOABLE,
+        Answer::Allow,
+        Grantee::person("workspace-owner"),
+    );
+    let party = Party::new(vec![Grantee::person(person)], std::iter::once(&grant));
+    let allows = |_: Option<&tilo_action_policy::Acting>, node: &TreePath, kind: ActionKind| {
+        party.decide(node, kind, &Context::at(0)).answer == Answer::Allow
+    };
+    check_claims(
+        &[claim(1, action, vec![Vec::new()])],
+        &posted(document),
+        None,
+        None,
+        Some(&Messages),
+        &allows,
+    )
+}
+
+#[test]
+fn a_part_or_chunk_is_decided_at_the_resource_its_tree_is_published_under() {
+    let part = format!("derived:part.0@{CHAIN}");
+    let chain_resource = format!("chain:{CHAIN}");
+    let node = claim_node(&posted(&part), &Messages, &post()).to_string();
+    assert!(
+        node.ends_with(&format!("resource:{chain_resource}/action:post")),
+        "{node}"
+    );
+    assert_eq!(
+        written_node(&posted(&part)),
+        TreePath::workspace(WORKSPACE)
+            .app(CHAT)
+            .resource(chain_resource.clone())
+    );
+    // A chunk of a part is the part's chain; a chunk of a document is that document.
+    let chunk = format!("derived:chunk.2@{part}");
+    assert_eq!(published_resource(&chunk), chain_resource);
+    assert_eq!(
+        published_resource(&format!("derived:chunk.1@{CHAIN}")),
+        CHAIN
+    );
+    assert_eq!(published_resource(CHAIN), CHAIN);
+}
+
+#[test]
+fn a_member_granted_undoable_on_the_chain_is_admitted_for_a_part_write() {
+    let part = format!("derived:part.0@{CHAIN}");
+    let chain = format!("chain:{CHAIN}");
+    assert_eq!(posts("ada", &chain, &part, post()), Ok(Receipt::Admit));
+    // Granted on another chain, the same member is refused: the part is its
+    // own chain's, never one the writer names.
+    assert!(matches!(
+        posts("ada", &format!("chain:{OTHER_CHAIN}"), &part, post()),
+        Err(ReceiptRefusal::NotGranted { .. })
+    ));
+}
+
+#[test]
+fn a_change_naming_another_chain_is_refused_where_that_chain_is_granted() {
+    // The change's own action context names another chain than its document's
+    // id does: the node comes from the id, so the other chain's grant reaches
+    // nothing.
+    let named_elsewhere = ClaimedAction::of(&ActionContext {
+        what: Some(Did::Verb(VerbCall::new(
+            ActionKey::new(CHAT, "chat.messages", "post"),
+            [],
+        ))),
+        ..ActionContext::for_resource(format!("chain:{OTHER_CHAIN}"), "chat.messages", "Chat")
+    })
+    .unwrap();
+    let part = format!("derived:part.0@{CHAIN}");
+    let node = claim_node(&posted(&part), &Messages, &named_elsewhere).to_string();
+    assert!(
+        node.contains(&format!("resource:chain:{CHAIN}/")),
+        "the document's own chain decides: {node}"
+    );
+    assert!(matches!(
+        posts(
+            "ada",
+            &format!("chain:{OTHER_CHAIN}"),
+            &part,
+            named_elsewhere
+        ),
+        Err(ReceiptRefusal::NotGranted { .. })
+    ));
+}
