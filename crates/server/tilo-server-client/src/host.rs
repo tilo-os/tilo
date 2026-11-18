@@ -17,7 +17,7 @@
 use iroh_base::{EndpointAddr, RelayUrl};
 use tilo_server_protocol::web::WebLink;
 
-#[cfg(all(feature = "dial", not(target_arch = "wasm32")))]
+#[cfg(feature = "dial")]
 use crate::LinkError;
 
 /// How a device's packets reach its host.
@@ -72,10 +72,25 @@ impl Host {
         Self { carrier, ..self }
     }
 
-    /// This host, taking WebTransport sessions at `web`.
+    /// This server, taking WebTransport sessions at `web`. A page reaches a server
+    /// that takes none (one behind a NAT, which no browser dials directly)
+    /// through the packet relay its address names, over iroh.
     #[must_use]
     pub fn with_web(self, web: Option<WebLink>) -> Self {
-        Self { web, ..self }
+        let carrier = if cfg!(target_family = "wasm")
+            && self.carrier == Carrier::WebTransport
+            && web.is_none()
+            && self.relay().is_some()
+        {
+            Carrier::Relay
+        } else {
+            self.carrier
+        };
+        Self {
+            carrier,
+            web,
+            ..self
+        }
     }
 
     /// Where the host takes WebTransport sessions, when it does.
@@ -137,7 +152,7 @@ impl Host {
     /// [`LinkError::Unavailable`] when the endpoint does not bind, or, over
     /// the relay, when the host names none: an endpoint with no direct
     /// transport and no relay could never reach the host.
-    #[cfg(all(feature = "dial", not(target_arch = "wasm32")))]
+    #[cfg(feature = "dial")]
     pub async fn bind(&self, key: Option<[u8; 32]>) -> Result<iroh::Endpoint, LinkError> {
         let relay = self.relay().cloned();
         if self.carrier == Carrier::WebTransport {
@@ -151,14 +166,13 @@ impl Host {
             ));
         }
         let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal);
+        // A page has only the relay; a native device asked to go through it
+        // drops its own addresses.
+        #[cfg(not(target_family = "wasm"))]
         if self.carrier == Carrier::Relay {
             // The relay's TCP connection paces what the network carries;
             // QUIC's own slow start above it only adds round trips.
-            builder = builder.transport_config(transport());
-            #[cfg(not(target_family = "wasm"))]
-            {
-                builder = builder.clear_ip_transports();
-            }
+            builder = builder.transport_config(transport()).clear_ip_transports();
         }
         if let Some(key) = key {
             builder = builder.secret_key(iroh::SecretKey::from_bytes(&key));

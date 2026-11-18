@@ -38,7 +38,6 @@ use crate::host::{Carrier, Host};
 /// have. A dial would otherwise wait out QUIC's 30-second idle timeout, which
 /// a session spends on every attempt. A working handshake completes within a
 /// few round trips, so ten seconds is a stopped host, not a slow one.
-#[cfg(not(target_arch = "wasm32"))]
 const DIAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// One thing a device asks its host, on a link of its own.
@@ -65,7 +64,6 @@ impl Purpose {
 
     /// The ALPN an iroh connection for it negotiates. A live session's carrier over
     /// iroh is dialled by the live session itself, which owns its ALPN.
-    #[cfg(not(target_arch = "wasm32"))]
     const fn alpn(self) -> Option<&'static [u8]> {
         match self {
             Self::Session => Some(tilo_server_protocol::transport::ALPN),
@@ -87,16 +85,10 @@ impl Purpose {
 pub struct Dialer {
     host: Host,
     /// The key the iroh endpoint speaks as; a fresh one when `None`.
-    #[cfg_attr(
-        target_arch = "wasm32",
-        expect(dead_code, reason = "a page binds no iroh endpoint")
-    )]
     key: Option<[u8; 32]>,
-    #[cfg(not(target_arch = "wasm32"))]
     endpoint: tokio::sync::OnceCell<iroh::Endpoint>,
     /// Whether the endpoint is the device's own, lent: it outlives this
     /// dialer, which never closes it.
-    #[cfg(not(target_arch = "wasm32"))]
     lent: bool,
 }
 
@@ -107,9 +99,7 @@ impl Dialer {
         Self {
             host,
             key,
-            #[cfg(not(target_arch = "wasm32"))]
             endpoint: tokio::sync::OnceCell::new(),
-            #[cfg(not(target_arch = "wasm32"))]
             lent: false,
         }
     }
@@ -117,7 +107,6 @@ impl Dialer {
     /// Links to `host` from `endpoint`, the one this device already runs:
     /// its links are connections of that endpoint, and closing the dialer
     /// leaves it running.
-    #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn from_endpoint(host: Host, endpoint: iroh::Endpoint) -> Self {
         Self {
@@ -164,7 +153,6 @@ impl Dialer {
                     .await
                     .map(|session| Link::of(Inner::Web(Box::new(session))))
             }
-            #[cfg(not(target_arch = "wasm32"))]
             Carrier::Direct | Carrier::Relay => {
                 let alpn = purpose.alpn().ok_or_else(|| {
                     LinkError::Unavailable(
@@ -172,7 +160,7 @@ impl Dialer {
                     )
                 })?;
                 let endpoint = self.endpoint().await?;
-                let connection = match tokio::time::timeout(
+                let connection = match n0_future::time::timeout(
                     DIAL_DEADLINE,
                     endpoint.connect(self.host.addr(), alpn),
                 )
@@ -187,10 +175,6 @@ impl Dialer {
                 };
                 Ok(Link::of(Inner::Iroh(connection)))
             }
-            #[cfg(target_arch = "wasm32")]
-            Carrier::Direct | Carrier::Relay => Err(LinkError::Unavailable(
-                "a page reaches its host over WebTransport only".into(),
-            )),
         }
     }
 
@@ -199,7 +183,6 @@ impl Dialer {
     /// # Errors
     ///
     /// As [`Host::bind`].
-    #[cfg(not(target_arch = "wasm32"))]
     pub async fn endpoint(&self) -> Result<iroh::Endpoint, LinkError> {
         self.endpoint
             .get_or_try_init(|| self.host.bind(self.key))
@@ -210,15 +193,7 @@ impl Dialer {
     /// Let go of the host: close the endpoint, waiting for the host to hear
     /// it; a lent endpoint stays open for the device that runs it. Links
     /// over WebTransport close on their own.
-    #[cfg_attr(
-        target_arch = "wasm32",
-        expect(
-            clippy::unused_async,
-            reason = "only an iroh endpoint is awaited closed"
-        )
-    )]
     pub async fn close(&self) {
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(endpoint) = self.endpoint.get().filter(|_| !self.lent) {
             endpoint.close().await;
         }
@@ -249,7 +224,6 @@ async fn web_session(
 
 /// The keying material `connection`'s TLS session exports for an entry
 /// ([`tilo_server_protocol::entering::ENTRY_BINDING_LABEL`]).
-#[cfg(not(target_arch = "wasm32"))]
 fn exported(connection: &iroh::endpoint::Connection) -> Option<[u8; 32]> {
     let mut binding = [0u8; 32];
     connection
@@ -265,7 +239,6 @@ fn exported(connection: &iroh::endpoint::Connection) -> Option<[u8; 32]> {
 /// Why an iroh dial failed. TLS `no_application_protocol` (alert 120) means
 /// the host is reached but serves nothing at `alpn`, which says more than
 /// the transport's words.
-#[cfg(not(target_arch = "wasm32"))]
 fn connect_error(error: &iroh::endpoint::ConnectError, alpn: &[u8]) -> LinkError {
     use iroh::endpoint::{ConnectError, ConnectingError, ConnectionError, TransportErrorCode};
     let connection = match error {
@@ -308,7 +281,6 @@ pub struct Link {
 
 #[derive(Clone)]
 enum Inner {
-    #[cfg(not(target_arch = "wasm32"))]
     Iroh(iroh::endpoint::Connection),
     Web(Box<tilo_net::webtransport::Session>),
 }
@@ -329,7 +301,6 @@ impl Link {
     }
 
     /// A link over an iroh connection already open.
-    #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn iroh(connection: iroh::endpoint::Connection) -> Self {
         Self::of(Inner::Iroh(connection))
@@ -343,7 +314,6 @@ impl Link {
     pub async fn open_bi(&self) -> Result<(LinkSend, LinkRecv), LinkError> {
         let gone = |error: String| LinkError::Unavailable(error);
         match &self.inner {
-            #[cfg(not(target_arch = "wasm32"))]
             Inner::Iroh(connection) => connection
                 .open_bi()
                 .await
@@ -365,7 +335,6 @@ impl Link {
     pub async fn accept_bi(&self) -> Result<(LinkSend, LinkRecv), LinkError> {
         let gone = |error: String| LinkError::Unavailable(error);
         match &self.inner {
-            #[cfg(not(target_arch = "wasm32"))]
             Inner::Iroh(connection) => connection
                 .accept_bi()
                 .await
@@ -391,7 +360,6 @@ impl Link {
     /// `None` when the link carries no binding (then it takes no entry).
     pub async fn offer_binding(&self) -> Option<[u8; 32]> {
         match &self.inner {
-            #[cfg(not(target_arch = "wasm32"))]
             Inner::Iroh(connection) => exported(connection),
             Inner::Web(session) => {
                 let binding: [u8; 32] = rand::random();
@@ -420,7 +388,6 @@ impl Link {
         let missing =
             |error: String| LinkError::Unavailable(format!("no binding to enter with: {error}"));
         match &self.inner {
-            #[cfg(not(target_arch = "wasm32"))]
             Inner::Iroh(connection) => {
                 exported(connection).ok_or_else(|| missing("the connection exports none".into()))
             }
@@ -443,7 +410,6 @@ impl Link {
     /// Close the link at once, telling the host `reason`.
     pub fn close(&self, reason: &str) {
         match &self.inner {
-            #[cfg(not(target_arch = "wasm32"))]
             Inner::Iroh(connection) => connection.close(0u32.into(), reason.as_bytes()),
             Inner::Web(session) => session.close(0, reason),
         }
@@ -452,7 +418,6 @@ impl Link {
     /// Resolves once the link has closed, from either end.
     pub async fn closed(&self) {
         match &self.inner {
-            #[cfg(not(target_arch = "wasm32"))]
             Inner::Iroh(connection) => {
                 connection.closed().await;
             }
@@ -472,13 +437,11 @@ impl Link {
     pub fn web_session(&self) -> Option<tilo_net::webtransport::Session> {
         match &self.inner {
             Inner::Web(session) => Some((**session).clone()),
-            #[cfg(not(target_arch = "wasm32"))]
             Inner::Iroh(_) => None,
         }
     }
 
     /// The iroh connection under the link, when it is one.
-    #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn connection(&self) -> Option<&iroh::endpoint::Connection> {
         match &self.inner {
@@ -490,14 +453,12 @@ impl Link {
 
 /// A link's sending half of one stream.
 pub enum LinkSend {
-    #[cfg(not(target_arch = "wasm32"))]
     Iroh(iroh::endpoint::SendStream),
     Web(tilo_net::webtransport::SendStream),
 }
 
 /// A link's receiving half of one stream.
 pub enum LinkRecv {
-    #[cfg(not(target_arch = "wasm32"))]
     Iroh(iroh::endpoint::RecvStream),
     Web(tilo_net::webtransport::RecvStream),
 }
@@ -509,7 +470,6 @@ impl AsyncWrite for LinkSend {
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
         match self.get_mut() {
-            #[cfg(not(target_arch = "wasm32"))]
             Self::Iroh(send) => Pin::new(send)
                 .poll_write(cx, buf)
                 .map_err(std::io::Error::other),
@@ -519,7 +479,6 @@ impl AsyncWrite for LinkSend {
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         match self.get_mut() {
-            #[cfg(not(target_arch = "wasm32"))]
             Self::Iroh(send) => Pin::new(send).poll_flush(cx),
             Self::Web(send) => Pin::new(send).poll_flush(cx),
         }
@@ -527,7 +486,6 @@ impl AsyncWrite for LinkSend {
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         match self.get_mut() {
-            #[cfg(not(target_arch = "wasm32"))]
             Self::Iroh(send) => Pin::new(send).poll_shutdown(cx),
             Self::Web(send) => Pin::new(send).poll_shutdown(cx),
         }
@@ -541,7 +499,6 @@ impl AsyncRead for LinkRecv {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
         match self.get_mut() {
-            #[cfg(not(target_arch = "wasm32"))]
             Self::Iroh(recv) => Pin::new(recv).poll_read(cx, buf),
             Self::Web(recv) => Pin::new(recv).poll_read(cx, buf),
         }
@@ -552,7 +509,6 @@ impl LinkSend {
     /// Resolves once the host has read everything sent, or stopped reading.
     pub async fn stopped(&mut self) {
         match self {
-            #[cfg(not(target_arch = "wasm32"))]
             Self::Iroh(send) => {
                 let _ = send.stopped().await;
             }
@@ -568,7 +524,6 @@ impl LinkSend {
     /// Say the stream is finished: the host reads its end.
     pub fn finish(&mut self) {
         match self {
-            #[cfg(not(target_arch = "wasm32"))]
             Self::Iroh(send) => {
                 let _ = send.finish();
             }

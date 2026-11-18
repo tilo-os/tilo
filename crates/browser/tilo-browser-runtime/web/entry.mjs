@@ -324,7 +324,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // and the route chosen; admission waits for it, as the way in is its to say.
   const loaded = deps.loadRuntime();
   const entry = await readEntry({mode, location: window.location, fetch: deps.fetch});
-  // The host the site names with its home workspace: the page dials it as named.
+  // The server the site names with its home workspace: the page dials it as named.
   nameSiteServer(entry.home);
   const linked = loaded.then(runtime => grammar(runtime, entry));
   // Awaited below; a failure is the first entry's to report.
@@ -381,8 +381,15 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   if (sealedAdmitted) {
     route = {mode: 'desktop', target: {scope: {kind: 'workspace', host: new URL(peer.origin).origin, workspace: peer.workspace}}};
   }
-  // A link that names no workspace is let in through its host's entry: the workspace
-  // the entry admits to is that host's listed workspace.
+  // An invitation whose server only it names (one reached over iroh alone) admits at that
+  // server: the link from here on names it, so the next visit comes back to it.
+  const admittedElsewhere = !sealedAdmitted && Boolean(peer?.origin) && route.target.scope.kind === 'workspace'
+    && new URL(peer.origin).origin !== route.target.scope.host;
+  if (admittedElsewhere) {
+    route = {...route, target: {...route.target, scope: {...route.target.scope, host: new URL(peer.origin).origin}}};
+  }
+  // A link that names no workspace is let in through its server's entry: the workspace
+  // the entry admits to is that server's listed workspace.
   const admittedWorkspace = peer && route.target.scope.kind === 'workspace' && (sealedAdmitted || !route.target.scope.workspace)
     ? peer.workspace : null;
   configureFeedback(peer, entry.home, admittedWorkspace, {
@@ -406,7 +413,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   followDisplayMode({runtime: await loaded, window});
   // The address names what opened, not the damaged part the page left out.
   if (damaged) window.history.replaceState(window.history.state, '', link.format(route));
-  if (peer && route.target.scope.kind === 'workspace' && (sealedAdmitted || !route.target.scope.workspace)) {
+  if (peer && route.target.scope.kind === 'workspace' && (sealedAdmitted || admittedElsewhere || !route.target.scope.workspace)) {
     // The workspace is known now: show its canonical link, in place of the
     // address the link reached the page at. Not while the first screen of a
     // setup covers it (first-run.mjs): this workspace is not in front of

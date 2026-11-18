@@ -184,7 +184,7 @@ test('an unbound desktop entry without a route is the person’s own desktop', (
   assert.throws(() => initialRoute({link, location: {hash: '', href: 'https://tilo.so/app/'}, mode: 'app'}), {code: 'no-route'});
 });
 
-test('a bare entry opens the web host’s home workspace, its workspace learned on admission', () => {
+test('a bare entry opens the web server’s home workspace, its workspace learned on admission', () => {
   const link = {parse: () => { throw Object.assign(new Error('no route'), {code: 'no-route'}); }};
   const home = {name: 'Commons', host: {origin: 'https://workspaces.example/'}, admission: 'https://workspaces.example/'};
   const scope = {kind: 'workspace', host: 'https://workspaces.example', workspace: null};
@@ -198,7 +198,7 @@ test('a bare entry opens the web host’s home workspace, its workspace learned 
     {mode: 'desktop', target: {scope, app: 'so.tilo.chat'}});
 });
 
-test('the entry is the page’s directory, with the home workspace the web host names', async () => {
+test('the entry is the page’s directory, with the home workspace the web server names', async () => {
   const home = {name: 'Commons', host: {origin: 'https://workspaces.example'}, admission: 'https://workspaces.example/'};
   const fetch = async url => ({ok: String(url) === 'https://workspaces.example/open/entry.json', json: async () => ({home})});
   assert.deepEqual(await readEntry({mode: 'app', location: {href: 'https://workspaces.example/open/app/?embed=1#/so.tilo.chat'}, fetch}),
@@ -335,6 +335,45 @@ test('the home workspace opens through its host entry under its listed name, and
   assert.equal(replaced[0], 'https://workspaces.example/open/#/@workspaces.example/w/WORKSPACE');
   assert.equal(mounts[0].workspaceName, 'Commons');
   assert.equal(mounts[0].host, 'workspaces.example');
+  page.router.stop?.();
+});
+
+test('an invitation whose server only it names admits there, and the address names that server from then on', async () => {
+  // A link carrying an invitation and no server of its own (`#/w/<workspace>?invite=…`): the
+  // invitation names a server reached over iroh alone, which the page joins at, and the next
+  // visit comes back to it there rather than at the page's own site.
+  const invited = 'https://f97887d9895250ef7d60f7929cc947cc.iroh.invalid';
+  const scope = {kind: 'workspace', host: 'https://tilo.example', workspace: 'W'};
+  const formatted = [];
+  const replaced = [];
+  const runtime = runtimeFake({
+    parseLink: () => JSON.stringify({mode: 'desktop', target: {scope}}),
+    formatLink: route => { formatted.push(JSON.parse(route)); return 'https://tilo.example/#/@iroh/w/W'; },
+    ...entering('invitation'),
+  });
+  const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
+  const peer = {workspace: 'W', origin: invited, whenReady: async () => {},
+    mountDesktop: async (element, options) => { options.onNavigation?.(navigation); return {navigation}; }};
+  const window = {
+    __tiloLinkSecrets: Object.freeze({invite: 'SIGNED'}),
+    location: {href: 'https://tilo.example/#/w/W', hash: '#/w/W'},
+    history: {state: null, replaceState: (state, title, url) => replaced.push(url), pushState() {}},
+    addEventListener() {}, removeEventListener() {},
+  };
+  const joined = [];
+  const deps = {
+    loadRuntime: async () => runtime,
+    fetch: async () => ({ok: false}),
+    readAccounts: async () => [],
+    openInvitation: async (site, secret) => ({invitation: secret}),
+    invitedServer: async () => ({origin: invited, offer: {workspace: 'W', role: 'editor'}}),
+    confirmInvitation: async () => true,
+    joinWorkspace: async options => { joined.push(options.origin); return peer; },
+  };
+  const page = await boot({mode: 'desktop', window, status: null, deps});
+  assert.deepEqual(joined, [invited]);
+  assert.equal(formatted.at(-1).target.scope.host, invited);
+  assert.equal(replaced.at(-1), 'https://tilo.example/#/@iroh/w/W');
   page.router.stop?.();
 });
 
