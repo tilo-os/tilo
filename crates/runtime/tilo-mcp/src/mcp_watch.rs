@@ -96,17 +96,22 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// The host's last state of invocation `id`, asked off this task's
     /// thread: a host may ask the device running it and wait for the answer
     /// (a session's actions do), and a wait on this thread would stall the
-    /// connection that carries that answer until it gave up.
+    /// connection that carries that answer until it gave up. What the look
+    /// cost is told on this thread, where a tool's own accounting is.
     pub(crate) async fn observed(
         &self,
         id: tilo_actions::InvocationId,
     ) -> Option<tilo_actions::remote::InvocationState> {
-        let host = std::sync::Arc::clone(&self.host);
+        let provider = std::sync::Arc::clone(&self.host);
         let caller = self.caller();
-        tokio::task::spawn_blocking(move || host.observe(&caller, &id))
+        let asked = caller.clone();
+        let told = std::sync::Arc::clone(&provider);
+        let state = tokio::task::spawn_blocking(move || provider.observe(&caller, &id))
             .await
             .ok()
-            .flatten()
+            .flatten();
+        told.observed(&asked, &id, state.as_ref());
+        state
     }
 
     /// Note that `invocation` started, as a watch of this session follows it.

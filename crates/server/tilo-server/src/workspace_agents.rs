@@ -416,14 +416,15 @@ impl ActionProvider for WorkspaceActionProvider {
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
         // What a provider of the turn's own took is no invocation of the workspace's: how it
         // ended is kept here.
-        let state = self
-            .ended
+        self.ended
             .as_ref()
             .and_then(|ended| ended.of(id))
             .or_else(|| self.actions.observe(caller, id))
-            .or_else(|| self.answered.of(caller, id));
-        steps::looked(id, state.as_ref());
-        state
+            .or_else(|| self.answered.of(caller, id))
+    }
+
+    fn observed(&self, _caller: &Caller, id: &InvocationId, state: Option<&InvocationState>) {
+        steps::looked(id, state);
     }
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {

@@ -882,6 +882,12 @@ pub trait ActionProvider {
     /// id this caller does not own.
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState>;
 
+    /// The state [`Self::observe`] answered for `id` was read for `caller`'s call, on the
+    /// caller's own thread: what a provider that counts the looks a tool makes of it keeps here.
+    fn observed(&self, caller: &Caller, id: &InvocationId, state: Option<&InvocationState>) {
+        let _ = (caller, id, state);
+    }
+
     /// Resolves the next time invocation `id` (owned by `caller`) may have
     /// changed state, so a waiter observes it again then instead of on a
     /// timer. `None` when this provider cannot tell; the caller then observes on
