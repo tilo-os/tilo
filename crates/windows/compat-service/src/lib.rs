@@ -16,7 +16,6 @@
 )]
 
 mod assembly;
-mod audio_proxy;
 mod catalogue;
 mod dxvk;
 mod execute;
@@ -32,7 +31,6 @@ mod translated;
 mod vm_adapter;
 
 pub use assembly::{Assembly, LazyVmDelegate, SessionSide, serve};
-pub use audio_proxy::{AudioProxyError, AudioProxyLease};
 pub use catalogue::{
     CatalogueLoadError, CatalogueLoadReport, ShippedCataloguePaths, load_shipped_catalogue,
 };

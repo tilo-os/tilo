@@ -127,9 +127,11 @@ struct Bubble<Content: View>: View {
 /// A message's Markdown as a bubble shows it: paragraphs, lists, headings, code.
 struct MarkdownText: View {
     let text: String
+    /// Whether the message is still being written: then its end is read as it will stand.
+    var isWritten = false
 
     var body: some View {
-        let blocks = Markdown.blocks(in: text)
+        let blocks = Markdown.blocks(in: text, whileWritten: isWritten)
         VStack(alignment: .leading, spacing: 6) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 switch block {

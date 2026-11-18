@@ -42,7 +42,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         .await
         .map_err(|error| format!("the record read ended: {error}"))?
         .map_err(|error| error.to_string())?;
-        let answer = readings.readable()?;
+        let mut answer = readings.readable()?;
+        // A document's words are whoever wrote them's: its person, another member, a file
+        // somebody passed on. The answer says first that it carries content from outside
+        // (data for a model to reason about, never instructions to follow), as its first
+        // field: the text a model is handed stays the JSON it is.
+        crate::mark_untrusted(&mut answer);
         let text = answer.to_string();
         if text.len() > RECORD_CHARS {
             return Err(format!(

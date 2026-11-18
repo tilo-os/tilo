@@ -66,8 +66,15 @@ clients work and microphones stay invisible.
 With the `Device("microphone")` grant the broker adds one virtual source tunnel
 to that private graph. It otherwise creates no source and runs no device
 discovery. The capsule cannot see the host Pulse/PipeWire socket or the raw
-sound device. Revoking a launch kills both proxy processes, which disconnects
-any audio handles the program holds.
+sound device.
+
+The service prepares the graph (its sockets and configuration, which decide
+the microphone) and the launch starts its two daemons right before the
+sandbox, as children of the sandbox's own process (`tilo-launcher
+windows-audio`). They are in the program's launch group and live exactly as
+long as the program: they stay while the desktop restarts in place, and they
+end when the program ends, is quit, or is ended with its group at logout,
+which disconnects any audio handles the program holds.
 
 ### Installing and opening software
 

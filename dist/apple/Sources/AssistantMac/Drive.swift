@@ -3,6 +3,7 @@ import AppKit
 import AssistantCore
 import AssistantTilo
 import AssistantUI
+import CryptoKit
 import Foundation
 import Observation
 import ShellCore
@@ -33,12 +34,18 @@ import WebKit
 ///                                                    line: the provider step stands in the main chat again, and
 ///                                                    "link" with that provider as its preset types the new key
 ///   {"do": "link-another"}   {"do": "not-now"}        as "Link another provider" there, and as Not now under the step
+///   {"do": "reply-way"}                               as the press under the newest reply whose model gave no answer
+///                                                    for the key's sake: the same step stands in the main chat
 ///   {"do": "event", "name": "…", "when": "…", "instruction": "…"}   something that comes at a time
 ///   {"do": "task", "title": "…"}                      as the plus of the Tasks panel gives the assistant a task
+///   {"do": "open", "file": "…"}                       as a press on a file's tag: the file is fetched and shown to nobody
 ///   {"do": "stop"}                                    stop the answer that is being written
 ///   {"do": "saw", "item": "…"}                        as opening a piece from its notification does
 ///   {"do": "press", "item": "…", "offer": "…"}        as a press on a button under a piece's notice
 ///   {"do": "models"}   {"do": "state"}   {"do": "quit"}
+/// Of each reply that grew it says, once its writing has ended, when it drew the first change
+/// of its words and when the last, in milliseconds, and how many it drew ("grew"): what a
+/// person at the window would have seen, counted where no window is.
 /// It prints no link, no code and no secret, and ends when its standard input ends. With
 /// --forget it removes the store, and with it the device's key, and what it kept beside it.
 @MainActor
@@ -51,6 +58,9 @@ final class AssistantDrive {
     private let began = Date()
     private var said: [String: String] = [:]
     private var pieces: [Item.ID: String] = [:]
+    /// What was drawn of each reply while it grew, and when the person last sent.
+    private var growth = ReplyGrowth()
+    private var sent: Date?
 
     private init(source: TiloSource, codeFile: String?) {
         self.source = source
@@ -213,6 +223,26 @@ final class AssistantDrive {
             pieces[item.id] = line.text
             AssistantDrive.say([known ? "changed" : "piece": line, "ms": .number((Date().timeIntervalSince1970 * 1000).rounded())])
         }
+        // What was drawn of each reply while it grew, counted each time the model holds something
+        // new, as the window's views are drawn again then. Said once the answer's writing has
+        // ended, and again where a reply changed after that.
+        growth.drew(conversation, at: Date())
+        if !conversation.isAnswering {
+            for (id, seen) in growth.seen.sorted(by: { $0.value.first < $1.value.first }) {
+                var line: [String: JSON] = ["id": .string(id.value), "drew": .number(Double(seen.drew)),
+                                            "letters": .number(Double(seen.letters)),
+                                            "firstMs": .number((seen.first.timeIntervalSince1970 * 1000).rounded()),
+                                            "lastMs": .number((seen.last.timeIntervalSince1970 * 1000).rounded())]
+                if let sent, sent <= seen.first {
+                    line["firstAfterSendMs"] = .number((seen.first.timeIntervalSince(sent) * 1000).rounded())
+                    line["lastAfterSendMs"] = .number((seen.last.timeIntervalSince(sent) * 1000).rounded())
+                }
+                let text = JSON.object(line).text
+                guard said["grew-\(id.value)"] != text else { continue }
+                said["grew-\(id.value)"] = text
+                AssistantDrive.say(["grew": .object(line)])
+            }
+        }
         if let problem = model.problem { once("problem", .string(problem)) } else { said["problem"] = nil }
         once("beside", ["subAgents": .number(Double(model.subAgents.count)), "tasks": .number(Double(model.tasks.count)),
                         "automations": .number(Double(model.automations.count)), "models": .number(Double(model.models.count)),
@@ -237,6 +267,12 @@ final class AssistantDrive {
             ["title": .string(task.title), "state": .string(String(describing: task.state)),
              "note": task.note.map(JSON.string) ?? .null]
         }))
+        // What the main chat offers under its newest reply, where that reply's model gave no answer.
+        if let offered = model.replyWay(in: .main) {
+            once("replyWay", ["item": .string(offered.item.value), "says": .string(offered.way.words)])
+        } else {
+            once("replyWay", .null)
+        }
         once("comes", .array(model.automations.map { coming in
             ["title": .string(coming.title), "when": .string(coming.summary), "on": .bool(coming.isOn),
              "next": coming.next.map { .number($0.timeIntervalSince1970) } ?? .null]
@@ -262,6 +298,12 @@ final class AssistantDrive {
                 line["files"] = .array(message.attachments.map { file in
                     ["id": .string(file.id.value), "name": .string(file.name), "bytes": file.bytes.map { .number(Double($0)) } ?? .null]
                 })
+            }
+            // The typed cause their server says with a reply that got no answer; never its words.
+            switch message.keyFault {
+            case .key(let provider, _)?: line["fault"] = ["is": "key", "provider": .string(provider.value)]
+            case .noProvider?: line["fault"] = ["is": "no-provider"]
+            case nil: break
             }
         case .question(let question):
             line["kind"] = "question"
@@ -323,8 +365,19 @@ final class AssistantDrive {
             // under it, and Send takes them.
             let files = (step["files"]?.array ?? []).compactMap(\.string).map { Draft.File(url: URL(fileURLWithPath: $0)) }
             model.drafts[.main] = Draft(text: typed, files: files)
+            sent = Date()
             model.send(in: .main)
             AssistantDrive.say(["asked": "send", "ms": .number((Date().timeIntervalSince1970 * 1000).rounded())])
+        case "open":
+            // As a press on a file's tag. What lies on this device then is said by its name,
+            // its length and a sum over its bytes: never the link, and nothing is shown.
+            guard let file = step["file"]?.string else { AssistantDrive.say(["error": "open takes file"]); return }
+            if let fetched = await model.file(of: .init(file)), let bytes = try? Data(contentsOf: fetched) {
+                AssistantDrive.say(["opened": ["name": .string(fetched.lastPathComponent), "bytes": .number(Double(bytes.count)),
+                                               "sha256": .string(SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())]])
+            } else {
+                AssistantDrive.say(["opened": false, "why": .string(model.problem ?? "")])
+            }
         case "answer":
             guard let question = step["question"]?.string, let choice = step["choice"]?.string else {
                 AssistantDrive.say(["error": "answer takes question and choice"])
@@ -413,6 +466,11 @@ final class AssistantDrive {
         case "not-now":
             model.putAwayKeyStep()
             AssistantDrive.say(["asked": "not-now"])
+        case "reply-way":
+            // As the one press under the newest reply whose model gave no answer for the key's sake.
+            guard let offered = model.replyWay(in: .main) else { AssistantDrive.say(["error": "nothing is offered under the newest reply"]); return }
+            model.take(offered)
+            AssistantDrive.say(["asked": "reply-way"])
         case "stop":
             model.stopAnswering(in: .main)
             AssistantDrive.say(["asked": "stop"])

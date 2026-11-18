@@ -61,7 +61,7 @@ import time
 from pathlib import Path
 
 from approver import Person
-from tilo import AsyncTilo, ProtocolError, Refused, Run
+from tilo import AsyncTilo, Invocation, ProtocolError, Refused
 
 import plans
 
@@ -179,7 +179,7 @@ async def outcome(call: object) -> object:
     """What an action answered: its result, or the run it waits in, followed
     to its end (a command can take longer than the API waits)."""
     answer = await call
-    if isinstance(answer, Run):
+    if isinstance(answer, Invocation):
         try:
             return await answer.result()
         except Refused as error:

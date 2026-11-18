@@ -266,6 +266,10 @@ pub struct Refusal {
 #[serde(default)]
 pub struct Entry {
     pub id: String,
+    /// Its id in the history of the resource it changed, where that is not [`Self::id`]: what the
+    /// app keeping the resource names the change by.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub change: Option<String>,
     pub author: Author,
     pub kind: Kind,
     /// When, in milliseconds since the Unix epoch.

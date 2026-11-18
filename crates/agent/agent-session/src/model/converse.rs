@@ -23,7 +23,7 @@ use tilo_agent::surface::{Catalogue, Offer};
 use tilo_agent::tools::Answer;
 use tilo_model_gateway::host_backend::protocol::{
     Content, ErrorKind, Message, ModelError, ModelRequest, ModelResponse, Role, StopReason,
-    ToolCall, ToolChoice, ToolDefinition,
+    StreamEvent, ToolCall, ToolChoice, ToolDefinition,
 };
 
 use super::{Briefing, MOST_PUBLISHED, READ_VIEW, ReadView};
@@ -110,6 +110,22 @@ pub trait PlanTurns: Send {
         deadline: Instant,
         retry: bool,
     ) -> Result<ModelResponse, ModelError>;
+
+    /// [`Self::turn`], handing what the model writes to `written` while it writes: the
+    /// answer's words as they arrive, for whoever shows the answer growing. Presentation
+    /// only: the answer returned is what counts. What carries its turns without anything
+    /// to hand on answers whole, and `written` hears nothing.
+    fn turn_streaming(
+        &mut self,
+        request: &ModelRequest,
+        key: &str,
+        deadline: Instant,
+        retry: bool,
+        written: &mut (dyn FnMut(StreamEvent) + Send),
+    ) -> Result<ModelResponse, ModelError> {
+        let _ = written;
+        self.turn(request, key, deadline, retry)
+    }
 
     /// The model's name, for the usage log.
     fn model(&self) -> &str;
@@ -372,7 +388,7 @@ fn ask(
 
 /// Whether a failed call was lost in transit (the connection failed or
 /// timed out) rather than answered: a refusal, a bad key or request, a
-/// context too long or credit run out would only be answered the same way
+/// context too long or credit used up would only be answered the same way
 /// again.
 const fn lost_in_transit(error: &ModelError) -> bool {
     matches!(error.kind, ErrorKind::Transport | ErrorKind::TimedOut)

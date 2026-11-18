@@ -389,7 +389,6 @@ pub struct WorkspaceActivityPane {
     /// The heads of the workspace's own document at the last rebuild: what it governed since is
     /// read even while the layout's own document stands still.
     last_governing: Vec<ChangeHash>,
-    period: Period,
     /// Every row the document yielded, with the workspace each belongs to (`None` for no single
     /// workspace). [`Self::scope`] selects the subset handed to the timeline.
     derived: Vec<(HistoryEntry, Option<WorkspaceId>)>,
@@ -406,7 +405,6 @@ pub struct WorkspaceActivityPane {
     projected_origins: HashMap<HistoryEntryId, WorkspaceHistoryId>,
     feed_coverage: FeedCoverage,
     pub(super) scope: WorkspaceScope,
-    author: Option<String>,
     /// First-seen order, derived from the rows rather than a roster — a name appears only if that
     /// person did something in this workspace.
     contributors: Vec<String>,
@@ -450,7 +448,6 @@ pub struct WorkspaceActivityPane {
     /// The undo of an agent's run the host is carrying out.
     undo_pending: Option<PendingUndo>,
     facet_index: HistoryFacetIndex,
-    lens: LensSelection,
     comparison: Option<HistoryComparison>,
     comparison_attempted: bool,
     comparison_selection: Vec<HistoryEntryId>,
@@ -578,7 +575,6 @@ impl WorkspaceActivityPane {
             last_heads: Vec::new(),
             last_rows: 0,
             last_governing: Vec::new(),
-            period: Period::default(),
             derived: Vec::new(),
             scoped_tree_rows: Vec::new(),
             history_index: WorkspaceHistoryIndex::new(),
@@ -588,7 +584,6 @@ impl WorkspaceActivityPane {
             projected_origins: HashMap::new(),
             feed_coverage: FeedCoverage::default(),
             scope: WorkspaceScope::default(),
-            author: None,
             contributors: Vec::new(),
             workspace_name: String::new(),
             total_entries: 0,
@@ -616,7 +611,6 @@ impl WorkspaceActivityPane {
             workspace: String::new(),
             undo_pending: None,
             facet_index: HistoryFacetIndex::default(),
-            lens: LensSelection::default(),
             comparison: None,
             comparison_attempted: false,
             comparison_selection: Vec::new(),
@@ -1454,17 +1448,20 @@ impl WorkspaceActivityPane {
         }
     }
 
-    /// Op-class chips and author typeahead are the widget's own, left alone.
-    fn reinstall_filter(&mut self) {
-        let prior_selection = self.selected_ids();
+    /// What a read narrowed to `period`, `author` and `lens` lists: each reader's own, so two readers
+    /// asking differently never narrow each other's.
+    fn filter_for(
+        &self,
+        period: Period,
+        author: Option<&str>,
+        lens: &LensSelection,
+    ) -> HistoryFilter {
         let mut filter = HistoryFilter {
-            time_range: self.period.range(self.now()),
+            time_range: period.range(self.now()),
             ..HistoryFilter::default()
         };
-        if let Some(a) = &self.author {
-            filter.authors.push(a.clone());
-        }
-        match &self.lens {
+        filter.authors.extend(author.map(str::to_owned));
+        match lens {
             LensSelection::All => {}
             LensSelection::AgentTasks => {
                 filter
@@ -1495,14 +1492,7 @@ impl WorkspaceActivityPane {
                 filter.classification = HistoryClassification::Unclassified;
             }
         }
-        self.timeline.set_filter(filter);
-        if self.selected_ids() != prior_selection {
-            self.clear_comparison();
-        }
-        self.timeline.set_time_range_label(match self.period {
-            Period::AllTime => None,
-            p => Some(p.label()),
-        });
+        filter
     }
 
     /// Re-derive the timeline from the workspace document if the graph has moved; called every
@@ -1999,20 +1989,11 @@ impl WorkspaceActivityPane {
             .filter(|e| seen.insert(e.author.name.clone()))
             .map(|e| e.author.name.clone())
             .collect();
-        let stale_author = self
-            .author
-            .as_ref()
-            .is_some_and(|a| !self.contributors.iter().any(|c| c == a));
-        if stale_author {
-            self.author = None;
-        }
-
         self.timeline.set_entries(rows);
         if self.selected_ids() != prior_selection {
             self.clear_comparison();
         }
         self.timeline.set_named_ranges(self.named.clone());
-        self.reinstall_filter();
     }
 
     fn reset_narrative(&mut self) {

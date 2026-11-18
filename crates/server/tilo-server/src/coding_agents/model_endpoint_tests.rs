@@ -328,6 +328,22 @@ tilo_test_env::scenario! {
                 402,
                 "billing_error",
             ),
+            (
+                ModelRefusal::KeyRefused {
+                    provider: "Anthropic".into(),
+                    error: ModelError::new(ErrorKind::Authentication),
+                },
+                401,
+                "authentication_error",
+            ),
+            (
+                ModelRefusal::KeyRefused {
+                    provider: "Anthropic".into(),
+                    error: ModelError::new(ErrorKind::CreditsExhausted),
+                },
+                402,
+                "billing_error",
+            ),
         ] {
             let (said_status, said_kind, words) = refused(&refusal, None);
             assert_eq!((said_status, said_kind), (status, kind), "{refusal:?}");

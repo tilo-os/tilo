@@ -25,6 +25,28 @@ struct Observed {
     requests: Vec<String>,
     events: Vec<Response>,
     stderr: String,
+    /// When the peer wrote each part of an answer it sends in parts, in Unix
+    /// milliseconds, each taken just before the part was written.
+    wrote: Vec<u128>,
+}
+
+/// How long the peer waits between the parts of an answer it sends in parts.
+const BETWEEN_PARTS: Duration = Duration::from_millis(500);
+
+/// Write the streamed answer in three parts, [`BETWEEN_PARTS`] apart: its
+/// headers, a keep-alive comment, the stream. `wrote` gains the moment
+/// before each.
+fn write_in_parts(stream: &mut TcpStream, wrote: &mut Vec<u128>) {
+    let (opening, answer) = STREAM_REPLY.split_once("\r\n\r\n").unwrap();
+    let opening = format!("{opening}\r\n\r\n");
+    for part in [opening.as_str(), ": keep-alive\n\n", answer] {
+        if !wrote.is_empty() {
+            std::thread::sleep(BETWEEN_PARTS);
+        }
+        wrote.push(unix_ms());
+        stream.write_all(part.as_bytes()).unwrap();
+        stream.flush().unwrap();
+    }
 }
 
 const STREAM_REPLY: &str = concat!(
@@ -293,7 +315,10 @@ fn child_plan(case: &str) {
 }
 
 fn child_request(case: &str, mut body: serde_json::Value) -> Request {
-    if matches!(case, "stream" | "stream-deltas" | "anthropic-stream") {
+    if matches!(
+        case,
+        "stream" | "stream-deltas" | "stream-keep-alive" | "anthropic-stream"
+    ) {
         body["tools"] = if case == "anthropic-stream" {
             serde_json::json!([
                 {"name":"list_operations", "input_schema":{"type":"object"}},
@@ -348,7 +373,10 @@ fn child_request(case: &str, mut body: serde_json::Value) -> Request {
                 "limits-owner-caller" => 100,
                 _ => 10_000,
             },
-            stream: matches!(case, "stream" | "stream-deltas" | "anthropic-stream"),
+            stream: matches!(
+                case,
+                "stream" | "stream-deltas" | "stream-keep-alive" | "anthropic-stream"
+            ),
             deltas: matches!(case, "stream-deltas" | "anthropic-stream"),
             trace: Some(PlanTrace { id: 7, turn: 1 }),
         }
@@ -518,6 +546,7 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
     let peer = std::thread::spawn(move || {
         let mut requests = Vec::new();
         let mut held = Vec::new();
+        let mut wrote = Vec::new();
         while !server_stop.load(Ordering::Acquire) {
             let (mut stream, _) = match listener.accept() {
                 Ok(accepted) => accepted,
@@ -543,6 +572,10 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
                 }
                 case if case.starts_with("complete-") => completion_error_reply(case),
                 "stream" | "stream-deltas" => STREAM_REPLY.into(),
+                "stream-keep-alive" => {
+                    write_in_parts(&mut stream, &mut wrote);
+                    continue;
+                }
                 "anthropic-stream" => ANTHROPIC_STREAM_REPLY.into(),
                 "400detail" => format!(
                     "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{ERROR_BODY}",
@@ -561,7 +594,7 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
         }
         // Held connections stay open, unanswered, until the peer stops.
         drop(held);
-        requests
+        (requests, wrote)
     });
     let child = Command::new(std::env::current_exe().unwrap())
         .args([
@@ -578,7 +611,7 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
         .output_locked()
         .unwrap();
     stop.store(true, Ordering::Release);
-    let requests = peer.join().unwrap();
+    let (requests, wrote) = peer.join().unwrap();
     assert!(
         child.status.success(),
         "child Plan path failed: {} {}",
@@ -593,6 +626,7 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
         requests,
         events,
         stderr: String::from_utf8(child.stderr).unwrap(),
+        wrote,
     })
 }
 
@@ -1171,11 +1205,15 @@ fn plan_dispatch_applies_the_configured_reasoning_effort() {
     assert!(body.get("reasoning_effort").is_none());
 }
 
+/// The peer sends this answer in three parts, half a second apart: its
+/// headers, a keep-alive comment, the stream. The calls come out as when
+/// it came at once, and the call's timing line tells the three moments
+/// apart.
 #[test]
 fn plan_dispatch_streams_completed_tool_calls_then_the_assembled_body() {
     let Some(observed) = run_case(
         "plan_dispatch_streams_completed_tool_calls_then_the_assembled_body",
-        "stream",
+        "stream-keep-alive",
     ) else {
         return;
     };
@@ -1210,6 +1248,51 @@ fn plan_dispatch_streams_completed_tool_calls_then_the_assembled_body() {
     assert_eq!(calls[1]["id"], "call_b");
     assert_eq!(calls[1]["function"]["arguments"], "{}");
     assert_eq!(assembled["usage"]["completion_tokens"], 7);
+    assert_timing_tells_the_headers_the_first_event_and_the_answer_apart(&observed);
+}
+
+/// A provider that is silent and one that works read differently in a call's
+/// timing line: it names when the headers came and when the first event of
+/// any kind came, apart from the first event that carried a piece of the
+/// answer. `observed` is a call whose peer wrote those three apart.
+fn assert_timing_tells_the_headers_the_first_event_and_the_answer_apart(observed: &Observed) {
+    let line = observed
+        .stderr
+        .lines()
+        .find(|line| line.contains("tilo-model-gateway: timing plan"))
+        .unwrap_or_else(|| panic!("the call wrote no timing line: {}", observed.stderr));
+    let field = |name: &str| -> u128 {
+        line.split_whitespace()
+            .find_map(|part| part.strip_prefix(name)?.strip_prefix('='))
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_else(|| panic!("the timing line gives no time for {name}: {line}"))
+    };
+    let start = field("start_unix_ms");
+    let headers = start.saturating_add(field("headers_ms"));
+    let any = start.saturating_add(field("first_event_ms"));
+    let answer = start.saturating_add(field("first_byte_ms"));
+    let &[_, comment_written, answer_written] = observed.wrote.as_slice() else {
+        panic!("the peer wrote three parts: {:?}", observed.wrote);
+    };
+    // The headers' time is theirs, not that of the first bytes after them.
+    assert!(
+        headers <= comment_written,
+        "the headers came before the comment was written: {line}"
+    );
+    // The first event of any kind is the comment: it is named from after
+    // the comment was written (the line's times are whole milliseconds) and
+    // from before the answer was.
+    assert!(
+        any.saturating_add(2) >= comment_written && any <= answer_written,
+        "the first event of any kind is the keep-alive comment: {line}"
+    );
+    // The first decoded event stays the answer's first piece.
+    assert!(
+        answer.saturating_add(2) >= answer_written,
+        "the first decoded event came with the answer: {line}"
+    );
+    // Times and counts only, as before: nothing the provider sent.
+    assert!(!line.contains("keep-alive"), "{line}");
 }
 
 #[test]

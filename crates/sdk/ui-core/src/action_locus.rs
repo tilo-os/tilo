@@ -19,22 +19,23 @@ pub(crate) fn draw_action_presence(
     bindings: &[crate::widget::ControlBindingMetadata],
     text_loci: &[(tilo_actions::InvocationId, vello::kurbo::Rect)],
     viewport: vello::kurbo::Rect,
-    surface: &str,
+    (surface, label_of): (&str, &dyn Fn(&str) -> Option<String>),
     now: crate::time::Instant,
 ) -> Vec<PaintedActionMarker> {
     let mut painted = Vec::new();
     let mut resolved = Vec::new();
     let occupied = occupied(tree, viewport);
+    presence.relabel_items(label_of);
     for interaction in presence.visible_interactions(now) {
         // Words written under an item that no view here shows in place (a comment added to an
-        // issue, seen in the list) stand on the item's row.
-        let under = crate::presence::written_under(&interaction.anchor)
+        // issue, seen in the list; a note made while another is open) stand on the item's row.
+        let under = crate::presence::written_under(&interaction)
             .filter(|_| !presence.placed(interaction.invocation));
         let Some(bounds) = text_loci
             .iter()
             .find(|(invocation, _)| *invocation == interaction.invocation)
             .map(|(_, rect)| *rect)
-            .or_else(|| under.and_then(|item| item_bounds(tree, &[item.to_owned()])))
+            .or_else(|| under.and_then(|item| item_bounds(tree, &[item])))
             .or_else(|| interaction_bounds(tree, bindings, &interaction))
         else {
             continue;

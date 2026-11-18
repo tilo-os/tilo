@@ -1350,7 +1350,27 @@ public final class TiloSource: AssistantSource {
             author = .assistant
         }
         return Item(id: id, at: message.at,
-                    .message(Message(author, message.text, attachments: TiloFiles.attachments(of: message), live: live)))
+                    .message(Message(author, message.text, attachments: TiloFiles.attachments(of: message), live: live,
+                                     keyFault: author == .assistant ? TiloSource.keyFault(of: fields["work"]) : nil)))
+    }
+
+    /// Why a reply's model gave no answer, where another key or another provider mends it: read
+    /// from the typed cause their server keeps with the reply's work (`failure_cause`: the kind
+    /// as the provider configuration names it, and the provider by the id and the name their
+    /// server gives it). Never from the reply's words, and nil where their server says no cause.
+    static func keyFault(of work: JSON?) -> Message.KeyFault? {
+        guard let cause = work?["failure_cause"], !cause.isNull, let kind = variant(cause["kind"]) else { return nil }
+        switch kind {
+        case "no_provider":
+            return .noProvider
+        case "authentication", "permission_denied", "credits_exhausted":
+            // A key's fault is some provider's: without one named there is nothing to type a key for.
+            guard let id = cause["provider"]?["id"]?.string, !id.isEmpty else { return nil }
+            let name = cause["provider"]?["name"]?.string ?? ""
+            return .key(.init(id), name: name.isEmpty ? id : name)
+        default:
+            return nil
+        }
     }
 
     /// What a question's kind keeps with it: JSON, as text or already read.
@@ -1561,8 +1581,15 @@ public final class TiloSource: AssistantSource {
         if let failure { throw failure }
     }
 
+    /// How a file's link is fetched to this device: the system's own download. A check hands
+    /// in one of its own making.
+    var download: TiloFiles.Download = TiloFiles.download
+
     public func file(of attachment: Attachment.ID) async throws -> URL {
-        throw SourceProblem.refused("A file cannot be fetched into this app yet")
+        var fetched: URL?
+        try await taken { fetched = try await TiloFiles.fetch(attachment, through: self.engine, by: self.download) }
+        guard let fetched else { throw SourceProblem.unreachable }
+        return fetched
     }
 
     // MARK: Sub-agents

@@ -72,8 +72,7 @@ fn entry(
         app: Some("Notes".to_owned()),
         resource: Some(resource.to_owned()),
         group: (n <= 3).then(|| "press".to_owned()),
-        redacted: false,
-        refused: Vec::new(),
+        ..wire::Entry::default()
     }
 }
 

@@ -108,6 +108,7 @@ async fn google_billing_and_gemini_signatures_survive_unary_and_streamed_tool_hi
                 failure: Arc::default(),
                 status: Arc::default(),
                 unary_body: Arc::default(),
+                signs: Arc::default(),
             };
             execute(
                 transport,

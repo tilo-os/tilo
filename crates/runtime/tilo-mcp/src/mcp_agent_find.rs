@@ -32,17 +32,8 @@ fn nothing_matches(query: &str) -> String {
 /// `reply`, saying first that it carries content from outside the person's own data. A find
 /// that names a file of the workspace's folder answers its name and its path, which whoever
 /// put it there wrote: data to reason about, as what the file says is, never an instruction.
-fn naming_files(mut reply: Reply) -> Reply {
-    reply.text = format!(
-        "[{}: {}]\n{}",
-        crate::UNTRUSTED,
-        crate::UNTRUSTED_NOTE,
-        reply.text
-    );
-    if let Some(typed) = reply.structured.as_mut() {
-        crate::mark_untrusted(typed);
-    }
-    reply
+fn naming_files(reply: Reply) -> Reply {
+    reply.labelled()
 }
 
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {

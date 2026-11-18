@@ -60,7 +60,9 @@ public struct Token: ShapeStyle, Sendable, Equatable {
     /// The two layers of `--shadow`, and the field's own.
     public static let shadowNear = Token(light: 0x13161b, dark: 0x000000, lightOpacity: 0.06, darkOpacity: 0.3)
     public static let shadowFar = Token(light: 0x13161b, dark: 0x000000, lightOpacity: 0.1, darkOpacity: 0.35)
-    public static let fieldShadow = Token(light: 0x13161b, dark: 0x000000, lightOpacity: 0.07, darkOpacity: 0.3)
+    /// The drawing's shadow under the message field: seven per cent of its dark ink in both themes.
+    /// On a dark ground a shadow darker than the ground is a ring about the field, not a shadow.
+    public static let fieldShadow = Token(light: 0x13161b, dark: 0x13161b, lightOpacity: 0.07, darkOpacity: 0.07)
     /// Nothing: a row that is not chosen, a button that is not on.
     public static let clear = Token(light: 0xffffff, dark: 0x000000, lightOpacity: 0, darkOpacity: 0)
     /// White on the person's colour and on a switch.
@@ -73,6 +75,11 @@ public enum Measure {
     public static let panel: CGFloat = 340
     public static let column: CGFloat = 700
     public static let columnGutter: CGFloat = 24
+    /// What stays free under a conversation's last piece: `.col`'s `padding-bottom`.
+    public static let columnFoot: CGFloat = 14
+    /// How deep a conversation's ends fade into the ground where pieces scroll out: as deep as
+    /// what stays free under the last piece, so nothing that is at rest stands under a fade.
+    public static let edgeFade: CGFloat = columnFoot
     public static let bubbleWidth: CGFloat = 500
     public static let bubbleRadius: CGFloat = 14
     public static let rowRadius: CGFloat = 8

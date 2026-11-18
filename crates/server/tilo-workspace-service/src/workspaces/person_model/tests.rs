@@ -381,32 +381,66 @@ async fn the_answer_streams_and_says_what_it_cost() {
 }
 
 /// A provider's own failure is the refusal, in the words it is safe to
-/// show.
+/// show. Where the provider turns the person's key away, or the key's
+/// account, the refusal names the provider and says what the person can do
+/// about it, in their language; the failure keeps the provider's kind.
 #[tokio::test]
-async fn a_providers_failure_is_the_refusal() {
+async fn a_providers_failure_is_the_refusal_and_a_refused_key_names_its_provider() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    workspaces.answer_models_with(ScriptedProvider::answering([Reply::failing(
-        ModelError::new(ErrorKind::Authentication),
-    )]));
+    let of_the_key = [
+        (
+            ErrorKind::Authentication,
+            "Google did not accept your API key. Check the key, or use another key for Google.",
+            "Google hat deinen API-Schlüssel nicht angenommen. Prüfe den Schlüssel oder verwende einen anderen Schlüssel für Google.",
+        ),
+        (
+            ErrorKind::PermissionDenied,
+            "Google does not let your API key do this. Check what the key may do at Google, or use another key.",
+            "Google lässt deinen API-Schlüssel das nicht tun. Prüfe bei Google, was der Schlüssel darf, oder verwende einen anderen Schlüssel.",
+        ),
+        (
+            ErrorKind::CreditsExhausted,
+            "The account of your Google key has no credit left. Add credit at Google, or use another key.",
+            "Das Konto deines Schlüssels für Google hat kein Guthaben mehr. Lade bei Google Guthaben auf oder verwende einen anderen Schlüssel.",
+        ),
+    ];
+    workspaces.answer_models_with(ScriptedProvider::answering(
+        of_the_key
+            .iter()
+            .map(|(kind, ..)| *kind)
+            .chain([ErrorKind::RateLimited])
+            .map(|kind| Reply::failing(ModelError::new(kind))),
+    ));
     workspaces.link_model_for(&ADA, &GOOGLE, true).unwrap();
+    let model = workspaces.person_model(ADA, Interaction::Request);
 
-    let refused = workspaces
-        .person_model(ADA, Interaction::Request)
+    for (kind, english, german) in of_the_key {
+        let refused = model
+            .answer(&asking("Hello"), soon(), &mut |_| {})
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code(), "provider", "{kind:?}");
+        assert_eq!(refused.words(None), english);
+        assert_eq!(refused.words(Some("de-AT")), german);
+        let error = refused.model_error();
+        assert_eq!(error.kind, kind, "the failure keeps the provider's kind");
+        assert_eq!(error.message, english);
+        assert!(!format!("{refused:?} {refused}").contains(ADA_KEY));
+    }
+    // Every other failure of the provider's says what it said, and names nobody.
+    let refused = model
         .answer(&asking("Hello"), soon(), &mut |_| {})
         .await
         .unwrap_err();
     assert_eq!(refused.code(), "provider");
     assert_eq!(
         refused,
-        ModelRefusal::Provider(ModelError::new(ErrorKind::Authentication))
+        ModelRefusal::Provider(ModelError::new(ErrorKind::RateLimited))
     );
-    assert_eq!(
-        refused.words(None),
-        "Provider authentication failed; check the credential in Settings"
-    );
+    assert_eq!(refused.words(None), "Provider rate limit reached");
 }
 
 /// A host that was given nothing to speak to providers with answers no

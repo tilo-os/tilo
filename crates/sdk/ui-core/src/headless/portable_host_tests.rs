@@ -1318,13 +1318,58 @@ fn a_window_that_drew_a_frame_asks_for_none_until_something_changes() {
     );
 }
 
-/// An agent renaming an item a list shows is drawn on the row's title where the new title lands:
-/// the title in its colour and its caret wearing what it did, with no card drawn for it
-/// anywhere else on the page.
-#[test]
-fn an_agents_rename_is_drawn_on_the_rows_title() {
+/// The tags an agent's caret wears once `event` landed on a page of `root`, which shows the
+/// write: where a row shows the item `issue-b`, only that row and its tag change, and no card
+/// stands for it anywhere else.
+fn agent_marks(root: Box<dyn Widget>, event: &tilo_actions::SemanticInteraction) -> Vec<String> {
     use crate::permissions::MemberId;
-    use crate::widget::ListRow;
+    let mut page = frame(root);
+    page.relayout();
+    let before = page.render_rgba();
+    let (width, height) = page.device_size();
+    let at = crate::time::now()
+        .checked_sub(crate::time::Duration::from_millis(300))
+        .expect("the clock is later than a moment ago");
+    page.update_presence(|presence| {
+        presence
+            .names
+            .insert(MemberId::agent("scribe"), "Ada".into());
+        presence
+            .apply_interaction_at(event.clone(), at)
+            .expect("a well-formed interaction applies")
+    });
+    page.poll_frame().unwrap();
+    page.relayout();
+    let after = page.render_rgba();
+    let changed = changed_pixels(&before, &after, width, (0, 0, width, height))
+        .expect("the write is drawn as the agent's");
+    let row = page.retained_action_geometry().and_then(|(tree, _)| {
+        tree.nodes_showing_item("issue-b")
+            .find_map(|node| node.bounds)
+    });
+    if let Some(row) = row {
+        let scale = f64::from(width) / 400.0;
+        assert!(
+            f64::from(changed.1) >= (row.y0 - 40.0) * scale
+                && f64::from(changed.3) <= (row.y1 + 40.0) * scale,
+            "only the row and its caret's tag change, no card elsewhere: {changed:?} vs {row:?}"
+        );
+    }
+    page.presence()
+        .caret_tags()
+        .into_iter()
+        .filter(|tag| tag.user == MemberId::agent("scribe"))
+        .map(|tag| tag.label)
+        .collect()
+}
+
+/// An agent's write on an item a list shows is drawn on the item's row: a rename on the row's
+/// title, its caret saying "renamed", never the title it had; a comment on the issue, or a note
+/// it made whose words show nowhere, on the row saying "wrote". In the issue's thread the
+/// comment's words are drawn as the agent's.
+#[test]
+fn an_agents_writes_are_drawn_on_the_items_row() {
+    use crate::widget::{ListRow, Text};
     let title = "Book the studio for Friday";
     let rows = || {
         Box::new(
@@ -1343,151 +1388,34 @@ fn an_agents_rename_is_drawn_on_the_rows_title() {
                 )),
         )
     };
-    let mut plain_frame = frame(rows());
-    plain_frame.relayout();
-    let (width, height) = plain_frame.device_size();
-    let plain = plain_frame.render_rgba();
-
-    let mut event = crate::headless::agent_acting("tasks.issues", "rename");
-    event.actor = tilo_actions::Acting::agent("scribe");
-    event.action.label = "Rename".into();
-    event.action.did = Some("renamed".into());
-    event.resource.label = "Book the studio for Friday".into();
-    event.anchor = tilo_actions::InteractionAnchor::Text {
-        region: "title".into(),
+    let text = |region: &str, block: &str, end: usize| tilo_actions::InteractionAnchor::Text {
+        region: region.into(),
         ranges: vec![tilo_actions::InteractionTextRange {
-            block: "issue-b".into(),
+            block: block.into(),
             start: 0,
-            end: u64::try_from(title.chars().count()).unwrap(),
+            end: u64::try_from(end).unwrap(),
         }],
     };
-    let mut frame = frame(rows());
-    frame.relayout();
-    let at = crate::time::now()
-        .checked_sub(crate::time::Duration::from_secs(1))
-        .expect("the clock is later than a second ago");
-    frame.update_presence(|presence| {
-        presence
-            .names
-            .insert(MemberId::agent("scribe"), "Ada".into());
-        presence
-            .apply_interaction_at(event.clone(), at)
-            .expect("a well-formed interaction applies")
-    });
-    frame.poll_frame().unwrap();
-    frame.relayout();
-    let drawn = frame.render_rgba();
-    if crate::env::var_os("TILO_UI_AGENT_MARKER_SHOTS").is_some() {
-        let dir = crate::headless::agent_marker_shots();
-        std::fs::create_dir_all(&dir).unwrap();
-        frame.render_png(&dir.join("list-row-agent-rename.png"));
-    }
-    let tags: Vec<String> = frame
-        .presence()
-        .caret_tags()
-        .into_iter()
-        .filter(|tag| tag.user == MemberId::agent("scribe"))
-        .map(|tag| tag.label)
-        .collect();
-    assert_eq!(
-        tags,
-        vec!["Ada: renamed".to_owned()],
-        "the caret on the new title says who renamed it, never the title it had"
-    );
-    let changed = changed_pixels(&plain, &drawn, width, (0, 0, width, height))
-        .expect("the rename shows on the row");
-    let row_b = frame
-        .retained_action_geometry()
-        .and_then(|(tree, _)| {
-            tree.nodes_showing_item("issue-b")
-                .find_map(|node| node.bounds)
-        })
-        .expect("the renamed item's row");
-    let scale = f64::from(width) / 400.0;
-    assert!(
-        f64::from(changed.1) >= (row_b.y0 - 40.0) * scale
-            && f64::from(changed.3) <= (row_b.y1 + 40.0) * scale,
-        "only the renamed row and its caret's tag change, no card elsewhere: {changed:?} vs {row_b:?}"
-    );
-}
-
-/// An agent's comment on an issue is drawn where a person sees it: in the issue's thread, its words
-/// in the agent's colour with its caret saying "wrote"; in the list, on the issue's row, which
-/// says the same.
-#[test]
-fn an_agents_comment_is_drawn_in_the_thread_and_on_the_issues_row() {
-    use crate::permissions::MemberId;
-    use crate::widget::{ListRow, Text};
-    let words = "Hall 4 is free Friday 10-12.";
-    let mut event = crate::headless::agent_acting("tasks.tracker", "comment");
+    let mut event = crate::headless::agent_acting("tasks.tracker", "rename");
     event.actor = tilo_actions::Acting::agent("scribe");
     event.phase = tilo_actions::InteractionPhase::Committed;
+    event.action.did = Some("renamed".into());
+    event.anchor = text("title", "issue-b", title.chars().count());
+    assert_eq!(agent_marks(rows(), &event), vec!["Ada: renamed".to_owned()]);
+
+    let words = "Hall 4 is free Friday 10-12.";
+    event.action.did = None;
     event.action.step = Some(tilo_actions::StepKind::Write);
-    event.anchor = tilo_actions::InteractionAnchor::Text {
-        region: "comments".into(),
-        ranges: vec![tilo_actions::InteractionTextRange {
-            block: "issue-b/c1".into(),
-            start: 0,
-            end: u64::try_from(words.chars().count()).unwrap(),
-        }],
-    };
-    let tags = |root: Box<dyn Widget>| {
-        let mut plain = frame(root);
-        plain.relayout();
-        let before = plain.render_rgba();
-        let (width, height) = plain.device_size();
-        let at = crate::time::now()
-            .checked_sub(crate::time::Duration::from_millis(300))
-            .expect("the clock is later than a moment ago");
-        plain.update_presence(|presence| {
-            presence
-                .names
-                .insert(MemberId::agent("scribe"), "Ada".into());
-            presence
-                .apply_interaction_at(event.clone(), at)
-                .expect("a well-formed interaction applies")
-        });
-        plain.poll_frame().unwrap();
-        plain.relayout();
-        let after = plain.render_rgba();
-        let changed = changed_pixels(&before, &after, width, (0, 0, width, height));
-        let tags: Vec<String> = plain
-            .presence()
-            .caret_tags()
-            .into_iter()
-            .filter(|tag| tag.user == MemberId::agent("scribe"))
-            .map(|tag| tag.label)
-            .collect();
-        (tags, changed)
-    };
+    event.anchor = text("comments", "issue-b/c1", words.chars().count());
     let thread =
         Box::new(Column::new().push(Box::new(Text::new(words).edits("comments", "issue-b/c1"))));
-    let (said, changed) = tags(thread);
-    assert_eq!(
-        said,
-        vec!["Ada: wrote".to_owned()],
-        "its caret on the words it wrote"
-    );
-    assert!(
-        changed.is_some(),
-        "the comment's words are drawn as the agent's"
-    );
-    let list = Box::new(
-        Column::new()
-            .push(Box::new(ListRow::new("a", "First task").item("issue-a")))
-            .push(Box::new(
-                ListRow::new("b", "Book hall 4 for Friday")
-                    .item("issue-b")
-                    .edits("title"),
-            )),
-    );
-    let (said, changed) = tags(list);
-    assert_eq!(
-        said,
-        vec!["Ada: wrote".to_owned()],
-        "the issue's row says what it did"
-    );
-    assert!(changed.is_some(), "the row is the agent's place");
+    assert_eq!(agent_marks(thread, &event), vec!["Ada: wrote".to_owned()]);
+    assert_eq!(agent_marks(rows(), &event), vec!["Ada: wrote".to_owned()]);
+
+    event.resource.id = "tasks.tracker/issues/issue-b".into();
+    event.resource.kind = "tasks.tracker.issues".into();
+    event.anchor = text("body", "0ca48c75", 7);
+    assert_eq!(agent_marks(rows(), &event), vec!["Ada: wrote".to_owned()]);
 }
 
 /// What someone else changed in a field stays only as the hover note saying who and what it held:

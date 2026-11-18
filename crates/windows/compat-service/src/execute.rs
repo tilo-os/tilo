@@ -139,9 +139,10 @@ impl SandboxExecutor for BwrapExecutor {
                 RUNTIME_LOCK_CHILD_FD,
             ));
         }
+        let (program, args) = sandbox_program(plan.audio_graph.as_deref(), &plan.bwrap_argv);
         Ok(SandboxCommand {
-            program: "/usr/bin/bwrap".into(),
-            args: plan.bwrap_argv.iter().map(Into::into).collect(),
+            program,
+            args,
             inherited,
             latency_sensitive: plan.latency_sensitive,
         })
@@ -199,6 +200,34 @@ fn duplicate_above_child_slots(fd: BorrowedFd<'_>) -> Result<std::os::fd::OwnedF
     Ok(rustix::io::fcntl_dupfd_cloexec(fd, GROUP_CHILD_FD + 1)?)
 }
 
+/// Bubblewrap with `bwrap_argv`, started by the launcher's `windows-audio` after the private
+/// audio graph prepared in `audio_graph` when there is one: the graph's daemons are children of
+/// the sandbox's own process then, so they end with the program whoever started it, and a program
+/// kept open while the desktop restarts keeps its sound.
+fn sandbox_program(
+    audio_graph: Option<&std::path::Path>,
+    bwrap_argv: &[String],
+) -> (std::path::PathBuf, Vec<std::ffi::OsString>) {
+    const BWRAP: &str = "/usr/bin/bwrap";
+    let bwrap = bwrap_argv.iter().map(Into::into);
+    match audio_graph {
+        None => (BWRAP.into(), bwrap.collect()),
+        Some(graph) => (
+            crate::plan::SHIM_HOST.into(),
+            [
+                "windows-audio".into(),
+                "--graph".into(),
+                graph.into(),
+                "--".into(),
+                BWRAP.into(),
+            ]
+            .into_iter()
+            .chain(bwrap)
+            .collect(),
+        ),
+    }
+}
+
 fn validate_identity_uid(planned: u32, effective: u32) -> Result<(), ExecutionError> {
     if planned != effective {
         return Err(ExecutionError::IdentityMismatch { planned, effective });
@@ -247,6 +276,27 @@ pub enum ExecutionError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sandbox_with_sound_starts_after_its_audio_graph() {
+        let bwrap_argv = vec!["--die-with-parent".to_owned()];
+        let (program, args) = sandbox_program(None, &bwrap_argv);
+        assert_eq!(program, std::path::Path::new("/usr/bin/bwrap"));
+        assert_eq!(args, ["--die-with-parent"]);
+        let (program, args) = sandbox_program(Some(std::path::Path::new("/lease")), &bwrap_argv);
+        assert_eq!(program, std::path::Path::new(crate::plan::SHIM_HOST));
+        assert_eq!(
+            args,
+            [
+                "windows-audio",
+                "--graph",
+                "/lease",
+                "--",
+                "/usr/bin/bwrap",
+                "--die-with-parent"
+            ]
+        );
+    }
 
     #[test]
     fn execution_identity_is_fixed_and_fails_closed_when_changed() {

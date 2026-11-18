@@ -4076,7 +4076,10 @@ impl FrameHarness {
                 &bindings,
                 &text_loci,
                 viewport,
-                "retained-primary",
+                ("retained-primary", &|id| {
+                    crate::widget::find_resource(self.root.as_ref(), &self.state.doc, id)
+                        .map(|resource| resource.label)
+                }),
                 interaction_now,
             );
         }

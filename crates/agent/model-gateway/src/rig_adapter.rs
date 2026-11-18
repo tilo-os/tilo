@@ -138,6 +138,9 @@ struct GatewayHttp {
     failure: Arc<Mutex<Option<ProviderFailure>>>,
     status: Arc<Mutex<Option<u16>>>,
     unary_body: Arc<Mutex<Option<String>>>,
+    /// Where the moments the provider's headers and its first bytes come
+    /// are noted, for the call's timing line.
+    signs: Arc<Signs>,
 }
 
 impl GatewayHttp {
@@ -205,6 +208,7 @@ impl GatewayHttp {
             );
             send_failure(&error)
         })?;
+        self.signs.headers_came();
         let status = response.status();
         *self
             .status
@@ -364,6 +368,7 @@ impl HttpClientExt for GatewayHttp {
             let body: LazyBody<U> = Box::pin(async move {
                 let mut body = Vec::new();
                 while let Some(chunk) = response.chunk().await.map_err(http::Error::instance)? {
+                    this.signs.event_came();
                     if body.len().saturating_add(chunk.len()) > MAX_STREAM_BYTES {
                         return Err(http::Error::instance(std::io::Error::other(
                             "provider response exceeds limit",
@@ -416,8 +421,9 @@ impl HttpClientExt for GatewayHttp {
             let (send, receive) = tokio::sync::mpsc::channel(2);
             let (done, receiver) = tokio::sync::oneshot::channel();
             let protocol = self.profile.protocol;
+            let signs = Arc::clone(&self.signs);
             let task = tokio::spawn(async move {
-                let result = drain_stream(response, protocol, send).await;
+                let result = drain_stream(response, protocol, send, &signs).await;
                 let _ = done.send(result);
             });
             *self.stream_end.lock().await = Some(StreamDrain { receiver, task });
@@ -434,6 +440,7 @@ async fn drain_stream(
     mut response: reqwest::Response,
     protocol: ProviderProtocol,
     send: tokio::sync::mpsc::Sender<Bytes>,
+    signs: &Signs,
 ) -> Result<(), String> {
     let mut tail = SseTail::default();
     let mut utf8 = Vec::new();
@@ -443,6 +450,7 @@ async fn drain_stream(
         .await
         .map_err(|_| "provider stream failed")?
     {
+        signs.event_came();
         read = read.saturating_add(chunk.len());
         if read > MAX_STREAM_BYTES {
             return Err("provider response exceeds limit".into());
@@ -548,6 +556,9 @@ pub(super) async fn legacy(
         failure: Arc::default(),
         status: Arc::default(),
         unary_body: Arc::default(),
+        signs: streaming
+            .as_ref()
+            .map_or_else(Arc::default, |(_, timing, _)| Arc::clone(&timing.signs)),
         profile_headers: Vec::new(),
     };
     let original = transport.unary_body.clone();
@@ -967,6 +978,7 @@ pub(super) async fn host_complete(
             failure: Arc::default(),
             status: Arc::default(),
             unary_body: Arc::default(),
+            signs: Arc::default(),
             profile_headers: Vec::new(),
         },
         secret,
@@ -1299,6 +1311,7 @@ pub(super) async fn complete_with(
         failure: Arc::default(),
         status: Arc::default(),
         unary_body: Arc::default(),
+        signs: Arc::clone(&timing.signs),
         profile_headers: Vec::new(),
     };
     // Why the answer was not used, for the timing line: the person reads
