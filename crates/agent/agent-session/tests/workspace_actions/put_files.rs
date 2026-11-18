@@ -610,3 +610,7 @@ async fn a_put_file_goes_into_the_tree_a_computer_wrote_first() {
 /// Files' verbs by a path in the workspace, on the tree the workspace's server keeps.
 #[path = "put_files_by_path.rs"]
 mod by_path;
+
+/// The workspace's files as its listing offers them to an agent.
+#[path = "files_listed.rs"]
+mod files_listed;

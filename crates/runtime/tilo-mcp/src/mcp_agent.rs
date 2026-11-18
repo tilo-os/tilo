@@ -1524,10 +1524,15 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // How a program writes what this lists: the listing is the one a program reads, and a
         // path names what it lists the same way, so the path is resolved by it too.
         let forms = self.program_forms().await.unwrap_or_default();
-        let resolved = match self.resolve_with(&parsed, Some(&forms)).await? {
-            Ok(resolved) => resolved,
-            Err(note) => return Ok(Reply::ok(note)),
-        };
+        let resolved =
+            if names_files(&parsed.app) && parsed.segments.is_empty() && parsed.action.is_none() {
+                self.files_resolved(&parsed, &forms).await?
+            } else {
+                match self.resolve_with(&parsed, Some(&forms)).await? {
+                    Ok(resolved) => resolved,
+                    Err(note) => return Ok(Reply::ok(note)),
+                }
+            };
         self.acted_in(&resolved.provider, &resolved.app_id);
         let called = |action: &ActionDescriptor| forms.called(action, &resolved.app_id);
         if let Some(action) = &parsed.action {

@@ -43,14 +43,9 @@ impl Worker {
         if needle.is_empty() || most == 0 {
             return Vec::new();
         }
-        let Some(workspace) = self.workspaces.get(&workspace_id) else {
+        let Some(tree) = self.workspace_tree(workspace_id, cluster_id) else {
             return Vec::new();
         };
-        let engine = workspace.peer.engine();
-        let Some(records) = tree_records(engine, cluster_id) else {
-            return Vec::new();
-        };
-        let tree = records.tree();
         let store = self.workspace_content(workspace_id);
         let files = files_of(&tree, |node| {
             let store = store.as_ref()?;
@@ -64,6 +59,19 @@ impl Worker {
             String::from_utf8(file).ok()
         });
         ranked(files, &needle, most)
+    }
+}
+
+impl Worker {
+    /// The tree of `workspace_id`'s folder (the session `cluster_id`) as this replica holds
+    /// it: the tree's own record and each chunk of it held here. `None` while it holds none.
+    pub(super) fn workspace_tree(
+        &self,
+        workspace_id: WorkspaceId,
+        cluster_id: &str,
+    ) -> Option<Tree> {
+        let workspace = self.workspaces.get(&workspace_id)?;
+        Some(tree_records(workspace.peer.engine(), cluster_id)?.tree())
     }
 }
 

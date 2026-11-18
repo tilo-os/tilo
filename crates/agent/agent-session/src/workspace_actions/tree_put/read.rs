@@ -212,7 +212,11 @@ impl Worker {
         if !self.may_on_tree(workspace_id, caller, &[]) {
             return Err(Outcome::Rejected(ActionCallError::NotPermitted));
         }
-        let arguments = invoke_arguments(&request.argument);
+        let mut arguments = invoke_arguments(&request.argument);
+        // A file a listing offered names itself: its read needs no path besides.
+        if let Some(path) = fs_protocol::tree::file_of_resource(&request.target.address.resource) {
+            arguments.insert("file".to_owned(), Value::String(path.to_owned()));
+        }
         if arguments.contains_key("device") {
             return Err(refused(
                 "a path in the workspace names no device: a device's own disk is read by Files \

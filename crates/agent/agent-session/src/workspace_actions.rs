@@ -58,6 +58,7 @@ mod change;
 mod content;
 mod direct;
 mod feedback;
+mod files_listing;
 mod follow;
 mod found;
 mod found_files;

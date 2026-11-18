@@ -1,4 +1,4 @@
-//! The apps a workspace has installed, as `tilo_ls` lists them.
+//! The apps a workspace has installed, as `tilo_ls` lists them, and the workspace's folder.
 
 use std::fmt::Write as _;
 
@@ -113,5 +113,30 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             reply.structured = Some(answer);
         }
         Ok(reply)
+    }
+
+    /// What `tilo_ls files` lists: the workspace's folder as the workspace's own listing offers
+    /// it, its files by their paths, each with Files' `read-text` on it; not the apps it offers to
+    /// open beside it. The folder is the workspace's, wherever its tree is kept, so it is listed
+    /// whether or not Files is open anywhere.
+    pub(super) async fn files_resolved(
+        &self,
+        parsed: &super::ParsedPath,
+        forms: &super::ProgramForms,
+    ) -> Result<super::Resolved, String> {
+        let provider = tilo_actions::remote::workspace_provider(&self.workspace);
+        let mut resolved = self
+            .resolve_in(
+                parsed,
+                fs_protocol::tree::FILES_APP.to_owned(),
+                provider,
+                true,
+                Some(forms),
+            )
+            .await?;
+        resolved
+            .children
+            .retain(|node| node.kind == tilo_actions::remote::FOUND_FILE);
+        Ok(resolved)
     }
 }

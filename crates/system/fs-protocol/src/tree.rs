@@ -148,6 +148,27 @@ pub const LIST: &str = "list";
 /// workspace, a page at a time.
 pub const READ_TEXT: &str = "read-text";
 
+/// What the resource a file of the workspace's folder is starts with: the file is named by its
+/// path in the workspace after it (`file:Tasks/12 Plan/notes.md`). A listing of the workspace
+/// offers each file as one, with [`READ_TEXT`] on it, so an agent that lists what the workspace
+/// holds sees its files and reads one by the row it was shown.
+pub const FILE_RESOURCE_PREFIX: &str = "file:";
+
+/// The resource the file at `path` in the workspace's folder is ([`FILE_RESOURCE_PREFIX`]).
+#[must_use]
+pub fn file_resource(path: &str) -> String {
+    format!("{FILE_RESOURCE_PREFIX}{}", path.trim_matches('/'))
+}
+
+/// The path in the workspace's folder the resource `resource` names, when it is a file's
+/// ([`file_resource`]).
+#[must_use]
+pub fn file_of_resource(resource: &str) -> Option<&str> {
+    resource
+        .strip_prefix(FILE_RESOURCE_PREFIX)
+        .filter(|path| !path.is_empty())
+}
+
 /// Whether `action` is one of the reads of a workspace's own folder by a path in the workspace
 /// ([`LIST`], [`READ_TEXT`]), which whoever holds its tree answers as it carries out
 /// [`TREE_VERBS`]: with no window, and with every device of its people off.

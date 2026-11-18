@@ -282,22 +282,34 @@ async fn a_devices_agent_keeps_a_folder_for_a_task_by_paths_in_the_workspace() {
 
 /// Ask the server's own action service for Files' `verb` on the folder of `workspace`, as
 /// `caller`: what it answered, or the words it refused with.
-async fn asked(
+pub(super) async fn asked(
     provider: &WorkspaceActionProvider,
     caller: &Caller,
     workspace: &str,
     verb: &str,
     arguments: Value,
 ) -> Result<Value, String> {
+    let target = RemoteActionTarget {
+        provider: tilo_actions::remote::workspace_provider(workspace),
+        address: ActionAddress {
+            resource: format!("app.{FILES_APP}"),
+            action: verb.to_owned(),
+        },
+    };
+    asked_of(provider, caller, target, arguments).await
+}
+
+/// Invoke `target` on the server's own action service as `caller`: what it answered, or the
+/// words it refused with.
+pub(super) async fn asked_of(
+    provider: &WorkspaceActionProvider,
+    caller: &Caller,
+    target: RemoteActionTarget,
+    arguments: Value,
+) -> Result<Value, String> {
     let request = InvokeRequest {
         invocation: InvocationId::new(),
-        target: RemoteActionTarget {
-            provider: tilo_actions::remote::workspace_provider(workspace),
-            address: ActionAddress {
-                resource: format!("app.{FILES_APP}"),
-                action: verb.to_owned(),
-            },
-        },
+        target,
         argument: InvokeArgument::Json(arguments.as_object().cloned().unwrap_or_default()),
         context: None,
         confirmation: None,
@@ -556,7 +568,7 @@ async fn with_no_page_open_the_server_keeps_a_folder_for_a_task_by_paths() {
 
 /// `bytes` put into the store of `workspace` through the server's own action service, as
 /// `caller`: the content's reference.
-async fn uploaded(
+pub(super) async fn uploaded(
     actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
     workspace: tilo_server_protocol::WorkspaceId,
     caller: &Caller,

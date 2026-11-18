@@ -35,9 +35,13 @@ mod write;
 /// Whether `target` is one of Files' verbs on the workspace's own folder, by a path in the
 /// workspace ([`by_path`]), which change its tree where it is kept; its `write-file` there
 /// ([`write`]), which writes a file into it; or one of its reads of that folder ([`read`]),
-/// which answer what the tree kept here holds.
+/// which answer what the tree kept here holds: by a path, or on a file a listing offered
+/// ([`tree::file_resource`]).
 pub(super) fn acts_on_tree(target: &tilo_actions::remote::RemoteActionTarget) -> bool {
     let action = target.address.action.as_str();
+    if tree::file_of_resource(&target.address.resource).is_some() {
+        return action == tree::READ_TEXT;
+    }
     target
         .address
         .resource
