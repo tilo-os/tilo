@@ -1,24 +1,19 @@
 # Identity signing boundary
 
 Tilo applications do not receive private identity material, and the launcher
-does not hold any. For each authored launch, `tilo-launcher` resolves the
-selected identity on the host and reads only its public fields
-(`runtime_identity::load_metadata_for_launch`): the record is validated as
-usual, but its secret provider is never contacted, so no secret is loaded. It
-opens exactly one Unix socket pair, serves that metadata on its end, and places
-the app end at file descriptor 15 (`TILO_IDENTITY_BROKER_FD`). That broker
-answers public metadata in frames of at most 4 MiB and refuses every `sign`: a
-root signature over the right 32 bytes is a device certificate or a revocation,
-so no application ever obtains one (`runtime_identity::broker::serve_metadata`).
-A store record whose key was never secured still fails the launch and names the
-Settings step that secures it.
-Application signatures come from the identity service (`tilo-identity`,
-file descriptor 31), which signs with this device's enrolled key and only under
-a grant naming the app, workspace and action. Read-only workspace participation gets
-no broker descriptor; the identity-service connection is still attached when the
-launch names a workspace, and its signing refuses without that grant. Managed
-(enrolled-agent) launches get no broker. Closing the application closes its
-authority.
+does not hold any. A launch that names a workspace is given one connection to
+the session's identity service (`tilo-identity`, file descriptor 31). The
+launcher writes the handshake naming the app and workspace before the sandbox
+starts, so an app cannot claim another package or workspace. Over that
+connection the app asks for public metadata, a certified collaboration-join
+proof and typed document operations, and the service signs with this device's
+enrolled key only under a grant naming the app, workspace and action. A launch
+that names no workspace gets no identity connection at all. An app that asks
+for a caller-chosen message is refused: a root signature over arbitrary bytes
+is a device certificate or a revocation, so no application ever obtains one.
+Read-only workspace participation gets the connection, whose signing refuses
+without the grant. Managed (enrolled-agent) launches get no identity
+connection. Closing the application closes its authority.
 
 ## Storage and migration
 
@@ -156,15 +151,15 @@ would pass its proof on; Tilo's bus clients open connections close-on-exec.
 ## Compatibility and limits
 
 `runtime_identity::load()` prefers the identity-service descriptor, then
-`TILO_IDENTITY_BROKER_FD`. The old `TILO_USER_IDENTITY` path remains for
-unsandboxed development, but the Tilo launcher never sets or mounts it. Existing
-application call sites keep the same `SigningIdentity` API.
+`TILO_USER_IDENTITY` for unsandboxed development, which the Tilo launcher
+never sets or mounts. Existing application call sites keep the same
+`SigningIdentity` API.
 
-Automated tests cover protocol bounds, the broker's refusal to sign with a root
-key, signature verification, one-shot file descriptor ownership, migration
-without secret bytes in metadata, symlink and permission refusal, duplicate
-imports, shared-secret removal, active/final record protections, and prevention
-of migration/chmod outside the canonical identity store.
+Automated tests cover protocol bounds, the service's refusal to sign with a
+root key, signature verification, one-shot file descriptor ownership,
+migration without secret bytes in metadata, symlink and permission refusal,
+duplicate imports, shared-secret removal, active/final record protections, and
+prevention of migration/chmod outside the canonical identity store.
 
 `runtime-identity`'s own test builds always use the file store. The store a
 real session chooses is proven by `crates/system/secret-service/tests/identity_ownership.rs`,

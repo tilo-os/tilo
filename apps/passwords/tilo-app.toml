@@ -43,8 +43,8 @@ secrets = "via-host"
 [sandbox.services]
 # The app's actions reach the shell over the workspace's broker: its window
 # publishes them there, and they are invoked back through it.
-collab = "optional@31"
-tilo-fs = "optional@31"
+collab = "optional@32"
+tilo-fs = "optional@32"
 # The window's bar shows the app's toolbar (ui::window_toolbar).
 shell-ui   = "optional@35"
 # The permission requests the messaging service makes for Messages.

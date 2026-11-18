@@ -25,11 +25,6 @@ pub enum Participation {
 }
 
 impl Participation {
-    /// Should the sandbox carry the user identity?
-    pub fn carries_identity(self) -> bool {
-        !matches!(self, Participation::ReadOnly)
-    }
-
     /// The value of `TILO_PARTICIPATION` inside the sandbox, if the mode is one worth telling the app
     /// about.
     pub fn env_value(self) -> Option<&'static str> {

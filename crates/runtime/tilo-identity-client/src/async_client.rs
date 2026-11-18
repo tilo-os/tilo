@@ -285,7 +285,7 @@ mod tests {
         // The async client speaks the same bytes as the blocking one: a
         // little-endian `u32` length, then postcard.
         {
-            const REQUEST: [u8; 7] = [3, 0, 0, 0, 2, 1, b'w'];
+            const REQUEST: [u8; 7] = [3, 0, 0, 0, 1, 1, b'w'];
             let (mut identity, mut server) = connected(tilo_test_env::hang_bound()).await;
             let broker = tokio::spawn(async move {
                 let mut request = [0_u8; REQUEST.len()];

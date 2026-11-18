@@ -2,7 +2,7 @@ use launcher::{
     owned_service::{
         CaptureAdmission, ServiceAuthority, ServiceCancellation, ServiceLaunch, ServiceLeaseKey,
     },
-    run::{IdentitySource, LaunchMode, RunOptions},
+    run::{LaunchMode, RunOptions},
 };
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
@@ -310,7 +310,6 @@ fn signed_capture_worker_confines_source_and_output_and_reaps_on_cancel() {
             expected_package_hash: Some(installed.package_id_hex),
             app_id: Some(PACKAGE.into()),
             no_services: true,
-            identity: IdentitySource::None,
             data_home: Some(data.clone()),
             mode: LaunchMode::Service {
                 passthrough_argv: vec![
@@ -781,7 +780,6 @@ fn original_reader_launch(
             expected_package_hash: Some(installed.package_id_hex.clone()),
             app_id: Some(PACKAGE.into()),
             data_home: Some(data.to_owned()),
-            identity: IdentitySource::None,
             no_services: true,
             ..Default::default()
         },

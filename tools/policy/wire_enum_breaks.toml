@@ -281,7 +281,7 @@ reason = "`ChannelKeys` is renamed `GroupKeys` at the same index: postcard write
 [[break]]
 file = "crates/runtime/tilo-identity-client/src/lib.rs"
 enum = "Request"
-reason = "`ChannelKeys` is renamed `GroupKeys` at the same index: postcard writes no names, so the bytes read the same"
+reason = "`Sign` is gone, so the collaboration requests move down one place; the identity service and every app are one build that ships together, no identity-service bytes are stored, and the bytes of a running connection die with it"
 
 [[break]]
 file = "crates/runtime/tilo-identity-client/src/lib.rs"

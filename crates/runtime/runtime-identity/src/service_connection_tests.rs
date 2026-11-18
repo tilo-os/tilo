@@ -78,23 +78,24 @@ tilo_test_env::scenario! {
                 },
             )
             .unwrap();
-            let mut messages = Vec::new();
+            let mut workspaces = Vec::new();
             for _ in 0..2 {
-                let wire::Request::Sign { action, message } = read_frame(&mut server).unwrap() else {
+                let wire::Request::CollaborationJoin { workspace_id } =
+                    read_frame(&mut server).unwrap()
+                else {
                     panic!("live SDK consumers must share the existing metadata connection");
                 };
-                assert_eq!(action, "document.save");
-                messages.push(message);
+                workspaces.push(workspace_id);
                 write_frame(&mut server, &wire::Response::Signature(vec![7; 64])).unwrap();
             }
-            messages.sort();
-            assert_eq!(messages, [b"first".to_vec(), b"second".to_vec()]);
+            workspaces.sort();
+            assert_eq!(workspaces, ["first".to_owned(), "second".to_owned()]);
         });
         let first = load_from_service(fd).unwrap();
         let second = load_from_service(fd).unwrap();
         std::thread::scope(|scope| {
-            let one = scope.spawn(|| first.sign_for("document.save", b"first").unwrap());
-            let two = scope.spawn(|| second.sign_for("document.save", b"second").unwrap());
+            let one = scope.spawn(|| first.sign_collaboration_join("first").unwrap());
+            let two = scope.spawn(|| second.sign_collaboration_join("second").unwrap());
             assert_eq!(one.join().unwrap(), [7; 64]);
             assert_eq!(two.join().unwrap(), [7; 64]);
         });

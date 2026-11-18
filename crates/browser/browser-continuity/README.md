@@ -17,5 +17,5 @@ Reviewed account-session imports use the Browser app's optional `secrets`
 capability; ordinary browsing requires only its existing WebView/network
 capabilities. Source selection and profile storage still require their typed,
 host-admitted grants. A path or session identifier alone grants no authority.
-Public avatars come only from the launcher's bound identity broker and never
+Public avatars come only from the workspace identity service and never
 trigger account-name discovery, config fallback or signing-share unlock.

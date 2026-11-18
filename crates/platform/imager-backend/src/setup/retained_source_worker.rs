@@ -12,7 +12,7 @@ use launcher::{
         self, RetainedIoAdmission, RetainedIoAuthority, RetainedIoCredentials, RetainedNativeOwner,
         ServiceAuthority, ServiceCancellation, ServiceLaunch, ServiceLeaseKey, SupervisedRun,
     },
-    run::{IdentitySource, LaunchMode, RunOptions},
+    run::{LaunchMode, RunOptions},
 };
 use std::{
     ffi::OsStr,
@@ -163,7 +163,6 @@ impl RetainedSourceWorker {
                 expected_package_hash: Some(service.package_hash.clone()),
                 app_id: Some(owned_service::RETAINED_IO_PACKAGE_ID.into()),
                 data_home: Some(working.path().to_path_buf()),
-                identity: IdentitySource::None,
                 mode: LaunchMode::Service {
                     passthrough_argv: vec![
                         if home {

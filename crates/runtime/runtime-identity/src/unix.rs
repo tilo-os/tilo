@@ -20,8 +20,6 @@ use zeroize::Zeroizing;
 
 #[path = "backup.rs"]
 mod backup;
-#[path = "broker.rs"]
-pub mod broker;
 #[path = "recovery_words.rs"]
 mod recovery_words;
 #[path = "secure_store.rs"]
@@ -105,8 +103,8 @@ pub fn secret_service_unavailable_error() -> io::Error {
     }
 }
 
-/// Legacy unsandboxed-development path. The Tilo launcher uses
-/// [`broker::BROKER_ENV_VAR`] and never sets this for packaged apps.
+/// Legacy unsandboxed-development path: a record named by the environment.
+/// Packaged apps get the workspace identity service instead.
 pub const IDENTITY_ENV_VAR: &str = "TILO_USER_IDENTITY";
 /// Opaque locator stored in public identity metadata. It never contains key
 /// bytes or a host filesystem path.
@@ -427,8 +425,7 @@ fn import_identity_unlocked(
 }
 
 /// Move one record's inline key into its secret provider. Idempotent. Only
-/// provisioning and Settings secure records; an app launch reads only their
-/// public fields through [`load_metadata_for_launch`] and never writes the store.
+/// provisioning and Settings secure records; an app launch never writes the store.
 pub fn secure_identity(dir: &std::path::Path, id: &str) -> io::Result<KeyProtection> {
     let _lock = IdentityLock::acquire(dir)?;
     let path = identity_path(dir, id)?;
@@ -905,9 +902,6 @@ enum LoadFailure {
     JsonMalformed(serde_json::Error),
     UnknownSchemaVersion(u32),
     SecuredRecordNeedsProvider,
-    /// A store record still carries its signing key inline: it was never
-    /// secured by provisioning.
-    KeyNotSecured,
     SecretSizeMismatch {
         got: usize,
     },
@@ -929,11 +923,6 @@ impl std::fmt::Display for LoadFailure {
             Self::SecuredRecordNeedsProvider => {
                 write!(f, "secured identity record needs its host secret provider")
             }
-            Self::KeyNotSecured => write!(
-                f,
-                "this identity's signing key is not secured yet, so apps cannot use it; \
-                 choose \"Protect now\" for it in Settings > Users, then open the app again"
-            ),
             Self::SecretSizeMismatch { got } => {
                 write!(f, "identity secret_bytes must be 32 bytes, got {got}")
             }
@@ -961,7 +950,6 @@ impl LoadFailure {
             LoadFailure::JsonMalformed(_)
             | LoadFailure::UnknownSchemaVersion(_)
             | LoadFailure::SecuredRecordNeedsProvider
-            | LoadFailure::KeyNotSecured
             | LoadFailure::SecretSizeMismatch { .. }
             | LoadFailure::PublicKeyMismatch { .. } => io::ErrorKind::InvalidData,
         };
@@ -990,18 +978,19 @@ pub struct SigningIdentity {
 
 #[allow(
     clippy::large_enum_variant,
-    reason = "Local carries a bare signing key while Broker/ActionBroker carry a live socket \
-              behind a Mutex; boxing the socket variants would touch every match arm across \
-              this file (11 call sites) for a few dozen bytes of stack that never round-trips \
-              through a hot path — this type is constructed once per identity, not per message"
+    reason = "Local carries a bare signing key while Service carries a live socket behind a \
+              Mutex; boxing the socket variants would touch every match arm across this file \
+              (11 call sites) for a few dozen bytes of stack that never round-trips through a \
+              hot path — this type is constructed once per identity, not per message"
 )]
 enum SigningSource {
     Local(Option<SigningKey>),
     /// Restored device-local FROST share. It stays inside the host and is
     /// usable only by the trusted quorum coordinator, never exported to apps.
     LocalThreshold(Mutex<ThresholdIdentity>),
-    Broker(Arc<BrokerSigningIdentity>),
-    ActionBroker(Arc<BrokerSigningIdentity>),
+    /// The workspace identity service, connected over the launcher's inherited
+    /// descriptor.
+    Service(Arc<BrokerSigningIdentity>),
 }
 
 #[allow(
@@ -1173,10 +1162,14 @@ impl SigningIdentity {
     /// [`NotAvailable::ConnectionFailed`] — threshold signing needs the
     /// multi-device FROST ceremony via `threshold-identity` instead.
     ///
+    /// The workspace identity service never signs caller-chosen messages, so
+    /// a service-backed identity refuses here; ask it for the specific
+    /// operation instead.
+    ///
     /// # Errors
     ///
-    /// Returns [`NotAvailable::ConnectionFailed`] in threshold mode, or if
-    /// signing through the broker fails.
+    /// Returns [`NotAvailable::ConnectionFailed`] in threshold mode, for a
+    /// service-backed identity, or if signing fails.
     pub fn sign(&self, message: &[u8]) -> Result<[u8; 64], NotAvailable> {
         match &self.source {
             SigningSource::Local(Some(sk)) => Ok(sk.sign(message).to_bytes()),
@@ -1191,8 +1184,10 @@ impl SigningIdentity {
                     "threshold signature is awaiting approval from another enrolled device",
                 )))
             }
-            SigningSource::Broker(stream) => stream.sign(message),
-            SigningSource::ActionBroker(stream) => stream.sign_for("generic", message),
+            SigningSource::Service(_) => Err(NotAvailable::ConnectionFailed(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "generic signing is not available to application connections",
+            ))),
         }
     }
 
@@ -1220,26 +1215,9 @@ impl SigningIdentity {
         }
     }
 
-    /// Ask the workspace identity broker to sign one named app action. The
-    /// shell binds the package and workspace before the app inherits this
-    /// connection, then evaluates the exact action capability.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable::ConnectionFailed`] if signing through the
-    /// action broker fails, or whatever [`Self::sign`] can return when this
-    /// identity has no action broker connection.
-    pub fn sign_for(&self, action: &str, message: &[u8]) -> Result<[u8; 64], NotAvailable> {
-        match &self.source {
-            SigningSource::ActionBroker(stream) => stream.sign_for(action, message),
-            _ => self.sign(message),
-        }
-    }
-
-    /// Prove that this process can ask the workspace-bound identity broker to
-    /// use the certified device key. Unlike [`Self::sign_for`], this is not an
-    /// application action grant: the launcher has already bound the broker
-    /// connection to exactly one workspace, and the broker rejects any other
+    /// Prove that this process can ask the workspace identity service to use
+    /// the certified device key. The launcher has already bound the service
+    /// connection to exactly one workspace, and the service rejects any other
     /// workspace id before signing the fixed collaboration-join domain.
     ///
     /// # Errors
@@ -1249,7 +1227,7 @@ impl SigningIdentity {
     /// longer enrolled, or the signing service is unavailable.
     pub fn sign_collaboration_join(&self, workspace_id: &str) -> Result<[u8; 64], NotAvailable> {
         match &self.source {
-            SigningSource::ActionBroker(stream) => stream.sign_collaboration_join(workspace_id),
+            SigningSource::Service(stream) => stream.sign_collaboration_join(workspace_id),
             _ => self.sign(&collaboration_join_signing_bytes(workspace_id)),
         }
     }
@@ -1269,15 +1247,15 @@ impl SigningIdentity {
         known_generation: u64,
     ) -> Result<crate::wire::ChannelKeysReply, NotAvailable> {
         match &self.source {
-            SigningSource::ActionBroker(stream) => {
+            SigningSource::Service(stream) => {
                 stream.group_keys(workspace_id, app_id, record_id, known_generation)
             }
-            SigningSource::Local(_)
-            | SigningSource::LocalThreshold(_)
-            | SigningSource::Broker(_) => Err(NotAvailable::ConnectionFailed(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "channel keys require the workspace identity service",
-            ))),
+            SigningSource::Local(_) | SigningSource::LocalThreshold(_) => {
+                Err(NotAvailable::ConnectionFailed(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "channel keys require the workspace identity service",
+                )))
+            }
         }
     }
 
@@ -1300,15 +1278,15 @@ impl SigningIdentity {
         unsigned_op: &[u8],
     ) -> Result<[u8; 64], NotAvailable> {
         match &self.source {
-            SigningSource::ActionBroker(stream) => {
+            SigningSource::Service(stream) => {
                 stream.sign_collaboration_op(workspace_id, app_id, record_id, unsigned_op)
             }
-            SigningSource::Local(_)
-            | SigningSource::LocalThreshold(_)
-            | SigningSource::Broker(_) => Err(NotAvailable::ConnectionFailed(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "certified collaboration operations require the workspace identity service",
-            ))),
+            SigningSource::Local(_) | SigningSource::LocalThreshold(_) => {
+                Err(NotAvailable::ConnectionFailed(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "certified collaboration operations require the workspace identity service",
+                )))
+            }
         }
     }
 
@@ -1361,23 +1339,20 @@ impl SigningIdentity {
     }
 }
 
-/// Load the user's identity from the inherited broker, falling back to the
-/// legacy [`IDENTITY_ENV_VAR`] development path. Returns
+/// Load the user's identity from the inherited workspace identity service,
+/// falling back to the legacy [`IDENTITY_ENV_VAR`] development path. Returns
 /// `Err(NotAvailable::ServiceFdMissing)` when neither is present,
 /// `Err(NotAvailable::ConnectionFailed(_))` when the file is missing,
 /// unreadable, or malformed, and `Ok(SigningIdentity)` on success.
 ///
 /// # Errors
 ///
-/// Returns [`NotAvailable::ServiceFdMissing`] when neither the broker nor
+/// Returns [`NotAvailable::ServiceFdMissing`] when neither the service nor
 /// [`IDENTITY_ENV_VAR`] is present, or [`NotAvailable::ConnectionFailed`]
 /// when the identity file is missing, unreadable, or malformed.
 pub fn load() -> Result<SigningIdentity, NotAvailable> {
     if let Some(fd) = runtime_portal::service_fd(IDENTITY_SERVICE) {
         return load_from_service(fd);
-    }
-    if std::env::var_os(broker::BROKER_ENV_VAR).is_some() {
-        return broker::connect_from_env();
     }
     let path_str = env::var(IDENTITY_ENV_VAR).map_err(|_| NotAvailable::ServiceFdMissing)?;
     if path_str.is_empty() {
@@ -1386,11 +1361,11 @@ pub fn load() -> Result<SigningIdentity, NotAvailable> {
     load_from_path(PathBuf::from(path_str))
 }
 
-/// The public fields of the person's identity: the launcher's broker or the
-/// identity service ([`tilo_identity_client::load_metadata`]), else a record
-/// named by [`IDENTITY_ENV_VAR`], read without contacting its secret provider,
-/// so a caller that only shows who this is never waits on (or prompts for)
-/// the system secret store.
+/// The public fields of the person's identity: the workspace identity service
+/// ([`tilo_identity_client::load_metadata`]), else a record named by
+/// [`IDENTITY_ENV_VAR`], read without contacting its secret provider, so a
+/// caller that only shows who this is never waits on (or prompts for) the
+/// system secret store.
 ///
 /// # Errors
 ///
@@ -1412,10 +1387,10 @@ fn load_from_service(fd: std::os::fd::RawFd) -> Result<SigningIdentity, NotAvail
     // SAFETY: the launcher retains the validated inherited service descriptor.
     let identity =
         tilo_identity_client::inherited::connect_service(unsafe { BorrowedFd::borrow_raw(fd) })?;
-    Ok(from_broker(identity))
+    Ok(from_service(identity))
 }
 
-fn from_broker(identity: Arc<BrokerSigningIdentity>) -> SigningIdentity {
+fn from_service(identity: Arc<BrokerSigningIdentity>) -> SigningIdentity {
     let metadata = identity.metadata();
     SigningIdentity {
         profile_photo: metadata.profile_photo().cloned(),
@@ -1428,7 +1403,7 @@ fn from_broker(identity: Arc<BrokerSigningIdentity>) -> SigningIdentity {
         total_shares: metadata.total_shares(),
         share_index: metadata.share_index(),
         single_device: metadata.is_single_device(),
-        source: SigningSource::ActionBroker(identity),
+        source: SigningSource::Service(identity),
     }
 }
 
@@ -1494,41 +1469,6 @@ fn load_record(
         .load(&reference.locator)
         .map_err(|e| LoadFailure::ReadFailed(e).into_not_available())?;
     identity_from_record(record, Some(secret.as_slice()))
-}
-
-/// Read a record from the identity store for an app launch: its public
-/// fields only, strictly read-only, never contacting its secret provider.
-///
-/// A launch holds no secret. The per-launch broker answers metadata and
-/// refuses every signature, and application signatures come from the
-/// identity service, so loading the person's key here would only leave it in
-/// launcher memory for the app's lifetime.
-///
-/// The record must still be in the form provisioning leaves it: a secured
-/// record naming a secret provider this session can resolve, or a joined
-/// device's public record. One still carrying its key inline is refused,
-/// never rewritten: securing it belongs to provisioning and Settings, not to
-/// a launch, and refusing it here is how an unsecured record gets noticed.
-///
-/// # Errors
-///
-/// As [`load_metadata_from_path`]; [`NotAvailable::ConnectionFailed`] naming
-/// Settings when the record's key is not secured, and when no provider this
-/// session has could hold it.
-pub fn load_metadata_for_launch(path: &std::path::Path) -> Result<IdentityMetadata, NotAvailable> {
-    let bytes =
-        read_record_bytes(path).map_err(|e| LoadFailure::ReadFailed(e).into_not_available())?;
-    let record = parse_record(&bytes)?;
-    match record.protection() {
-        KeyProtection::LegacyPlaintext => Err(LoadFailure::KeyNotSecured.into_not_available()),
-        KeyProtection::Unavailable => {
-            Err(LoadFailure::SecuredRecordNeedsProvider.into_not_available())
-        }
-        KeyProtection::SecretService
-        | KeyProtection::BrokerFile
-        | KeyProtection::HardwareBacked
-        | KeyProtection::DeviceCertificate => Ok(metadata_from_record(record)),
-    }
 }
 
 /// Read the public presentation and quorum fields of a private identity
@@ -2200,9 +2140,7 @@ mod tests {
 
     fn clear_env() -> tilo_test_env::ScopedEnv {
         let mut scoped = tilo_test_env::ScopedEnv::new();
-        scoped
-            .remove(IDENTITY_ENV_VAR)
-            .remove(broker::BROKER_ENV_VAR);
+        scoped.remove(IDENTITY_ENV_VAR);
         scoped
     }
 
@@ -2946,156 +2884,6 @@ mod tests {
         assert!(imported.is_err(), "{imported:?}");
         assert!(!dir.join("personal.json").exists());
         assert!(!dir.join("secrets").exists(), "a file fallback was written");
-    }
-
-    #[test]
-    fn a_launch_refuses_an_unsecured_record_without_rewriting_it() {
-        let dir = tempfile::tempdir().unwrap();
-        ensure_private_dir(dir.path()).unwrap();
-        let bytes = record_bytes("Ada", 27);
-        let path = dir.path().join("primary.json");
-        write_private_atomic(&path, &bytes).unwrap();
-
-        let Err(error) = load_metadata_for_launch(&path) else {
-            panic!("an inline key must be refused");
-        };
-        assert!(error.to_string().contains("Settings > Users"), "{error}");
-        assert_eq!(fs::read(&path).unwrap(), bytes);
-        assert!(!dir.path().join("secrets").exists());
-        assert!(!dir.path().join(LOCK_FILE).exists());
-
-        secure_identity_with_provider(dir.path(), "primary", &BrokerFileProvider::new(dir.path()))
-            .unwrap();
-        assert!(load_metadata_for_launch(&path).is_ok());
-    }
-
-    fn metadata_of(identity: &SigningIdentity) -> IdentityMetadata {
-        IdentityMetadata {
-            profile_photo: identity.profile_photo().cloned(),
-            display_name: identity.display_name().to_owned(),
-            avatar_color: identity.avatar_color(),
-            group_public_key: identity.group_public_key(),
-            threshold: identity.threshold(),
-            total_shares: identity.total_shares(),
-            share_index: identity.share_index(),
-            single_device: identity.is_single_device(),
-        }
-    }
-
-    fn remove_secret_files(dir: &std::path::Path) -> usize {
-        let files: Vec<_> = fs::read_dir(dir.join("secrets"))
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .collect();
-        for file in &files {
-            fs::remove_file(file).unwrap();
-        }
-        files.len()
-    }
-
-    fn rewrite_record(path: &std::path::Path, edit: impl FnOnce(&mut serde_json::Value)) {
-        let mut record: serde_json::Value =
-            serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-        edit(&mut record);
-        write_private_atomic(path, &serde_json::to_vec(&record).unwrap()).unwrap();
-    }
-
-    tilo_test_env::scenario! {
-        fn a_launch_reads_public_fields_without_the_secret_provider;
-
-        phase launch_metadata_equals_the_full_records_public_fields;
-        // phase: a_launch_succeeds_with_the_secret_absent_from_its_provider
-        // The secret is deleted from its provider: a load that touched the
-        // provider would fail, so a launch that still answers never read it.
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = import_identity_with_provider(
-                dir.path(),
-                "primary",
-                &record_bytes("Ada", 61),
-                &BrokerFileProvider::new(dir.path()),
-            )
-            .unwrap();
-            let full = metadata_of(&load_from_path(path.clone()).unwrap());
-            assert!(full.single_device);
-            assert_eq!(load_metadata_for_launch(&path).unwrap(), full);
-
-            assert_eq!(remove_secret_files(dir.path()), 1);
-            assert!(
-                load_from_path(path.clone()).is_err(),
-                "the secret is gone from its provider"
-            );
-            assert_eq!(load_metadata_for_launch(&path).unwrap(), full);
-        }
-
-        phase a_secret_service_record_launches_without_a_lookup;
-        // No Secret Service answers in a test, and none holds this locator.
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = import_identity_with_provider(
-                dir.path(),
-                "primary",
-                &record_bytes("Ada", 62),
-                &BrokerFileProvider::new(dir.path()),
-            )
-            .unwrap();
-            let full = metadata_of(&load_from_path(path.clone()).unwrap());
-            remove_secret_files(dir.path());
-            rewrite_record(&path, |record| {
-                record["secret_ref"]["backend"] = "secret-service-v1".into();
-                record["secret_ref"]["locator"] = "absent-from-every-store".into();
-            });
-            assert_eq!(load_metadata_for_launch(&path).unwrap(), full);
-        }
-
-        phase a_record_no_session_provider_can_hold_still_fails_the_launch;
-        {
-            for backend in ["tpm2-sealed-v1", "unknown-backend"] {
-                let dir = tempfile::tempdir().unwrap();
-                let path = import_identity_with_provider(
-                    dir.path(),
-                    "primary",
-                    &record_bytes("Ada", 63),
-                    &BrokerFileProvider::new(dir.path()),
-                )
-                .unwrap();
-                rewrite_record(&path, |record| {
-                    record["secret_ref"]["backend"] = backend.into();
-                });
-                let Err(error) = load_metadata_for_launch(&path) else {
-                    panic!("{backend}: a record with no reachable provider must not launch");
-                };
-                assert!(error.to_string().contains("secret provider"), "{error}");
-            }
-        }
-
-        phase a_secured_record_without_a_reference_fails_the_launch;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = import_identity_with_provider(
-                dir.path(),
-                "primary",
-                &record_bytes("Ada", 64),
-                &BrokerFileProvider::new(dir.path()),
-            )
-            .unwrap();
-            rewrite_record(&path, |record| {
-                record.as_object_mut().unwrap().remove("secret_ref");
-            });
-            assert!(load_metadata_for_launch(&path).is_err());
-        }
-
-        phase a_joined_devices_public_record_launches;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            ensure_private_dir(dir.path()).unwrap();
-            let path = dir.path().join("identity-joined.json");
-            let record = public_member_record("Member", [1, 2, 3], [9; 32]).unwrap();
-            write_private_atomic(&path, &record).unwrap();
-            let full = metadata_of(&load_from_path(path.clone()).unwrap());
-            assert!(!full.single_device);
-            assert_eq!(load_metadata_for_launch(&path).unwrap(), full);
-        }
     }
 
     tilo_test_env::scenario! {

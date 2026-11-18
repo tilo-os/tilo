@@ -30,7 +30,7 @@ use crate::setup::home_capture::{
 };
 use launcher::{
     owned_service::{self, ServiceLaunch, ServiceLeaseKey, SupervisedRun},
-    run::{IdentitySource, LaunchMode, RunOptions},
+    run::{LaunchMode, RunOptions},
 };
 use std::{
     os::unix::fs::PermissionsExt,
@@ -233,7 +233,6 @@ pub(in crate::setup::home_capture) fn launch<O: OriginalWorkerOwner>(
                 mode: LaunchMode::Service {
                     passthrough_argv: Vec::new(),
                 },
-                identity: IdentitySource::None,
                 ..RunOptions::default()
             },
         },

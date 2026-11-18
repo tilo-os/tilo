@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 use desktop_entry::launch::LaunchEnv;
 use launcher::landlock_shim::{SANDBOX_EXEC_SUBCOMMAND, run_sandbox_exec};
 use launcher::launch_hold::{LAUNCH_REGISTRATION_FD_ENV, LAUNCH_REGISTRATION_STDIN_ENV};
-use launcher::run::{IdentitySource, LaunchMode, RunOptions, launch_manifest, run_manifest};
+use launcher::run::{LaunchMode, RunOptions, launch_manifest, run_manifest};
 
 fn wait_for_registration_fd(
     fd: RawFd,
@@ -121,9 +121,6 @@ enum Cmd {
         /// App id the caller launched; must equal the manifest's package id.
         #[arg(long)]
         app_id: Option<String>,
-        /// Exact host identity record selected for this workspace.
-        #[arg(long)]
-        identity: Option<PathBuf>,
         /// The DRM render node the compositor renders on.
         #[arg(long)]
         render_node: Option<PathBuf>,
@@ -474,7 +471,6 @@ fn run_cli_args(command: Cmd) -> Option<RunCliArgs> {
         file_locations,
         action_authority,
         app_id,
-        identity,
         render_node,
         open,
         open_uri,
@@ -506,7 +502,6 @@ fn run_cli_args(command: Cmd) -> Option<RunCliArgs> {
         browser_continuity: file_locations.browser_continuity,
         action_authority: action_authority.action_authority,
         app_id,
-        identity,
         render_node,
         open,
         open_uri,
@@ -731,7 +726,6 @@ struct RunCliArgs {
     browser_continuity: Option<PathBuf>,
     action_authority: Option<PathBuf>,
     app_id: Option<String>,
-    identity: Option<PathBuf>,
     render_node: Option<PathBuf>,
     open: Option<PathBuf>,
     open_uri: Option<String>,
@@ -772,9 +766,6 @@ fn run_gui_command(
         allow_missing_runtime: args.allow_missing_runtime,
         allow_unsigned_runtime: args.allow_unsigned_runtime,
         require_runtime_publisher: args.require_runtime_publisher,
-        identity: args
-            .identity
-            .map_or(IdentitySource::UserStore, IdentitySource::Record),
         data_home: None,
         wayland_socket: args.wayland_socket,
         workspace_id: args.workspace_id,
@@ -1243,7 +1234,6 @@ fn run_installed(
         require_runtime_publisher: std::env::var("TILO_LAUNCHER_REQUIRE_RUNTIME_PUBLISHER")
             .ok()
             .filter(|s| !s.is_empty()),
-        identity: IdentitySource::UserStore,
         data_home: None,
         trusted_identities_host_path: None,
         retained_files_host_path: None,

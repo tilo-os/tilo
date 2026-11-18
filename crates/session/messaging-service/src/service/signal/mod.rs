@@ -91,7 +91,6 @@ fn installed_launch() -> Result<ServiceLaunch, SendError> {
                 passthrough_argv: vec![],
             },
             no_services: true,
-            identity: launcher::run::IdentitySource::None,
             ..launcher::run::RunOptions::default()
         },
     })

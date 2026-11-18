@@ -17,13 +17,7 @@ impl<T: Read + Write + Send> BrokerIo for T {}
 /// never prints the stream or the certificate.
 pub struct BrokerSigningIdentity {
     metadata: BrokerMetadata,
-    stream: Mutex<BrokerTransport>,
-}
-
-enum BrokerTransport {
-    Service(Box<dyn BrokerIo>),
-    #[cfg(unix)]
-    Legacy(std::os::unix::net::UnixStream),
+    stream: Mutex<Box<dyn BrokerIo>>,
 }
 
 /// Public identity metadata the host reports for a broker connection.
@@ -62,45 +56,12 @@ impl BrokerSigningIdentity {
         let metadata = BrokerMetadata::from_reply(read_frame(&mut stream)?)?;
         Ok(Self {
             metadata,
-            stream: Mutex::new(BrokerTransport::Service(Box::new(stream))),
+            stream: Mutex::new(Box::new(stream)),
         })
-    }
-
-    #[cfg(unix)]
-    pub(crate) fn from_legacy_stream(
-        stream: std::os::unix::net::UnixStream,
-        metadata: crate::legacy::PublicMetadata,
-    ) -> Self {
-        Self {
-            metadata: BrokerMetadata {
-                profile_photo: metadata.profile_photo,
-                display_name: metadata.display_name,
-                avatar_color: metadata.avatar_color,
-                group_public_key: metadata.group_public_key,
-                signing_public_key: metadata.group_public_key,
-                device_certificate: None,
-                threshold: metadata.threshold,
-                total_shares: metadata.total_shares,
-                share_index: metadata.share_index,
-                single_device: metadata.single_device,
-            },
-            stream: Mutex::new(BrokerTransport::Legacy(stream)),
-        }
     }
 
     pub fn metadata(&self) -> &BrokerMetadata {
         &self.metadata
-    }
-
-    pub fn sign(&self, message: &[u8]) -> Result<[u8; 64], NotAvailable> {
-        self.sign_for("generic", message)
-    }
-
-    pub fn sign_for(&self, action: &str, message: &[u8]) -> Result<[u8; 64], NotAvailable> {
-        self.signature(&wire::Request::Sign {
-            action: action.to_owned(),
-            message: message.to_vec(),
-        })
     }
 
     pub fn sign_collaboration_join(&self, workspace_id: &str) -> Result<[u8; 64], NotAvailable> {
@@ -152,14 +113,8 @@ impl BrokerSigningIdentity {
         let mut stream = self.stream.lock().map_err(|_| {
             NotAvailable::ConnectionFailed(io::Error::other("identity broker lock poisoned"))
         })?;
-        match &mut *stream {
-            BrokerTransport::Service(stream) => {
-                write_frame(&mut **stream, request)?;
-                read_frame(&mut **stream)
-            }
-            #[cfg(unix)]
-            BrokerTransport::Legacy(stream) => crate::legacy::exchange(stream, request),
-        }
+        write_frame(&mut **stream, request)?;
+        read_frame(&mut **stream)
     }
 }
 
@@ -493,7 +448,6 @@ mod tests {
         {
             let (stream, output) = channel(&[
                 metadata(),
-                wire::Response::Signature(vec![11; 64]),
                 wire::Response::Signature(vec![12; 64]),
                 wire::Response::Signature(vec![13; 64]),
             ]);
@@ -516,12 +470,6 @@ mod tests {
             );
             assert!(identity.metadata().is_single_device());
             assert_eq!(
-                identity
-                    .sign_for("document.save", b"message")
-                    .expect("action"),
-                [11; 64]
-            );
-            assert_eq!(
                 identity.sign_collaboration_join("workspace").expect("join"),
                 [12; 64]
             );
@@ -537,13 +485,6 @@ mod tests {
                 read_frame::<wire::Request>(&mut requests).expect("metadata request"),
                 wire::Request::Metadata
             ));
-            match read_frame::<wire::Request>(&mut requests).expect("sign request") {
-                wire::Request::Sign { action, message } => {
-                    assert_eq!(action, "document.save");
-                    assert_eq!(message, b"message");
-                }
-                _ => panic!("wrong action request"),
-            }
             match read_frame::<wire::Request>(&mut requests).expect("join request") {
                 wire::Request::CollaborationJoin { workspace_id } => {
                     assert_eq!(workspace_id, "workspace");
@@ -610,7 +551,10 @@ mod tests {
             ] {
                 let (stream, _) = channel(&[metadata(), response]);
                 let identity = BrokerSigningIdentity::from_connected_io(stream).expect("metadata");
-                assert_eq!(error_kind(identity.sign(b"generic")), expected);
+                assert_eq!(
+                    error_kind(identity.sign_collaboration_join("workspace")),
+                    expected
+                );
             }
         }
 
@@ -639,18 +583,17 @@ mod tests {
 
         phase wire_bytes_are_pinned;
         // The identity service's bytes: a little-endian `u32` length, then
-        // postcard. The shell's broker and every packaged app must agree.
+        // postcard. The service and every packaged app must agree.
         {
             let mut output = Cursor::new(Vec::new());
             write_frame(
                 &mut output,
-                &wire::Request::Sign {
-                    action: "a".into(),
-                    message: vec![1, 2],
+                &wire::Request::CollaborationJoin {
+                    workspace_id: "a".into(),
                 },
             )
             .unwrap();
-            assert_eq!(output.into_inner(), [6, 0, 0, 0, 1, 1, b'a', 2, 1, 2]);
+            assert_eq!(output.into_inner(), [3, 0, 0, 0, 1, 1, b'a']);
             let mut input = Cursor::new(vec![4, 0, 0, 0, 2, 2, b'n', b'o']);
             assert!(matches!(
                 read_frame::<wire::Response>(&mut input).unwrap(),
@@ -693,9 +636,8 @@ mod tests {
 
         phase outbound_limit_rejects_without_writing_partial_frame;
         {
-            let request = wire::Request::Sign {
-                action: "oversized".into(),
-                message: vec![0; wire::FRAMING.max_len()],
+            let request = wire::Request::CollaborationJoin {
+                workspace_id: "x".repeat(wire::FRAMING.max_len()),
             };
             let mut output = Cursor::new(Vec::new());
             assert_eq!(
@@ -719,7 +661,10 @@ mod tests {
                 .join()
                 .is_err()
             );
-            assert_eq!(error_kind(identity.sign(b"message")), io::ErrorKind::Other);
+            assert_eq!(
+                error_kind(identity.sign_collaboration_join("workspace")),
+                io::ErrorKind::Other
+            );
         }
 
         phase client_can_cross_the_sdk_worker_boundary;

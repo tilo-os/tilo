@@ -33,7 +33,6 @@ const SESSION_PRIVATE: &[(&str, &str)] = &[
         "TILO_USER_IDENTITY",
         "/home/somebody/.config/tilo/identity/primary.json",
     ),
-    ("TILO_IDENTITY_BROKER_FD", "42"),
 ];
 
 /// Variables set on *this* process for the duration of one test, put back afterwards — what the
@@ -141,7 +140,6 @@ tilo_test_env::scenario! {
                 "TILO_PERSON_DIR".to_string(),
                 "TILO_USER_HOME".to_string(),
                 "TILO_USER_IDENTITY".to_string(),
-                "TILO_IDENTITY_BROKER_FD".to_string(),
                 "TILO_WORKSPACE_ID".to_string(),
                 "TILO_WORKSPACE_ROOTS".to_string(),
                 "TILO_PARTICIPATION".to_string(),

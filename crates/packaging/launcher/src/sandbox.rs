@@ -361,15 +361,13 @@ pub fn push_action_authority_bind(argv: &mut Vec<String>, host_path: &Path) {
 }
 
 /// Build the bwrap argv from a manifest plus the launcher's resolved inputs: `runtime_root`,
-/// `service_binds` (fds reach the child by inheritance, not argv), `dbus_bind`, and whether an identity
-/// broker fd is available (`identity_host_path` is a host-only presence marker).
+/// `service_binds` (fds reach the child by inheritance, not argv), and `dbus_bind`.
 pub fn build_bwrap_argv(
     manifest: &ManifestView,
     payload_root: &Path,
     runtime: Option<(&Path, &str)>,
     service_binds: &[ServiceBind],
     dbus_bind: Option<&DBusBindPlan>,
-    identity_host_path: Option<&Path>,
     capabilities: &CapabilityPlan,
 ) -> Vec<String> {
     // GUI launch: pick the GUI-flavour bin, falling back to the legacy top-level `bin`.
@@ -383,7 +381,6 @@ pub fn build_bwrap_argv(
         runtime,
         service_binds,
         dbus_bind,
-        identity_host_path,
         entry,
         capabilities,
     )
@@ -606,7 +603,6 @@ pub fn build_bwrap_argv_for_entry(
     runtime: Option<(&Path, &str)>,
     service_binds: &[ServiceBind],
     dbus_bind: Option<&DBusBindPlan>,
-    identity_host_path: Option<&Path>,
     entry_bin: &str,
     capabilities: &CapabilityPlan,
 ) -> Vec<String> {
@@ -715,16 +711,6 @@ pub fn build_bwrap_argv_for_entry(
         argv.push("--setenv".to_string());
         argv.push("TILO_PARTICIPATION".to_string());
         argv.push(mode.to_string());
-    }
-
-    // User identity: the path is a host-side presence marker only.
-    if let Some(host_path) =
-        identity_host_path.filter(|_| capabilities.participation.carries_identity())
-    {
-        let _ = host_path;
-        argv.push("--setenv".to_string());
-        argv.push(runtime_identity::broker::BROKER_ENV_VAR.to_string());
-        argv.push(runtime_identity::broker::BROKER_CHILD_FD.to_string());
     }
 
     // Service sockets reach the app as inherited descriptors: dup2'd onto `child_fd` in `pre_exec`,
@@ -998,7 +984,6 @@ mod tests {
             None,
             &[],
             None,
-            None,
             &CapabilityPlan::empty(),
         )
     }
@@ -1087,9 +1072,7 @@ mod tests {
                     Some((runtime.path(), "selected")),
                     &[],
                     None,
-                    None,
-                    &CapabilityPlan::empty(),
-                )
+                    &CapabilityPlan::empty())
             };
             assert_eq!(
                 setenv_value(&argv_for(), "GST_PLUGIN_SYSTEM_PATH_1_0"),
@@ -1125,9 +1108,7 @@ mod tests {
                 None,
                 &[],
                 None,
-                None,
-                &CapabilityPlan::empty(),
-            );
+                &CapabilityPlan::empty());
             assert_eq!(
                 argv.last().map(String::as_str),
                 Some("/run/tilo-runtime/0.1.0/bin/tilolang")
@@ -1147,9 +1128,7 @@ mod tests {
                 None,
                 &[],
                 None,
-                None,
-                &CapabilityPlan::empty(),
-            );
+                &CapabilityPlan::empty());
             assert_eq!(
                 argv.last().map(String::as_str),
                 Some("/var/tilo-apps/com.example.notes/bin/notes")
@@ -1175,7 +1154,6 @@ mod tests {
             None,
             &[],
             Some(&plan),
-            None,
             &CapabilityPlan::empty(),
         )
     }
@@ -1256,9 +1234,7 @@ mod tests {
                     None,
                     &[],
                     None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
+                    &CapabilityPlan::empty());
                 assert!(argv.iter().any(|a| a == "--unshare-all"));
                 assert!(argv.iter().any(|a| a == "--die-with-parent"));
                 assert!(!argv.iter().any(|a| a == "--share-net"));
@@ -1274,9 +1250,7 @@ mod tests {
                     None,
                     &[],
                     None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
+                    &CapabilityPlan::empty());
                 assert!(argv.iter().any(|a| a == "--share-net"));
             }
             {
@@ -1287,9 +1261,7 @@ mod tests {
                     None,
                     &[],
                     None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
+                    &CapabilityPlan::empty());
                 let pos = argv
                     .iter()
                     .position(|a| a == "/host/pkg")
@@ -1311,9 +1283,7 @@ mod tests {
                     None,
                     &[],
                     None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
+                    &CapabilityPlan::empty());
                 assert_eq!(
                     named(&without, "TILO_SURFACE"),
                     None,
@@ -1326,9 +1296,7 @@ mod tests {
                     None,
                     &[],
                     None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
+                    &CapabilityPlan::empty());
                 assert_eq!(
                     named(&with, "TILO_SURFACE").as_deref(),
                     Some("/var/tilo-apps/com.example.notes/surface.toml"),
@@ -1348,9 +1316,7 @@ mod tests {
                     None,
                     &[],
                     None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
+                    &CapabilityPlan::empty());
                 for entry in crate::profile::SYSTEM_READ_PATHS {
                     assert!(
                         argv.windows(3)
@@ -1369,9 +1335,7 @@ mod tests {
                     None,
                     &[],
                     None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
+                    &CapabilityPlan::empty());
                 assert_eq!(
                     argv, hostile_argv,
                     "a manifest naming paths must produce byte-identical argv to one that names none"
@@ -1397,9 +1361,7 @@ mod tests {
                     Some((Path::new("/host/runtime"), "1")),
                     &[],
                     None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
+                    &CapabilityPlan::empty());
                 let rt_pos = argv
                     .windows(3)
                     .position(|w| {
@@ -1436,9 +1398,7 @@ mod tests {
                     None,
                     &[],
                     None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
+                    &CapabilityPlan::empty());
                 assert_eq!(
                     argv.last().map(String::as_str),
                     Some("/var/tilo-apps/com.example.notes/bin/notes")
@@ -1452,10 +1412,8 @@ mod tests {
                     None,
                     &[],
                     None,
-                    None,
                     "bin/notes-cli",
-                    &CapabilityPlan::empty(),
-                );
+                    &CapabilityPlan::empty());
                 assert_eq!(
                     argv.last().map(String::as_str),
                     Some("/var/tilo-apps/com.example.notes/bin/notes-cli")
@@ -1471,9 +1429,7 @@ mod tests {
                     None,
                     &[],
                     None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
+                    &CapabilityPlan::empty());
                 let entry = argv.pop().expect("argv non-empty");
                 push_workspace_id(&mut argv, "3f2b1c00-0000-4000-8000-000000000001");
                 argv.push(entry);
@@ -1508,9 +1464,7 @@ mod tests {
                     None,
                     &[],
                     None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
+                    &CapabilityPlan::empty());
                 assert!(argv.iter().any(|arg| arg == "--clearenv"));
                 assert_eq!(
                     setenv_value(&argv, "TILO_PROFILE_PRESENTATION"),
@@ -1570,9 +1524,7 @@ mod tests {
                     None,
                     &[],
                     None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
+                    &CapabilityPlan::empty());
                 drop(env);
                 assert_eq!(setenv_value(&argv, "TILO_CONTINUITY_INSTANCE"), Some("42"));
                 assert_eq!(
@@ -1601,9 +1553,7 @@ mod tests {
                     None,
                     &[],
                     None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
+                    &CapabilityPlan::empty());
                 assert_eq!(
                     setenv_value(&argv, "TILO_STARTUP_METRICS_PATH"),
                     Some("/run/tilo/app/.local/state/startup-42-dead_beef.json")
@@ -1620,9 +1570,7 @@ mod tests {
                     None,
                     &[],
                     None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
+                    &CapabilityPlan::empty());
                 assert_eq!(setenv_value(&argv, "TILO_STARTUP_METRICS_PATH"), None);
 
                 env.set("TILO_STARTUP_METRICS_PATH", "/home/user/metrics.json");
@@ -1632,9 +1580,7 @@ mod tests {
                     None,
                     &[],
                     None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
+                    &CapabilityPlan::empty());
                 drop(env);
                 assert_eq!(setenv_value(&argv, "TILO_STARTUP_METRICS_PATH"), None);
             }
@@ -1646,9 +1592,7 @@ mod tests {
                     None,
                     &[],
                     None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
+                    &CapabilityPlan::empty());
                 assert_eq!(setenv_value(&argv, "TILO_APP_NAME"), Some("Notes"));
             }
             {
@@ -1661,9 +1605,7 @@ mod tests {
                     None,
                     &[],
                     None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
+                    &CapabilityPlan::empty());
                 assert_eq!(setenv_value(&argv, "TILO_APP_NAME"), None);
             }
             {
@@ -1676,9 +1618,7 @@ mod tests {
                     None,
                     &[],
                     None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
+                    &CapabilityPlan::empty());
                 assert_eq!(
                     setenv_value(&argv, "TILO_APP_ICON"),
                     Some("/var/tilo-apps/com.example.notes/assets/icon.png"),
@@ -1693,160 +1633,26 @@ mod tests {
                     None,
                     &[],
                     None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
+                    &CapabilityPlan::empty());
                 assert_eq!(setenv_value(&argv, "TILO_APP_ICON"), None);
             }
         }
 
-        phase identity_handoff_follows_participation;
+        phase trusted_identity_projection_is_bound_read_only;
         {
-            {
-                let m = mk_manifest("off");
-                let argv = build_bwrap_argv(
-                    &m,
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    Some(Path::new("/home/alice/.config/tilo/identity/primary.json")),
-                    &CapabilityPlan::empty(),
-                );
-                assert!(
-                    argv.windows(3).any(|w| w[0] == "--setenv"
-                        && w[1] == runtime_identity::broker::BROKER_ENV_VAR
-                        && w[2] == runtime_identity::broker::BROKER_CHILD_FD.to_string()),
-                    "identity broker setenv missing: {argv:?}"
-                );
-                assert!(
-                    !argv.iter().any(|arg| arg.contains("identity/primary.json")),
-                    "private identity path reached the sandbox argv: {argv:?}"
-                );
-            }
-            {
-                let mut argv = Vec::new();
-                push_trusted_identities_bind(
-                    &mut argv,
-                    Path::new("/run/user/1000/tilo/identity-projections/workspace/trusted.json"),
-                );
-                assert_eq!(
-                    argv,
-                    vec![
-                        "--ro-bind",
-                        "/run/user/1000/tilo/identity-projections/workspace",
-                        SANDBOX_TRUSTED_IDENTITIES_DIR,
-                    ]
-                );
-            }
-            {
-                use crate::capabilities::Participation;
-
-                let m = mk_manifest("off");
-                let host = Path::new("/home/alice/.config/tilo/identity/primary.json");
-                let read_only = CapabilityPlan {
-                    participation: Participation::ReadOnly,
-                    ..CapabilityPlan::empty()
-                };
-                let argv = build_bwrap_argv(
-                    &m,
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    Some(host),
-                    &read_only,
-                );
-                assert!(
-                    !argv
-                        .iter()
-                        .any(|a| a == runtime_identity::broker::BROKER_ENV_VAR),
-                    "a read-only member must not receive a signing capability: {argv:?}"
-                );
-                assert!(
-                    !argv.iter().any(|a| a == host.to_str().unwrap()),
-                    "nor may the private identity path enter its namespace: {argv:?}"
-                );
-                // …and it is told which shape it is in, so chrome can present a viewer rather than an
-                // editor whose saves vanish.
-                assert!(
-                    argv.windows(3).any(|w| w[0] == "--setenv"
-                        && w[1] == "TILO_PARTICIPATION"
-                        && w[2] == "read-only"),
-                    "the app must be able to see that it is a viewer: {argv:?}"
-                );
-
-                let authoring = CapabilityPlan {
-                    participation: Participation::Author,
-                    ..CapabilityPlan::empty()
-                };
-                let argv = build_bwrap_argv(
-                    &m,
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    Some(host),
-                    &authoring,
-                );
-                assert!(
-                    argv.windows(3).any(|w| w[0] == "--setenv"
-                        && w[1] == runtime_identity::broker::BROKER_ENV_VAR
-                        && w[2] == runtime_identity::broker::BROKER_CHILD_FD.to_string()),
-                    "an authoring member gets a signing broker: {argv:?}"
-                );
-                assert!(
-                    argv.windows(3).any(|w| w[0] == "--setenv"
-                        && w[1] == "TILO_PARTICIPATION"
-                        && w[2] == "author"),
-                    "and is told so: {argv:?}"
-                );
-            }
-            {
-                let m = mk_manifest("off");
-                let host = Path::new("/home/alice/.config/tilo/identity/primary.json");
-                let argv = build_bwrap_argv(
-                    &m,
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    Some(host),
-                    &CapabilityPlan::empty(),
-                );
-                assert!(
-                    argv.windows(3).any(|w| w[0] == "--setenv"
-                        && w[1] == runtime_identity::broker::BROKER_ENV_VAR
-                        && w[2] == runtime_identity::broker::BROKER_CHILD_FD.to_string()),
-                    "an unscoped launch keeps brokered identity: {argv:?}"
-                );
-                assert!(
-                    !argv.iter().any(|a| a == "TILO_PARTICIPATION"),
-                    "and no participation is claimed on its behalf: {argv:?}"
-                );
-            }
-            {
-                let m = mk_manifest("off");
-                let argv = build_bwrap_argv(
-                    &m,
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
-                assert!(
-                    !argv
-                        .iter()
-                        .any(|a| a == runtime_identity::broker::BROKER_ENV_VAR),
-                    "identity broker fd must not appear without a host identity: {argv:?}"
-                );
-                assert!(
-                    !argv.iter().any(|a| a == "TILO_USER_IDENTITY"),
-                    "legacy identity path env must never appear: {argv:?}"
-                );
-            }
+            let mut argv = Vec::new();
+            push_trusted_identities_bind(
+                &mut argv,
+                Path::new("/run/user/1000/tilo/identity-projections/workspace/trusted.json"),
+            );
+            assert_eq!(
+                argv,
+                vec![
+                    "--ro-bind",
+                    "/run/user/1000/tilo/identity-projections/workspace",
+                    SANDBOX_TRUSTED_IDENTITIES_DIR,
+                ]
+            );
         }
     }
 
@@ -1930,9 +1736,7 @@ mod tests {
                 None,
                 &[],
                 None,
-                None,
-                &CapabilityPlan::empty(),
-            );
+                &CapabilityPlan::empty());
             let app = tilo_process::environment::ProcessIdentity {
                 app_id: setenv_value(&argv, "TILO_PACKAGE_ID").map(str::to_owned),
                 ..Default::default()
@@ -2005,9 +1809,7 @@ mod tests {
                     None,
                     &[],
                     Some(&plan),
-                    None,
-                    &CapabilityPlan::empty(),
-                );
+                    &CapabilityPlan::empty());
                 // Proxy socket bound at /run/user/1234/bus, NOT the raw bus path.
                 assert!(
                     argv.windows(3).any(|w| w[0] == "--ro-bind"
@@ -2035,9 +1837,7 @@ mod tests {
                     None,
                     &[],
                     None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
+                    &CapabilityPlan::empty());
                 assert!(
                     !argv.iter().any(|a| a == "DBUS_SESSION_BUS_ADDRESS"),
                     "bus must not leak into sandbox without a plan: {argv:?}"
@@ -2055,9 +1855,7 @@ mod tests {
                     None,
                     &[],
                     None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
+                    &CapabilityPlan::empty());
                 assert!(
                     !argv.iter().any(|a| a == "DBUS_SESSION_BUS_ADDRESS"),
                     "bus must stay out when caller passes no plan: {argv:?}"
@@ -2080,9 +1878,7 @@ mod tests {
                     None,
                     &binds,
                     None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
+                    &CapabilityPlan::empty());
                 assert!(
                     argv.windows(3)
                         .any(|w| w[0] == "--setenv" && w[1] == "TILO_SVC_COLLAB_FD" && w[2] == "17"),
@@ -2109,9 +1905,7 @@ mod tests {
                     None,
                     &binds,
                     None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
+                    &CapabilityPlan::empty());
                 for copy_flag in ["--file", "--bind-data", "--ro-bind-data"] {
                     for w in argv.windows(2) {
                         assert_ne!(
@@ -2165,7 +1959,7 @@ mod tests {
     fn argv_with_caps(app_id: &str, caps: &[CapOverride], now: u64) -> Vec<String> {
         let m = mk_manifest("off");
         let plan = CapabilityPlan::for_app_with(app_id, caps, Some(now), fake_device_paths);
-        build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, &plan)
+        build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, &plan)
     }
 
     /// Every bind triple in an argv, as `(flag, src, dst)`.
@@ -2339,9 +2133,7 @@ mod tests {
                 None,
                 &[],
                 None,
-                None,
-                &plan,
-            );
+                &plan);
             let s = |p: &Path| p.display().to_string();
             let position = |pattern: &[&str]| {
                 argv.windows(pattern.len())
@@ -2381,9 +2173,7 @@ mod tests {
                     None,
                     &[],
                     None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
+                    &CapabilityPlan::empty());
                 assert_eq!(
                     baseline, manifest_only,
                     "an app granted nothing must get byte-identical argv to a manifest-only launch"

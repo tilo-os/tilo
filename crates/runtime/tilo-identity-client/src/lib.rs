@@ -4,13 +4,13 @@
     reason = "migration stack lint debt is scoped to this target"
 )]
 
-//! Broker-backed identity signing on an owned, connected byte stream:
-//! [`BrokerSigningIdentity`] asks for public metadata and signatures and never
-//! receives private key material.
+//! Identity-service-backed signing on an owned, connected byte stream:
+//! [`BrokerSigningIdentity`] asks the workspace identity service for public
+//! metadata and signatures and never receives private key material.
 //!
 //! The caller supplies the connection to its trusted host, which this crate
-//! neither discovers nor authenticates. Inherited descriptors are the only
-//! capabilities it takes from the environment.
+//! neither discovers nor authenticates. The inherited service descriptor is
+//! the only capability it takes from the environment.
 
 mod public_metadata;
 pub use public_metadata::{IdentitySummary, KeyProtection};
@@ -33,8 +33,6 @@ pub use public_record::{
 
 #[cfg(unix)]
 pub mod inherited;
-#[cfg(unix)]
-pub mod legacy;
 #[cfg(unix)]
 pub use inherited::{load, load_bound_metadata, load_metadata};
 
@@ -75,9 +73,9 @@ pub struct IdentityMetadata {
     pub single_device: bool,
 }
 
-/// The avatar from the launcher's authenticated identity broker only: no config
-/// record, account name or signing share is read, and a host without an
-/// inherited broker shows none.
+/// The avatar from the workspace identity service only: no config record,
+/// account name or signing share is read, and an app without a bound
+/// workspace shows none.
 #[must_use]
 pub fn bound_profile_photo() -> Option<([u8; 32], ProfilePhoto)> {
     #[cfg(unix)]
@@ -152,10 +150,6 @@ pub mod wire {
     #[derive(Debug, Serialize, Deserialize)]
     pub enum Request {
         Metadata,
-        Sign {
-            action: String,
-            message: Vec<u8>,
-        },
         CollaborationJoin {
             workspace_id: String,
         },
@@ -243,9 +237,6 @@ pub mod wire {
 #[cfg(test)]
 #[cfg(unix)]
 mod inherited_tests;
-#[cfg(test)]
-#[cfg(unix)]
-mod legacy_tests;
 
 #[cfg(test)]
 #[cfg(unix)]

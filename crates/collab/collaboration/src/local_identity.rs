@@ -347,7 +347,6 @@ mod active_document_tests {
 
         let mut env = tilo_test_env::ScopedEnv::new();
         env.remove("TILO_SVC_IDENTITY_FD")
-            .remove("TILO_IDENTITY_BROKER_FD")
             .remove("TILO_USER_IDENTITY")
             .set("XDG_CONFIG_HOME", config.path());
         assert_eq!(
