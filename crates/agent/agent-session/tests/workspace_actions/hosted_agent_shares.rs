@@ -426,8 +426,66 @@ async fn an_agent_on_a_server_answers_with_the_document_it_wrote_shown_live() {
     page.peer.close();
 }
 
-/// What a turn's tools let it do today without the tool: Chat's `share-window` through
-/// `tilo_do`, where the conversation is an argument the model gives.
+/// Through its other tools the conversation of a share is an argument the model gives. A turn's
+/// call of Chat's own sharing verbs for any conversation but the one it answers in is refused
+/// in words and shares nothing: not where everyone reads, and not in its person's
+/// conversation with another agent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_turn_shares_only_into_the_conversation_it_answers_in() {
+    team!(root, browser, actions, workspaces, workspace, page);
+    write_to_agent(
+        &actions,
+        &workspaces,
+        &workspace,
+        (&root, &browser),
+        "Post the document for everyone.",
+    )
+    .await;
+    let person = hex::encode(root.verifying_key().to_bytes());
+    let elsewhere = chat::Chat::direct_id([MemberId::person(person), MemberId::agent("other")]);
+    let attached = serde_json::json!({"app": WRITER, DOCUMENT: "letter", "kind": "tilo.window",
+        "id": "letter", "label": "A letter"});
+    let sharing = |verb: &str, to: &str| {
+        serde_json::json!({"path": format!("chat/Messages#{verb}"),
+            "args": {IN: to, "attached": attached.clone()}})
+    };
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    answer_the_turn!(
+        workspaces,
+        actions,
+        workspace,
+        calls_then_answers(
+            vec![
+                ("tilo_do", sharing("share-window", "c_general")),
+                ("tilo_do", sharing("share-resource", "c_general")),
+                ("tilo_do", sharing("share-window", elsewhere.as_str())),
+            ],
+            "I did not post it.",
+            Arc::clone(&asked),
+        )
+    );
+    // Taken out whole: no lock is held while the test asks the server anything more.
+    let asked = asked.lock().unwrap().clone();
+    let told = told(&asked);
+    assert_eq!(told.len(), 3, "{told:?}");
+    for (answer, failed) in &told {
+        assert!(
+            *failed && answer.contains("only into the conversation it is answering in"),
+            "refused in words, as a failure: {answer}"
+        );
+    }
+    let part = conversation_part(&workspaces, &workspace).await;
+    assert!(
+        part.messages
+            .iter()
+            .all(|(_, held)| held.attachments.is_empty()),
+        "nothing was shared anywhere"
+    );
+    page.peer.close();
+}
+
+/// A turn's own call of Chat's `share-window` for the conversation it answers in is taken, as
+/// before: the rule above holds only the conversation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_turn_shares_a_window_into_its_conversation_through_the_action_tool() {
     team!(root, browser, actions, workspaces, workspace, page);

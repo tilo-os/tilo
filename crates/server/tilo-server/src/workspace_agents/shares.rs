@@ -18,6 +18,9 @@
 //!   the turn itself, by the turn's own reading tool in the turn's own session of its tools:
 //!   the document that read resolved is the one the model's own calls of that path worked in,
 //!   and a path the turn may not read names none.
+//! - **A turn shares nowhere else.** Chat's own sharing verbs take the conversation as an
+//!   argument, which through the turn's other tools is the model's to give. A turn's call of
+//!   one is taken only for the conversation the turn answers in ([`refuses`]).
 //! - **It gives nobody anything.** What a share grants is asked for by its sharer's own Chat;
 //!   no Chat is the agent's, so no grant is written, and whoever opens the document opens it
 //!   with what they hold.
@@ -26,8 +29,8 @@ use serde_json::{Map, Value, json};
 use tilo_mcp::McpServer;
 
 use super::{
-    Ask, CHAT, DocumentRoute, Reply, ToolDefinition, Turn, WorkspaceActionProvider, call_tool,
-    invoke_named, learned,
+    Ask, CHAT, Caller, DocumentRoute, InvokeArgument, InvokeRequest, Reply, ToolDefinition, Turn,
+    WorkspaceActionProvider, call_tool, invoke_named, learned,
 };
 
 /// The tool a turn in a conversation answers through with the thing it worked on.
@@ -48,6 +51,10 @@ const NOT_THEIR_OWN: &str = "The document was not shown: you show a document onl
 keeper's own conversation with you, and this is not it, or others read it too. Say where the \
 document is (`tilo_link` gives a link only the workspace's members can open); the person \
 shares it here themselves if they want to.";
+
+/// Chat's verbs that share something into a conversation, and what they call the conversation.
+const SHARING: [&str; 2] = ["share-window", "share-resource"];
+const IN: &str = "channel";
 
 /// The longest a card's name the model gives is kept, in characters.
 const MOST_TITLE_CHARS: usize = 120;
@@ -101,6 +108,30 @@ fn conversation_id(address: &str) -> Option<String> {
         .strip_prefix(&prefix)
         .filter(|id| !id.is_empty())
         .map(str::to_owned)
+}
+
+/// Why a turn's call of one of Chat's sharing verbs is not taken, when it is not: a turn shares
+/// only into the conversation it answers in. Where a share stands is where a document's name
+/// and address reach, and the conversation is an argument the model gives, so it is held here
+/// to the turn's own, as a sub-agent's words are (`sub_agents::admits`). A call that is no
+/// turn's, as a person's own is, is never refused here, and neither is any other action.
+pub(super) fn refuses(caller: &Caller, request: &InvokeRequest) -> Option<String> {
+    let turn = caller.turn()?;
+    let chat = format!("{}:{CHAT}:", tilo_agent_session::RESOURCE_PROVIDER);
+    let target = &request.target;
+    if !target.provider.starts_with(&chat) || !SHARING.contains(&target.address.action.as_str()) {
+        return None;
+    }
+    let named = match &request.argument {
+        InvokeArgument::Json(given) => given.get(IN).and_then(Value::as_str),
+        _ => None,
+    };
+    let own = conversation_id(&turn.conversation);
+    (named.is_none() || named != own.as_deref()).then(|| {
+        "an agent shares only into the conversation it is answering in: say where the thing \
+         is, or show it there with `answer_with_document`"
+            .to_owned()
+    })
 }
 
 /// What the model asked to show: the path it worked on the thing with, and what its card is
@@ -158,7 +189,7 @@ fn sharing(conversation: &str, (app, document): (&str, &str), title: &str) -> Ma
     attached.insert("kind".into(), json!(WINDOW_KIND));
     attached.insert("label".into(), json!(title));
     let mut arguments = Map::new();
-    arguments.insert("channel".into(), json!(conversation));
+    arguments.insert(IN.into(), json!(conversation));
     arguments.insert("attached".into(), Value::Object(attached));
     // What its card offers a reader: to work in it. It grants nothing: each reader changes
     // what they may change anyway.

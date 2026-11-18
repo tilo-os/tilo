@@ -385,6 +385,9 @@ impl ActionProvider for WorkspaceActionProvider {
         {
             return Pending::ready(Err(ActionCallError::NotPermitted));
         }
+        if let Some(reason) = shares::refuses(caller, &request) {
+            return Pending::ready(Err(ActionCallError::InvalidRequest { reason }));
+        }
         if let Some(events) = &self.events
             && request.target.provider == person_events::PROVIDER
         {
