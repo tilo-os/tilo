@@ -842,6 +842,7 @@ paths = [
     "crates/server/tilo-workspace-service/src/workspaces/hosted_use.rs",
     "crates/server/tilo-workspace-service/src/workspaces/actions/host/turn_delegation_tests.rs",
     "crates/server/tilo-workspace-service/src/workspaces/actions/host/mail_reach_tests.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/actions/host/calendar_reach_tests.rs",
 ]
 
 [[allow]]
