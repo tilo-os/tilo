@@ -21968,6 +21968,7 @@ dependencies = [
  "wayland-protocols",
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
+ "windows-vm",
  "wire-frame",
  "workspace-hack",
  "x11rb",

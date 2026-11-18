@@ -107,6 +107,41 @@ fn a_secrets_question_says_what_is_asked_for_and_where_it_belongs() {
     assert_eq!(mounted_rows(&mut app, CHANNEL).len(), before);
 }
 
+/// A question for a secret that is refused for its detail is told what was
+/// wrong with the detail it gave, key by key, and the arguments that work,
+/// written out with its own channel, words and places. Nobody is asked.
+#[test]
+fn a_refused_question_for_a_secret_is_told_the_arguments_that_work() {
+    let mut app = TestApp::<ChatShell>::new().unwrap();
+    let me = window_person(&mut app);
+    let before = mounted_rows(&mut app, CHANNEL).len();
+    let given = json!({
+        "kind": "password",
+        "belongs_to": ["imap://mail.example.test:993", "mail.example.test"],
+        "user": "ada",
+        "label": "Mail",
+    });
+    let Err(refused) = app.call_by(helper_of(&me), &chain(), "ask", asking(&given)) else {
+        panic!("a detail of another shape is refused");
+    };
+    let told = format!("{refused:?}");
+    for said in [
+        "`belongs_to` is written `belongsTo`",
+        "`user` is written `username`",
+        "it takes no `label`",
+        "the `kind` `password` is written `login`",
+        "yours is `mail.example.test`",
+        "imap://mail.example.test:993",
+        CHANNEL,
+        "I need it to sign in.",
+        "Ask again with exactly these arguments",
+    ] {
+        assert!(told.contains(said), "{said}: {told}");
+    }
+    app.settle();
+    assert_eq!(mounted_rows(&mut app, CHANNEL).len(), before);
+}
+
 /// Only the person asked answers, themselves; their answer carries the
 /// vault item's reference and nothing else, and a question they decline
 /// says so.

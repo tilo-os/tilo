@@ -285,7 +285,11 @@ where
         let lease_id = format!("install-{}", prepared.operation_id.as_str());
         self.launcher
             .launch(
-                workspace_id,
+                &crate::Shown {
+                    workspace_id,
+                    application_id: prepared.operation_id.as_str(),
+                    display_name: "Windows setup",
+                },
                 &prepared.presentation,
                 &BrokeredLaunch::deny_all(lease_id),
             )
@@ -359,7 +363,11 @@ where
         let lease_id = format!("uninstall-{}", prepared.operation_id.as_str());
         self.launcher
             .launch(
-                workspace_id,
+                &crate::Shown {
+                    workspace_id,
+                    application_id: prepared.operation_id.as_str(),
+                    display_name: "Windows uninstaller",
+                },
                 &prepared.presentation,
                 &BrokeredLaunch::deny_all(lease_id),
             )
@@ -428,9 +436,15 @@ where
             if guest.remote_app_alias != application.remote_app_alias {
                 return Err(LaunchError::PublicationChanged);
             }
-            let process = self
-                .launcher
-                .launch(&request.workspace_id, &guest, &brokered)?;
+            let process = self.launcher.launch(
+                &crate::Shown {
+                    workspace_id: &request.workspace_id,
+                    application_id: &request.application_id,
+                    display_name: &application.display_name,
+                },
+                &guest,
+                &brokered,
+            )?;
             Ok(RunningRemoteApp {
                 application_id: request.application_id.clone(),
                 workspace_id: request.workspace_id.clone(),
@@ -725,7 +739,7 @@ mod tests {
     impl RemoteAppLauncher for Launcher {
         fn launch(
             &self,
-            _: &str,
+            _: &crate::Shown<'_>,
             _: &GuestLaunch,
             _: &BrokeredLaunch,
         ) -> Result<RemoteAppProcess, RemoteAppError> {

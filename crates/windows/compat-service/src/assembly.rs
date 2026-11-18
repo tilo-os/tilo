@@ -22,8 +22,7 @@ use std::sync::{Arc, Mutex};
 use compat_catalogue::Catalogue;
 use windows_vm::{
     ApplianceConfig, ApplicationPresentation, GuestBridgeConfig, HttpsGuestBridge, LibvirtBackend,
-    PortalDocumentStore, PortalRailCapabilityBroker, ProvisioningStore, StdCommandRunner,
-    WindowsAppliance,
+    PortalDocumentStore, PortalRailCapabilityBroker, ProvisioningStore, WindowsAppliance,
 };
 
 use crate::{
@@ -233,8 +232,8 @@ fn appliance_delegate(displays: Arc<dyn LaunchDisplays>) -> Result<Arc<dyn VmDel
             shared_session.clone(),
         ),
         Presentation {
-            rail: AudioIsolatedRailLauncher::new(StdCommandRunner, Arc::clone(&displays)),
-            spice: AudioIsolatedSpiceLauncher::new(StdCommandRunner, displays),
+            rail: AudioIsolatedRailLauncher::new(Arc::clone(&displays)),
+            spice: AudioIsolatedSpiceLauncher::new(displays),
         },
     );
     Ok(Arc::new(LiveVmDelegate::with_shared_session_tracker(
@@ -247,22 +246,20 @@ fn appliance_delegate(displays: Arc<dyn LaunchDisplays>) -> Result<Arc<dyn VmDel
 
 /// The presentation the guest chose for each application.
 struct Presentation {
-    rail: AudioIsolatedRailLauncher<StdCommandRunner>,
-    spice: AudioIsolatedSpiceLauncher<StdCommandRunner>,
+    rail: AudioIsolatedRailLauncher,
+    spice: AudioIsolatedSpiceLauncher,
 }
 
 impl windows_vm::RemoteAppLauncher for Presentation {
     fn launch(
         &self,
-        workspace_id: &str,
+        shown: &windows_vm::Shown<'_>,
         guest: &windows_vm::GuestLaunch,
         brokered: &windows_vm::BrokeredLaunch,
     ) -> Result<windows_vm::RemoteAppProcess, windows_vm::RemoteAppError> {
         match guest.presentation {
-            ApplicationPresentation::NativeRail => self.rail.launch(workspace_id, guest, brokered),
-            ApplicationPresentation::AppFocusedSpice => {
-                self.spice.launch(workspace_id, guest, brokered)
-            }
+            ApplicationPresentation::NativeRail => self.rail.launch(shown, guest, brokered),
+            ApplicationPresentation::AppFocusedSpice => self.spice.launch(shown, guest, brokered),
         }
     }
 }

@@ -15,7 +15,7 @@ use crate::store::{
 const PREFIX_MOUNT: &str = "/run/tilo/capsule/prefix";
 pub(crate) const HOME_MOUNT: &str = "/run/tilo/capsule/home";
 const FILES_MOUNT: &str = "/run/tilo/files";
-pub(crate) const SHIM_HOST: &str = "/usr/libexec/tilo/tilo-launcher";
+pub(crate) const TILO_LAUNCHER: &str = "/usr/libexec/tilo/tilo-launcher";
 const SHIM_MOUNT: &str = "/tilo-launcher";
 const LEASE_ROOT: &str = "/run/tilo/windows-compat/leases";
 const PINNED_PROTON: &str = "UMU-Proton-10.0-4";
@@ -569,6 +569,9 @@ pub struct CapsuleCommandPlan {
     pub lease_id: String,
     /// The private audio graph to start right before the sandbox, whose sockets it binds.
     pub audio_graph: Option<PathBuf>,
+    /// The program shows its windows through X11: the sandbox is given the X11 display its
+    /// keeper serves (the launcher's `windows-x11-sandbox`).
+    pub x11: bool,
     // Open directory descriptors backing the prefix/home bind sources. Kept
     // private so a plan cannot be copied after its authority-bearing handles.
     launch_paths: LaunchPaths,
@@ -754,7 +757,7 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
         }
         argv.extend([
             "--ro-bind".to_string(),
-            SHIM_HOST.to_string(),
+            TILO_LAUNCHER.to_string(),
             SHIM_MOUNT.to_string(),
             SHIM_MOUNT.to_string(),
             launcher::landlock_shim::SANDBOX_EXEC_SUBCOMMAND.to_string(),
@@ -815,11 +818,19 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
             latency_sensitive: route.runtime.layer == Layer::Proton,
             lease_id: lease.id.clone(),
             audio_graph: lease.audio_graph.clone(),
+            x11: shows_through_x11(route.runtime.layer),
             launch_paths,
             runtime_lock_required: runtime.runtime_lock_mount.is_some(),
             identity_uid: self.display.uid,
         })
     }
+}
+
+/// Whether a program of `layer` shows its windows through X11. The pinned Proton's Wine has no
+/// Wayland driver (it ships winex11 alone), so a Proton program given only a Wayland socket opens
+/// no window at all.
+pub(crate) fn shows_through_x11(layer: Layer) -> bool {
+    layer == Layer::Proton
 }
 
 fn map_granted_files(
