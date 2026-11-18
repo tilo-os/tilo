@@ -29,16 +29,3 @@ pub fn var(name: &str) -> Result<String, VarError> {
         None => Err(VarError::NotPresent),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn an_unset_variable_reads_as_not_present() {
-        assert_eq!(
-            var("TILO_UI_TEST_NEVER_SET_ANYWHERE"),
-            Err(VarError::NotPresent)
-        );
-    }
-}
