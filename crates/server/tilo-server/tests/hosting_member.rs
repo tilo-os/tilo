@@ -679,8 +679,8 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
     governor.stop().await;
 }
 
-/// A host that keeps workspaces for the people it lets in takes a workspace
-/// another host governs for an owner of it it let in, and for nobody else:
+/// A server that keeps workspaces for the people it lets in takes a workspace
+/// another server governs for an owner of it it let in, and for nobody else:
 /// asked before it let the owner in, it refuses and says why, and answers her
 /// device's subscribe with `NotAdmitted` and nothing else (no workspace data,
 /// members or keys); asked after, it holds the workspace and a member's change
@@ -786,7 +786,26 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
         phone.device_pubkey()
     );
 
-    drop((on_holder, local, outside));
+    // Restarted, the site still holds the workspace and follows the laptop's
+    // changes: it knows where it was handed the workspace from, as it did
+    // before.
+    drop((on_holder, outside));
+    let state = holder.stop_keeping().await;
+    let holder = crate::common::host_in(&site, &server, WorkSetting::own_person(), state).await;
+    let on_holder = session_at(&phone, &site, &server, &holder).await;
+    tilo_test_env::within("the restarted site admits the workspace's member", async {
+        while !admitted(&on_holder, workspace.workspace_id).await {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    send_change(&local, workspace.workspace_id, &laptop, b"from the laptop");
+    assert_eq!(
+        change_author(&on_holder, b"from the laptop").await,
+        laptop.device_pubkey()
+    );
+
+    drop((on_holder, local));
     holder.stop().await;
     governor.stop().await;
 }

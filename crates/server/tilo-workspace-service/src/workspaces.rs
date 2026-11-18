@@ -527,6 +527,8 @@ impl GovernedWorkspace {
             parts,
             publications,
             receipts,
+            // Read before the path moves into the workspace.
+            handed_by: holding::handed_by(&path),
             path,
             device: device.cloned(),
             publisher: Arc::default(),
@@ -540,7 +542,6 @@ impl GovernedWorkspace {
             rebased: false,
             since_base: SinceBase::Withdrew,
             holders: holding::Holders::default(),
-            handed_by: None,
         })
     }
 
