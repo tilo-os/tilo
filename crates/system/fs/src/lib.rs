@@ -34,7 +34,6 @@ pub mod content;
 #[cfg(feature = "filesystem")]
 pub mod content_kind;
 #[cfg(feature = "filesystem")]
-pub mod document_content;
 #[cfg(feature = "document-media")]
 pub mod document_media;
 #[cfg(feature = "filesystem")]

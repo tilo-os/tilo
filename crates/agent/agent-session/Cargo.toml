@@ -136,7 +136,7 @@ tilo-automerge-isolate = { path = "../../doc/tilo-automerge-isolate" }
 tilo-content = { version = "0.1.0", path = "../../system/content" }
 # The workspace tree a put file becomes a node of, written as its mount writes it.
 tilo-fs = { package = "tilo-fs", path = "../../system/fs" }
-fs-protocol = { path = "../../system/fs-protocol", features = ["documents"] }
+fs-protocol = { path = "../../system/fs-protocol" }
 fs-content = { path = "../../system/fs-content" }
 # What an uploaded file is, from its first bytes: the media type the store
 # keeps it under.
@@ -154,10 +154,6 @@ image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 # agent's video renders run in (the helper itself is its binary).
 tilo-video-render = { path = "../../media/video-render", default-features = false }
 
-# A workspace's notes as `.md` files in its folder: a note's body written as Markdown by
-# the codec the folder writes its `.md` files with.
-tilo-doc-codecs = { path = "../../doc/tilo-doc-codecs" }
-tilo-doc = { path = "../../doc/tilo-doc" }
 tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -179,6 +175,9 @@ discord = { path = "../../../apps/discord" }
 
 
 [dev-dependencies]
+# Documents the tests write and read back as a Word or Markdown file.
+tilo-doc-codecs = { path = "../../doc/tilo-doc-codecs" }
+tilo-doc = { path = "../../doc/tilo-doc" }
 # The desktop broker's admission, which the host's decisions are held to.
 tilo-broker-core = { path = "../../collab/broker-core" }
 tilo-action-policy = { path = "../../collab/action-policy" }

@@ -72,7 +72,6 @@ mod layout_window;
 mod link;
 mod listing;
 mod member;
-mod notes_folder;
 mod opened;
 mod opened_file;
 mod placed;
@@ -166,8 +165,6 @@ struct Shared {
     approvals: bounded::Approvals,
     /// What asks an agent's person in the conversation its turn is in.
     in_conversation: std::sync::RwLock<Option<Arc<dyn AsksInConversation>>>,
-    /// Workspaces whose notes and folder wait for a pass to bring them into step.
-    projecting: Mutex<HashSet<WorkspaceId>>,
     /// Records whose name in their app's index waits to be read again.
     renaming: Mutex<HashSet<DocumentRoute>>,
     /// What search read of the documents, counted for the timing lines and for the tests that
@@ -208,7 +205,6 @@ impl WorkspaceActions {
                 puts: tilo_actions::remote::HostedContentPuts::default(),
                 approvals: bounded::Approvals::default(),
                 in_conversation: std::sync::RwLock::default(),
-                projecting: Mutex::default(),
                 renaming: Mutex::default(),
                 search: SearchActivity::default(),
             }),
@@ -322,28 +318,6 @@ impl WorkspaceActions {
                 tracing::debug!(%error, workspace_id = %workspace_id, "workspace actions: a workspace was not joined ahead");
             }
         }
-    }
-
-    /// `workspace_id`'s notebook or folder took a write: bring its notes and their `.md`
-    /// files in the folder into step ([`notes_folder`]). Writes that arrive while a pass
-    /// waits to run are taken in by that pass.
-    pub fn notes_folder_written(&self, workspace_id: WorkspaceId) {
-        if self.shared.queue_notes_pass(workspace_id) {
-            self.join_ahead(workspace_id);
-        }
-    }
-
-    /// Whether `app`'s workspace record is the notebook whose notes are files in the
-    /// workspace's folder: a workspace without one has no notes to bring into step.
-    #[must_use]
-    pub fn is_notebook(app: &str) -> bool {
-        app == notes_folder::NOTES_APP
-    }
-
-    /// Whether a write to `app`'s record is one [`Self::notes_folder_written`] follows.
-    #[must_use]
-    pub fn follows_notes_folder(app: &str) -> bool {
-        app == notes_folder::NOTES_APP || app == tilo_fs::tree_document::FILES_APP
     }
 
     /// Whether `caller` started invocation `id` here.
@@ -754,13 +728,6 @@ impl WorkspaceState {
         self.records.contains(route)
     }
 
-    /// Whether this replica holds the document at `route` at all, opened or not: what a
-    /// caller asks before it reads the document, rather than reading it whole to find out.
-    fn holds_document(&self, route: &DocumentRoute) -> bool {
-        self.engine
-            .holds_resource(&route.cluster_id, &route.app_id, &route.document)
-    }
-
     /// What changed of the record at `route` since `held`, the heads a
     /// replica merged last: only the changes after them where the record
     /// holds them, the record whole where it does not (or where nothing was
@@ -1155,12 +1122,6 @@ struct Worker {
     /// The registered reads listings offer, kept between them
     /// ([`canonical`]).
     canonical: canonical::CanonicalReads,
-    /// How many passes over each workspace's notes and their files failed in a row
-    /// ([`notes_folder`]): the next is tried again after a wait that grows with them.
-    notes_failures: HashMap<WorkspaceId, u32>,
-    /// The notebook and folder of the workspaces whose notes were projected last, as the
-    /// last pass left them ([`notes_folder::Followed`]).
-    notes_followed: HashMap<WorkspaceId, notes_folder::Followed>,
     /// When each record's name was last read for its app's index ([`publish`]).
     named: HashMap<DocumentRoute, Instant>,
     /// Why each document a listing offers did not mount, as it was told last
@@ -1285,28 +1246,6 @@ fn take_all(
     Ok(taken)
 }
 
-/// The longest a pass over a workspace's notes waits for the requests queued
-/// behind it on the worker's thread.
-const PROJECTION_WAIT: Duration = Duration::from_secs(2);
-
-impl Shared {
-    /// Queue a pass over `workspace_id`'s notes and their files, unless one waits to run
-    /// already, which takes in whatever this one would have: whether it was queued.
-    fn queue_notes_pass(&self, workspace_id: WorkspaceId) -> bool {
-        if !self.projecting.lock_recover().insert(workspace_id) {
-            return false;
-        }
-        let sent = self.jobs.lock_recover().as_ref().is_some_and(|jobs| {
-            jobs.send((Instant::now(), Job::NotesFolder(workspace_id)))
-                .is_ok()
-        });
-        if !sent {
-            self.projecting.lock_recover().remove(&workspace_id);
-        }
-        sent
-    }
-}
-
 impl Worker {
     fn new(
         link: &dyn WorkspaceDocumentsLink,
@@ -1332,8 +1271,6 @@ impl Worker {
             clock: 0,
             handed: HashMap::new(),
             canonical: canonical::CanonicalReads::default(),
-            notes_failures: HashMap::new(),
-            notes_followed: HashMap::new(),
             trees: HashMap::new(),
             wrote: HashSet::new(),
             named: HashMap::new(),
@@ -1345,36 +1282,7 @@ impl Worker {
     }
 
     fn run(mut self, jobs: &mpsc::Receiver<(Instant, Job)>) {
-        // Passes over a workspace's notes and their files, waiting for the
-        // requests queued behind them: a pass is what a person's folder shows,
-        // never what a caller waits on, so it goes once no request waits.
-        let mut projections: VecDeque<(Instant, Job)> = VecDeque::new();
         loop {
-            if projections
-                .front()
-                .is_some_and(|(queued, _)| queued.elapsed() >= PROJECTION_WAIT)
-            {
-                // Requests that keep coming never keep a folder behind for long.
-                if let Some((queued, job)) = projections.pop_front() {
-                    self.admit(queued, job);
-                }
-                continue;
-            }
-            if !projections.is_empty() {
-                match jobs.try_recv() {
-                    Ok((queued, job)) if matches!(job, Job::NotesFolder(_)) => {
-                        projections.push_back((queued, job));
-                    }
-                    Ok((queued, job)) => self.admit(queued, job),
-                    Err(mpsc::TryRecvError::Empty) => {
-                        if let Some((queued, job)) = projections.pop_front() {
-                            self.admit(queued, job);
-                        }
-                    }
-                    Err(mpsc::TryRecvError::Disconnected) => break,
-                }
-                continue;
-            }
             // A document whose write landed since the last pass is read for the index here,
             // between requests: a find answers from the index, never by opening every one
             // while the person waits.
@@ -1401,9 +1309,6 @@ impl Worker {
             };
             self.expire_watchers();
             match next {
-                Ok((queued, job)) if matches!(job, Job::NotesFolder(_)) => {
-                    projections.push_back((queued, job));
-                }
                 Ok((queued, job)) => {
                     self.admit(queued, job);
                     // Requests that keep coming never hold back a run's word:
@@ -1754,7 +1659,6 @@ impl Worker {
                     done,
                 } => done.complete(self.invocations(workspace_id, &caller, &query)),
                 Job::Joined(workspace_id) => self.woken(workspace_id),
-                Job::NotesFolder(workspace_id) => self.notes_pass(workspace_id),
                 Job::Rename(workspace_id, route) => self.rename(workspace_id, &route),
                 Job::Forget(workspace_id) => self.forget(workspace_id),
                 Job::Content {

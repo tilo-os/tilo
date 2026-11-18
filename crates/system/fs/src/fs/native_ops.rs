@@ -8,7 +8,7 @@
 use std::path::{Component, Path};
 use std::sync::atomic::Ordering;
 
-use super::{EIO, EISDIR, ENOENT, ENOTDIR, FileType, Hash, QuickFS, document_codec_for, now_ms};
+use super::{EIO, EISDIR, ENOENT, ENOTDIR, FileType, Hash, QuickFS, now_ms};
 use crate::namespace::{LeaseRequest, PosixAttrs, ROOT_INO, VersionFence, WriteLease};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -487,17 +487,8 @@ impl QuickFS {
         })
     }
 
-    /// Whether the file at `rel` is a document: kept as a CRDT and read and written in the legacy format
-    /// its name declares.
-    pub fn document_at(&self, rel: &Path) -> bool {
-        path_components(rel)
-            .ok()
-            .and_then(|components| self.ino_at(&components))
-            .is_some_and(|ino| self.is_document(ino))
-    }
-
-    /// The whole file at `rel` as a reader of the mount sees it: a document exported through its
-    /// format's codec, other content hydrated first when it is not local.
+    /// The whole file at `rel` as a reader of the mount sees it, hydrated first when it is not
+    /// local.
     pub fn read_path(&self, rel: &Path) -> Result<Vec<u8>, i32> {
         let components = path_components(rel)?;
         let ino = self.ino_at(&components).ok_or(ENOENT)?;
@@ -513,7 +504,7 @@ impl QuickFS {
     pub fn read_path_range(&self, rel: &Path, offset: u64, len: u64) -> Result<Vec<u8>, i32> {
         let components = path_components(rel)?;
         let ino = self.ino_at(&components).ok_or(ENOENT)?;
-        // One namespace lock for the inode's kind, content and document-ness.
+        // One namespace lock for the inode's kind and content.
         let view = self.inode_view(ino, false).ok_or(ENOENT)?;
         if view.attr.kind == FileType::Directory {
             return Err(EISDIR);
@@ -522,16 +513,6 @@ impl QuickFS {
             return self
                 .read_stage_blocking(&stage, offset, len)
                 .map_err(|e| to_errno(&e));
-        }
-        if view.document {
-            let whole = self.read_full_blocking(ino).map_err(|e| to_errno(&e))?;
-            let start = usize::try_from(offset)
-                .unwrap_or(usize::MAX)
-                .min(whole.len());
-            let end = usize::try_from(len)
-                .map_or(whole.len(), |len| start.saturating_add(len))
-                .min(whole.len());
-            return Ok(whole.get(start..end).unwrap_or_default().to_vec());
         }
         let Some(hash) = view.hash else {
             return Ok(Vec::new());
@@ -566,25 +547,15 @@ impl QuickFS {
     }
 
     /// Writes the file at `snapshot` (immutable while this runs) as the whole file at `rel`, as a create
-    /// or an open, write and close of the mount would: a document is imported through its format's
-    /// codec (bytes it cannot read back as written make it a plain file holding them), a new file
-    /// named for a registered format becomes a document where the namespace keeps documents, and
-    /// anything else is content ([`Self::apply_local_snapshot`]).
+    /// or an open, write and close of the mount would ([`Self::apply_local_snapshot`]).
     pub fn write_path(&self, rel: &Path, snapshot: &Path, mtime_ms: u64) -> Result<(), i32> {
         let components = path_components(rel)?;
         let Some((name, parents)) = components.split_last() else {
             return Err(EISDIR);
         };
         let parent = self.ensure_dir_components(parents)?;
-        let read = || std::fs::read(snapshot).map_err(|e| to_errno(&e));
         match self.lookup_kind(parent, name) {
-            Some((ino, FileType::RegularFile)) if self.is_document(ino) => {
-                self.commit_bytes(ino, &read()?)
-            }
             None => {
-                if let Some(codec) = Self::new_document_codec(name) {
-                    return self.create_local_document(parent, name, &codec, &read()?, mtime_ms);
-                }
                 self.write_snapshot(rel, snapshot, mtime_ms)?;
                 if let Some((ino, _)) = self.lookup_kind(parent, name) {
                     self.document_version(ino, fs_protocol::FileProvenance::Create, None);
@@ -598,42 +569,6 @@ impl QuickFS {
     fn write_snapshot(&self, rel: &Path, snapshot: &Path, mtime_ms: u64) -> Result<(), i32> {
         let attrs = PosixAttrs::default_for(false);
         self.apply_local_snapshot(rel, snapshot, None, mtime_ms, attrs, None)
-    }
-
-    fn new_document_codec(name: &[u8]) -> Option<String> {
-        std::str::from_utf8(name).ok().and_then(document_codec_for)
-    }
-
-    /// Creates the document `name` in `parent` with `data` as its content, as a FUSE create followed by
-    /// a write and close.
-    fn create_local_document(
-        &self,
-        parent: u64,
-        name: &[u8],
-        codec: &str,
-        data: &[u8],
-        mtime_ms: u64,
-    ) -> Result<(), i32> {
-        let name = std::str::from_utf8(name).map_err(|_| libc::EINVAL)?;
-        let ino = {
-            let mut ns = self.ns();
-            let ino = ns
-                .create_document(parent, name, codec, mtime_ms)
-                .ok_or(ENOENT)?;
-            ns.note_change();
-            ino
-        };
-        self.publish();
-        self.document_version(ino, fs_protocol::FileProvenance::Create, None);
-        if data.is_empty() {
-            return Ok(());
-        }
-        let committed = self.commit_bytes(ino, data);
-        if committed.is_err() {
-            // A document whose bytes could not be committed must not stay behind empty.
-            let _ = self.delete_named(parent, name.as_bytes(), false);
-        }
-        committed
     }
 
     pub fn write_lease_at(&self, rel: &Path) -> Option<WriteLease> {

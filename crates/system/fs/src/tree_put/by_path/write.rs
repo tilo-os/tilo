@@ -57,11 +57,6 @@ impl Namespace {
                     "{path:?} is there already: `replace: true` writes over it"
                 ));
             }
-            if self.document_codec(attr.ino.into()).is_some() {
-                return Err(format!(
-                    "{path:?} is a document the tree itself keeps: the app that opens it writes it"
-                ));
-            }
         }
         let before = self.before_change();
         let mut made = Vec::new();

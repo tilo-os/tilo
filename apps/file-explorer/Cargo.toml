@@ -78,7 +78,7 @@ web-features = []
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
 # File records: the tree a workspace's files are, and the kinds of node in it.
-fs-protocol = { path = "../../crates/system/fs-protocol", features = ["documents"] }
+fs-protocol = { path = "../../crates/system/fs-protocol" }
 jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true

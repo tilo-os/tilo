@@ -369,13 +369,6 @@ impl Chunks {
         self.doc_of_mut(obj)?.delete(&obj.id, prop)
     }
 
-    /// Drop chunk `chunk`'s pending edits.
-    pub(super) fn rollback(&mut self, chunk: TreeChunk) {
-        if let Some(doc) = self.doc_mut(chunk) {
-            let _ = doc.rollback();
-        }
-    }
-
     fn doc_of(&self, obj: &Obj) -> Result<&ChangeTrackedDoc, AutomergeError> {
         self.doc(obj.chunk)
             .ok_or_else(|| AutomergeError::InvalidObjId(format!("chunk {}", obj.chunk)))

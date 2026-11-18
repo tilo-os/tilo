@@ -264,13 +264,6 @@ impl Namespace {
                 }
                 Ok(())
             }
-            // A text document's content is the tree's own, under its node: only its app
-            // copies it whole.
-            Some(_) if self.hash_for(ino).is_none() && self.document_snapshot(ino).is_some() => {
-                Err(format!(
-                    "{path:?} is a document the tree itself keeps: the app that opens it copies it"
-                ))
-            }
             Some(_) => Ok(()),
             None => Err(format!("the workspace has no {path:?}")),
         }

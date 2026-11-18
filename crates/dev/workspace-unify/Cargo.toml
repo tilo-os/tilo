@@ -371,7 +371,7 @@ doc = false
 "frost-rerandomized-3_0_0" = { package = "frost-rerandomized", version = "^3.0.0", default-features = false, features = ["serde", "serialization"] }
 "fs-content" = { path = "../../../crates/system/fs-content", default-features = false, features = [] }
 "fs-native" = { path = "../../../crates/system/fs-native", default-features = false, features = [] }
-"fs-protocol" = { path = "../../../crates/system/fs-protocol", default-features = false, features = ["documents"] }
+"fs-protocol" = { path = "../../../crates/system/fs-protocol", default-features = false, features = [] }
 "fs-set-times-0_20_3" = { package = "fs-set-times", version = "^0.20.3", default-features = false, features = [] }
 "fs4-0_13_1" = { package = "fs4", version = "^0.13.1", default-features = false, features = ["default", "sync"] }
 "fuser-0_18_0" = { package = "fuser", version = "^0.18.0", default-features = false, features = ["default"] }
@@ -1884,7 +1884,7 @@ doc = false
 "frost-rerandomized-3_0_0" = { package = "frost-rerandomized", version = "^3.0.0", default-features = false, features = ["serde", "serialization"] }
 "fs-content" = { path = "../../../crates/system/fs-content", default-features = false, features = [] }
 "fs-native" = { path = "../../../crates/system/fs-native", default-features = false, features = [] }
-"fs-protocol" = { path = "../../../crates/system/fs-protocol", default-features = false, features = ["documents"] }
+"fs-protocol" = { path = "../../../crates/system/fs-protocol", default-features = false, features = [] }
 "fs-set-times-0_20_3" = { package = "fs-set-times", version = "^0.20.3", default-features = false, features = [] }
 "fs4-0_13_1" = { package = "fs4", version = "^0.13.1", default-features = false, features = ["default", "sync"] }
 "fs_extra-1_3_0" = { package = "fs_extra", version = "^1.3.0", default-features = false, features = [] }
@@ -2214,7 +2214,6 @@ doc = false
 "protobuf-support-3_7_2" = { package = "protobuf-support", version = "^3.7.2", default-features = false, features = [] }
 "psl-2_1_190" = { package = "psl", version = "^2.1.190", default-features = false, features = ["default", "helpers"] }
 "psl-types-2_0_11" = { package = "psl-types", version = "^2.0.11", default-features = false, features = [] }
-"pulldown-cmark-0_12_2" = { package = "pulldown-cmark", path = "../../../vendor/pulldown-cmark", default-features = false, features = [] }
 "pulley-interpreter-50_0_1" = { package = "pulley-interpreter", version = "^50.0.1", default-features = false, features = ["decode", "disas", "encode", "interp", "std"] }
 "pulley-macros-50_0_1" = { package = "pulley-macros", version = "^50.0.1", default-features = false, features = [] }
 "pxfm-0_1_27" = { package = "pxfm", version = "^0.1.27", default-features = false, features = [] }
@@ -2429,7 +2428,6 @@ doc = false
 "tilo-desktop-entry" = { path = "../../../crates/system/desktop-entry", default-features = false, features = [] }
 "tilo-desktop-model" = { path = "../../../crates/session/desktop-model", default-features = false, features = [] }
 "tilo-doc" = { path = "../../../crates/doc/tilo-doc", default-features = false, features = ["bulk-instrumentation"] }
-"tilo-doc-codecs" = { path = "../../../crates/doc/tilo-doc-codecs", default-features = false, features = ["all", "default", "docx", "epub", "html", "markdown", "ods", "odt", "office", "rtf", "xlsx"] }
 "tilo-documents" = { path = "../../../crates/system/documents", default-features = false, features = [] }
 "tilo-endpoint-reachability" = { path = "../../../crates/system/endpoint-reachability", default-features = false, features = [] }
 "tilo-face" = { path = "../../../crates/platform/tilo-face", default-features = false, features = [] }

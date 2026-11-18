@@ -96,9 +96,6 @@ pub(super) enum Job {
     Joined(WorkspaceId),
     /// A workspace was deleted: the service lets go of all it holds of it.
     Forget(WorkspaceId),
-    /// A workspace's notebook or folder took a write: its notes and their files in the
-    /// folder are brought into step ([`notes_folder`]).
-    NotesFolder(WorkspaceId),
     /// A document written since its name was last read: its name in its app's index is
     /// read again ([`publish`]).
     Rename(WorkspaceId, DocumentRoute),
@@ -121,7 +118,6 @@ impl Job {
             Self::Changed { .. } => "changed",
             Self::Joined(_) => "joined",
             Self::Forget(_) => "forget",
-            Self::NotesFolder(_) => "notes-folder",
             Self::Rename(..) => "rename",
         }
     }
@@ -139,7 +135,6 @@ impl Job {
             | Self::Invocations { workspace_id, .. }
             | Self::Changed { workspace_id, .. }
             | Self::Arrived { workspace_id, .. }
-            | Self::NotesFolder(workspace_id)
             | Self::Rename(workspace_id, _) => Some(*workspace_id),
             Self::Feedback { .. } | Self::Ran(_) | Self::Joined(_) | Self::Forget(_) => None,
         }
@@ -166,7 +161,6 @@ impl Job {
             | Self::Arrived { .. }
             | Self::Joined(_)
             | Self::Forget(_)
-            | Self::NotesFolder(_)
             | Self::Rename(..) => Keys::Joined,
         }
     }

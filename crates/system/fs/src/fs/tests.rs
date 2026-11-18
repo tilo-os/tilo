@@ -1784,123 +1784,6 @@ mod history_integration_tests {
             3
         );
     }
-
-    fn history_fs(
-        endpoint: &Endpoint,
-        namespace: Namespace,
-    ) -> (QuickFS, Arc<crate::history_fixture::History>) {
-        let hydrator = Arc::new(Hydrator::new(
-            endpoint.clone(),
-            Arc::new(crate::store::ContentStore::memory()),
-        ));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-        let namespace = Arc::new(Mutex::new(namespace));
-        let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
-        let actor = FileActor {
-            person: Ed25519PublicKey([1; 32]),
-            device: Ed25519PublicKey([2; 32]),
-        };
-        let fs = QuickFS::new(namespace, hydrator, heuristics)
-            .with_history(actor)
-            .unwrap();
-        (fs, history)
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn document_versions_are_fetchable() {
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-        let mut namespace = Namespace::new("documents").unwrap();
-        let doc = namespace
-            .create_document(crate::namespace::ROOT_INO, "notes.md", "md", 1)
-            .unwrap();
-        let document_id = namespace.document_id_for(doc).unwrap();
-        let (fs, history) = history_fs(&endpoint, namespace);
-        assert!(fs.is_document(doc));
-
-        let edits: [&[u8]; 2] = [b"# One\n\nfirst\n", b"# Two\n\nsecond\n"];
-        for edit in edits {
-            assert_eq!(fs.commit_bytes(doc, edit), Ok(()));
-        }
-        let snapshot = history.snapshot(document_id).unwrap();
-        let edited = snapshot
-            .versions
-            .iter()
-            .filter(|version| version.provenance == FileProvenance::Edit)
-            .count();
-        assert_eq!(edited, edits.len());
-        let mut read = Vec::new();
-        for version in &snapshot.versions {
-            let Some(hash) = version.content_hash else {
-                assert_ne!(version.provenance, FileProvenance::Edit);
-                continue;
-            };
-            let bytes = fs
-                .hydrator
-                .read(Hash::from(hash.0), 0, u64::MAX)
-                .await
-                .expect("every recorded document version is fetchable");
-            assert_eq!(
-                fs.history_version_preview(doc, version.id).unwrap(),
-                bytes,
-                "history previews the version's own payload"
-            );
-            read.push(bytes);
-        }
-        for edit in edits {
-            assert!(
-                read.iter().any(|bytes| bytes == edit),
-                "{:?} is readable from history",
-                String::from_utf8_lossy(edit)
-            );
-        }
-        drop(fs);
-        endpoint.close().await;
-    }
-}
-
-mod allocation_count {
-    use std::alloc::{GlobalAlloc, Layout, System};
-    use std::cell::Cell;
-
-    pub struct Counting;
-
-    std::thread_local! {
-        static ALLOCATED: Cell<u64> = const { Cell::new(0) };
-    }
-
-    fn add(bytes: usize) {
-        let _ = ALLOCATED.try_with(|count| count.set(count.get().saturating_add(bytes as u64)));
-    }
-
-    unsafe impl GlobalAlloc for Counting {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            add(layout.size());
-            unsafe { System.alloc(layout) }
-        }
-
-        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-            add(layout.size());
-            unsafe { System.alloc_zeroed(layout) }
-        }
-
-        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            unsafe { System.dealloc(ptr, layout) }
-        }
-
-        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-            add(new_size);
-            unsafe { System.realloc(ptr, layout, new_size) }
-        }
-    }
-
-    #[global_allocator]
-    static COUNTING: Counting = Counting;
-
-    pub fn allocated_by(run: impl FnOnce()) -> u64 {
-        let before = ALLOCATED.with(Cell::get);
-        run();
-        ALLOCATED.with(Cell::get).saturating_sub(before)
-    }
 }
 
 mod write_stage_tests {
@@ -2193,63 +2076,10 @@ mod write_stage_tests {
         endpoint.close().await;
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_document_reads_back_the_bytes_written_until_the_document_is_edited() {
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-        let hydrator = Arc::new(Hydrator::new(
-            endpoint.clone(),
-            Arc::new(ContentStore::memory()),
-        ));
-        let namespace = Arc::new(Mutex::new(Namespace::new("documents").unwrap()));
-        let doc = namespace
-            .lock()
-            .unwrap()
-            .create_document(ROOT_INO, "question.md", "md", 1)
-            .unwrap();
-        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-        let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics);
-        let fs = tokio::task::spawn_blocking(move || {
-            let write = |bytes: &[u8]| {
-                assert_eq!(
-                    fs.write_buffer(doc, 0, bytes),
-                    Ok(u32::try_from(bytes.len()).unwrap())
-                );
-                assert_eq!(fs.flush_inode(doc), Ok(()));
-                fs.settle_last_close(doc, true);
-            };
-            let question = b"Question X\nfirst line of thought\n";
-            write(question);
-            assert_eq!(
-                &*fs.document_export(doc).unwrap(),
-                question,
-                "the file is the bytes written"
-            );
-            assert_eq!(
-                fs.presented_attr(doc).unwrap().0.size,
-                question.len() as u64
-            );
-            fs
-        })
-        .await
-        .unwrap();
-        {
-            let mut ns = namespace.lock().unwrap();
-            let block = ns.document_insert_block(doc, None, "paragraph").unwrap();
-            ns.document_splice(doc, &block, 0, 0, "added in a rich view");
-        }
-        let edited = tokio::task::spawn_blocking(move || fs.document_export(doc).unwrap())
-            .await
-            .unwrap();
-        assert!(String::from_utf8_lossy(&edited).contains("added in a rich view"));
-        assert_ne!(&*edited, b"Question X\nfirst line of thought\n");
-        endpoint.close().await;
-    }
-
     /// What a reader of the mount gets for the whole of `ino`.
     fn served(fs: &QuickFS, ino: u64) -> Vec<u8> {
         match fs.plan_read(ino, 0, 0, 1 << 20) {
             ReadPlan::Local(data) => data,
-            ReadPlan::Buffered(BufferedRead::Shared(bytes, range)) => bytes[range].to_vec(),
             ReadPlan::Error(errno) => panic!("the read failed with errno {errno}"),
             ReadPlan::Buffered(_) => panic!("a closed file was read from a stage"),
             ReadPlan::Remote(_) => panic!("locally written content was asked of a peer"),
@@ -2257,8 +2087,7 @@ mod write_stage_tests {
     }
 
     /// A file written into the folder reads back byte for byte, whatever format its name
-    /// names: a document codec that cannot read the bytes, or cannot write its format back,
-    /// leaves them a plain file. `git reset --hard` once left every `.html` file empty.
+    /// names. `git reset --hard` once left every `.html` file empty.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_file_reads_back_the_bytes_written_whatever_its_format() {
         let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
@@ -2287,7 +2116,7 @@ mod write_stage_tests {
             for ext in extensions {
                 for (what, bytes) in contents {
                     let name = format!("{what}.{ext}");
-                    let (ino, _) = fs
+                    let ino = fs
                         .create_for_write(ROOT_INO, name.as_bytes(), 0o644)
                         .unwrap();
                     if !bytes.is_empty() {
@@ -2307,14 +2136,6 @@ mod write_stage_tests {
                     );
                 }
             }
-            let kept = |name: &str| {
-                let ino = fs.ns().lookup(ROOT_INO, name.as_bytes()).unwrap().ino.0;
-                fs.is_document(ino)
-            };
-            assert!(kept("markdown.md"), "Markdown it reads is kept as a document");
-            assert!(!kept("non-utf8.md"), "bytes Markdown cannot read stay a plain file");
-            assert!(!kept("html.html"), "HTML, which no codec writes, is a plain file");
-            assert!(!kept("malformed.odt"), "a file its codec refuses stays a plain file");
         })
         .await
         .unwrap();
@@ -2344,154 +2165,6 @@ mod write_stage_tests {
         })
         .await
         .unwrap();
-        endpoint.close().await;
-    }
-
-    /// git sizes its mapping of a file by `lstat` (`getattr`), then opens it; with a zero
-    /// entry TTL the open's path walk asks `lookup` again, and the kernel takes the size
-    /// from that answer too. Every answer must size the file as a read serves it, or the
-    /// mapping reaches past the size the kernel holds and the reader dies with SIGBUS.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn lookup_sizes_a_file_as_getattr_and_read_do() {
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-        let hydrator = Arc::new(Hydrator::new(
-            endpoint.clone(),
-            Arc::new(ContentStore::memory()),
-        ));
-        let namespace = Arc::new(Mutex::new(Namespace::new("sizes").unwrap()));
-        let doc = namespace
-            .lock()
-            .unwrap()
-            .create_document(ROOT_INO, "defects.md", "md", 1)
-            .unwrap();
-        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-        let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics);
-        let fs = tokio::task::spawn_blocking(move || {
-            let text = b"# Defects\n\nA checkout wrote this file.\n";
-            assert_eq!(
-                fs.write_buffer(doc, 0, text),
-                Ok(u32::try_from(text.len()).unwrap())
-            );
-            assert_eq!(fs.flush_inode(doc), Ok(()));
-            fs.settle_last_close(doc, true);
-            fs
-        })
-        .await
-        .unwrap();
-        {
-            let mut ns = namespace.lock().unwrap();
-            let block = ns.document_insert_block(doc, None, "paragraph").unwrap();
-            ns.document_splice(doc, &block, 0, 0, "edited in a rich view");
-        }
-        tokio::task::spawn_blocking(move || {
-            let served = fs.document_export(doc).unwrap().len() as u64;
-            let (stat, _) = fs.attr_for_request(doc, None).unwrap();
-            let (walked, _) = fs.lookup_entry(ROOT_INO, b"defects.md").unwrap();
-            assert_eq!(
-                stat.size, served,
-                "getattr sizes the document as read serves it"
-            );
-            assert_eq!(
-                walked.size, served,
-                "lookup sizes the document as read serves it"
-            );
-            assert_eq!(
-                fs.presented_attr(doc).unwrap().0.size,
-                served,
-                "setattr and readdirplus size the document as read serves it"
-            );
-
-            let log = fs.create_empty_file(ROOT_INO, "build.log").unwrap();
-            let line = b"a line still being written\n";
-            assert_eq!(
-                fs.write_buffer(log, 0, line),
-                Ok(u32::try_from(line.len()).unwrap())
-            );
-            let (walked, _) = fs.lookup_entry(ROOT_INO, b"build.log").unwrap();
-            assert_eq!(
-                walked.size,
-                line.len() as u64,
-                "lookup sizes an open file by its unflushed writes"
-            );
-        })
-        .await
-        .unwrap();
-        endpoint.close().await;
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn document_read_does_not_clone_per_chunk() {
-        const CHUNK: u32 = 128 * 1024;
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-        let hydrator = Arc::new(Hydrator::new(
-            endpoint.clone(),
-            Arc::new(ContentStore::memory()),
-        ));
-        let namespace = Arc::new(Mutex::new(Namespace::new("documents").unwrap()));
-        let doc = namespace
-            .lock()
-            .unwrap()
-            .create_document(ROOT_INO, "big.md", "md", 1)
-            .unwrap();
-        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-        let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics);
-        assert!(fs.is_document(doc));
-
-        let paragraph = "Collaboration lives below applications. ".repeat(50);
-        let mut text = String::new();
-        while text.len() < 4 * 1024 * 1024 + 64 * 1024 {
-            text.push_str(&paragraph);
-            text.push_str("\n\n");
-        }
-        assert_eq!(
-            fs.write_buffer(doc, 0, text.as_bytes()),
-            Ok(u32::try_from(text.len()).unwrap())
-        );
-        assert_eq!(fs.flush_inode(doc), Ok(()));
-        fs.settle_last_close(doc, true);
-        assert!(fs.stage(doc).is_none());
-
-        let size = fs.presented_attr(doc).unwrap().0.size;
-        assert!(size >= 4 * 1024 * 1024, "export is {size} bytes");
-        let exported = fs.document_export(doc).unwrap();
-        namespace
-            .lock()
-            .unwrap()
-            .create_file(ROOT_INO, "unrelated.txt", None, 0, 2)
-            .unwrap();
-        assert!(
-            Arc::ptr_eq(&exported, &fs.document_export(doc).unwrap()),
-            "a change elsewhere in the namespace re-exported the document"
-        );
-
-        let mut read = Vec::with_capacity(exported.len());
-        let allocated = allocation_count::allocated_by(|| {
-            let mut offset = 0_u64;
-            while offset < size {
-                match fs.plan_read(doc, 0, offset, CHUNK) {
-                    ReadPlan::Buffered(BufferedRead::Shared(bytes, range)) => {
-                        read.extend_from_slice(&bytes[range]);
-                    }
-                    _ => panic!("a document read is served from its export"),
-                }
-                offset += u64::from(CHUNK);
-            }
-        });
-        assert_eq!(
-            blake3::hash(&read),
-            blake3::hash(&exported),
-            "the chunks reassemble the export"
-        );
-        assert!(
-            allocated <= 2 * size,
-            "reading a {size}-byte document in {CHUNK}-byte chunks allocated {allocated} bytes"
-        );
-
-        assert_eq!(fs.write_buffer(doc, 0, b"# Title\n\n"), Ok(9));
-        assert_eq!(fs.flush_inode(doc), Ok(()));
-        fs.settle_last_close(doc, true);
-        assert!(!Arc::ptr_eq(&exported, &fs.document_export(doc).unwrap()));
-        drop(fs);
         endpoint.close().await;
     }
 }
@@ -2603,11 +2276,10 @@ mod read_lock_tests {
         } = fixture().await;
         let fs = fs.with_acl(shared_read_policy(), ME);
         let before = locks(&fs);
-        let (attr, is_doc) = fs.attr_for_request(file, None).unwrap();
+        let attr = fs.attr_for_request(file, None).unwrap();
         assert_eq!(locks(&fs) - before, 1);
         assert_eq!(attr.size, BYTES.len() as u64);
         assert_eq!(attr.kind, FileType::RegularFile);
-        assert!(!is_doc);
         drop(fs);
         endpoint.close().await;
     }
@@ -2682,8 +2354,7 @@ mod read_lock_tests {
             "the handle opened before the unlink keeps reading"
         );
         assert_eq!(
-            fs.attr_for_request(file, Some(fh))
-                .map(|(attr, _)| attr.size),
+            fs.attr_for_request(file, Some(fh)).map(|attr| attr.size),
             Ok(BYTES.len() as u64)
         );
         assert_eq!(

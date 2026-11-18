@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
-use fs_protocol::files::{FIRST_TREE_CHUNK, FileNodeKind, TreeChunk};
+use fs_protocol::files::{FileNodeKind, TreeChunk};
 use fs_protocol::tree::{FILES_APP, ROOT_ID, Tree, TreeChunks, TreeEntry, chunk_document_id};
 use ui::carry_out::{ContentLinkAsk, ContentLinkFile, Offers};
 use ui::framework::{
@@ -96,9 +96,6 @@ impl ResourceApp for FilesTreeShell {
 /// The bytes of content the window holds, by hash. Reading content the page
 /// lacks is what asks the workspace for it.
 type Reads = Rc<dyn Fn(&str) -> Option<Vec<u8>>>;
-/// Keeps bytes in the content the window reads, answering their hash: a text
-/// document's file, which the tree holds as a document rather than by hash.
-type Keeps = Rc<dyn Fn(&[u8]) -> Option<String>>;
 
 /// A file the person asked to open, waiting for the bytes that say which app
 /// opens it.
@@ -239,7 +236,6 @@ pub struct TreeBrowser {
     /// The window's own document, which the open folder is set in.
     dispatch: Dispatcher<FilesWindow>,
     read: Option<Reads>,
-    keep: Option<Keeps>,
     body: Column,
     shown: Option<Shown>,
     structure_dirty: bool,
@@ -265,9 +261,6 @@ impl TreeBrowser {
                 })
             }) as Rc<dyn Fn(&str) -> Option<Vec<u8>>>
         });
-        let keep: Option<Keeps> = cx
-            .content()
-            .map(|content| Rc::new(move |bytes: &[u8]| content.put(bytes).ok()) as Keeps);
         let people = cx.people();
         // The workspace's tree is the resource every member holds, under the
         // Files app's own name for it — the one the page's search reads
@@ -285,7 +278,6 @@ impl TreeBrowser {
             people,
             dispatch: cx.dispatcher(),
             read,
-            keep,
             body: Column::new(),
             shown: None,
             structure_dirty: true,
@@ -465,7 +457,7 @@ impl TreeBrowser {
             }));
         }
         let Some(hash) = node.hash.clone() else {
-            return Box::new(self.document_row(row, id, node, name));
+            return Box::new(row);
         };
         let asked = Rc::clone(&self.asked);
         let read = self.read.clone();
@@ -515,36 +507,6 @@ impl TreeBrowser {
                 folder: folder.as_deref(),
             },
         )
-    }
-
-    /// A text document's row (a `.md`, an `.odt`): its content is the tree's
-    /// own, so choosing it writes the file from the tree and opens that, as a
-    /// computer's folder reads it.
-    fn document_row(&self, row: ListRow, id: &str, node: &TreeEntry, name: String) -> ListRow {
-        let (Some(held), Some(keep)) = (self.tree.as_ref(), self.keep.clone()) else {
-            return row;
-        };
-        if node.codec.is_none() {
-            return row;
-        }
-        // The document is written from the chunk of the tree that holds the node.
-        let chunk = node.document_id.map_or(FIRST_TREE_CHUNK, |id| id.chunk());
-        let Some(record) = held.chunk(chunk).map(|chunk| chunk.record.clone()) else {
-            return row;
-        };
-        let asked = Rc::clone(&self.asked);
-        let id = id.to_owned();
-        row.on_view(move || {
-            let file = record
-                .read(|doc| fs_protocol::tree::document_file(doc, &id, &ui::content::NoContent))
-                .flatten();
-            if let Some(hash) = file.as_deref().and_then(|file| keep(file)) {
-                asked.borrow_mut().push(Asked {
-                    hash,
-                    name: name.clone(),
-                });
-            }
-        })
     }
 
     /// What carrying the entry `id` out of the workspace takes: the file
@@ -647,31 +609,13 @@ impl TreeBrowser {
                 .submit(FilesWindow::paths().folder.set(Atom(id.to_owned())));
             return true;
         }
-        let hash = if let Some(hash) = node.hash {
-            if let Some(read) = &self.read {
-                // Reading content the page lacks asks the workspace for it.
-                let _ = read(&hash);
-            }
-            hash
-        } else {
-            // A text document is written from the chunk of the tree that holds the node.
-            let chunk = node.document_id.map_or(FIRST_TREE_CHUNK, |id| id.chunk());
-            let file = held
-                .chunk(chunk)
-                .and_then(|chunk| {
-                    chunk.record.read(|doc| {
-                        fs_protocol::tree::document_file(doc, id, &ui::content::NoContent)
-                    })
-                })
-                .flatten();
-            let Some(hash) = file
-                .as_deref()
-                .and_then(|file| self.keep.as_ref().and_then(|keep| keep(file)))
-            else {
-                return false;
-            };
-            hash
+        let Some(hash) = node.hash else {
+            return false;
         };
+        if let Some(read) = &self.read {
+            // Reading content the page lacks asks the workspace for it.
+            let _ = read(&hash);
+        }
         self.asked.borrow_mut().push(Asked { hash, name });
         self.open_what_arrived();
         true
@@ -821,7 +765,6 @@ mod tests {
             mtime: 1_767_225_600_000,
             author: Some("ada".to_owned()),
             document_id: None,
-            codec: None,
         };
         (id.to_owned(), entry)
     }

@@ -221,13 +221,6 @@ split_code! {
 }
 
 split_code! {
-    /// The codecs that read a workspace's document (a `.md`, an `.odt`) for
-    /// search: the first tree that names one asks for them.
-    mod document_files: tilo_browser_runtime::DocumentFiles = tilo_browser_runtime::builtin_document_files()
-        => tilo_browser_runtime::DOCUMENT_FILES, module = "document_files", hash = "7a2f63c8e1b95d04";
-}
-
-split_code! {
     /// The page's layout actions: the page asks for them as it first draws, and an action asked
     /// before they are in waits for them.
     mod page_layout: tilo_browser_runtime::MakePageLayout = tilo_browser_runtime::builtin_page_layout()
@@ -382,7 +375,6 @@ pub(crate) fn register() {
     page_drops::register();
     page_layout::register();
     page_search::register();
-    document_files::register();
     sheets::register();
     questions::register();
     desktop_search::register();

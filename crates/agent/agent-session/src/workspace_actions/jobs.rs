@@ -25,7 +25,6 @@ impl Job {
             | Self::Arrived { workspace_id, .. }
             | Self::Joined(workspace_id)
             | Self::Forget(workspace_id)
-            | Self::NotesFolder(workspace_id)
             | Self::Rename(workspace_id, _) => *workspace_id,
             Self::Ran(ended) => ended.workspace_id,
         }

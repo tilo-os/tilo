@@ -79,9 +79,7 @@ pub use drops_code::{DROPS, MakeDrops, builtin_drops};
 #[cfg(target_arch = "wasm32")]
 pub use layout::{MakePageLayout, PAGE_LAYOUT, builtin_page_layout};
 #[cfg(target_arch = "wasm32")]
-pub use page_files::{
-    DOCUMENT_FILES, DocumentFiles, PDF_WORDS, PdfWords, builtin_document_files, builtin_pdf_words,
-};
+pub use page_files::{PDF_WORDS, PdfWords, builtin_pdf_words};
 #[cfg(target_arch = "wasm32")]
 pub use page_search::{MakePageSearch, PAGE_SEARCH, builtin_page_search};
 /// Install an already-admitted feedback transport before mounting its desktop.

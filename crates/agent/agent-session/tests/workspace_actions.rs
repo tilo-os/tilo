@@ -137,8 +137,6 @@ mod member_own;
 #[path = "workspace_actions/member_roles.rs"]
 mod member_roles;
 #[cfg(test)]
-#[path = "workspace_actions/notes_files.rs"]
-mod notes_files;
 #[cfg(test)]
 #[path = "workspace_actions/own_agent.rs"]
 mod own_agent;

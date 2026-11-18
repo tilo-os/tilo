@@ -201,17 +201,6 @@ impl ChangeTrackedDoc {
         self.doc.save_after(heads)
     }
 
-    pub(super) fn diff_obj(
-        &mut self,
-        obj: &automerge::ObjId,
-        before: &[ChangeHash],
-        after: &[ChangeHash],
-        recursive: bool,
-    ) -> Result<Vec<automerge::Patch>, automerge::AutomergeError> {
-        self.commit_named();
-        self.doc.diff_obj(obj, before, after, recursive)
-    }
-
     /// Record the patches of the changes applied from now on: what a peer's
     /// delta touched, and only that, so derived state follows it without a
     /// walk over the document.

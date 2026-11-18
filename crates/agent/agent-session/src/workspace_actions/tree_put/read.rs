@@ -6,7 +6,7 @@
 //! disk. A caller with no window and no mount (an agent working while every device of its
 //! person is off) asks the workspace instead, and whoever keeps its tree answers: what a folder
 //! holds, a page at a time, and what a file says, put together from the content kept here of
-//! it ([`fs_content::whole`]) or, for a text document, from the tree itself.
+//! it ([`fs_content::whole`]).
 //!
 //! Nothing is written, so nothing is taken back. A read is answered to whoever may read what
 //! Files keeps in the workspace ([`Worker::may_on_tree`]).
@@ -122,19 +122,11 @@ fn listing(tree: &mut Namespace, arguments: &Map<String, Value>) -> Result<Value
 }
 
 impl Worker {
-    /// The bytes of `file`, a file of `tree`: put together from the content the workspace's
-    /// store keeps of it here, or, for a text document the tree itself keeps, written out in
-    /// its format.
-    fn bytes_at(
-        &self,
-        workspace_id: WorkspaceId,
-        tree: &Namespace,
-        file: &FileAt,
-    ) -> Result<Vec<u8>, String> {
+    /// The bytes of `file`: put together from the content the workspace's store keeps of it
+    /// here.
+    fn bytes_at(&self, workspace_id: WorkspaceId, file: &FileAt) -> Result<Vec<u8>, String> {
         let Some(content) = &file.content else {
-            return tree
-                .export_document(file.ino, &tilo_content::NoContent)
-                .ok_or_else(|| format!("{:?} holds nothing a text read reads", file.path));
+            return Ok(Vec::new());
         };
         if file.size > MOST_TEXT_BYTES {
             return Err(format!(
@@ -176,7 +168,7 @@ impl Worker {
             .ok_or("`file` names the file by its path in the workspace")?;
         let from = place(arguments, "from")?.unwrap_or(0);
         let file = tree.file_at(named)?;
-        let text = String::from_utf8(self.bytes_at(workspace_id, tree, &file)?)
+        let text = String::from_utf8(self.bytes_at(workspace_id, &file)?)
             .map_err(|_| format!("{:?} is not text: {}", file.path, read_by(&file.path)))?;
         let total = text.chars().count();
         let from = from.min(total);

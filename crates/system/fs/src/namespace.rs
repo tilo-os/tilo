@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::{Duration, UNIX_EPOCH};
 
-use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use fs_protocol::{
     ContentRevisionV1, FILE_BINDING_VERSION, FileActor, FileBindingV1, FileDocumentId,
     FileMutationTransactionManifest, FileNameV1, FileNodeKind, MAX_FILE_NAME_BYTES,
@@ -38,7 +38,6 @@ pub const MAX_LIVE_RECORD_BLOB_SCAN: usize = 100_000;
 mod changes;
 mod changesets;
 mod chunks;
-mod documents;
 mod records;
 pub use records::ResourceWrite;
 use records::bundle;
@@ -49,7 +48,7 @@ mod index_walk_tests;
 mod kernel_changes;
 mod leases;
 mod posix;
-mod projection;
+mod trash;
 pub use changesets::ChangesetMark;
 use chunks::Chunks;
 pub(crate) use chunks::Obj;
@@ -178,9 +177,6 @@ pub(crate) struct InodeView {
     pub hash: Option<Hash>,
     pub live: bool,
     pub path: Option<String>,
-    /// A CRDT-backed document whose bytes are its export: a codec under the legacy
-    /// content authority.
-    pub document: bool,
 }
 
 /// One authoritative, path-current row in the namespace-owned record index.
@@ -513,13 +509,6 @@ fn str_at_doc(doc: &AutoCommit, key: &str) -> Option<String> {
             ScalarValue::Str(value) => Some(value.to_string()),
             _ => None,
         },
-        _ => None,
-    }
-}
-
-fn map_at(doc: &Chunks, obj: &Obj, key: &str) -> Option<Obj> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
         _ => None,
     }
 }
@@ -1864,8 +1853,8 @@ impl Namespace {
 
     /// Everything one FUSE request asks about `ino`, read in one pass so the caller takes the
     /// namespace lock once: what [`Self::getattr`] (or, with `unlinked`,
-    /// [`Self::getattr_including_unlinked`]), [`Self::hash_for`], [`Self::path_for`] and
-    /// [`Self::document_codec`] would each answer. The path is built only when `query.path` asks
+    /// [`Self::getattr_including_unlinked`]), [`Self::hash_for`] and [`Self::path_for`] would each
+    /// answer. The path is built only when `query.path` asks
     /// for it, so a mount without an ACL never looks at it.
     pub(crate) fn inode_view(&self, ino: u64, query: InodeQuery) -> Option<InodeView> {
         let id = self.ino_to_id.get(&ino)?;
@@ -1875,7 +1864,6 @@ impl Namespace {
                 hash: None,
                 live: true,
                 path: query.path.then(|| "/".to_string()),
-                document: false,
             });
         }
         let live = self.reaches_root(id);
@@ -1893,7 +1881,6 @@ impl Namespace {
             } else {
                 None
             },
-            document: str_at(&self.doc, &obj, "codec").is_some(),
         })
     }
 
@@ -2165,33 +2152,6 @@ impl Namespace {
         }
     }
 
-    /// Whether the document file `ino` (its node: codec and content) changed between namespace heads
-    /// `before` and `after`. The diff walks only that node's objects. Unknown inodes count as
-    /// changed.
-    pub fn document_changed_between(
-        &mut self,
-        ino: u64,
-        before: &[automerge::ChangeHash],
-        after: &[automerge::ChangeHash],
-    ) -> bool {
-        let Some(node) = self.ino_to_id.get(&ino).and_then(|id| self.node(id)) else {
-            return true;
-        };
-        let Some(doc) = self.doc.doc_mut(node.chunk) else {
-            return true;
-        };
-        let mut of_doc = |heads: &[automerge::ChangeHash]| -> Vec<automerge::ChangeHash> {
-            heads
-                .iter()
-                .copied()
-                .filter(|hash| doc.has_change(hash))
-                .collect()
-        };
-        let (before, after) = (of_doc(before), of_doc(after));
-        doc.diff_obj(&node.id, &before, &after, true)
-            .map_or(true, |patches| !patches.is_empty())
-    }
-
     /// Every change this document holds beyond `heads`, as one incremental
     /// chunk for [`Self::apply_remote_and_resolve`]. Heads this document
     /// does not know (the asker's own changes) are ignored, so an asker that
@@ -2211,67 +2171,6 @@ impl Namespace {
             })
             .collect();
         bundle(records)
-    }
-
-    fn with_doc_mut<R>(
-        &mut self,
-        ino: u64,
-        f: impl FnOnce(&mut tilo_doc::DocMut) -> R,
-    ) -> Option<R> {
-        let id = self.ino_to_id.get(&ino)?.clone();
-        let root = self.document_root(&id)?;
-        let doc = &mut **self.doc.doc_mut(root.chunk)?;
-        let containers = tilo_doc::model::open(doc, &root.id).ok()?;
-        let mut ids = tilo_doc::model::seeded_id_gen(doc, &containers);
-        let mut dmut = tilo_doc::DocMut {
-            doc,
-            c: &containers,
-            ids: &mut ids,
-        };
-        Some(f(&mut dmut))
-    }
-
-    pub fn document_insert_block(
-        &mut self,
-        ino: u64,
-        after: Option<&str>,
-        kind: &str,
-    ) -> Option<String> {
-        self.with_doc_mut(ino, |d| d.insert_block(after, kind))
-    }
-
-    pub fn document_splice(
-        &mut self,
-        ino: u64,
-        block_id: &str,
-        idx: usize,
-        del: isize,
-        ins: &str,
-    ) -> bool {
-        self.with_doc_mut(ino, |d| d.splice_text(block_id, idx, del, ins))
-            .is_some()
-    }
-
-    pub fn document_block_text(&self, ino: u64, block_id: &str) -> Option<String> {
-        let id = self.ino_to_id.get(&ino)?;
-        let root = self.document_root(id)?;
-        let doc = &**self.doc.doc(root.chunk)?;
-        let containers = tilo_doc::model::open(doc, &root.id).ok()?;
-        tilo_doc::model::block_text(doc, &containers, block_id)
-    }
-
-    pub fn document_snapshot(&self, ino: u64) -> Option<tilo_doc::DocSnapshot> {
-        let id = self.ino_to_id.get(&ino)?;
-        let root = self.document_root(id)?;
-        let doc = &**self.doc.doc(root.chunk)?;
-        let containers = tilo_doc::model::open(doc, &root.id).ok()?;
-        Some(
-            tilo_doc::DocRef {
-                doc,
-                c: &containers,
-            }
-            .materialize(),
-        )
     }
 
     pub fn set_content(&mut self, ino: u64, hash: Option<&Hash>, size: u64, mtime: u64) -> bool {

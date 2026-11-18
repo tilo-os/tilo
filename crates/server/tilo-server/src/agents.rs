@@ -1157,27 +1157,6 @@ pub async fn start_serving_documents_and_events(
     Ok((server, app_server.actions.clone(), events, initiative))
 }
 
-/// The workspaces of `workspaces` that hold a notebook: those whose notes a pass brings into
-/// step with their files.
-async fn with_notes(
-    workspaces: &crate::workspaces::Workspaces,
-) -> std::collections::BTreeSet<tilo_server_protocol::WorkspaceId> {
-    let mut held = std::collections::BTreeSet::new();
-    for summary in workspaces.list().await {
-        let Ok(routes) = workspaces.document_routes(&summary.workspace).await else {
-            continue;
-        };
-        if routes
-            .iter()
-            .any(|(app, _)| WorkspaceActions::is_notebook(app))
-            && let Some(workspace_id) = tilo_server_protocol::WorkspaceId::parse(&summary.workspace)
-        {
-            held.insert(workspace_id);
-        }
-    }
-    held
-}
-
 /// Give `workspaces` the records `server` holds, joined as its own device.
 fn attach_resources(
     actions: &WorkspaceActions,
@@ -1220,46 +1199,6 @@ fn attach_resources(
         }
     }
     let shell = shell.map(|shell| shell as Arc<dyn WorkspaceShell>);
-    // A workspace's notes are also `.md` files in its folder: a write to its notebook or
-    // its folder brings the two into step, on this host, which holds both.
-    if let Some(workspaces) = server.workspaces() {
-        let mut writes = workspaces.document_writes();
-        let workspaces = workspaces.clone();
-        let actions = actions.clone();
-        tokio::spawn(async move {
-            // A workspace takes many writes a second (each keystroke in a note is one): the
-            // workspaces written to are brought into step once a second, together. Each
-            // workspace that holds notes is brought into step once as the host starts, and
-            // again whenever writes were missed: a write that landed while the host was down,
-            // or one this task fell behind on, still reaches its note or file.
-            let mut written = with_notes(&workspaces).await;
-            let mut every = tokio::time::interval(std::time::Duration::from_secs(1));
-            every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            loop {
-                tokio::select! {
-                    write = writes.recv() => match write {
-                        Ok(write) => {
-                            if WorkspaceActions::follows_notes_folder(&write.app)
-                                && let Some(workspace_id) =
-                                    tilo_server_protocol::WorkspaceId::parse(&write.workspace)
-                            {
-                                written.insert(workspace_id);
-                            }
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                            written.extend(with_notes(&workspaces).await);
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-                    },
-                    _ = every.tick() => {
-                        for workspace_id in std::mem::take(&mut written) {
-                            actions.notes_folder_written(workspace_id);
-                        }
-                    }
-                }
-            }
-        });
-    }
     actions
         .attach(Arc::new(ServerRecordsLink {
             shell,

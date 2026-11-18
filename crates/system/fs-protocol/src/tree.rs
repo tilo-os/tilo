@@ -221,12 +221,6 @@ pub const SIZE_KEY: &str = "size";
 /// When the content last changed, in milliseconds since the epoch.
 pub const MTIME_KEY: &str = "mtime";
 pub const AUTHOR_KEY: &str = "author";
-/// The format of a text document's file (`md`, `odt`): a file whose content
-/// the tree holds itself, as a rich-text document under [`DOCUMENT_KEY`], and
-/// names by no hash.
-pub const CODEC_KEY: &str = "codec";
-/// The document a text document's node holds.
-pub const DOCUMENT_KEY: &str = "doc";
 /// The signed content revision the node's bytes come from.
 pub const CONTENT_REVISION_KEY: &str = "content_revision_v1";
 
@@ -420,9 +414,6 @@ pub struct TreeEntry {
     pub kind: FileNodeKind,
     /// The content blob its bytes come from, as the document's hex digest.
     pub hash: Option<String>,
-    /// For a text document, the format its file is in: its content is the
-    /// tree's own ([`document_file`] reads it), and it has no hash.
-    pub codec: Option<String>,
     /// The content's length in bytes.
     pub size: u64,
     /// When its content last changed, in milliseconds since the epoch.
@@ -656,32 +647,6 @@ impl SharedResource for FilesTree {
     const OWNER: &'static str = tilo_app_id::apps::FILE_EXPLORER;
 }
 
-/// The file the text document `id` of the tree `doc` is: its document written
-/// in its format, the binary content it embeds read from `content`. `None` for
-/// a node that is no text document, or one in a format nothing here writes.
-#[cfg(feature = "documents")]
-#[must_use]
-pub fn document_file(
-    doc: &Doc,
-    id: &str,
-    content: &dyn tilo_content::ContentSource,
-) -> Option<Vec<u8>> {
-    let node = nodes_at(doc, &nodes_of(doc)?, id)?;
-    let codec = doc.str_at(&node, CODEC_KEY)?;
-    let provider = tilo_doc_codecs::provider_for_ext(&codec)?;
-    let root = doc.obj_at(&node, DOCUMENT_KEY, ObjType::Map)?;
-    let containers = tilo_doc::model::open(doc, &root).ok()?;
-    provider
-        .export(
-            tilo_doc::DocRef {
-                doc,
-                c: &containers,
-            },
-            content,
-        )
-        .ok()
-}
-
 /// The map of node objects, when the document has one.
 fn nodes_of(doc: &Doc) -> Option<ObjId> {
     doc.obj_at(&ROOT, NODES_KEY, ObjType::Map)
@@ -714,9 +679,6 @@ fn entry_of<D: ReadDoc>(doc: &D, node: &ObjId) -> TreeEntry {
             _ => FileNodeKind::File,
         },
         hash: doc.str_at(node, HASH_KEY),
-        codec: doc
-            .str_at(node, CODEC_KEY)
-            .filter(|codec| !codec.is_empty()),
         size: doc.uint_at(node, SIZE_KEY).unwrap_or_default(),
         mtime: doc.uint_at(node, MTIME_KEY).unwrap_or_default(),
         author: doc.str_at(node, AUTHOR_KEY).filter(|name| !name.is_empty()),
@@ -916,7 +878,6 @@ pub fn place(
             name: FileNameV1::from(name.as_str()),
             kind,
             hash: hash.map(str::to_owned),
-            codec: None,
             size,
             mtime,
             document_id: Some(document_id),
@@ -936,7 +897,6 @@ mod live_tests {
             name: FileNameV1::from(name),
             kind,
             hash: hash.map(str::to_owned),
-            codec: None,
             size: 3,
             mtime: 0,
             author: None,

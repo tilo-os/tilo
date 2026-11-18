@@ -6,8 +6,7 @@
 //! path in the folder (`legal/contract.txt`), which a computer that logged in has at
 //! `~/<workspace>/legal/contract.txt` and a page shows in Files. Its words come from the content
 //! this host keeps of the tree ([`super::content`]), put together from the chunks its manifest
-//! lists ([`fs_content::whole`]), or, for a text document, from the tree itself
-//! ([`fs_protocol::tree::document_file`]).
+//! lists ([`fs_content::whole`]).
 
 use std::collections::BTreeMap;
 
@@ -51,15 +50,9 @@ impl Worker {
         let Some(records) = tree_records(engine, cluster_id) else {
             return Vec::new();
         };
-        let (tree, documents) = records.split();
+        let tree = records.tree();
         let store = self.workspace_content(workspace_id);
-        let files = files_of(&tree, |id, node| {
-            if node.codec.is_some() {
-                let chunk = node.document_id.map_or(1, |record| record.chunk());
-                let doc = documents.get(&chunk)?;
-                let file = fs_protocol::tree::document_file(doc, id, &tilo_content::NoContent)?;
-                return String::from_utf8(file).ok();
-            }
+        let files = files_of(&tree, |node| {
             let store = store.as_ref()?;
             let hash = node.hash.as_deref()?;
             if node.size > MOST_READ_BYTES {
@@ -93,14 +86,14 @@ impl TreeRecords {
         Some(Self { index, chunks })
     }
 
-    /// The tree every record read holds, with the documents by chunk.
-    fn split(self) -> (Tree, BTreeMap<TreeChunk, automerge::AutoCommit>) {
+    /// The tree every record read holds.
+    fn tree(self) -> Tree {
         let mut tree = TreeChunks::default();
         tree.read_index(&self.index);
         for (chunk, doc) in &self.chunks {
             tree.read_chunk(*chunk, doc);
         }
-        (tree.tree(), self.chunks)
+        tree.tree()
     }
 }
 
@@ -132,7 +125,7 @@ fn tree_records(
 /// Each live file of `tree` with its path, and its words as `words` reads them.
 fn files_of(
     tree: &Tree,
-    mut words: impl FnMut(&str, &fs_protocol::tree::TreeEntry) -> Option<String>,
+    mut words: impl FnMut(&fs_protocol::tree::TreeEntry) -> Option<String>,
 ) -> Vec<File> {
     fs_protocol::tree::live_files(tree)
         .into_iter()
@@ -140,7 +133,7 @@ fn files_of(
         .map(|file| File {
             path: file.path,
             name: file.name,
-            words: words(file.id, file.node),
+            words: words(file.node),
         })
         .collect()
 }
@@ -234,13 +227,7 @@ mod tests {
             Some(chunk_of(&format!("f{chunk}.txt")))
         })
         .expect("the tree's own record reads");
-        let (tree, documents) = records.split();
-        assert_eq!(names(&tree), ["f1.txt", "f2.txt"]);
-        assert_eq!(
-            documents.len(),
-            2,
-            "each chunk is kept, for the words of a text document in it"
-        );
+        assert_eq!(names(&records.tree()), ["f1.txt", "f2.txt"]);
 
         // A chunk this member holds none of is no part of the folder: what it finds
         // is what it can read.
@@ -248,8 +235,7 @@ mod tests {
             (chunk == 1).then(|| chunk_of("here.txt"))
         })
         .expect("the tree's own record reads");
-        let (tree, _) = records.split();
-        assert_eq!(names(&tree), ["here.txt"]);
+        assert_eq!(names(&records.tree()), ["here.txt"]);
     }
 
     /// A chunk record holding the file `name` under the workspace's root.

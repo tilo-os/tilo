@@ -334,27 +334,11 @@ impl Worker {
         Ok(false)
     }
 
-    /// The record at `route`, saved, when this host holds it; `None` for one
-    /// the workspace holds none of. A record the workspace may still send is
-    /// refused as on its way, as [`Self::held_or_owed`] refuses it, `act`
-    /// waiting for its keys every time as a write to it needs them.
-    #[allow(
-        clippy::result_large_err,
-        reason = "the outcome becomes the receipt the host records"
-    )]
-    pub(super) fn record_here(
-        &mut self,
-        workspace_id: WorkspaceId,
-        route: &DocumentRoute,
-        act: bool,
-    ) -> Result<Option<Vec<u8>>, Outcome> {
-        Ok(self
-            .saved_here(workspace_id, route, act)?
-            .map(|(bytes, _)| bytes))
-    }
-
-    /// [`Self::record_here`], with the heads the record stands at: what a follower of the
-    /// record asks the changes after, next time.
+    /// The record at `route`, saved, when this host holds it, with the heads it stands at;
+    /// `None` for one the workspace holds none of. A record the workspace may still send is
+    /// refused as on its way, as [`Self::held_or_owed`] refuses it, `act` waiting for its keys
+    /// every time as a write to it needs them. The heads are what a follower of the record
+    /// asks the changes after, next time.
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"

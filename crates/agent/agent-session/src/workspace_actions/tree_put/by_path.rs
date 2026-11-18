@@ -16,10 +16,10 @@
 
 use std::collections::BTreeMap;
 
+use fs_protocol::tree;
 use serde_json::{Map, Value, json};
 use tilo_actions::ActionOutput;
 use tilo_actions::remote::{ActionCallError, ActorPlace, Caller, InvokeRequest};
-use fs_protocol::tree;
 use tilo_fs::namespace::Namespace;
 use tilo_fs::tree_put::Changed;
 use tilo_server_protocol::WorkspaceId;
@@ -72,11 +72,6 @@ fn destination(arguments: &Map<String, Value>) -> Result<String, String> {
                 .to_owned(),
         ),
     }
-}
-
-/// The folder `path` is in and its name there.
-fn split(path: &str) -> (&str, &str) {
-    path.rsplit_once('/').unwrap_or(("", path))
 }
 
 /// Carry `verb` out on `tree` as `arguments` say, at the time `now`: what it changed.

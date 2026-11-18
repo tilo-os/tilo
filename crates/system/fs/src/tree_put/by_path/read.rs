@@ -69,8 +69,8 @@ pub struct FileAt {
     pub size: u64,
     /// When it last changed, in milliseconds since 1970.
     pub changed: u64,
-    /// The address its content manifest is kept under in the workspace's store; `None` for a
-    /// text document the tree itself keeps.
+    /// The address its content manifest is kept under in the workspace's store; `None` for an
+    /// empty file.
     pub content: Option<String>,
 }
 

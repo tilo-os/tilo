@@ -488,7 +488,7 @@ impl Namespace {
         let actor = doc.get_actor().to_bytes().to_vec();
         doc.arm_patches();
         let applied =
-            tilo_actions::apply_local_with_context(&mut **doc, action, encoded, Some(&actor), context);
+            tilo_actions::apply_local_with_context(doc, action, encoded, Some(&actor), context);
         let patches = doc.take_patches();
         doc.disarm_patches();
         applied?;

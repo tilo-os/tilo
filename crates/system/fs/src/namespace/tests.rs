@@ -540,18 +540,12 @@ tilo_test_env::scenario! {
         let gone = source
             .create_file(ROOT_INO, "gone.txt", Some(&h(3)), 30, 1)
             .unwrap();
-        source
-            .create_document(ROOT_INO, "note.md", "md", 1)
-            .unwrap();
         let mut peer = Namespace::from_bytes("peer", &source.save()).unwrap();
         let peer_dir = peer.lookup(ROOT_INO, "dir").unwrap().ino.0;
         let peer_a = peer.lookup(peer_dir, "a.txt").unwrap().ino.0;
         let peer_b = peer.lookup(ROOT_INO, "b.txt").unwrap().ino.0;
         let peer_gone = peer.lookup(ROOT_INO, "gone.txt").unwrap().ino.0;
-        let peer_note = peer.lookup(ROOT_INO, "note.md").unwrap().ino.0;
-        let inos = [
-            ROOT_INO, peer_dir, peer_a, peer_b, peer_gone, peer_note, 9_999,
-        ];
+        let inos = [ROOT_INO, peer_dir, peer_a, peer_b, peer_gone, 9_999];
         for ino in inos {
             assert_view_matches_accessors(&peer, ino);
         }
@@ -585,8 +579,6 @@ tilo_test_env::scenario! {
             .unwrap();
         assert!(!retained.live);
         assert_eq!(retained.path, None, "a trashed inode has no live path");
-        let note = peer.inode_view(peer_note, live).unwrap();
-        assert!(note.document);
     }
 }
 
@@ -1008,154 +1000,6 @@ fn byte_names_survive_load_save_rename_and_replication_exactly() {
     }
 }
 
-tilo_test_env::scenario! {
-    fn documents_import_export_save_and_merge_by_block;
-
-    phase documents_import_export_and_merge_semantically;
-    {
-        {
-            let mut ns = Namespace::new("a").unwrap();
-            let ino = ns.create_document(ROOT_INO, "note.md", "md", 1).unwrap();
-            assert_eq!(ns.document_codec(ino).as_deref(), Some("md"));
-
-            let md = b"# Title\n\nHello world\n";
-            assert!(ns.import_document(ino, md, 2, &tilo_content::ContentStore::memory()));
-            let out = ns
-                .export_document(ino, &tilo_content::NoContent)
-                .expect("export");
-            let s = String::from_utf8_lossy(&out);
-            assert!(
-                s.contains("Title") && s.contains("Hello world"),
-                "round-trip lost content: {s}"
-            );
-            // A reader with only the tree record (a page's Files, an agent's
-            // host) reads the same file from it.
-            let id = ns.id_for_ino(ino).unwrap().to_owned();
-            let chunk = ns.document_id_for(ino).unwrap().chunk();
-            let mut record = automerge::AutoCommit::load(&ns.save_record(chunk).unwrap()).unwrap();
-            let tree = fs_protocol::tree::Tree::of_document(&record.save()).unwrap();
-            let node = tree.node(&id).unwrap();
-            assert_eq!(
-                (node.codec.as_deref(), node.hash.as_deref()),
-                (Some("md"), None)
-            );
-            let file =
-                fs_protocol::tree::document_file(&record, &id, &tilo_content::NoContent).unwrap();
-            assert_eq!(file, out, "the file the tree record holds is the mount's");
-        }
-        {
-            let mut ns = Namespace::new("a").unwrap();
-            let ino = ns.create_document(ROOT_INO, "doc.md", "md", 1).unwrap();
-            assert!(ns.import_document(
-                ino,
-                b"# Keep\n\nimportant\n",
-                2,
-                &tilo_content::ContentStore::memory()
-            ));
-            let before = ns.export_document(ino, &tilo_content::NoContent).unwrap();
-
-            assert!(
-                !ns.import_document(
-                    ino,
-                    &[0xff, 0xfe, 0x00],
-                    3,
-                    &tilo_content::ContentStore::memory()
-                ),
-                "malformed import must be rejected"
-            );
-            let after = ns.export_document(ino, &tilo_content::NoContent).unwrap();
-            assert_eq!(
-                before, after,
-                "existing document must survive a rejected import"
-            );
-        }
-        {
-            let mut a = Namespace::new("a").unwrap();
-            let ino = a.create_document(ROOT_INO, "doc.md", "md", 1).unwrap();
-            let bid = a.document_insert_block(ino, None, "paragraph").unwrap();
-            a.document_splice(ino, &bid, 0, 0, "Hello world");
-
-            let snap = a.save();
-            let mut b = Namespace::from_bytes("b", &snap).unwrap();
-            let bino = b.lookup(ROOT_INO, "doc.md").unwrap().ino.0;
-
-            a.document_splice(ino, &bid, 5, 0, " dear");
-            b.document_splice(bino, &bid, 11, 0, " (B)");
-
-            a.merge_doc(&mut b).unwrap();
-            let text = a.document_block_text(ino, &bid).unwrap();
-            assert!(text.contains("dear"), "A's edit must survive: {text}");
-            assert!(
-                text.contains("(B)"),
-                "B's edit must survive (text-level merge): {text}"
-            );
-        }
-    }
-
-    phase saving_a_document_keeps_its_block_ids;
-    {
-        let mut ns = Namespace::new("a").unwrap();
-        let ino = ns.create_document(ROOT_INO, "note.md", "md", 1).unwrap();
-        assert!(ns.import_document(
-            ino,
-            b"# Title\n\nHello world\n",
-            2,
-            &tilo_content::ContentStore::memory()
-        ));
-        let ids = |ns: &Namespace| -> Vec<String> {
-            ns.document_snapshot(ino)
-                .map(|snap| snap.blocks.iter().map(|block| block.id.clone()).collect())
-                .unwrap_or_default()
-        };
-        let before = ids(&ns);
-        assert!(!before.is_empty(), "the save must have written blocks");
-
-        assert!(ns.import_document(
-            ino,
-            b"# Title\n\nHello world\n",
-            3,
-            &tilo_content::ContentStore::memory()
-        ));
-        let after = ids(&ns);
-        assert_eq!(before, after, "a save must not re-mint block ids");
-    }
-
-    phase saving_a_document_keeps_a_peer_concurrent_edit;
-    {
-        let mut a = Namespace::new("a").unwrap();
-        let ino = a.create_document(ROOT_INO, "doc.md", "md", 1).unwrap();
-        assert!(a.import_document(
-            ino,
-            b"first\n\nsecond\n",
-            2,
-            &tilo_content::ContentStore::memory()
-        ));
-        let second = a
-            .document_snapshot(ino)
-            .and_then(|snap| snap.blocks.get(1).map(|block| block.id.clone()))
-            .unwrap_or_default();
-        assert!(!second.is_empty(), "the file must have written two blocks");
-
-        let snap = a.save();
-        let mut b = Namespace::from_bytes("b", &snap).unwrap();
-        let bino = b.lookup(ROOT_INO, "doc.md").unwrap().ino.0;
-        b.document_splice(bino, &second, 6, 0, " paragraph");
-
-        assert!(a.import_document(
-            ino,
-            b"first\n\nsecond\n",
-            3,
-            &tilo_content::ContentStore::memory()
-        ));
-        a.merge_doc(&mut b).unwrap();
-        let text = a.document_block_text(ino, &second).unwrap_or_default();
-        assert!(
-            text.contains("paragraph"),
-            "a save must not lose a peer's concurrent edit: {text}"
-        );
-    }
-}
-
 pub(super) fn assert_indexes_match_rebuild(ns: &Namespace) {
     let mut rebuilt = ns.clone();
     rebuilt.rebuild_document_index();
@@ -1202,11 +1046,6 @@ fn assert_view_matches_accessors(ns: &Namespace, ino: u64) {
             assert_eq!(view.hash, ns.hash_for(ino), "hash of {ino}");
             let expected_path = if path { ns.path_for(ino) } else { None };
             assert_eq!(view.path, expected_path, "path of {ino}");
-            assert_eq!(
-                view.document,
-                ns.document_codec(ino).is_some(),
-                "document of {ino}"
-            );
         }
     }
 }
@@ -1453,7 +1292,9 @@ fn a_write_through_the_mount_names_its_file_actions_and_the_agent_that_wrote() {
     )
     .named(Some("Tidy the notes".into()));
     let (ino, chunk) = {
-        let _acting = acting_as(Some(tilo_actions::ActionContext::default().with_invoker(agent)));
+        let _acting = acting_as(Some(
+            tilo_actions::ActionContext::default().with_invoker(agent),
+        ));
         let ino = ns
             .create_file(ROOT_INO, "plan.md", Some(&h(1)), 4, 1)
             .unwrap();
