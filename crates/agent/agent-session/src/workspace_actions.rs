@@ -1514,6 +1514,13 @@ impl Worker {
     /// waiting for every join and every key before it. A workspace's requests
     /// run in the order they came.
     fn admit(&mut self, queued: Instant, job: Job) {
+        self.take_up(queued, job);
+        // What landed while the job read its workspace wakes who waits for a change of it.
+        self.wake_watchers();
+    }
+
+    /// [`Self::admit`] without the look at who waits for a change.
+    fn take_up(&mut self, queued: Instant, job: Job) {
         // A workspace's change woke this thread to run what waited for it.
         // Nothing waits usually, and most wakes then cost nothing: reading
         // the workspace for each wake would make a busy workspace pay a read
