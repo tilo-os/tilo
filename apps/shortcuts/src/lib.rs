@@ -154,4 +154,4 @@ impl ResourceApp for App {
     }
 }
 
-ui::reach_tests!(App);
+ui::reach_tests!(App, shares: [share_0, share_1, share_2]);
