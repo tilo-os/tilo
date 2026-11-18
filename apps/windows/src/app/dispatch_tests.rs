@@ -347,3 +347,200 @@ fn appliance_operations_are_refused_when_this_session_cannot_manage_it() {
         Err(APPLIANCE_OFFLINE.to_owned())
     );
 }
+
+/// Stands in for the session's compatibility service on `stream`, as the manager's own client
+/// reaches it: it asks where an installer goes, installs it in a private capsule once told to,
+/// and lists it from then on (or once the test sets `installed`, as a setup finishing by itself
+/// does). Each request's method is noted in `asked`.
+fn stand_in_service(
+    mut stream: std::os::unix::net::UnixStream,
+    installed: &std::sync::atomic::AtomicBool,
+    asked: &std::sync::Mutex<Vec<String>>,
+) {
+    use compat_service::{
+        InstallReceipt, InstallationStatus, ManagedInstallation, ProtocolRequest, ProtocolResponse,
+        RouteKind, VmAvailability,
+    };
+    use std::io::{Read, Write};
+    use std::sync::atomic::Ordering;
+    loop {
+        let mut length = [0_u8; 4];
+        if stream.read_exact(&mut length).is_err() {
+            return;
+        }
+        let mut bytes = vec![0_u8; u32::from_le_bytes(length) as usize];
+        if stream.read_exact(&mut bytes).is_err() {
+            return;
+        }
+        let request: ProtocolRequest = serde_json::from_slice(&bytes).expect("a request");
+        let answer = match &request {
+            ProtocolRequest::RefreshVmInstallation { .. } => {
+                ProtocolResponse::VmInstallationRefreshed { installation: None }
+            }
+            ProtocolRequest::RefreshVmUninstallation { .. } => {
+                ProtocolResponse::VmUninstallationRefreshed {
+                    uninstallation: None,
+                }
+            }
+            ProtocolRequest::List { .. } => ProtocolResponse::Listed {
+                applications: Vec::new(),
+                installations: installed
+                    .load(Ordering::SeqCst)
+                    .then(|| ManagedInstallation {
+                        capsule_id: "capsule".into(),
+                        display_name: "Setup".into(),
+                        route: RouteKind::Wine,
+                        runner: "Wine".into(),
+                        status: InstallationStatus::Installed,
+                        program_count: 1,
+                        can_retry: false,
+                        can_vendor_uninstall: false,
+                        can_delete_data: true,
+                        detail: "Installed.".into(),
+                    })
+                    .into_iter()
+                    .collect(),
+                vm_availability: VmAvailability::unavailable("Not set up"),
+                vm_installation: None,
+                vm_uninstallation: None,
+                ended: Vec::new(),
+            },
+            ProtocolRequest::Install { .. } => ProtocolResponse::VmInstallConfirmation {
+                confirmation: compat_service::VmInstallConfirmation {
+                    display_name: "Setup".into(),
+                    detail: "Tilo recommends a private compatibility capsule.".into(),
+                    recommended_route: RouteKind::Wine,
+                },
+            },
+            ProtocolRequest::InstallInCapsule { .. } => {
+                installed.store(true, Ordering::SeqCst);
+                ProtocolResponse::Installed {
+                    receipt: InstallReceipt {
+                        capsule_id: "capsule".into(),
+                        display_name: "Setup".into(),
+                        route: RouteKind::Wine,
+                        status: InstallationStatus::Installed,
+                        discovered_programs: 1,
+                        exit_code: Some(0),
+                        detail: "Installed.".into(),
+                    },
+                }
+            }
+            other => panic!("the manager asked for nothing this flow needs: {other:?}"),
+        };
+        let method = serde_json::to_value(&request).expect("a request")["method"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        asked.lock().expect("the requests asked").push(method);
+        let bytes = serde_json::to_vec(&answer).expect("an answer");
+        let length = u32::try_from(bytes.len())
+            .expect("a short answer")
+            .to_le_bytes();
+        if stream
+            .write_all(&length)
+            .and_then(|()| stream.write_all(&bytes))
+            .is_err()
+        {
+            return;
+        }
+    }
+}
+
+/// An installer is taken, the window asks where it goes, and the private capsule the person then
+/// approves is where the service installs it: the install answers once its destination is asked
+/// for, so the approved choice is not refused as another operation still running.
+#[test]
+fn an_approved_private_capsule_installs_the_chosen_installer() {
+    use actions::WindowsEffect as E;
+    let (manager, service) = std::os::unix::net::UnixStream::pair().expect("a connection");
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    {
+        let asked = std::sync::Arc::clone(&asked);
+        std::thread::spawn(move || {
+            stand_in_service(service, &std::sync::atomic::AtomicBool::new(false), &asked);
+        });
+    }
+    let mut app = ui::prelude::TestApp::<crate::resource::WindowsShell>::new().unwrap();
+    app.with_widget(|window: &mut WindowsWindow| {
+        let provider = crate::provider::LiveProvider::over(
+            compat_service::SessionClient::from_owned_fd(manager.into()),
+            ui::WakeHandle::new(),
+        )
+        .expect("the worker starts");
+        window.app.borrow_mut().use_provider(Box::new(provider));
+    })
+    .expect("the window over the stand-in service");
+    let directory = tempfile::tempdir().unwrap();
+    let installer = directory.path().join("setup.exe");
+    std::fs::write(&installer, b"MZ installer bytes").unwrap();
+
+    app.effect_confirmed(&E::Install {
+        path: Some(ui::tilo_resource::AbsolutePath::new(&installer).unwrap()),
+    })
+    .expect("the install is answered once the window asks where it goes");
+    assert!(
+        app.effect_on(actions::PENDING_INSTALL_ROW, &E::InstallPrivateCapsule)
+            .is_err(),
+        "a private capsule needs the person's approval"
+    );
+    app.effect_on_confirmed(actions::PENDING_INSTALL_ROW, &E::InstallPrivateCapsule)
+        .expect("the approved capsule installs");
+
+    let methods = asked.lock().expect("the requests asked").clone();
+    assert!(
+        methods.iter().any(|method| method == "install_in_capsule"),
+        "the service was asked to install in the capsule: {methods:?}"
+    );
+}
+
+/// What the service answers reaches the window by itself: the worker wakes it with every answer,
+/// and with a list that changed while nobody asked (a setup that finished), so the window shows it
+/// without waiting for the person's next input.
+#[test]
+fn the_window_is_woken_by_what_the_service_answers() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (manager, service) = std::os::unix::net::UnixStream::pair().expect("a connection");
+    let installed = Arc::new(AtomicBool::new(false));
+    {
+        let installed = Arc::clone(&installed);
+        std::thread::spawn(move || {
+            stand_in_service(service, &installed, &std::sync::Mutex::default());
+        });
+    }
+    let scope = ui::WakeScope::new();
+    let mut provider = crate::provider::LiveProvider::over(
+        compat_service::SessionClient::from_owned_fd(manager.into()),
+        scope.handle(),
+    )
+    .expect("the worker starts");
+    let woken = |what: &str| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !scope.is_pending() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the window was not woken by {what}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        scope.take_pending();
+    };
+
+    woken("the first list");
+    assert_eq!(
+        provider.catalogue().vm.detail,
+        "Not set up",
+        "the woken window takes in the list"
+    );
+    installed.store(true, Ordering::SeqCst);
+    woken("a list that changed while nobody asked");
+    assert!(
+        provider
+            .catalogue()
+            .apps
+            .iter()
+            .any(|app| app.capsule == "capsule"),
+        "the finished setup is shown"
+    );
+}

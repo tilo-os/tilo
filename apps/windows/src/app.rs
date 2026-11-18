@@ -297,9 +297,10 @@ impl WindowsApp {
     }
     /// Reach the session's compatibility service and the appliance owner, as a window
     /// someone uses does; an unreachable service leaves an honest empty state saying why.
-    pub(crate) fn connect_live(&mut self) {
+    /// `wake` has the window take in what the service answers as it arrives.
+    pub(crate) fn connect_live(&mut self, wake: ui::WakeHandle) {
         self.appliance_owner = ApplianceOwnerClient::new();
-        let provider: Box<dyn CompatibilityProvider> = match LiveProvider::connect() {
+        let provider: Box<dyn CompatibilityProvider> = match LiveProvider::connect(wake) {
             Ok(provider) => Box::new(provider),
             Err(detail) => Box::new(EmptyProvider::with_detail(detail)),
         };
@@ -318,7 +319,7 @@ impl WindowsApp {
     /// Take part in the resource: route edits go through its dispatcher.
     fn attach(&mut self, cx: &ViewCx<crate::resource::Windows>) {
         match cx.mode() {
-            RunMode::Live => self.connect_live(),
+            RunMode::Live => self.connect_live(cx.waker()),
             RunMode::Capture => {
                 if let Some(sample) = cx.fixture::<crate::provider::SampleProvider>() {
                     self.use_provider(Box::new((*sample).clone()));
