@@ -1668,7 +1668,7 @@ mod tests {
             let signature = ed25519_dalek::Signature::from_bytes(
                 &hex::decode(&claim.signature).unwrap().try_into().unwrap(),
             );
-            let message = protocol::claim_message(&claim.report, claim.signed_at_ns);
+            let message = protocol::claim_digest(&claim.report, claim.signed_at_ns).unwrap();
             if public.verify_strict(&message, &signature).is_ok() && claim.cert == "00" {
                 (200, json!({"expires_at_ms": 5}))
             } else {

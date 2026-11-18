@@ -148,7 +148,7 @@ pub fn presentation(device: &SigningKey, cert: &DeviceCert, cluster: &str) -> Ve
         workspace_id: cluster.to_owned(),
         device_certificate: serde_json::to_vec(cert).expect("a certificate is JSON"),
         proof: device
-            .sign(&runtime_identity::collaboration_join_signing_bytes(cluster))
+            .sign(&runtime_identity::collaboration_join_digest(cluster).unwrap())
             .to_bytes()
             .to_vec(),
     }

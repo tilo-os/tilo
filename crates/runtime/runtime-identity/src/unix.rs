@@ -45,7 +45,7 @@ pub use secure_store::{
 
 use crate::{
     BrokerSigningIdentity, IDENTITY_SERVICE, IdentityMetadata, IdentitySummary, KeyProtection,
-    NotAvailable, collaboration_join_signing_bytes,
+    NotAvailable, collaboration_join_digest,
 };
 #[cfg(test)]
 use crate::{
@@ -1226,10 +1226,12 @@ impl SigningIdentity {
     /// workspace differs from the launcher's handshake, the device is no
     /// longer enrolled, or the signing service is unavailable.
     pub fn sign_collaboration_join(&self, workspace_id: &str) -> Result<[u8; 64], NotAvailable> {
-        match &self.source {
-            SigningSource::Service(stream) => stream.sign_collaboration_join(workspace_id),
-            _ => self.sign(&collaboration_join_signing_bytes(workspace_id)),
+        if let SigningSource::Service(stream) = &self.source {
+            return stream.sign_collaboration_join(workspace_id);
         }
+        let digest = collaboration_join_digest(workspace_id)
+            .map_err(|error| NotAvailable::ConnectionFailed(io::Error::other(error.to_string())))?;
+        self.sign(&digest)
     }
 
     /// Ask the workspace-bound identity broker for the content keys of one

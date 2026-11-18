@@ -1223,16 +1223,16 @@ mod confirmation_tests {
     }
 
     fn signed(member: &ed25519_dalek::SigningKey, request: ApproverRequest) -> MemberApproval {
-        use ed25519_dalek::Signer as _;
+        use tilo_user_identity::StatementSigner as _;
         let user_public_key = member.verifying_key().to_bytes();
         let issued_at_ns = unix_now_ns();
         let message =
-            MemberApproval::signed_message(&user_public_key, issued_at_ns, &request).unwrap();
+            MemberApproval::signed_digest(&user_public_key, issued_at_ns, &request).unwrap();
         MemberApproval {
             user_public_key,
             issued_at_ns,
             request,
-            signature: member.sign(&message).to_bytes(),
+            signature: member.sign_digest(&message).unwrap(),
             device: None,
         }
     }

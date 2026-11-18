@@ -146,7 +146,7 @@ pub const CERTIFIED_JOIN_PREFIX: &[u8] = b"tilo-collab-certified-join-v1\0";
 /// Peer-verifiable proof that an enrolled device joined one workspace.
 /// `device_certificate` is the JSON form supplied by `runtime-identity`; the
 /// proof is an Ed25519 device-key signature over
-/// `runtime_identity::collaboration_join_signing_bytes(workspace_id)`.
+/// `runtime_identity::collaboration_join_digest(workspace_id)`.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CertifiedJoinIdentity {

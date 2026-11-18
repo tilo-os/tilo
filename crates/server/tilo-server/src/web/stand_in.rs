@@ -113,13 +113,10 @@ fn root_signed(
             "the request is too old or from the future",
         ));
     }
+    let digest = StandInRequest::signed_digest(op, &user, signed_at_ns)
+        .map_err(|_| Refusal::Malformed("the request cannot be encoded"))?;
     VerifyingKey::from_bytes(&user)
-        .and_then(|root| {
-            root.verify_strict(
-                &StandInRequest::signed_message(op, &user, signed_at_ns),
-                &signature,
-            )
-        })
+        .and_then(|root| root.verify_strict(&digest, &signature))
         .map_err(|_| Refusal::Forbidden("the request is not signed by this person's root"))?;
     Ok(user)
 }

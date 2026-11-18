@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use fs::workspace_authority::{AuthorityRequest, WorkspaceAuthority, WorkspaceAuthorityEnvelope};
 use tilo_device_identity::{IdentityPaths, persist};
+use tilo_user_identity::StatementSigner;
 
 #[derive(clap::Args, Debug)]
 pub(super) struct InitializeOptions {
@@ -177,9 +178,9 @@ pub(super) fn initialize(options: &InitializeOptions) -> Result<()> {
         policy,
         false,
         person,
-        |bytes| {
+        |digest| {
             identity
-                .sign(bytes)
+                .sign_digest(digest)
                 .map_err(|e| anyhow::anyhow!("sign existing policy: {e}"))
         },
     )?;
@@ -218,9 +219,9 @@ pub(super) fn publish(acl: &Path) -> Result<()> {
             policy,
             false,
             person,
-            |bytes| {
+            |digest| {
                 identity
-                    .sign(bytes)
+                    .sign_digest(digest)
                     .map_err(|e| anyhow::anyhow!("sign existing policy: {e}"))
             },
         )?;

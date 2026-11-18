@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use hyper::{Response, StatusCode};
 use tilo_server_protocol::certify::MEMBER_APPROVAL_SKEW_NS;
-use tilo_server_protocol::login_code::{Claim, Claimed, claim_message};
+use tilo_server_protocol::login_code::{Claim, Claimed, claim_digest};
 use tilo_user_identity::{CertificationRequest, DeviceCert, RevocationList};
 
 use super::{Body, Web, code_refused, json, login_codes::LoginCodes, refused, stand_in::StandIns};
@@ -109,12 +109,11 @@ impl Web {
         if claim.signed_at_ns.abs_diff(now_ns) > MEMBER_APPROVAL_SKEW_NS {
             return Err(forbidden("the claim is too old or from the future"));
         }
+        let digest = claim_digest(&claim.report, claim.signed_at_ns)
+            .map_err(|_| forbidden("the claim cannot be encoded"))?;
         ed25519_dalek::VerifyingKey::from_bytes(&cert.device_public_key)
             .and_then(|device| {
-                device.verify_strict(
-                    &claim_message(&claim.report, claim.signed_at_ns),
-                    &ed25519_dalek::Signature::from_bytes(&signature),
-                )
+                device.verify_strict(&digest, &ed25519_dalek::Signature::from_bytes(&signature))
             })
             .map_err(|_| forbidden("the claim is not signed by this device"))?;
         let user = cert.user_public_key;

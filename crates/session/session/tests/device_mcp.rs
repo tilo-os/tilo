@@ -1255,9 +1255,7 @@ fn notes(
             workspace_id: workspace.to_owned(),
             device_certificate: serde_json::to_vec(cert).expect("a certificate is JSON"),
             proof: key
-                .sign(&runtime_identity::collaboration_join_signing_bytes(
-                    workspace,
-                ))
+                .sign(&runtime_identity::collaboration_join_digest(workspace).unwrap())
                 .to_bytes()
                 .to_vec(),
         }

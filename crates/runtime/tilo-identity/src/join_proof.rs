@@ -11,10 +11,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
-use ed25519_dalek::Signer as _;
 use tilo_device_identity::IdentityPaths;
 use tilo_device_identity::persist::DeviceKeyOwnership;
-use tilo_user_identity::DeviceCert;
+use tilo_user_identity::{DeviceCert, StatementSigner};
 
 use crate::device_fleet::{DeviceFleetStore, FileStamp, FleetStamps};
 use crate::registry::{DirStamp, IdentityRegistryStore};
@@ -309,9 +308,12 @@ pub fn trusted_current_join_proof(workspace: &str) -> io::Result<CurrentDeviceJo
     let (device, certificate) = crate::broker::trusted_current_device(workspace)?;
     #[cfg(test)]
     MINTS.with(|mints| mints.set(mints.get().saturating_add(1)));
-    let signed = runtime_identity::collaboration_join_signing_bytes(workspace);
+    let digest = runtime_identity::collaboration_join_digest(workspace)
+        .map_err(|error| io::Error::other(error.to_string()))?;
     let proof = CurrentDeviceJoinProof {
-        proof: device.sign(&signed).to_bytes(),
+        proof: device
+            .sign_digest(&digest)
+            .map_err(|error| io::Error::other(error.to_string()))?,
         certificate,
     };
     drop(device);
@@ -342,7 +344,6 @@ pub(crate) mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{Duration, SystemTime};
 
-    use ed25519_dalek::Signer as _;
     use tilo_device_identity::IdentityPaths;
     use tilo_user_identity::RevocationReason;
 
@@ -477,7 +478,7 @@ pub(crate) mod tests {
             ed25519_dalek::VerifyingKey::from_bytes(&proof.certificate.device_public_key)
                 .expect("device key")
                 .verify_strict(
-                    &runtime_identity::collaboration_join_signing_bytes(&fixture.workspace),
+                    &runtime_identity::collaboration_join_digest(&fixture.workspace).unwrap(),
                     &ed25519_dalek::Signature::from_bytes(&proof.proof),
                 )
                 .expect("the proof is this device's signature for this workspace");
@@ -558,10 +559,12 @@ pub(crate) mod tests {
                 let (key, _) =
                     crate::broker::trusted_current_device(&fixture.workspace).expect("trusted device");
                 fixture.store().load(&fixture.identity_id).expect("fleet");
-                let proof = key.sign(&runtime_identity::collaboration_join_signing_bytes(
-                    &fixture.workspace,
-                ));
-                assert_eq!(proof.to_bytes().len(), 64);
+                let proof = key
+                    .sign_digest(
+                        &runtime_identity::collaboration_join_digest(&fixture.workspace).unwrap(),
+                    )
+                    .unwrap();
+                assert_eq!(proof.len(), 64);
             }
             let minted = started.elapsed();
             let mut cached = Duration::ZERO;

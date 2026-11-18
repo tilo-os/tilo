@@ -71,8 +71,12 @@ tilo_test_env::scenario! {
         let forged = account(temp.path(), "cy", uid() + 2);
         let (user, device) = device_binding(&paths).unwrap();
         let other = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let signature = ed25519_dalek::Signer::sign(&other, &proof_message(&user, &device, forged.uid));
-        std::fs::write(proof_path(&forged), signature.to_bytes()).unwrap();
+        let signature = tilo_user_identity::StatementSigner::sign_digest(
+            &other,
+            &proof_digest(&user, &device, forged.uid).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(proof_path(&forged), signature).unwrap();
         let claim = account(temp.path(), "dee", uid() + 3);
         std::fs::write(
             claim.home.join(IDENTITY_DIR_IN_HOME).join("registry.json"),

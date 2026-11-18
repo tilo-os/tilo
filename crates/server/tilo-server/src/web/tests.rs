@@ -1376,22 +1376,24 @@ async fn a_persons_stand_in_certifies_the_tab_a_device_of_theirs_claimed() {
     };
     let claim = |report: &str, key: &SigningKey, cert: &str| {
         let signed_at_ns = tilo_clock::unix_now_ns();
-        let signature = key.sign(&wire::claim_message(report, signed_at_ns));
+        let digest = wire::claim_digest(report, signed_at_ns).unwrap();
+        let signature = tilo_user_identity::StatementSigner::sign_digest(key, &digest).unwrap();
         serde_json::json!({
             "report": report,
             "cert": cert,
             "signed_at_ns": signed_at_ns,
-            "signature": hex::encode(signature.to_bytes()),
+            "signature": hex::encode(signature),
         })
     };
     let root_signed = |op: &str| {
         let signed_at_ns = tilo_clock::unix_now_ns();
-        let signature = person.sign(&StandInRequest::signed_message(op, &user, signed_at_ns));
+        let digest = StandInRequest::signed_digest(op, &user, signed_at_ns).unwrap();
+        let signature = tilo_user_identity::StatementSigner::sign_digest(&person, &digest).unwrap();
         serde_json::json!({
             "op": op,
             "user": hex::encode(user),
             "signed_at_ns": signed_at_ns,
-            "signature": hex::encode(signature.to_bytes()),
+            "signature": hex::encode(signature),
         })
     };
 

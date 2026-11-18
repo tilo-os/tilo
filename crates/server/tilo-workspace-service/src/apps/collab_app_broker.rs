@@ -591,13 +591,12 @@ fn verify_join_presentation(
     let proof = <[u8; 64]>::try_from(presentation.proof.as_slice())
         .map_err(|_| "collaboration join proof must be 64 bytes".to_string())?;
     let workspace = presentation.workspace_id.as_str();
+    let digest = runtime_identity::collaboration_join_digest(workspace)
+        .map_err(|error| format!("collaboration join cannot be encoded: {error}"))?;
     admission_memo::join_proof_verified(&cert.device_public_key, workspace, &proof, || {
         VerifyingKey::from_bytes(&cert.device_public_key)
             .map_err(|_| "device certificate contains an invalid device key".to_string())?
-            .verify(
-                &runtime_identity::collaboration_join_signing_bytes(workspace),
-                &Signature::from_bytes(&proof),
-            )
+            .verify(&digest, &Signature::from_bytes(&proof))
             .map_err(|_| "collaboration join proof was signed by an unknown device".to_string())
     })?;
     // Without an authority to ask who governs the workspace, every foreign device
@@ -12230,9 +12229,7 @@ pub mod tests {
             workspace_id: workspace.into(),
             device_certificate: serde_json::to_vec(&cert).expect("certificate JSON"),
             proof: device
-                .sign(&runtime_identity::collaboration_join_signing_bytes(
-                    workspace,
-                ))
+                .sign(&runtime_identity::collaboration_join_digest(workspace).unwrap())
                 .to_bytes()
                 .to_vec(),
         }
@@ -12271,9 +12268,9 @@ pub mod tests {
             let route = CrdtRoute::cluster("workspace-a");
             let mut presentation = certified_join("workspace-a", &root, &device);
             presentation.proof = stranger
-                .sign(&runtime_identity::collaboration_join_signing_bytes(
+                .sign(&runtime_identity::collaboration_join_digest(
                     "workspace-a",
-                ))
+                ).unwrap())
                 .to_bytes()
                 .to_vec();
             assert!(

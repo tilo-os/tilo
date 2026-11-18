@@ -601,11 +601,17 @@ mod tests {
             ));
         }
 
-        phase join_signing_domain_is_unchanged;
+        phase join_signing_domain_is_the_canonical_digest;
         {
-            assert_eq!(
-                crate::collaboration_join_signing_bytes("workspace"),
-                b"tilo-collaboration-join-v1\0workspace"
+            let digest = crate::collaboration_join_digest("workspace").unwrap();
+            assert_eq!(digest.len(), 32);
+            assert_ne!(
+                digest,
+                tilo_user_identity::canonical::signing_digest(
+                    b"tilo-collaboration-join-v2\0",
+                    &"other"
+                )
+                .unwrap()
             );
         }
 

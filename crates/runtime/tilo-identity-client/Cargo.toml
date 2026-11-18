@@ -13,6 +13,7 @@ runtime-portal = { version = "0.1.0", path = "../runtime-portal" }
 serde.workspace = true
 hex.workspace = true
 tokio = { workspace = true, features = ["io-util", "time"] }
+tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
 wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard", "tokio"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

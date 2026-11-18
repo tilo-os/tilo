@@ -17,6 +17,33 @@ fn fleet_document(
     serde_json::to_vec_pretty(&fleet).unwrap()
 }
 
+#[test]
+fn a_refused_signature_issues_no_enrollment_response() {
+    struct RefusingRoot;
+
+    impl tilo_user_identity::StatementSigner for RefusingRoot {
+        fn public_key(&self) -> [u8; 32] {
+            [1; 32]
+        }
+
+        fn sign_digest(
+            &self,
+            _digest: &[u8; 32],
+        ) -> Result<[u8; 64], tilo_user_identity::SignError> {
+            Err(tilo_user_identity::SignError("locked".into()))
+        }
+    }
+
+    impl tilo_server::root_signer::RootSigner for RefusingRoot {}
+
+    let refusing = RefusingRoot;
+    let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+    assert!(
+        sign_response(payload(&root), Approver::Root(&refusing)).is_err(),
+        "a refusing root issues no enrollment response"
+    );
+}
+
 tilo_test_env::scenario! {
     fn certificates_and_fleets_admit_only_what_the_identity_signed;
 
@@ -1653,10 +1680,12 @@ tilo_test_env::scenario! {
         let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
         let user = root.verifying_key().to_bytes();
         let reply = sign_response(payload(&root), Approver::Root(&root)).unwrap();
-        let signature = root
-            .sign(&response_preimage(&payload(&root)).unwrap())
-            .to_bytes()
-            .to_vec();
+        let signature = tilo_user_identity::StatementSigner::sign_digest(
+            &root,
+            &response_statement_digest(&payload(&root)).unwrap(),
+        )
+        .unwrap()
+        .to_vec();
         assert_eq!(
             *reply,
             postcard::to_stdvec(&(payload(&root), signature)).unwrap()

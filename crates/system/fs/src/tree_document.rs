@@ -220,15 +220,15 @@ impl TreePublisher {
         credentials: &PeerCredentials,
         identity: &Path,
     ) -> Result<Self> {
+        let join = tilo_identity_client::collaboration_join_digest(cluster)
+            .context("this device's join encodes")?;
         let presentation = CertifiedJoinIdentity {
             workspace_id: cluster.to_owned(),
             device_certificate: serde_json::to_vec(credentials.cert())
                 .context("this device's certificate is JSON")?,
             proof: credentials
                 .signer()
-                .sign(tilo_identity_client::collaboration_join_signing_bytes(
-                    cluster,
-                ))
+                .sign(join.to_vec())
                 .await
                 .context("this device signs its join")?
                 .to_vec(),

@@ -55,6 +55,7 @@
 //! handing it on, and refuses revoked devices at request and at issuance.
 
 use serde::{Deserialize, Serialize};
+use tilo_user_identity::canonical::{CanonicalError, signing_digest};
 use tilo_user_identity::{CertificationRequest, DeviceCert};
 
 use crate::auth::Hello;
@@ -182,8 +183,10 @@ pub enum ApproverDecision {
     },
 }
 
-/// Domain label of a [`MemberApproval`] signature.
-pub const MEMBER_APPROVAL_LABEL: &[u8] = b"tilo member approval v1\0";
+/// Domain label of a [`MemberApproval`] signature: the signer signs the BLAKE3
+/// digest of this label followed by the canonical encoding of the approval's
+/// unsigned fields.
+pub const MEMBER_APPROVAL_LABEL: &[u8] = b"tilo member approval v2\0";
 /// How far a [`MemberApproval`]'s time may be from the host's clock.
 pub const MEMBER_APPROVAL_SKEW_NS: u64 = 5 * 60 * 1_000_000_000;
 
@@ -207,7 +210,7 @@ pub struct MemberApproval {
     pub issued_at_ns: u64,
     /// The command.
     pub request: ApproverRequest,
-    /// Ed25519 signature over [`Self::signed_message`]: the root's, or the
+    /// Ed25519 signature over [`Self::signed_digest`]: the root's, or the
     /// device's when `device` names one.
     #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
@@ -218,21 +221,31 @@ pub struct MemberApproval {
 }
 
 impl MemberApproval {
-    /// What the root signs: the label, the root, the time and the command.
+    /// The digest the root, or the device, signs: the approval's root, its
+    /// time and the command.
     ///
     /// # Errors
     ///
-    /// Returns an error when the command cannot be encoded.
-    pub fn signed_message(
+    /// [`CanonicalError::Serialize`] when the command cannot be encoded.
+    pub fn signed_digest(
         user_public_key: &[u8; 32],
         issued_at_ns: u64,
         request: &ApproverRequest,
-    ) -> Result<Vec<u8>, postcard::Error> {
-        let mut message = MEMBER_APPROVAL_LABEL.to_vec();
-        message.extend_from_slice(user_public_key);
-        message.extend_from_slice(&issued_at_ns.to_le_bytes());
-        message.extend_from_slice(&postcard::to_allocvec(request)?);
-        Ok(message)
+    ) -> Result<[u8; 32], CanonicalError> {
+        #[derive(Serialize)]
+        struct View<'a> {
+            user_public_key: &'a [u8; 32],
+            issued_at_ns: u64,
+            request: &'a ApproverRequest,
+        }
+        signing_digest(
+            MEMBER_APPROVAL_LABEL,
+            &View {
+                user_public_key,
+                issued_at_ns,
+                request,
+            },
+        )
     }
 
     /// Check the signature, and that it was signed within the allowed skew
@@ -268,7 +281,7 @@ impl MemberApproval {
         };
         let key = ed25519_dalek::VerifyingKey::from_bytes(&signer)
             .map_err(|_| "the approval names no valid root")?;
-        let message = Self::signed_message(&self.user_public_key, self.issued_at_ns, &self.request)
+        let message = Self::signed_digest(&self.user_public_key, self.issued_at_ns, &self.request)
             .map_err(|_| "the approval cannot be encoded")?;
         key.verify_strict(
             &message,
@@ -527,17 +540,18 @@ pub enum ApproverReply {
 #[allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 mod tests {
     use super::*;
-    use ed25519_dalek::{Signer as _, SigningKey};
+    use ed25519_dalek::SigningKey;
+    use tilo_user_identity::StatementSigner as _;
 
     fn approval(root: &SigningKey, issued_at_ns: u64, request: ApproverRequest) -> MemberApproval {
         let user_public_key = root.verifying_key().to_bytes();
         let message =
-            MemberApproval::signed_message(&user_public_key, issued_at_ns, &request).unwrap();
+            MemberApproval::signed_digest(&user_public_key, issued_at_ns, &request).unwrap();
         MemberApproval {
             user_public_key,
             issued_at_ns,
             request,
-            signature: root.sign(&message).to_bytes(),
+            signature: root.sign_digest(&message).unwrap(),
             device: None,
         }
     }
@@ -562,12 +576,12 @@ mod tests {
         };
         tilo_user_identity::sign_device_cert(&mut cert, root).unwrap();
         let user_public_key = root.verifying_key().to_bytes();
-        let message = MemberApproval::signed_message(&user_public_key, now, &request).unwrap();
+        let message = MemberApproval::signed_digest(&user_public_key, now, &request).unwrap();
         MemberApproval {
             user_public_key,
             issued_at_ns: now,
             request,
-            signature: device.sign(&message).to_bytes(),
+            signature: device.sign_digest(&message).unwrap(),
             device: Some(cert),
         }
     }

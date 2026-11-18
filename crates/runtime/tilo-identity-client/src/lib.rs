@@ -90,18 +90,29 @@ pub fn bound_profile_photo() -> Option<([u8; 32], ProfilePhoto)> {
 }
 
 pub const IDENTITY_SERVICE: &str = "identity";
-const COLLABORATION_JOIN_TAG: &[u8] = b"tilo-collaboration-join-v1\0";
+const COLLABORATION_JOIN_TAG: &[u8] = b"tilo-collaboration-join-v2\0";
 
-/// Domain-separated bytes an enrolled device signs when it joins a workspace:
-/// a NUL-terminated domain tag, then the workspace bytes. This concatenation is
-/// fixed wire ABI for peer verification.
-#[must_use]
-pub fn collaboration_join_signing_bytes(workspace_id: &str) -> Vec<u8> {
-    let workspace = workspace_id.as_bytes();
-    let mut message = Vec::new();
-    message.extend_from_slice(COLLABORATION_JOIN_TAG);
-    message.extend_from_slice(workspace);
-    message
+/// The digest an enrolled device signs when it joins a workspace: the BLAKE3
+/// digest of the join's domain label and the workspace id. This is fixed wire
+/// ABI for peer verification.
+///
+/// # Errors
+///
+/// [`tilo_user_identity::canonical::CanonicalError::Serialize`] when the join
+/// cannot be encoded (effectively unreachable for a workspace id).
+pub fn collaboration_join_digest(
+    workspace_id: &str,
+) -> Result<[u8; 32], tilo_user_identity::canonical::CanonicalError> {
+    #[derive(serde::Serialize)]
+    struct View<'a> {
+        workspace: &'a str,
+    }
+    tilo_user_identity::canonical::signing_digest(
+        COLLABORATION_JOIN_TAG,
+        &View {
+            workspace: workspace_id,
+        },
+    )
 }
 
 /// The synchronous wire protocol over a connected identity stream. The

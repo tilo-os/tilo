@@ -19,32 +19,47 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use serde::Serialize;
 use tilo_device_identity::IdentityPaths;
 use tilo_device_identity::persist;
+use tilo_user_identity::canonical::signing_digest;
 
 /// The proof's file in an account's identity directory: the 64-byte
-/// Ed25519 signature of [`proof_message`] by the device's identity.
+/// Ed25519 signature of [`proof_digest`] by the device's identity.
 pub const PROOF_FILE: &str = "local-person.sig";
 
 /// Where a login account keeps its identity records, relative to its home.
 pub const IDENTITY_DIR_IN_HOME: &str = ".config/tilo/identity";
 
-const DOMAIN: &[u8] = b"tilo local person v1\0";
+const DOMAIN: &[u8] = b"tilo local person v2\0";
 
 /// What the identity `user_public_key` signs to say that the account with
-/// `uid` on the device with key `device_public_key` is its person.
-#[must_use]
-pub fn proof_message(
+/// `uid` on the device with key `device_public_key` is its person: the
+/// BLAKE3 digest of the proof's domain label and those three facts.
+///
+/// # Errors
+///
+/// [`tilo_user_identity::canonical::CanonicalError::Serialize`] when the
+/// proof cannot be encoded (effectively unreachable).
+pub fn proof_digest(
     user_public_key: &[u8; 32],
     device_public_key: &[u8; 32],
     uid: u32,
-) -> Vec<u8> {
-    let mut message = Vec::with_capacity(DOMAIN.len().saturating_add(68));
-    message.extend_from_slice(DOMAIN);
-    message.extend_from_slice(user_public_key);
-    message.extend_from_slice(device_public_key);
-    message.extend_from_slice(&uid.to_le_bytes());
-    message
+) -> Result<[u8; 32], tilo_user_identity::canonical::CanonicalError> {
+    #[derive(Serialize)]
+    struct View<'a> {
+        user_public_key: &'a [u8; 32],
+        device_public_key: &'a [u8; 32],
+        uid: u32,
+    }
+    signing_digest(
+        DOMAIN,
+        &View {
+            user_public_key,
+            device_public_key,
+            uid,
+        },
+    )
 }
 
 /// The identity this device is bound to and the device's own key, from its
@@ -81,11 +96,10 @@ pub fn proves(
     let Ok(key) = VerifyingKey::from_bytes(user_public_key) else {
         return false;
     };
-    key.verify(
-        &proof_message(user_public_key, device_public_key, uid),
-        &Signature::from_bytes(&signature),
-    )
-    .is_ok()
+    proof_digest(user_public_key, device_public_key, uid).is_ok_and(|digest| {
+        key.verify(&digest, &Signature::from_bytes(&signature))
+            .is_ok()
+    })
 }
 
 /// A login account, as the system's account database lists it.
@@ -180,8 +194,9 @@ pub fn ensure_proof(
     {
         return Ok(true);
     }
-    let signature = identity
-        .sign(&proof_message(&user_public_key, &device_public_key, uid))
+    let digest = proof_digest(&user_public_key, &device_public_key, uid)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    let signature = tilo_user_identity::StatementSigner::sign_digest(identity, &digest)
         .map_err(|error| io::Error::other(error.to_string()))?;
     // Public: the system reads it from every account's directory.
     #[cfg(unix)]

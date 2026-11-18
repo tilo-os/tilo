@@ -169,11 +169,15 @@ pub async fn claim(
     signer: &dyn DeviceSigner,
     signed_at_ns: u64,
 ) -> Result<Claimed, CodeRefusal> {
+    let digest =
+        tilo_server_protocol::login_code::claim_digest(report, signed_at_ns).map_err(|error| {
+            CodeRefusal {
+                status: 0,
+                message: format!("This device did not sign the claim: {error}"),
+            }
+        })?;
     let signature = signer
-        .sign(tilo_server_protocol::login_code::claim_message(
-            report,
-            signed_at_ns,
-        ))
+        .sign(digest.to_vec())
         .await
         .map_err(|error| CodeRefusal {
             status: 0,
@@ -226,10 +230,9 @@ pub async fn signed_stand_in(
         StandInOp::Key => "key",
         StandInOp::Retire => "retire",
     };
-    let signature = hex::encode(
-        root.sign(StandInRequest::signed_message(name, &user, signed_at_ns))
-            .await?,
-    );
+    let digest = StandInRequest::signed_digest(name, &user, signed_at_ns)
+        .map_err(|error| crate::SignError(error.to_string()))?;
+    let signature = hex::encode(root.sign(digest.to_vec()).await?);
     let user = hex::encode(user);
     Ok(match op {
         StandInOp::Key => StandInRequest::Key {
@@ -317,6 +320,43 @@ pub async fn retire_stand_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::signer::{SignError, SignFuture};
+
+    /// A server that is never asked: the refusing signer answers first.
+    struct NoAnswer;
+
+    impl crate::https::HttpClient for NoAnswer {
+        fn post(&self, _path: &str, _body: Vec<u8>) -> crate::https::HttpFuture<'_> {
+            Box::pin(async { Err("unreachable".to_string()) })
+        }
+    }
+
+    /// A device key that refuses: no claim and no stand-in request is made.
+    struct Refusing;
+
+    impl DeviceSigner for Refusing {
+        fn device_public_key(&self) -> [u8; 32] {
+            [0; 32]
+        }
+
+        fn sign(&self, _message: Vec<u8>) -> SignFuture<'_> {
+            Box::pin(async { Err(SignError("locked".into())) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_signature_claims_nothing() {
+        let claim = claim(&NoAnswer, "report", "00".to_string(), &Refusing, 1).await;
+        assert!(matches!(claim, Err(refusal) if refusal.status == 0));
+    }
+
+    #[tokio::test]
+    async fn a_refused_signature_asks_no_stand_in() {
+        for op in [StandInOp::Key, StandInOp::Retire] {
+            let asked = signed_stand_in(op, &Refusing, 1).await;
+            assert!(matches!(asked, Err(SignError(_))));
+        }
+    }
 
     #[test]
     fn each_refusal_says_what_kind_it_is() {

@@ -398,14 +398,15 @@ fn sign_collaboration_join(
         return Response::Denied("collaboration join requested for a different workspace".into());
     }
     match require_trusted_current_device(&profile) {
-        Ok((device, _)) => Response::Signature(
-            device
-                .sign(&runtime_identity::collaboration_join_signing_bytes(
-                    workspace_id,
-                ))
-                .to_bytes()
-                .to_vec(),
-        ),
+        Ok((device, _)) => match runtime_identity::collaboration_join_digest(workspace_id) {
+            Ok(digest) => {
+                match tilo_user_identity::StatementSigner::sign_digest(&device, &digest) {
+                    Ok(signature) => Response::Signature(signature.to_vec()),
+                    Err(error) => Response::Denied(error.to_string()),
+                }
+            }
+            Err(error) => Response::Denied(error.to_string()),
+        },
         Err(error) => Response::Denied(error.to_string()),
     }
 }
@@ -1582,7 +1583,7 @@ params = []
             VerifyingKey::from_bytes(&identity.signing_public_key())
                 .expect("device key")
                 .verify(
-                    &runtime_identity::collaboration_join_signing_bytes(&workspace_id),
+                    &runtime_identity::collaboration_join_digest(&workspace_id).unwrap(),
                     &Signature::from_bytes(&join_proof),
                 )
                 .expect("workspace-scoped device proof");
@@ -1623,7 +1624,7 @@ params = []
             VerifyingKey::from_bytes(&identity.signing_public_key())
                 .expect("device key")
                 .verify(
-                    &runtime_identity::collaboration_join_signing_bytes(&own_cluster),
+                    &runtime_identity::collaboration_join_digest(&own_cluster).unwrap(),
                     &Signature::from_bytes(&own_proof),
                 )
                 .expect("a proof for the person's store");

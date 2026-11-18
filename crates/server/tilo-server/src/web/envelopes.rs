@@ -8,7 +8,7 @@
 //! the person again: the passkey names the root, any of their hosts answers
 //! with the envelope, the passkey opens it.
 //!
-//! The person's profile ([`Record::Profile`]: `{version: 1, user_public_key,
+//! The person's profile ([`Kind::Profile`]: `{version: 1, user_public_key,
 //! display_name, photo?}`, JSON) is kept the same way, so each of their
 //! devices, paired or signed in, shows the name and picture they chose, and
 //! everyone here sees that picture beside their name. The picture is a small
@@ -17,7 +17,7 @@
 //!
 //! `POST /peer/v1/envelope` keeps one: `{envelope, issued_at_ms, signature}`
 //! where `envelope` is the envelope's JSON text and `signature` (hex) the
-//! root's Ed25519 signature over the record (`root_statement::statement`).
+//! root's Ed25519 signature over the statement's digest (`root_statement::digest`).
 //! Only a root admitted to a workspace here may keep one,
 //! and only a newer statement replaces the kept one, so an old envelope
 //! (with a passkey since dropped) cannot be replayed over it.
@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 
 use tilo_user_identity::root_envelope::RootEnvelope;
 use tilo_user_identity::root_statement;
-pub(super) use tilo_user_identity::root_statement::Record;
+pub(super) use tilo_user_identity::root_statement::Kind;
 
 /// An envelope with a handful of passkeys is about 2 KB.
 pub(super) const MAX_ENVELOPE_BYTES: usize = 16 * 1024;
@@ -131,9 +131,9 @@ fn valid_photo(photo: &str) -> bool {
 }
 
 /// The root the record `text` (JSON) belongs to, once it reads as `kind`.
-fn root_of_record(kind: Record, text: &str) -> Result<[u8; 32], Refusal> {
+fn root_for(kind: Kind, text: &str) -> Result<[u8; 32], Refusal> {
     match kind {
-        Record::Envelope => {
+        Kind::Envelope => {
             if text.len() > MAX_ENVELOPE_BYTES {
                 return Err(Refusal::Malformed("envelope too large"));
             }
@@ -144,10 +144,10 @@ fn root_of_record(kind: Record, text: &str) -> Result<[u8; 32], Refusal> {
             {
                 return Err(Refusal::Malformed("not a root envelope"));
             }
-            root_of(&envelope.root_public_key)
+            root_for(&envelope.root_public_key)
                 .ok_or(Refusal::Malformed("malformed root public key"))
         }
-        Record::Profile => {
+        Kind::Profile => {
             if text.len() > MAX_PROFILE_BYTES {
                 return Err(Refusal::Malformed("profile too large"));
             }
@@ -172,7 +172,8 @@ fn root_of_record(kind: Record, text: &str) -> Result<[u8; 32], Refusal> {
             {
                 return Err(Refusal::Malformed("not a profile"));
             }
-            root_of(&profile.user_public_key).ok_or(Refusal::Malformed("malformed root public key"))
+            root_for(&profile.user_public_key)
+                .ok_or(Refusal::Malformed("malformed root public key"))
         }
     }
 }
@@ -215,7 +216,7 @@ impl Refusal {
 
 pub(super) struct Envelopes {
     dir: PathBuf,
-    kind: Record,
+    kind: Kind,
     /// One write at a time, so "newer than kept" holds across requests.
     write: tokio::sync::Mutex<()>,
 }
@@ -233,11 +234,11 @@ fn root_of(text: &str) -> Option<[u8; 32]> {
 
 impl Envelopes {
     pub(super) fn new(dir: PathBuf) -> Self {
-        Self::of(Record::Envelope, dir)
+        Self::of(Kind::Envelope, dir)
     }
 
     /// A store of the members' records of `kind`, under `dir`.
-    pub(super) fn of(kind: Record, dir: PathBuf) -> Self {
+    pub(super) fn of(kind: Kind, dir: PathBuf) -> Self {
         Self {
             dir,
             kind,
@@ -292,7 +293,7 @@ impl Envelopes {
     {
         let publish: Publish =
             serde_json::from_slice(body).map_err(|_| Refusal::Malformed("malformed body"))?;
-        let root = root_of_record(self.kind, &publish.envelope)?;
+        let root = root_for(self.kind, &publish.envelope)?;
         if publish.issued_at_ms > now_ms.saturating_add(MAX_SKEW_MS) {
             return Err(Refusal::Malformed("dated in the future"));
         }
@@ -345,15 +346,17 @@ mod tests {
     }
 
     fn statement(root: &SigningKey, envelope: &str, at: u64) -> Vec<u8> {
-        signed(Record::Envelope, root, "envelope", envelope, at)
+        signed(Kind::Envelope, root, "envelope", envelope, at)
     }
 
     /// A publish body of `kind`'s record `text`, signed by `root`.
-    fn signed(kind: Record, root: &SigningKey, field: &str, text: &str, at: u64) -> Vec<u8> {
+    fn signed(kind: Kind, root: &SigningKey, field: &str, text: &str, at: u64) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             field: text,
             "issued_at_ms": at,
-            "signature": hex::encode(root_statement::sign(root, kind, at, text)),
+            "signature": hex::encode(
+                root_statement::sign(root, kind, at, text).expect("a root statement"),
+            ),
         }))
         .unwrap_or_default()
     }
@@ -418,7 +421,7 @@ mod tests {
     #[tokio::test]
     async fn a_member_keeps_a_profile_with_a_name_a_picture_and_nothing_else() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let profiles = Envelopes::of(Record::Profile, dir.path().join("profiles"));
+        let profiles = Envelopes::of(Kind::Profile, dir.path().join("profiles"));
         let root = SigningKey::from_bytes(&[7; 32]);
         let hex_root = hex::encode(root.verifying_key().to_bytes());
         let profile = |name: &str| {
@@ -426,11 +429,11 @@ mod tests {
                 .to_string()
         };
         let profile_body =
-            |kind: Record, text: &str, at: u64| signed(kind, &root, "profile", text, at);
+            |kind: Kind, text: &str, at: u64| signed(kind, &root, "profile", text, at);
         let ada = profile("Ada Lovelace");
         profiles
             .publish(
-                &profile_body(Record::Profile, &ada, 1_000),
+                &profile_body(Kind::Profile, &ada, 1_000),
                 1_000,
                 |_| async { true },
             )
@@ -458,7 +461,7 @@ mod tests {
             assert!(matches!(
                 profiles
                     .publish(
-                        &profile_body(Record::Profile, &bad, 2_000),
+                        &profile_body(Kind::Profile, &bad, 2_000),
                         2_000,
                         |_| async { true }
                     )
@@ -470,7 +473,7 @@ mod tests {
         assert_eq!(
             profiles
                 .publish(
-                    &profile_body(Record::Envelope, &profile("Grace"), 3_000),
+                    &profile_body(Kind::Envelope, &profile("Grace"), 3_000),
                     3_000,
                     |_| async { true }
                 )
@@ -483,7 +486,7 @@ mod tests {
         .to_string();
         profiles
             .publish(
-                &profile_body(Record::Profile, &pictured, 4_000),
+                &profile_body(Kind::Profile, &pictured, 4_000),
                 4_000,
                 |_| async { true },
             )
@@ -509,7 +512,7 @@ mod tests {
                 matches!(
                     profiles
                         .publish(
-                            &profile_body(Record::Profile, &text, 5_000),
+                            &profile_body(Kind::Profile, &text, 5_000),
                             5_000,
                             |_| async { true }
                         )
@@ -525,11 +528,11 @@ mod tests {
     #[tokio::test]
     async fn a_profile_keeps_what_they_say_they_are_doing() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let profiles = Envelopes::of(Record::Profile, dir.path().join("profiles"));
+        let profiles = Envelopes::of(Kind::Profile, dir.path().join("profiles"));
         let root = SigningKey::from_bytes(&[8; 32]);
         let hex_root = hex::encode(root.verifying_key().to_bytes());
         let profile_body =
-            |kind: Record, text: &str, at: u64| signed(kind, &root, "profile", text, at);
+            |kind: Kind, text: &str, at: u64| signed(kind, &root, "profile", text, at);
         // What they say they are doing, and how they share it, ride along
         // too; a second line or a way of sharing nobody knows does not.
         let said = serde_json::json!({"version": 1, "user_public_key": hex_root,
@@ -537,7 +540,7 @@ mod tests {
         .to_string();
         profiles
             .publish(
-                &profile_body(Record::Profile, &said, 4_500),
+                &profile_body(Kind::Profile, &said, 4_500),
                 4_500,
                 |_| async { true },
             )
@@ -550,7 +553,7 @@ mod tests {
             assert!(matches!(
                 profiles
                     .publish(
-                        &profile_body(Record::Profile, &text, 4_600),
+                        &profile_body(Kind::Profile, &text, 4_600),
                         4_600,
                         |_| async { true }
                     )
@@ -564,11 +567,11 @@ mod tests {
     #[tokio::test]
     async fn a_profile_names_its_linked_accounts_and_where_its_picture_is_from() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let profiles = Envelopes::of(Record::Profile, dir.path().join("profiles"));
+        let profiles = Envelopes::of(Kind::Profile, dir.path().join("profiles"));
         let root = SigningKey::from_bytes(&[9; 32]);
         let hex_root = hex::encode(root.verifying_key().to_bytes());
         let publish = |text: String, at: u64| {
-            let body = signed(Record::Profile, &root, "profile", &text, at);
+            let body = signed(Kind::Profile, &root, "profile", &text, at);
             let profiles = &profiles;
             async move { profiles.publish(&body, at, |_| async { true }).await }
         };
