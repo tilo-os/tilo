@@ -130,6 +130,7 @@ members = [
     "apps/diffmerge-model",
     "apps/disks",
     "apps/disk-usage",
+    "apps/disk-usage-model",
     "apps/ebook",
     "apps/feeds",
     "apps/file-explorer",
