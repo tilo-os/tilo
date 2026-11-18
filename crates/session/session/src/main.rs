@@ -704,12 +704,6 @@ fn start(
         hosted_browser,
         ..device_options(machine, config)
     };
-    // A session in another desktop's window serves no MCP server of its own, unless the person
-    // started it with an agent key (`--agent-key`): the agent holding it reaches the session only
-    // through a socket, and the window's private runtime directory holds it.
-    if options.mcp_server.is_none() && options.agent_key.is_some() {
-        options.mcp_server = tilo_session::mcp_server::path();
-    }
     // The person's files: the login's files daemon serves them as the Files app's windowless
     // endpoint, so the session records its process before the daemon's connections to the broker
     // arrive. A session in another desktop's window serves no files daemon of its own.
@@ -1131,9 +1125,11 @@ fn device_options(
         // The apps this session starts reach its services over the socket the launcher hands them,
         // in this session's runtime directory.
         app_socket: AppSocket::Launcher,
-        // A program of this login asks the MCP server of the person at this device to work in a workspace
-        // as an agent; a session in another desktop's window serves none.
-        mcp_server: owned.then(tilo_session::mcp_server::path).flatten(),
+        // A program of this login asks the person's MCP server to work in a workspace as their
+        // agent, admitted by the person on the sheet or by the agent key they started the session
+        // with. Every session serves one in its own runtime directory, a nested one too: the agents
+        // are the person's, not the machine's.
+        mcp_server: tilo_session::mcp_server::path(),
         // The person's own programs reach this desktop through Tilo's API in the login's private
         // directory: a nested session's is its own.
         api_server: tilo_paths::login::session_dir(std::env::var_os("XDG_RUNTIME_DIR"))

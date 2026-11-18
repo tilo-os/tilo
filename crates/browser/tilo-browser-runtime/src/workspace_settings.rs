@@ -326,6 +326,37 @@ impl PageWorkspaceSettings {
         changed
     }
 
+    /// The sheet's General tab: which servers keep the workspace, once the server answered with
+    /// them.
+    fn general(&self) -> sheet::General {
+        // Which servers keep the workspace is its owners' to choose: the page shows them the tab
+        // once the server answered with them, and a person who may not choose sees nothing of them.
+        match &*self.servers.borrow() {
+            Some(servers) => sheet::General {
+                servers: Some(sheet::Servers {
+                    group: sheet::Group {
+                        title: t("workspace-settings-servers-title"),
+                        description: t("workspace-settings-servers-description"),
+                    },
+                    origin_label: t("workspace-settings-servers-origin-label"),
+                    add_label: t("workspace-settings-servers-add"),
+                    remove_label: t("workspace-settings-servers-remove"),
+                    here_label: t("workspace-settings-servers-here"),
+                    rows: servers
+                        .iter()
+                        .map(|server| sheet::Server {
+                            key: server.device.clone(),
+                            label: server.device.clone(),
+                            here: server.here,
+                        })
+                        .collect(),
+                }),
+                ..sheet::General::default()
+            },
+            None => sheet::General::default(),
+        }
+    }
+
     /// The sheet as the workspace stands for this page's person.
     fn settings(&self) -> sheet::Settings {
         let workspace = self.workspace.borrow();
@@ -384,32 +415,7 @@ impl PageWorkspaceSettings {
         ));
         // What the workspace did is the session's to show; a page offers only the decision.
         people.remove_decision.review.clear();
-        // Which servers keep the workspace is its owners' to choose: the page shows them the tab
-        // once the server answered with them, and a person who may not choose sees nothing of them.
-        let general = match &*self.servers.borrow() {
-            Some(servers) => sheet::General {
-                servers: Some(sheet::Servers {
-                    group: sheet::Group {
-                        title: t("workspace-settings-servers-title"),
-                        description: t("workspace-settings-servers-description"),
-                    },
-                    origin_label: t("workspace-settings-servers-origin-label"),
-                    add_label: t("workspace-settings-servers-add"),
-                    remove_label: t("workspace-settings-servers-remove"),
-                    here_label: t("workspace-settings-servers-here"),
-                    rows: servers
-                        .iter()
-                        .map(|server| sheet::Server {
-                            key: server.device.clone(),
-                            label: server.device.clone(),
-                            here: server.here,
-                        })
-                        .collect(),
-                }),
-                ..sheet::General::default()
-            },
-            None => sheet::General::default(),
-        };
+        let general = self.general();
         let mut tabs = Vec::new();
         if general.servers.is_some() {
             tabs.push(sheet::Tab::General);

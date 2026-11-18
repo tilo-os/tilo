@@ -25,6 +25,11 @@ public protocol AssistantSource: Sendable {
     /// it is `.unknown`, and nothing is said to have failed: a page on its way in is not away.
     func reach() -> AsyncStream<Reach>
 
+    /// Why the last pairing ended without letting this device in, in Tilo's own sentence: its
+    /// site refused the link, or its page could not go on. Nil where none did, and again once
+    /// another link is taken or the device is in. The way in says it.
+    func pairingEnded() -> AsyncStream<String?>
+
     /// Pair this device with a link that "Pair a new device" made on a device where the person is
     /// signed in: scanned as a code, or pasted. `session()` says how it goes on.
     func pair(with link: PairingLink) async throws
@@ -197,6 +202,8 @@ extension AssistantSource {
     // A source with no first run of its own asks nothing before it pairs, has nothing in the
     // way of an answer and links no provider.
     public func answerPairing(goOn: Bool) async {}
+    /// A source whose pairings end with no sentence of Tilo's has none to say.
+    public func pairingEnded() -> AsyncStream<String?> { AsyncStream { $0.yield(nil) } }
     public func setup() -> AsyncStream<Setup> { AsyncStream { $0.yield(.ready) } }
     public func makeAssistant() async throws {}
     public func link(_ provider: ProviderChoice.ID, key: Secret) async throws -> [ModelChoice] {

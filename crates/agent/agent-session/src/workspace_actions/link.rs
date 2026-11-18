@@ -114,6 +114,40 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     ) -> Vec<ui::permissions::policy::Rule> {
         Vec::new()
     }
+    /// The `.tapp` `workspace` keeps for `app`, when its governance installs
+    /// a version and this device has the package file: the model every holder
+    /// of the workspace applies the app's actions from, whichever device
+    /// built the app. `None` for an app the workspace installs no such
+    /// version of.
+    fn installed_package(&self, _workspace: WorkspaceId, _app: &str) -> Option<Vec<u8>> {
+        None
+    }
+    /// Apply `call`, an action of an installed app, in `workspace` as
+    /// `caller`: the device executes the module the app version's package
+    /// carries, admits and publishes what it wrote under the invocation's
+    /// actor — the person, agent or bot the caller is — and answers the
+    /// invocation a peer replays. `Ok(None)` when this device applies no
+    /// packaged actions; `Err` with why it refused.
+    fn apply_packaged_action(
+        &self,
+        _workspace: WorkspaceId,
+        _caller: &Caller,
+        _call: PackagedCall<'_>,
+    ) -> Result<Option<serde_json::Value>, String> {
+        Ok(None)
+    }
+    /// The action `action` of `app` as the version `workspace` installs
+    /// declares it in its package's surface: what the caller is offered and
+    /// the kind it is decided by. `None` for an app or action it does not
+    /// declare.
+    fn packaged_action(
+        &self,
+        _workspace: WorkspaceId,
+        _app: &str,
+        _action: &str,
+    ) -> Option<tilo_actions::surface::VerbSurface> {
+        None
+    }
     /// Read an exact existing source using already-owned host keys. The host
     /// must check current certified Read under its workspace lock before key access
     /// and again before returning. Missing keys never cause enrollment.
@@ -255,6 +289,24 @@ pub trait AsksInConversation: Send + Sync {
         caller: &Caller,
         asked: AskedInTurn,
     ) -> Option<Pending<Result<(), String>>>;
+}
+
+/// One action of an installed app, as the action API asks a holder to apply
+/// it from the app version's package.
+#[derive(Debug)]
+pub struct PackagedCall<'a> {
+    /// The app's id, as its package and its resources name it.
+    pub app: &'a str,
+    /// The resource's document id: `""` for what the app keeps per workspace.
+    pub document: &'a str,
+    /// The `.tapp` the workspace keeps for that app version.
+    pub package: &'a [u8],
+    /// The action's id in the resource's vocabulary.
+    pub action: &'a str,
+    /// Its arguments, as the action API binds them.
+    pub arguments: serde_json::Map<String, serde_json::Value>,
+    /// The origin clock, milliseconds since the Unix epoch.
+    pub now_ms: i64,
 }
 
 /// What an agent working inside a turn wants to do, as its person is asked

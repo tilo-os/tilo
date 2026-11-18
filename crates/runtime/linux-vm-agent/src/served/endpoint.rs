@@ -113,7 +113,9 @@ fn answer_one(run: &Shared, endpoint: &str, port: u16, stream: TcpStream, full: 
             return;
         }
         Err(Malformed::Io(error)) => {
-            eprintln!("tilo-linux-vm-agent serve-run: a request at {endpoint} was not read: {error}");
+            eprintln!(
+                "tilo-linux-vm-agent serve-run: a request at {endpoint} was not read: {error}"
+            );
             return;
         }
         Err(Malformed::Closed) => return,

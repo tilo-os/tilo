@@ -77,6 +77,7 @@ mod member;
 mod opened;
 mod opened_file;
 mod outcome;
+mod packaged;
 mod placed;
 mod publish;
 mod reads;
@@ -90,8 +91,8 @@ pub(super) use arguments::invoke_arguments;
 pub use content::MAX_PUT_BYTES;
 pub use host_actions::HostActions;
 pub use link::{
-    AskedInTurn, AsksInConversation, FeedbackReviewer, HostDevice, ViewDocument, ViewReadPolicy,
-    WorkspaceDocumentsLink,
+    AskedInTurn, AsksInConversation, FeedbackReviewer, HostDevice, PackagedCall, ViewDocument,
+    ViewReadPolicy, WorkspaceDocumentsLink,
 };
 pub use terminal::{ShellRan, TERMINAL_APP, Watching, WorkspaceShell};
 
@@ -2443,7 +2444,7 @@ impl Worker {
 
     #[allow(
         clippy::result_large_err,
-        reason = "the outcome becomes the receipt the host records"
+        reason = "the outcome becomes the receipt answered"
     )]
     #[allow(
         clippy::too_many_lines,
@@ -2488,15 +2489,34 @@ impl Worker {
             return self.open_in_workspace(workspace_id, caller, request, (named, &state));
         }
         let workspace = workspace.ok_or_else(unknown_action)?;
-        let route = resource_of(&target.provider, &workspace)
-            .filter(|route| self.catalogue.get(&route.app_id).is_some())
-            .ok_or_else(unknown_action)?;
+        let route = resource_of(&target.provider, &workspace).ok_or_else(unknown_action)?;
+        // The package of the version `workspace` installs, when this device
+        // keeps it: an installed app's action is applied from the model its
+        // package carries, whichever device built the app, because that is the
+        // same module every holder of the workspace replays it with.
+        let packaged = self.installed_package(workspace_id, &route.app_id);
+        if self.catalogue.get(&route.app_id).is_none() && packaged.is_none() {
+            return Err(unknown_action());
+        }
         let target = &self.with_document_resource(target, &route.app_id);
         let arguments = invoke_arguments(&request.argument);
         // What is said in a direct conversation the caller's person takes no part in is not
         // there for them: an action on it is answered as one on nothing, and no read answers
         // with a row of it ([`direct`]).
         let withheld = self.kept_from_caller(caller, &route, &state);
+        if let Some(package) = packaged {
+            if stale_revision(request.revision.as_deref(), &state.revision.to_string()) {
+                return Err(Outcome::Rejected(ActionCallError::StaleRevision));
+            }
+            let performed = self.perform_packaged(
+                workspace_id,
+                caller,
+                &route,
+                &package,
+                (target, arguments, &withheld),
+            )?;
+            return Ok((withheld.shown(performed.0), performed.1));
+        }
         // What the record publishes, its own API runs. What only its
         // committed source publishes — a canonical read of it — is asked of
         // that source, which reads the record and opens a worker for it: an
@@ -2632,7 +2652,7 @@ impl Worker {
     /// now.
     #[allow(
         clippy::result_large_err,
-        reason = "the outcome becomes the receipt the host records"
+        reason = "the outcome becomes the receipt answered"
     )]
     fn open_asked(
         &mut self,
@@ -2785,7 +2805,7 @@ impl Worker {
     /// may not write is never saved, as no change of theirs is.
     #[allow(
         clippy::result_large_err,
-        reason = "the outcome becomes the receipt the host records"
+        reason = "the outcome becomes the receipt answered"
     )]
     fn open_new(
         &mut self,

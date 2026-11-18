@@ -486,6 +486,15 @@ which is when the system keeps a picture of the window.
 While a device where the person is signed in asks about a code, the window shows that code
 large (`Session.confirming`), so the two are compared before anyone approves.
 
+**A pairing that ends.** A pairing can end before the device is anybody's: its site refuses
+the link, the page stops after the person pressed its button, or the device is let in and its
+page cannot draw there. The engine keeps the page's own sentence for it (`TiloEngine.State`
+`refused` and `failed`), `TiloSource` says it (`AssistantSource.pairingEnded()`), and the way in
+shows it under its buttons until another link is taken or the device is in: whoever stands at
+the way in again reads why. A device that is its person's already is told nothing there.
+`PairingEndedTests` checks this against a page that speaks as Tilo's does, `ModelTests` in the
+window's model.
+
 **A workspace that is gone.** A device goes back to its way in by itself when Tilo's page says
 that the workspace it was let into is no longer there: the site's server was set up again
 since, or the workspace was deleted. The engine reads the page's own name for the case

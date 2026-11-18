@@ -82,6 +82,12 @@ struct Request {
     /// person's key, `agent:<id>` or `bot:<id>`.
     #[serde(default)]
     member: String,
+    /// Who acts, and for whom, as the device's action API recorded it
+    /// ([`tilo_actions::Acting`]): an agent a person's session handed to, for
+    /// that person, writes changes that say so. Absent for a member acting for
+    /// themselves, which [`Request::member`] alone names.
+    #[serde(default)]
+    acting: Option<serde_json::Value>,
     /// The action's id in the resource's vocabulary.
     #[serde(default)]
     action: String,
@@ -156,6 +162,14 @@ fn genesis<R: Resource>(request: &Request) -> Result<Answer, String> {
 fn apply<R: Resource>(request: &Request) -> Result<Answer, String> {
     let member = MemberId::of_actor_bytes(request.member.as_bytes())
         .ok_or_else(|| format!("`{}` names no member", request.member))?;
+    // The actor the device admitted, when it named one: an agent acting for
+    // the person whose session handed it the action says so, and the receipt
+    // decides the change by what that agent may do for them.
+    let acting = match &request.acting {
+        Some(acting) => serde_json::from_value::<Acting>(acting.clone())
+            .map_err(|error| format!("who acts: {error}"))?,
+        None => Acting::member(member.clone()),
+    };
     let action =
         tilo_resource::build_action::<R>(&request.action, &request.arguments, request.now)?;
     let encoded = tilo_resource::encode::<R>(&action)
@@ -166,7 +180,7 @@ fn apply<R: Resource>(request: &Request) -> Result<Answer, String> {
     let heads = replica.doc_mut().get_heads();
     let context = ActionContext::for_resource(R::KIND, R::KIND, R::label())
         .with_app(R::APP_ID, R::label())
-        .with_invoker(ActionInvoker::admitted(&Acting::member(member.clone())))
+        .with_invoker(ActionInvoker::admitted(&acting))
         .with_change(action.change_kind());
     let envelope = ActionEnvelope {
         id: invocation_id(&request.id, &member, &encoded, &heads, request.now),

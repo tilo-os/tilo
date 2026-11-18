@@ -190,9 +190,7 @@ mod tests {
             );
             assert_eq!(
                 pinned_ref(&snapshot, "x86_64"),
-                Some(format!(
-                    "registry.tilo.so/tilo/linux-guest@sha256:{digest}"
-                ))
+                Some(format!("registry.tilo.so/tilo/linux-guest@sha256:{digest}"))
             );
             assert_eq!(pinned_ref(&snapshot, "aarch64"), None);
             assert!(!valid_pinned_ref(

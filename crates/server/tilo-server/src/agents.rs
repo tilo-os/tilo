@@ -29,7 +29,9 @@ use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
 use tilo_actions::remote::{ActionCallError, Caller, Pending};
-use tilo_agent_session::workspace_actions::{HostDevice, ShellRan, Watching, WorkspaceShell};
+use tilo_agent_session::workspace_actions::{
+    HostDevice, PackagedCall, ShellRan, Watching, WorkspaceShell,
+};
 use tilo_agent_session::{
     AdmissionDone, AgentHost, AgentHostLink, AppCatalogue, ApprovalDone, CatalogueFactory,
     FeedbackReviewer, HostActions, HostEndpoint, MakeTurns, SupervisorHost, WorkspaceActions,
@@ -657,6 +659,9 @@ fn placed_when_ready(
 struct ServerRecordsLink {
     user_public_key: [u8; 32],
     host_device: HostDevice,
+    /// The runtime the records' work waits on: the same one its device's
+    /// requests answer from.
+    runtime: tokio::runtime::Handle,
     workspaces: Option<crate::workspaces::Workspaces>,
     browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
     web_entry: Option<String>,
@@ -878,6 +883,69 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
             .block_on(workspaces.records(channel))
     }
 
+    fn installed_package(&self, workspace: WorkspaceId, app: &str) -> Option<Vec<u8>> {
+        let workspaces = self.workspaces.as_ref()?;
+        self.runtime
+            .block_on(workspaces.installed_package(&workspace.to_string(), app))
+    }
+
+    fn apply_packaged_action(
+        &self,
+        workspace: WorkspaceId,
+        caller: &Caller,
+        call: PackagedCall<'_>,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let PackagedCall {
+            app,
+            document,
+            package,
+            action,
+            arguments,
+            now_ms,
+        } = call;
+        let workspaces = self
+            .workspaces
+            .as_ref()
+            .ok_or("governed workspaces unavailable")?;
+        // The invocation is the caller's: its person, agent or bot is the
+        // change's actor, though the server's own device signs it.
+        let member = caller
+            .acting()
+            .member_id()
+            .cloned()
+            .ok_or("the caller is no member")?;
+        self.runtime
+            .block_on(workspaces.apply_packaged_action(
+                &workspace.to_string(),
+                workspaces.governor(),
+                tilo_workspace_service::workspaces::PackagedAction {
+                    app,
+                    document,
+                    package,
+                    action,
+                    arguments,
+                    member,
+                    acting: caller.acting().clone(),
+                    now_ms,
+                },
+            ))
+            .map(Some)
+            .map_err(|error| error.to_string())
+    }
+
+    fn packaged_action(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        action: &str,
+    ) -> Option<tilo_actions::surface::VerbSurface> {
+        let workspaces = self.workspaces.as_ref()?;
+        let package = self
+            .runtime
+            .block_on(workspaces.installed_package(&workspace.to_string(), app))?;
+        tilo_workspace_service::workspaces::packaged_action_verb(&package, app, action).ok()
+    }
+
     fn view_locator(
         &self,
         workspace: &str,
@@ -1078,6 +1146,7 @@ fn attach_resources(
             stores: server.content(),
             content_links: server.content_links(),
             certification: server.web_context().certification.clone(),
+            runtime: tokio::runtime::Handle::current(),
             host_device: HostDevice {
                 endpoint: HostEndpoint::iroh(server.node_addr(), host_cert.clone()),
                 key: server.workspace_documents().signing_key().clone(),

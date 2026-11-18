@@ -5,8 +5,8 @@
 
 use std::path::Path;
 
-use linux_vm_protocol::link::{AgentLink, HYBRID_GUEST_CID};
 use libvirt_domain::xml_text;
+use linux_vm_protocol::link::{AgentLink, HYBRID_GUEST_CID};
 
 /// The libvirt namespace for raw QEMU arguments.
 pub const QEMU_NAMESPACE: &str = "http://libvirt.org/schemas/domain/qemu/1.0";

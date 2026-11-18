@@ -6,18 +6,18 @@ use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
 
-use linux_vm_protocol::client::{self, LaunchIo};
-use linux_vm_protocol::link::AgentLink;
-use linux_vm_protocol::waypipe::PORT_ENV;
-use linux_vm_protocol::{
-    AGENT_PORT, Display, GuestMessage, GuestOs, HostMessage, Launch, Stdio as LaunchStdio,
-};
 use linux_vm::apps::{self, Registry};
 use linux_vm::config::{Paths, VmConfig};
 use linux_vm::control::{self, ControlReply, ControlRequest};
 use linux_vm::grants::Grants;
 use linux_vm::supervisor::Supervisor;
 use linux_vm::{confine, image, virtiofs};
+use linux_vm_protocol::client::{self, LaunchIo};
+use linux_vm_protocol::link::AgentLink;
+use linux_vm_protocol::waypipe::PORT_ENV;
+use linux_vm_protocol::{
+    AGENT_PORT, Display, GuestMessage, GuestOs, HostMessage, Launch, Stdio as LaunchStdio,
+};
 
 #[cfg(target_os = "linux")]
 mod hosted_cli;
