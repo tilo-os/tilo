@@ -1,7 +1,6 @@
 ## What Chat's resources say in words.
 
 chat-person-unnamed = Someone ({ $tag })
-chat-draft-line = Draft: { $preview }
 
 ## The resource's resources, their actions and what it does.
 chat-effects-model-control = Ask about this message

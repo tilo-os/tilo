@@ -197,7 +197,10 @@ impl ChatApp {
                         let channel = key.split_once("::").map_or(key.as_str(), |(at, _)| at);
                         let text = crate::projection::draft_text(doc, &key);
                         let line = crate::drafts::line(&text)?;
-                        Some((channel.to_owned(), line))
+                        Some((
+                            channel.to_owned(),
+                            crate::i18n::t_args("chat-draft-row", &[("preview", line.into())]),
+                        ))
                     })
                     .collect()
             })
