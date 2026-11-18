@@ -37,14 +37,14 @@ pub mod graph;
 pub mod history;
 mod http_transport;
 pub mod i18n;
-pub mod model;
+pub use git_client_model::model;
 pub mod panels;
 pub mod repo;
 pub mod resource;
 #[cfg(feature = "samples")]
 pub mod sample;
 pub mod settings;
-pub mod shared;
+pub use git_client_model::shared;
 mod ssh_transport;
 mod transport;
 
