@@ -566,9 +566,12 @@ written into the bundles, never into the sources. Without an identity the Mac ap
 nobody: it runs on the Mac that built it, a later build cannot read the keys it kept, and it
 has no share extension.
 
-The icon of both apps is one drawing, `Bundle/AppIcon.svg`: Tilo's mark. The repository keeps
-no pictures, so `build.sh` draws it at every size a bundle carries when the bundle is made:
-the Mac's icon, and the two files the iPhone's `Info.plist` names.
+Each app has one drawing for its icon, so the two are told apart at a glance: Tilo Shell's is
+`Bundle/AppIcon.svg`, Tilo's mark on its light ground; Tilo Assistant's is
+`AssistantBundle/AppIcon.svg`, a message on Tilo's blue with the mark's three parts as three
+dots. The repository keeps no pictures, so `build.sh` draws an app's drawing at every size a
+bundle carries when the bundle is made: the Mac's icon, and the two files the iPhone's
+`Info.plist` names.
 
 `--check` runs the app with nothing on screen and prints one line per fact: who signed it,
 whether it is sandboxed, whether the web view offers a secure context, WebGPU with an adapter,
