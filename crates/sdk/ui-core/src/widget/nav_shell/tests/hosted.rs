@@ -624,3 +624,49 @@ fn a_narrow_window_floating_as_a_card_shows_its_content_alone() {
         "in the strip its list is a press away"
     );
 }
+
+/// An app that shows one thing alone (the view a message carries, mounted in that message's
+/// place) has nothing of its window around it: at a width where the sidebar docks, the shell
+/// places none and the bar offers no toggle for one. Taken back, the sidebar stands as the
+/// person left it.
+#[test]
+fn a_window_that_shows_one_thing_alone_places_no_sidebar_at_any_width() {
+    let shell = NavShell::new()
+        .with_window_toolbar()
+        .content_kind(ContentKind::Reading);
+    let link = shell.window_bar_link();
+    let shell = shell
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Probe::boxed("content").0);
+    let mut h = harness(shell, 1100, 760, Theme::dark());
+    settle(&mut h, 1100, 760);
+    assert_eq!(geometry(&h).sidebar, SidebarPlacement::Docked);
+    assert_eq!(link.parts().sidebar, Some(true), "docked, with its toggle");
+
+    link.show_content_alone(true);
+    settle(&mut h, 1100, 760);
+    assert_eq!(
+        geometry(&h).sidebar,
+        SidebarPlacement::None,
+        "the one thing has no sidebar beside it"
+    );
+    assert_eq!(
+        link.parts().sidebar,
+        None,
+        "no toggle for a sidebar it does not show"
+    );
+    assert!(child_rect(&h, "content").is_some_and(|r| r.width() >= 1099.0));
+    assert!(
+        child_rect(&h, "sidebar").is_none_or(|r| r.area() <= 0.0),
+        "nothing of the window's places beside the one thing"
+    );
+
+    link.show_content_alone(false);
+    settle(&mut h, 1100, 760);
+    assert_eq!(geometry(&h).sidebar, SidebarPlacement::Docked);
+    assert_eq!(
+        link.parts().sidebar,
+        Some(true),
+        "the sidebar stands as the person left it"
+    );
+}

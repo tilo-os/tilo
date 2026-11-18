@@ -22,6 +22,8 @@ pub(super) struct Requests {
     pub(super) staged_pane: Cell<Option<NavPane>>,
     /// Put a floating sidebar away ([`WindowBarLink::put_drawer_away`]).
     pub(super) put_drawer_away: Cell<bool>,
+    /// The app shows one thing alone ([`WindowBarLink::show_content_alone`]).
+    pub(super) content_alone: Cell<bool>,
     /// A notice the app asked the window's bar to show ([`WindowBarLink::toast`]).
     pub(super) toast: RefCell<Option<(String, crate::widget::toast::ToastKind)>>,
     parts: RefCell<WindowToolbar>,
@@ -70,6 +72,19 @@ impl WindowBarLink {
     /// first screen (the app opened something it would cover); a docked sidebar stays.
     pub fn put_drawer_away(&self) {
         self.0.put_drawer_away.set(true);
+    }
+
+    /// The window shows one thing alone (`alone`), or its places beside it again. While it
+    /// does, the shell places no sidebar at any width and offers no toggle for one, as for a
+    /// card floating over the shell. What the person chose for the sidebar stays as it was.
+    pub fn show_content_alone(&self, alone: bool) {
+        self.0.content_alone.set(alone);
+    }
+
+    /// Whether the app asked for its one thing alone ([`Self::show_content_alone`]).
+    #[must_use]
+    pub fn shows_content_alone(&self) -> bool {
+        self.0.content_alone.get()
     }
 
     /// Show a transient notice in the window's bar, as [`NavShell::toast`] does: what an
@@ -133,6 +148,12 @@ impl NavShell {
             acted |= self.press_notice_action();
         }
         acted |= self.take_inspector_requests();
+        let alone = self.requests.content_alone.get();
+        if std::mem::replace(&mut self.inputs.borrow_mut().alone, alone) != alone {
+            self.structure_dirty = true;
+            self.invalidate();
+            acted = true;
+        }
         if self.built
             && let Some(open) = self.requests.staged_sidebar.take()
         {

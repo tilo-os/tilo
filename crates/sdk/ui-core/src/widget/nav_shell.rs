@@ -473,6 +473,9 @@ struct Inputs {
     /// The window floats over the shell as a card ([`crate::window_toolbar::floats`]): too narrow
     /// to dock its sidebar, it shows its content alone.
     floats: bool,
+    /// The app shows one thing alone ([`crate::widget::WindowBarLink::show_content_alone`]): no
+    /// sidebar is placed at any width.
+    alone: bool,
     has_overview: bool,
     /// The window shows a content column. A shell with nothing to show beside its overview gives
     /// the window to the overview until something is shown ([`NavShell::content_shown`]).
@@ -563,6 +566,7 @@ impl Default for Inputs {
             metrics: Metrics::default(),
             has_sidebar: false,
             floats: false,
+            alone: false,
             has_overview: false,
             has_content: true,
             has_rail: false,
