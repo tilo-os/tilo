@@ -2162,9 +2162,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             AppRef::Installed { opens: false, .. } => {
                 Err(Self::not_running_note(&parsed.app, false))
             }
-            AppRef::Installed { .. } if starts_app(action) || !parsed.segments.is_empty() => {
+            AppRef::Installed { .. } if starts_app(action) && parsed.segments.is_empty() => {
                 Ok(None)
             }
+            // Any other action, on the app or on a resource inside it, starts the app without a
+            // window first and is then done where its path points: a fresh workspace's first
+            // `notes/Notes#new-note` works the way the refusal for a read says it will.
             AppRef::Installed { app_id, .. } => {
                 let provider = self.started_provider(&app_id, wait_ms).await?;
                 Ok(Some((app_id, provider, true)))

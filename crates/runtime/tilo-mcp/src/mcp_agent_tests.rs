@@ -1480,18 +1480,28 @@ tilo_test_env::scenario! {
                         .all(|request| request.target.address.action != "open")
                 );
             }
-            // Not the app's own action on an app that is not running.
-            let host = Notes::new(false);
+            // An action on a resource inside an app that is not running starts the app the
+            // same way, without a window, and is then done on that resource.
+            let notes = Notes::new(false);
             let (text, failed) = tool(
-                &agent(&host),
+                &agent(&notes),
                 "tilo_do",
-                json!({"path": "notes/Todo#rename"}),
+                json!({"path": "notes/Todo#rename", "args": {"title": "Errands"}}),
             )
             .await;
-            assert!(
-                failed && text.contains("installed but not running"),
-                "{text}"
+            assert!(!failed, "{text}");
+            let asked = notes.invoked.lock().unwrap().clone();
+            assert_eq!(
+                asked
+                    .iter()
+                    .map(|request| request.target.address.action.as_str())
+                    .collect::<Vec<_>>()
+                    .first()
+                    .copied(),
+                Some("start")
             );
+            assert!(asked.iter().any(|request| request.target.address.action == "rename"));
+            assert!(asked.iter().all(|request| request.target.address.action != "open"));
         });
     }
 }
