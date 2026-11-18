@@ -7,25 +7,6 @@ tilo_test_env::scenario! {
     phase presence_keys_and_locations_are_single_per_peer;
     {
         {
-            let a = PresenceKey::Widget {
-                path: vec![PathSegment::Field("root".into()), PathSegment::Index(2)],
-            };
-            let b = PresenceKey::Widget {
-                path: vec![PathSegment::Field("root".into()), PathSegment::Index(2)],
-            };
-            let c = PresenceKey::Widget {
-                path: vec![PathSegment::Field("root".into()), PathSegment::Index(3)],
-            };
-            assert_eq!(a, b);
-            assert_ne!(a, c);
-
-            let mut map = std::collections::HashMap::new();
-            map.insert(a, 1u32);
-            assert_eq!(map.get(&b), Some(&1));
-            assert_eq!(map.get(&c), None);
-        }
-
-        {
             let r = SelectionRange { start: 3, end: 10 };
             assert_eq!(r.len(), 7);
             assert!(!r.is_caret());

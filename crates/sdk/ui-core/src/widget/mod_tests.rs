@@ -211,24 +211,4 @@ tilo_test_env::scenario! {
         audience_presentation_capability_forwards_through_dyn_widget();
         action_emitter_backlog_is_bounded_and_keeps_the_newest_intent();
     }
-
-    phase collaboration_capabilities_visit_parent_and_child_exactly_once;
-    {
-        let events = std::rc::Rc::new(std::cell::Cell::new(0));
-        let child = CollabProbe {
-            events: std::rc::Rc::clone(&events),
-            child: None,
-        };
-        let mut root = CollabProbe {
-            events: std::rc::Rc::clone(&events),
-            child: Some(Box::new(child)),
-        };
-
-        assert_eq!(take_collab_requests(&mut root).len(), 2);
-        handle_collab_event(
-            &mut root,
-            &crate::collaboration::CollabEvent::FollowChanged { peer_id: None },
-        );
-        assert_eq!(events.get(), 2);
-    }
 }

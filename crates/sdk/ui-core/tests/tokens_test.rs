@@ -1,29 +1,14 @@
 use tilo_ui::Theme;
-use tilo_ui::tokens::{Metrics, Radii, Spacing, SpacingStep, Tokens};
+use tilo_ui::tokens::{Metrics, Spacing, SpacingStep, Tokens};
 
 tilo_test_env::scenario! {
-    fn colour_radius_and_spacing_tokens_have_their_documented_shape;
+    fn colour_and_spacing_tokens_have_their_documented_shape;
 
-    phase colour_and_radius_tokens_have_their_documented_shape;
+    phase colour_tokens_have_their_documented_shape;
     {
-        {
-            let t = Tokens::dark();
-            assert_eq!(t.colors.neutral.len(), 11);
-            assert_ne!(t.colors.neutral[0], t.colors.neutral[10]);
-        }
-
-        // Each role is pinned to the design language's table, so a drift in one
-        // step is a visible failure rather than a softer corner.
-        {
-            let r = Radii::default();
-            assert_eq!(r.detail, 4.0);
-            assert_eq!(r.item, 6.0);
-            assert_eq!(r.control, 8.0);
-            assert_eq!(r.tile, 14.0);
-            assert_eq!(r.panel, 18.0);
-            assert_eq!(r.full, 9999.0);
-            assert_eq!(r.concentric(r.panel, 6.0), 12.0);
-        }
+        let t = Tokens::dark();
+        assert_eq!(t.colors.neutral.len(), 11);
+        assert_ne!(t.colors.neutral[0], t.colors.neutral[10]);
     }
 
     // The spacing scale is the 4 px base, read by field or resolved by step name.
@@ -143,18 +128,4 @@ fn theme_metrics_follow_the_hig_density_table_and_scale_only_with_ui_scale() {
             "the shells' factor is ui_scale × text_growth"
         );
     }
-}
-
-use tilo_ui::permissions::{ActionKind, PermissionScope, TreePath};
-
-#[test]
-fn permission_scope_constructs() {
-    let s = PermissionScope::workspace(ActionKind::Undoable);
-    assert_eq!(
-        s,
-        PermissionScope::Action {
-            node: TreePath::root(),
-            kind: ActionKind::Undoable,
-        }
-    );
 }

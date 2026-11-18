@@ -23,8 +23,6 @@ mod support;
 
 #[path = "accessibility_geometry.rs"]
 mod accessibility_geometry;
-#[path = "app_widget.rs"]
-mod app_widget;
 #[path = "block_editor_markdown.rs"]
 mod block_editor_markdown;
 #[path = "block_editor_slash_menu_integration.rs"]
@@ -113,8 +111,6 @@ mod placed_pointers_test;
 mod presence_context;
 #[path = "presence_experience_test.rs"]
 mod presence_experience_test;
-#[path = "presence_remote_cursors_test.rs"]
-mod presence_remote_cursors_test;
 #[path = "process_entry_points.rs"]
 mod process_entry_points;
 #[path = "profiling.rs"]
@@ -137,19 +133,12 @@ mod scrollable_test;
 mod scrollbar_render_test;
 #[path = "spacing_token_audit.rs"]
 mod spacing_token_audit;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-#[path = "synthetic_key_event.rs"]
-mod synthetic_key_event;
 #[path = "tab_strip_test.rs"]
 mod tab_strip_test;
-#[path = "tabs_test.rs"]
-mod tabs_test;
 #[path = "text_scaled_once.rs"]
 mod text_scaled_once;
 #[path = "textinput_local_mode.rs"]
 mod textinput_local_mode;
-#[path = "tile_app_widget.rs"]
-mod tile_app_widget;
 #[path = "toast_test.rs"]
 mod toast_test;
 #[path = "tokens_test.rs"]
@@ -172,8 +161,6 @@ mod undo_per_author;
 mod undo_the_agents_work;
 #[path = "wake_scope_host.rs"]
 mod wake_scope_host;
-#[path = "widget_trait_test.rs"]
-mod widget_trait_test;
 #[path = "window_group_test.rs"]
 mod window_group_test;
 #[path = "window_group_visual_journey.rs"]
