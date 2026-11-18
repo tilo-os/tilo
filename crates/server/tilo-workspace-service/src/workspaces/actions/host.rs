@@ -1155,6 +1155,8 @@ mod kept_asks_tests;
 #[cfg(test)]
 mod mail_assistant_tests;
 #[cfg(test)]
+mod mail_reach_tests;
+#[cfg(test)]
 mod mail_turn_tests;
 #[cfg(test)]
 mod own_tests;

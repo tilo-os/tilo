@@ -677,7 +677,10 @@ paths = ["crates/collab/tilo-peer-state/src/owner/refused_change_tests.rs"]
 reason = "The keys a mail account's settings keep its two servers' names under, as mail programs call them."
 words = ["host"]
 identifiers = ["imap_host", "smtp_host"]
-paths = ["crates/platform/account-probe/src/mail_servers.rs"]
+paths = [
+    "crates/platform/account-probe/src/mail_servers.rs",
+    "crates/platform/mail-session/src/lib.rs",
+]
 
 [[allow]]
 reason = "Tokio's broadcast channel constructor: a Rust API name, not one of Chat's channels."
@@ -832,6 +835,7 @@ paths = [
     "crates/server/tilo-workspace-service/src/workspaces/delegated_work.rs",
     "crates/server/tilo-workspace-service/src/workspaces/hosted_use.rs",
     "crates/server/tilo-workspace-service/src/workspaces/actions/host/turn_delegation_tests.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/actions/host/mail_reach_tests.rs",
 ]
 
 [[allow]]
