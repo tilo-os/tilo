@@ -1,4 +1,6 @@
-use super::*;
+use super::{HistoryEntryId, listed, wire};
+use tilo_lock::MutexRecover as _;
+
 use crate::tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeRequest, Pending, ReceiptStatus,
@@ -27,10 +29,10 @@ impl ServedHistory {
     #[cfg(test)]
     pub(crate) fn write(&self, doc: &automerge::AutoCommit) {
         {
-            let mut feed = self.feed.lock().unwrap();
+            let mut feed = self.feed.lock_recover();
             *feed = (feed.0 + 1, read(doc));
         }
-        let waiting = std::mem::take(&mut *self.waiting.lock().unwrap());
+        let waiting = std::mem::take(&mut *self.waiting.lock_recover());
         for waiter in waiting {
             waiter.complete(());
         }
@@ -61,7 +63,7 @@ impl ActionProvider for ServedHistory {
     }
 
     fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        let (sequence, feed) = &*self.feed.lock().unwrap();
+        let (sequence, feed) = &*self.feed.lock_recover();
         Some(InvocationState {
             update: InvocationUpdate::Item {
                 invocation: *id,
@@ -76,7 +78,7 @@ impl ActionProvider for ServedHistory {
 
     fn next_change(&self, _caller: &Caller, _id: &InvocationId) -> Option<Pending<()>> {
         let (changed, next) = crate::tilo_actions::remote::pending();
-        self.waiting.lock().unwrap().push(changed);
+        self.waiting.lock_recover().push(changed);
         Some(next)
     }
 
