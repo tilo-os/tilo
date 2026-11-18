@@ -2057,8 +2057,8 @@ tilo_test_env::scenario! {
 
     phase a_structured_read_is_the_typed_answer_the_markdown_read_renders;
     // A program reads the same resource the markdown read renders, typed: its
-    // fields as the app typed them, what it holds as children with the path
-    // each reads by, and the app's own paging; at the same cost.
+    // fields as the app typed them, the surface an app publishes, and the app's
+    // own paging; at the same cost.
     {
         let host = Notes::new(true);
         // A note: its fields, typed.
@@ -2088,32 +2088,19 @@ tilo_test_env::scenario! {
             "the markdown read renders these fields"
         );
 
-        // The app: what it holds, each with the path that reads it.
+        // The app: the surface it publishes, which types are read from, and
+        // the list of what it holds underneath.
         let (_, _, listing) = work_of(&host, "tilo_read", &json!({"path": "notes"}));
-        let (app, _, _) = structured_read(&host, "notes", None);
-        let children = app["children"].as_array().unwrap();
-        assert_eq!(children.len(), 2, "{app:#}");
-        assert_eq!(children[0]["list"], "pages");
-        assert_eq!(children[0]["name"], "Todo");
-        assert_eq!(children[0]["item"], TODO);
-        for child in children {
-            let line = format!(
-                "  {}  ({})",
-                child["name"].as_str().unwrap(),
-                child["item"].as_str().unwrap()
-            );
-            assert!(
-                listing.contains(&line),
-                "the listing renders each child: {listing}"
-            );
-        }
         assert!(
-            app["fields"].get("pages").is_none(),
-            "children are not fields too: {app:#}"
+            listing.contains("  Todo  (notes.page:"),
+            "the listing renders each child: {listing}"
         );
+        let (app, _, _) = structured_read(&host, "notes", None);
+        assert_eq!(app["kind"], "app", "{app:#}");
+        let surface = app["surface"].as_str().expect("an app answers its surface");
+        assert!(surface.contains("notes.page"), "{surface}");
         // A child's path is a ref the other tools take: it reads that note.
-        let path = children[0]["path"].as_str().unwrap();
-        let (child, _, _) = structured_read(&host, path, None);
+        let (child, _, _) = structured_read(&host, "notes/Todo", None);
         assert_eq!(child["fields"]["title"], "Todo", "{child:#}");
 
         // Paging is the app's own: the cursor it gave, passed back, reads the rest.

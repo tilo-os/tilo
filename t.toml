@@ -700,8 +700,8 @@ heavy = true
 [[check]]
 name = "app-surfaces"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- surfaces"
-fix = "cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- surfaces --write"
+run = "cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- surfaces\npython3 -I tools/apps/generate_catalogue_fleet.py --check\n"
+fix = "cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- surfaces --write\npython3 -I tools/apps/generate_catalogue_fleet.py\n"
 env = { CARGO_PROFILE_DEV_DEBUG = "0" }
 
 [[check]]

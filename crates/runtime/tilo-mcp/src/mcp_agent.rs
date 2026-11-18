@@ -54,7 +54,6 @@ mod view;
 #[path = "mcp_watch.rs"]
 pub(super) mod watch;
 use answer::{action_row, action_rows, answer_of, outcome, text_result};
-use find::split_reference;
 use level::{LevelPages, LsCursor};
 use render::{
     action_line, action_page, block_line, parse_read_cursor, read_answer, restart_pause,
@@ -1775,6 +1774,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         {
             return Some(surface.into_bytes());
         }
+        // An app of the fleet answers what its signed package publishes even
+        // when this computer has neither started it nor kept its package: the
+        // fleet compiles each app's surface in, so every installed app's types
+        // are readable on a fresh workspace.
+        if let Some(surface) = app_fleet::surface(app_id) {
+            return Some(surface.as_bytes().to_vec());
+        }
         self.host.installed_surface(app_id).await.flatten()
     }
 
@@ -2575,6 +2581,10 @@ use resolved::{Resolution, ResolvedAction};
 #[cfg(test)]
 #[path = "mcp_agent_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "mcp_agent_surface_tests.rs"]
+mod surface_tests;
 
 #[cfg(test)]
 #[path = "mcp_agent_link_tests.rs"]
