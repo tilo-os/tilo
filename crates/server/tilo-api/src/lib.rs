@@ -777,7 +777,7 @@ impl Server {
     /// `POST /sign-in`: the person's Tilo answers a pending authorization,
     /// declined (`decision=deny`) or with a sign-in proof and the certificate
     /// it gave the grant's key.
-    fn signed_in(&self, body: &[u8]) -> Reply {
+    fn signed_in(self: &Arc<Self>, body: &[u8]) -> Reply {
         let form = oauth::form(body).unwrap_or_default();
         let now = now_ms();
         // Answered once, whatever the answer: its challenge and key are spent.
@@ -1511,6 +1511,46 @@ impl Server {
 }
 
 impl Server {
+    /// Have `grant`, a key the person just approved, enter every workspace it reaches, in the
+    /// background: each workspace keeps the keys it admitted, which every server holding it and
+    /// every API server reads, so the key is listed (`account/keys#list`, `tilo keys ls`) and
+    /// revocable wherever the person asks, before anything used it.
+    pub(crate) fn admit_into_its_workspaces(self: &Arc<Self>, grant: &store::Grant) {
+        let Some(key) = grant.key() else {
+            return;
+        };
+        let (server, id) = (Arc::downgrade(self), grant.id.clone());
+        tokio::spawn(async move {
+            let Some(server) = server.upgrade() else {
+                return;
+            };
+            let connection = match server.connection(&id, &key).await {
+                Ok(connection) => connection,
+                Err(error) => {
+                    tracing::warn!(%error, grant = id, "a new key's workspaces were not reached");
+                    return;
+                }
+            };
+            let workspaces = match key.scope() {
+                tilo_user_identity::AgentScope::Workspace(_) => vec![key.scope().name()],
+                tilo_user_identity::AgentScope::AllWorkspaces => connection
+                    .server()
+                    .labelled(
+                        &connection,
+                        &tilo_server_session::workspaces::WorkspaceLabels::new(),
+                    )
+                    .await
+                    .map(|listed| listed.into_iter().map(|workspace| workspace.id).collect())
+                    .unwrap_or_default(),
+            };
+            for workspace in workspaces {
+                if let Err(error) = connection.server().enter(&connection, &workspace).await {
+                    tracing::info!(%error, workspace, grant = id, "a new key is not recorded in a workspace yet");
+                }
+            }
+        });
+    }
+
     /// Keep `grant` when it is a key this server did not issue, once the
     /// server its session is with has let its person in
     /// ([`Connection::when_let_in`]). Until then nothing of it is kept:

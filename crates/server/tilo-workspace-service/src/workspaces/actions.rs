@@ -1663,9 +1663,10 @@ impl Workspaces {
         Ok(json!({"grants": grants}))
     }
 
-    /// Revoke the key `grant` names, the caller's own or one it minted: the
-    /// workspace records its person's revocation, and every holder and API
-    /// server refuses it from then on.
+    /// Revoke the key `grant` names: the caller's own or one it minted, or, for a device of the
+    /// person's or a server key of theirs, any key of the person's. The workspace keeps its
+    /// person's revocation, and every holder and API server refuses it from then on. An agent's
+    /// grant takes back no key but its own and the ones it minted.
     async fn governance_revoke_key(
         &self,
         call: GovernanceCall<'_>,
@@ -1677,10 +1678,12 @@ impl Workspaces {
             .grants_of(call.workspace, &call.device.user_public_key)
             .await
             .map_err(|error| refused(&error))?;
+        let persons_own =
+            call.device.capabilities.agent.is_none() || call.device.capabilities.server_key;
         let own = id == mine
-            || grants
-                .iter()
-                .any(|grant| grant.id == id && grant.parent.as_deref() == Some(mine.as_str()));
+            || grants.iter().any(|grant| {
+                grant.id == id && (persons_own || grant.parent.as_deref() == Some(mine.as_str()))
+            });
         if !own {
             return Err(ActionCallError::UnknownAction);
         }

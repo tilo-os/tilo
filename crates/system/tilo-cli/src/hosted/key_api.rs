@@ -4,7 +4,7 @@
 use anyhow::{Result, bail};
 use serde_json::Value;
 
-use super::MAX_ANSWER;
+use super::{MAX_ANSWER, text};
 use crate::api;
 
 /// Where a key is asked for: the API server `--api` or `TILO_API_URL` names, else the one of the
@@ -72,6 +72,35 @@ fn api_of_site(site: &str, named: Option<&str>, over_iroh: bool) -> Result<Strin
     )
 }
 
+/// The grant of the key `asked` names in `listed` (`GET /v1/keys`): the key whose grant it is, or
+/// the one key called that. A name two keys share is refused with both grants, to name one.
+pub(super) fn key_named(listed: &Value, asked: &str) -> Result<String> {
+    let keys = listed
+        .get("keys")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if keys.iter().any(|key| text(key, "grant") == asked) {
+        return Ok(asked.to_owned());
+    }
+    let named: Vec<&Value> = keys
+        .iter()
+        .filter(|key| text(key, "name") == asked)
+        .collect();
+    match named.as_slice() {
+        [one] => Ok(text(one, "grant").to_owned()),
+        [] => bail!("no key is called {asked}: `tilo keys ls` lists them"),
+        many => bail!(
+            "{} keys are called {asked}: revoke one by its grant ({})",
+            many.len(),
+            many.iter()
+                .map(|key| text(key, "grant"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// A computer logged in with a site asks that site's API server for keys, as the site names
@@ -104,5 +133,30 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(iroh.contains("TILO_API_URL"), "{iroh}");
+    }
+
+    /// `tilo keys revoke` takes a key by its grant or by its name as `tilo keys ls` lists it, and
+    /// asks for the grant when two keys share the name.
+    #[test]
+    fn a_key_is_revoked_by_its_grant_or_its_name() {
+        let listed = serde_json::json!({"keys": [
+            {"grant": "grant-1", "name": "Claude Code on laptop"},
+            {"grant": "grant-2", "name": "Linear import via https://mcp.tilo.test"},
+            {"grant": "grant-3", "name": "Nightly"},
+            {"grant": "grant-4", "name": "Nightly"},
+        ]});
+        assert_eq!(super::key_named(&listed, "grant-2").unwrap(), "grant-2");
+        assert_eq!(
+            super::key_named(&listed, "Linear import via https://mcp.tilo.test").unwrap(),
+            "grant-2"
+        );
+        let shared = super::key_named(&listed, "Nightly")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            shared.contains("grant-3") && shared.contains("grant-4"),
+            "{shared}"
+        );
+        assert!(super::key_named(&listed, "Nobody").is_err());
     }
 }

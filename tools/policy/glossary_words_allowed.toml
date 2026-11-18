@@ -955,3 +955,9 @@ reason = "A call's failure names the host's own error beside its text (`Failure:
 words = ["host"]
 identifiers = ["host"]
 paths = ["crates/runtime/tilo-mcp/src/mcp_agent.rs"]
+
+[[allow]]
+reason = "The API server's configuration names the servers it forwards to by its field `hosts`; a test that starts another API server sets it."
+words = ["host"]
+identifiers = ["hosts"]
+paths = ["crates/agent/agent-session/tests/workspace_actions/api_v1.rs"]

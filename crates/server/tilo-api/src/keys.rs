@@ -387,7 +387,7 @@ impl Server {
 
     /// The person's Tilo answered a key's sign-in.
     pub(crate) fn key_signed_in(
-        &self,
+        self: &std::sync::Arc<Self>,
         pending: &crate::Pending,
         name: &str,
         poll: Option<&str>,
@@ -436,6 +436,7 @@ impl Server {
                 ),
             );
         };
+        self.admit_into_its_workspaces(&grant);
         let mut reply = match poll {
             Some(poll) => {
                 self.answer_poller(

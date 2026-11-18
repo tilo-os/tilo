@@ -67,9 +67,10 @@ pub enum KeysCmd {
         #[arg(long)]
         expires_in: Option<u64>,
     },
-    /// Revoke this key or one it minted, and every key it minted.
+    /// Revoke a key, by its name or grant as `tilo keys ls` lists it, and every key it minted.
+    /// On a computer logged in as the person, any key of theirs, `tilo keys export`'s included.
     Revoke {
-        /// The grant, as `tilo keys ls` names it.
+        /// The key's name, or its grant, as `tilo keys ls` lists them.
         grant: String,
     },
     /// Make a key of its own for a program here, and write it as a key file.
@@ -1874,18 +1875,25 @@ pub fn keys(reach: Reach<'_>, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode
                 );
                 Ok(show(reach.json, &minted, &said))
             }
-            KeysCmd::Revoke { grant } => {
-                let revoked = Client::open(reach)?
-                    .delete(&format!("/v1/keys/{}", api::encode_path(&grant)))
-                    .await?;
-                Ok(show(
-                    reach.json,
-                    &revoked,
-                    &format!("revoked {}", text(&revoked, "revoked")),
-                ))
-            }
+            KeysCmd::Revoke { grant } => revoke_key(reach, &grant).await,
         }
     })
+}
+
+/// `tilo keys revoke KEY`: the key `named` (its grant, or its name as `tilo keys ls` lists it)
+/// revoked, with every key it minted.
+async fn revoke_key(reach: Reach<'_>, named: &str) -> Result<ExitCode> {
+    let client = Client::open(reach)?;
+    let listed = client.get("/v1/keys").await?;
+    let grant = key_api::key_named(&listed, named)?;
+    let revoked = client
+        .delete(&format!("/v1/keys/{}", api::encode_path(&grant)))
+        .await?;
+    Ok(show(
+        reach.json,
+        &revoked,
+        &format!("revoked {}", text(&revoked, "revoked")),
+    ))
 }
 
 /// `tilo keys export NAME --out <path>`: a new key for a program here, asked
@@ -2768,8 +2776,7 @@ mod tests {
             let _key = keyed();
             let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let counted = Arc::clone(&asked);
-            let api_server = test_http::Responder::handle(move |_request: &test_http::Request| {
-                let first = counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+            let api_server = test_http::Responder::handle(move |request: &test_http::Request| {
                 let reply = |status: u16, body: Value| {
                     Some(
                         test_http::Reply::status(status)
@@ -2777,6 +2784,11 @@ mod tests {
                             .body(body.to_string()),
                     )
                 };
+                // The key is named as `tilo keys ls` lists it first.
+                if request.method == "GET" {
+                    return reply(200, json!({"keys": [{"grant": "grant-1", "name": "Nightly"}]}));
+                }
+                let first = counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
                 if first {
                     reply(
                         503,
@@ -2798,7 +2810,11 @@ mod tests {
                     grant: "grant-1".into(),
                 },
             );
-            let sent = api_server.drain_requests();
+            let sent: Vec<_> = api_server
+                .drain_requests()
+                .into_iter()
+                .filter(|sent| sent.method == "DELETE")
+                .collect();
             assert_eq!(
                 sent.len(),
                 2,

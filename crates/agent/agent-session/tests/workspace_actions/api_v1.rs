@@ -440,6 +440,102 @@ async fn a_backend_key_works_through_the_api_on_a_server_host() {
     );
 }
 
+/// Every key a person has is listed and revoked from any key of theirs that reaches all their
+/// workspaces, whichever API server made it: a computer's own login, answered by the API in its
+/// own process, lists a script's key that the site's API server approved (named, reaching all
+/// workspaces, until when), before the script used it, and revokes it, after which the workspace
+/// refuses it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_key_of_a_person_is_listed_and_revoked_from_any_api_server() {
+    Box::pin(a_persons_keys_are_listed_and_revoked_from_any_api_server()).await;
+}
+
+async fn a_persons_keys_are_listed_and_revoked_from_any_api_server() {
+    let on_server = api_on_server(ISSUER).await;
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    // A script's key, approved through the site's API server as `tilo keys export` asks for one.
+    let script = approved_key(&on_server, &ada, &page, "Linear import").await;
+    // The computer's own login, answered by the API in its own process from its key file, as
+    // `tilo keys ls` is: an API server that never saw the script's key approved.
+    let laptop = enrol(&ada, "Claude Code on laptop", DeviceCapabilities::member());
+    let file = tilo_api::direct::KeyFile::new(
+        &on_server.server,
+        Some(&on_server.web_entry),
+        "Claude Code on laptop",
+        &laptop.key,
+        &laptop.cert,
+    );
+    let computer = tilo_api::direct::Direct::new(&file).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let listed_script = loop {
+        let (status, listed) = json_of(computer.request("GET", "/v1/keys", &[], b"").await).await;
+        assert_eq!(status, 200, "{listed}");
+        if let Some(row) = listed["keys"].as_array().into_iter().flatten().find(|row| {
+            row["name"]
+                .as_str()
+                .is_some_and(|name| name.starts_with("Linear import"))
+        }) {
+            break row.clone();
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the script's key is not among the person's keys: {listed}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    };
+    assert_eq!(listed_script["scope"], "all", "{listed_script}");
+    assert!(
+        listed_script.get("expires_at_ms").is_some(),
+        "a key says until when it lasts (null: until revoked): {listed_script}"
+    );
+    let grant = listed_script["grant"].as_str().unwrap().to_owned();
+
+    let revoking = [(
+        "idempotency-key".to_owned(),
+        "revoke-linear-import".to_owned(),
+    )];
+    let (status, revoked) = json_of(
+        computer
+            .request("DELETE", &format!("/v1/keys/{grant}"), &revoking, b"")
+            .await,
+    )
+    .await;
+    assert_eq!(status, 200, "{revoked}");
+    let (_, listed) = json_of(computer.request("GET", "/v1/keys", &[], b"").await).await;
+    assert!(
+        listed["keys"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .all(|row| row["grant"] != grant.as_str()),
+        "a revoked key is listed no more: {listed}"
+    );
+    // The workspace keeps the revocation: the script's key enters it no more, from wherever it
+    // comes (here an API server it reaches the workspace through anew, as a script started again
+    // does).
+    let anew = Server::new(
+        &tilo_api::Config {
+            issuer: ISSUER.into(),
+            web_entry: on_server.web_entry.clone(),
+            invite_entry: None,
+            hosts: vec![on_server.server.clone()],
+        },
+        tilo_api::store::Store::in_memory(),
+    )
+    .unwrap();
+    let script = V1 {
+        api: &anew,
+        token: script,
+    };
+    let (status, refused) = script.get("/v1/keys").await;
+    assert_eq!(
+        (status, &refused["error"]["code"]),
+        (401, &json!("key_revoked")),
+        "{refused}"
+    );
+}
+
 /// A program holding a key of the person's own (a device of theirs, not a
 /// grant an API server keeps) reaches the server directly: the API served in
 /// process, the same routes and answers, with no API server between them.

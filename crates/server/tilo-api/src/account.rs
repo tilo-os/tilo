@@ -697,11 +697,54 @@ impl Server {
                 "account/keys#list names them",
             );
         };
-        let own = id == grant.id
-            || self
-                .store
-                .grant(id)
-                .is_some_and(|found| found.parent() == Some(grant.id.as_str()));
+        let held_here = self
+            .store
+            .grant(id)
+            .filter(|found| found.person == grant.person);
+        let minted = self
+            .store
+            .grant(id)
+            .is_some_and(|found| found.parent() == Some(grant.id.as_str()));
+        // A key of the person's own reaching all their workspaces revokes any key of theirs,
+        // wherever it was made: each workspace that lists it keeps the revocation.
+        if grant.scope == Scope::Account && persons_own(grant) && id != grant.id && !minted {
+            let recorded: Vec<String> = self
+                .recorded_keys(key)
+                .await
+                .into_iter()
+                .filter(|(_, recorded)| recorded.id == id)
+                .map(|(workspace, _)| workspace)
+                .collect();
+            if held_here.is_none() && recorded.is_empty() {
+                return failed(
+                    "not_found",
+                    "no such key of yours",
+                    "account/keys#list names them",
+                );
+            }
+            if held_here.is_some()
+                && let Err(error) = self.revoke_grant(&grant.person, id).await
+            {
+                tracing::warn!(%error, grant = id, "a key's revocation was not kept");
+                return failed(
+                    "unavailable",
+                    "revocation is unavailable",
+                    "try again shortly",
+                );
+            }
+            for workspace in recorded {
+                if let Err(outcome) = crate::session::keys::revoke_in(key, &workspace, id).await {
+                    tracing::warn!(
+                        workspace,
+                        grant = id,
+                        "a workspace did not keep a key's revocation"
+                    );
+                    return outcome;
+                }
+            }
+            return Outcome::Ok(json!({"revoked": id}));
+        }
+        let own = id == grant.id || minted;
         if !own {
             return failed(
                 "not_found",
@@ -851,13 +894,31 @@ impl Server {
 
     /// The keys this one holds and the keys it minted. One reaching a
     /// workspace reads them from the workspace's own record, which every
-    /// holder keeps and every API server reads. One reaching all of them
-    /// reads the keys minted through this API server.
+    /// holder keeps and every API server reads. A key of the person's own
+    /// reaching all of them lists every key the person has: the ones this API
+    /// server keeps, and the ones each of their workspaces keeps, whichever
+    /// API server made them. Any other key reaching all of them (an agent's)
+    /// reads the keys it minted.
     async fn account_keys(&self, grant: &Grant, key: &Connection) -> Outcome {
         let mine = grant.id.clone();
         let Scope::Workspace(workspace) = grant.scope.clone() else {
+            if !persons_own(grant) {
+                let mut keys = vec![grant_row(grant)];
+                keys.extend(self.store.minted_by(&grant.id).iter().map(grant_row));
+                return Outcome::Ok(json!({"keys": keys}));
+            }
+            let mut seen = std::collections::HashSet::from([grant.id.clone()]);
             let mut keys = vec![grant_row(grant)];
-            keys.extend(self.store.minted_by(&grant.id).iter().map(grant_row));
+            for held in self.store.grants_of(&grant.person) {
+                if held.live() && seen.insert(held.id.clone()) {
+                    keys.push(grant_row(&held));
+                }
+            }
+            for (_, recorded) in self.recorded_keys(key).await {
+                if recorded.revoked_ms.is_none() && seen.insert(recorded.id.clone()) {
+                    keys.push(workspace_grant_row(&recorded));
+                }
+            }
             return Outcome::Ok(json!({"keys": keys}));
         };
         let grants = match crate::session::keys::grants_in(key, &workspace).await {
@@ -1000,6 +1061,40 @@ impl Server {
 
 /// A key as the workspace's own governance records it, in the shape
 /// `GET /v1/keys` answers every other.
+/// Whether `grant` is one of the person's own keys rather than an agent's grant: an API key they
+/// approved, or the key a computer of theirs logged in with. An agent never sees or takes back the
+/// person's other keys.
+fn persons_own(grant: &Grant) -> bool {
+    matches!(grant.kind, GrantKind::Key)
+}
+
+impl Server {
+    /// Every key of its person's that the workspaces `key` reaches keep, each with the workspace
+    /// that keeps it. A workspace that does not answer leaves its keys out.
+    async fn recorded_keys(
+        &self,
+        key: &Connection,
+    ) -> Vec<(String, collab_types::workspace_grant::WorkspaceGrant)> {
+        let Ok(workspaces) = key.server().labelled(key, &WorkspaceLabels::new()).await else {
+            return Vec::new();
+        };
+        let mut recorded = Vec::new();
+        for workspace in workspaces {
+            match crate::session::keys::grants_in(key, &workspace.id).await {
+                Ok(grants) => recorded.extend(
+                    grants
+                        .into_iter()
+                        .map(|grant| (workspace.id.clone(), grant)),
+                ),
+                Err(_) => {
+                    tracing::info!(workspace = workspace.id, "a workspace's keys were not read");
+                }
+            }
+        }
+        recorded
+    }
+}
+
 fn workspace_grant_row(grant: &collab_types::workspace_grant::WorkspaceGrant) -> Value {
     json!({
         "grant": grant.id,
