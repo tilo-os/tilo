@@ -599,9 +599,55 @@ impl DesktopPolicy {
     /// finds in its place.
     /// # Errors
     /// The desktop has no workspace or strip to open it in.
-    pub fn stopped(&mut self, asked: &str, title: &str, closed: Closed) -> Result<(), String> {
+    pub fn stopped(
+        &mut self,
+        asked: &str,
+        title: &str,
+        closed: Closed,
+        tab: Option<TabId>,
+    ) -> Result<(), String> {
         let answer = closed.outcome(title, tilo_desktop_surface::i18n::t("answer-reopen"));
+        if let Some(tab) = tab
+            && self.answer_where_it_was(tab, asked, title)
+        {
+            self.failed_at(tab, asked, answer);
+            return Ok(());
+        }
         self.notice(asked, title, answer)
+    }
+
+    /// Make `tab`, the last window of the app `asked` names, the place that says what became of
+    /// it: still on the desktop, or put back where it was closed. False when it is neither.
+    fn answer_where_it_was(&self, tab: TabId, asked: &str, title: &str) -> bool {
+        let mut tree = self.handle.read(Clone::clone);
+        let placed = tree.tab(tab).is_some()
+            || tree
+                .workspaces
+                .iter_mut()
+                .any(|workspace| workspace.reopen_closed_tab(tab).is_some());
+        if !placed {
+            return false;
+        }
+        // The tile a notice's own tab opens with (`Windows::place`).
+        let place = Tab {
+            id: tab,
+            title: title.to_owned(),
+            tile: TileContent::AppPlaceholder {
+                kind: tilo_desktop_model::AppKind::Other(asked.to_owned()),
+                label: asked.to_owned(),
+            },
+            app_title: None,
+            view: String::new(),
+            pinned: false,
+        };
+        if let Some(held) = tabs_mut(&mut tree).find(|held| held.id == tab) {
+            *held = place;
+        }
+        self.titles
+            .borrow_mut()
+            .insert(asked.to_owned(), title.to_owned());
+        self.handle.replace_tree(tree);
+        true
     }
 
     /// Show that the app `asked` names could not open, in a tab of its own that says `answer`,

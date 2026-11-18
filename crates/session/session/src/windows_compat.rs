@@ -390,7 +390,9 @@ fn outcome_of(event: &tilo_app_launch::Event) -> ExecutionOutcome {
         success: !end.crashed(),
         exit_code: match end {
             tilo_app_launch::End::Exited { code, .. } => Some(*code),
-            tilo_app_launch::End::Signalled { .. } | tilo_app_launch::End::Failed(_) => None,
+            tilo_app_launch::End::Signalled { .. }
+            | tilo_app_launch::End::Failed(_)
+            | tilo_app_launch::End::KeeperStopped => None,
         },
         said: end
             .crashed()

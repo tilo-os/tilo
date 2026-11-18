@@ -64,6 +64,8 @@ pub enum End {
     },
     /// It never started, and why.
     Failed(String),
+    /// Its keeper stopped without a word (killed, or crashed), and the app ended with it.
+    KeeperStopped,
 }
 
 impl End {
@@ -95,7 +97,7 @@ impl End {
             Self::Exited { memory, .. } | Self::Signalled { memory, .. } => {
                 *memory = Some(cause);
             }
-            Self::Failed(_) => {}
+            Self::Failed(_) | Self::KeeperStopped => {}
         }
         self
     }
@@ -107,7 +109,7 @@ impl End {
     pub fn memory(&self) -> Option<Cause> {
         match self {
             Self::Exited { memory, .. } | Self::Signalled { memory, .. } => *memory,
-            Self::Failed(_) => None,
+            Self::Failed(_) | Self::KeeperStopped => None,
         }
     }
 
@@ -125,6 +127,7 @@ impl std::fmt::Display for End {
             Self::Exited { code, .. } => write!(f, "exited with {code}"),
             Self::Signalled { signal, .. } => write!(f, "was killed by signal {signal}"),
             Self::Failed(reason) => write!(f, "did not start: {reason}"),
+            Self::KeeperStopped => write!(f, "closed because its keeper stopped"),
         }
     }
 }
@@ -960,8 +963,9 @@ impl Spawner {
                     running(&still_running).remove(&id);
                     return;
                 }
-                // A keeper gone without a word was killed with its app.
-                let end = heard.unwrap_or_else(|| End::signalled(libc::SIGKILL));
+                // A keeper gone without a word took its app with it: the signal that ended the
+                // app was the keeper's doing, not the app's.
+                let end = heard.unwrap_or(End::KeeperStopped);
                 let end = match cgroup.and_then(|dir| memory::take_end(&ends, &dir)) {
                     Some(cause) if end.crashed() => end.remembering(cause),
                     _ => end,
@@ -1240,8 +1244,8 @@ impl Spawner {
 /// How the launch behind `kept` ended, its launcher having ended as `end` says: `None` for a
 /// launch the session let go of for a restart, which the desktop after it reports. The launcher's
 /// exit says only that the keeper ended; the keeper said how its app did (`heard`). A keeper that
-/// said nothing went down with its app (a memory kill takes the whole launch), which the
-/// launcher's end tells.
+/// said nothing was ended by a signal and took its app with it: for memory, which the launcher's
+/// end tells, or otherwise ([`End::KeeperStopped`]: the signal was the keeper's, not the app's).
 #[cfg(target_os = "linux")]
 fn kept_end(kept: Option<&crate::kept::Kept>, heard: Option<Heard>, end: End) -> Option<End> {
     let Some(kept) = kept else {
@@ -1255,6 +1259,7 @@ fn kept_end(kept: Option<&crate::kept::Kept>, heard: Option<Heard>, end: End) ->
     Some(match (heard, end.memory()) {
         (Some(heard), Some(cause)) if heard.crashed() => heard.remembering(cause),
         (Some(heard), _) => heard,
+        (None, None) if matches!(end, End::Signalled { .. }) => End::KeeperStopped,
         (None, _) => end,
     })
 }
