@@ -186,6 +186,15 @@ impl tilo_actions::Exports for LiveRow {
 use ui_core::resources::admits_outside_document as admits;
 pub(crate) use ui_core::resources::{outside_document, resolved_outside_document};
 
+/// An application the shell lists, as the type its rows are items of: the
+/// kind every app's application rows share.
+pub struct Application;
+
+impl tilo_resource::words::RowType for Application {
+    const KIND: &'static str = "applications.app";
+    const LABEL: &'static str = "Application";
+}
+
 /// Merge `rows` by id into `children`: a row naming an existing child adds
 /// the operations and rows that child lacks, and its presentation when the
 /// child has none; any other row is appended. The first publisher of an id
