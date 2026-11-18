@@ -1077,6 +1077,14 @@ impl Runtime {
         *self.core.shown_by.borrow_mut() = Some(Box::new(read));
     }
 
+    /// How a day or a time of day named in a sentence reads (`"{d}"`): a day as `Jun 29`, or
+    /// `Jun 29, 2025` another year, a moment as `Jun 29, 6:00 PM`, in the person's formats.
+    /// `read` answers a day or a time of day (`kind` is `date` or `time`, `value` its stored
+    /// text). Until it is set, the stored text.
+    pub fn set_sentence_by(&self, read: impl Fn(&str, &str) -> String + 'static) {
+        *self.core.sentence_by.borrow_mut() = Some(Box::new(read));
+    }
+
     /// What `now` reads: the current time as ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`. The
     /// runtime reads it once per outermost invocation, so the actions one invocation runs see
     /// one time. Until it is set, `now` is `1970-01-01T00:00:00Z`.

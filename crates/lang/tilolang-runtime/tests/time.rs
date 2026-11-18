@@ -116,6 +116,14 @@ view read_back(b: Board) {
     }
 }
 
+/// A day and a moment named in text (`"{d}"`), and the stored text a machine reads (`.iso()`).
+view named() {
+    text("a {Date("2026-06-29")}")
+    text("b {Date("2025-06-29")}")
+    text("c {Time("2026-06-29T18:00:00Z")}")
+    text("d {Date("2026-06-29").iso()} {Time("2026-06-29T18:00:00Z").iso()}")
+}
+
 view agreed(b: Board) {
     for f in filters(Log).filter(f -> f.toggle) {
         text("on today {b.logs.matching(f).len()}")
@@ -375,6 +383,38 @@ action fine(b: Board) uses time {
         for (i, sheet) in [&utc, &east, &west, &berlin].into_iter().enumerate() {
             assert_eq!(sheet.view("agreed"), ["on today 1"], "case {i}");
         }
+    }
+
+    /// Text a program builds by interpolation names a day or a moment the way the person reads
+    /// it, and `.iso()` is the stored text a machine reads.
+    #[test]
+    fn text_names_a_day_and_a_moment_as_the_person_reads_them() {
+        // Nothing names them: a day and a moment keep their stored text.
+        let sheet = Sheet::in_zone(0, None);
+        assert_eq!(
+            sheet.bare("named"),
+            [
+                "a 2026-06-29",
+                "b 2025-06-29",
+                "c 2026-06-29T18:00:00Z",
+                "d 2026-06-29 2026-06-29T18:00:00Z",
+            ],
+            "what the formats name, and the same text from `.iso()`"
+        );
+        // What names them for the person is handed the kind of value and its stored text, and
+        // `.iso()` still answers the stored text.
+        sheet
+            .rt
+            .set_sentence_by(|kind, value| format!("<{kind} {value}>"));
+        assert_eq!(
+            sheet.bare("named"),
+            [
+                "a <date 2026-06-29>",
+                "b <date 2025-06-29>",
+                "c <time 2026-06-29T18:00:00Z>",
+                "d 2026-06-29 2026-06-29T18:00:00Z",
+            ]
+        );
     }
 
     #[test]

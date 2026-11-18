@@ -33,6 +33,12 @@ impl<L: Loads> Platform for OnSession<L> {
         ui::clock::hour_minute(hour, minute)
     }
 
+    /// How a day or a time of day named in a sentence reads: the person's formats, which the
+    /// session holds.
+    fn sentence(&self, kind: &str, value: &str) -> String {
+        tilo_app_window::date::sentence_text(kind, value)
+    }
+
     fn add_words(&self, window: bool, catalogues: &[(String, String)]) {
         if window {
             tilo_app_window::i18n::add_catalogues(catalogues);

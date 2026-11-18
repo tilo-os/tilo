@@ -100,13 +100,13 @@ const COLLECTION: &[&str] = &[
 /// The methods a map field's value has, read with the key they ask for.
 const MAP: &[&str] = &["get", "keys"];
 
-/// What a day can be asked: the day of the week it is, the day, month and year it names, and the first day of
-/// the week it stands in.
-const DAY: &[&str] = &["weekday", "day", "month", "year", "start_of_week"];
+/// What a day can be asked: the day of the week it is, the day, month and year it names, the first day of
+/// the week it stands in, and its stored text (`iso`).
+const DAY: &[&str] = &["weekday", "day", "month", "year", "start_of_week", "iso"];
 
-/// What a moment can be asked: the day it falls on, the time of day it is then, and that time as the person
-/// reads a clock.
-const MOMENT: &[&str] = &["day", "time_of_day", "clock"];
+/// What a moment can be asked: the day it falls on, the time of day it is then, that time as the person
+/// reads a clock, and its stored text (`iso`).
+const MOMENT: &[&str] = &["day", "time_of_day", "clock", "iso"];
 
 const LENGTH: &[&str] = &["seconds"];
 

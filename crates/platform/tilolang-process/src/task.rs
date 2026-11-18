@@ -61,6 +61,20 @@ fn shown_for_a_person(kind: &str, value: &str) -> String {
     )
 }
 
+/// How a day or a time of day named in a sentence a person reads (`"{d}"`) reads: the person's
+/// formats, from their settings, and their zone.
+fn sentence_for_a_person(kind: &str, value: &str) -> String {
+    let now = ui::clock::local_now();
+    tilo_formats::sentence(
+        kind,
+        value,
+        ui::format::region::current(),
+        now.date(),
+        i64::from(now.offset().seconds()),
+        ui::format::words(),
+    )
+}
+
 /// The program connection, one line at a time.
 struct Line {
     reader: RefCell<BufReader<UnixStream>>,
@@ -385,6 +399,7 @@ impl Task {
         // A reply the person reads takes the words they read: a day or a moment in their
         // formats, not the stored ISO text.
         session.set_shown_by(shown_for_a_person);
+        session.set_sentence_by(sentence_for_a_person);
         // An app whose payload did not read is reported as one whose package does not load: a
         // program naming it reads that it can't be reached, and the task runs every other app.
         for gone in &apps.unreachable {
