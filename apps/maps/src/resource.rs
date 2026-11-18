@@ -20,7 +20,7 @@ use crate::workspace::Workspace;
 #[effect(operation = "maps.effect")]
 pub enum MapsEffect {
     /// Search maps.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     Search {
         #[param("Place, address, or category, e.g. museum near me")]
         query: String,
@@ -29,34 +29,34 @@ pub enum MapsEffect {
     #[effect(job, kind = "read")]
     Locate,
     /// Show traffic.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     ToggleTraffic,
     /// Open place.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     OpenPlace {
         #[param("The place's id")]
         place: String,
     },
     /// Get directions.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     Directions {
         #[param("The place's id")]
         place: String,
     },
     /// Open point of interest.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     OpenPoi {
         #[param("The point of interest's id")]
         poi: String,
     },
     /// Get directions to point of interest.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     PoiDirections {
         #[param("The point of interest's id")]
         poi: String,
     },
     /// Show a point on the map.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     ShowPoint {
         #[param("Latitude, in degrees north")]
         lat: f64,

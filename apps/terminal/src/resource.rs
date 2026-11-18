@@ -618,16 +618,16 @@ pub enum TerminalEffect {
     #[effect(keywords = "copy output, copy screen")]
     CopyVisible,
     /// Copy selected output
-    #[effect(destructive, kind = "read")]
+    #[effect(destructive, own_device, kind = "read")]
     CopySelection,
     /// Select all output
-    #[effect(destructive, kind = "read")]
+    #[effect(destructive, screen)]
     SelectAll,
     /// Show oldest output
-    #[effect(kind = "read")]
+    #[effect(screen)]
     HistoryTop,
     /// Return to live output
-    #[effect(kind = "read")]
+    #[effect(screen)]
     HistoryLive,
     /// Show item
     ///
@@ -643,7 +643,7 @@ pub enum TerminalEffect {
     /// Open link
     ///
     /// Opens a public web link the process printed.
-    #[effect(destructive, kind = "read")]
+    #[effect(destructive, own_device, kind = "read")]
     OpenLink {
         #[param("The link")]
         url: String,

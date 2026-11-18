@@ -24,12 +24,12 @@ pub use disks_model::Disks;
 pub enum DisksEffect {
     #[effect(job, returns, kind = "read")]
     Rescan,
-    #[effect(kind = "read")]
+    #[effect(screen)]
     Select {
         #[param("Kernel name of a drive or partition, e.g. sda or sda1")]
         device: String,
     },
-    #[effect(kind = "read")]
+    #[effect(screen)]
     ShowTab {
         #[param("The tab to show", choices = ["overview", "smart", "partitions"])]
         tab: String,

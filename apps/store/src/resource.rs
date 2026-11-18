@@ -56,17 +56,17 @@ pub enum StoreEffect {
     Refresh,
     #[effect(job)]
     UpdateAll,
-    #[effect(kind = "read")]
+    #[effect(screen)]
     SetSearch {
         #[param("App name, publisher, category, or description")]
         query: String,
     },
-    #[effect(kind = "read")]
+    #[effect(screen)]
     ShowView {
         #[param("home, updates, installed or bots")]
         view: String,
     },
-    #[effect(kind = "read")]
+    #[effect(screen)]
     ShowMore,
     /// Block app.
     ///
@@ -88,14 +88,14 @@ pub enum StoreEffect {
         #[param("Configured repository resource identity, including its account or device scope")]
         remote: String,
     },
-    #[effect(kind = "read")]
+    #[effect(screen)]
     SetCategory {
         #[param("App category, or All")]
         category: String,
     },
-    #[effect(kind = "read")]
+    #[effect(screen)]
     ClearFilters,
-    #[effect(kind = "read")]
+    #[effect(screen)]
     ShowDetails {
         #[param("App identity (for example so.tilo.notes)")]
         app: String,
@@ -114,7 +114,7 @@ pub enum StoreEffect {
         #[param("Exact reviewed signed package root")]
         root: String,
     },
-    #[effect(kind = "read")]
+    #[effect(screen)]
     SetTechnicalDetails {
         #[param("Whether to show package identity, digest and publisher key")]
         expanded: bool,
@@ -139,18 +139,18 @@ pub enum StoreEffect {
         #[param("Exact reviewed signed package root, without tapp: prefix")]
         root: String,
     },
-    #[effect(kind = "read")]
+    #[effect(screen)]
     OpenReference {
         #[param("Absolute path of a .flatpakref file")]
         path: Option<AbsolutePath>,
         #[param("The text of a .flatpakref, when there is no file")]
         contents: Option<String>,
     },
-    #[effect(kind = "read")]
+    #[effect(screen)]
     ShowCatalogue,
-    #[effect(kind = "read")]
+    #[effect(screen)]
     ShowRemotes,
-    #[effect(kind = "read")]
+    #[effect(screen)]
     ShowTrust,
     #[effect(idempotent)]
     OpenLink {

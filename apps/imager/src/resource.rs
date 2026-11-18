@@ -175,11 +175,11 @@ pub enum ImagerEffect {
     ChooseImage,
     /// Cancel the installer download; what was verified is kept for resume.
     CancelDownload,
-    #[effect(kind = "read")]
+    #[effect(own_device, kind = "read")]
     #[effect(label = "imager-rescan-drives")]
     Rescan,
     /// Choose target drive.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     ChooseDrive {
         #[param("Kernel name of a removable drive, e.g. sdb")]
         drive: String,

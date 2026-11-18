@@ -189,13 +189,20 @@ mod schema;
 /// `<operation>-<id>` (separators as dashes), or the key `label = "..."`
 /// names. `#[effect(catalogue = "dir")]` on the enum reads another catalogue
 /// than `locales/`. Variant options: `#[effect(label = "key", view, row, job, cancellable, returns,
-/// destructive, privileged, idempotent, own_device, attended, audience = "agents", untrusted, opens_path, member, risk = "path", kind = "read",
+/// destructive, privileged, idempotent, own_device, attended, screen, audience = "agents", untrusted, opens_path, member, risk = "path", kind = "read",
 /// host_render, tag = some::TAG)]`. `host_render` marks an effect a host
 /// answers in a render service of its own rather than the record's app
 /// worker; `tag` (repeatable) adds a contract tag, a `&'static str` constant;
 /// `outside_with = "path"` makes a `kind = "read"` effect reach outside only
 /// when that parameter is given (an export writing the file it names).
-/// Who may run an effect is decided by its kind, like any action. An
+/// Who may run an effect is decided by what it declares, like any action:
+/// `kind = "read"`, `"undoable"` or `"outside"`, `screen`, `own_device` or
+/// `attended`. One that declares no kind is `outside`: a change checked
+/// against the caller's grants, the safe reading of an effect that says
+/// nothing, since no grant lets it run unasked where reading would. A `screen`
+/// effect only changes what is on the screen it is invoked on (a form, a
+/// panel, a place it shows): it reads, answers nothing, only the person at
+/// that screen invokes it and no agent is listed it. An
 /// `own_device` effect's whole scope is the invoking person's own device,
 /// touching nothing shared and no one else (their clipboard, their own
 /// appearance): a room's grants have nothing to consent to. An `attended`

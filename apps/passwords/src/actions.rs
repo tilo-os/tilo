@@ -24,11 +24,11 @@ pub enum PasswordsEffect {
         proposal: String,
         lifetime: String,
     },
-    #[effect(idempotent, kind = "read", label = "passwords-deny-access")]
+    #[effect(idempotent, attended, kind = "read", label = "passwords-deny-access")]
     DenyAccess {
         proposal: String,
     },
-    #[effect(kind = "read")]
+    #[effect(screen)]
     Add,
     Save,
     /// The password is a secret parameter: it is never shown, logged or listed.
@@ -44,7 +44,7 @@ pub enum PasswordsEffect {
     },
     #[effect(returns, kind = "read", idempotent)]
     ListLogins,
-    #[effect(kind = "read")]
+    #[effect(screen)]
     Cancel,
     Generate,
     Edit {
@@ -99,12 +99,12 @@ pub enum PasswordsEffect {
     Import,
     #[effect(attended)]
     Export,
-    #[effect(kind = "read")]
+    #[effect(screen)]
     Filter {
         #[param("all | favorites | login | api-key | note | wifi | other")]
         filter: String,
     },
-    #[effect(row, kind = "read")]
+    #[effect(row, screen)]
     Open {
         #[param("Opaque id of the vault item")]
         item: String,

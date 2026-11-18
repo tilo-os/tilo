@@ -13,7 +13,7 @@ pub enum CodeEditorEffect {
     /// Open file.
     ///
     /// Offered on the file it opens: its id is the file row's, never typed.
-    #[effect(row, kind = "read")]
+    #[effect(row, screen)]
     #[effect(icon = "file-code")]
     ShowFile {
         #[param("The file resource's id")]
@@ -83,7 +83,7 @@ pub enum CodeEditorEffect {
     #[effect(icon = "rotate-ccw")]
     RevertFile,
     /// Find in file.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     #[effect(keywords = "search in file, find text")]
     #[effect(icon = "search")]
     Find,
@@ -92,12 +92,12 @@ pub enum CodeEditorEffect {
     #[effect(icon = "type")]
     Replace,
     /// Search project.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     #[effect(keywords = "find in files, grep, search all files")]
     #[effect(icon = "search")]
     SearchProject,
     /// Go to line.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     #[effect(keywords = "jump to line, line number, goto")]
     #[effect(icon = "hash")]
     GoToLine {
@@ -121,7 +121,7 @@ pub enum CodeEditorEffect {
     #[effect(tag = CARET)]
     ToggleComment,
     /// Toggle bottom panel.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     #[effect(icon = "panel-bottom")]
     ToggleBottomPanel,
     /// Cycle color theme.
@@ -129,21 +129,21 @@ pub enum CodeEditorEffect {
     #[effect(icon = "palette")]
     NextTheme,
     /// Show problems.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     #[effect(keywords = "errors, warnings, diagnostics")]
     #[effect(icon = "triangle-alert")]
     GoToProblems,
     /// Show search results.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     #[effect(icon = "search")]
     GoToSearch,
     /// Show terminal.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     #[effect(keywords = "console, shell, command line")]
     #[effect(icon = "square-terminal")]
     GoToTerminal,
     /// Toggle sidebar.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     #[effect(icon = "panel-left")]
     ToggleSidebar,
     /// Turn language servers on or off.

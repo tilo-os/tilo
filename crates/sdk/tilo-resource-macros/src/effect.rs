@@ -189,6 +189,11 @@ struct VariantOptions {
     /// credential, something only they may see): anyone acting for them is
     /// always asked first.
     attended: bool,
+    /// `screen`: the effect only changes what is on the screen it is invoked
+    /// on (a form it opens, a panel or a place it shows). It reads and answers
+    /// nothing, only the person at that screen invokes it, and no agent is
+    /// listed it.
+    screen: bool,
     risk: Option<syn::Path>,
     /// `phrase = "path"`: the `fn(&Self) -> String` naming what one bound
     /// invocation loses, which its caller types to confirm it.
@@ -314,6 +319,8 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.own_device = true;
             } else if meta.path.is_ident("attended") {
                 options.attended = true;
+            } else if meta.path.is_ident("screen") {
+                options.screen = true;
             } else if meta.path.is_ident("risk") {
                 options.risk = Some(meta.value()?.parse::<syn::LitStr>()?.parse::<syn::Path>()?);
             } else if meta.path.is_ident("phrase") {
@@ -355,7 +362,7 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 return Err(meta.error(
                     "expected `label`, `keywords`, `icon`, `view`, `row`, `job`, `cancellable`, `returns` (`returns = Type` for the value's type), `content`, \
                      `destructive`, `privileged`, `sensitive`, `idempotent`, \
-                     `own_device`, `attended`, `risk`, `phrase`, `audience`, `untrusted`, `opens_path`, `presence`, `edit`, `member`, \
+                     `own_device`, `attended`, `screen`, `risk`, `phrase`, `audience`, `untrusted`, `opens_path`, `presence`, `edit`, `member`, \
                      `item = field`, `offload(...)`, `host_render`, `tag = ...`, `outside_with` or `kind`",
                 ));
             }
@@ -444,10 +451,29 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                  asks no confirmation (drop `job`, `cancellable`, `destructive`, `privileged` and `sensitive`)",
             ));
         }
+        if options.screen
+            && (options.kind.is_some()
+                || options.view
+                || options.edit
+                || options.returns
+                || options.content
+                || options.job
+                || options.cancellable
+                || options.own_device
+                || options.attended)
+        {
+            return Err(syn::Error::new(
+                variant.span(),
+                "a `screen` effect only changes the screen it is invoked on: it reads and \
+                 answers nothing (drop `kind`, `view`, `edit`, `returns`, `content`, `job`, \
+                 `cancellable`, `own_device` and `attended`)",
+            ));
+        }
         let action_kind = match options.kind.as_deref() {
             // An edit at the invoker's caret is an undoable change of the
             // record, whatever else it is.
             None if options.edit => quote!(Undoable),
+            None if options.screen => quote!(Read),
             None if options.view => quote!(Read),
             None | Some("outside") => quote!(Outside),
             Some("read") => quote!(Read),
@@ -676,8 +702,12 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             .host_render
             .then(|| quote!(#krate::__private::HOST_RENDER_TAG))
             .into_iter();
+        let screen = options
+            .screen
+            .then(|| quote!(#krate::__private::SCREEN_TAG))
+            .into_iter();
         let declared = &options.tags;
-        let tags = quote!(&[#(#host_render,)* #(#declared),*]);
+        let tags = quote!(&[#(#host_render,)* #(#screen,)* #(#declared),*]);
         let outside_with = match &options.outside_with {
             None => quote!(::core::option::Option::None),
             Some(_) if !reads => {

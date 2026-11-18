@@ -130,10 +130,10 @@ pub(crate) fn safe_identity_field<'a>(value: &'a str, secret: &str) -> &'a str {
 #[effect(operation = "totp.effect")]
 pub enum TotpEffect {
     /// Add account.
-    #[effect(kind = "read", label = "totp-add-title-add")]
+    #[effect(screen, label = "totp-add-title-add")]
     AddAccount,
     /// Open account.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     OpenAccount {
         #[param("Id of the account")]
         account: String,
@@ -145,7 +145,7 @@ pub enum TotpEffect {
         account: String,
     },
     /// Set up on this device.
-    #[effect(kind = "read", label = "totp-add-title-provision")]
+    #[effect(own_device, kind = "read", label = "totp-add-title-provision")]
     SetUpLocal {
         #[param("Id of the account")]
         account: String,

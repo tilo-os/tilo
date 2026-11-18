@@ -15,14 +15,14 @@ const ENTRY_LIMIT: usize = 200;
 pub enum JournalEffect {
     #[effect(job, kind = "read")]
     Refresh,
-    #[effect(kind = "read")]
+    #[effect(screen)]
     SetLiveTail {
         #[param("Follow new entries; omit to toggle")]
         enabled: Option<bool>,
     },
     #[effect(attended, job)]
     ExportFilteredJsonl,
-    #[effect(kind = "read")]
+    #[effect(screen)]
     SelectEntry {
         #[param("Stable logs.entry.* id")]
         entry_id: String,

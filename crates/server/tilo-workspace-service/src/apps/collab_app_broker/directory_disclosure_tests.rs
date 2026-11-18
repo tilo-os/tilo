@@ -924,7 +924,7 @@ fn an_agent_is_never_offered_a_drawn_control_and_hears_whose_a_shown_effect_is()
     assert!(question.disclosed_to(&publisher, Some("publisher")));
     let shown = row(
         "tasks.tracker",
-        ActionContract::view(),
+        ActionContract::screen(),
         OperationKind::Effect,
     );
     let question = directory_row_question(&shown).unwrap();
@@ -933,6 +933,16 @@ fn an_agent_is_never_offered_a_drawn_control_and_hears_whose_a_shown_effect_is()
         question.refused_by_name_to(&agent),
         "named, it is the publisher's"
     );
+    // A read that answers nothing but is not declared screen-only is the agent's like any read:
+    // what it answers says nothing of whose it is.
+    let undeclared = row(
+        "tasks.tracker",
+        ActionContract::view(),
+        OperationKind::Effect,
+    );
+    let question = directory_row_question(&undeclared).unwrap();
+    assert!(question.disclosed_to(&agent, Some("publisher")));
+    assert!(!question.refused_by_name_to(&agent));
     let real = row("tasks.tracker", write, OperationKind::Effect);
     assert!(
         directory_row_question(&real)

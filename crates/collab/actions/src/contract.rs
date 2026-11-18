@@ -660,6 +660,13 @@ impl ResultSpec {
 /// what reading needs and runs only on the device of whoever starts it.
 pub const ATTENDED_TAG: &str = "tilo.attended";
 
+/// The contract tag of an effect that only changes what is on the screen it is
+/// invoked on, as its app declares it (`#[effect(screen)]`): a form it opens, a
+/// panel or a place it shows. It reads and answers nothing. Only the person at
+/// that screen invokes it, and no agent is listed it: anyone else would move
+/// their window and learn nothing ([`ActionContract::only_shows`]).
+pub const SCREEN_TAG: &str = "tilo.screen";
+
 /// The contract tag of an effect whose whole scope is the invoking
 /// person's own device: it touches nothing a workspace shares and no one else
 /// (their clipboard, their own appearance, a network test from their own
@@ -931,15 +938,22 @@ impl ActionContract {
     }
 
     /// Whether an effect under this contract only changes what is on the
-    /// screen it is invoked on: it reads, answers nothing and asks no one (a
-    /// form it opens, a panel or a place it shows). Only the person at that
-    /// screen invokes it; for anyone else it would move their window and tell
-    /// the caller nothing.
+    /// screen it is invoked on, as its app declares ([`SCREEN_TAG`]): a form it
+    /// opens, a panel or a place it shows. Only the person at that screen
+    /// invokes it; for anyone else it would move their window and tell the
+    /// caller nothing. Nothing else about the contract decides it: an effect
+    /// that reads and answers nothing may still write, and is decided as
+    /// what it declares.
     pub fn only_shows(&self) -> bool {
-        self.kind == ActionKind::Read
-            && matches!(self.result, ResultSpec::None)
-            && !self.is_own_device()
-            && !self.is_attended()
+        self.tags.iter().any(|tag| tag == SCREEN_TAG)
+    }
+
+    /// Safe defaults for an effect that only changes what is on the screen it
+    /// is invoked on ([`Self::only_shows`]).
+    pub fn screen() -> Self {
+        let mut contract = Self::view();
+        contract.tags.push(SCREEN_TAG.to_owned());
+        contract
     }
 
     /// Who the action is listed for, as its tags record it. See [`Audience`].

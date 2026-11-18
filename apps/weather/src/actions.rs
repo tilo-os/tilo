@@ -29,7 +29,7 @@ pub enum WeatherEffect {
     /// Open forecast.
     ///
     /// Show one saved place's forecast.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     OpenLocation {
         #[param("Id of the saved place")]
         location: String,
