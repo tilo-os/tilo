@@ -168,6 +168,22 @@ impl Widget for ChatWindow {
         true
     }
 
+    // A view shown alone is drawn by the chat as widgets of its own. The window stands for the
+    // chat, so a walk of the window's content (how tall it asks to be, what it says for
+    // assistive use) reaches that view through the window.
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        let Ok(chat) = self.chat.try_borrow() else {
+            return;
+        };
+        for child in chat.alone_children() {
+            visitor(child);
+        }
+    }
+
+    fn preferred_window_size(&self) -> Option<(f64, f64)> {
+        self.chat.try_borrow().ok()?.alone_size()
+    }
+
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.state().apply_layout(taffy, node, origin);
     }

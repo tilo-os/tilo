@@ -53,8 +53,7 @@ case $image in
               -p tilo-board-successor --bin tilo-board-successor
               -p tilo-rollback --bin tilo-rollback
               -p tilo-auth --bin tilo-auth
-              -p tilo-boot-signin --bin tilo-boot-signin
-             )
+              -p tilo-boot-signin --bin tilo-boot-signin)
     bins=(tilo-server tilo-server-admin tilo-enroll fs tilo-linux-vm tilo-hosted-jail tilo-api
           tilolang-process
           tilo-esp-write tilo-image-policy-check tilo-image-trust tilo-board-successor

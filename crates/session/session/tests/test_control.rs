@@ -204,8 +204,9 @@ struct StartedSession {
 }
 
 impl StartedSession {
-    /// The session, up once it printed its test-control socket, the last of what it prints.
-    fn start() -> Self {
+    /// The session, up once it printed its test-control socket, the last of what it prints, with
+    /// `env` set in its environment besides.
+    fn start(env: &[(&str, &str)]) -> Self {
         let runtime = private_home();
         let home = tempfile::tempdir().unwrap();
         let control = runtime.path().join("test-control.sock");
@@ -231,6 +232,7 @@ impl StartedSession {
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("DISPLAY")
             .env_remove("TILO_MCP_SERVER")
+            .envs(env.iter().copied())
             // A stop of the whole group, as a session is stopped in a terminal or
             // by a script, reaches it through this group; and one of the test itself ends it
             // where the test ends without running a destructor.
@@ -260,7 +262,7 @@ impl StartedSession {
 
     /// The session and its mount, when this machine can mount FUSE.
     fn started() -> Option<Self> {
-        let session = Self::start();
+        let session = Self::start(&[]);
         if mounted(&session.documents) {
             return Some(session);
         }
@@ -319,6 +321,25 @@ impl Drop for StartedSession {
             let _ = self.child.wait();
         }
     }
+}
+
+/// A session started as `dist/dev/nested-session.sh` starts it, beside another desktop
+/// (`TILO_MACHINE=hosted`), serves its apps on the socket its launcher hands them: the apps, windows
+/// and agents it starts find the collaboration broker there. It once served them on a socket of its
+/// own that no launcher knew, so every app it started ran without one and its agents exited.
+#[test]
+fn a_hosted_session_serves_its_apps_where_its_launcher_hands_them() {
+    let session = StartedSession::start(&[(tilo_paths::machine::VAR, "hosted")]);
+    let collab = session.runtime.path().join("tilo/services/collab.sock");
+    assert!(
+        collab.exists(),
+        "the session serves its apps at {}: {:?}",
+        collab.display(),
+        std::fs::read_dir(session.runtime.path().join("tilo/services")).map(|entries| entries
+            .flatten()
+            .map(|entry| entry.file_name())
+            .collect::<Vec<_>>())
+    );
 }
 
 tilo_test_env::scenario! {

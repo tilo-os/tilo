@@ -52,6 +52,7 @@ use tilo_lock::MutexRecover;
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
 use web_time::{Duration, SystemTime};
 
+pub mod device_grants;
 pub mod link;
 pub mod scopes;
 

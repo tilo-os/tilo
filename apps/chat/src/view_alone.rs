@@ -461,6 +461,18 @@ impl ChatApp {
             .is_some_and(|view| view.widget().needs_animation_frame())
     }
 
+    /// Whether the view shown alone owes the window a sync: its instance has work that no frame
+    /// has taken in yet. The column that holds the view answers for none of its children, so
+    /// the view's own widget is asked.
+    pub(crate) fn alone_owes_sync(&self) -> bool {
+        let mut owes = false;
+        if let Some(view) = self.alone.as_ref().and_then(|alone| alone.view.as_ref()) {
+            view.widget()
+                .for_each_child(&mut |child| owes |= child.needs_idle_sync());
+        }
+        owes
+    }
+
     /// When the view shown alone next wants the window woken.
     pub(crate) fn alone_wake(&self) -> Option<ui::time::Instant> {
         self.alone
@@ -480,7 +492,7 @@ mod tests {
     use ui::Widget;
     use ui::tilo_actions::Actor;
     use ui::tilo_resource::{Acting, Id, MemberId, NonBlank};
-    use ui::widget::Text;
+    use ui::widget::{DrawChild as _, Text};
     use ui::written_view::{
         MakeWrittenView, Shown, Suggestion, ViewState, WRITTEN_VIEWS, WrittenView,
     };
@@ -525,10 +537,35 @@ mod tests {
         }
     }
 
+    thread_local! {
+        /// Whether the widget this thread's views are shown by owes its window a sync.
+        static OWES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// What a view is shown by here: a line of text that owes its window a sync while [`OWES`]
+    /// says so, as a written view does while its instance owes a frame.
+    struct Owing(ui::widget::Element);
+
+    impl ui::widget::Decorator for Owing {
+        type Inner = dyn Widget;
+
+        fn inner(&self) -> &(dyn Widget + 'static) {
+            &*self.0
+        }
+
+        fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+            &mut *self.0
+        }
+
+        fn needs_idle_sync(&self) -> bool {
+            OWES.with(std::cell::Cell::get)
+        }
+    }
+
     fn make(view: &WrittenView, _: &ui::RemoteActions) -> Shown {
         PLACED.with(|placed| placed.borrow_mut().push(view.clone()));
         Shown {
-            widget: Text::new("shown").into_widget(),
+            widget: Box::new(Owing(Text::new("shown").into_widget())),
             state: Rc::new(Nothing),
         }
     }
@@ -586,6 +623,34 @@ mod tests {
             .find(|message| message.view.is_some())
             .expect("the message that carries the view")
             .id
+    }
+
+    /// A written view owes its window a sync while its instance has work that no frame has taken
+    /// in yet (a change no sync has sent the window, an action handed on, work under way off the
+    /// frame), and says so. The toolkit's frame asks the window and never the view inside it:
+    /// the window of a view shown alone hands the view's word on. Where it does not, that work
+    /// waits for whatever else next makes a frame.
+    #[test]
+    fn the_window_owes_a_sync_while_the_view_it_shows_alone_owes_one() {
+        views_are_shown();
+        let mut workspace = crate::testing::demo_doc();
+        let message = posted(&mut workspace);
+        let mut app = window(&workspace, aria());
+        app.answer_effect(ChatEffect::ShowView { message })
+            .expect("the view is shown alone");
+        Widget::update(&mut app, &workspace.chat, &ROOT);
+        let window = crate::ChatWindow::new(Rc::new(RefCell::new(app)));
+        assert!(
+            !Widget::needs_idle_sync(&window),
+            "a view at rest owes its window nothing"
+        );
+        OWES.with(|owes| owes.set(true));
+        let owed = Widget::needs_idle_sync(&window);
+        OWES.with(|owes| owes.set(false));
+        assert!(
+            owed,
+            "the view shown alone owes a sync and its window does not say so"
+        );
     }
 
     #[test]
@@ -713,5 +778,57 @@ mod tests {
         Widget::update(&mut app, &workspace.chat, &ROOT);
         assert!(placed().is_empty(), "nothing was placed");
         assert!(app.alone_size().is_none());
+    }
+
+    /// Every name the widgets from `widget` down say for assistive use, as a walk of a window's
+    /// widgets finds them.
+    fn said(widget: &dyn Widget, out: &mut Vec<String>) {
+        if let Some(name) = widget.accessibility().and_then(|node| node.name) {
+            out.push(name);
+        }
+        widget.for_each_child(&mut |child| said(child, out));
+    }
+
+    /// A page asks the window it mounts, not the chat inside it: how tall what it shows asks to
+    /// be, and what it says for assistive use. The window answers both from the view it shows
+    /// alone.
+    #[test]
+    fn the_window_says_the_height_and_the_words_of_the_view_it_shows_alone() {
+        views_are_shown();
+        let mut workspace = crate::testing::demo_doc();
+        let message = posted(&mut workspace);
+        let mut app = window(&workspace, aria());
+        app.answer_effect(ChatEffect::ShowView { message })
+            .expect("the view is shown alone");
+        Widget::update(&mut app, &workspace.chat, &ROOT);
+        app.rect = vello::kurbo::Rect::new(0.0, 0.0, 620.0, 400.0);
+        let mut window = crate::ChatWindow::new(Rc::new(RefCell::new(app)));
+        let theme = ui::theme::Theme::dark();
+        let mut text = ui::text_render::TextRenderer::new();
+        let mut scene = vello::Scene::new();
+        window.draw_child(
+            &mut scene,
+            vello::kurbo::Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &ui::presence::PresenceCtx::empty(),
+        );
+
+        let (width, height) = ui::widget::preferred_window_size(&window)
+            .expect("the window says the size of the view it shows alone");
+        assert!(
+            (width - 620.0).abs() < 1.0,
+            "the window's own width: {width}"
+        );
+        assert!(
+            height > 0.0 && height < 400.0,
+            "the view's own height, not the window's: {height}"
+        );
+        let mut names = Vec::new();
+        said(&window, &mut names);
+        assert!(
+            names.iter().any(|name| name == "shown"),
+            "what the view draws is said through the window: {names:?}"
+        );
     }
 }

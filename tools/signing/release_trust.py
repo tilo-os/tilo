@@ -57,11 +57,13 @@ PURPOSES = ('os-images', 'extension-manifests')
 OPERATIONAL_KEYS = {'os-images': KEYS / 'cosign.pub', 'extension-manifests': KEYS / 'extensions.pub'}
 
 # Repositories installed systems pull and verify: bootc updates (the board
-# images live in the forge's own registry), the Linux VM guest and the hosted
-# workspace VMs' guest image (crates/runtime/linux-vm).
+# images live in the forge's own registry), the server OS a server updates
+# itself from, the Linux VM guest and the hosted workspace VMs' guest image
+# (crates/runtime/linux-vm).
 SIGNED_REPOSITORIES = {
     'registry.tilo.so/tilo/tilo': 'os-images',
     'code.tilo.so/tilo/tilo': 'os-images',
+    'registry.tilo.so/tilo/tilo-host': 'os-images',
     'registry.tilo.so/tilo/linux-guest': 'os-images',
     'registry.tilo.so/tilo/hosted-guest': 'os-images',
 }

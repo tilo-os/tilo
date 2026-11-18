@@ -256,6 +256,32 @@ final class SourceTests: XCTestCase {
         XCTAssertEqual(source.items().count, Drawing.mainChat.count + 1)
     }
 
+    func testAThingThatIsThePersonsToEndIsEndedAndNoOtherIs() async throws {
+        let source = Drawing.source()
+        let theirs = LiveThing(id: "poem", title: "A poem", reference: "shared:poem", theirsToEnd: true)
+        let other = LiveThing(id: "letter", title: "A letter", reference: "shared:letter")
+        source.post(Item(id: "shared", at: Drawing.now, .message(Message(.assistant, "The poem is above.", live: [theirs]))))
+        source.post(Item(id: "other", at: Drawing.now, .message(Message(.assistant, "A letter.", live: [other]))))
+        func live(_ id: Item.ID) -> [LiveThing] {
+            guard case .message(let message) = source.items().first(where: { $0.id == id })?.content else { return [] }
+            return message.live
+        }
+        // A thing that does not say it is theirs to end is not ended, and stays.
+        do {
+            try await source.stopSharing(other.id)
+            XCTFail("a thing that is not theirs to end was ended")
+        } catch let problem as SourceProblem {
+            guard case .refused = problem else { return XCTFail("refused, not \(problem)") }
+        }
+        XCTAssertEqual(live("other"), [other])
+        XCTAssertEqual(live("shared"), [theirs])
+        // The one that is theirs is ended: its place is gone, its message stays, the other stays.
+        try await source.stopSharing(theirs.id)
+        XCTAssertEqual(live("shared"), [])
+        XCTAssertTrue(source.items().contains { $0.id == "shared" })
+        XCTAssertEqual(live("other"), [other])
+    }
+
     func testAFileSentCanBeHadAgain() async throws {
         let source = Drawing.source()
         let file = URL(fileURLWithPath: "/tmp/numbers.csv")

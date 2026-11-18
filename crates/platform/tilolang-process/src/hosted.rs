@@ -496,6 +496,20 @@ impl Platform for HostPlatform {
         )
     }
 
+    /// A day or a time of day named in a sentence (`"{d}"`), in the person's styles and language:
+    /// a day as `Jun 29`, or `Jun 29, 2025` another year, a moment as `Jun 29, 6:00 PM`.
+    fn sentence(&self, kind: &str, value: &str) -> String {
+        let now = local_now();
+        tilo_formats::sentence(
+            kind,
+            value,
+            self.formats.get(),
+            now.date(),
+            i64::from(now.offset().seconds()),
+            &*self.phrases,
+        )
+    }
+
     fn web(
         &self,
         request: &tilolang_tilo::runtime::run::WebRequest,

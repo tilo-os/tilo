@@ -1461,7 +1461,19 @@ fn a_new_message_and_an_answer_carry_the_accounts_signature() {
     let signature = sent
         .find("https://rivera.example")
         .expect("it carries the signature");
-    let quotation = sent.find("On 2026-").expect("it quotes what it answers");
+    let quotation = signature
+        + sent
+            .get(signature..)
+            .and_then(|after| after.find("On "))
+            .expect("it quotes what it answers");
+    let quoted = sent
+        .get(quotation..)
+        .and_then(|rest| rest.lines().next())
+        .unwrap_or_default();
+    assert!(
+        !quoted.contains("2026-"),
+        "it names the day it answers as the person reads one, not as a machine does: {quoted:?}"
+    );
     assert!(
         said < signature && signature < quotation,
         "the answer, its signature, then what it quotes: {sent}"

@@ -268,13 +268,11 @@ impl App {
         invocation.is_some_and(|invocation| self.invoke_host_command(&invocation))
     }
 
-    /// The newest changes people made, from whichever History serves this
-    /// app. The document's genesis is a version, not a change anyone made.
+    /// The newest changes people made, as this app's History lists them.
     fn recent_changes(&self) -> Vec<RecentChange> {
         self.history_rows()
             .iter()
             .rev()
-            .filter(|entry| !entry.is_genesis())
             .take(model::RECENT_CHANGES)
             .map(RecentChange::from_entry)
             .collect()
@@ -284,7 +282,7 @@ impl App {
     fn history_rows(&self) -> Vec<crate::widget::HistoryEntry> {
         self.history
             .as_ref()
-            .map(|history| history.current_entries(&self.state.doc))
+            .map(|history| history.current_entries())
             .unwrap_or_default()
     }
 

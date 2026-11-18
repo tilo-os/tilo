@@ -192,6 +192,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub use tilo_server_protocol::WorkspaceId;
 
 #[cfg(not(target_arch = "wasm32"))]
+pub mod operations;
 pub mod rollout;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod root_signer;

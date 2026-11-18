@@ -101,6 +101,11 @@ enum BubbleTone {
 /// A bubble: `.b`, `.b.me`, `.b.lead`.
 struct Bubble<Content: View>: View {
     var tone = BubbleTone.plain
+    /// The piece's words, where a person may copy them or mark a part of them: the bubble then
+    /// has the piece's menu.
+    var words: PieceWords?
+    /// Whether, on a Mac, a drag marks the words where they stand: a message's do.
+    var marks = false
     @ViewBuilder var content: Content
 
     var body: some View {
@@ -112,6 +117,7 @@ struct Bubble<Content: View>: View {
                 .padding(.vertical, 9)
         }
         .background(fill, in: RoundedRectangle(cornerRadius: Measure.bubbleRadius))
+        .modifier(PieceMenu(words: words, marks: marks))
         .frame(maxWidth: .infinity, alignment: tone == .me ? .trailing : .leading)
     }
 
@@ -477,28 +483,40 @@ struct Fine: View {
 /// The place of a live Tilo thing: one card, filled whole in the cards' own tone. The source's
 /// own view draws the thing there, or says in its place why it is not shown, at the height it
 /// takes itself; its buttons are a card's buttons. Without a source, the thing's name stands there.
+/// A thing the person's own assistant shared for them carries one button under it, the way to
+/// end that share; no other thing does.
 struct LiveThingPlace: View {
     let thing: LiveThing
     @Environment(\.liveThingView) private var draw
+    @Environment(AssistantModel.self) private var model: AssistantModel?
 
     var body: some View {
-        Group {
-            if let draw {
-                draw(thing).buttonStyle(BoxButtonStyle())
-            } else {
-                VStack(spacing: 6) {
-                    Mark(side: 22)
-                    Text(thing.title).font(.tilo(14, .medium)).foregroundStyle(Token.ink)
-                    Fine(words: AssistantWords.liveThing.said)
+        VStack(alignment: .leading, spacing: 0) {
+            Group {
+                if let draw {
+                    draw(thing).buttonStyle(BoxButtonStyle())
+                } else {
+                    VStack(spacing: 6) {
+                        Mark(side: 22)
+                        Text(thing.title).font(.tilo(14, .medium)).foregroundStyle(Token.ink)
+                        Fine(words: AssistantWords.liveThing.said)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 360)
                 }
-                .frame(maxWidth: .infinity)
-                .frame(height: 360)
+            }
+            .frame(maxWidth: .infinity)
+            .accessibilityLabel(thing.title)
+            if thing.theirsToEnd {
+                Button(AssistantWords.stopSharing.said) { model?.stopSharing(thing.id) }
+                    .buttonStyle(BoxButtonStyle())
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
             }
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Token.raised)
         .clipShape(RoundedRectangle(cornerRadius: Measure.cardRadius))
         .overlay { RoundedRectangle(cornerRadius: Measure.cardRadius).strokeBorder(Token.line, lineWidth: 1) }
-        .accessibilityLabel(thing.title)
     }
 }

@@ -582,7 +582,7 @@ impl tilo_agent_session::workspace_actions::WorkspaceDocumentsLink for DeliveryR
     fn user_public_key(&self) -> [u8; 32] {
         self.member.endpoint.host_cert.user_public_key
     }
-    fn host_device(&self) -> tilo_agent_session::workspace_actions::HostDevice {
+    fn own_device(&self) -> tilo_agent_session::workspace_actions::HostDevice {
         self.member.clone()
     }
     fn view_read_policy(

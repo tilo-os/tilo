@@ -19,7 +19,9 @@
 //! window's own menu ([`ui::window_share::Ask`]), choosing what the others
 //! may do there (view only unless they say otherwise), and stops from the
 //! message, its menu, or the window. While they share a window, their Chat
-//! keeps the message saying whether the window is still open.
+//! keeps the message saying whether the window is still open. A share an
+//! agent made for a person is that person's to end too: their card and the
+//! message's menu offer "Stop sharing", and nothing else of the sharer's.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -111,10 +113,10 @@ struct CardParts {
     smaller: Option<Rect>,
 }
 
-/// The sharer's row under a live share's card.
+/// The row under a live share's card, for whoever may end it.
 struct SharerControls {
-    /// "View only" and "Can edit", the share's own pressed.
-    access: [(ShareAccess, Rect); 2],
+    /// "View only" and "Can edit", the share's own pressed: its sharer's alone.
+    access: Option<[(ShareAccess, Rect); 2]>,
     stop: Rect,
 }
 
@@ -128,6 +130,49 @@ impl ChatApp {
     /// Whether `m` is a live share of this person's.
     pub(crate) fn is_my_live_share(&self, m: &Message) -> bool {
         m.share.as_ref().is_some_and(|share| !share.ended) && self.is_me(&m.author)
+    }
+
+    /// Whether this person may end `m`'s live share, as Chat's `stop-sharing` takes it: the
+    /// share is theirs, or their own agent made it for them
+    /// ([`crate::messages::shared_for`]).
+    pub(crate) fn may_end_share(&self, m: &Message) -> bool {
+        m.share.as_ref().is_some_and(|share| !share.ended)
+            && (self.is_me(&m.author)
+                || crate::messages::shared_for(m.acting.as_ref())
+                    .is_some_and(|person| self.is_me(&ui::tilo_resource::MemberId::person(person))))
+    }
+
+    /// The row under a live share's card for whoever may end it, from `(x, y)`: for its
+    /// sharer, what the others may do, switched in place, then "Stop sharing"; for the person
+    /// an agent shared it for, "Stop sharing" alone, since what the others may do stays its
+    /// sharer's.
+    fn sharer_controls(
+        &self,
+        m: &Message,
+        (x, y): (f64, f64),
+        tr: &mut ui::text_render::TextRenderer,
+        theme: &ui::theme::Theme,
+    ) -> Option<SharerControls> {
+        if !self.may_end_share(m) {
+            return None;
+        }
+        let sp = &theme.tokens.spacing;
+        let button_h = ButtonFace::height(ControlSize::Small, theme);
+        let mut button = |left: f64, label: &str| {
+            let width = ButtonFace::new(Rect::ZERO, label)
+                .control_size(ControlSize::Small)
+                .intrinsic_width(tr, theme);
+            Rect::new(left, y, left + width, y + button_h)
+        };
+        let access = self.is_my_live_share(m).then(|| {
+            let view = button(x, &access_label(ShareAccess::View));
+            let edit = button(view.x1 + f64::from(sp.s1), &access_label(ShareAccess::Edit));
+            [(ShareAccess::View, view), (ShareAccess::Edit, edit)]
+        });
+        // Stopping stands apart from the choice of what others may do.
+        let stop_x = access.map_or(x, |[_, (_, edit)]| edit.x1 + f64::from(sp.s3));
+        let stop = button(stop_x, &crate::i18n::t("chat-share-stop"));
+        Some(SharerControls { access, stop })
     }
 
     /// Whether this person works in `m`'s share where the conversation
@@ -221,41 +266,7 @@ impl ChatApp {
             origin.x + w,
             view.map_or(header.y1, |view| view.y1 + f64::from(sp.s1)),
         );
-        let controls = self.is_my_live_share(m).then(|| {
-            let button_h = ButtonFace::height(ControlSize::Small, theme);
-            let y = card.y1 + f64::from(sp.s2);
-            let mut width = |label: &str| {
-                ButtonFace::new(Rect::ZERO, label)
-                    .control_size(ControlSize::Small)
-                    .intrinsic_width(tr, theme)
-            };
-            let view_button = Rect::new(
-                origin.x,
-                y,
-                origin.x + width(&access_label(ShareAccess::View)),
-                y + button_h,
-            );
-            let x = view_button.x1 + f64::from(sp.s1);
-            let edit_button = Rect::new(
-                x,
-                y,
-                x + width(&access_label(ShareAccess::Edit)),
-                y + button_h,
-            );
-            // Stopping stands apart from the choice of what others may do.
-            let x = edit_button.x1 + f64::from(sp.s3);
-            let stop = Rect::new(
-                x,
-                y,
-                x + width(&crate::i18n::t("chat-share-stop")),
-                y + button_h,
-            );
-            let access = [
-                (ShareAccess::View, view_button),
-                (ShareAccess::Edit, edit_button),
-            ];
-            SharerControls { access, stop }
-        });
+        let controls = self.sharer_controls(m, (origin.x, card.y1 + f64::from(sp.s2)), tr, theme);
         CardParts {
             card,
             header,
@@ -322,7 +333,7 @@ impl ChatApp {
         }
         self.draw_share_head_controls(&mut paint, m, label, (parts.open, parts.smaller), hits);
         if let Some(controls) = &parts.controls {
-            for (access, rect) in controls.access {
+            for (access, rect) in controls.access.into_iter().flatten() {
                 let label = access_label(access);
                 Button::paint(
                     paint.scene,
@@ -707,7 +718,7 @@ impl ChatApp {
         let Some(m) = self.message(message) else {
             return;
         };
-        if !self.is_my_live_share(m) {
+        if !self.may_end_share(m) {
             return;
         }
         self.apply_part(

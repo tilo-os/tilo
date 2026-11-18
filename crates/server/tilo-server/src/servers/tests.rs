@@ -1,5 +1,7 @@
 use super::*;
 
+use super::device::{DHCP, STATIC};
+
 const WORKSPACE: &str = "0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a11";
 
 fn device() -> Id {
@@ -123,10 +125,215 @@ fn a_change_the_record_cannot_mean_is_refused() {
             "Attic".into(),
             "not-an-address".into(),
         )),
+        Servers::SET_HOSTNAME.with((device(), "-nas".into())),
+        Servers::USE_DISK.with((device(), "ROOT1".into(), "spare".into(), String::new())),
+        Servers::USE_DISK.with((device(), " ".into(), "data".into(), String::new())),
+        Servers::USE_DISK.with((device(), "DATA1".into(), "data".into(), "OTHER".into())),
+        Servers::SET_INTERFACE.with((
+            device(),
+            "enp2".into(),
+            "static".into(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+        )),
+        Servers::SET_INTERFACE.with((
+            device(),
+            "enp2".into(),
+            "dhcp".into(),
+            "10.0.0.5/24".into(),
+            String::new(),
+            String::new(),
+            String::new(),
+        )),
+        Servers::SET_INTERFACE.with((
+            device(),
+            "enp2".into(),
+            "dhcp".into(),
+            String::new(),
+            String::new(),
+            String::new(),
+            "bond0".into(),
+        )),
+        Servers::REPORT_DEVICE_CONFIG.with((
+            device(),
+            "revision".into(),
+            "applied".into(),
+            String::new(),
+        )),
     ] {
         assert!(record.apply(refused).is_err());
     }
     assert_eq!(record.log().len(), 1, "nothing refused is history");
+}
+
+/// The machine an entry configures: three drives, a bond of two interfaces, a
+/// tagged interface with a static address, and a hostname.
+fn configured() -> Replica<Servers> {
+    let mut servers = enrolled();
+    for (identity, role) in [
+        ("ROOT1", "system"),
+        ("DATA1", "data"),
+        ("MIRROR1", "mirror"),
+    ] {
+        servers
+            .apply(Servers::USE_DISK.with((device(), identity.into(), role.into(), String::new())))
+            .unwrap();
+    }
+    servers
+        .apply(Servers::SET_INTERFACE.with((
+            device(),
+            "enp2".into(),
+            STATIC.into(),
+            "10.0.0.5/24".into(),
+            "10.0.0.1".into(),
+            "1.1.1.1,9.9.9.9".into(),
+            String::new(),
+        )))
+        .unwrap();
+    servers
+        .apply(Servers::SET_INTERFACE.with((
+            device(),
+            "enp3.20".into(),
+            DHCP.into(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+        )))
+        .unwrap();
+    for (name, bond) in [("bond0", ""), ("eno1", "bond0")] {
+        servers
+            .apply(Servers::SET_INTERFACE.with((
+                device(),
+                name.into(),
+                DHCP.into(),
+                String::new(),
+                String::new(),
+                String::new(),
+                bond.into(),
+            )))
+            .unwrap();
+    }
+    servers
+        .apply(Servers::SET_HOSTNAME.with((device(), "nas".into())))
+        .unwrap();
+    servers
+}
+
+#[test]
+fn a_machines_own_configuration_is_typed_actions_with_history() {
+    let mut servers = configured();
+    let status = Servers::REPORT_DEVICE_CONFIG.with((
+        device(),
+        "0123456789abcdef0123456789abcdef".into(),
+        "applied".into(),
+        "hostname, network".into(),
+    ));
+    servers.apply(status).unwrap();
+    let server = servers.state().unwrap().active(&[7; 32]).cloned().unwrap();
+    assert_eq!(server.device.hostname, "nas");
+    let roles = server
+        .device
+        .disks
+        .iter()
+        .map(|(id, disk)| (id.as_str().to_owned(), disk.role.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        roles,
+        [
+            ("ROOT1".to_owned(), "system".to_owned()),
+            ("DATA1".to_owned(), "data".to_owned()),
+            ("MIRROR1".to_owned(), "mirror".to_owned()),
+        ]
+    );
+    let enp2 = server
+        .device
+        .network
+        .get(&Id::from_raw("enp2"))
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        (enp2.addressing.as_str(), enp2.addresses.as_str()),
+        (STATIC, "10.0.0.5/24")
+    );
+    assert_eq!(
+        server
+            .device
+            .network
+            .get(&Id::from_raw("eno1"))
+            .map(|eno1| eno1.bond.clone()),
+        Some("bond0".to_owned())
+    );
+    assert_eq!(
+        server
+            .device
+            .network
+            .get(&Id::from_raw("enp3.20"))
+            .map(|i| i.vlan),
+        Some(20)
+    );
+    assert_eq!(server.device.status.state, "applied");
+    assert_eq!(
+        server.device.status.revision,
+        "0123456789abcdef0123456789abcdef"
+    );
+}
+
+/// A drive another role would erase takes the drive's name to confirm, and
+/// what a machine needs stays: the disk it boots from, and an interface others
+/// are bonded to.
+#[test]
+fn a_machine_keeps_what_it_boots_from_and_a_drive_is_erased_only_when_named() {
+    let mut servers = configured();
+
+    // Another role erases the drive, so it takes the drive's name to confirm.
+    assert!(
+        servers
+            .apply(Servers::USE_DISK.with((
+                device(),
+                "DATA1".into(),
+                "mirror".into(),
+                String::new(),
+            )))
+            .is_err()
+    );
+    servers
+        .apply(Servers::USE_DISK.with((device(), "DATA1".into(), "mirror".into(), "DATA1".into())))
+        .unwrap();
+    // The disk the system boots from stays, and one that others are bonded to
+    // stays until they let go.
+    assert!(
+        servers
+            .apply(Servers::RELEASE_DISK.with((device(), "ROOT1".into())))
+            .is_err()
+    );
+    assert!(
+        servers
+            .apply(Servers::RELEASE_INTERFACE.with((device(), "bond0".into())))
+            .is_err()
+    );
+    servers
+        .apply(Servers::RELEASE_INTERFACE.with((device(), "eno1".into())))
+        .unwrap();
+    servers
+        .apply(Servers::RELEASE_INTERFACE.with((device(), "bond0".into())))
+        .unwrap();
+    servers
+        .apply(Servers::RELEASE_DISK.with((device(), "MIRROR1".into())))
+        .unwrap();
+    let server = servers.state().unwrap().active(&[7; 32]).cloned().unwrap();
+    assert!(server.device.network.get(&Id::from_raw("bond0")).is_none());
+    assert!(server.device.disks.get(&Id::from_raw("MIRROR1")).is_none());
+    assert_eq!(
+        server
+            .device
+            .disks
+            .get(&Id::from_raw("DATA1"))
+            .map(|d| d.role.clone()),
+        Some("mirror".to_owned())
+    );
 }
 
 #[test]

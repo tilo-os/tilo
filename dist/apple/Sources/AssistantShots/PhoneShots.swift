@@ -247,7 +247,9 @@ enum PhoneShots {
 
     /// The main chat with the keyboard up and words in the field, then with the keyboard put away,
     /// then a message sent: whether a drag on the conversation takes the keyboard down with the
-    /// finger, and whether the words and the conversation's place are kept. Says each as a line
+    /// finger, what the window draws behind the keyboard's round upper corners, whether the
+    /// words and the conversation's place are kept, and what Up, Down and Escape of an attached
+    /// keyboard do in the field. Says each as a line
     /// and a fault as `FAULT`, and stays with the keyboard up and with it down, so a picture of the
     /// whole screen can be taken at both.
     static func keyboard(in window: UIWindow, dark: Bool) async {
@@ -303,6 +305,15 @@ enum PhoneShots {
             kept.say("FAULT: drag: a drag on the conversation leaves the keyboard up")
         }
         place("with the keyboard up")
+        // Where the keyboard's round upper corners leave the window in sight, it draws its own ground.
+        let shown = picture(of: window)
+        let beside = colour(in: shown, at: CGPoint(x: 3, y: top - 8))
+        let behind = [CGPoint(x: 2, y: top + 2), CGPoint(x: window.bounds.width - 2, y: top + 2)].map { colour(in: shown, at: $0) }
+        if behind.allSatisfy({ $0 == beside }) {
+            kept.say("ground: behind the keyboard's upper corners the window draws its ground, \(beside)")
+        } else {
+            kept.say("FAULT: ground: behind the keyboard's upper corners the window draws \(behind.joined(separator: " and ")), and \(beside) beside the field")
+        }
         let words = field.text ?? ""
         kept.say("ready up")
         try? await Task.sleep(for: .milliseconds(4000))
@@ -324,7 +335,63 @@ enum PhoneShots {
         let writes = field.isFirstResponder && watch.top != nil && (field.text ?? "").isEmpty
         kept.say(writes ? "send: the message is sent, the field is empty and keeps the keyboard" : "FAULT: send: after a message is sent the field is not empty with the keyboard up")
         place("after a message is sent")
+        // A keyboard attached to the phone, its keys pressed as the system presses them, through the field's
+        // own key commands: Up in the empty field brings back what the person sent last, Escape lets it go,
+        // and Down past the newest empties the field again.
+        func press(_ input: String) -> Bool {
+            guard let command = field.keyCommands?.first(where: { $0.input == input && $0.modifierFlags.isEmpty }),
+                  let action = command.action
+            else { return false }
+            return UIApplication.shared.sendAction(action, to: field, from: command, for: nil)
+        }
+        func moment() async { try? await Task.sleep(for: .milliseconds(300)) }
+        let sentLast = model.conversation(.main).items.reversed().compactMap { item -> String? in
+            if case .message(let message) = item.content, message.author == .person { message.text } else { nil }
+        }.first ?? ""
+        let tookUp = press(UIKeyCommand.inputUpArrow)
+        await moment()
+        let back = tookUp && !sentLast.isEmpty && field.text == sentLast && model.drafts[.main]?.text == sentLast
+        let tookEscape = press(UIKeyCommand.inputEscape)
+        await moment()
+        let gone = tookEscape && (field.text ?? "").isEmpty
+        _ = press(UIKeyCommand.inputUpArrow)
+        await moment()
+        let tookDown = press(UIKeyCommand.inputDownArrow)
+        await moment()
+        let forward = tookDown && (field.text ?? "").isEmpty
+        if back, gone, forward {
+            kept.say("keys: on a keyboard Up in the empty field brings back what was sent last, Escape lets it go, Down past the newest empties the field")
+        } else {
+            kept.say("FAULT: keys: on a keyboard Up in the empty field \(back ? "brings back" : "does not bring back") what was sent last, Escape \(gone ? "lets it go" : "does not let it go"), Down past the newest \(forward ? "empties the field" : "does not empty the field")")
+        }
+        // With the person's own words in the field the arrows are a text field's: they move the caret.
+        field.insertText("own words")
+        await moment()
+        let taken = field.keyCommands?.contains { $0.input == UIKeyCommand.inputUpArrow || $0.input == UIKeyCommand.inputDownArrow } ?? false
+        kept.say(taken ? "FAULT: keys: with the person's own words in the field the arrows are taken from the text field" : "keys: with the person's own words in the field the arrows move the caret")
+        // While an input method is putting a letter together, every key is its own: the field takes none.
+        field.setMarkedText("k", selectedRange: NSRange(location: 1, length: 0))
+        let making = field.markedTextRange != nil
+        let own = field.keyCommands ?? []
+        field.unmarkText()
+        if !making {
+            kept.say("FAULT: keys: the field took no letter in the making, so what it does with a key then is not known")
+        } else {
+            kept.say(own.isEmpty ? "keys: while a letter is being put together the field takes no key for itself" : "FAULT: keys: while a letter is being put together the field takes \(own.count) of the keyboard's keys for itself")
+        }
         kept.say("done")
+    }
+
+    /// The colour of a picture at one point, as six digits.
+    static func colour(in picture: UIImage, at point: CGPoint) -> String {
+        guard let image = picture.cgImage, let data = image.dataProvider?.data, let bytes = CFDataGetBytePtr(data),
+              image.bitsPerPixel == 32
+        else { return "unread" }
+        let scale = CGFloat(image.width) / picture.size.width
+        let x = min(image.width - 1, max(0, Int(point.x * scale))), y = min(image.height - 1, max(0, Int(point.y * scale)))
+        let at = y * image.bytesPerRow + x * 4
+        let ends = image.bitmapInfo.contains(.byteOrder32Little) ? (at + 2, at) : (at, at + 2)
+        return String(format: "%02x%02x%02x", bytes[ends.0], bytes[at + 1], bytes[ends.1])
     }
 
     /// What the system is handed outside the window, through the app's own code and with the

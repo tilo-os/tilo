@@ -1,0 +1,38 @@
+[Unit]
+Description=Do one thing a server's owner asked it to do
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tilo-server-control
+UMask=0077
+LimitCORE=0
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+PrivateIPC=yes
+ProtectHome=yes
+ProtectSystem=strict
+# The request the server writes and the answer this writes back, and the
+# systemd state a restart, a mask and a rollback change.
+ReadWritePaths=/var/lib/tilo-server /etc/systemd/system /run/systemd
+InaccessiblePaths=-/var/lib/tilo/device-private -/var/lib/tilo/secureboot -/var/lib/tilo/image-trust -/var/lib/tilo/rollback
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@clock @cpu-emulation @debug @module @mount @obsolete @privileged @raw-io @resources @swap
+SystemCallErrorNumber=EPERM

@@ -487,7 +487,7 @@ fn cost_at_1080p() {
 tilo_test_env::scenario! {
     fn published_and_provided_backdrops_stand_in_for_the_placeholder;
 
-    phase a_surface_over_the_published_shell_is_an_image_fill_under_the_tint;
+    phase the_shells_ground_is_its_picture_blurred_as_one_image_fill;
     {
         let theme = Theme::dark();
         let ground = crate::chrome::panel_ground(&theme);
@@ -499,24 +499,17 @@ tilo_test_env::scenario! {
             }
         }
         let wallpaper = crate::raster::rgba8(wallpaper, 64, 64);
-        let display = Rect::new(0.0, 0.0, 256.0, 192.0);
+        let source = wallpaper::Source::new();
         let draw = |theme: &Theme| {
             let mut scene = Scene::new();
-            wallpaper::fill(
-                &mut scene,
-                (Affine::IDENTITY, Affine::IDENTITY),
-                &panel(),
-                Material::Floating,
-                theme,
-                ground,
-            );
+            wallpaper::shell(&mut scene, &source, Affine::IDENTITY, &panel(), theme, ground);
             scene
         };
-        wallpaper::publish(Vec::new());
         assert!(
             draw(&theme).encoding().resources.patches.is_empty(),
-            "nothing published: opaque"
+            "no picture on the shell: opaque"
         );
+        let display = panel().bounding_box();
         let blurred = wallpaper::blurred_cover(&wallpaper, display, 24.0).expect("pixels in memory");
         let again = wallpaper::blurred_cover(&wallpaper, display, 24.0).expect("cached");
         assert_eq!(
@@ -531,11 +524,7 @@ tilo_test_env::scenario! {
             * 4;
         let grey = pixels[mid];
         assert!((100..=155).contains(&grey), "the checks still show: {grey}");
-        wallpaper::publish(vec![wallpaper::image_piece(
-            Affine::IDENTITY,
-            display,
-            blurred,
-        )]);
+        source.set(Some(wallpaper));
         let frosted = draw(&theme);
         assert_eq!(
             frosted.encoding().resources.patches.len(),
@@ -554,7 +543,40 @@ tilo_test_env::scenario! {
                 .is_empty(),
             "reduced transparency is opaque"
         );
-        wallpaper::publish(Vec::new());
+    }
+
+    phase the_shells_ground_is_its_gradient_where_it_shows_no_picture;
+    {
+        let theme = Theme::dark();
+        let ground = crate::chrome::panel_ground(&theme);
+        let source = wallpaper::Source::new();
+        let draw = |theme: &Theme| {
+            let mut scene = Scene::new();
+            wallpaper::shell(&mut scene, &source, Affine::IDENTITY, &panel(), theme, ground);
+            scene
+        };
+        let ramps = |scene: &Scene| {
+            scene
+                .encoding()
+                .resources
+                .patches
+                .iter()
+                .filter(|patch| matches!(patch, crate::vello_encoding::Patch::Ramp { .. }))
+                .count()
+        };
+        source.set_gradient((Color::from_rgb8(30, 40, 60), Color::from_rgb8(10, 12, 20)));
+        assert_eq!(
+            ramps(&draw(&theme)),
+            1,
+            "the shell's gradient shows through, not a flat ground"
+        );
+        assert_eq!(
+            ramps(&draw(&theme.clone().with_reduce_transparency(true))),
+            0,
+            "reduced transparency is opaque"
+        );
+        source.set(None);
+        assert_eq!(ramps(&draw(&theme)), 0, "a shell showing nothing: opaque");
     }
 
     phase a_provided_backdrop_of_the_right_size_is_drawn_in_place_of_the_placeholder;
@@ -649,118 +671,6 @@ tilo_test_env::scenario! {
         );
         provide_backdrops(Vec::new());
     }
-}
-
-/// What frosting the window strips costs at 1080p on this machine's
-/// adapter: blurring a 4K wallpaper once, and rendering a frame with three
-/// docked strips frosted against the same frame with them opaque.
-///
-/// `cargo test -p tilo-ui --lib backdrop::tests::frost_cost_at_1080p -- --ignored --nocapture`
-#[test]
-#[ignore = "a timing report for the machine it runs on, not a check"]
-fn frost_cost_at_1080p() {
-    let gpu = crate::offscreen::shared_gpu().expect("a wgpu adapter");
-    let mut renderer = Renderer::new(
-        &gpu.device,
-        vello::RendererOptions {
-            use_cpu: false,
-            antialiasing_support: vello::AaSupport::all(),
-            num_init_threads: None,
-            pipeline_cache: None,
-        },
-    )
-    .expect("vello renderer");
-    let theme = Theme::dark();
-    let (width, height) = (1920_u32, 1080_u32);
-    let mut wallpaper = Vec::with_capacity(3840 * 2160 * 4);
-    for y in 0..2160_u32 {
-        for x in 0..3840_u32 {
-            wallpaper.extend_from_slice(&[(x / 7) as u8, (y / 5) as u8, ((x + y) / 11) as u8, 255]);
-        }
-    }
-    let wallpaper = crate::raster::rgba8(wallpaper, 3840, 2160);
-    let display = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
-    let started = crate::time::now();
-    let blurred = wallpaper::blurred_cover(&wallpaper, display, 24.0).expect("pixels in memory");
-    let blur_us = started.elapsed().as_micros();
-    let ground = crate::chrome::panel_ground(&theme);
-    let frame = |material: Material| {
-        let mut scene = Scene::new();
-        let brush = ImageBrush::new(wallpaper.clone());
-        scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            &brush,
-            Some(Affine::scale(0.5)),
-            &display,
-        );
-        for i in 0..3 {
-            let strip = RoundedRect::new(
-                40.0 + 620.0 * f64::from(i),
-                40.0,
-                620.0 * f64::from(i + 1),
-                84.0,
-                16.0,
-            );
-            wallpaper::fill(
-                &mut scene,
-                (Affine::IDENTITY, Affine::IDENTITY),
-                &strip,
-                material,
-                &theme,
-                ground,
-            );
-        }
-        scene
-    };
-    wallpaper::publish(vec![wallpaper::image_piece(
-        Affine::IDENTITY,
-        display,
-        blurred,
-    )]);
-    let target = gpu.device.create_texture(&wgpu::TextureDescriptor {
-        label: None,
-        size: wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-    });
-    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-    let mut time = |scene: &Scene| {
-        median_us(&gpu.device, 30, || {
-            renderer
-                .render_to_texture(
-                    &gpu.device,
-                    &gpu.queue,
-                    scene,
-                    &view,
-                    &RenderParams {
-                        base_color: Color::BLACK,
-                        width,
-                        height,
-                        antialiasing_method: AaConfig::Area,
-                    },
-                )
-                .expect("render");
-        })
-    };
-    let frosted = time(&frame(Material::Floating));
-    let opaque = time(&frame(Material::Opaque));
-    wallpaper::publish(Vec::new());
-    let info = gpu.device.adapter_info();
-    println!(
-        "frosted strips at {width}x{height} on {} ({:?}): blurring a 3840x2160 wallpaper once \
-         {blur_us} us; a frame with three frosted strips {frosted} us, with them opaque \
-         {opaque} us (medians)",
-        info.name, info.device_type,
-    );
 }
 
 fn render_floating_over_stripes(theme: &Theme) -> Vec<u8> {

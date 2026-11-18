@@ -143,6 +143,74 @@ fn stopped_now(message: &Message) -> bool {
         .is_some_and(|stopped| stopped.attempt == message.attempts)
 }
 
+/// The turn a reply answers, as its part holds it: what a window shows of an agent at work, and
+/// what it offers the person the agent works for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Answering {
+    /// The agent's reply, where its work is kept.
+    pub reply: Id,
+    /// The message it answers: the one a stop stands on.
+    pub message: Id,
+    /// The person the turn is for, by their person id: who stops it (`stop-agent`), and nobody
+    /// else.
+    pub person: String,
+    /// Whether the agent is still at work on it: its reply is unfinished and nobody stopped it.
+    pub going: bool,
+    /// Whether its person stopped the attempt the reply answers.
+    pub stopped: bool,
+}
+
+/// Whether `reply`'s work ended as stopped.
+fn ended_stopped(reply: &Message) -> bool {
+    use crate::agent_stream::AgentFinish;
+    reply.work.as_ref().is_some_and(|work| {
+        work.stream
+            .as_ref()
+            .and_then(|stream| stream.finish)
+            .map_or_else(
+                || {
+                    work.state.as_ref().is_some_and(|transition| {
+                        matches!(
+                            transition.state,
+                            crate::model::AgentWorkState::ProviderFinished {
+                                outcome: AgentFinish::Cancelled
+                            }
+                        )
+                    })
+                },
+                |finish| matches!(finish, AgentFinish::Cancelled),
+            )
+    })
+}
+
+/// The replies of `part` an agent is at work on, or was when its person stopped it: each reply
+/// written on the attempt its message is in whose work is unfinished or ended as stopped, with
+/// the turn it answers. Read from the part alone, so every window on every device finds the
+/// same: a window offers the stop of a turn that is `going` to the person it is for, and says of
+/// one `stopped` that its person stopped it. A reply whose work ended any other way is not
+/// listed.
+#[must_use]
+pub fn answering(part: &ChatMessages) -> Vec<Answering> {
+    part.messages
+        .iter()
+        .filter(|&(_, reply)| {
+            reply.work.is_some() && (unanswered(Some(reply)) || ended_stopped(reply))
+        })
+        .filter_map(|(id, reply)| {
+            let message = part.answered_by(id)?;
+            let asked = part.messages.get(&message)?;
+            let stopped = stopped_now(asked);
+            Some(Answering {
+                reply: id.clone(),
+                person: asks_for(asked)?,
+                going: !stopped && unanswered(Some(reply)),
+                stopped,
+                message,
+            })
+        })
+        .collect()
+}
+
 /// Whether `message` is its person's own words: one they wrote, or asked themselves.
 fn typed(message: &Message) -> bool {
     message

@@ -59,6 +59,7 @@ pub mod store;
 pub mod workspace;
 pub use installation::{AppearancePolicy, ArmedRecord, DirectoryRef, Installation, InstallationId};
 mod verified_certificate;
+pub use collab_types::work_delegation::WorkDelegation;
 pub use state::ChangeRefused;
 pub use state::mail_send_lease;
 /// The person's own documents between their devices, with no host in between.
@@ -76,9 +77,10 @@ pub use state::{
     SeedDocument, SeedState, Shortfall, StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite,
     WIFI_KIND, WORKSPACE_KEEPING_DEVICES_KEY, WORKSPACES_KIND, committed_document_revision,
     decide_with_surfaces, default_surfaces, holder_role, keeping_devices_of, peer_handle,
-    seed_workspace, trigger_mark, unranked, workspace_grants_of, workspace_host_actor,
-    workspace_seed,
+    seed_workspace, trigger_mark, unranked, work_delegations_of, workspace_grants_of,
+    workspace_host_actor, workspace_seed,
 };
+pub use state::{DEVICE_ANSWERS_KIND, DeviceAnswer, DeviceGrants, Kept};
 pub use state::{vm_lease, vm_rank};
 pub mod coverage;
 mod governed_routes;

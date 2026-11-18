@@ -97,10 +97,10 @@ pub(super) fn answer(
         .view_read_policy(workspace, &caller, &route.app_id, &route.document)
         .filter(|policy| policy.workspace == route.cluster_id)
         .ok_or_else(|| unavailable("certified feedback admission unavailable"))?;
-    let host_device = link.host_device();
-    let cert = &host_device.endpoint.host_cert;
+    let own_device = link.own_device();
+    let cert = &own_device.endpoint.host_cert;
     if cert.user_public_key != link.user_public_key()
-        || cert.device_public_key != host_device.key.verifying_key().to_bytes()
+        || cert.device_public_key != own_device.key.verifying_key().to_bytes()
     {
         return Err(unavailable("feedback owner identity mismatch"));
     }
@@ -137,7 +137,7 @@ pub(super) fn answer(
             serde_json::from_value(value).map_err(|error| unavailable(&error))?;
         let signer = OwnerSigner {
             owner: owner.clone(),
-            host_device,
+            own_device,
         };
         let mut service = CanonicalDestination::from_source(
             owner,
@@ -292,7 +292,7 @@ impl CanonicalReceiptSource for RetainedSource {
 }
 struct OwnerSigner {
     owner: Caller,
-    host_device: HostDevice,
+    own_device: HostDevice,
 }
 impl ReceiptSigner for OwnerSigner {
     fn owner(&self) -> &Caller {
@@ -300,7 +300,7 @@ impl ReceiptSigner for OwnerSigner {
     }
     fn sign(&mut self, request: &ReceiptSigningRequest) -> Result<Vec<u8>, Error> {
         Ok(self
-            .host_device
+            .own_device
             .key
             .sign(request.digest())
             .to_bytes()

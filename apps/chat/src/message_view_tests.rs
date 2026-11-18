@@ -161,6 +161,36 @@ fn asked() -> (Part, Id) {
     (part, question)
 }
 
+/// A view that reads fields the ways the guide names: an option, a list and its length.
+const BY_TYPE: &str = "view people() {\n    for a in tasks.tracker.areas {\n        text(a.name ?? \"unnamed\")\n        text(a.people.len().to_string())\n    }\n}";
+
+#[test]
+fn the_guide_says_how_a_view_reads_a_field_by_its_type_and_chat_takes_such_a_view() {
+    // What a model is told: each way a field is read, by its type.
+    for way in [
+        "`??`",
+        "`if let v = x {}`",
+        "`for i in xs {}`",
+        "`.len()`",
+        "`.map()`",
+        "`.field`",
+        "`== .name`",
+    ] {
+        assert!(
+            crate::message_view::GUIDE.contains(way),
+            "the guide names {way}"
+        );
+    }
+    // And what a reader meets where a field cannot be read.
+    assert!(
+        crate::message_view::GUIDE.contains("fails alone and says so in the view's place"),
+        "the guide says what a field that cannot be read does"
+    );
+    // Chat takes a view written that way under the app's name alone.
+    let view = View::written(BY_TYPE.to_owned(), vec!["tasks".to_owned()], 5).expect("a view");
+    assert_eq!(view.reads, ["tasks"]);
+}
+
 #[test]
 fn a_posted_view_is_state_of_its_message_and_its_author_is_whoever_invoked() {
     let mut part = Part::new();

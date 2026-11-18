@@ -628,7 +628,7 @@ type NewResource = fn(
 
 /// [`AppHooks::open`] — the context, who edits, whether it is a capture and
 /// whether the launch created the record.
-/// The window's root, and the parts its History lists with the window's document.
+/// The window's root, and the parts whose versions its History shows and restores.
 type OpenedRoot = (
     Box<dyn ui_core::widget::AppWidget>,
     Rc<dyn ui_core::history_mode::HistoryParts>,

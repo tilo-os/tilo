@@ -406,6 +406,7 @@ pub use tilo_lock as lock;
 pub use tilo_rt as rt;
 pub use vello;
 pub use vello::{kurbo, peniko};
+pub use vello_encoding;
 pub use winit;
 
 #[cfg(not(target_arch = "wasm32"))]

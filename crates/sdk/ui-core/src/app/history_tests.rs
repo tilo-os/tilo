@@ -122,6 +122,8 @@ fn app_on(state: State) -> App {
 }
 /// An app on `state` showing `root` under the framework's registered History.
 pub(crate) fn app_with_root(state: State, root: Box<dyn crate::widget::Widget>) -> App {
+    // The session serves the history of the window's document.
+    crate::history_mode::feed::tests::serve(&state.doc);
     let registration = HistoryRegistration::new(
         &HISTORY,
         vec![HistorySourceRegistration::HostDocument {
@@ -148,6 +150,7 @@ pub(crate) fn layout(app: &mut App) {
     complete_native_frame_content(app, |_| {});
 }
 /// [`app`] where the host's own chrome presents History, laid out.
+/// An app whose platform menus list its History, served the history of its document.
 pub(crate) fn native_chrome_app() -> App {
     let mut app = app();
     app.prepare_native_presentation(crate::host_chrome::HostChrome::Native);
@@ -1267,6 +1270,14 @@ static OWNED_HISTORY: HistoryDefinition = HistoryDefinition {
 };
 impl RoutedOwners {
     fn install_history(&mut self) {
+        // The session serves the history of the window's first resource.
+        let first = &self.bindings[0];
+        crate::history_mode::feed::tests::serve(
+            &first
+                .records
+                .read_checked(&first.checkout.id, Clone::clone)
+                .unwrap(),
+        );
         let sources = self
             .bindings
             .iter()
@@ -4329,6 +4340,7 @@ tilo_test_env::scenario! {
         let mut state = State::new();
         state.doc.put(ROOT, "body", "live").unwrap();
         state.commit_action(None, None);
+        crate::history_mode::feed::tests::serve(&state.doc);
         let mut driver = crate::headless::FrameHarness::from_managed_root(
             state,
             ManagedRoot::new(root, registration),
@@ -5774,47 +5786,6 @@ fn header_history_control_opens_framework_history() {
     layout(&mut app);
     assert!(!app.history.as_ref().unwrap().is_open());
     assert_eq!(history_buttons(&mut app), [Some(accesskit::Toggled::False)]);
-}
-
-#[test]
-fn a_documents_genesis_is_a_version_in_history_but_never_a_recent_change() {
-    use crate::host_chrome::model::CommandGroup;
-    use crate::resource::{DocumentCheckout, DocumentId, ResourceOwners, ResourceType};
-    let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
-    let store = ResourceOwners::portable(cache)
-        .open("test", "workspace")
-        .unwrap();
-    let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("document"));
-    store.create_resource(&checkout).unwrap();
-    let mut state = State::from_doc(
-        store
-            .read(&checkout.id, automerge::AutoCommit::clone)
-            .unwrap(),
-    );
-    state.doc.put(ROOT, "body", "typed").unwrap();
-    state.commit_action(None, None);
-    let mut app = app_on(state);
-    app.prepare_native_presentation(crate::host_chrome::HostChrome::Native);
-    layout(&mut app);
-
-    let rows = app
-        .history
-        .as_ref()
-        .unwrap()
-        .current_entries(&app.state.doc);
-    assert_eq!(rows.len(), 2);
-    assert!(
-        rows[0].is_genesis(),
-        "History keeps the version it was created as"
-    );
-    let recent: Vec<_> = app
-        .host_commands(true)
-        .into_iter()
-        .filter(|command| command.group == CommandGroup::RecentChanges)
-        .map(|command| command.label)
-        .collect();
-    assert_eq!(recent.len(), 1, "only the change someone made: {recent:?}");
-    assert!(recent[0].contains("Changed the document"), "{recent:?}");
 }
 
 #[test]

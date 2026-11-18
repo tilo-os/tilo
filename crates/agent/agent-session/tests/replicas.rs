@@ -781,6 +781,7 @@ fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
             sandbox: Vec::new(),
             unix_time: 1_900_000_000,
             agent_name: None,
+            device: None,
         },
         Seed::Existing {
             record: made.document_id().clone(),
@@ -879,6 +880,7 @@ fn two_replicas_of_one_agent_never_write_one_sequence_twice() {
                 sandbox: Vec::new(),
                 unix_time: 1_900_000_000,
                 agent_name: None,
+                device: None,
             },
             Seed::Existing {
                 record: made.document_id().clone(),

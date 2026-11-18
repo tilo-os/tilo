@@ -372,6 +372,35 @@ def lock_seeds(root: Path, push: Push, members: set[str]) -> set[str] | None:
     return seeds
 
 
+def profile_seeds(before: object, after: object, packages: dict[str, dict]) -> set[str] | None:
+    """The members a profile change reaches, or None when it reaches all of them.
+
+    A setting at a profile's own level (`[profile.release]`) decides how every
+    member of that profile is built; one under `package.<name>` (`[profile.
+    release.package.tilo-auth]`) decides only how that member is. A section
+    naming a package no longer in the workspace has no build to reach.
+    """
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return None
+    seeds: set[str] = set()
+    for name in before.keys() | after.keys():
+        old, new = before.get(name), after.get(name)
+        if old == new:
+            continue
+        if not isinstance(old, dict) or not isinstance(new, dict):
+            return None
+        if {key: value for key, value in old.items() if key != "package"} != {
+                key: value for key, value in new.items() if key != "package"}:
+            return None
+        old_packages, new_packages = old.get("package", {}), new.get("package", {})
+        if not isinstance(old_packages, dict) or not isinstance(new_packages, dict):
+            return None
+        seeds |= {package for package in old_packages.keys() | new_packages.keys()
+                  if old_packages.get(package) != new_packages.get(package)
+                  and package in packages}
+    return seeds
+
+
 def manifest_seeds(root: Path, push: Push, metadata: dict) -> set[str] | None:
     """The members a root Cargo.toml change reaches, or None when it reaches all of them."""
     packages = {package["name"]: package for package in metadata["packages"]}
@@ -386,11 +415,15 @@ def manifest_seeds(root: Path, push: Push, metadata: dict) -> set[str] | None:
             old, new = tomllib.loads(before.decode("utf-8")), tomllib.loads(after.decode("utf-8"))
         except (UnicodeDecodeError, tomllib.TOMLDecodeError):
             return None
-        # A change outside the workspace table - the lint table, a profile, a
-        # patch - decides how every member is built.
-        if {key: value for key, value in old.items() if key != "workspace"} != {
-                key: value for key, value in new.items() if key != "workspace"}:
+        # A change outside the workspace table and the profiles - the lint
+        # table, a patch - decides how every member is built.
+        if {key: value for key, value in old.items() if key not in ("workspace", "profile")} != {
+                key: value for key, value in new.items() if key not in ("workspace", "profile")}:
             return None
+        reached = profile_seeds(old.get("profile", {}), new.get("profile", {}), packages)
+        if reached is None:
+            return None
+        seeds |= reached
         old_workspace, new_workspace = old.get("workspace", {}), new.get("workspace", {})
         if not isinstance(old_workspace, dict) or not isinstance(new_workspace, dict):
             return None

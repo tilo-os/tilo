@@ -159,7 +159,9 @@ fn words(verb: &str) -> String {
 
 /// `json`, a stored value of the type `ty` of `meta`'s package, as a reading holds it: a
 /// collection as the list of its items in their order, each with its id; an enum as its case's
-/// name; a record as its declared fields under their names.
+/// name, with the values the case carries where it carries any ([`case`]); a map as its
+/// entries by key ([`entries`]); an actor as the actor it is ([`actor`]); a record as its
+/// declared fields under their names.
 fn normal(meta: &PackageMeta, ty: &str, json: &Json) -> Json {
     let ty = ty.trim();
     if ty == "RichText" {
@@ -184,8 +186,14 @@ fn normal(meta: &PackageMeta, ty: &str, json: &Json) -> Json {
             return Json::Array(items.collect());
         }
     }
-    if ty.starts_with("enum ") {
-        return json.get("$variant").unwrap_or(json).clone();
+    if ty == "Actor" {
+        return actor(json);
+    }
+    if let Some(inner) = wrapped(ty, "Map") {
+        return entries(meta, inner, json);
+    }
+    if let Some(name) = ty.strip_prefix("enum ") {
+        return case(meta, name, json);
     }
     let (Some(declared), Json::Object(held)) = (
         meta.types
@@ -203,6 +211,74 @@ fn normal(meta: &PackageMeta, ty: &str, json: &Json) -> Json {
         }
     }
     Json::Object(fields)
+}
+
+/// `json`, a stored value of `meta`'s enum `name`, as a reading holds it: a plain case as its
+/// name. A case that carries values is stored as a map, its name under `$variant` beside its
+/// values (under `0`, `1` where the case numbers them), and is handed on the same way, each
+/// value under the name the package declares for it and as its own type reads.
+fn case(meta: &PackageMeta, name: &str, json: &Json) -> Json {
+    let Some(variant) = json.get("$variant") else {
+        return json.clone();
+    };
+    let carried = meta
+        .enums
+        .iter()
+        .find(|declared| declared.name == name)
+        .and_then(|declared| {
+            declared
+                .variants
+                .iter()
+                .find(|held| Some(held.name.as_str()) == variant.as_str())
+        })
+        .map(|held| held.fields.as_slice())
+        .unwrap_or_default();
+    if carried.is_empty() {
+        return variant.clone();
+    }
+    let mut spelled = Map::new();
+    spelled.insert("$variant".to_owned(), variant.clone());
+    for (index, field) in carried.iter().enumerate() {
+        let key = field.id.rsplit('.').next().unwrap_or(&field.name);
+        let stored = json
+            .get(key)
+            .or_else(|| json.get(&field.name))
+            .or_else(|| json.get(index.to_string()));
+        if let Some(value) = stored {
+            spelled.insert(key.to_owned(), normal(meta, &field.ty, value));
+        }
+    }
+    Json::Object(spelled)
+}
+
+/// `json`, a stored map of `inner`, as a reading holds it: the object of its entries, each
+/// value as its own type reads. What is no object is handed on as it is.
+fn entries(meta: &PackageMeta, inner: &str, json: &Json) -> Json {
+    let Json::Object(held) = json else {
+        return json.clone();
+    };
+    let read = held
+        .iter()
+        .map(|(key, value)| (key.clone(), normal(meta, inner, value)));
+    Json::Object(read.collect())
+}
+
+/// `json`, a stored actor, as a reading holds one: under `actor`. An actor is stored whole as
+/// one text of JSON, an actor's own or a member's, which a surface declares as an actor too.
+/// What is neither is handed on as it is.
+fn actor(json: &Json) -> Json {
+    let written = json
+        .as_str()
+        .and_then(|text| serde_json::from_str::<Json>(text).ok());
+    let held = written.as_ref().unwrap_or(json);
+    let who = serde_json::from_value::<tilo_actions::Actor>(held.clone())
+        .ok()
+        .or_else(|| {
+            serde_json::from_value::<tilo_actions::MemberId>(held.clone())
+                .ok()
+                .map(tilo_actions::Actor::Member)
+        });
+    who.map_or_else(|| json.clone(), |who| serde_json::json!({ "actor": who }))
 }
 
 /// The type `wrap<...>` wraps.

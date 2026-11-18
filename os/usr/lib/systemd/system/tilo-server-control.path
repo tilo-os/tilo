@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for what a server's owner asked it to do
+
+[Path]
+PathChanged=/var/lib/tilo-server/control.request
+Unit=tilo-server-control.service
+
+[Install]
+WantedBy=multi-user.target

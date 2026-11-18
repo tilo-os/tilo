@@ -453,13 +453,6 @@ impl Widget for HistoryHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if self
-            .controller
-            .as_mut()
-            .is_some_and(|controller| controller.follow_roster(presence))
-        {
-            self.toolbar_dirty = true;
-        }
         self.motion = theme.motion();
         if self.show_preview() {
             let window_presents = self.window_presents;

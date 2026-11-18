@@ -307,6 +307,20 @@ impl Formats {
         tilo_formats::month_day_time(self.region, at, words())
     }
 
+    /// The **sentence date** style: a calendar day as a sentence names it (`Jun 29`, or
+    /// `Jun 29, 2025` another year). See `tilo_formats::sentence_date`.
+    #[must_use]
+    pub fn sentence_date(&self, day: Date, today: Date) -> String {
+        tilo_formats::sentence_date(day, today, words())
+    }
+
+    /// The **sentence moment** style: a moment as a sentence names it (`Jun 29, 6:00 PM`; another
+    /// year, or a numeric date style, with its year). See `tilo_formats::sentence_moment`.
+    #[must_use]
+    pub fn sentence_moment(&self, at: DateTime, today: Date) -> String {
+        tilo_formats::sentence_moment(self.region, at, today, words())
+    }
+
     /// The abbreviated weekday: `Sun`.
     #[must_use]
     pub fn weekday_short(&self, day: Weekday) -> String {

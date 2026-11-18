@@ -44,6 +44,7 @@ mod nouns;
 mod os;
 mod peer;
 mod sdk;
+mod server;
 mod service;
 mod settings;
 mod status;
@@ -252,6 +253,18 @@ enum Cmd {
     Workspace {
         #[command(subcommand)]
         cmd: hosted::WorkspaceCmd,
+    },
+    /// What your servers are, and what you may ask them to do from here.
+    #[command(
+        after_help = "Examples:\n  tilo server list\n  tilo server status nas\n  tilo server logs nas tilo-server.service\n  \
+                      tilo server restart nas tilo-server.service\n  tilo server update nas\n\n\
+                      A server is reached over Tilo's owner-only route from this computer's own \
+                      device: nothing here needs ssh. `tilo server list` names the servers this \
+                      computer enrolled."
+    )]
+    Server {
+        #[command(subcommand)]
+        cmd: server::ServerCmd,
     },
     /// Keys to your hosted workspaces, for your code and its agents.
     #[command(
@@ -584,6 +597,8 @@ fn command_here(here: Here) -> clap::Command {
                 "device" => !(here.system || nouns::any_present(nouns::DEVICE, here.has)),
                 // A computer logged in as one of the person's devices tells of its folders.
                 "status" => !(here.system || login::logged_in()),
+                // Its servers are reached as the device it enrolled them with.
+                "server" => !login::logged_in(),
                 "rollback" => !here.system,
                 "update" => !(here.apps || here.system),
                 "agent" => {
@@ -1247,6 +1262,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Open { app, items } => Ok(desktop::run_open(&app, &items, &spelling)),
         Cmd::Action { cmd } => Ok(desktop::run_action(cmd, &spelling)),
         Cmd::Actions { filter } => Ok(list_actions(filter, &spelling)),
+        Cmd::Server { cmd } => server::serve(cmd),
         Cmd::Complete { what, prefix } => Ok(desktop::complete(
             what,
             prefix.as_deref().unwrap_or_default(),

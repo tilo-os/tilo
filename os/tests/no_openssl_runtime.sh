@@ -153,7 +153,7 @@ else
 fi
 
 if rg -n '^[[:space:]]*efitools([[:space:]\\]|$)' \
-    "$repo/os/Containerfile" "$repo/os/Containerfile.host" >/dev/null; then
+    "$repo/os/Containerfile" "$repo/os/Containerfile.host-base" >/dev/null; then
   bad 'runtime image still installs efitools, whose firmware utilities link libcrypto'
 else
   ok 'runtime image does not install libcrypto-linked efitools'
@@ -215,7 +215,9 @@ else
   bad 'Music does not carry a Rust-native full-track resolver'
 fi
 
-server_runtime="$(sed -n '/^# ---- Runtime image ----/,/^# ---- Programs ----/p' "$repo/os/Containerfile.host")"
+# The server's package set and its prune are the base image's (os/Containerfile.host-base); the
+# layer above it only copies programs.
+server_runtime="$(sed -n '/^# ---- Runtime base ----/,/^# ---- Firecracker ----/p' "$repo/os/Containerfile.host-base")"
 # The prune reads what the base actually installed and removes only those
 # packages; a protected one (mokutil, which the shim requires) must not be named.
 prune="$(grep -F "awk '/^(" <<<"$server_runtime" || true)"

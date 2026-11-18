@@ -193,11 +193,7 @@ All of that moves to the document host:
    and Calendar, behind its `agents` feature), and `tilo-agent-session` links
    the models of most apps natively; both go once packages carry the model as
    WebAssembly. Most apps' models already build for WebAssembly, for the page.
-8. A member delegates work to a server: a signed delegation naming the member,
-   the server, the workspace, which work and until when, revocable, and shown
-   to every member beside who holds the workspace. Until it exists, a server
-   does work as itself.
-9. A member lets a server use one secret, and a consent sheet raised on a
+8. A member lets a server use one secret, and a consent sheet raised on a
    server reaches that member's devices.
 
 Each step keeps apps working while it lands, and each ends by deleting the app-side

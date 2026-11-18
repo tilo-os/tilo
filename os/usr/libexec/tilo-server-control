@@ -1,0 +1,170 @@
+#!/usr/bin/bash
+# Carry out one operation the owner of a Tilo server asked for from another of
+# their devices.
+#
+#   tilo-server-control
+#
+# The server daemon runs unprivileged. When its owner asks for something that
+# changes the machine itself — restarting a unit, rebooting, staging an update,
+# pausing updates, going back to the previous system, or reading a unit's
+# journal — the daemon writes the request at one fixed path
+# (/var/lib/tilo-server/control.request) and a path unit starts this as root.
+# The request is one `key=value` line per field:
+#
+#   id=<request id>
+#   verb=<restart|logs|reboot|update|pause-updates|resume-updates|rollback>
+#   service=<a systemd unit, for restart and logs>
+#   lines=<how many journal lines, for logs>
+#
+# This answers at /var/lib/tilo-server/control.result, whose first line names
+# the request and whether it worked (`<id> 1` or `<id> 0`), and whose rest is
+# what it read (a journal, or why it failed). Writing the answer before a
+# reboot or a rollback lets the daemon tell its owner what it did.
+#
+# Nothing in the request is passed to a shell. Every field is checked here
+# again, and a request naming anything else is refused as a whole.
+set -uo pipefail
+
+request="${TILO_SERVER_CONTROL_REQUEST:-/var/lib/tilo-server/control.request}"
+result="${TILO_SERVER_CONTROL_RESULT:-/var/lib/tilo-server/control.result}"
+deployment="${TILO_SERVER_CONTROL_DEPLOYMENT:-/usr/libexec/tilo-deployment}"
+journal="${TILO_SERVER_CONTROL_JOURNAL:-journalctl}"
+systemctl="${TILO_SERVER_CONTROL_SYSTEMCTL:-systemctl}"
+update_service="${TILO_SERVER_CONTROL_UPDATE_SERVICE:-bootc-fetch-apply-updates.service}"
+update_timer="${TILO_SERVER_CONTROL_UPDATE_TIMER:-bootc-fetch-apply-updates.timer}"
+apply_timer="${TILO_SERVER_CONTROL_APPLY_TIMER:-tilo-server-update-apply.timer}"
+max_lines=500
+
+id=
+verb=
+service=
+lines=
+body=
+ok=0
+
+answer() {
+    printf '%s %s\n%s' "$id" "$ok" "$body" >"$result.tmp" && mv -f "$result.tmp" "$result"
+    chmod 0644 "$result" 2>/dev/null || true
+}
+
+refuse() {
+    ok=0
+    body="tilo-server-control: $*"
+    printf 'tilo-server-control: %s\n' "$*" >&2
+    answer
+    exit 0
+}
+
+# A systemd unit name: letters, digits and the punctuation unit names use, with
+# no path, space or shell metacharacter.
+valid_unit() {
+    case "$1" in
+        ''|[-._@:]*|*[!A-Za-z0-9._@:-]*) return 1 ;;
+    esac
+    [ "${#1}" -le 128 ]
+}
+
+[ -r "$request" ] || exit 0
+while IFS='=' read -r key value || [ -n "$key" ]; do
+    case "$key" in
+        id)
+            [ -z "$id" ] || refuse "the request names its id twice"
+            id=$value
+            ;;
+        verb)
+            [ -z "$verb" ] || refuse "the request names its verb twice"
+            verb=$value
+            ;;
+        service)
+            [ -z "$service" ] || refuse "the request names its service twice"
+            service=$value
+            ;;
+        lines)
+            [ -z "$lines" ] || refuse "the request names its lines twice"
+            lines=$value
+            ;;
+        '') ;;
+        *) refuse "the request names a field this server does not take" ;;
+    esac
+done <"$request"
+
+case "$id" in
+    ''|*[!A-Za-z0-9-]*) refuse "the request has no id of its own" ;;
+esac
+
+case "$verb" in
+    restart|logs)
+        valid_unit "$service" || refuse "'$service' is not a systemd unit"
+        ;;
+    reboot|update|pause-updates|resume-updates|rollback)
+        [ -z "$service" ] || refuse "$verb takes no service"
+        ;;
+    *)
+        refuse "unknown verb '$verb'"
+        ;;
+esac
+if [ "$verb" = logs ]; then
+    case "$lines" in
+        ''|*[!0-9]*) refuse "lines must be a number" ;;
+    esac
+    [ "$lines" -le "$max_lines" ] || lines=$max_lines
+else
+    lines=0
+fi
+
+case "$verb" in
+    restart)
+        if out=$("$systemctl" restart -- "$service" 2>&1); then
+            ok=1 body="restarted $service"
+        else
+            ok=0 body=$out
+        fi
+        ;;
+    logs)
+        [ "$lines" -gt 0 ] || lines=200
+        if out=$("$journal" -u "$service" -n "$lines" --no-pager --output=short-iso 2>&1); then
+            ok=1 body=$out
+        else
+            ok=0 body=$out
+        fi
+        ;;
+    reboot)
+        # Answer first: the machine goes down before anything else reaches the
+        # owner's device.
+        ok=1 body="the machine is rebooting"
+        answer
+        "$systemctl" reboot --no-block
+        exit 0
+        ;;
+    update)
+        if out=$("$systemctl" start "$update_service" 2>&1); then
+            ok=1 body="staging the newest update"
+        else
+            ok=0 body=$out
+        fi
+        ;;
+    pause-updates)
+        if out=$("$systemctl" mask --now "$update_timer" "$apply_timer" 2>&1); then
+            ok=1 body="stopped taking OS updates"
+        else
+            ok=0 body=$out
+        fi
+        ;;
+    resume-updates)
+        if out=$("$systemctl" unmask "$update_timer" "$apply_timer" 2>&1) \
+            && out=$("$systemctl" start "$update_timer" "$apply_timer" 2>&1); then
+            ok=1 body="follows OS updates again"
+        else
+            ok=0 body=$out
+        fi
+        ;;
+    rollback)
+        if out=$("$deployment" rollback --yes 2>&1); then
+            ok=1 body="boots the previous system from now on"
+        else
+            ok=0 body=$out
+        fi
+        ;;
+esac
+
+answer

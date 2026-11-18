@@ -43,12 +43,16 @@ DEFAULT_TIMEOUT = 120.0
 # the guest never got there. The log keeps the raw bytes; matching happens against
 # a stripped copy.
 _CSI = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]")
+# systemd marks the terminal sessions it opens (a `sudo` call among them) with
+# OSC 3008 sequences, and everything the command prints arrives between a start
+# and an end mark. Left in, a caller reading a value gets the marks with it.
+_OSC = re.compile(rb"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 _CR = re.compile(rb"\r+\n?")
 
 
 def visible(buf: bytes) -> bytes:
     """What the line would look like on a terminal, for matching against."""
-    return _CR.sub(b"\n", _CSI.sub(b"", buf))
+    return _CR.sub(b"\n", _CSI.sub(b"", _OSC.sub(b"", buf)))
 
 
 class Console:

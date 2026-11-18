@@ -183,6 +183,7 @@ impl DeviceFleetStore {
         capabilities: DeviceCapabilities,
         issued_at_ns: u64,
         expires_at_ns: u64,
+        dial: &[tilo_user_identity::Dial],
     ) -> io::Result<String> {
         let (_, profile) = self.identity(identity_id)?;
         let (device, cert) = crate::enrollment::device_for(
@@ -201,6 +202,7 @@ impl DeviceFleetStore {
             capabilities,
             issued_at_ns,
             expires_at_ns,
+            dial,
             &device,
         )
     }
@@ -958,6 +960,7 @@ mod tests {
                         DeviceCapabilities::member(),
                         issued_at_ns,
                         issued_at_ns + 5_000,
+                        &[],
                     )
                     .expect("token");
                 let phone = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
@@ -1002,6 +1005,7 @@ mod tests {
                         DeviceCapabilities::member(),
                         issued_at_ns + 1,
                         issued_at_ns + 5_000,
+                        &[],
                     )
                     .expect("second token");
                 let (root_signer, _) = store.identity(&identity_id).expect("root signer");
@@ -1069,6 +1073,7 @@ mod tests {
                         DeviceCapabilities::member(),
                         issued_at_ns,
                         issued_at_ns + 5_000,
+                        &[],
                     )
                     .expect("first token");
                 let first_device = ed25519_dalek::SigningKey::from_bytes(&[95; 32]);
@@ -1089,6 +1094,7 @@ mod tests {
                         DeviceCapabilities::member(),
                         after_first_expiry,
                         after_first_expiry + 5_000,
+                        &[],
                     )
                     .expect("second token");
                 let second_device = ed25519_dalek::SigningKey::from_bytes(&[96; 32]);
@@ -1148,6 +1154,7 @@ mod tests {
                     DeviceCapabilities::member(),
                     issued_at_ns,
                     issued_at_ns + 5_000,
+                    &[],
                 )
                 .expect("token");
             let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));

@@ -135,30 +135,6 @@ pub fn recipients_matching(all: &[Recipient], query: &str) -> Vec<Recipient> {
         .collect()
 }
 
-/// What a model may know about one change it is asked to describe: the
-/// change's id as History lists it (32 lowercase hex characters), its
-/// summary, the action and resource it named, and what it wrote. Never who
-/// made it: History shows that beside the description.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HistoryChangeFacts {
-    pub change: String,
-    pub summary: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub action: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resource: Option<String>,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub wrote: String,
-}
-
-/// One change described: its id, the sentence, and which provider and model wrote it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HistoryChangeDescription {
-    pub change: String,
-    pub text: String,
-    pub generator: String,
-}
-
 /// One part of a paint payload too large for one message
 /// ([`FloatingSurfaceClientMessage::PaintStream`]): the parts of a payload follow each other on
 /// the connection, in order, and the shell joins them.
@@ -418,11 +394,6 @@ pub enum FloatingSurfaceClientMessage {
         instance: Option<u64>,
         request: crate::search::SearchRequest,
     },
-    /// Describe these changes of the resource whose History is open: the shell asks the model on this
-    /// device and answers with [`FloatingSurfaceHostMessage::HistoryDescriptions`].
-    DescribeHistory {
-        changes: Vec<HistoryChangeFacts>,
-    },
     /// This app answers [`FloatingSurfaceHostMessage::ShareSelection`] and
     /// [`FloatingSurfaceHostMessage::PointAt`] (sent once). An app that never
     /// says so is never asked.
@@ -596,11 +567,6 @@ pub enum FloatingSurfaceHostMessage {
         event: crate::window_toolbar::ToolbarEvent,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         after_input: Option<u32>,
-    },
-    /// What the changes of a [`FloatingSurfaceClientMessage::DescribeHistory`] did, as the model on
-    /// this device described them.
-    HistoryDescriptions {
-        described: Vec<HistoryChangeDescription>,
     },
     /// Authorises creation of one secondary toplevel. `token` is random and
     /// scoped to this authenticated connection; merely copying an app id can

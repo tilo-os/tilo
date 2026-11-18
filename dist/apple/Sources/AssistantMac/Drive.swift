@@ -200,7 +200,7 @@ final class AssistantDrive {
         case .reset: once("session", ["is": "reset"])
         case .asked(let ask):
             once("session", ["is": "asked", "heading": .string(ask.heading), "said": .array(ask.said.map(JSON.string)),
-                             "go": .string(ask.go), "stop": .string(ask.stop)])
+                             "go": .string(ask.go), "stop": .string(ask.stop), "site": .string(ask.site)])
         case .pairing: once("session", ["is": "pairing"])
         // The code itself goes into --code-file and is never printed.
         case .confirming: once("session", ["is": "confirming"])
@@ -303,6 +303,7 @@ final class AssistantDrive {
             }
             line["text"] = .string(message.text)
             line["live"] = .number(Double(message.live.count))
+            if message.live.contains(where: \.theirsToEnd) { line["endsShare"] = true }
             // The files a message carries, as their tags say them: by name and size.
             if !message.attachments.isEmpty {
                 line["files"] = .array(message.attachments.map { file in
@@ -314,6 +315,16 @@ final class AssistantDrive {
             case .key(let provider, _)?: line["fault"] = ["is": "key", "provider": .string(provider.value)]
             case .noProvider?: line["fault"] = ["is": "no-provider"]
             case nil: break
+            }
+            // What the reply's turn does, as the line at the conversation's foot says it.
+            if let turn = message.turn {
+                let now: JSON = switch turn.now {
+                case .thinking(let words): ["is": "thinking", "words": JSON.string(words)]
+                case .step(let words): ["is": "step", "words": words.map { JSON.string($0) } ?? JSON.null]
+                case .writing: ["is": "writing"]
+                }
+                line["turn"] = ["now": now, "steps": .number(Double(turn.steps.count)),
+                                "failed": .number(Double(turn.steps.filter { $0.outcome == .failed }.count))]
             }
         case .question(let question):
             line["kind"] = "question"
@@ -369,6 +380,14 @@ final class AssistantDrive {
             guard let link = words("file") else { AssistantDrive.say(["error": "pair takes a file that holds a link"]); return }
             model.pair(with: link)
             AssistantDrive.say(["asked": "pair"])
+        case "open-address":
+            // As the system hands the app an address of its own. The file holds one, which is never printed.
+            guard let address = words("file").flatMap({ URL(string: $0) }) else {
+                AssistantDrive.say(["error": "open-address takes a file that holds an address"])
+                return
+            }
+            AppAddress.open(address, in: model)
+            AssistantDrive.say(["asked": "open-address"])
         case "send":
             guard let typed = step["text"]?.string else { AssistantDrive.say(["error": "send takes text"]); return }
             // As the message field does: the words stand in the draft with the files picked
@@ -536,6 +555,20 @@ final class AssistantDrive {
                 AssistantDrive.say(["liveText": ["held": true, "text": read["output"]?["value"]?["content"]?["markdown"] ?? .null]])
             } catch {
                 AssistantDrive.say(["liveText": ["held": true, "text": .null, "why": .string("\(error)")]])
+            }
+        case "stop-sharing":
+            // As the press on Stop sharing under a live thing the person's own assistant shared for them.
+            guard let item = step["item"]?.string else { AssistantDrive.say(["error": "stop-sharing takes item"]); return }
+            guard let piece = model.conversation(.main).items.first(where: { $0.id.value == item }),
+                  case .message(let message) = piece.content, let thing = message.live.first, thing.theirsToEnd
+            else { AssistantDrive.say(["stoppedSharing": ["offered": false]]); return }
+            do {
+                try await source.stopSharing(thing.id)
+                AssistantDrive.say(["stoppedSharing": ["offered": true, "taken": true]])
+            } catch SourceProblem.refused(let why) {
+                AssistantDrive.say(["stoppedSharing": ["offered": true, "taken": false, "why": .string(why)]])
+            } catch {
+                AssistantDrive.say(["stoppedSharing": ["offered": true, "taken": false, "why": "unreachable"]])
             }
         case "state":
             report(everything: true)

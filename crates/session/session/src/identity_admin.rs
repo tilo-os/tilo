@@ -883,6 +883,7 @@ mod tests {
                 tilo_user_identity::DeviceCapabilities::member(),
                 issued_at_ns,
                 issued_at_ns.saturating_add(5_000),
+                &[],
             )
             .expect("token");
         let phone = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);

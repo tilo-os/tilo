@@ -158,6 +158,8 @@ public final class TiloSource: AssistantSource {
 
     private var feeds: [Chat: Feed] = [.main: Feed()]
     private var looking = false
+    /// What this device saw of the turns that write replies.
+    private var turns = TurnWatch()
     private var again = false
     private var surveying = false
     private var surveyAgain: Survey?
@@ -364,7 +366,7 @@ public final class TiloSource: AssistantSource {
         case .open: person.map(Session.signedIn) ?? .pairing
         // The page shows a code at its join step: the window shows it too, to compare.
         // The page asks before it pairs: the window shows its sentences and its two ways on.
-        case .asking(let ask): .asked(PairingAsk(heading: ask.heading, said: ask.said, go: ask.go, stop: ask.stop))
+        case .asking(let ask): .asked(PairingAsk(heading: ask.heading, said: ask.said, go: ask.go, stop: ask.stop, site: engine.settings.origin))
         case .pairing(let code): code.isEmpty ? .pairing : .confirming(code: code)
         case .arriving: person.map(Session.signedIn) ?? .pairing
         case .away, .refused, .failed, .gone: person.map(Session.signedIn) ?? (wasReset ? .reset : .signedOut)
@@ -1431,6 +1433,9 @@ public final class TiloSource: AssistantSource {
             let record = shared["record"]?.string ?? "@tilo:package-primary"
             let title = shared["reference"]?["label"]?.string ?? message.text
             live.append(AssistantCore.LiveThing(id: .init(message.id), title: title, reference: "record:\(app):\(record)"))
+            // It is theirs to end here where the message says an agent made the share for them
+            // and for nobody else. Chat decides when they ask.
+            live[live.count - 1].theirsToEnd = message.author.kind == .agent && me != nil && message.actedFor == me
         }
         // The view a message carries stands in it live, named by its message: its text stays in Tilo.
         if live.isEmpty, let view = fields["view"], !view.isNull {
@@ -1450,7 +1455,14 @@ public final class TiloSource: AssistantSource {
         }
         return Item(id: id, at: message.at,
                     .message(Message(author, message.text, attachments: TiloFiles.attachments(of: message), live: live,
-                                     keyFault: author == .assistant ? TiloSource.keyFault(of: fields["work"]) : nil)))
+                                     keyFault: author == .assistant ? TiloSource.keyFault(of: fields["work"]) : nil,
+                                     turn: author == .assistant ? turn(of: message) : nil)))
+    }
+
+    /// What the turn at work on a reply does, as this device saw it.
+    private func turn(of message: ChatMessage) -> Message.Turn? {
+        turns.read(work: message.fields["work"], words: message.text, of: message.id, began: message.at,
+                   going: message.isWorkedOn, now: Date())
     }
 
     /// Why a reply's model gave no answer, where another key or another provider mends it: read
@@ -1527,6 +1539,12 @@ public final class TiloSource: AssistantSource {
             guard let atWork = read?.last(where: \.isWorkedOn) else { return }
             try await self.engine.chatStop(atWork)
         }
+    }
+
+    /// End the share a message carries, as the person: Chat's own `stop-sharing` on the message
+    /// the live thing stands in. Chat decides whether it is theirs to end.
+    public func stopSharing(_ thing: AssistantCore.LiveThing.ID) async throws {
+        try await taken { try await self.engine.chatStopSharing(thing.value) }
     }
 
     public func answer(_ question: Question.ID, with choice: Choice.ID) async throws {

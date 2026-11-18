@@ -423,6 +423,12 @@ impl TaskSession {
         self.runtime.set_shown_by(read);
     }
 
+    /// How a day or a time of day named in a sentence reads (`"{d}"`), from a plain function a
+    /// caller already has: `read` answers it in the person's formats.
+    pub fn set_sentence_by(&self, read: impl Fn(&str, &str) -> String + 'static) {
+        self.runtime.set_sentence_by(read);
+    }
+
     /// Run `source`, written by `author`, as one step of the task; see the module docs for
     /// `confirm`. The program runs as its author: the agent's as the agent, a line its person
     /// typed as the person. The answer: `{state, output, detail, lets, steps, changed, apps}`,

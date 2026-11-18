@@ -197,7 +197,10 @@ the plan hands Bubblewrap passed down unchanged. Memory tiers, a force quit, a
 crash notice and a logout treat it as any other app. The desktop that follows
 the restart takes the keeper back, the program's windows return to their tabs,
 and its service lists the program open again and can quit it; a program that
-ended while no desktop was there is reported with its exit status.
+ended while no desktop was there is reported with its exit status and the last
+line or two it wrote, and its tab closes rather than starting it again. A
+program that fails says those last lines in the manager beside its status:
+they went to its keeper's log, not to the service.
 
 A Wine program shows on the Wayland socket the keeper binds. A Proton program
 shows on an X display of the keeper's own: UMU-Proton carries no Wayland driver,
@@ -212,8 +215,8 @@ lists it open again after the restart and, as before it, offers no Quit: it
 closes inside Windows. Each program shown that way ends when the appliance
 itself restarts: the manager lists it closed once Windows is back.
 
-A saved tab reopens its program after a reboot or a logout too, not only after
-an in-place restart. The session keeps the window class each program showed
+A saved tab reopens its program after a reboot or a logout, when nothing kept
+it running. The session keeps the window class each program showed
 under, with the entry it belongs to and the workspace whose tab it stood in,
 beside the capsules (`tilo/windows-compat/window-identities.json`). At the next
 start it asks the compatibility service, as the session itself rather than

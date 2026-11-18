@@ -1,0 +1,40 @@
+[Unit]
+Description=Apply the machine configuration a server's document asks for
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tilo-server-device-config
+UMask=0077
+LimitCORE=0
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+# NetworkManager is reached over the system bus and applies the keyfiles this
+# writes; the helper itself needs no network of its own, but its whole point is
+# the machine's.
+PrivateIPC=yes
+ProtectHome=yes
+ProtectSystem=strict
+# The request the server writes and the report and confirmation it reads, the
+# keyfiles NetworkManager reads, and the hostname it sets.
+ReadWritePaths=/var/lib/tilo-server /etc/NetworkManager/system-connections /etc/hostname
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@clock @cpu-emulation @debug @module @mount @obsolete @privileged @raw-io @reboot @resources @swap
+SystemCallErrorNumber=EPERM

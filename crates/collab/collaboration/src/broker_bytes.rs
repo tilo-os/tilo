@@ -643,19 +643,6 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             serialized_bytes(event, &mut meter);
             "Realtime"
         }
-        CollabEvent::HistoryAgents { cluster_id, agents } => {
-            meter.string_capacity(cluster_id);
-            meter.add_product(
-                agents.capacity(),
-                std::mem::size_of::<collab_types::history::RosterAgent>(),
-            );
-            for agent in agents {
-                meter.string_capacity(&agent.person_name);
-                meter.string_capacity(&agent.agent_id);
-                meter.string_capacity(&agent.label);
-            }
-            "HistoryAgents"
-        }
     };
     (kind, meter.finish())
 }

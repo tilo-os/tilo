@@ -14,7 +14,7 @@ use crate::wire::{
     Publication, Read, Receipt, Reply, Report, Service, SettingsCall, Topic,
     client::{Answerer, Client, Failure, Subscription},
 };
-use crate::{ChannelContext, HistoryAgent, Invocation, OpEvent, PresenceEvent, ScrollbackBatch};
+use crate::{ChannelContext, Invocation, OpEvent, PresenceEvent, ScrollbackBatch};
 use crate::{
     ExportedAction, NearbyTransferCommand, NearbyTransferReply, PresencePayload, SpeakerCommand,
     SpeakerReply, SurfaceDelta, WifiContinuityCommand, WifiContinuityReply, WorkspaceControlEvent,
@@ -1769,28 +1769,10 @@ impl ContextStream {
             ContextUpdate::FollowChanged { peer_id } => context.follow_changed = Some(peer_id),
             ContextUpdate::SnapshotRequested => context.snapshot_requested = true,
             ContextUpdate::Handoff(handoff) => context.handoff = Some(handoff),
-            ContextUpdate::HistoryAgents(agents) => {
-                context.history_agents = Some(
-                    agents
-                        .into_iter()
-                        .map(|agent| {
-                            let [r, g, b] = agent.color;
-                            HistoryAgent {
-                                device: agent.device,
-                                person: agent.person,
-                                person_name: agent.person_name,
-                                agent_id: agent.agent_id,
-                                label: agent.label,
-                                color: u32::from_be_bytes([0, r, g, b]),
-                            }
-                        })
-                        .collect(),
-                );
-            }
             ContextUpdate::ResourcesArrived(records) => context.resources_arrived = records,
             // Retired: a conversation is an ordinary record, carried by the
             // workspace like any other and never named here.
-            ContextUpdate::RetiredPersonPairs => {}
+            ContextUpdate::RetiredPersonPairs | ContextUpdate::RetiredHistoryAgents => {}
         }
         Ok(context)
     }

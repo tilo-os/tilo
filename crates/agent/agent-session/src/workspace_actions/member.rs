@@ -60,17 +60,17 @@ struct Sorted {
 impl Member {
     /// Start the host device's session. A change in a workspace whose
     /// requests wait hands `shared`'s thread [`Job::Joined`] for it.
-    pub(super) fn start(host_device: &HostDevice, shared: &Arc<Shared>) -> Arc<Self> {
-        let _runtime = host_device.runtime.enter();
+    pub(super) fn start(own_device: &HostDevice, shared: &Arc<Shared>) -> Arc<Self> {
+        let _runtime = own_device.runtime.enter();
         let peer = tilo_session_client::start_session(
             PeerConfig {
-                host: host_device.endpoint.host.clone(),
-                cert: host_device.endpoint.host_cert.clone(),
-                host_cert: host_device.endpoint.host_cert.clone(),
+                host: own_device.endpoint.host.clone(),
+                cert: own_device.endpoint.host_cert.clone(),
+                host_cert: own_device.endpoint.host_cert.clone(),
                 revocations: RevocationList::new(),
                 entering: None,
             },
-            Arc::new(host_device.key.clone()),
+            Arc::new(own_device.key.clone()),
             Arc::new(MemoryPeerStore::default()),
         );
         let member = Arc::new(Self {

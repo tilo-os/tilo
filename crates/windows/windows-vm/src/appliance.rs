@@ -194,6 +194,52 @@ impl<B, A, C, L> WindowsAppliance<B, A, C, L> {
             agent_timeout: Duration::from_secs(45),
         }
     }
+
+    /// Keep `operation`, which `workspace_id` started, as the setup in progress: a service that
+    /// restarts finds it again ([`Self::retained_setup`]) while its window stays open.
+    pub fn retain_setup(
+        &self,
+        workspace_id: &str,
+        operation: &InstallationOperationId,
+        catalog_generation: u64,
+    ) -> Result<(), LaunchError> {
+        let mut state = self.state.load()?;
+        state.setup = Some(Box::new(crate::RetainedSetup {
+            workspace_id: workspace_id.to_owned(),
+            operation: operation.as_str().to_owned(),
+            catalog_generation,
+        }));
+        self.state.save(&state)?;
+        Ok(())
+    }
+
+    /// The setup in progress the appliance keeps, read without waking the appliance: its
+    /// workspace, operation and catalogue generation.
+    #[must_use]
+    pub fn retained_setup(&self) -> Option<(String, InstallationOperationId, u64)> {
+        let setup = self.state.load().ok()?.setup?;
+        let crate::RetainedSetup {
+            workspace_id,
+            operation,
+            catalog_generation,
+        } = *setup;
+        let operation = InstallationOperationId::parse(operation).ok()?;
+        Some((workspace_id, operation, catalog_generation))
+    }
+
+    /// `operation` is no longer the setup in progress.
+    pub fn forget_setup(&self, operation: &InstallationOperationId) -> Result<(), LaunchError> {
+        let mut state = self.state.load()?;
+        if state
+            .setup
+            .as_ref()
+            .is_some_and(|setup| setup.operation == operation.as_str())
+        {
+            state.setup = None;
+            self.state.save(&state)?;
+        }
+        Ok(())
+    }
 }
 
 impl<B, A, C, L> WindowsAppliance<B, A, C, L>
@@ -524,6 +570,7 @@ where
             license: session.health.license.clone(),
             catalog_generation: session.health.catalog_generation,
             cached_catalog: None,
+            setup: None,
         };
         // The tools ISO contains the one-time enrollment key. Do not mark the
         // appliance launchable until both setup images have been removed from
@@ -760,6 +807,7 @@ mod tests {
                 license: LicenseState::DigitallyActivated,
                 catalog_generation: 1,
                 cached_catalog: None,
+                setup: None,
             })
             .unwrap();
         WindowsAppliance::new(
@@ -978,6 +1026,7 @@ mod tests {
                     license: LicenseState::DigitallyActivated,
                     catalog_generation: 1,
                     cached_catalog: Some(cached.clone()),
+                    setup: None,
                 })
                 .unwrap();
 

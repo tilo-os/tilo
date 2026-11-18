@@ -75,6 +75,9 @@ pub struct Apps {
     /// The desktop the launches come from, once the session has mounted it: what a launch reads its
     /// workspace from, and where a stopped app's notice goes.
     desktop: RefCell<Option<ShellDesktop>>,
+    /// The person's answers about this device's camera, microphone, screen and input: what a
+    /// launch hands an app of them.
+    device_answers: RefCell<Option<tilo_peer_state::DeviceGrants>>,
     state: RefCell<State>,
     /// Why a workspace's apps may not start yet, once the session lent it ([`Self::lend_admission`]).
     admission: RefCell<Option<Admission>>,
@@ -169,6 +172,10 @@ struct State {
     /// ([`Apps::take_kept`]).
     #[cfg(target_os = "linux")]
     kept: Vec<tilo_app_launch::Adopted>,
+    /// The launches of the kept apps that ended while no desktop was there, until the restore
+    /// closes their saved tabs ([`Apps::take_kept`]).
+    #[cfg(target_os = "linux")]
+    ended_away: Vec<tilo_app_launch::kept::KeptLaunch>,
     /// The apps from before an update that this desktop cannot show, by launch id.
     #[cfg(target_os = "linux")]
     outdated: BTreeMap<u64, outdated::FromBefore>,
@@ -283,6 +290,7 @@ impl Apps {
     ) -> Self {
         Self {
             desktop: RefCell::new(None),
+            device_answers: RefCell::new(None),
             admission: RefCell::new(None),
             reach: reach::Reach::default(),
             awaited: Arc::default(),
@@ -313,6 +321,8 @@ impl Apps {
                 documents: None,
                 #[cfg(target_os = "linux")]
                 kept: Vec::new(),
+                #[cfg(target_os = "linux")]
+                ended_away: Vec::new(),
                 #[cfg(target_os = "linux")]
                 outdated: BTreeMap::new(),
                 windows_waits: Vec::new(),
@@ -761,6 +771,10 @@ impl Apps {
             self.state.borrow().spawner.clear_kept();
         }
         let adopted = self.state.borrow_mut().spawner.adopt_kept();
+        {
+            let mut state = self.state.borrow_mut();
+            state.ended_away = state.spawner.away();
+        }
         self.took_up(adopted, true);
     }
 
@@ -809,10 +823,20 @@ impl Apps {
 
     /// The kept apps this run took back: each of their windows claims the saved tab its keeper
     /// was last told it stood in, which waits for that window rather than starting the app again.
-    /// Taken once.
+    /// Beside them, the launches of the kept apps that ended while no desktop was there: their
+    /// saved tabs close, as any the app closed meanwhile. Taken once.
     #[cfg(target_os = "linux")]
-    pub(crate) fn take_kept(&self) -> Vec<tilo_app_launch::Adopted> {
-        std::mem::take(&mut self.state.borrow_mut().kept)
+    pub(crate) fn take_kept(
+        &self,
+    ) -> (
+        Vec<tilo_app_launch::Adopted>,
+        Vec<tilo_app_launch::kept::KeptLaunch>,
+    ) {
+        let mut state = self.state.borrow_mut();
+        (
+            std::mem::take(&mut state.kept),
+            std::mem::take(&mut state.ended_away),
+        )
     }
 
     /// Tell each kept window's keeper the tab it stands in now (`placements`), where that changed:
@@ -1386,7 +1410,18 @@ impl Apps {
                 )
         });
         launched.person = person;
+        launched.devices = self
+            .device_answers
+            .borrow()
+            .as_ref()
+            .map(tilo_peer_state::DeviceGrants::allowed_here)
+            .unwrap_or_default();
         launched
+    }
+
+    /// Hand the apps this session starts the devices the person allowed them through `grants`.
+    pub fn answer_devices_with(&self, grants: tilo_peer_state::DeviceGrants) {
+        self.device_answers.replace(Some(grants));
     }
 
     /// `shown` as a launch into it is planned: what the person granted apps there, and the policy

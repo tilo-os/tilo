@@ -338,5 +338,56 @@ final class WorkspaceGoneTests: XCTestCase {
             XCTAssertFalse(TiloEngine.gone(failure: name, status: "Couldn’t open Lounge. The workspace did not let you in."), name)
         }
     }
+
+    // MARK: A stranger's link
+
+    /// A link of another site than the app's own is refused in words: nothing of it is opened,
+    /// no card is shown, and the device stays at its way in.
+    func testAStrangersLinkOfAnotherSiteIsRefusedInWordsAndShowsNoCard() async throws {
+        try await standsAtItsWayIn(after: Self.gone, "the page said its workspace no longer exists")
+        let asked = loaded.count
+        let link = try XCTUnwrap(PairingLink(in: "https://other.example/#/w/1f0e?pair=\(String(repeating: "e5", count: 48))"))
+        do {
+            try await source.pair(with: link)
+            XCTFail("a link of another site was taken")
+        } catch let problem as SourceProblem {
+            XCTAssertEqual(problem, .refused(AssistantWords.codeFromElsewhere.said(["from": "other.example", "site": Self.site])))
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(loaded.count, asked, "something of another site's link was opened")
+        XCTAssertEqual(sessions.last, .reset)
+        XCTAssertFalse(sessions.contains { if case .asked = $0 { true } else { false } }, "a card stood for a link of another site")
+    }
+
+    /// A link of the app's own site that somebody else made meets Tilo's question, which names
+    /// whose devices this one would join and the app's own site in full, and lets nobody in
+    /// without the person's press: stopped, the device is nobody's and stands at its way in.
+    func testAStrangersLinkOfThisSiteMeetsTilosQuestionAndLetsNobodyInWithoutThePersonsPress() async throws {
+        try await standsAtItsWayIn(after: Self.gone, "the page said its workspace no longer exists")
+        let link = try XCTUnwrap(PairingLink(in: "\(Self.site)/#/w/ws-6?pair=\(String(repeating: "e5", count: 48))"))
+        try await source.pair(with: link)
+        try await showPage()
+        let whose = "You are adding this device to Eve Stranger’s devices. If that is not you, stop."
+        let server = "The server that adds it is this site’s own, tilo.test."
+        try await inPage("askWhose('\(whose)', '\(server)')")
+        let ask = PairingAsk(heading: "Add this device?", said: [whose, server], go: "Add this device", stop: "Stop", site: Self.site)
+        try await until("Tilo's question to stand, with the app's own site in full") { self.sessions.last == .asked(ask) }
+        try await Task.sleep(for: .milliseconds(400))
+        let untouched = try await page("return String(window.agreed)")
+        XCTAssertEqual(untouched, "undefined", "something answered for the person")
+        XCTAssertFalse(isSignedIn)
+        await source.answerPairing(goOn: false)
+        let stopped = try await page("return String(window.agreed)")
+        XCTAssertEqual(stopped, "false")
+        // The page says that nothing was paired, as Tilo's does.
+        try await inPage("""
+            document.getElementById('status').textContent = 'Nothing was paired. This device was added to nobody’s devices.';
+            document.documentElement.dataset.arrival = 'stopped'; document.documentElement.dataset.entry = 'failed'
+            """)
+        try await until("the way in to stand again") { self.sessions.last == .reset }
+        XCTAssertFalse(isSignedIn)
+        XCTAssertNil(defaults.string(forKey: "TiloLiveRoute"))
+        XCTAssertNil(defaults.array(forKey: "TiloLivePerson"))
+    }
 }
 #endif

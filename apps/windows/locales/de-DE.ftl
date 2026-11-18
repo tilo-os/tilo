@@ -194,8 +194,10 @@ windows-app-status-failed = Die Einrichtung wurde nicht fertig
 windows-app-status-uninstalled = Deinstalliert, Daten behalten
 
 windows-ended-with-error = { $app } wurde mit einem Fehler beendet (Status { $status }).
+windows-ended-with-error-saying = { $app } wurde mit einem Fehler beendet (Status { $status }): { $said }
 windows-ended-could-not-open = { $app } konnte nicht geöffnet werden: { $reason }
 windows-ended-stopped = { $app } wurde beendet.
+windows-ended-stopped-saying = { $app } wurde beendet: { $said }
 
 windows-confidence-verified = Geprüft
 windows-confidence-community = Von der Community getestet

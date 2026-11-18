@@ -63,17 +63,17 @@ impl Apps {
 
     /// Set each kept program's filtered network to what its workspace's grants allow now: the
     /// proxy lives in the launch, so this reaches a program that outlived the desktop that
-    /// started it, and a grant taken back cuts the connections it allowed.
+    /// started it, and a grant taken back cuts the connections it allowed. A Windows appliance
+    /// presentation's egress lived in the desktop that started it; the one that adopted it serves
+    /// it again from what the launch kept.
     fn follow_windows_networks(&self, display: &crate::windows_compat::Display) {
         let networks = self.state.borrow().spawner.kept_networks();
-        if networks.is_empty() {
-            return;
-        }
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .ok()
             .map(|since| since.as_secs());
         let mut wanted = Vec::with_capacity(networks.len());
+        let mut appliance = Vec::with_capacity(networks.len());
         for network in networks {
             let workspace = self.workspace_named(&network.workspace);
             let capabilities = launcher::capabilities::CapabilityPlan::for_app(
@@ -86,9 +86,15 @@ impl Apps {
             if capabilities.net_hosts.iter().any(|name| name == "*") {
                 continue;
             }
-            wanted.push((network.control, capabilities.net_hosts.clone()));
+            if let Some(control) = network.control {
+                wanted.push((control, capabilities.net_hosts.clone()));
+            }
+            if network.appliance && network.adopted {
+                appliance.push((network.dir, capabilities.net_hosts.clone()));
+            }
         }
         display.apply_networks(wanted);
+        display.adopt_vm_networks(appliance);
     }
 
     /// Start `launch` behind the keeper `handed` was reserved for, through the launcher's
@@ -140,10 +146,10 @@ impl Apps {
     /// while no desktop was there is handed back to it with its end.
     pub(super) fn windows_program_ended(&self, event: &tilo_app_launch::Event) {
         let display = self.windows_display();
-        display.ended(event.id, &event.end);
+        display.ended(event);
         let away = self.state.borrow_mut().spawner.ended_away(event.id);
         if let Some(launch) = away {
-            display.take_back(event.id, &launch, Some(&event.end));
+            display.take_back(event.id, &launch, Some(event));
         }
     }
 

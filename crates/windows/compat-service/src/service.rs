@@ -690,10 +690,7 @@ where
                 receipt: LaunchReceipt {
                     explanation: explanation(&route, input.vm_fallback, &capabilities, false),
                 },
-                program: Box::new(Ended(ExecutionOutcome {
-                    success: running.process.exit_code == Some(0),
-                    exit_code: running.process.exit_code,
-                })),
+                program: Box::new(Ended(ExecutionOutcome::exited(running.process.exit_code))),
                 release: Box::new(|| {}),
             });
         }
@@ -808,10 +805,7 @@ where
             capabilities,
             resolved_capabilities: &resolved,
         })?;
-        Ok(ExecutionOutcome {
-            success: running.process.exit_code == Some(0),
-            exit_code: running.process.exit_code,
-        })
+        Ok(ExecutionOutcome::exited(running.process.exit_code))
     }
 
     pub fn launch_published_vm_with_portal_file(
@@ -842,10 +836,7 @@ where
             source,
             access,
         )?;
-        Ok(ExecutionOutcome {
-            success: running.process.exit_code == Some(0),
-            exit_code: running.process.exit_code,
-        })
+        Ok(ExecutionOutcome::exited(running.process.exit_code))
     }
 
     /// Import and run one portal-selected installer. The caller transfers an

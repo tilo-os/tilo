@@ -63,6 +63,7 @@ fn a_member_below_moderator_is_offered_the_batch_and_a_batch_is_one_step() {
             sandbox: Vec::new(),
             unix_time: 1_900_000_000,
             agent_name: None,
+            device: None,
         },
         Seed::New,
     )

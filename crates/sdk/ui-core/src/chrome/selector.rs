@@ -8,21 +8,9 @@ use vello::peniko::{Color, ColorStop, Extend, Fill, Gradient};
 use super::shell::{
     HAIRLINE_ALPHA, SELECTION_MIN_STEP, SelectionState, SelectionTier, lightness_step, panel_ground,
 };
-use crate::floating_surface::Material;
 use crate::theme::Theme;
 use crate::tokens::colors::composite;
-use crate::tokens::{Colors, SelectorFinish, StripMaterial};
-
-/// What of a selector is painted.
-#[derive(Clone, Copy, Debug)]
-pub enum SelectorRole<'a> {
-    /// The body a docked strip of selectors sits on: the floating material over the shell behind it
-    /// (or the opaque panel ground), edged like the panel it is made of.
-    Strip(Affine),
-    /// One selector, in the tier [`selector_tier`] resolved (or one a
-    /// caller animating it faded).
-    Item(&'a SelectionTier),
-}
+use crate::tokens::{Colors, SelectorFinish};
 
 /// The finish this theme paints selectors with: the theme, or [`SelectorFinish::OPAQUE`] where nothing
 /// may be translucent.
@@ -131,7 +119,8 @@ pub fn selector_tier(theme: &Theme, state: SelectionState, ground: Color) -> Sel
     }
 }
 
-/// Paint one selector: a strip body or an item, on `shape`.
+/// Paint one selector on `shape`, in `tier`: the tier [`selector_tier`] resolved (or one a caller
+/// animating it faded).
 ///
 /// An item paints its fill, its edge and its lit rim, and nothing else: no
 /// shadow, since a lift means "chosen on the surface" and a shadow "off it"
@@ -139,45 +128,6 @@ pub fn selector_tier(theme: &Theme, state: SelectionState, ground: Color) -> Sel
 /// `rim_span` of the way down, so it reads as light catching the top of the
 /// item rather than a ring around it.
 pub fn paint_selector(
-    scene: &mut Scene,
-    transform: Affine,
-    shape: &RoundedRect,
-    role: SelectorRole<'_>,
-    theme: &Theme,
-) {
-    let rect = shape.rect();
-    if rect.width() <= 0.0 || rect.height() <= 0.0 {
-        return;
-    }
-    match role {
-        SelectorRole::Strip(shell) => paint_strip(scene, (transform, shell), shape, theme),
-        SelectorRole::Item(tier) => paint_item(scene, transform, shape, tier, theme),
-    }
-}
-
-fn paint_strip(
-    scene: &mut Scene,
-    (transform, shell): (Affine, Affine),
-    shape: &RoundedRect,
-    theme: &Theme,
-) {
-    let ground = strip_ground(theme);
-    let material = match selector_finish(theme).strip {
-        StripMaterial::Floating => Material::Floating,
-        StripMaterial::Opaque => Material::Opaque,
-    };
-    crate::backdrop::wallpaper::fill(scene, (transform, shell), shape, material, theme, ground);
-    let radius = shape.radii().top_left;
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        crate::surface::edge_on(ground),
-        None,
-        &crate::surface::edge_outline(shape.rect(), radius),
-    );
-}
-
-fn paint_item(
     scene: &mut Scene,
     transform: Affine,
     shape: &RoundedRect,

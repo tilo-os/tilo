@@ -65,6 +65,7 @@ fn global_driver(pending: Rc<Cell<bool>>, calls: Rc<Cell<usize>>) -> FrameHarnes
         }],
     )
     .unwrap();
+    crate::history_mode::feed::tests::serve(&state.doc);
     let mut driver = FrameHarness::from_managed_root(
         state,
         ManagedRoot::new(Box::new(DraftRoot::new(pending, calls)), registration),
@@ -205,6 +206,12 @@ fn readiness_component_tile_checks_retained_child_at_confirmation() {
             hash
         })
         .unwrap();
+    crate::history_mode::feed::tests::serve(
+        &binding
+            .records
+            .read_checked(&binding.checkout.id, Clone::clone)
+            .unwrap(),
+    );
     let tile = crate::widget::TileHost::from_component(component);
     let mut driver = FrameHarness::new(State::new(), Box::new(tile), (900, 650));
     driver.click_named("history-open").unwrap();

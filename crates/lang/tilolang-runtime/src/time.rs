@@ -22,6 +22,18 @@ use crate::engine::Wasm;
 use crate::value::Value;
 
 impl Core {
+    /// A day (`a.h(1)` 0) or a moment as a sentence names it, in the person's formats (`Imp::DateShow`).
+    fn date_show(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let text = self.text(a.h(0)?)?;
+        let kind = if a.h(1)? == 0 { "date" } else { "time" };
+        self.read_person();
+        let shown = match self.sentence_by.borrow().as_ref() {
+            Some(read) => read(kind, &text),
+            None => text,
+        };
+        self.ret_h(Value::Text(shown))
+    }
+
     pub(crate) fn time_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
             Imp::Today => {
@@ -117,6 +129,10 @@ impl Core {
                 };
                 self.ret_h(Value::Text(day_text(start)))
             }
+            // A day or a moment as a sentence names it in the person's formats: `Jun 29`, or
+            // `Jun 29, 2025` another year, `Jun 29, 6:00 PM` a moment. The person's words, and
+            // its stored text where none is set.
+            Imp::DateShow => self.date_show(a),
             Imp::DayParse => self.day_parse(a),
             Imp::WallClock => {
                 self.clock()?;

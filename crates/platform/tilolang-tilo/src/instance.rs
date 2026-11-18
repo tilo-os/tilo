@@ -927,8 +927,10 @@ impl Instance {
         }
         host.runtime()
             .set_name_host(SharedNames(Rc::clone(&self.names)));
-        host.runtime()
-            .set_shown_host(PlatformShown(Rc::clone(&self.platform)));
+        let runtime = host.runtime();
+        runtime.set_shown_host(PlatformShown(Rc::clone(&self.platform)));
+        let platform = Rc::clone(&self.platform);
+        runtime.set_sentence_by(move |kind, value| platform.sentence(kind, value));
         let platform = Rc::clone(&self.platform);
         host.set_clock(move || platform.now());
         host.runtime()

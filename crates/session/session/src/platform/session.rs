@@ -312,12 +312,16 @@ impl Session {
         // The shell a login shows is built before its first frame: this pair
         // is the phase between the compositor coming up and the frame that
         // draws it (tools/perf/startup_marks.py).
+        // The shell's wallpaper: one source, which the shell's backdrop publishes and the chrome's
+        // overview draws over — the two hosts draw one ground, never a copy each.
+        let wallpaper = ui::backdrop::wallpaper::Source::new();
         tilo_startup_metrics::mark("shell-build-start");
         let (desktop, strips, asks) = crate::background::background(
             &options,
             &activity,
             notices.clone(),
             std::sync::Arc::clone(&wallpapers),
+            wallpaper.clone(),
             crate::background::Background {
                 widgets: widget_prefs,
                 fold: fold.clone(),
@@ -533,6 +537,13 @@ impl Session {
         if let Some(launch) = &options.launch {
             launch.attach(desktop.clone());
             launch.set_person(options.person.clone());
+            if let Some(consents) = options
+                .desktop
+                .as_ref()
+                .and_then(|desktop| desktop.consents())
+            {
+                launch.answer_devices_with(consents.grants().clone());
+            }
         }
         // One process per app per workspace: its later windows open in the
         // process the session started, with connections of their own. A
@@ -890,6 +901,7 @@ impl Session {
                 engine: engine.clone(),
                 hints: hints.clone(),
                 peek: super_peek.clone(),
+                wallpaper,
             },
             sync.clone(),
             &overview,

@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use collab_types::caps::DeviceCap;
 use media::realtime::InputFormat;
 use media::realtime::capture::{CaptureConfig, VideoCapture};
 use runtime_collab::native_media::{
@@ -45,11 +46,6 @@ const CARRIED_PICTURES: usize = 8 * 1024 * 1024;
 /// Pictures one workspace's live session may have heard before its calls draw them: a burst of them is a
 /// few passes' worth, never a backlog.
 const CARRIED: usize = 256;
-/// What the person's answer covers when an app turns a camera on, by the name every app's device
-/// capabilities use.
-const CAMERA: &str = "camera";
-/// What the person's answer covers when an app shares a screen.
-const SCREEN: &str = "screen";
 /// The largest desktop a shared screen is captured at: the screen's largest layer, so nothing is
 /// captured that no tile could show.
 const SCREEN_MAX: (u32, u32) = {
@@ -59,9 +55,6 @@ const SCREEN_MAX: (u32, u32) = {
 /// Bytes of received pictures one answer carries at most: several tiles of every layer, so a burst
 /// of them is drawn in one pass.
 const PICTURES_BUDGET: usize = 1024 * 1024;
-/// What the person's answer covers: the microphone, by the name every app's device capabilities
-/// use.
-const MICROPHONE: &str = "microphone";
 
 /// The calls of every workspace this session takes part in.
 pub(crate) struct Calls {
@@ -563,10 +556,9 @@ impl Sources {
 impl Factory {
     #[must_use]
     pub(crate) fn new(sources: Sources) -> Self {
-        let consents = sources
-            .questions
-            .clone()
-            .map(|questions| tilo_portal::consent::Consents::new(questions, None));
+        let consents = sources.questions.clone().map(|questions| {
+            tilo_portal::consent::Consents::new(questions, tilo_peer_state::DeviceGrants::unkept())
+        });
         Self {
             sources: Arc::new(sources),
             consents,
@@ -883,7 +875,7 @@ impl Shared {
             return Err(Issue::SourceLost);
         };
         if let Some(consents) = &self.consents
-            && !consents.allowed(&self.caller, MICROPHONE)
+            && !consents.allowed(&self.caller, DeviceCap::Microphone)
         {
             // The person has not allowed their microphone yet: ask them through the session's own
             // sheet, and open nothing until they answer. Asking again while the question waits is
@@ -892,13 +884,16 @@ impl Shared {
             let caller = self.caller.clone();
             let handle = format!("call-microphone:{}", self.call);
             let question = tilo_portal::consent::AccessQuestion {
-                capability: MICROPHONE.to_owned(),
+                capability: DeviceCap::Microphone.name().to_owned(),
                 reason: Some(crate::i18n::t("call-microphone-reason")),
                 may_remember: false,
                 text: None,
             };
             tokio::spawn(async move {
-                if let Err(error) = consents.decide(&caller, &handle, question).await {
+                if let Err(error) = consents
+                    .decide(&caller, &handle, DeviceCap::Microphone, question)
+                    .await
+                {
                     tracing::warn!(
                         error = ?error,
                         "a microphone permission question was not put to the person"
@@ -991,7 +986,11 @@ impl Shared {
             self.side.lock_recover().camera = None;
             return Ok(());
         }
-        if !self.ask(CAMERA, "call-camera", &crate::i18n::t("call-camera-reason")) {
+        if !self.ask(
+            DeviceCap::Camera,
+            "call-camera",
+            &crate::i18n::t("call-camera-reason"),
+        ) {
             return Err(Issue::PermissionDenied);
         }
         let device = self.camera.device().ok_or(Issue::CameraLost)?;
@@ -1040,7 +1039,11 @@ impl Shared {
             self.screen.set_sharing(false);
             return Ok(());
         }
-        if !self.ask(SCREEN, "call-screen", &crate::i18n::t("call-screen-reason")) {
+        if !self.ask(
+            DeviceCap::Screen,
+            "call-screen",
+            &crate::i18n::t("call-screen-reason"),
+        ) {
             return Err(Issue::PermissionDenied);
         }
         let sending = Arc::new(
@@ -1056,24 +1059,24 @@ impl Shared {
     /// allowed it for this call. `reason` is what the sheet says the call wants it for, in the
     /// person's language. A question that was not answered yet is not asked again; the service
     /// refuses the second.
-    fn ask(&self, capability: &str, handle: &str, reason: &str) -> bool {
+    fn ask(&self, device: DeviceCap, handle: &str, reason: &str) -> bool {
         let Some(consents) = &self.consents else {
             return true;
         };
-        if consents.allowed(&self.caller, capability) {
+        if consents.allowed(&self.caller, device) {
             return true;
         }
         let consents = consents.clone();
         let caller = self.caller.clone();
         let handle = format!("{handle}:{}", self.call);
         let question = tilo_portal::consent::AccessQuestion {
-            capability: capability.to_owned(),
+            capability: device.name().to_owned(),
             reason: Some(reason.to_owned()),
             may_remember: false,
             text: None,
         };
         tokio::spawn(async move {
-            let _ = consents.decide(&caller, &handle, question).await;
+            let _ = consents.decide(&caller, &handle, device, question).await;
         });
         false
     }

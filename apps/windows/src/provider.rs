@@ -1014,23 +1014,33 @@ fn launched(response: Result<ProtocolResponse, SessionError>, started: &str) -> 
 
 /// What the manager says of a program that ended, when it is worth a sentence: a program that
 /// opened and closed says nothing, since the list already shows it is no longer open. A program
-/// that stopped by itself says what happened, with the status the person can quote; one that never
-/// opened says why in the program's own words.
+/// that stopped by itself says what happened, with the status the person can quote and the last
+/// of what it or its sandbox said; one that never opened says why in the program's own words.
 pub(crate) fn ended_notice(end: &ProgramEnd) -> Option<String> {
     let name = end.display_name.clone();
+    let said = end.said.clone();
     match (&end.error, end.success, end.exit_code) {
         (Some(error), _, _) => Some(crate::strings::format_all(
             "windows-ended-could-not-open",
             &[("app", name), ("reason", error.clone())],
         )),
-        (None, false, Some(code)) => Some(crate::strings::format_all(
-            "windows-ended-with-error",
-            &[("app", name), ("status", code.to_string())],
-        )),
-        (None, false, None) => Some(crate::strings::format_all(
-            "windows-ended-stopped",
-            &[("app", name)],
-        )),
+        (None, false, Some(code)) => Some(match said {
+            Some(said) => crate::strings::format_all(
+                "windows-ended-with-error-saying",
+                &[("app", name), ("status", code.to_string()), ("said", said)],
+            ),
+            None => crate::strings::format_all(
+                "windows-ended-with-error",
+                &[("app", name), ("status", code.to_string())],
+            ),
+        }),
+        (None, false, None) => Some(match said {
+            Some(said) => crate::strings::format_all(
+                "windows-ended-stopped-saying",
+                &[("app", name), ("said", said)],
+            ),
+            None => crate::strings::format_all("windows-ended-stopped", &[("app", name)]),
+        }),
         (None, true, _) => None,
     }
 }
@@ -1804,6 +1814,7 @@ mod tests {
                     success: false,
                     exit_code: Some(3),
                     error: None,
+                    said: None,
                 }],
             ))
             .unwrap();
@@ -1815,5 +1826,21 @@ mod tests {
         );
         assert!(provider.notice_is_error(), "an error is said as one");
         assert!(provider.stop("probe").is_err(), "nothing is open to end");
+        let said = |exit_code| ProgramEnd {
+            entry_id: "probe".into(),
+            display_name: "Probe".into(),
+            success: false,
+            exit_code,
+            error: None,
+            said: Some("wine: could not load ntdll.so".into()),
+        };
+        assert_eq!(
+            ended_notice(&said(Some(3))).as_deref(),
+            Some("Probe stopped with an error (status 3): wine: could not load ntdll.so")
+        );
+        assert_eq!(
+            ended_notice(&said(None)).as_deref(),
+            Some("Probe stopped: wine: could not load ntdll.so")
+        );
     }
 }

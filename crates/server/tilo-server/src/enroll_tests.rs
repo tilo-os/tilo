@@ -1,4 +1,5 @@
 use super::*;
+use crate::protocol::v2_body;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{
     DeviceCapabilities, RevocationEntry, RevocationReason, sign_device_cert, sign_revocation_entry,
@@ -383,6 +384,7 @@ fn token_from(
         10,
         1_000,
         [3; 16],
+        vec![],
         issuer,
     )
     .unwrap()

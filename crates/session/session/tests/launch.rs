@@ -976,13 +976,6 @@ fn unanswerable() -> Vec<(&'static str, FloatingSurfaceClientMessage)> {
                 result: Err("refused".to_owned()),
             },
         ),
-        // A window's changes to describe, with no changes in it.
-        (
-            "describe_history",
-            FloatingSurfaceClientMessage::DescribeHistory {
-                changes: Vec::new(),
-            },
-        ),
         // The connection said its version when it opened: a second greeting is told so too.
         (
             "hello",

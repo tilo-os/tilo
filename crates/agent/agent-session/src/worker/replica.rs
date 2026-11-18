@@ -94,6 +94,13 @@ struct Inner {
     /// for a store that asks nothing): told again to a worker that replaces it, since what
     /// the app keeps for its whole workspace opens only on that word.
     told: BTreeMap<String, ui::resource::WorkspaceAnswer>,
+    /// The action last found by its address (both as JSON: the address, and the worker's
+    /// answer), while nothing asked of the worker since could change that answer
+    /// ([`Request::moves_nothing`]). One request of the service asks for the same address
+    /// several times over (whether the document offers it, what it is, whether it is an
+    /// effect, what its change is called), and each answer costs the worker a look at what
+    /// the document publishes, which grows with what it holds.
+    found: Option<(String, String)>,
 }
 
 impl Inner {
@@ -212,6 +219,7 @@ impl ConfinedReplica {
                 held: BTreeSet::new(),
                 asks_workspace: None,
                 told: BTreeMap::new(),
+                found: None,
             }),
         };
         if fresh {
@@ -285,6 +293,14 @@ impl ConfinedReplica {
     /// when the one holding it stopped. A failed call stops the worker; the
     /// next call gives the record to another.
     fn call(&self, inner: &mut Inner, request: &Request) -> Result<Reply, AppError> {
+        // The same address asked for again with nothing between that moves what the
+        // document offers: the worker's last answer stands, and the worker is not asked.
+        if let Request::Resolve { address } = request
+            && let Some((known, answer)) = &inner.found
+            && known == address
+        {
+            return Ok(Reply::Descriptors(answer.clone()));
+        }
         // What the operation this request is part of left to collect is
         // still to be collected from the worker the record is given to.
         let pending = (inner.dirty, inner.beside_dirty);
@@ -292,6 +308,7 @@ impl ConfinedReplica {
             self.revive(inner, true)?;
             (inner.dirty, inner.beside_dirty) = pending;
         }
+        let began = std::time::Instant::now();
         let mut answer = Self::send(inner, request);
         // Another slot's request stopped the worker this record was in:
         // nothing of this request was sent, and the record is given again
@@ -318,6 +335,21 @@ impl ConfinedReplica {
             inner.dirty = true;
             inner.beside_dirty = true;
         }
+        match (request, &answer) {
+            (Request::Resolve { address }, Ok(Reply::Descriptors(text))) => {
+                inner.found = Some((address.clone(), text.clone()));
+            }
+            _ if request.moves_nothing() => {}
+            _ => inner.found = None,
+        }
+        // What each thing asked of a worker took, beside the service's own line for the
+        // whole request: where a request spends its time.
+        tracing::debug!(
+            app = %self.app_id,
+            kind = request.kind(),
+            took_us = began.elapsed().as_micros(),
+            "app worker: a request answered"
+        );
         answer.map_err(|stopped| {
             inner.stop();
             tracing::warn!(app = %self.app_id, record = %self.record.as_str(), reason = %stopped,
@@ -338,6 +370,8 @@ impl ConfinedReplica {
     /// `counted` when the record's own request stopped the last one: a record
     /// that keeps stopping its workers is given up on.
     fn revive(&self, inner: &mut Inner, counted: bool) -> Result<(), AppError> {
+        // Another worker answers from here on: it is asked again.
+        inner.found = None;
         if counted {
             if inner.revivals >= MAX_REVIVALS {
                 return Err(worker_error(
@@ -1557,6 +1591,88 @@ mod tests {
             "a new record's genesis is what it first publishes"
         );
         replica
+    }
+
+    /// Every line the code under test writes to the log.
+    #[derive(Clone, Default)]
+    struct Lines(std::sync::Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Lines {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock_recover().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Lines {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self {
+            self.clone()
+        }
+    }
+
+    /// How often `during` had a worker find an action by its address, counted by the line
+    /// each request to a worker writes.
+    fn asked_to_find(during: impl FnOnce()) -> usize {
+        let lines = Lines::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .with_writer(lines.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, during);
+        let written = String::from_utf8_lossy(&lines.0.lock_recover()).into_owned();
+        written
+            .lines()
+            .filter(|line| {
+                line.contains("app worker: a request answered") && line.contains("kind=\"resolve\"")
+            })
+            .count()
+    }
+
+    #[test]
+    fn an_action_found_again_with_nothing_between_asks_its_worker_once() {
+        let replica = begun();
+        let address = replica
+            .survey()
+            .into_iter()
+            .next()
+            .expect("a notebook offers its agent an action")
+            .address;
+        // As one write of the service asks: whether the document offers the action, what it
+        // is, and once more after what it wrote was collected.
+        let mut answers = Vec::new();
+        let asked = asked_to_find(|| {
+            answers.push(replica.descriptor(&address).map(|found| found.address));
+            answers.push(replica.descriptor(&address).map(|found| found.address));
+            replica.take_mutation().unwrap();
+            answers.push(replica.descriptor(&address).map(|found| found.address));
+        });
+        assert_eq!(
+            answers,
+            vec![Some(address.clone()); 3],
+            "each time it is the action asked for"
+        );
+        assert_eq!(
+            asked, 1,
+            "nothing moved between: the worker is asked once, not for every asking"
+        );
+        // Another member's change may change what the document offers: the worker is asked
+        // again, once.
+        let (first, _) = another_members_two_changes(&replica);
+        let asked = asked_to_find(|| {
+            replica
+                .apply(&DocumentMutation::Incremental(first))
+                .unwrap();
+            assert!(replica.descriptor(&address).is_some());
+            assert!(replica.descriptor(&address).is_some());
+        });
+        assert_eq!(asked, 1, "after a merge the worker is asked again, once");
     }
 
     /// Two changes of another member's on `replica`'s record, the second

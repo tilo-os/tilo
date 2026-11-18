@@ -77,8 +77,8 @@ pub trait NameHost {
 }
 
 /// How a value a change shows reads as text, where a sentence must carry it rather than a view
-/// node (a row's line, a notice): a day or a time of day in the person's format. Until the host
-/// says, the value's stored text.
+/// node (a row's line, a notice): a day or a time of day in the person's format. Until it is set,
+/// the value's stored text.
 pub trait ShownHost {
     /// `value` of the shown kind `kind` (`date` or `time`), as the person reads it.
     fn shown(&self, kind: &str, value: &str) -> String;
@@ -96,6 +96,10 @@ type NamedZone = Box<dyn Fn() -> Option<String>>;
 
 /// How a day or a time of day reads, as a plain function (`Runtime::set_shown_by`).
 pub type ShownBy = dyn Fn(&str, &str) -> String;
+
+/// How a day or a time of day named in a sentence reads, as a plain function
+/// (`Runtime::set_sentence_by`).
+pub type SentenceBy = dyn Fn(&str, &str) -> String;
 
 pub struct Core {
     me: Weak<Core>,
@@ -120,6 +124,9 @@ pub struct Core {
     /// [`Self::shown`] as a plain function, when a caller set one (`Runtime::set_shown_by`): a
     /// day or a time of day in the person's formats, without a trait of this crate.
     pub shown_by: RefCell<Option<Box<ShownBy>>>,
+    /// How a day or a time of day named in a sentence reads, in the person's formats
+    /// (`Runtime::set_sentence_by`).
+    pub sentence_by: RefCell<Option<Box<SentenceBy>>>,
     /// The workspace's members, as the host last gave them (`workspace.members`).
     pub members: RefCell<crate::members::Members>,
     pub sink: RefCell<Option<Box<dyn OutsideSink>>>,
@@ -300,6 +307,7 @@ impl Core {
             names: RefCell::new(None),
             shown: RefCell::new(None),
             shown_by: RefCell::new(None),
+            sentence_by: RefCell::new(None),
             members: RefCell::new(crate::members::Members::default()),
             sink: RefCell::new(None),
             retry_waiting: std::cell::Cell::new(false),
@@ -448,9 +456,9 @@ impl Core {
             ActUndo, Actions, ActorEq, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt,
             BytesLength, CallFn, ChangeView, CollCount, CollCounted, CollEmpty, CollInsert,
             CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollRelatives, CollRemove, CollWhere,
-            CollWhereWith, CountBy, DayParse, DayPart, DayShift, DayStartOfWeek, DayWeekday,
-            Delivery, Describe, DescribeRef, DurationText, EditField, EntryParts, EnumGetF,
-            EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart,
+            CollWhereWith, CountBy, DateShow, DayParse, DayPart, DayShift, DayStartOfWeek,
+            DayWeekday, Delivery, Describe, DescribeRef, DurationText, EditField, EntryParts,
+            EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart,
             EventValue, FieldChanged, FileAt, FileFiles, FileOfBytes, FileOfText, FilePart,
             FileSize, FileText, FileZip, FilterLit, Filters, Find, FirstUnseen, FloatAbs,
             FloatCeil, FloatCeilTo, FloatClamp, FloatFloor, FloatFloorTo, FloatMax, FloatMin,
@@ -504,7 +512,7 @@ impl Core {
             Filters | FilterLit | SortLit => self.catalogue_import(imp, a),
             IdentPart => self.ret_h(self.ident_part(a.h(0)?, a.h(1)?)?),
             Today | TimeDay | TimeOfDay | TimeClock | TimeSpan | DayShift | DayPart
-            | DayWeekday | DayStartOfWeek | DayParse | TimeParse | WallClock => {
+            | DayWeekday | DayStartOfWeek | DayParse | TimeParse | WallClock | DateShow => {
                 self.time_import(imp, a)
             }
             RandomInt | RandomFloat | RandomChoice | RandomShuffle | RandomId => {

@@ -365,7 +365,8 @@ fn audio_daemon() {
 
 /// Not a test: a Windows program, as the stand-in for Bubblewrap starts it. It writes what it
 /// finds at the descriptor Bubblewrap reads its filter from to `handed`, its pid to `started`, and
-/// shows a window until a code appears in `exit`, then exits with it.
+/// shows a window until a code appears in `exit`, then says what `say` holds on its error stream
+/// and exits with it.
 #[test]
 #[expect(
     clippy::exit,
@@ -406,6 +407,9 @@ fn probe_program() {
         window.exchange();
         if let Ok(code) = fs::read_to_string(dir.join("exit")) {
             let _ = fs::remove_file(dir.join("exit"));
+            if let Ok(said) = fs::read_to_string(dir.join("say")) {
+                eprint!("{said}");
+            }
             std::process::exit(code.trim().parse().expect("an exit code"));
         }
         std::thread::sleep(Duration::from_millis(5));
@@ -1137,6 +1141,12 @@ impl KeptRig {
     fn exit(&self, code: i32) {
         fs::write(self.probe.join("exit"), code.to_string()).unwrap();
     }
+
+    /// End the program with `code`, saying `said` on its error stream first.
+    fn exit_saying(&self, code: i32, said: &str) {
+        fs::write(self.probe.join("say"), said).unwrap();
+        self.exit(code);
+    }
 }
 
 /// What the real launcher would do with `handed`, the command line the session started a launch
@@ -1241,12 +1251,14 @@ fn a_windows_program_stays_open_through_an_in_place_restart() {
         (!alive(pid)).then_some(())
     });
 
-    // A program that ends while no desktop is there is reported to the next desktop with its code.
+    // A program that ends while no desktop is there is reported to the next desktop with its code,
+    // and the tab it left closes rather than starting it again.
     let answers = second.manage(&rig, "third", &["launch"]);
     assert_eq!(answers[0]["result"], "launched", "{answers:?}");
     second.shown();
+    let tab = saved_window_tab(&rig, &mut second);
     second.end(tilo_app_launch::Teardown::InPlaceRestart);
-    rig.exit(5);
+    rig.exit_saying(5, "err:module:import_dll Library MSVCP140.dll not found\n");
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     let ended = || {
         fs::read_dir(&rig.root)
@@ -1274,6 +1286,11 @@ fn a_windows_program_stays_open_through_an_in_place_restart() {
     let answers = third.manage(&rig, "fourth", &["ended"]);
     assert_eq!(answers[0]["ended"][0]["entry_id"], rig.entry, "{answers:?}");
     assert_eq!(answers[0]["ended"][0]["exit_code"], 5, "{answers:?}");
+    assert_eq!(
+        answers[0]["ended"][0]["said"], "err:module:import_dll Library MSVCP140.dll not found",
+        "what it said while no desktop was there comes with its end: {answers:?}"
+    );
+    closed_and_not_started(&rig, &mut third, tab, 2);
 
     // A logout ends a program and its keeper.
     let answers = third.manage(&rig, "fifth", &["launch"]);
@@ -1293,6 +1310,60 @@ fn a_windows_program_stays_open_through_an_in_place_restart() {
         tilo_app_launch::kept::testing::described(&rig.root).is_empty(),
         "no keeper is left"
     );
+}
+
+/// A Windows program that fails says why: the last of what it wrote, which went to its keeper's
+/// log rather than the service, comes with its end, bounded to what a sentence holds. One that
+/// says nothing ends with its status alone.
+#[test]
+fn a_failed_windows_program_says_why_with_its_end() {
+    let rig = KeptRig::new();
+    let mut desktop = rig.start(false);
+    let answers = desktop.manage(&rig, "first", &["launch"]);
+    assert_eq!(answers[0]["result"], "launched", "{answers:?}");
+    desktop.shown();
+    let long = "x".repeat(4096);
+    rig.exit_saying(
+        3,
+        &format!("fixme:heap:stub\n{long}\n\nwine: could not load ntdll.so\n"),
+    );
+    let answers = desktop.manage(&rig, "second", &["ended"]);
+    let end = &answers[0]["ended"][0];
+    assert_eq!(end["exit_code"], 3, "{answers:?}");
+    let said = end["said"].as_str().expect("what it said");
+    assert!(
+        said.ends_with("x wine: could not load ntdll.so"),
+        "its last lines: {said}"
+    );
+    assert!(
+        said.starts_with('…') && said.chars().count() <= 200,
+        "{said}"
+    );
+
+    fs::remove_file(rig.probe.join("say")).unwrap();
+    let answers = desktop.manage(&rig, "third", &["launch"]);
+    assert_eq!(answers[0]["result"], "launched", "{answers:?}");
+    desktop.shown();
+    rig.exit(4);
+    // A manager opened later hears every end kept: this one is the last, once it came.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let end = loop {
+        let answers = desktop.manage(&rig, "fourth", &["ended"]);
+        let last = answers[0]["ended"]
+            .as_array()
+            .and_then(|ended| ended.last())
+            .cloned()
+            .unwrap_or_default();
+        if last["exit_code"] == 4 {
+            break last;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the second end did not come: {answers:?}"
+        );
+    };
+    assert_eq!(end["said"], Value::Null, "{end:?}");
+    desktop.end(tilo_app_launch::Teardown::Logout);
 }
 
 /// The parent of process `pid`.
@@ -1639,6 +1710,45 @@ fn a_proton_program_shows_through_its_keepers_x11_display_and_stays_open() {
 }
 
 /// The tab a Windows program's window took, and the class it showed under, once it mapped.
+/// The tab of the program's window, once the session kept the window's class for the next start
+/// and wrote the tab into the workspace's layout.
+fn saved_window_tab(rig: &KeptRig, desktop: &mut KeptDesktop) -> u64 {
+    let (tab, _) = window_tab(&mut desktop.session);
+    let workspace = desktop.workspace.clone();
+    crate::common::wait_for(&mut desktop.session, "the window's class kept", |_| {
+        kept_entry(rig, &workspace)
+    });
+    crate::layout::until(&mut desktop.session, "the tab is written", |session| {
+        session.layout().borrow_mut().last_step().is_some()
+    });
+    tab
+}
+
+/// The tab `tab` of a program that ended while no desktop was there closes, and the program is
+/// not started again: `starts` stays the number of its starts.
+fn closed_and_not_started(rig: &KeptRig, desktop: &mut KeptDesktop, tab: u64, starts: usize) {
+    crate::layout::until(
+        &mut desktop.session,
+        "the ended program's tab closes",
+        |session| {
+            !crate::layout::tabs(session)
+                .iter()
+                .any(|(other, _)| *other == tab)
+        },
+    );
+    for _ in 0..200 {
+        desktop
+            .session
+            .step(Duration::from_millis(1))
+            .expect("step");
+    }
+    assert_eq!(
+        rig.starts().len(),
+        starts,
+        "the ended program is not started again"
+    );
+}
+
 fn window_tab(session: &mut tilo_session::Session) -> (u64, String) {
     crate::common::wait_for(session, "the program's tab", |session| {
         crate::layout::tabs(session)
@@ -2057,8 +2167,24 @@ fn a_remote_app_window_stays_open_through_an_in_place_restart() {
     assert!(alive(pid), "on the same X11 connection, not quit");
     assert!(daemons.iter().all(|daemon| alive(*daemon)));
 
+    // Another appliance program waits for it, as a second client would take its Windows session
+    // over: once it closes, the next one opens.
+    let answers = second.manage(&rig, "queued", &["launch-vm"]);
+    assert_eq!(answers[0]["result"], "launched", "{answers:?}");
+    for _ in 0..200 {
+        second.session.step(Duration::from_millis(1)).expect("step");
+    }
+    assert_eq!(rig.starts(), [pid], "the next one waits for the open one");
+    rig.exit(0);
+    crate::common::wait_for(&mut second.session, "the next one opens", |_| {
+        (rig.starts().len() == 2).then_some(())
+    });
+    second.shown();
+    let tab = saved_window_tab(&rig, &mut second);
+    let daemons = rig.appliance_daemons(&mut second);
+
     // It ends while no desktop is there (the program closed inside Windows): the next desktop
-    // reports it.
+    // reports it, and the tab it left closes rather than opening the program again.
     second.end(tilo_app_launch::Teardown::InPlaceRestart);
     rig.exit(4);
     KeptRig::gone(daemons);
@@ -2066,12 +2192,11 @@ fn a_remote_app_window_stays_open_through_an_in_place_restart() {
     let answers = third.manage(&rig, "third", &["ended"]);
     assert_eq!(answers[0]["ended"][0]["entry_id"], rig.entry, "{answers:?}");
     assert_eq!(answers[0]["ended"][0]["exit_code"], 4, "{answers:?}");
+    closed_and_not_started(&rig, &mut third, tab, 2);
 
-    // The tab it left reopens it, as any saved tab of a Windows program; a logout ends that
-    // presentation, its keeper and its sound.
-    crate::common::wait_for(&mut third.session, "the tab's program again", |_| {
-        (rig.starts().len() == 2).then_some(())
-    });
+    // A logout ends a presentation, its keeper and its sound.
+    let answers = third.manage(&rig, "fourth", &["launch-vm"]);
+    assert_eq!(answers[0]["result"], "launched", "{answers:?}");
     third.shown();
     let pid = *rig.starts().last().unwrap();
     let daemons = rig.appliance_daemons(&mut third);

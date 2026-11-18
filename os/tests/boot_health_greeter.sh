@@ -58,6 +58,7 @@ case "$1" in
         NRestarts) echo "$n" ;;
         MainPID) echo 4242 ;;
         Virtualization) echo "$VIRT" ;;
+        ActiveState) case "$ACTIVE" in yes) echo active ;; failed) echo failed ;; *) echo inactive ;; esac ;;
       esac
     done ;;
   *) exit 0 ;;

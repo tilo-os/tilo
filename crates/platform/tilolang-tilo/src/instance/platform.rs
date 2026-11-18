@@ -91,6 +91,14 @@ pub trait Platform {
         value.to_owned()
     }
 
+    /// How a day or a time of day named in a sentence (`"{d}"`) reads, in the person's formats: a
+    /// day as `Jun 29`, or `Jun 29, 2025` another year, a moment as `Jun 29, 6:00 PM`. Stored text
+    /// unless the platform formats, which a window's instance does.
+    fn sentence(&self, kind: &str, value: &str) -> String {
+        let _ = kind;
+        value.to_owned()
+    }
+
     /// The time of day `hour`:`minute` as the person reads a clock (`14:05`, `2:05 PM`), in the
     /// style they chose in Settings: what a view says when it names the time of a moment
     /// (`a.fetched.clock()`). A 24-hour clock unless the platform knows the person's style, which

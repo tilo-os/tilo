@@ -934,9 +934,6 @@ impl App {
                 // What each app installed here is called: the same feed names the people in it.
                 crate::history_source::set_installed_apps(apps);
             }
-            CollabEvent::HistoryAgents { cluster_id, agents } => {
-                crate::history_source::set_workspace_agents(&cluster_id, agents);
-            }
             CollabEvent::ResourcesArrived { records } => self.resources_arrived(&records),
             CollabEvent::ResourceUnavailable { route } => self.resource_unavailable(&route),
             CollabEvent::FollowChanged { peer_id } => match peer_id.clone() {

@@ -783,12 +783,18 @@ impl AttachedView {
     }
 
     /// Every document operation the member may perform through the
-    /// view now, with its typed parameters.
+    /// view now, with its typed parameters. What its permissions deny it is
+    /// not among them: an agent is listed that marked not allowed
+    /// ([`tilo_actions::Availability::not_allowed`]), so that it hears a
+    /// refusal, and an offer names only what may be done.
     #[must_use]
     pub fn operations(&self) -> Vec<ActionDescriptor> {
         tilo_actions::api::survey(&self.published())
             .into_iter()
-            .filter(|descriptor| descriptor.kind == tilo_actions::OperationKind::Document)
+            .filter(|descriptor| {
+                descriptor.kind == tilo_actions::OperationKind::Document
+                    && descriptor.contract.availability.refusal().is_none()
+            })
             .collect()
     }
 

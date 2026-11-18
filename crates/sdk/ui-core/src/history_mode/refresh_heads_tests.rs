@@ -496,13 +496,6 @@ impl Parts {
     }
 }
 impl crate::history_mode::HistoryParts for Parts {
-    fn heads(&self) -> Vec<automerge::ChangeHash> {
-        self.0
-            .borrow()
-            .iter()
-            .flat_map(AutoCommit::base_heads)
-            .collect()
-    }
     fn documents(&self) -> Vec<(crate::history_mode::HistoryPart, AutoCommit)> {
         self.0
             .borrow()
@@ -554,62 +547,27 @@ fn typed_at(document: &mut AutoCommit, seconds: i64) {
 }
 
 #[test]
-fn history_lists_previews_and_restores_the_parts_beside_the_document() {
+fn history_previews_and_restores_the_parts_beside_the_document() {
     let mut fixture = BoundFixture::new();
     let outer = outer();
     let mut part = AutoCommit::new();
-    let typed = crate::history_mode::HISTORY_PAGE + 50;
-    for second in 1..=typed {
-        typed_at(&mut part, i64::try_from(second).unwrap());
+    for second in 1..=3 {
+        typed_at(&mut part, second);
     }
+    // The workspace's history the window follows lists the part's changes.
+    crate::history_mode::feed::tests::serve(&part);
     let parts = std::rc::Rc::new(std::cell::RefCell::new(vec![part]));
     fixture.parts = Some(std::rc::Rc::new(Parts(std::rc::Rc::clone(&parts))));
     let mut history = fixture.history(&outer);
     assert!(history.request_open());
     history.refresh(&outer);
     let listed = history.timeline.entries().to_vec();
-    assert_eq!(
-        listed.len(),
-        crate::history_mode::HISTORY_PAGE,
-        "one page of the parts' typing"
-    );
-    assert!(
-        listed
-            .windows(2)
-            .all(|pair| pair[0].timestamp <= pair[1].timestamp),
-        "listed in time order"
-    );
-    assert!(
-        history
-            .controller
-            .as_ref()
-            .is_some_and(crate::history_mode::HistoryController::has_earlier)
-    );
-    let own: Vec<_> = crate::history_source::HistorySource::new()
-        .entries(
-            &mut HistoryOwner::component(fixture.binding.clone())
-                .document(&outer)
-                .unwrap(),
-        )
-        .into_iter()
-        .map(|entry| entry.id)
-        .collect();
-    assert!(!own.is_empty());
+    assert!(!listed.is_empty(), "the part's changes are listed");
 
-    // Typing in a part shows on the next refresh.
-    assert!(!history.needs_refresh(&outer, 900.0));
-    typed_at(&mut parts.borrow_mut()[0], i64::MAX / 2_000);
-    assert!(history.needs_refresh(&outer, 900.0));
-    history.refresh(&outer);
-    let newest = parts.borrow()[0].clone().get_heads()[0];
-    assert_eq!(
-        history.timeline.entries().last().unwrap().id,
-        crate::history_source::entry_id_from_hash(&newest.to_string())
-    );
-
-    // Choosing a part's change shows the part as that change left it.
-    let chosen = history.timeline.entries()[0].clone();
-    history.timeline.set_selection(Some((0, 0)));
+    // Choosing a part's earliest change shows the part as that change left it.
+    let index = 0;
+    let chosen = listed[index].clone();
+    history.timeline.set_selection(Some((index, index)));
     history.refresh(&outer);
     assert_eq!(history.timeline_selection(), [chosen.id]);
     let part = Parts::part(0);
@@ -631,7 +589,7 @@ fn history_lists_previews_and_restores_the_parts_beside_the_document() {
             .to_vec();
         Parts(std::rc::Rc::clone(&parts)).body_at(&part, &heads)
     };
-    assert!(shown_body.starts_with("typed at"), "{shown_body}");
+    assert_eq!(shown_body, "typed at 1");
     let shown = history
         .after
         .preview
@@ -674,28 +632,13 @@ fn history_lists_previews_and_restores_the_parts_beside_the_document() {
             .restore_part(&review, &crate::permissions::MemberId::person("ada")),
         Err(crate::history_mode::HistoryError::StaleLiveHeads)
     );
-    history.commands.borrow_mut().push_back(Command::Now);
+    // The shown version stays behind the part.
     history.refresh(&outer);
-
-    // An earlier page lists the rest.
-    history.commands.borrow_mut().push_back(Command::Earlier);
-    history.refresh(&outer);
-    let all: Vec<_> = history
-        .timeline
-        .entries()
-        .iter()
-        .map(|entry| entry.id)
-        .collect();
-    assert_eq!(all.len(), typed + 2 + own.len());
     assert!(
-        own.iter().all(|id| all.contains(id)),
-        "the document's own changes are listed too"
-    );
-    assert!(
-        !history
+        history
             .controller
             .as_ref()
-            .is_some_and(crate::history_mode::HistoryController::has_earlier)
+            .is_some_and(crate::history_mode::HistoryController::has_live_updates)
     );
     fixture.close();
 }

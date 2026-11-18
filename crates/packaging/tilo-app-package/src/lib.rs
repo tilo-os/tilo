@@ -51,7 +51,8 @@ pub use unpack::{
     UnpackError, unpack, validate_materialized_payload, validate_materialized_payload_within,
 };
 pub use validate::{
-    FORMAT_PROVIDER_MODULE, ManifestError, validate_manifest, validate_manifest_with_payload,
+    FORMAT_PROVIDER_MODULE, MODEL_MODULE, ManifestError, validate_manifest,
+    validate_manifest_with_payload,
 };
 pub use verify::{Verification, verify, verify_with_trust};
 

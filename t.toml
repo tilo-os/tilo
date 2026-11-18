@@ -6265,13 +6265,48 @@ isolation = "vm"
 timeout_secs = 1800
 default = false
 
-# The server OS (os/Containerfile.host): the machine that serves other people's
-# workspaces — the server and the file replica, the hosted-VM service with
-# Firecracker and its jail helper, the API server — with updates that stage and
-# are judged by the server's own health verdict. Its programs are t's own compile
-# (host-binaries), so the image is packaging only: the mirrored bootc base and the
-# runtime packages from the frozen RPM snapshot. Tested in a micro-VM, and booted
-# in a VM of its own on dispatch.
+# The server OS's base and the layer above it (os/Containerfile.host-base, Containerfile.host).
+# Splitting them is what makes a server change cheap: the base is the mirrored bootc base and the
+# frozen package set, which change only when those do, and t serves it to every commit that keeps
+# them; the image is the server's programs and the files that name them, a copying build of
+# seconds.
+# Together they are the dev loop: `t test test-image-host host-assurance-x86_64` builds the
+# changed programs, lays them on the cached base, and boots the result in a VM without signing or
+# publishing anything.
+#
+# The date each is built at, oci-build.sh's SOURCE_DATE_EPOCH: the commit time of the newest
+# commit that changed a file the image is built from (source-date.sh). Only these read Git, so
+# only they are kept per commit, and each takes a second; the builds need the date, not the
+# commit, so a commit that changes none of their files builds the same image again.
+[[check]]
+name = "source-date-host-base"
+run = "bash tools/ci/publish/source-date.sh /target/source-date/host-base os/Containerfile.host-base os/base-snapshot.env os/external-assets/github-assets.tsv os/dev/cache-github-assets.sh tools/ci/publish/host-base.sh tools/ci/publish/lib.sh"
+git = true
+outputs = ["/target/source-date/host-base"]
+default = false
+
+[[check]]
+name = "source-date-host"
+run = "bash tools/ci/publish/source-date.sh /target/source-date/host os/Containerfile.host os/containers/tilo-vm-host/hosted-jail.json os/etc/containers os/etc/modules-load.d/tilo-hosted.conf os/usr/libexec os/usr/lib/systemd/system os/usr/lib/systemd/system-generators os/usr/lib/dracut/modules.d os/usr/lib/sysusers.d os/usr/lib/tmpfiles.d os/scripts/build-initramfs.sh os/scripts/verify-board-initramfs.py keys/cosign.pub keys/release keys/tpm2-pcr-signing.public.pem docs/recovery.md docs/app-model/environments.md tools/ci/publish/host-build.sh tools/ci/publish/lib.sh"
+git = true
+outputs = ["/target/source-date/host"]
+default = false
+
+[[check]]
+name = "host-base"
+# Pinned: it pulls the mirrored base and the frozen RPM snapshot by digest, both of which this
+# run's files name (os/base-snapshot.env, the snapshot reference), and the Firecracker release
+# from the checksum-verified external assets, which its files and the assets' list decide.
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
+run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/host-base)\nexport SOURCE_DATE_EPOCH\nbash tools/ci/publish/host-base.sh /target/publish/rpm-snapshot/x86_64 /target/publish/rpms/x86_64 /target/publish/host-base"
+needs = ["source-date-host-base", "rpm-snapshot-x86_64", "image-rpms-x86_64", "os-assets"]
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+requires = ["arch=x86_64"]
+isolation = "vm"
+outputs = ["/target/publish/host-base/image.oci.tar", "/target/publish/host-base/digest", "/target/publish/host-base/rpms-source"]
+timeout_secs = 7200
+default = false
+
 [[check]]
 name = "host-binaries"
 egress = { to = ["code.tilo.so:443"], pinned = true }
@@ -6287,22 +6322,21 @@ default = false
 
 [[check]]
 name = "image-host"
-# Fetches from mirrors, registries and release hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/publish/host-build.sh /target/publish/rpm-snapshot/x86_64 /target/publish/rpms/x86_64 /target/publish/host/binaries /target/publish/host"
-needs = ["host-binaries", "rpm-snapshot-x86_64", "image-rpms-x86_64", "os-assets"]
+# No network: the base comes from host-base's archive, loaded into this step's store, and the
+# layer copies programs and files the tree holds. A commit that changes none of them is served
+# from t's cache.
+run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/host)\nexport SOURCE_DATE_EPOCH\nbash tools/ci/publish/host-build.sh /target/publish/host/binaries /target/publish/host-base /target/publish/host"
+needs = ["source-date-host", "host-base", "host-binaries"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"
-git = true
 outputs = ["/target/publish/host/image.oci.tar", "/target/publish/host/digest", "/target/publish/host/rpms-source"]
-timeout_secs = 7200
+timeout_secs = 3600
 default = false
 
 [[check]]
 name = "test-image-host"
-# Pulls and builds container images whose packages come from mirrors and registries no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# No network: it pulls the image out of the archive image-host left and runs what is in it.
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = "bash os/tests/host_image.sh /target/publish/host/image.oci.tar"
 needs = ["image-host"]
@@ -6310,6 +6344,58 @@ requires = ["arch=x86_64"]
 isolation = "vm"
 timeout_secs = 1800
 default = false
+
+# The server image's release, asked for and never run by a tag or a change: build it (host-base,
+# host-binaries, image-host), prove it (test-image-host in a container, host-assurance-x86_64 by
+# installing and booting it), sign it with the release key and publish it as
+# registry.tilo.so/tilo/tilo-host. As the desktop's OS release, someone runs it on a release tag,
+# one step at a time: a release builds a commit whose server checks passed, and the boot proof is
+# a need, not a step someone remembers.
+#
+# `t dispatch publish-host --ref tag:vX.Y.Z --publish` is the whole release, and one step may be
+# dispatched alone on a tag whose own run stopped there. The tags never move a published image:
+# sha-<commit> names the build once, <version> the release, and latest follows only a final
+# version (oci-publish.sh). A dispatch elsewhere signs and publishes nothing: the release key's
+# role trusts v* tags, and oci-sign.sh refuses an image built from an RPM set no release published.
+[[check]]
+name = "sign-host"
+# Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-host /target/publish/host"
+needs = ["image-host", "test-image-host", "host-assurance-x86_64", "signing-tools"]
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
+outputs = ["/target/publish/host/payload.json", "/target/publish/host/signature", "/target/publish/host/dry-run.pub", "/target/publish/host/bundle.json"]
+on = ["dispatch"]
+heavy = true
+id_token = ["sts.amazonaws.com"]
+
+[[check]]
+name = "publish-host"
+# Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-host /target/publish/host '{version}' 'sha-{commit}' 'final:latest'"
+needs = ["image-host", "sign-host", "signing-tools"]
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+outputs = ["/target/publish/host/receipt.json"]
+on = ["dispatch"]
+heavy = true
+id_token = ["registry.tilo.so"]
+
+# The release path rehearsed with no credentials: the image is signed with a throwaway key and
+# published into a local OCI layout as a release tag of this tree would, and the published image
+# is verified as its consumers verify it (oci-sign.sh's and oci-publish.sh's dry runs). It reads
+# the tree's T_REF as the tag the run pretends to be, so it also runs from a branch.
+[[check]]
+name = "host-release-rehearsal"
+run = "set -euo pipefail\nwork=/target/host-release-rehearsal\nrm -rf \"$work\"\nmkdir -p \"$work/image\" \"$work/registry\"\ncp /target/publish/host/image.oci.tar /target/publish/host/digest /target/publish/host/rpms-source \"$work/image/\"\nexport T_REF=tag:v0.0.0\nexport TILO_PUBLISH_DRY_RUN=$work/registry\nbash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-host \"$work/image\"\nbash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-host \"$work/image\" '0.0.0' 'sha-{commit}' 'final:latest'\n"
+needs = ["image-host", "test-image-host", "signing-tools"]
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+requires = ["arch=x86_64"]
+outputs = ["/target/host-release-rehearsal/**"]
+on = ["dispatch"]
+heavy = true
+
 
 # The server image proves itself by booting: the machine serves (the hosted-VM
 # service binds its socket, the boot judges itself by the server probe, updates

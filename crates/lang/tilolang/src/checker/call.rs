@@ -2748,6 +2748,9 @@ impl Checker<'_> {
                 self.reads(crate::effects::Effect::Time, span, "`clock`");
                 Ex::host(Imp::TimeClock, vec![r], Ty::Text)
             }
+            // A day or a moment as a machine reads it (`2026-06-29`, `2026-06-29T16:00:00Z`): the
+            // stored text, which sorts in time order and parses back with `Date` or `Time`.
+            (Ty::Date | Ty::Time, "iso") if args.is_empty() => r.typed(Ty::Text),
             // A length of time as the seconds it is, which is how a record keeps one.
             (Ty::Duration, "seconds") if args.is_empty() => r.typed(Ty::Int),
             (Ty::Actor, "name") if args.is_empty() => Ex::host(Imp::ActorName, vec![r], Ty::Text),

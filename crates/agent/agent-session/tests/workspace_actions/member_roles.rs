@@ -99,7 +99,7 @@ impl WorkspaceDocumentsLink for Membership {
     fn user_public_key(&self) -> [u8; 32] {
         self.member.endpoint.host_cert.user_public_key
     }
-    fn host_device(&self) -> HostDevice {
+    fn own_device(&self) -> HostDevice {
         self.member.clone()
     }
     fn admits(&self, _workspace: WorkspaceId, caller: &Caller) -> bool {

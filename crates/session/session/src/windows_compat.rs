@@ -54,6 +54,12 @@ pub struct Display {
     /// What each kept program's network proxy was last told to allow, by its control socket, so
     /// only a change is sent and a grant taken back cuts the connections it allowed.
     networks: Mutex<std::collections::BTreeMap<PathBuf, SentPolicy>>,
+    /// The filtered egress this desktop serves for the Windows appliance presentations it
+    /// adopted: their listener lived in the desktop that started them.
+    vm_networks: compat_service::VmNetworkLeases,
+    /// What the adopted presentations' egress was last served with, so a pass that changes
+    /// nothing neither reads their files nor touches their listeners.
+    vm_networks_served: Mutex<Vec<(PathBuf, Vec<String>)>>,
 }
 
 /// How a saved tab's Windows program is found: ready to start, still waiting for the service to
@@ -219,6 +225,21 @@ impl Display {
         }
     }
 
+    /// Serve the filtered egress of the adopted Windows appliance presentations in `wanted` —
+    /// each launch's keeper directory and the names its workspace grants it now — and of nothing
+    /// else: a launch that is gone, or a grant taken back, leaves its guest offline rather than
+    /// unfiltered.
+    pub(crate) fn adopt_vm_networks(&self, wanted: Vec<(PathBuf, Vec<String>)>) {
+        {
+            let mut served = self.vm_networks_served.lock_recover();
+            if *served == wanted {
+                return;
+            }
+            served.clone_from(&wanted);
+        }
+        self.vm_networks.adopt(wanted);
+    }
+
     /// Keep what `control`'s proxy was last told: the policy it took, or that one it did not.
     #[expect(
         clippy::significant_drop_tightening,
@@ -314,11 +335,12 @@ impl Display {
         self.kept.asked.lock_recover().ends.insert(id, end);
     }
 
-    /// The launch `id` ended as `end` says: a program the service waits on is told.
-    pub(crate) fn ended(&self, id: u64, end: &tilo_app_launch::End) {
-        let ending = self.kept.asked.lock_recover().ends.remove(&id);
+    /// The launch `event` names ended: a program the service waits on is told how, with what it
+    /// said last.
+    pub(crate) fn ended(&self, event: &tilo_app_launch::Event) {
+        let ending = self.kept.asked.lock_recover().ends.remove(&event.id);
         if let Some(ending) = ending {
-            ending.give(outcome_of(end));
+            ending.give(outcome_of(event));
         }
     }
 
@@ -329,7 +351,7 @@ impl Display {
         &self,
         id: u64,
         launch: &tilo_app_launch::kept::KeptLaunch,
-        end: Option<&tilo_app_launch::End>,
+        end: Option<&tilo_app_launch::Event>,
     ) {
         let Some(entry_id) = launch
             .asked
@@ -360,14 +382,20 @@ impl Display {
 /// list. A later desktop reads the entry back from it.
 pub(crate) const ASKED_PREFIX: &str = "windows:";
 
-/// How the service reads an app's end.
-fn outcome_of(end: &tilo_app_launch::End) -> ExecutionOutcome {
+/// How the service reads an app's end: a program that failed carries the last of what it, or its
+/// sandbox, wrote on its error stream, which reached the keeper's log rather than the service.
+fn outcome_of(event: &tilo_app_launch::Event) -> ExecutionOutcome {
+    let end = &event.end;
     ExecutionOutcome {
         success: !end.crashed(),
         exit_code: match end {
             tilo_app_launch::End::Exited { code, .. } => Some(*code),
             tilo_app_launch::End::Signalled { .. } | tilo_app_launch::End::Failed(_) => None,
         },
+        said: end
+            .crashed()
+            .then(|| compat_service::last_words(&event.said.stderr))
+            .flatten(),
     }
 }
 

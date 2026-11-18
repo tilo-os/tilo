@@ -5,6 +5,17 @@
 # of. A use of Tilo's own concept never goes here: rename it.
 
 [[allow]]
+reason = "The dialer's name for the network host it reaches, which the glossary keeps as a network host name."
+words = ["host"]
+identifiers = ["Host", "host"]
+paths = ["crates/system/tilo-cli/src/server.rs"]
+
+[[allow]]
+reason = "systemd's runtime directory, its own name."
+words = ["run"]
+paths = ["crates/server/tilo-server/src/operations.rs"]
+
+[[allow]]
 reason = "The hosted-VM service's load of the machine running its VMs, which the glossary keeps as host."
 words = ["host"]
 identifiers = ["HostLoad"]
@@ -77,6 +88,7 @@ paths = [
     "crates/server/tilo-server/src/agents.rs",
     "crates/server/tilo-server/src/daemon.rs",
     "crates/server/tilo-server/src/web_cli.rs",
+    "crates/server/tilo-server/src/servers/device.rs",
     "crates/server/tilo-server/src/web/mod.rs",
     "crates/server/tilo-workspace-service/Cargo.toml",
     "crates/platform/tilo-net-p2p/src/lib.rs",
@@ -664,3 +676,75 @@ reason = "The server fixture's own device, as the shared API fixture names its f
 words = ["host"]
 identifiers = ["host"]
 paths = ["crates/agent/agent-session/tests/workspace_actions/key_writes.rs"]
+
+[[allow]]
+reason = "t's name for this check and the image it tests, the console of the VM it boots the image in, and the boot-assessment runner's own variable naming the unit it breaks: names those tools give them, not Tilo concepts."
+words = ["host", "run", "record", "subject"]
+paths = ["tools/ci/host-assurance.sh"]
+
+[[allow]]
+# The server OS image's established names: Containerfile.host, image-host,
+# test-image-host, host-binaries, host-build.sh, host-base.sh and
+# host-assurance-x86_64. They name the machine running workspaces' VMs, which
+# the glossary calls the server now, and the names are what the tree's checks
+# and files already answer to; renaming them is a tree-wide change of its own.
+reason = "The server OS image's established file and check names."
+words = ["host"]
+paths = [
+    "t.toml",
+    "docs/release-pipeline.md",
+    "os/Containerfile.host",
+    "os/Containerfile.host-base",
+    "os/build-host.sh",
+    "os/dev/derive-rpm-package-set.py",
+    "os/tests/containerfile_sources.sh",
+    "os/tests/no_openssl_runtime.sh",
+    "os/tests/rpm_snapshot_invariants.sh",
+    "tools/ci/publish/host-base.sh",
+    "tools/ci/publish/host-build.sh",
+    "tools/signing/release_trust.py",
+]
+
+[[allow]]
+reason = "The wasm engine's names for what answers a module's imports (`Host`) and what one of them answers (`HostFail`): an ABI the engine crate fixes, not Tilo's concept."
+words = ["host"]
+identifiers = ["Host", "HostFail"]
+
+[[allow]]
+reason = "The workspace service's own names for this device's identity (`inner.host`) and the state each governed workspace keeps (`governed.record`), which every writer of the service reads."
+words = ["host", "record"]
+identifiers = ["host", "record"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces/packaged_model.rs"]
+
+[[allow]]
+reason = "The service's test fixture starts a certified device (`test_host`), a name its other tests share."
+words = ["host"]
+identifiers = ["test_host"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces/packaged_model_tests.rs"]
+
+[[allow]]
+reason = "The domain bytes a genesis change is hashed under, fixed before the word was retired; a different domain forks every resource created since."
+words = ["record"]
+identifiers = ["record"]
+paths = ["crates/sdk/tilo-resource/src/genesis.rs"]
+
+[[allow]]
+reason = "iroh's NAT and packet relay: a device's address for one of its others to dial is its endpoint id and the packet relay that reaches it."
+words = ["relay"]
+paths = [
+    "crates/collab/tilo-user-identity/src/enrollment.rs",
+    "crates/server/tilo-server/src/enroll.rs",
+    "crates/server/tilo-server/src/enroll_transport.rs",
+    "crates/server/tilo-server/src/enroll_transport_tests.rs",
+    "crates/server/tilo-server/src/enroll_tests.rs",
+]
+
+[[allow]]
+reason = "The nonce store's own record call, which marks a token spent; the name is the store's API."
+words = ["record"]
+paths = ["crates/server/tilo-server/src/enroll.rs"]
+
+[[allow]]
+reason = "A test's readiness handoff between two threads, which is what mpsc's channel is."
+words = ["channel"]
+paths = ["crates/server/tilo-server/src/enroll_transport_tests.rs"]

@@ -106,9 +106,9 @@ pub(crate) fn result(
     ui_core::history_source::verbs::result(action, doc, patches, &ThreadWords)
 }
 
-/// The parts of the chains a window's views opened, as its History lists them with the window's
-/// document: `storage` holds the chains, `preview` draws a part's version in the window's view, and
-/// `record` is the window's record, beside which a chain may be kept.
+/// The parts of the chains a window's views opened, whose versions its History shows and restores:
+/// `storage` holds the chains, `preview` draws a part's version in the window's view, and `record` is
+/// the window's record, beside which a chain may be kept.
 pub(crate) struct ChainHistory {
     pub(crate) storage: std::rc::Weak<super::settings::ViewStorage>,
     pub(crate) preview: super::preview::PartPreview,
@@ -116,19 +116,6 @@ pub(crate) struct ChainHistory {
 }
 
 impl ui_core::history_mode::HistoryParts for ChainHistory {
-    fn heads(&self) -> Vec<ChangeHash> {
-        self.storage
-            .upgrade()
-            .map(|storage| {
-                storage
-                    .read_chain_parts(&ui_core::automerge::transaction::Transactable::base_heads)
-                    .into_iter()
-                    .flat_map(|(_, heads)| heads)
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
     fn documents(&self) -> Vec<(ui_core::history_mode::HistoryPart, AutoCommit)> {
         self.storage
             .upgrade()

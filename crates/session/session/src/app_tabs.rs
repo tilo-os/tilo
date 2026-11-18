@@ -1195,11 +1195,6 @@ impl Answers<'_> {
             FloatingSurfaceClientMessage::DeviceShellOutcome { .. } => {
                 refuse(&reply, &app, &name, NO_DEVICE);
             }
-            // What is kept of a window's changes, in the person's words: the session keeps no model
-            // to describe them with.
-            FloatingSurfaceClientMessage::DescribeHistory { .. } => {
-                refuse(&reply, &app, &name, NO_HISTORY);
-            }
             // The app under the pointer did not scroll with a sideways wheel: the strip its window
             // stands in pans by it, as a wheel over the strip's own canvas does. Nothing to answer
             // — the app took what it scrolled with, and this is what it left.
@@ -1395,9 +1390,6 @@ const NO_AGENT: &str = "this session asks no window about a selection";
 
 /// An app answered a device-shell operation.
 const NO_DEVICE: &str = "this session runs no device-shell operation here";
-
-/// An app asked for its changes described.
-const NO_HISTORY: &str = "this session describes no history";
 
 /// A second greeting on a connection whose version was read when it opened.
 const SAID: &str = "this connection said its version when it opened";

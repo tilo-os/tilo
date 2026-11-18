@@ -197,8 +197,10 @@ windows-app-status-uninstalled = Uninstalled, data kept
 ## sentence, and one that stopped by itself names the status to quote.
 
 windows-ended-with-error = { $app } stopped with an error (status { $status }).
+windows-ended-with-error-saying = { $app } stopped with an error (status { $status }): { $said }
 windows-ended-could-not-open = { $app } could not open: { $reason }
 windows-ended-stopped = { $app } stopped.
+windows-ended-stopped-saying = { $app } stopped: { $said }
 
 windows-confidence-verified = Verified
 windows-confidence-community = Community tested

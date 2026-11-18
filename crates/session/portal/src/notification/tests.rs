@@ -317,7 +317,10 @@ async fn bed() -> Bed {
         authenticator,
         tilo_documents::Documents::new(),
     )
-    .with_consents(crate::consent::Consents::new(questions, None));
+    .with_consents(crate::consent::Consents::new(
+        questions,
+        tilo_peer_state::DeviceGrants::unkept(),
+    ));
     let notifications = Notifications::new();
     serve_on(&portal, &backend, notifications.clone())
         .await

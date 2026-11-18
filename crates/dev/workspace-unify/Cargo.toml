@@ -1310,6 +1310,7 @@ doc = false
 "tilo-settings-records" = { path = "../../../crates/platform/tilo-settings-records", default-features = false, features = ["watch"] }
 "tilo-settings-service" = { path = "../../../crates/session/settings-service", default-features = false, features = [] }
 "tilo-sheets" = { path = "../../../crates/session/sheets", default-features = false, features = [] }
+"tilo-shell-surface" = { path = "../../../crates/session/shell-surface", default-features = false, features = [] }
 "tilo-sort" = { path = "../../../crates/platform/tilo-sort", default-features = false, features = [] }
 "tilo-speaker-service" = { path = "../../../crates/session/speaker-service", default-features = false, features = [] }
 "tilo-spellcheck" = { path = "../../../crates/text/spellcheck", default-features = false, features = [] }

@@ -121,6 +121,16 @@
           "type": "reject"
         }
       ],
+      "registry.tilo.so/tilo/tilo-host": [
+        {
+          "type": "sigstoreSigned",
+          "keyPath": "/usr/share/tilo/cosign.pub",
+          "rekorPublicKeyPath": "/usr/share/tilo/release/rekor.pub",
+          "signedIdentity": {
+            "type": "matchRepository"
+          }
+        }
+      ],
       "registry.tilo.so/tilo/tilo-vm": [
         {
           "type": "reject"

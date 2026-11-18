@@ -276,8 +276,11 @@ mkdir -p "$work/wants" "$work/marker"
 cat >"$bin/systemctl" <<'EOF'
 #!/bin/sh
 echo "$*" >>"$HEALTH_LOG"
-case "$1" in cat|is-active|--failed) exit 0 ;; esac
-exit 1
+case "$1" in
+  show) case "$*" in *ActiveState*) echo active ;; *) exit 1 ;; esac ;;
+  cat|is-active|--failed) exit 0 ;;
+  *) exit 1 ;;
+esac
 EOF
 chmod 755 "$bin/systemctl"
 health() {
@@ -287,7 +290,7 @@ health() {
     TILO_BOOT_HEALTH_WANTS="$work/wants" "$@" "$libexec/tilo-boot-health" >/dev/null 2>&1
 }
 health
-if grep -q 'is-active --quiet multi-user.target' "$work/health.log"; then
+if grep -q 'show -p ActiveState --value multi-user.target' "$work/health.log"; then
   ok 'a board without an account is judged by multi-user.target'
 else
   bad 'a board without an account waited for something else'
@@ -295,7 +298,7 @@ fi
 ln -s /usr/lib/systemd/system/tilo-board-headless-session@.service \
   "$work/wants/tilo-board-headless-session@you.service"
 health
-if grep -q 'is-active --quiet tilo-board-headless-session@you.service' "$work/health.log" \
+if grep -q 'show -p ActiveState --value tilo-board-headless-session@you.service' "$work/health.log" \
    && ! grep -q greetd "$work/health.log"; then
   ok 'a board with an account is judged by its session, not the masked greeter'
 else

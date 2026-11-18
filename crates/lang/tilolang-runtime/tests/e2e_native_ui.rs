@@ -111,7 +111,7 @@ action rename(n: Note, t: Text) (label: "Rename", on: n.title != "") {
             assert_eq!(
                 rt.read(&t, "seen").unwrap(),
                 at,
-                "a Date interpolates as its ISO text"
+                "a moment interpolated reads as its stored text where nothing names its day"
             );
             assert_eq!(
                 rt.read(&t, "title").unwrap(),

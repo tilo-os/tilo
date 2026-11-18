@@ -30,6 +30,7 @@ mod session;
 mod store;
 mod translated;
 mod vm_adapter;
+mod vm_network;
 
 pub use assembly::{Assembly, LazyVmDelegate, SessionSide, serve};
 pub use catalogue::{
@@ -37,7 +38,7 @@ pub use catalogue::{
 };
 pub use execute::{
     BwrapExecutor, ChildProgram, ExecutionError, ExecutionOutcome, SECCOMP_CHILD_FD,
-    SandboxCommand, SandboxExecutor, StartedProgram,
+    SandboxCommand, SandboxExecutor, StartedProgram, last_words,
 };
 pub use installer::{
     InstallerError, InstallerInspection, MAX_INSTALLER_BYTES, PeMachine, inspect_installer,
@@ -78,3 +79,4 @@ pub use vm_adapter::{
     LiveVmDelegate, PortalRailPortalAuthority, RAIL_PRESENTER, SharedSessionCapabilityBroker,
     VmPortalAuthority, VmSharedSessionTracker, vm_app_id, vm_entry_id,
 };
+pub use vm_network::VmNetworkLeases;

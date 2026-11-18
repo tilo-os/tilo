@@ -275,8 +275,33 @@ pub(super) fn action_row(action: &ActionDescriptor) -> Value {
     row
 }
 
-pub(super) fn action_rows(actions: &[ActionDescriptor]) -> Vec<Value> {
-    actions.iter().map(action_row).collect()
+/// One action of a listing of what a thing holds, typed: what it is called, what it may reach,
+/// and each thing it takes by its name and type with whether it must be given. What a
+/// parameter means, its choices and its schema are answered where that one action is asked for
+/// ([`action_row`]): said of every action of every kind on a page they were nine tenths of a
+/// listing, and its rows stood behind them.
+pub(super) fn action_named(action: &ActionDescriptor) -> Value {
+    let takes: Vec<Value> = action
+        .params
+        .iter()
+        .map(|param| {
+            json!({
+                "name": param.name,
+                "ty": param.ty,
+                "required": param.required,
+            })
+        })
+        .collect();
+    json!({
+        "id": action.address.action,
+        "label": action.action_label,
+        "params": takes,
+        "kind": action.contract.kind,
+    })
+}
+
+pub(super) fn actions_named(actions: &[ActionDescriptor]) -> Vec<Value> {
+    actions.iter().map(action_named).collect()
 }
 
 /// What an invocation's final update says, as an agent reads it.

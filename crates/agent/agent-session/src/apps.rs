@@ -254,6 +254,10 @@ pub enum ReplicaActor {
         /// The name the agent acting for the person goes by, as its admission certified it,
         /// when an agent acts (`access`'s acting names it, in its session).
         agent_name: Option<String>,
+        /// The device the person's work is admitted on, when the caller names this device:
+        /// a server taking a member's work under their delegation. History names it as where
+        /// the change was made ([`tilo_actions::ActionInvoker::device`]).
+        device: Option<tilo_actions::InvokerDevice>,
     },
 }
 
@@ -1661,6 +1665,7 @@ fn replica_access(
             sandbox,
             unix_time,
             agent_name,
+            device,
         } => {
             if access.acting.is_agent() {
                 // The agent's changes name it as it was admitted (`Caller::acting`): for the
@@ -1668,6 +1673,9 @@ fn replica_access(
                 // reads the agent, and every receiver decides its changes as this access does.
                 invoker = tilo_actions::ActionInvoker::admitted(&access.acting).named(agent_name);
             }
+            // Where the work was made, when the caller named this device: a server taking
+            // a member's work under the delegation that admits it.
+            invoker.device = device;
             member_permissions(access, sandbox, unix_time)
         }
     };

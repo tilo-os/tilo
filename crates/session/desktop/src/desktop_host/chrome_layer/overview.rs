@@ -10,6 +10,11 @@ impl DesktopChrome {
     pub(super) fn overview(&self) -> OverviewCards {
         let mut shell = OverviewCards::of(self.cards());
         shell.can_join = self.may_join_workspace();
+        // Each window's size on its display, as the shell laid it out: the picture of the window
+        // keeps its shape by it, so every card fills with the window it pictures at the window's
+        // own aspect rather than at a share of the display. A window the shell does not draw here
+        // (its strip is not on screen) is absent, and the panel pictures it at its share.
+        shell.group_sizes = self.handle.group_sizes().into_iter().collect();
         let ids: std::collections::HashMap<WorkspaceId, String> = self.handle.read(|tree| {
             tree.workspaces
                 .iter()

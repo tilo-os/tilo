@@ -57,6 +57,7 @@ tilo_test_env::scenario! {
             1_300_000,
             1_800_000, // expires in the future
             [0xAA; 16],
+            vec![],
             &primary_sk,
         )
         .unwrap();

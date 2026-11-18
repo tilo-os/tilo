@@ -171,10 +171,26 @@ pub fn shown_case(node: &UiNode, value: &str) -> Option<String> {
     }
 }
 
-/// How the stored `value` of a day or a time of day (`kind` is `date` or `time`) reads in a
-/// sentence where no view can stand beside it: a day as the day fact (`Today`, `Friday`, `Jun 29`),
-/// a time of day as a list shows when something came. Anything else, and text that is not a day or
-/// an instant, stays as stored.
+/// How the stored `value` of a day or a time of day (`kind` is `date` or `time`) reads where a
+/// sentence names it, in the person's formats: a day as `Jun 29` (`Jun 29, 2025` another year), a
+/// moment as `Jun 29, 6:00 PM`. What `ui::format::sentence_date` and `ui::format::sentence_moment`
+/// write, so a program's text and a window's words agree. Anything else, and text that is not a
+/// day or an instant, stays as stored.
+#[must_use]
+pub fn sentence_text(kind: &str, value: &str) -> String {
+    tilo_formats::sentence(
+        kind,
+        value,
+        ui::format::region::current(),
+        ui::clock::today(),
+        i64::from(ui::clock::local_now().offset().seconds()),
+        ui::format::words(),
+    )
+}
+
+/// How the stored `value` of a day or a time of day reads in a row or a notice where no view can
+/// stand beside it: a day as the day fact (`Today`, `Friday`, `Jun 29`), a time of day as a list
+/// shows when something came. Anything else stays as stored.
 #[must_use]
 pub fn shown_text(kind: &str, value: &str) -> String {
     let now = ui::clock::local_now();

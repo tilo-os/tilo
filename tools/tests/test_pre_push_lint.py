@@ -321,6 +321,35 @@ class PrePushLintTests(unittest.TestCase):
             "clippy --locked --target wasm32-unknown-unknown -p fixture-web -- -D warnings",
         ]))
 
+    def test_a_profile_section_for_one_member_lints_only_that_member(self):
+        # `[profile.release.package.X]` decides how X alone is built, so a
+        # section that moves from a package the workspace no longer has to a
+        # member names that member, not every member of the workspace.
+        self.write("Cargo.toml", WORKSPACE
+                   + '\n[profile.release.package.fixture-gone]\nstrip = "symbols"\n')
+        self.commit("chore: strip a package's symbols")
+        self.base = self.head()
+        self.write("Cargo.toml", WORKSPACE
+                   + '\n[profile.release.package.fixture-web]\nstrip = "symbols"\n')
+        self.commit("refactor: the web member is the one shipped stripped")
+        result = self.push()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("workspace-wide lint", result.stderr)
+        self.assertEqual([call for call in self.calls() if "-p fixture-native" in call], [],
+                         "a section for another member did not reach the native member")
+        self.assertTrue([call for call in self.calls() if "-p fixture-web" in call],
+                        "the member whose section changed was not linted")
+
+    def test_a_profile_change_for_every_member_refuses_the_push(self):
+        # A setting at the profile's own level is how every member is built,
+        # and nothing in the tree lints all of them here.
+        self.write("Cargo.toml", WORKSPACE + '\n[profile.release]\nstrip = "symbols"\n')
+        self.commit("chore: strip every member")
+        result = self.push()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("only a workspace-wide lint", result.stderr)
+        self.assertEqual(self.calls(), [])
+
     def test_the_lint_gets_the_features_the_workspace_builds_with(self):
         # A member's code behind a feature no default build enables is compiled
         # only with the features the workspace's whole build resolves for it.

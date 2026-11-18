@@ -1128,10 +1128,9 @@ fn device_options(
         search: search_options(std::sync::Arc::clone(&content)),
         lists: tilo_session::Lists::of_device(),
         content,
-        // The apps this session starts reach its services over the socket the launcher hands them;
-        // a session inside another desktop's window serves them on a socket of its own, leaving
-        // that desktop's alone.
-        app_socket: AppSocket::for_machine(machine),
+        // The apps this session starts reach its services over the socket the launcher hands them,
+        // in this session's runtime directory.
+        app_socket: AppSocket::Launcher,
         // A program of this login asks the MCP server of the person at this device to work in a workspace
         // as an agent; a session in another desktop's window serves none.
         mcp_server: owned.then(tilo_session::mcp_server::path).flatten(),

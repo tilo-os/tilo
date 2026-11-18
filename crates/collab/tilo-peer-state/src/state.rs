@@ -88,6 +88,8 @@ mod native_publication;
 mod publication;
 mod workspace_grants;
 pub use workspace_grants::workspace_grants_of;
+mod work_delegations;
+pub use work_delegations::work_delegations_of;
 mod keeping_devices;
 pub use keeping_devices::{
     WORKSPACE_KEEPING_DEVICES_KEY, holder_role, keeping_device_keys_of, keeping_devices_of,
@@ -99,6 +101,7 @@ mod workspace_settings;
 use held::Held;
 pub use held::{MAX_HELD_BYTES, MAX_HELD_INPUTS};
 pub use native_publication::NativePublicationCut;
+pub use personal::device_grants::{DEVICE_ANSWERS_KIND, DeviceAnswer, DeviceGrants, Kept};
 pub use personal::link::{AdmittedFrame, PERSONAL_ALPN, PersonalSync};
 pub use personal::scopes::{device_resource, resource_owner};
 pub use personal::{

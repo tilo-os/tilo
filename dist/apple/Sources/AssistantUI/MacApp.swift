@@ -134,9 +134,10 @@ public final class MacApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NS
         return false
     }
 
-    /// The address a live activity or a notification leads to.
+    /// An address of the app's own: where a live activity or a notification leads, or a
+    /// pairing link handed over by Tilo's page.
     public func application(_ application: NSApplication, open urls: [URL]) {
-        for url in urls { LiveLink.open(url, in: model) }
+        for url in urls { AppAddress.open(url, in: model) }
     }
 
     /// Keep the menu-bar item's number, the icon's and the question about notifications in line

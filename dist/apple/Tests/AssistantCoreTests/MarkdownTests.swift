@@ -82,6 +82,29 @@ final class MarkdownTests: XCTestCase {
         XCTAssertEqual(Markdown.plain("Call Jonas."), "Call Jonas.")
     }
 
+    func testCopiedWordsArePlainAndKeepEveryLine() {
+        // Markdown's own signs go and the line stays; a link's address follows its words.
+        XCTAssertEqual(Markdown.copied("**Maya** asks for `x`,\nsee [this](https://tilo.sh)."),
+                       "Maya asks for x,\nsee this (https://tilo.sh).")
+        // A list keeps its entries, each on its line, with the round sign a bubble draws.
+        guard case .message(let rundown) = Drawing.mainChat[0].content else { return XCTFail("the rundown is a message") }
+        XCTAssertEqual(Markdown.copied(rundown.text), """
+            Good morning. Today:
+            • 10:30 Northwind, with a rundown on the fund 15 minutes before.
+            • 14:00 Atlas, moved from Wednesday.
+            • Open two things wait for your yes.
+            """)
+        // A heading, two lines of a paragraph, a list with its numbers, a quote, and code as it was
+        // written, without its fence.
+        XCTAssertEqual(Markdown.copied("# Title\n\none\ntwo\n\n3. c\n4. d\n> q\n```\ncode\n  more\n```"),
+                       "Title\n\none\ntwo\n\n3. c\n4. d\nq\ncode\n  more")
+        XCTAssertEqual(Markdown.copied("Try:\n```sh\ncargo test\n```\nThen say so."), "Try:\ncargo test\nThen say so.")
+        XCTAssertEqual(Markdown.copied("```\n  let x = 1\n```"), "  let x = 1")
+        // What is no Markdown stays as it was typed.
+        XCTAssertEqual(Markdown.copied("snake_case, 2 * 3 and https://tilo.sh/a_b"), "snake_case, 2 * 3 and https://tilo.sh/a_b")
+        XCTAssertEqual(Markdown.copied("Call Jonas."), "Call Jonas.")
+    }
+
     func testAMessageIsCutIntoBlocks() {
         guard case .message(let rundown) = Drawing.mainChat[0].content else { return XCTFail("the rundown is a message") }
         XCTAssertEqual(Markdown.blocks(in: rundown.text), [

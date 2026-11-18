@@ -86,6 +86,168 @@ pub enum HomePeerManagementRequest {
         /// Where the asking server is dialled.
         endpoint: iroh_base::EndpointAddr,
     },
+    /// Do one thing an owner does to their server from another of their
+    /// devices.
+    Operate(ServerOperation),
+}
+
+/// One thing the person who owns a server asks it to do from another of their
+/// devices. Every one of these is an ordinary management request: only the
+/// server's own person reaches the route, and each answers with what it found
+/// or did.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ServerOperation {
+    /// What it serves and how its copies stand, how it unlocks, whether it
+    /// takes work and how its updates are, read live.
+    Status,
+    /// The last `lines` journal lines of `service`.
+    Logs {
+        /// The systemd unit whose journal to read.
+        service: String,
+        /// How many lines back to read, at most 500.
+        lines: u32,
+    },
+    /// Restart `service`.
+    Restart {
+        /// The systemd unit to restart.
+        service: String,
+    },
+    /// Reboot the machine.
+    Reboot,
+    /// Fetch and stage the newest update now, instead of waiting for the
+    /// update timer.
+    Update,
+    /// Stop taking OS updates.
+    PauseUpdates,
+    /// Follow OS updates again.
+    ResumeUpdates,
+    /// Boot the previous system from now on.
+    Rollback,
+    /// Suspend its workspaces' Linux machines and hand their work off.
+    Drain,
+}
+
+/// What a server answers an operation with.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerOperationResult {
+    /// What was asked, in one word: `status`, `logs`, `restart`, `reboot`,
+    /// `update`, `pause-updates`, `resume-updates`, `rollback` or `drain`.
+    pub operation: String,
+    /// Whether the server did it now. `false` when it asked a root helper
+    /// to do something that ends or changes a boot, where an immediate answer
+    /// would not survive the machine going down.
+    pub done: bool,
+    /// One sentence a person reads.
+    pub summary: String,
+    /// What it read, when the operation read something.
+    pub answer: ServerAnswer,
+}
+
+impl ServerOperationResult {
+    /// The answer of a request that was not an operation.
+    #[must_use]
+    pub fn nothing() -> Self {
+        Self {
+            operation: String::new(),
+            done: true,
+            summary: String::new(),
+            answer: ServerAnswer::Nothing,
+        }
+    }
+}
+
+/// What an operation read, if anything.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ServerAnswer {
+    /// Nothing: the operation changed something.
+    Nothing,
+    /// Text it read: a service's journal.
+    Text(String),
+    /// The server as it is now.
+    Status(Box<ServerStatus>),
+}
+
+/// A server as it is now.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerStatus {
+    /// The machine's name on its network.
+    pub hostname: String,
+    /// How long it has been up, in seconds.
+    pub uptime_seconds: u64,
+    /// The image it booted.
+    pub booted_image: String,
+    /// The image an update staged, empty when none is staged.
+    pub staged_image: String,
+    /// The updates it follows (`stable` or `dev`), empty for the ones its
+    /// image came with.
+    pub updates: String,
+    /// Whether its update timer is stopped.
+    pub updates_paused: bool,
+    /// The image it restarted into while it held its person's update lease,
+    /// empty when none is pending.
+    pub pending_update: String,
+    /// How it unlocks after a boot: `owner-device`, `tpm` or `passphrase`.
+    pub unlock: String,
+    /// The workspaces it holds, and how each one's copies stand.
+    pub holding: Vec<HeldWorkspace>,
+    /// The machine it is.
+    pub hardware: ServerHardware,
+    /// What was asked of it recently, newest first.
+    pub history: Vec<OperationEntry>,
+}
+
+/// One workspace a server holds, and how its copies stand.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldWorkspace {
+    /// The workspace's id.
+    pub workspace: String,
+    /// The workspace's name.
+    pub name: String,
+    /// Each holder of it, with its role.
+    pub holders: Vec<HeldCopy>,
+    /// What falls short of the copies its owners chose, in words.
+    pub shortfall: Vec<String>,
+}
+
+/// One holder's copy of a workspace.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldCopy {
+    /// The holder's device key, in lowercase hex.
+    pub device: String,
+    /// Its role: `key-holder` or `store`.
+    pub role: String,
+    /// Whether its copy is current.
+    pub current: bool,
+}
+
+/// The machine a server is.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerHardware {
+    /// The product the firmware names.
+    pub product: String,
+    /// Its processor.
+    pub cpu_model: String,
+    /// How many processors it has.
+    pub cpus: u32,
+    /// Its memory, in megabytes.
+    pub memory_mb: u64,
+    /// Free storage under its state root, in gigabytes.
+    pub storage_free_gb: u64,
+    /// Total storage under its state root, in gigabytes.
+    pub storage_total_gb: u64,
+}
+
+/// One operation a server was asked to do, as it keeps them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationEntry {
+    /// When it was asked, in nanoseconds since the epoch.
+    pub at_ns: u64,
+    /// What was asked, in one word.
+    pub operation: String,
+    /// What the server answered, in one sentence.
+    pub summary: String,
+    /// Whether it was carried out.
+    pub done: bool,
 }
 
 /// Authenticated result returned by a home peer.
@@ -104,6 +266,9 @@ pub struct HomePeerManagementResponse {
     pub services: crate::mesh::ServiceCapabilities,
     /// Whether this response completed permanent decommissioning.
     pub decommissioned: bool,
+    /// What an [`HomePeerManagementRequest::Operate`] found or did; nothing
+    /// for the other requests.
+    pub operation: ServerOperationResult,
 }
 
 /// A client must name the server workspace it is resolving. The host never exposes

@@ -6,7 +6,9 @@
 //! which workspaces it holds and how (an encrypted store or a key holder that
 //! takes work), how much it offers (storage, compute, machines), which updates
 //! it follows and when it may restart for maintenance, how it unlocks
-//! after a boot, and whether it was retired. Every change is a typed action on
+//! after a boot, whether it was retired, and the machine itself: its hostname,
+//! the drives it uses for what and how its network interfaces are set up
+//! ([`device`]). Every change is a typed action on
 //! that record ([`Servers`]), so it has history and an author, and the device
 //! admin route, an agent or a script change it the same way. A server applies
 //! what its entry says; nothing about it lives in a file of its own.
@@ -34,6 +36,7 @@ use tilo_user_identity::DeviceCert;
 use crate::workspaces::Workspaces;
 
 pub mod applied;
+pub mod device;
 pub mod policy;
 
 /// The admin workspace's record of the person's servers.
@@ -93,6 +96,9 @@ pub struct Server {
     /// The public half (PEM) of the key its TPM's rollback floor takes
     /// approvals from, as the server says; empty until it said.
     pub floor_key: String,
+    /// The machine itself: its hostname, the drives it uses and how its
+    /// network interfaces are set up ([`device::DeviceConfig`]).
+    pub device: device::DeviceConfig,
 }
 
 /// How a server holds one workspace.
@@ -278,6 +284,183 @@ impl Servers {
     #[action(external)]
     pub fn set_floor_key(&mut self, device: Id, key: String) -> Result<(), Refusal> {
         self.server(&device)?.floor_key = key;
+        Ok(())
+    }
+
+    /// Set the machine's hostname.
+    #[action(external)]
+    pub fn set_hostname(&mut self, device: Id, hostname: String) -> Result<(), Refusal> {
+        let hostname = device::valid_hostname(&hostname)?;
+        self.server(&device)?.device.hostname = hostname;
+        Ok(())
+    }
+
+    /// Use the drive `identity` (its serial or WWN) as `role`
+    /// ([`device::DISK_ROLES`]).
+    ///
+    /// `confirm` names the drive again to confirm erasing what it holds: a
+    /// drive used for something else already is erased to become this one, so
+    /// changing its role needs it. A machine has one system disk, and the disk
+    /// boots from is never repurposed.
+    #[action(external)]
+    pub fn use_disk(
+        &mut self,
+        device: Id,
+        identity: String,
+        role: String,
+        confirm: String,
+    ) -> Result<(), Refusal> {
+        let identity = device::valid_identity(&identity)?;
+        device::valid_role(&role)?;
+        let confirm = confirm.trim().to_owned();
+        if !confirm.is_empty() && confirm != identity {
+            return Err(Refusal::new(
+                "confirming a drive is naming its own serial or WWN",
+            ));
+        }
+        let erase = confirm == identity;
+        let disk = Id::from_raw(identity);
+        let server = self.server(&device)?;
+        if let Some(known) = server.device.disks.get(&disk)
+            && known.role != role
+        {
+            if known.role == device::SYSTEM {
+                return Err(Refusal::new(
+                    "a machine does not repurpose the disk it boots from",
+                ));
+            }
+            if !erase {
+                return Err(Refusal::new(
+                    "another role erases the drive; confirm it by naming its serial or WWN",
+                ));
+            }
+        }
+        if role == device::SYSTEM
+            && server
+                .device
+                .disks
+                .iter()
+                .any(|(known, held)| held.role == device::SYSTEM && known != &disk)
+        {
+            return Err(Refusal::new(
+                "a machine has one system disk; release the other first",
+            ));
+        }
+        match server.device.disks.get_mut(&disk) {
+            Some(held) => {
+                held.role = role;
+                held.erase = erase;
+            }
+            None => {
+                server.device.disks.push(disk, device::Disk { role, erase });
+            }
+        }
+        Ok(())
+    }
+
+    /// Stop using the drive `identity`; the disk boots from stays.
+    #[action(external)]
+    pub fn release_disk(&mut self, device: Id, identity: String) -> Result<(), Refusal> {
+        let disk = Id::from_raw(identity);
+        let server = self.server(&device)?;
+        if server
+            .device
+            .disks
+            .get(&disk)
+            .is_some_and(|held| held.role == device::SYSTEM)
+        {
+            return Err(Refusal::new("a machine keeps the disk it boots from"));
+        }
+        server.device.disks.remove(&disk);
+        Ok(())
+    }
+
+    /// Set up the interface `name`: addressed by the `addresses` it names
+    /// (`address/prefix`, comma separated), or by DHCP when it names none;
+    /// reached through `gateway`; using `dns` servers (comma separated); a
+    /// member of `bond` (empty for none; a member takes its addressing from the
+    /// bond). A name ending in `.<vlan>` tags the interface with it.
+    #[action(external)]
+    pub fn set_interface(
+        &mut self,
+        device: Id,
+        name: String,
+        addressing: String,
+        addresses: String,
+        gateway: String,
+        dns: String,
+        bond: String,
+    ) -> Result<(), Refusal> {
+        let name = name.trim().to_owned();
+        let interface =
+            device::valid_interface(&name, &addressing, &addresses, &gateway, &dns, &bond)?;
+        let interface_id = Id::from_raw(name);
+        let server = self.server(&device)?;
+        if !interface.bond.is_empty()
+            && server
+                .device
+                .network
+                .get(&Id::from_raw(interface.bond.clone()))
+                .is_none()
+        {
+            return Err(Refusal::new(
+                "a bond member names the interface its bond is set up on",
+            ));
+        }
+        if !interface.bond.is_empty()
+            && server
+                .device
+                .network
+                .iter()
+                .any(|(known, held)| known != &interface_id && held.bond == interface_id.as_str())
+        {
+            return Err(Refusal::new(
+                "an interface others are bonded to is no member",
+            ));
+        }
+        match server.device.network.get_mut(&interface_id) {
+            Some(held) => *held = interface,
+            None => {
+                server.device.network.push(interface_id, interface);
+            }
+        }
+        Ok(())
+    }
+
+    /// Stop configuring the interface `name`; the interfaces bonded to it stay
+    /// until they are let go.
+    #[action(external)]
+    pub fn release_interface(&mut self, device: Id, name: String) -> Result<(), Refusal> {
+        let name = name.trim().to_owned();
+        let interface = Id::from_raw(name);
+        let server = self.server(&device)?;
+        if server
+            .device
+            .network
+            .iter()
+            .any(|(known, held)| known != &interface && held.bond == interface.as_str())
+        {
+            return Err(Refusal::new(
+                "interfaces are bonded to it; let them go first",
+            ));
+        }
+        server.device.network.remove(&interface);
+        Ok(())
+    }
+
+    /// Say what a server's machine reported applying its configuration: the
+    /// `revision` of the request, an [`REPORT_STATES`](device::REPORT_STATES)
+    /// state, and what it applied or why not.
+    #[action(external)]
+    pub fn report_device_config(
+        &mut self,
+        device: Id,
+        revision: String,
+        state: String,
+        detail: String,
+    ) -> Result<(), Refusal> {
+        let status = device::valid_status(&revision, &state, &detail)?;
+        self.server(&device)?.device.status = status;
         Ok(())
     }
 

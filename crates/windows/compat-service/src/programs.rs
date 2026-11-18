@@ -7,7 +7,7 @@
 //! them on request.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use crate::{ExecutionError, ExecutionOutcome, ProgramEnd, StartedProgram};
 
@@ -34,7 +34,11 @@ struct Inner {
 
 /// The programs the service started.
 #[derive(Default)]
-pub(crate) struct Programs(Mutex<Inner>);
+pub(crate) struct Programs {
+    inner: Mutex<Inner>,
+    /// Told whenever a program ended.
+    ended: Condvar,
+}
 
 /// The sequence number of the first end a connection has not read.
 #[derive(Default)]
@@ -42,7 +46,7 @@ pub(crate) struct EndsRead(u64);
 
 impl Programs {
     fn inner(&self) -> MutexGuard<'_, Inner> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// `program`, of entry `entry_id` in `workspace_id`, is open from now on; [`Self::ended`] is told
@@ -86,6 +90,7 @@ impl Programs {
                 success: outcome.success,
                 exit_code: outcome.exit_code,
                 error: None,
+                said: outcome.said,
             },
             Err(error) => ProgramEnd {
                 entry_id: running.entry_id,
@@ -93,6 +98,7 @@ impl Programs {
                 success: false,
                 exit_code: None,
                 error: Some(error),
+                said: None,
             },
         };
         let sequence = inner.next_end;
@@ -100,6 +106,25 @@ impl Programs {
         inner.ended.push_back((sequence, running.workspace_id, end));
         while inner.ended.len() > KEPT_ENDS {
             inner.ended.pop_front();
+        }
+        drop(inner);
+        self.ended.notify_all();
+    }
+
+    /// Wait until no program started before the program `id` whose entry `waits_for` names is
+    /// open any more: a program that must not be open beside another starts once the ones before it
+    /// ended, in the order they were asked for.
+    pub(crate) fn wait_for_earlier(&self, id: u64, waits_for: impl Fn(&str) -> bool) {
+        let mut inner = self.inner();
+        while inner
+            .running
+            .iter()
+            .any(|(other, running)| *other < id && waits_for(&running.entry_id))
+        {
+            inner = self
+                .ended
+                .wait(inner)
+                .unwrap_or_else(PoisonError::into_inner);
         }
         drop(inner);
     }
@@ -206,6 +231,7 @@ mod tests {
             Ok(ExecutionOutcome {
                 success: false,
                 exit_code: Some(3),
+                said: None,
             }),
         );
         programs.ended(other, "Probe", Err("no display".to_owned()));

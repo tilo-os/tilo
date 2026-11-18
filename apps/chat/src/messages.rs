@@ -47,6 +47,42 @@ fn own(cx: &ActionCx, message: &Message) -> Result<(), Refusal> {
     }
 }
 
+/// Refuses anyone who does not end the share `message` carries. Its author ends it, as they
+/// change anything of their message. So does the person it was shared for
+/// ([`shared_for`]), when they invoke the verb themselves, on any device of theirs: an agent
+/// shares in its person's name, and that person takes the share back without removing the
+/// message. Nobody else does: not another member, not what acts for that person, and nobody
+/// for what was posted for several people at once.
+fn ends_share(cx: &ActionCx, message: &Message) -> Result<(), Refusal> {
+    let invoker = author(cx)?;
+    if invoker == message.author {
+        return Ok(());
+    }
+    let themselves = cx
+        .invoked_by()
+        .as_ref()
+        .is_none_or(tilo_actions::Acting::is_person);
+    let theirs = shared_for(message.acting.as_ref())
+        .is_some_and(|person| invoker.person_id() == Some(person));
+    if themselves && theirs {
+        Ok(())
+    } else {
+        Err(Refusal::new(
+            "only its sharer, or the person their agent shared it for, stops sharing a window",
+        ))
+    }
+}
+
+/// The one person the software that posted a message acted for, as the message keeps who wrote
+/// it for whom (`acting`: pinned from whoever invoked the verb that posted it, never an
+/// argument). None for a person's own message, for software that acted for nobody, and for
+/// what acted for several people at once.
+pub(crate) fn shared_for(acting: Option<&tilo_actions::Acting>) -> Option<&str> {
+    acting
+        .filter(|acting| !acting.is_person())
+        .and_then(crate::cause::led_to)
+}
+
 /// The longest name a delivered message is shown under.
 const MAX_SHOWN_NAME_BYTES: usize = 128;
 
@@ -446,15 +482,16 @@ impl ChatMessages {
 
     /// Stop sharing.
     ///
-    /// End a window you shared: the message keeps saying what was shared,
-    /// and no one sees or opens it from there any more.
+    /// End a window you shared, or one your own agent shared for you: the
+    /// message keeps saying what was shared, and no one sees or opens it
+    /// from there any more.
     #[action(item = messages)]
     pub fn stop_sharing(&mut self, cx: &mut ActionCx, message: &Id) -> Result<(), Refusal> {
         let row = self
             .messages
             .get_mut(message)
             .ok_or_else(|| Refusal::new("there is no such message"))?;
-        own(cx, row)?;
+        ends_share(cx, row)?;
         let share = row
             .share
             .as_mut()
@@ -1417,7 +1454,7 @@ impl Chained for ChatMessages {
 impl ChatMessages {
     /// The message `reply` answers, when `reply` is what an agent writes in answer on the
     /// attempt that goes now ([`reply_id_at`]): the message its turn's stop stands on.
-    fn answered_by(&self, reply: &Id) -> Option<Id> {
+    pub(crate) fn answered_by(&self, reply: &Id) -> Option<Id> {
         let row = self.messages.get(reply)?;
         row.work.as_ref()?;
         let thread = row.parent.as_ref()?;

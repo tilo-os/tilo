@@ -4,7 +4,7 @@
 use ui::kurbo::Rect;
 use ui::widget::{GroupRow, Widget as _};
 
-use super::{DesktopHandle, TabId};
+use super::{DesktopHandle, GroupId, TabId};
 
 impl DesktopHandle {
     /// Where each window the shell draws draws its active tab, in the surface's coordinates, as of
@@ -72,6 +72,18 @@ impl DesktopHandle {
     pub fn window_rect(&self, tab: TabId) -> Option<Rect> {
         self.shared.borrow().shown_tabs.window_rect(tab)
     }
+
+    /// Each window group's size on the display it is laid out on, as of the last layout: the tab's
+    /// content — the pixels the window draws — where the window has laid it out, and the whole
+    /// window where it has not. A group whose row is not drawn (its strip is not on screen, or its
+    /// display shows another strip) is not here; a host pictures it at the size its share of the
+    /// strip would give it. A picture of the window fills its card by this size: a card drawn from
+    /// it stands at the window's own aspect, so what the window shows fills the card rather than
+    /// leaving bars of ground round a smaller picture.
+    #[must_use]
+    pub fn group_sizes(&self) -> Vec<(GroupId, ui::kurbo::Size)> {
+        self.shared.borrow().shown_tabs.sizes()
+    }
 }
 
 /// Where a window the shell draws stands, and the bounds of the tab it shows.
@@ -79,6 +91,8 @@ impl DesktopHandle {
 struct ShownTab {
     /// The tab the window shows: the active one of its bar.
     tab: TabId,
+    /// The window group's own id, which a picture of it is named by.
+    group: GroupId,
     /// The window's whole frame: its bar, and the tab's content in it.
     window: Rect,
     /// The bounds of the tab's content, once its window laid it out.
@@ -113,6 +127,7 @@ impl ShownTabs {
                     let tab = group.active_tab_id();
                     ShownTab {
                         tab,
+                        group: group.id,
                         window: group.get_rect(),
                         content: group.content_rect_for_tab(tab),
                         bar_over_content: group.bar_over_content_rect(),
@@ -165,6 +180,16 @@ impl ShownTabs {
     pub(super) fn window_rect(&self, tab: TabId) -> Option<Rect> {
         let shown = self.0.iter().find(|shown| shown.tab == tab)?;
         Some(shown.window)
+    }
+
+    /// Each window group's size on its display: the tab's content where the window laid it out —
+    /// the pixels the window draws, which a picture of it shows — and the whole window where it has
+    /// not.
+    pub(super) fn sizes(&self) -> Vec<(GroupId, ui::kurbo::Size)> {
+        self.0
+            .iter()
+            .map(|shown| (shown.group, shown.content.unwrap_or(shown.window).size()))
+            .collect()
     }
 
     /// The top of the highest window's content: where banners start, below the windows' bars, which

@@ -1,7 +1,7 @@
 //! An app that is not Tilo's runs behind a keeper and stays running while the desktop restarts in
 //! place: the session that follows takes it back, and each of its windows returns to the tab it
 //! stood in, in the workspace the person had moved it to. A logout ends it, and so does a start that follows
-//! no restart, and a restart whose keeper stopped answering: nobody would take such an app back.
+//! no restart, and a restart whose keeper is gone or cannot be reached: nobody would take such an app back.
 //!
 //! Everything is real but the launcher: the session's own spawner and restore, a keeper (this
 //! test binary, run as one), and the app (this test binary again, a Wayland client of the keeper).
@@ -529,8 +529,105 @@ fn a_window_the_app_closed_while_no_desktop_was_there_closes_its_tab() {
     second.end(Teardown::Logout);
 }
 
+/// The kept app ends (a signal, so it stopped rather than closed) after the desktop went away
+/// for an in-place restart, and its keeper notes how: the app's one tab, by id.
+fn ended_while_away(rig: &Rig) -> TabId {
+    let mut first = rig.desktop(false);
+    rig.launch(&first);
+    let placed = shown_and_told(rig, &mut first, &["Only"]);
+    let (dir, pid, _) = rig.kept();
+    first.end(Teardown::InPlaceRestart);
+    signal(pid, libc::SIGTERM);
+    tilo_test_env::exited("the app, while no desktop is there", pid);
+    tilo_test_env::wait_until("its keeper notes the end", || dir.join("ended").exists());
+    placed[0].1
+}
+
 #[test]
-fn a_restart_ends_an_app_whose_keeper_stopped_answering() {
+fn an_app_that_ended_while_no_desktop_was_there_closes_its_tab_and_says_it_stopped() {
+    let _settled = ui::motion::testing::settled();
+    let rig = Rig::new(&["Only"]);
+    let tab = ended_while_away(&rig);
+    let [pid] = rig.starts()[..] else {
+        panic!("one start: {:?}", rig.starts());
+    };
+
+    let mut second = rig.desktop(true);
+    // Its end is told in a tab of its own, and the tab it stood in closes, as one the app closed
+    // itself would.
+    until(&mut second.session, "the stop is told", |session| {
+        tabs(session).iter().any(|(other, _)| *other != tab)
+    });
+    until(&mut second.session, "its tab closes", |session| {
+        !tabs(session).iter().any(|(other, _)| *other == tab)
+    });
+    for _ in 0..100 {
+        second.session.step(Duration::from_millis(1)).expect("step");
+    }
+    let shown: Vec<Option<TileContent>> = tabs(&second.session)
+        .into_iter()
+        .map(|(other, _)| tile_of(&second.session, other))
+        .collect();
+    assert!(
+        matches!(&shown[..], [Some(TileContent::AppPlaceholder { label, .. })] if label == APP),
+        "only the notice that it stopped: {shown:?}"
+    );
+    assert_eq!(rig.starts(), [pid], "and the app is not started again");
+    second.end(Teardown::Logout);
+}
+
+#[test]
+fn a_start_after_a_reboot_opens_the_tab_of_an_app_that_ended_again() {
+    let _settled = ui::motion::testing::settled();
+    let rig = Rig::new(&["Only"]);
+    let tab = ended_while_away(&rig);
+
+    // A start that follows no in-place restart has nothing running to keep: the saved tab opens
+    // its app again, in that tab.
+    let mut second = rig.desktop(false);
+    crate::common::wait_for(&mut second.session, "the app opens in its tab", |session| {
+        (tab_showing(session, "Only") == Some(tab)).then_some(())
+    });
+    assert_eq!(rig.starts().len(), 2, "the app started once more");
+    second.end(Teardown::Logout);
+}
+
+/// A restart keeps an app whose keeper is merely slow to run: the update it applies is itself
+/// load, and a delay in scheduling a healthy keeper must not cost the person what the app holds.
+#[test]
+fn a_restart_keeps_an_app_whose_keeper_is_slow() {
+    let _settled = ui::motion::testing::settled();
+    let rig = Rig::new(&["Only"]);
+    let mut first = rig.desktop(false);
+    rig.launch(&first);
+    let placed = shown_and_told(&rig, &mut first, &["Only"]);
+    let (dir, pid, at) = rig.kept();
+    let keeper = parent_of(pid);
+    signal(keeper, libc::SIGSTOP);
+
+    first.end(Teardown::InPlaceRestart);
+    assert!(
+        dir.exists(),
+        "a keeper that is slow keeps its app for the next run"
+    );
+    assert!(running(pid, at), "and the app goes on with what it holds");
+
+    signal(keeper, libc::SIGCONT);
+    let mut second = rig.desktop(true);
+    let back = shown_and_told(&rig, &mut second, &["Only"]);
+    assert_eq!(
+        back[0].1, placed[0].1,
+        "the next desktop takes it back where it stood"
+    );
+    assert_eq!(rig.starts(), [pid], "the same app, not a second copy");
+    second.end(Teardown::Logout);
+    tilo_test_env::exited("the kept app at logout", pid);
+}
+
+/// A restart ends an app whose keeper no later desktop could take back: its socket refuses, as a
+/// keeper that ended does.
+#[test]
+fn a_restart_ends_an_app_whose_keepers_socket_refuses() {
     let _settled = ui::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
     let mut first = rig.desktop(false);
@@ -538,15 +635,42 @@ fn a_restart_ends_an_app_whose_keeper_stopped_answering() {
     shown_and_told(&rig, &mut first, &["Only"]);
     let (dir, pid, _) = rig.kept();
     let keeper = parent_of(pid);
-    signal(keeper, libc::SIGSTOP);
+    // The keeper stays up, but nothing can reach it again: neither this desktop nor the next.
+    fs::remove_file(dir.join("control")).expect("the socket goes");
 
     first.end(Teardown::InPlaceRestart);
     assert!(
         !dir.exists(),
-        "a keeper that does not answer is not left for the next run"
+        "a keeper that cannot be reached is not left for the next run"
     );
-    signal(keeper, libc::SIGCONT);
-    tilo_test_env::exited("the app of a keeper that stopped answering", pid);
+    tilo_test_env::exited("the app of a keeper that cannot be reached", pid);
+    // It ends once its app did; a keeper already gone is no failure.
+    // SAFETY: kill takes a pid and a signal number.
+    let _ = unsafe { libc::kill(libc::pid_t::try_from(keeper).unwrap(), libc::SIGKILL) };
+}
+
+/// A restart ends an app whose keeper process is gone: nothing would hold it, and no later
+/// desktop could take it back.
+#[test]
+fn a_restart_ends_an_app_whose_keeper_is_gone() {
+    let _settled = ui::motion::testing::settled();
+    let rig = Rig::new(&["Only"]);
+    let mut first = rig.desktop(false);
+    rig.launch(&first);
+    shown_and_told(&rig, &mut first, &["Only"]);
+    let (dir, pid, _) = rig.kept();
+    let keeper = parent_of(pid);
+    signal(keeper, libc::SIGKILL);
+    tilo_test_env::wait_until("the keeper's socket refuses", || {
+        std::os::unix::net::UnixStream::connect(dir.join("control")).is_err()
+    });
+
+    first.end(Teardown::InPlaceRestart);
+    assert!(
+        !dir.exists(),
+        "a keeper that is gone leaves nothing for the next run"
+    );
+    tilo_test_env::exited("the app of a keeper that is gone", pid);
 }
 
 #[test]

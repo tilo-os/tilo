@@ -20,6 +20,8 @@ public struct ConversationView: View {
     /// Whether the height of the line that said an answer was being written is kept after
     /// the answer ended, so that nothing above it moves. The next piece takes its place.
     @State private var keepsFoot = false
+    /// Whether the steps of the turn at work are shown under its line. A person opens them.
+    @State private var stepsOpen = false
 
     public init(chat: Chat, picturedSecret: String = "", head: String? = nil) {
         self.chat = chat
@@ -65,7 +67,9 @@ public struct ConversationView: View {
                         // What stands between the person and a first answer is said where that answer would stand.
                         if chat == .main { SetupStep() }
                         if conversation.isAnswering || keepsFoot {
-                            Fine(words: "\(AssistantWords.answering.said)…").padding(.leading, 14)
+                            // One line says what the turn does now; a press opens its steps so far.
+                            TurnLine(turn: conversation.isAnswering ? turn(of: conversation) : nil, open: $stepsOpen)
+                                .padding(.leading, 14)
                                 .opacity(conversation.isAnswering ? 1 : 0)
                                 .accessibilityHidden(!conversation.isAnswering)
                         }
@@ -86,19 +90,35 @@ public struct ConversationView: View {
                 // cut flat there, its round corners made square.
                 .overlay(alignment: .top) { EdgeFade(edge: .top) }
                 .overlay(alignment: .bottom) { EdgeFade(edge: .bottom) }
-                // The end is in sight while what shows reaches to within two lines of it.
-                .onScrollGeometryChange(for: Bool.self) { place in
-                    place.contentSize.height - place.visibleRect.maxY <= 40
-                } action: { _, inSight in
-                    atEnd = inSight
-                    if inSight { moreBelow = false }
+                // Where the conversation rests is held by hand: when the conversation, or what
+                // shows of it, changes its height while the person is at the end, the end is brought
+                // back at once, whatever the reading says of where the view rests; and only a
+                // scroll takes a person away from the end, or back to it.
+                // A scroll view whose place is read all the time does not keep its end by itself on
+                // an iPhone: it opened at its oldest piece and lost its newest to the keyboard.
+                .onScrollGeometryChange(for: Resting.self) { place in
+                    Resting(tall: place.contentSize.height, shown: place.containerSize.height,
+                            below: place.contentSize.height - place.visibleRect.maxY)
+                } action: { was, now in
+                    if was.tall != now.tall || was.shown != now.shown {
+                        if atEnd {
+                            reader.scrollTo("end", anchor: .bottom)
+                        }
+                    } else {
+                        // The end is in sight while what shows reaches to within two lines of it.
+                        let inSight = now.below <= 40
+                        if atEnd != inSight { atEnd = inSight }
+                        if inSight, moreBelow { moreBelow = false }
+                    }
                 }
+                .onAppear { reader.scrollTo("end", anchor: .bottom) }
                 // Scrolled up, the view stays where the person put it, and a quiet mark says that
                 // more came below. A press on it brings the end back.
                 .overlay(alignment: .bottom) {
                     if moreBelow {
                         Button {
                             moreBelow = false
+                            atEnd = true
                             reader.scrollTo("end", anchor: .bottom)
                         } label: {
                             Tag(words: AssistantWords.moreBelow.said)
@@ -112,16 +132,24 @@ public struct ConversationView: View {
                 }
                 .onChange(of: conversation.isAnswering) { was, now in
                     keepsFoot = was && !now
+                    // The next turn's steps are closed until its person opens them.
+                    if !now { stepsOpen = false }
                 }
                 .onChange(of: chat) {
                     keepsFoot = false
+                    stepsOpen = false
                     moreBelow = false
+                    // Another conversation opens on its newest piece, wherever the last one was left.
+                    atEnd = true
+                    reader.scrollTo("end", anchor: .bottom)
                 }
                 .onChange(of: rows.last?.id) {
                     keepsFoot = false
-                    // A new piece brings the end into view for a person who stands at it, or who sent it.
+                    // A new piece brings the end into view for a person who stands at it, or who sent
+                    // it. At once: an eased scroll to the end begins at the conversation's top.
                     guard atEnd || newestIsOwn(conversation) else { return }
-                    withAnimation(.easeOut(duration: 0.2)) { reader.scrollTo("end", anchor: .bottom) }
+                    atEnd = true
+                    reader.scrollTo("end", anchor: .bottom)
                 }
                 .onChange(of: model.shownItem) {
                     guard let item = model.shownItem else { return }
@@ -131,6 +159,14 @@ public struct ConversationView: View {
             }
         }
         .environment(\.writtenPiece, written)
+    }
+
+    /// What the turn at work does, as the newest reply that says so carries it.
+    private func turn(of conversation: Conversation) -> Message.Turn? {
+        for item in conversation.items.reversed() {
+            if case .message(let message) = item.content, let turn = message.turn { return turn }
+        }
+        return nil
     }
 
     /// Whether the newest piece is what the person wrote themselves.
@@ -161,6 +197,14 @@ public struct ConversationView: View {
         .frame(maxWidth: .infinity)
         .padding(.bottom, 40)
     }
+}
+
+/// What of a conversation's scroll view says where it rests: how tall the conversation is, how
+/// tall what shows of it is, and how much of it lies under what shows.
+private struct Resting: Equatable {
+    var tall: CGFloat
+    var shown: CGFloat
+    var below: CGFloat
 }
 
 /// One thing the conversation draws under another.
@@ -217,13 +261,13 @@ private struct PieceView: View {
     var body: some View {
         switch item.content {
         case .message(let message):
-            MessageView(message: message, isWritten: item.id == writtenPiece)
+            MessageView(message: message, piece: item.id, isWritten: item.id == writtenPiece)
         case .report(let line):
-            Bubble { MarkdownText(text: line) }
+            Bubble(words: PieceWords(of: item.id, line)) { MarkdownText(text: line) }
         case .reminder(let words):
-            Bubble { MarkdownText(text: words) }
+            Bubble(words: PieceWords(of: item.id, words)) { MarkdownText(text: words) }
         case .question(let asked):
-            Bubble { MarkdownText(text: asked.text) }
+            Bubble(words: PieceWords(of: item.id, asked.text)) { MarkdownText(text: asked.text) }
                 // Read out as what it is: a question, and that it waits.
                 .modifier(WaitsForAnswer(waits: asked.waits))
             QuickAnswers(choices: asked.choices, chosen: asked.answer) { model.answer(asked.id, with: $0.id) }
@@ -269,6 +313,8 @@ private struct SaidByPerson: ViewModifier {
 /// Words from the person, the assistant or the main agent, with what came with them.
 private struct MessageView: View {
     let message: Message
+    /// The piece these words are.
+    let piece: Item.ID
     /// Whether its model is writing it now.
     var isWritten = false
     @Environment(AssistantModel.self) private var model
@@ -277,7 +323,7 @@ private struct MessageView: View {
 
     var body: some View {
         if !message.text.isEmpty {
-            Bubble(tone: tone) {
+            Bubble(tone: tone, words: PieceWords(of: piece, message.text), marks: true) {
                 if isAddress {
                     // An address alone is shown as what it is, letter by letter.
                     Text(message.text).font(.tiloMono(12.5))
@@ -286,9 +332,6 @@ private struct MessageView: View {
                     MarkdownText(text: message.text, isWritten: isWritten && message.author != .person)
                 }
             }
-            #if os(macOS)
-            .textSelection(.enabled)
-            #endif
             // The person's own words are read out as theirs; everything else in a conversation is
             // whoever it is with, or says who it is from in the line above it.
             .modifier(SaidByPerson(words: message.author == .person ? Markdown.plain(message.text) : nil))

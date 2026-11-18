@@ -2533,7 +2533,7 @@ tilo_test_env::scenario! {
         settle(&mut host, &mut window);
         let monday = shown(&window);
         assert!(
-            monday.contains("2026-10-26"),
+            monday.contains("Oct 26"),
             "until the person says otherwise, Thursday the 29th stands in the week that began on \
          Monday: {monday}"
         );
@@ -2559,7 +2559,7 @@ tilo_test_env::scenario! {
         settle(&mut host, &mut window);
         let sunday = shown(&window);
         assert!(
-            sunday.contains("2026-10-25"),
+            sunday.contains("Oct 25"),
             "the week the person starts on Sunday is the one their window shows: {sunday}"
         );
     }

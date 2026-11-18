@@ -117,7 +117,7 @@ impl Followed {
 impl Drop for Followed {
     fn drop(&mut self) {
         if !self.answer.with(Arrival::is_finished) {
-            let _ = self.remote.cancel(self.invocation);
+            self.remote.forget(self.invocation);
         }
     }
 }
@@ -625,6 +625,15 @@ impl RemoteActions {
                 .following
                 .values()
                 .any(|following| following.revision.is_none() && !following.unread)
+    }
+
+    /// Stop following `invocation`: its provider is asked to cancel it, and nothing it answers is
+    /// read any more, so its acknowledgement wakes no window.
+    fn forget(&self, invocation: InvocationId) {
+        let followed = self.lock().invocations.remove(&invocation);
+        if followed.is_some() {
+            self.send(RemoteActionMessage::Cancel { invocation });
+        }
     }
 
     /// Ask the provider to cancel an invocation this client is still observing.

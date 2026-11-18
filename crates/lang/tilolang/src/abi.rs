@@ -293,6 +293,10 @@ imports! {
     DayStartOfWeek = "day_start_of_week" ([H] -> [H]);
     DayParse = "day_parse" ([H, H] -> [H]);
     TimeParse = "time_parse" ([H, H] -> [H]);
+    // A day (`I32` 0) or a moment (`I32` 1) as a sentence names it in the person's formats: `Jun 29`,
+    // `Jun 29, 2025`, `Jun 29, 6:00 PM`, in the zone the person's device reads clocks in. Its stored
+    // text where no formats are known.
+    DateShow = "date_show" ([H, I32] -> [H]);
     // A draw (`uses random`): a number in `0..upto`, one call per number, which the invocation records so
     // a replay reads the same value.
     RandomInt = "random_int" ([I64, I64] -> [I64]);

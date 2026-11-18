@@ -43,9 +43,12 @@ through pairing; it comes in through an invitation to a workspace, as that
 person's device.
 
 **One enrollment serves every device.** A machine arrives with a single-use,
-expiring token the person made for it, shows a short code that one of their
-devices approves, or is found and paired by one of their devices on the local
-network. Every image uses the same enrollment; what an image allows is declared
+expiring token the person made for it, shows a short code and its address for
+one of their devices to dial and approve, or is found and paired by one of
+their devices on the local network. The token is signed by the person's device
+and names, under that signature, where their devices are reached over iroh —
+endpoint ids and the packet relay that gets past a network address
+translation — so a machine in a data centre enrolls as one at home does. Every image uses the same enrollment; what an image allows is declared
 once in it, one method per line in `/usr/lib/tilo/enrollment-methods`. Tilo
 Server offers the token and the code, because nobody is at it to confirm a
 device it found; Tilo OS and a board offer all three. A method an image does
@@ -298,6 +301,26 @@ it work, and writes the updates it follows and its maintenance window for a
 root-run helper to apply. A retired server lets go of everything it holds and takes no
 work. Holding a workspace as an encrypted store, rather than as a key holder,
 is not applied yet.
+
+The same entry names the machine itself: its hostname, which drives it uses for
+what — the system disk, the data pool, a mirror — by serial or WWN rather than
+by kernel name, and how each network interface is set up (DHCP or static
+addresses, gateway, DNS, a VLAN tag, membership in a bond). These are typed
+actions on the document like any other, so they carry history and an author,
+and they refuse what a machine cannot be: a static interface with no address, a
+second system disk, the disk the system runs from repurposed, a drive holding
+data used without the person naming its serial to confirm erasing it. The
+device writes the whole desired configuration as a request for a root-run
+helper, which applies the hostname and the network as NetworkManager keyfiles
+and checks each drive's identity before anything is written; it reports what it
+applied or why not, and the entry's status carries that report back to the
+person. A network change keeps the keyfiles it replaced until the device is
+reached through a relay again, and puts them back with the reason when it is
+not, so a wrong address does not lock the person out of their server. Disk
+encryption, partitioning and the data pool's mount are the server image's own
+boot chain, which this configuration names and verifies but does not replace.
+The configuration is a device's, not a server's, so a desktop's entry carries the same
+configuration.
 
 ## Transport
 

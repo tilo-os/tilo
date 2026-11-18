@@ -474,3 +474,157 @@ async fn a_refused_write_reaches_its_author_over_the_link_and_the_next_one() {
     assert!(!b.store().holds_document(APP, RECORD));
     meeting.part().await;
 }
+
+/// An answer kept on one device answers there alone, and every other device of
+/// the person sees it and may take it back.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_answer_kept_on_one_device_answers_there_and_is_revoked_from_another() {
+    use collab_types::caps::DeviceCap;
+    use tilo_action_policy::{Answer, Lifetime};
+    use tilo_peer_state::DeviceGrants;
+
+    const RECORDER: &str = "org.example.Recorder";
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let root_key = root.verifying_key().to_bytes();
+    let (a_key, a_cert) = device(&root, 2);
+    let (b_key, b_cert) = device(&root, 3);
+    let now = SystemTime::now();
+    let a = PersonalSync::new(
+        PersonalStore::open(root_key, a_cert, now).unwrap(),
+        a_key.clone(),
+    );
+    let b = PersonalSync::new(
+        PersonalStore::open(root_key, b_cert, now).unwrap(),
+        b_key.clone(),
+    );
+    let on_a = DeviceGrants::over(a.clone());
+    let on_b = DeviceGrants::over(b.clone());
+
+    // Once and for the session are never kept in the person's store.
+    on_a.answer(
+        RECORDER,
+        DeviceCap::Microphone,
+        Answer::Allow,
+        Lifetime::Once,
+    )
+    .unwrap();
+    on_a.answer(
+        RECORDER,
+        DeviceCap::Screen,
+        Answer::Allow,
+        Lifetime::Session,
+    )
+    .unwrap();
+    assert_eq!(
+        on_a.decide(RECORDER, DeviceCap::Microphone, Answer::Allow),
+        Answer::Ask
+    );
+    assert_eq!(
+        on_a.decide(RECORDER, DeviceCap::Screen, Answer::Allow),
+        Answer::Allow
+    );
+    assert!(
+        on_a.kept().is_empty(),
+        "nothing outlasting the session was answered"
+    );
+
+    on_a.answer(
+        RECORDER,
+        DeviceCap::Camera,
+        Answer::Allow,
+        Lifetime::UntilRevoked,
+    )
+    .unwrap();
+    assert_eq!(
+        on_a.decide(RECORDER, DeviceCap::Camera, Answer::Allow),
+        Answer::Allow
+    );
+    // A workspace puts a ceiling on it, and never more.
+    assert_eq!(
+        on_a.decide(RECORDER, DeviceCap::Camera, Answer::Deny),
+        Answer::Deny
+    );
+    assert_eq!(
+        on_a.decide(RECORDER, DeviceCap::Camera, Answer::Ask),
+        Answer::Ask
+    );
+
+    let linked = Linked::up(&a, &a_key, &b, &b_key).await;
+
+    let answers = collab_types::person_document_id(tilo_peer_state::DEVICE_ANSWERS_KIND);
+    until(&b, |store| {
+        store.holds_document("so.tilo.identity", &answers)
+    })
+    .await;
+    let seen = on_b.kept();
+    assert_eq!(seen.len(), 1, "B sees the answer A kept: {seen:?}");
+    assert!(!seen[0].this_device);
+    assert_eq!(seen[0].device_label, "device-2");
+    assert_eq!(seen[0].answer.cap, DeviceCap::Camera);
+    assert_eq!(
+        on_b.decide(RECORDER, DeviceCap::Camera, Answer::Allow),
+        Answer::Ask,
+        "an answer about A's camera never opens B's"
+    );
+    assert_eq!(
+        on_b.decide(RECORDER, DeviceCap::Screen, Answer::Allow),
+        Answer::Ask
+    );
+
+    assert!(
+        on_b.revoke(&seen[0].answer.device, RECORDER, DeviceCap::Camera)
+            .unwrap()
+    );
+    until(&a, |store| {
+        store
+            .document("so.tilo.identity", &answers)
+            .is_some_and(|doc| AutoCommit::load(&doc).unwrap().keys(ROOT).count() == 0)
+    })
+    .await;
+    assert!(on_a.kept().is_empty());
+    assert_eq!(
+        on_a.decide(RECORDER, DeviceCap::Camera, Answer::Allow),
+        Answer::Ask
+    );
+
+    linked.down().await;
+}
+
+/// B dialled into A over the person's link.
+struct Linked {
+    link: tokio::task::JoinHandle<Result<(), String>>,
+    router: iroh::protocol::Router,
+    endpoint: Endpoint,
+}
+
+impl Linked {
+    async fn up(
+        a: &PersonalSync,
+        a_key: &SigningKey,
+        b: &PersonalSync,
+        b_key: &SigningKey,
+    ) -> Self {
+        let a_endpoint = localhost_endpoint(a_key).await;
+        let router = iroh::protocol::Router::builder(a_endpoint.clone())
+            .accept(PERSONAL_ALPN, a.clone())
+            .spawn();
+        let endpoint = localhost_endpoint(b_key).await;
+        let link = tokio::spawn({
+            let b = b.clone();
+            let endpoint = endpoint.clone();
+            let a_addr = addr(&a_endpoint);
+            async move { b.connect(&endpoint, a_addr).await }
+        });
+        Self {
+            link,
+            router,
+            endpoint,
+        }
+    }
+
+    async fn down(self) {
+        self.link.abort();
+        self.router.shutdown().await.unwrap();
+        self.endpoint.close().await;
+    }
+}

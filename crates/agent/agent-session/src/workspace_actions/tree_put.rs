@@ -395,7 +395,7 @@ impl Worker {
                 return Ok((tree, Some(held)));
             }
         }
-        let author = hex::encode(self.host_device.key.verifying_key().to_bytes());
+        let author = hex::encode(self.own_device.key.verifying_key().to_bytes());
         let Some((records, held)) = self.tree_records(workspace_id, workspace)? else {
             let tree = Namespace::new(&author)
                 .map_err(|error| refused(format!("a tree could not be founded: {error}")))?;

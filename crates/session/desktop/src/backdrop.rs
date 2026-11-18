@@ -118,6 +118,9 @@ pub struct DesktopBackdrop {
     /// The blob of the wallpaper last drawn, so a wallpaper the host changes (a portal import, a
     /// choice in Settings) asks for a frame.
     drawn_wallpaper: Option<u64>,
+    /// The shell's wallpaper as every host that draws the ground reads it: the one source the
+    /// session hands the backdrop and the chrome's overview alike.
+    wallpaper_source: ui::backdrop::wallpaper::Source,
 }
 
 /// Host-supplied lookup from a workspace identity to its verified decoded wallpaper.
@@ -193,6 +196,7 @@ impl DesktopBackdrop {
             wallpaper: None,
             displays: Vec::new(),
             drawn_wallpaper: None,
+            wallpaper_source: ui::backdrop::wallpaper::Source::new(),
         }
     }
 
@@ -222,6 +226,14 @@ impl DesktopBackdrop {
         provider: impl Fn(&str) -> Option<ImageData> + 'static,
     ) {
         self.wallpaper = Some(Box::new(provider));
+    }
+
+    /// Take `source`, the shell's one wallpaper, shared with the chrome's overview: what this
+    /// backdrop shows and what the overview draws over it is the same picture.
+    #[must_use]
+    pub fn with_wallpaper_source(mut self, source: ui::backdrop::wallpaper::Source) -> Self {
+        self.wallpaper_source = source;
+        self
     }
 
     /// Show the picture of `workspace_id` , the workspace now in front.
@@ -273,32 +285,17 @@ impl DesktopBackdrop {
         // nothing else. It covers the gradient entirely, so the gradient is not drawn under it.
         if let Some(image) = self.current_wallpaper() {
             self.drawn_wallpaper = Some(image.data.id());
-            let blur = theme.tokens.colors.surfaces.material_blur_px;
-            let mut pieces = Vec::new();
             for display in self.display_rects() {
                 draw_cover_image(out_scene, out_transform, &display, &image);
-                // What a docked tab strip frosts with: this display's picture blurred, made once
-                // per wallpaper and size.
-                if let Some(blurred) = ui::backdrop::wallpaper::blurred_cover(&image, display, blur)
-                {
-                    pieces.push(ui::backdrop::wallpaper::image_piece(
-                        out_transform,
-                        display,
-                        blurred,
-                    ));
-                }
             }
-            ui::backdrop::wallpaper::publish(pieces);
+            // Every host that draws the ground reads the one picture: the chrome's overview draws
+            // over the shell's wallpaper, never a stand-in.
+            self.wallpaper_source.set(Some(image));
             return;
         }
         self.drawn_wallpaper = None;
         let stops = ground_stops(theme);
-        // The gradient is already as smooth as its blur would be.
-        ui::backdrop::wallpaper::publish(vec![ui::backdrop::wallpaper::smooth_piece(
-            out_transform,
-            self.rect,
-            Brush::Gradient(self.gradient(stops)),
-        )]);
+        self.wallpaper_source.set_gradient(stops);
         // Bit-exact comparison, not "close enough": any change (even one
         // ULP, from a layout recompute) must invalidate the cached scene,
         // so a tolerant comparison would let a real resize slip through
@@ -618,6 +615,34 @@ mod tests {
         );
         paint(&mut backdrop);
         assert_eq!(backdrop.drawn_wallpaper, None, "and it has none");
+    }
+
+    /// What the backdrop draws is what every surface standing on the shell frosts: the one source
+    /// the session hands it holds this workspace's picture while it shows one, and nothing when the
+    /// shell falls back to its gradient.
+    #[test]
+    fn the_shells_wallpaper_source_is_the_picture_the_backdrop_draws() {
+        let seven = picture(7);
+        let source = ui::backdrop::wallpaper::Source::new();
+        let mut backdrop = DesktopBackdrop::for_workspace("7")
+            .with_wallpaper_provider({
+                let seven = seven.clone();
+                move |workspace| (workspace == "7").then(|| seven.clone())
+            })
+            .with_wallpaper_source(source.clone());
+        paint(&mut backdrop);
+        assert_eq!(
+            source.picture().map(|image| image.data.id()),
+            Some(seven.data.id()),
+            "the source holds the picture the backdrop drew"
+        );
+
+        backdrop.set_workspace("8");
+        paint(&mut backdrop);
+        assert!(
+            source.picture().is_none(),
+            "a shell with no picture publishes none, so no surface frosts one"
+        );
     }
 
     /// The backdrop's baked noise texture must exist and have the right byte-size (64×64 RGBA8 =

@@ -431,14 +431,18 @@ shows nothing.
 typed, and every character stays: Markdown's own signs are out of sight, except in the words
 the person is writing in (`Markdown.marks`, `Markdown.hidden`, `FieldStyle`). Return sends and
 Shift Return makes a line; on an iPhone's glass keyboard Return makes a line and the arrow
-sends. On the Mac, Up in an empty field brings back the last message the person sent in the
-conversation, Up again the one before and Down the next, until they type, move the caret or
-press Escape (`Stepping`): the messages are the conversation's own, and the app keeps no list
-of them. While an input method is putting a letter together the field takes no key for itself.
+sends. On a keyboard, the Mac's or one attached to an iPhone, Up in an empty field brings back
+the last message the person sent in the conversation, Up again the one before and Down the
+next, until they type, move the caret or press Escape (`Stepping`): the messages are the
+conversation's own, and the app keeps no list of them. Everywhere else the arrows move the
+caret. While an input method is putting a letter together the field takes no key for itself.
 On an iPhone a drag down the conversation takes the keyboard down with the finger, the
 system's own way for a scroll view, and a touch on the conversation puts it away; the words
 being written stay in the field and the conversation stays at its newest piece. Sending
-leaves the keyboard up: the field is empty and takes the next message.
+leaves the keyboard up: the field is empty and takes the next message. A screen's ground
+reaches past every safe area, the keyboard's too: the keyboard's upper corners are round, and
+what they leave in sight is the screen's own ground, where the system's own view is black in
+the dark look.
 Attachments and dictation stand under the field, and dictation is the shell's.
 
 **A file in a message** is shown with the name and the size Chat gives. In Tilo a file that a
@@ -497,6 +501,18 @@ that names no such case (a person taken out of a workspace, a device removed fro
 person's) changes nothing: the app stands as it did. `WorkspaceGoneTests` checks this against a
 page that speaks as Tilo's does, `WayInAfterResetTests` in the window.
 
+**A link handed over.** The app answers to one more address of its own,
+`tilo-assistant://pair?link=<a pairing link>` (`HandedLink`). Tilo's page can offer it beside the
+link and the code of "Pair a new device", so that on the computer the app is on nobody
+copies and pastes. The app takes it only while it stands at its way in, and then it is a pasted
+link and nothing more: a link that leads to another site than the app's own is refused in words
+and shows no card; Tilo's question stands with the app's own site named in full under it
+(`PairingAsk.site`); and nothing goes on before the person's press there and their approval, with
+the code both show, on the device that made the link. An app that is in, or in the middle of a
+pairing, takes no link from outside and says nothing of it. An app that was started by the
+address keeps the link until it knows where it stands (`AssistantModel.takeHanded`).
+`HandedLinkTests` checks this in the window.
+
 **Read out.** The Mac's window is read in three named parts in the order a person reads it:
 the sidebar, the conversation with its field, the Tasks panel. Every control is named by
 what it does, the drawing's dots between facts are pauses and not words, the person's own
@@ -507,6 +523,19 @@ is one. On an iPhone the same views say the same.
 for two things side by side stacks them, names are read whole on as many lines as they
 take, the way in scrolls, and the message field keeps its height while the conversation
 gives way.
+
+**A piece's menu.** A long press on a piece of words on an iPhone, the second button or
+Control and a click on a Mac, opens a menu for it (`PieceMenu`): Copy and Select text. Copy
+puts the piece's words on the pasteboard as plain text with every line where it stood
+(`Markdown.copied`): Markdown's own signs are gone, a list keeps its entries and its numbers,
+code keeps its lines, a link's address follows its words. Select text lays the same words out
+in the system's own text view, where a part is marked with the system's handles on an iPhone
+and by a drag on a Mac, and copied by the system's own Copy; nothing in it can be changed. On
+a Mac a drag also marks a message's words where they stand in the conversation. Words that can
+be marked answer the second button with the system's own menu for text, so a view of the
+app's lies over a message there and takes the second button and Control with a click alone
+(`SecondButtonView`): every other press goes past it to the words. The app keeps nothing of
+this.
 
 **A task's replies.** A task's line counts the replies the conversation does not show.
 Pressed, they open under the line (`AssistantSource.replies(of:in:)`), and the same press
@@ -612,7 +641,9 @@ set to, and its other ways: `said` writes down what every screen of the iPhone s
 to someone who cannot see it, `secret` types into the protected field and looks at the window
 as the app leaves the front, `typing` takes the whole screen with the keyboard up, and
 `keyboard` brings the keyboard up, puts it away and sends a message, light and dark: it says
-what a drag on the conversation does to the keyboard and what is kept, takes the whole screen
+what a drag on the conversation does to the keyboard, what the window draws behind the
+keyboard's upper corners, what Up, Down and Escape of an attached keyboard do in the field
+and what is kept, takes the whole screen
 with the keyboard up and with it away, and fails where it found a fault. Asked for `told`, it also hands the system the drawing's
 notifications and live activities there, and writes down what the system then holds.
 

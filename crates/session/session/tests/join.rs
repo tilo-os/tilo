@@ -86,6 +86,7 @@ fn person() -> Person {
             tilo_user_identity::DeviceCapabilities::member(),
             now,
             now.saturating_add(3_600_000_000_000),
+            &[],
         )
         .expect("this device may enroll another of the person's");
     let other_device = ed25519_dalek::SigningKey::from_bytes(&[0x52; 32]);

@@ -23,9 +23,7 @@ pub use nav_row::{
     rail_width_fitting, sidebar_rail_width_fitting,
 };
 pub use page::PageGeometry;
-pub use selector::{
-    SelectorRole, paint_selector, selector_finish, selector_tier, strip_ground, strip_shape,
-};
+pub use selector::{paint_selector, selector_finish, selector_tier, strip_ground, strip_shape};
 pub use shell::{
     ChromeRole, GLOW_ALPHA, HAIRLINE_ALPHA, PANEL_BORDER_ALPHA, RowJoin, SELECTION_MIN_STEP,
     SelectionState, SelectionTier, chrome_hairline, column_gutter, disclosure_gutter, fill_scrim,

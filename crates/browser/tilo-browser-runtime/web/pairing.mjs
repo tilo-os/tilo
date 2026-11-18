@@ -260,6 +260,25 @@ export function forInvites(pending, invites) {
   });
 }
 
+/**
+ * The address that hands a pairing link to Tilo Assistant on the device this
+ * page is open on: `tilo-assistant://pair?link=<the link>`, every character
+ * of the link written out, so nothing of it ends the address. The app takes
+ * such an address only while it stands at its way in, and then as a pasted
+ * link: it says whose devices it would join and asks its person before
+ * anyone is asked to approve. `null` where there is no Tilo Assistant (it is
+ * an app for the Mac, the iPhone and the iPad; the system is read as
+ * `deviceLabel` reads it), and for anything that is no web address.
+ */
+export function assistantAddress(link, navigator = globalThis.navigator ?? {}) {
+  if (typeof link !== 'string' || !/^https?:\/\/\S+$/.test(link)) return null;
+  const agent = navigator.userAgent ?? '';
+  const system = PLATFORMS[navigator.userAgentData?.platform] ?? navigator.userAgentData?.platform
+    ?? SYSTEMS.find(([pattern]) => pattern.test(agent))?.[1] ?? '';
+  if (!['Mac', 'iPhone', 'iPad'].includes(system)) return null;
+  return `tilo-assistant://pair?link=${encodeURIComponent(link)}`;
+}
+
 const BROWSERS = [
   [/EdgA?\/|EdgiOS\//, 'Edge'], [/OPR\/|OPiOS\//, 'Opera'], [/SamsungBrowser\//, 'Samsung Internet'],
   [/Firefox\/|FxiOS\//, 'Firefox'], [/Chrome\/|CriOS\/|Chromium\//, 'Chrome'], [/Safari\//, 'Safari'],

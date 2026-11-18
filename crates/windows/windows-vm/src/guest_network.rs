@@ -38,10 +38,45 @@ const HEAD_TIMEOUT: Duration = Duration::from_secs(30);
 /// Opaque proxy details carried only over the mutually-authenticated bridge.
 /// The token is not a `NetHost` grant; it merely proves that the guest-local
 /// proxy is using the already materialized short-lived lease.
-#[derive(Clone, Eq, PartialEq)]
+///
+/// A launch keeps the binding in its keeper's directory while its app lives: the guest
+/// holds the endpoint and token, so the desktop that adopts the app after an in-place restart
+/// must serve them on the same listener, with the workspace's grants as they stand then.
+#[derive(Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GuestNetworkBinding {
     pub endpoint: SocketAddr,
     pub token: String,
+}
+
+impl GuestNetworkBinding {
+    /// Write the binding, readable by this person alone, into the kept launch's directory
+    /// `dir`: the note a later desktop serves its network from.
+    ///
+    /// # Errors
+    /// The binding could not be written.
+    pub fn persist(&self, dir: &std::path::Path) -> io::Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = dir.join(launcher::egress_proxy::APPLIANCE_NETWORK);
+        let beside = path.with_extension("new");
+        let bytes = serde_json::to_vec(self).map_err(io::Error::other)?;
+        std::fs::write(&beside, bytes)?;
+        std::fs::set_permissions(&beside, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::rename(&beside, &path)
+    }
+
+    /// The binding kept in the kept launch's directory `dir`, when one is.
+    ///
+    /// # Errors
+    /// There is no readable binding there.
+    pub fn read(dir: &std::path::Path) -> io::Result<Self> {
+        let bytes = std::fs::read(dir.join(launcher::egress_proxy::APPLIANCE_NETWORK))?;
+        serde_json::from_slice(&bytes).map_err(io::Error::other)
+    }
+
+    /// Forget the binding in `dir`: the launch ended, and no listener may start from it again.
+    pub fn forget(dir: &std::path::Path) {
+        let _ = std::fs::remove_file(dir.join(launcher::egress_proxy::APPLIANCE_NETWORK));
+    }
 }
 
 impl std::fmt::Debug for GuestNetworkBinding {
@@ -59,6 +94,8 @@ pub enum GuestNetworkError {
     EmptyAllowlist,
     #[error("the canonical NetHost value {0:?} is invalid")]
     InvalidHost(String),
+    #[error("a kept presentation's network token is not one the guest proxy presents")]
+    InvalidToken,
     #[error("could not bind the host-only Windows egress relay: {0}")]
     Bind(#[source] io::Error),
     #[error("could not start the runtime serving the Windows egress relay: {0}")]
@@ -104,6 +141,29 @@ impl GuestNetworkProxy {
             hosts,
             require_guest_peer,
             launcher::egress_proxy::MAX_CONNECTIONS,
+            None,
+        )
+    }
+
+    /// Serve the lease again on the endpoint and token its guest was given, as the desktop that
+    /// adopts a kept presentation after a restart does: the guest keeps using what it holds, and
+    /// the listener is back with the grants as they stand now. A token that is not the shape the
+    /// guest proxy presents is refused, so a file someone else wrote cannot be served.
+    pub fn start_at_with_token(
+        address: SocketAddr,
+        allowed: &[String],
+        require_guest_peer: bool,
+        token: String,
+    ) -> Result<Self, GuestNetworkError> {
+        if token.len() != 64 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(GuestNetworkError::InvalidToken);
+        }
+        Self::start_limited(
+            address,
+            allowed,
+            require_guest_peer,
+            launcher::egress_proxy::MAX_CONNECTIONS,
+            Some(token),
         )
     }
 
@@ -112,6 +172,7 @@ impl GuestNetworkProxy {
         hosts: &[String],
         require_guest_peer: bool,
         max_connections: usize,
+        token: Option<String>,
     ) -> Result<Self, GuestNetworkError> {
         let policy = lease_policy(hosts)?;
         let listener = std::net::TcpListener::bind(address).map_err(GuestNetworkError::Bind)?;
@@ -125,14 +186,20 @@ impl GuestNetworkProxy {
             let _entered = runtime.enter();
             tokio::net::TcpListener::from_std(listener).map_err(GuestNetworkError::Bind)?
         };
-        let mut random = [0_u8; 32];
-        UnwrapErr(SysRng).fill_bytes(&mut random);
-        let token = hex::encode(random);
-        random.fill(0);
-        let binding = GuestNetworkBinding { endpoint, token };
+        let token = token.unwrap_or_else(|| {
+            let mut random = [0_u8; 32];
+            UnwrapErr(SysRng).fill_bytes(&mut random);
+            let token = hex::encode(random);
+            random.fill(0);
+            token
+        });
+        let binding = GuestNetworkBinding {
+            endpoint,
+            token: token.clone(),
+        };
         let lease = Arc::new(Lease {
             policy,
-            token: binding.token.clone(),
+            token,
             shutdown: Arc::new(AtomicBool::new(false)),
             active_connections: Arc::new(ActiveTunnels::default()),
         });
@@ -407,6 +474,56 @@ mod tests {
     use std::net::TcpListener;
 
     #[test]
+    fn a_binding_is_kept_private_and_served_again_on_its_own_token() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let binding = GuestNetworkBinding {
+            endpoint: "127.0.0.1:1234".parse().unwrap(),
+            token: "a".repeat(64),
+        };
+        binding.persist(directory.path()).unwrap();
+        let kept = directory
+            .path()
+            .join(launcher::egress_proxy::APPLIANCE_NETWORK);
+        assert_eq!(
+            std::fs::metadata(&kept).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "the token is this person's alone"
+        );
+        assert_eq!(
+            GuestNetworkBinding::read(directory.path()).unwrap(),
+            binding
+        );
+
+        let proxy = GuestNetworkProxy::start_at_with_token(
+            "127.0.0.1:0".parse().unwrap(),
+            &["example.test".into()],
+            false,
+            binding.token.clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            proxy.binding().token,
+            binding.token,
+            "the guest's token is served"
+        );
+        assert!(matches!(
+            GuestNetworkProxy::start_at_with_token(
+                "127.0.0.1:0".parse().unwrap(),
+                &["example.test".into()],
+                false,
+                "not a token".into()
+            ),
+            Err(GuestNetworkError::InvalidToken)
+        ));
+        drop(proxy);
+        GuestNetworkBinding::forget(directory.path());
+        assert!(GuestNetworkBinding::read(directory.path()).is_err());
+    }
+
+    #[test]
     fn guest_network_leases_parse_strictly_and_hide_their_tokens() {
         {
             assert!(matches!(
@@ -613,6 +730,7 @@ mod tests {
             &["localhost".into()],
             false,
             1,
+            None,
         )
         .unwrap();
         let token = proxy.binding().token.clone();

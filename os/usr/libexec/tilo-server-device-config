@@ -1,0 +1,457 @@
+#!/bin/sh
+# Apply the configuration of the machine a server's entry in its person's admin
+# workspace asks for: its hostname, the drives it uses, and its network.
+#
+#   tilo-server-device-config
+#
+# The server is unprivileged and writes what it wants at one fixed path
+# (/var/lib/tilo-server/device-config.request, written by the tilo-server
+# daemon from the server's entry in the admin workspace's `tilo.servers`
+# document). A path unit starts this as root when that file changes. The
+# request is a revision line and one line per setting, fields separated by
+# `|`, in exactly these shapes:
+#
+#   revision|<hex>
+#   hostname|<hostname>
+#   disk|<system|data|mirror>|<serial or WWN>|<0|1: confirmed erasing it>
+#   interface|<name>|<dhcp|static>|<address/prefix,...>|<gateway>|<dns,...>|<bond>|<vlan>
+#
+# Every value is checked here again: nothing in the request is passed to a
+# shell, and a request naming anything else is refused as a whole rather than
+# half applied.
+#
+# The network is written as NetworkManager keyfiles and activated through
+# nmcli. A network change can cut the machine off from its person's devices, so
+# the keyfiles this helper wrote before are kept and put back unless the daemon
+# confirms within the window that the machine is still reached: it writes the
+# revision to device-config.confirmed once this device is reached again.
+#
+# What it did is written to device-config.report (`revision`, `state` of
+# applied, refused or reverted, and one line of `detail`), which the daemon
+# writes into the entry's status.
+#
+# A drive that already holds something is only erased when the entry's action
+# confirmed it by naming the drive; partitioning, encrypting and mounting a data
+# pool belong to the image's own boot chain, not here.
+set -eu
+
+request=${TILO_DEVICE_CONFIG_REQUEST:-/var/lib/tilo-server/device-config.request}
+report=${TILO_DEVICE_CONFIG_REPORT:-/var/lib/tilo-server/device-config.report}
+applied_at=${TILO_DEVICE_CONFIG_APPLIED_AT:-/var/lib/tilo-server/device-config.applied-at}
+confirmed=${TILO_DEVICE_CONFIG_CONFIRMED:-/var/lib/tilo-server/device-config.confirmed}
+state_dir=${TILO_DEVICE_CONFIG_STATE:-/var/lib/tilo-server}
+revert_after=${TILO_DEVICE_CONFIG_REVERT_AFTER:-90}
+nm_dir=${TILO_NETWORKMANAGER_DIR:-/etc/NetworkManager/system-connections}
+nmcli=${TILO_NMCLI:-nmcli}
+lsblk=${TILO_LSBLK:-lsblk}
+findmnt=${TILO_FINDMNT:-findmnt}
+wipefs=${TILO_WIPEFS:-wipefs}
+etc=${TILO_ETC:-/etc}
+if [ -n "${TILO_HOSTNAMECTL:-}" ]; then
+    hostnamectl=$TILO_HOSTNAMECTL
+elif command -v hostnamectl >/dev/null 2>&1; then
+    hostnamectl=hostnamectl
+else
+    hostnamectl=
+fi
+
+revision=none
+refuse() {
+    write_report refused "$*"
+    printf 'tilo-server-device-config: %s\n' "$*" >&2
+    exit 2
+}
+
+write_report() {
+    mkdir -p "${report%/*}"
+    tmp=$report.tmp.$$
+    {
+        printf 'revision\t%s\n' "$revision"
+        printf 'state\t%s\n' "$1"
+        printf 'detail\t%s\n' "$2"
+    } >"$tmp"
+    chmod 0600 "$tmp"
+    mv -f "$tmp" "$report"
+}
+
+# One field of the request, checked so it is only ever a value here.
+valid_ifname() {
+    [ -n "$1" ] && [ "${#1}" -le 15 ] || return 1
+    case "$1" in
+        -*) return 1 ;;
+        *[!A-Za-z0-9._-]*) return 1 ;;
+    esac
+    return 0
+}
+
+valid_vlan() {
+    case "$1" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$1" -le 4094 ]
+}
+
+# The addresses of one line, each `address/prefix`, as a list of lines.
+valid_addresses() {
+    [ -z "$1" ] && return 0
+    case "$1" in
+        *[!0-9A-Fa-f:./,]*) return 1 ;;
+    esac
+    printf '%s' "$1" | tr ',' '\n' | while IFS= read -r address; do
+        case "$address" in
+            *:*/*) ;; # an IPv6 address and its prefix
+            */*) case "${address#*/}" in ''|*[!0-9]*) return 1 ;; esac
+                 case "${address%/*}" in ''|*[!0-9.]*) return 1 ;; esac ;;
+            *) return 1 ;;
+        esac
+        [ -n "${address%%/*}" ] || return 1
+    done
+}
+
+# Whether the drive `name` or a partition of it holds anything.
+has_data() {
+    printf '%s\n' "$listing" | awk -v disk="$1" '
+        {
+            name = ""; fstype = ""
+            n = split($0, fields, " ")
+            for (i = 1; i <= n; i++) {
+                if (fields[i] ~ /^NAME="/) { name = fields[i]; sub(/^NAME="/, "", name); sub(/"$/, "", name) }
+                if (fields[i] ~ /^FSTYPE="/) { fstype = fields[i]; sub(/^FSTYPE="/, "", fstype); sub(/"$/, "", fstype) }
+            }
+            part = substr(name, 1, length(disk)) == disk && substr(name, length(disk) + 1) ~ /^[0-9p]/
+            if ((name == disk || part) && fstype != "") { found = 1 }
+        }
+        END { exit(found ? 0 : 1) }'
+}
+
+# Whether an interface names `name` as its bond.
+is_master() {
+    awk -F'|' -v name="$1" '$1 == "interface" && $7 == name { found = 1 } END { exit(found ? 0 : 1) }' "$interfaces"
+}
+
+restore_network() {
+    for keyfile in "$nm_dir"/tilo-*.nmconnection; do
+        [ -e "$keyfile" ] || continue
+        rm -f "$keyfile"
+    done
+    for saved in "$backup_dir"/tilo-*.nmconnection; do
+        [ -e "$saved" ] || continue
+        cp -p "$saved" "$nm_dir/"
+    done
+    "$nmcli" connection reload >/dev/null 2>&1 || true
+    for saved in "$backup_dir"/tilo-*.nmconnection; do
+        [ -e "$saved" ] || continue
+        base=${saved##*/}
+        "$nmcli" connection up "${base%.nmconnection}" >/dev/null 2>&1 || true
+    done
+}
+
+revert() {
+    restore_network
+    write_report reverted "$1; the previous network configuration is back"
+    printf 'tilo-server-device-config: %s; the previous network configuration is back\n' "$1" >&2
+    exit 0
+}
+
+confirmed_now() {
+    [ -r "$confirmed" ] || return 1
+    key=
+    value=
+    read -r key value <"$confirmed" || return 1
+    [ "$key" = revision ] && [ "$value" = "$revision" ]
+}
+
+[ -r "$request" ] || exit 0
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+disks=$work/disks
+interfaces=$work/interfaces
+: >"$disks"
+: >"$interfaces"
+hostname=
+wanted=
+interfaces_named=0
+
+# ---- The request, checked whole before anything is applied ------------------
+while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] || continue
+    old_ifs=$IFS
+    IFS='|'
+    set -f
+    set -- $line
+    set +f
+    IFS=$old_ifs
+    key=$1
+    case "$key" in
+        revision)
+            [ "$#" -eq 2 ] || refuse "the request names a revision and nothing beside it"
+            revision=$2
+            case "$revision" in
+                *[!0-9a-f]*) refuse "a revision is 32 hex digits" ;;
+            esac
+            [ "${#revision}" -eq 32 ] || refuse "a revision is 32 hex digits"
+            ;;
+        hostname)
+            [ "$#" -eq 2 ] || refuse "a hostname line names one hostname"
+            hostname=$2
+            [ -n "$hostname" ] && [ "${#hostname}" -le 253 ] || refuse "a hostname is 1 to 253 lowercased letters, digits, dots and hyphens"
+            case "$hostname" in
+                *[!a-z0-9.-]*|.*|*.|*..*) refuse "a hostname is letters, digits, dots and hyphens" ;;
+                -*|*-.*|*.-*) refuse "a hostname's labels do not start or end with a hyphen" ;;
+            esac
+            ;;
+        disk)
+            [ "$#" -eq 4 ] || refuse "a disk line names its role, identity and confirmation"
+            role=$2
+            identity=$3
+            erase=$4
+            case "$role" in
+                system|data|mirror) ;;
+                *) refuse "a drive is used as system, data or mirror" ;;
+            esac
+            [ -n "$identity" ] && [ "${#identity}" -le 64 ] || refuse "a drive is named by its serial or WWN"
+            case "$identity" in
+                *[!A-Za-z0-9._:-]*) refuse "a drive is named by its serial or WWN" ;;
+            esac
+            case "$erase" in
+                0|1) ;;
+                *) refuse "a drive's confirmation is 0 or 1" ;;
+            esac
+            printf '%s|%s|%s\n' "$role" "$identity" "$erase" >>"$disks"
+            ;;
+        interface)
+            [ "$#" -eq 8 ] || refuse "an interface line names its name, addressing, addresses, gateway, dns, bond and vlan"
+            name=$2
+            addressing=$3
+            addresses=$4
+            gateway=$5
+            dns=$6
+            bond=$7
+            vlan=$8
+            valid_ifname "$name" || refuse "an interface is named by 1 to 15 letters, digits, dots, hyphens or underscores"
+            case "$addressing" in
+                dhcp|static) ;;
+                *) refuse "an interface is addressed by dhcp or static" ;;
+            esac
+            valid_addresses "$addresses" || refuse "an address is written as <address>/<prefix>"
+            [ -z "$gateway" ] || case "$gateway" in
+                *[!0-9A-Fa-f:.]*) refuse "a gateway is an IP address" ;;
+            esac
+            [ -z "$dns" ] || case "$dns" in
+                *[!0-9A-Fa-f:.,]*) refuse "a DNS server is an IP address" ;;
+            esac
+            valid_vlan "$vlan" || refuse "a VLAN id is 1 to 4094, or 0 for untagged"
+            if [ -n "$bond" ]; then
+                valid_ifname "$bond" || refuse "a bond is named like an interface"
+                [ "$bond" != "$name" ] || refuse "an interface is not its own bond"
+                [ -z "$addresses" ] && [ -z "$gateway" ] && [ -z "$dns" ] ||
+                    refuse "a bond member takes its addressing from the bond"
+                [ "$addressing" = dhcp ] || refuse "a bond member takes its addressing from the bond"
+            elif [ "$addressing" = static ]; then
+                [ -n "$addresses" ] || refuse "a static interface names at least one address"
+            else
+                [ -z "$addresses" ] && [ -z "$gateway" ] ||
+                    refuse "a dhcp interface takes no addresses of its own"
+            fi
+            if [ "$vlan" -gt 0 ]; then
+                parent=${name%.*}
+                [ "$parent" != "$name" ] && valid_ifname "$parent" &&
+                    [ "${name##*.}" = "$vlan" ] ||
+                    refuse "a VLAN interface is named after its parent as <parent>.<vlan>"
+            fi
+            printf '%s|%s|%s|%s|%s|%s|%s\n' "$name" "$addressing" "$addresses" "$gateway" "$dns" "$bond" "$vlan" >>"$interfaces"
+            interfaces_named=$((interfaces_named + 1))
+            ;;
+        *)
+            refuse "the request names a setting this server does not set"
+            ;;
+    esac
+done <"$request"
+[ "$revision" != none ] || refuse "the request names no revision"
+
+detail=
+
+# ---- Disks ------------------------------------------------------------------
+listing=
+if [ -s "$disks" ]; then
+    listing=$("$lsblk" -P -o NAME,TYPE,SERIAL,WWN,FSTYPE,MOUNTPOINT 2>/dev/null) ||
+        refuse "the drives could not be listed"
+    root_source=$("$findmnt" -n -o SOURCE / 2>/dev/null) || refuse "the disk boots from is unknown"
+    # The chain from what the system boots on to the disk under it: a partition,
+    # or a device mapper volume on one.
+    root_chain=$("$lsblk" -n -o NAME -s "$root_source" 2>/dev/null) || refuse "the disk boots from is unknown"
+    root_disk=$(printf '%s\n' "$root_chain" | tail -n 1)
+    [ -n "$root_disk" ] || refuse "the disk boots from is unknown"
+    disk_lines=
+    while IFS='|' read -r role identity erase; do
+        line=$(printf '%s\n' "$listing" | grep -F "SERIAL=\"$identity\"" | head -n 1)
+        [ -n "$line" ] || line=$(printf '%s\n' "$listing" | grep -F "WWN=\"$identity\"" | head -n 1)
+        [ -n "$line" ] || refuse "no drive of this machine answers to $identity"
+        case "$line" in
+            *'TYPE="disk"'*) ;;
+            *) refuse "no drive of this machine answers to $identity" ;;
+        esac
+        name=$(printf '%s\n' "$line" | sed -n 's/.*NAME="\([^"]*\)".*/\1/p')
+        [ -n "$name" ] || refuse "the drive $identity could not be named"
+        if [ "$role" = system ]; then
+            [ "$name" = "$root_disk" ] ||
+                refuse "the running system is on $root_disk, not on $identity"
+        else
+            [ "$name" != "$root_disk" ] ||
+                refuse "the disk boots from is not a $role disk"
+            if has_data "$name"; then
+                [ "$erase" = 1 ] ||
+                    refuse "the drive $identity holds data; confirm erasing it by naming its serial or WWN"
+                "$wipefs" -a "/dev/$name" >/dev/null 2>&1 ||
+                    refuse "the drive $identity could not be erased"
+            fi
+        fi
+        disk_lines=$disk_lines${disk_lines:+, }"$role=$identity"
+    done <"$disks"
+    detail="disks $disk_lines"
+fi
+
+# ---- Hostname ---------------------------------------------------------------
+if [ -n "$hostname" ]; then
+    if [ -n "$hostnamectl" ]; then
+        "$hostnamectl" set-hostname "$hostname" || refuse "the hostname could not be set"
+    else
+        mkdir -p "$etc"
+        printf '%s\n' "$hostname" >"$etc/hostname"
+    fi
+    detail=${detail:+$detail; }"hostname $hostname"
+fi
+
+# ---- Network ----------------------------------------------------------------
+backup_dir=$state_dir/network-previous
+network_changed=0
+for keyfile in "$nm_dir"/tilo-*.nmconnection; do
+    [ -e "$keyfile" ] || continue
+    network_changed=1
+done
+[ "$interfaces_named" -eq 0 ] || network_changed=1
+
+if [ "$network_changed" = 1 ]; then
+    mkdir -p "$nm_dir"
+    rm -rf "$backup_dir"
+    mkdir -p "$backup_dir"
+    for keyfile in "$nm_dir"/tilo-*.nmconnection; do
+        [ -e "$keyfile" ] || continue
+        cp -p "$keyfile" "$backup_dir/"
+    done
+    network_names=
+    while IFS='|' read -r name addressing addresses gateway dns bond vlan; do
+        keyfile=$nm_dir/tilo-$name.nmconnection
+        wanted=$wanted" $keyfile"
+        network_names=$network_names${network_names:+, }"$name"
+        hex=$(printf 'tilo-%s' "$name" | sha1sum)
+        hex=${hex%% *}
+        uuid=$(printf '%s' "$hex" | sed -E 's/^(.{8})(.{4})(.{4})(.{4})(.{12}).*/\1-\2-\3-\4-\5/')
+        {
+            printf '[connection]\n'
+            printf 'id=tilo-%s\n' "$name"
+            printf 'uuid=%s\n' "$uuid"
+            if [ -z "$bond" ] && [ "$vlan" -gt 0 ]; then
+                printf 'type=vlan\n'
+            else
+                printf 'type=ethernet\n'
+            fi
+            printf 'interface-name=%s\n' "$name"
+            printf 'autoconnect=true\n'
+            if [ -n "$bond" ]; then
+                printf 'master=%s\nslave-type=bond\n' "$bond"
+            fi
+            printf '\n'
+            if [ -z "$bond" ] && [ "$vlan" -gt 0 ]; then
+                printf '[vlan]\nid=%s\nparent=%s\n\n' "$vlan" "${name%.*}"
+            fi
+            if is_master "$name"; then
+                printf '[bond]\nmode=active-backup\nmiimon=100\n\n'
+            fi
+            printf '[ipv4]\n'
+            if [ -n "$bond" ]; then
+                printf 'method=disabled\n'
+            elif [ "$addressing" = static ]; then
+                printf 'method=manual\n'
+                at=0
+                printf '%s\n' "$addresses" | tr ',' '\n' | while IFS= read -r address; do
+                    case "$address" in
+                        *:*) ;;
+                        *)
+                            at=$((at + 1))
+                            printf 'address%d=%s\n' "$at" "$address"
+                            ;;
+                    esac
+                done
+                [ -z "$gateway" ] || printf 'gateway=%s\n' "$gateway"
+            else
+                printf 'method=auto\n'
+            fi
+            [ -z "$dns" ] || printf 'dns=%s;\n' "$(printf '%s' "$dns" | tr ',' ';')"
+            printf '\n[ipv6]\n'
+            case "$addresses" in
+                *:*)
+                    printf 'method=manual\n'
+                    at=0
+                    printf '%s\n' "$addresses" | tr ',' '\n' | while IFS= read -r address; do
+                        case "$address" in
+                            *:*)
+                                at=$((at + 1))
+                                printf 'address%d=%s\n' "$at" "$address"
+                                ;;
+                        esac
+                    done
+                    ;;
+                *)
+                    if [ -n "$bond" ] || [ "$addressing" = static ]; then
+                        printf 'method=ignore\n'
+                    else
+                        printf 'method=auto\n'
+                    fi
+                    ;;
+            esac
+        } >"$keyfile"
+        chmod 0600 "$keyfile"
+    done <"$interfaces"
+    for keyfile in "$nm_dir"/tilo-*.nmconnection; do
+        [ -e "$keyfile" ] || continue
+        case "$wanted " in
+            *" $keyfile "*) ;;
+            *) rm -f "$keyfile" ;;
+        esac
+    done
+    "$nmcli" connection reload >/dev/null 2>&1 || revert "the network configuration could not be reloaded"
+    # Members join first, then the bonds they belong to, then everything else.
+    for pass in member master other; do
+        while IFS='|' read -r name addressing addresses gateway dns bond vlan; do
+            case "$pass" in
+                member) [ -n "$bond" ] || continue ;;
+                master) [ -z "$bond" ] && is_master "$name" || continue ;;
+                other) [ -n "$bond" ] && continue
+                       is_master "$name" && continue ;;
+            esac
+            "$nmcli" connection up "tilo-$name" >/dev/null 2>&1 ||
+                revert "the interface $name did not come up"
+        done <"$interfaces"
+    done
+    detail=${detail:+$detail; }"network${network_names:+ $network_names}"
+    mkdir -p "$state_dir"
+    printf 'revision\t%s\n' "$revision" >"$applied_at.tmp"
+    chmod 0600 "$applied_at.tmp"
+    mv -f "$applied_at.tmp" "$applied_at"
+    waited=0
+    kept=0
+    while :; do
+        if confirmed_now; then
+            kept=1
+            break
+        fi
+        [ "$waited" -lt "$revert_after" ] || break
+        sleep 1
+        waited=$((waited + 1))
+    done
+    [ "$kept" = 1 ] || revert "no device of yours reached this machine within ${revert_after}s"
+fi
+
+write_report applied "${detail:-nothing to change}"

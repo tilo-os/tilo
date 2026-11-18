@@ -72,9 +72,11 @@ pub(crate) struct Restore {
     /// Every workspace's layout has been read once, or this session reads none: a tab a kept
     /// window names that is not laid out by then is gone.
     read: bool,
-    /// What the windows of those apps announce themselves by: a saved tab of one of them that no
-    /// window of theirs claimed is a window the app closed while the desktop was away, and is not
-    /// asked for again, which would start a second instance of an app that still runs.
+    /// What the windows of those apps announce themselves by, and what they were asked as: a saved
+    /// tab of one of them that no window of theirs claimed is a window the app closed while the
+    /// desktop was away, and is not asked for again, which would start a second instance of an app
+    /// that still runs. An app that ended while the desktop was away is one step further: its tabs
+    /// close the same way, and its end is reported rather than the app started again.
     kept_apps: Vec<String>,
     /// The revision of the layout the kept windows' keepers were last told their tabs at.
     placed_at: Option<u64>,
@@ -168,7 +170,7 @@ impl Restore {
             .collect();
         // Laid out after the kept apps claimed their tabs: what is left of theirs closed meanwhile.
         saved.retain(|(_, saved)| {
-            let closed = self.kept_by_app(&saved.app);
+            let closed = self.kept_by(saved);
             if closed {
                 tree.close_tab(saved.tab);
             }
@@ -249,7 +251,17 @@ impl Restore {
             self.kept_since = Some(Instant::now());
             #[cfg(target_os = "linux")]
             {
-                self.kept = apps.take_kept();
+                let (kept, ended) = apps.take_kept();
+                self.kept = kept;
+                for launch in ended {
+                    tracing::info!(
+                        target: tilo_startup_metrics::KEPT_APPS_TARGET,
+                        app = %launch.app,
+                        "ended while the desktop was away: its saved tabs close"
+                    );
+                    self.keep_identities(launch);
+                }
+                self.close_left_by_kept(desktop);
             }
         }
         #[cfg(target_os = "linux")]
@@ -393,26 +405,40 @@ impl Restore {
                 });
             }
             shown.push(kept.pid);
-            self.kept_apps.push(kept.launch.app.clone());
-            self.kept_apps.extend(kept.launch.window_identities);
             self.kept_apps
                 .extend(kept.windows.into_iter().filter_map(|window| window.app_id));
+            self.keep_identities(kept.launch);
         }
-        // Before the layout is laid out, what of a kept app's is left of it closes as it does
-        // ([`Self::start`]).
-        if self.seeded {
-            let closed: Vec<TabId> = self
-                .waiting
-                .iter()
-                .filter(|saved| self.kept_by_app(&saved.app))
-                .map(|saved| saved.tab)
-                .collect();
-            self.waiting.retain(|saved| !closed.contains(&saved.tab));
-            for tab in closed {
-                desktop.with_policy(|policy| policy.release_tab(tab));
-            }
-        }
+        self.close_left_by_kept(desktop);
         shown
+    }
+
+    /// Note what the windows of the kept launch `launch` announce themselves by, and what it was
+    /// asked as ([`Self::kept_apps`]).
+    #[cfg(target_os = "linux")]
+    fn keep_identities(&mut self, launch: tilo_app_launch::kept::KeptLaunch) {
+        self.kept_apps.push(launch.app);
+        self.kept_apps.extend(launch.window_identities);
+        self.kept_apps.extend(launch.asked);
+    }
+
+    /// Close the saved tabs of the kept apps that none of their windows claimed, once the layout
+    /// is laid out; before, [`Self::start`] closes them as it lays the layout out.
+    #[cfg(target_os = "linux")]
+    fn close_left_by_kept(&mut self, desktop: &ShellDesktop) {
+        if !self.seeded {
+            return;
+        }
+        let closed: Vec<TabId> = self
+            .waiting
+            .iter()
+            .filter(|saved| self.kept_by(saved))
+            .map(|saved| saved.tab)
+            .collect();
+        self.waiting.retain(|saved| !closed.contains(&saved.tab));
+        for tab in closed {
+            desktop.with_policy(|policy| policy.release_tab(tab));
+        }
     }
 
     /// The saved tabs of each app still open from before an update, which this desktop cannot
@@ -465,8 +491,17 @@ impl Restore {
         apps.place_kept(&desktop.with_policy(|policy| policy.kept_placements()));
     }
 
-    /// Whether `app` is one of the apps kept across the restart this run follows.
-    fn kept_by_app(&self, app: &str) -> bool {
+    /// Whether `saved` is a tab of one of the apps kept across the restart this run follows: by
+    /// what its windows announce themselves as, or, for a Windows program, by the entry it was
+    /// asked as.
+    fn kept_by(&self, saved: &Saved) -> bool {
+        if let Some(Start::Windows(entry)) = &saved.start {
+            let asked = format!("{}{entry}", crate::windows_compat::ASKED_PREFIX);
+            if self.kept_apps.contains(&asked) {
+                return true;
+            }
+        }
+        let app = saved.app.as_str();
         self.kept_apps.iter().any(|kept| {
             tilo_desktop_model::apps::app_ids_match(kept, app)
                 || tilo_desktop_model::apps::app_ids_match(app, kept)

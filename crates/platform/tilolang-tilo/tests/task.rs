@@ -439,6 +439,18 @@ fn a_task_moved_to_another_day_takes_its_moment_and_reminder() {
         "the day, the moment and the reminder: {said}"
     );
     assert!(!said.contains("2026-11-18"), "{said}");
+
+    // A day named in text ("due {t.due}") reads as the person reads their dates; until the
+    // platform names it, it stays its stored text.
+    let named_text = "for t in tasks.tasks.items.filter(t -> t.title == \"Call mum\") { print(\"due {t.due}\") }";
+    let stored = task.said(named_text);
+    assert_eq!(stored, "due 2026-11-20", "{stored}");
+    task.session.set_sentence_by(|kind, value| match kind {
+        "date" if value == "2026-11-20" => "20th November 2026".to_owned(),
+        _ => value.to_owned(),
+    });
+    let named = task.said(named_text);
+    assert_eq!(named, "due 20th November 2026", "{named}");
 }
 
 /// An action that sets what a document already holds changes nothing and is done, never a failure

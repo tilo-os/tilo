@@ -18194,6 +18194,7 @@ dependencies = [
  "hex",
  "http-body-util",
  "iroh",
+ "iroh-base",
  "iroh-blobs",
  "jiff",
  "mail-parser",
@@ -20046,6 +20047,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-model-engine"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tilolang-runtime",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-model-gateway"
 version = "0.1.0"
 dependencies = [
@@ -20766,6 +20779,7 @@ dependencies = [
  "base64 0.22.1",
  "bounded-command",
  "calloop",
+ "collab-types",
  "desktop-policy",
  "futures-util",
  "hex",
@@ -20792,6 +20806,7 @@ dependencies = [
  "tilo-lock",
  "tilo-notifications-service",
  "tilo-paths",
+ "tilo-peer-state",
  "tilo-power-mgmt",
  "tilo-resource",
  "tilo-secrets",
@@ -21047,6 +21062,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_path_to_error",
+ "sha2 0.11.0",
  "thiserror 2.0.21",
  "tilo-action-policy",
  "tilo-actions",
@@ -21147,7 +21163,6 @@ dependencies = [
  "blake3",
  "bytes",
  "collab-types",
- "console-control",
  "ed25519-dalek 3.0.0",
  "fs-protocol",
  "fuser",
@@ -23185,6 +23200,7 @@ dependencies = [
  "accounts",
  "agent-provider-config",
  "app-cli",
+ "base64 0.22.1",
  "blake3",
  "calendar",
  "chat",
@@ -23221,6 +23237,7 @@ dependencies = [
  "settings-store",
  "sha2 0.11.0",
  "store",
+ "tasks-model",
  "tempfile",
  "test-http",
  "thiserror 2.0.21",
@@ -23251,6 +23268,7 @@ dependencies = [
  "tilo-identity-client",
  "tilo-lock",
  "tilo-mail-session",
+ "tilo-model-engine",
  "tilo-model-gateway",
  "tilo-net",
  "tilo-paths",
@@ -23277,6 +23295,7 @@ dependencies = [
  "word-processor",
  "workspace-hack",
  "zeroize",
+ "zstd",
 ]
 
 [[package]]

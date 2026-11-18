@@ -40,12 +40,21 @@ impl Words for English {
                 ],
             ),
             "format-month-day" => format!("{} {}", said(args, "month"), said(args, "day")),
-            "format-month-day-year" => format!(
+            "format-month-day-year" | "format-date-language" => format!(
                 "{} {}, {}",
                 said(args, "month"),
                 said(args, "day"),
                 said(args, "year")
             ),
+            "format-month-day-time" => format!(
+                "{} {}, {}",
+                said(args, "month"),
+                said(args, "day"),
+                said(args, "time")
+            ),
+            "format-date-time-language" => {
+                format!("{}, {}", said(args, "date"), said(args, "time"))
+            }
             "format-duration-seconds" => format!("{} sec", said(args, "count")),
             "format-duration-minutes" => format!("{} min", said(args, "count")),
             "format-date-long" => format!(
@@ -174,4 +183,53 @@ fn at(hour: i8, minute: i8) -> DateTime {
 /// The day `year`-`month`-`day`.
 fn date(year: i16, month: i8, day: i8) -> Date {
     Date::new(year, month, day).expect("a day")
+}
+
+#[test]
+fn a_day_in_an_interpolated_sentence_names_its_day_and_a_moment_its_day_and_clock() {
+    let words = English;
+    let today = date(2026, 6, 30);
+    let formats = formats(TimeStyle::H12, DateStyle::Language);
+    assert_eq!(
+        crate::sentence("date", "2026-06-29", formats, today, 0, &words),
+        "Jun 29",
+        "this year's day is its month and day"
+    );
+    assert_eq!(
+        crate::sentence("date", "2025-06-29", formats, today, 0, &words),
+        "Jun 29, 2025",
+        "another year's day names the year"
+    );
+    assert_eq!(
+        crate::sentence("time", "2026-06-29T18:00:00Z", formats, today, 0, &words),
+        "Jun 29, 6:00 PM",
+        "a moment in this year is its day and the time of day"
+    );
+    assert_eq!(
+        crate::sentence("time", "2025-06-29T18:00:00Z", formats, today, 0, &words),
+        "Jun 29, 2025, 6:00 PM",
+        "another year's moment names the year"
+    );
+    assert_eq!(
+        crate::sentence(
+            "time",
+            "2026-06-29T18:00:00Z",
+            formats,
+            today,
+            2 * 3600,
+            &words
+        ),
+        "Jun 29, 8:00 PM",
+        "a moment reads in the person's own zone"
+    );
+    assert_eq!(
+        crate::sentence("date", "2026-06-29", formats, date(2027, 1, 1), 0, &words),
+        "Jun 29, 2026",
+        "another year to the person's today names the year too"
+    );
+    assert_eq!(
+        crate::sentence("duration", "125", formats, today, 0, &words),
+        "125",
+        "only a day and a moment read as dates"
+    );
 }

@@ -35,10 +35,9 @@
 #   2. Staging an update and running the same maintenance, as every update path
 #      does, gives the staged deployment's entry, and only it, a try counter
 #      BEFORE the reboot into it.
-#   3. The staged deployment is made unable to reach the greeter, by a greetd
-#      drop-in in /etc that acts only on the staged deployment's composefs
-#      identity. /etc is carried into the staged deployment when it is
-#      finalized, so the image itself is untouched and the fault is bounded to
+#   3. The staged deployment is made unable to come into service, by a drop-in
+#      in the current /etc that acts only on the staged deployment's composefs
+#      identity, so the image itself is untouched and the fault is bounded to
 #      that one deployment. FAULT picks how it breaks:
 #        greetd   (default) greetd itself fails to start.
 #        greeter  greetd starts and stays in service, but its greeter is the
@@ -57,7 +56,10 @@
 #                 boots, so its real encrypted root waits.
 #        server   the staged deployment's own service (SUBJECT_UNIT) fails to
 #                 start: the shape of an update whose server comes up unable to
-#                 serve, which no "the unit is enabled" check would catch.
+#                 serve, which no "the unit is enabled" check would catch. This
+#                 fault is in the staged image instead of this machine's /etc:
+#                 a staged deployment's /etc is made when the deployment is,
+#                 so the caller builds the update so that it cannot serve.
 #      Each of its boots spends a try: tilo-boot-health.service fails (or, at
 #      the unlock prompt, nothing runs at all), systemd-bless-boot leaves the
 #      counter, and the boot loader decrements it. While a broken boot is up,
@@ -120,6 +122,15 @@ as_root() {
 }
 
 boot_id() { guest 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null | tr -d '\r\n'; }
+# The console is shared with everything else on the machine, and this harness
+# reads values from it: a server that is not paired prints its pairing prompt
+# there on every attempt, and a line that lands inside a read is read as part
+# of it. Quiet the boot's own writers, as the check that drives a machine with
+# no sshd has to.
+quiet_console() {
+  as_root 'dmesg -n 1; systemctl cat tilo-server-firstboot.service >/dev/null 2>&1 && systemctl stop tilo-server-firstboot.service' \
+    >/dev/null 2>&1 || true
+}
 booted_digest() {
   guest 'tr " " "\n" < /proc/cmdline | sed -n "s/^composefs=//p"' 2>/dev/null | tr -d '\r\n'
 }
@@ -175,18 +186,27 @@ wait_reachable() {  # OLD-BOOT-ID [TIMEOUT [UNLOCK]]
 reboot_guest() {
   local old="$1" new
   as_root 'systemctl reboot' >/dev/null 2>&1 || true
-  if new="$(wait_reachable "$old")"; then printf '%s\n' "$new"; return 0; fi
+  if new="$(wait_reachable "$old")"; then quiet_console; printf '%s\n' "$new"; return 0; fi
   [ -n "$RESET" ] || return 1
   printf '      no answer within %ss; power-cycling with RESET\n' "$BOOT_TIMEOUT" >&2
   bash -c "$RESET" >&2 || return 1
-  wait_reachable "$old"
+  new="$(wait_reachable "$old")" || return 1
+  quiet_console
+  printf '%s\n' "$new"
 }
 
 # tilo-boot-health's verdict for this boot: good, failed, or not-assessed (the
 # boot loader did not count this boot, so boot-complete.target never asked).
 health_verdict() {
   local deadline=$(( $(date +%s) + HEALTH_TIMEOUT )) state result counted
-  counted="$(as_root 'test -e /sys/firmware/efi/efivars/LoaderBootCountPath-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f && echo yes || echo no' | tr -d '\r\n')"
+  # A token rather than the bare word: the console carries other writers' lines
+  # too, and anything they add must not change which answer was read.
+  counted="$(as_root 'test -e /sys/firmware/efi/efivars/LoaderBootCountPath-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f && echo __counted_yes__ || echo __counted_no__')"
+  case "$counted" in
+    *__counted_yes__*) counted=yes ;;
+    *__counted_no__*) counted=no ;;
+    *) counted=unknown ;;
+  esac
   while [ "$(date +%s)" -lt "$deadline" ]; do
     state="$(guest 'systemctl show -p ActiveState --value tilo-boot-health.service' 2>/dev/null | tr -d '\r\n')"
     result="$(guest 'systemctl show -p Result --value tilo-boot-health.service' 2>/dev/null | tr -d '\r\n')"
@@ -253,6 +273,7 @@ boot_entries_pass() {
 # --- 0. what is booted ----------------------------------------------------------
 step "the booted deployment"
 [ -n "$(boot_id)" ] || fail "RUNNER cannot reach the guest"
+quiet_console
 A_DIGEST="$(booted_digest)"
 [[ "$A_DIGEST" =~ ^[[:xdigit:]]{128}$ ]] || fail "no composefs= identity on the kernel command line; this is not a bootc composefs boot"
 A_ENTRY="$(current_entry)"
@@ -359,14 +380,12 @@ grep "^options" "$file"'
     ok "the staged entry's initrd now waits at an unlock prompt: $shape"
   fi
 elif [ "$FAULT" = server ]; then
-  as_root "install -d -m 0755 $DROPIN_DIR && cat > $DROPIN <<EOF
-# Written by os/tests/boot_assessment_rollback.sh: $SUBJECT_UNIT, this machine's
-# own liveness, fails on the deployment under test (composefs $B_DIGEST) and
-# nowhere else: the shape of an update whose server comes up unable to serve.
-[Service]
-ExecStartPre=/usr/bin/sh -c '! grep -q \"composefs=$B_DIGEST\" /proc/cmdline'
-EOF
-systemctl daemon-reload" > "$OUT/03-fault.txt" 2>&1 || fail "could not write $DROPIN"
+  # Nothing to write: the staged image is the broken one, and it is the caller
+  # that builds it that way. A drop-in written here would not reach it — a
+  # staged deployment's /etc is made when the deployment is, and staging ran
+  # already — so an update that breaks a server is broken in the image, as a
+  # real one would be.
+  : > "$OUT/03-fault.txt"
 elif [ "$FAULT" = greetd ]; then
   as_root "install -d -m 0755 $DROPIN_DIR && cat > $DROPIN <<EOF
 # Written by os/tests/boot_assessment_rollback.sh: greetd fails on the
@@ -408,8 +427,12 @@ ExecStart=/usr/bin/sh -c 'if grep -q \"composefs=$B_DIGEST\" /proc/cmdline; then
 EOF
 systemctl daemon-reload" > "$OUT/03-fault.txt" 2>&1 || fail "could not write $DROPIN"
 fi
-guest "systemctl is-active --quiet $SUBJECT_UNIT" || fail "$SUBJECT_UNIT is not active on the booted deployment after the fault was written; it must only affect the staged one"
-[ "$FAULT" = unlock ] || ok "$SUBJECT_UNIT still runs here; its $FAULT fault acts on composefs ${B_DIGEST:0:16}"
+guest "systemctl is-active --quiet $SUBJECT_UNIT" || fail "$SUBJECT_UNIT is not active on the booted deployment; the fault must only affect the staged one"
+case "$FAULT" in
+  unlock) ;;
+  server) ok "$SUBJECT_UNIT is still in service here; the staged image's own probe is what fails" ;;
+  *) ok "$SUBJECT_UNIT is still in service here; its $FAULT fault acts on composefs ${B_DIGEST:0:16}" ;;
+esac
 
 has_fallback_unit() {
   guest 'systemctl cat tilo-boot-fallback.service >/dev/null 2>&1'

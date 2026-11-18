@@ -64,7 +64,11 @@ they are of and never a colour or a size: `ui.BarChart([.bars(values: [3.0, 5.0]
 stacks several `.bars`), `ui.PieChart([.slice(label: \"Open\", value: 3.0)])` \
 for the parts of one whole, `ui.Chart([.series(values: [1.0, 2.0], label: \"Opened\")])` for \
 a history; build the lists from what the app keeps (`areas.map(a -> a.people.len().to_float())`) \
-and the chart follows it. `reads` lists every app the view reads, each as the view calls \
+and the chart follows it. A view reads a field by its type: a text, a number, a flag, a date \
+or a time as it is; an option with `??` or `if let v = x {}`; a list, a set or a collection \
+with `for i in xs {}`, `.len()` or `.map()`; a thing inside a thing by `.field`; a plain case \
+by `== .name`. A field that cannot be read fails alone and says so in the view's place. \
+`reads` lists every app the view reads, each as the view calls \
 it (`[\"tasks\"]`); the view is given those apps and no other. Calling it again in the same \
 turn writes the view again. After it, say in a sentence or two what the view shows: those words \
 are all that search, notifications and a reader that cannot show a view have.";

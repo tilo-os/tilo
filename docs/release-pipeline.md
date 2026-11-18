@@ -9,6 +9,7 @@ does not fan out into unrelated builds:
 | Apps | Relevant `main` pushes, `app-<directory>-vX.Y.Z`, `apps-vX.Y.Z`, or a manual **Release / apps** run with `publish` | Affected apps on routine `main`; selected apps once per enabled native architecture for explicit releases | Independently versioned tapps and immutable collection bundles |
 | Desktop session | `desktop-vX.Y.Z`; scheduled/manual runs from `main` publish the OS payload | Enabled native host-package jobs; compiler objects shared per architecture | Debian, RPM, Arch and Nix packages plus checksums; immutable OS payload |
 | OS | `tools/ci/publish/os-release.sh` dispatched on a `vX.Y.Z` tag | Release image, sealed-image boot, boot signing, independent rebuild | Signed generation image, SBOM, provenance and freshness |
+| Server OS | A dispatch on a `vX.Y.Z` tag (t's `publish-host`) | The server's programs, the package-snapshot base, the image booted in a VM | The signed server image in `registry.tilo.so/tilo/tilo-host` under `sha-<commit>`, `<version>` and `latest` |
 | Tilo Installer | Relevant protected `main` pushes; `imager-vX.Y.Z` for releases | Six native host-package jobs; signed installer media only on tags/manual rehearsals | Signed Linux/Windows and signed/notarized macOS downloads; immutable source-revision prereleases on main |
 | Python and TypeScript SDKs | A `vX.Y.Z` tag (t's `publish-sdks`, `on = ["tag:v…"]`) | The two packages built and read back, and their suites, which the publish needs | `tilo-sdk` on PyPI and `tilo-sdk` on npm, at the tag's version; re-running the tag's step skips what is already published |
 
@@ -220,6 +221,53 @@ first publication is published from a tree whose generation was allocated
 that way on purpose with no signed series to read. `os-release.sh rehearse`
 runs the boot signing, signing and publishing of a sealed image with throwaway
 keys into an OCI layout, without credentials.
+
+## Server OS releases
+
+The server OS (os/Containerfile.host) releases through one check, on a release tag or when
+someone dispatches it there:
+
+```sh
+t dispatch publish-host --ref tag:vX.Y.Z --publish
+```
+
+It builds what it needs and refuses to publish anything else: the server's programs
+(`host-binaries`), their base (`host-base`: the mirrored bootc base, the frozen package set and
+Firecracker) and the image above it (`image-host`); it proves the image in a container
+(`test-image-host`) and by installing and booting it in a VM (`host-assurance-x86_64`); and
+`sign-host` signs it with the release key in KMS, with a transparency-log entry. `publish-host`
+pushes it to `registry.tilo.so/tilo/tilo-host` as `sha-<commit>`, as `<version>`, and as `latest`
+only for a final version tag; a published tag is never moved. An image built from an RPM set no
+release published is refused by signing, so a release installs from a published package set.
+The image's container policy admits that repository, verified with the release key
+(`tools/signing/release_trust.py`), so a server installed with it as its update origin
+(`bootc install --target-imgref registry.tilo.so/tilo/tilo-host:latest`) updates from it.
+
+`t dispatch host-release-rehearsal --ref BRANCH` rehearses the signing and publishing path with a
+throwaway key into a local OCI layout, verifying the published image as its consumers do, with no
+credentials. It proves the release steps; it publishes nothing.
+
+## The server's iteration loop
+
+The server image is split so that a change to one program does not rebuild what the frozen
+package set decides. `host-base` installs the packages and Firecracker and changes only when the
+snapshot, the base or the package list does; t serves it across commits that keep them.
+`image-host` copies the built programs and the files that name them onto it, so it is a copying
+build of seconds. Both are dated by the newest commit that changed their own files
+(`tools/ci/publish/source-date.sh`), so a commit that changes neither is answered from t's cache
+rather than rebuilt.
+
+The loop for a change to a server program, a libexec script or a unit file:
+
+```sh
+t test test-image-host host-assurance-x86_64
+```
+
+`host-binaries` relinks the changed programs (the builder's compiler cache keeps a one-crate
+change at a relink), `image-host` lays them on the cached base, `test-image-host` checks the
+image in a container, and `host-assurance-x86_64` installs it on an encrypted disk and boots it,
+proving the services, the health verdict and the rollback. Nothing is signed or published on this
+path. A local machine builds the same two layers with `os/build-host.sh`.
 
 ## Dev VM disks
 

@@ -164,6 +164,18 @@ impl DeviceCap {
         Self::ALL.into_iter().find(|device| device.name() == name)
     }
 
+    /// Whether only the person at the device answers for it: the camera, the
+    /// microphone, the screen and the input. A workspace may refuse these to
+    /// the apps in it, but never allows them on a member's device: the
+    /// person's own answer, kept for that device, does.
+    #[must_use]
+    pub const fn is_personal(self) -> bool {
+        matches!(
+            self,
+            Self::Camera | Self::Microphone | Self::Screen | Self::Input
+        )
+    }
+
     /// The access a grant of this device gives: driving input, printing, the
     /// clipboard, a host shell and desktop control change things, the rest
     /// observe.
