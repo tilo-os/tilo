@@ -461,7 +461,7 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(set(bins), {"tilo-runtime-mcp", "tilo-vmd", "tilo-device-admin", "tilo-vm",
                                          "tilo-test-registry", "tilo-session", "tilo-window-menu",
                                          "tilo-lock-screen", "osk", "tilo-quick-settings",
-                                         "tilolang-process"})
+                                         "tilo-secret-service", "tilolang-process"})
             _, _, production_features = installer.cargo_plan(dev, False)
             self.assertFalse([feature for feature in production_features
                               if feature.endswith("dev-overrides")], production_features)
