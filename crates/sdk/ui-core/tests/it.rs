@@ -23,12 +23,6 @@ mod support;
 
 #[path = "accessibility_geometry.rs"]
 mod accessibility_geometry;
-#[path = "block_editor_markdown.rs"]
-mod block_editor_markdown;
-#[path = "block_editor_slash_menu_integration.rs"]
-mod block_editor_slash_menu_integration;
-#[path = "block_editor_wrapping.rs"]
-mod block_editor_wrapping;
 #[cfg(unix)]
 #[path = "coedit_keystone.rs"]
 mod coedit_keystone;
@@ -86,8 +80,6 @@ mod large_document_transfer;
 mod large_frame_reassembly;
 #[path = "layout_walk_lists_each_child_once.rs"]
 mod layout_walk_lists_each_child_once;
-#[path = "link_popover_renders.rs"]
-mod link_popover_renders;
 #[cfg(unix)]
 #[path = "live_text_sync.rs"]
 mod live_text_sync;

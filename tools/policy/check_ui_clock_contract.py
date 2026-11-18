@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Keep the UI toolkit's clock behind ``ui::time``.
 
-The toolkit (``crates/sdk/ui-core``), its host services
+The toolkit (``crates/sdk/ui-core``), the editor built on it
+(``crates/sdk/tilo-rich-edit``), its host services
 (``crates/sdk/tilo-process-services``) and the collab client under it
 (``crates/collab/collaboration``) name their clock types through
 ``crate::time`` —
@@ -56,6 +57,7 @@ from rust_source import (  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 CRATES = (
     Path("crates/sdk/ui-core"),
+    Path("crates/sdk/tilo-rich-edit"),
     Path("crates/sdk/tilo-process-services"),
     Path("crates/collab/collaboration"),
 )

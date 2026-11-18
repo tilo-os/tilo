@@ -1,5 +1,5 @@
 //! Pure functions to translate between a page's markdown body on
-//! disk and the in-memory block list the [`ui::widget::BlockEditor`]
+//! disk and the in-memory block list the [`ui::rich_edit::BlockEditor`]
 //! renders.
 //!
 //! The grammar supports block structure and a per-block [`MarkSpan`] list:
@@ -106,7 +106,7 @@ pub enum BlockSpec {
     Paragraph(InlineText),
     Quote(InlineText),
     Callout {
-        kind: ui::widget::CalloutKind,
+        kind: ui::rich_edit::CalloutKind,
         text: InlineText,
     },
     Heading {
@@ -136,7 +136,7 @@ pub enum BlockSpec {
     Divider,
 }
 
-/// Same constant as [`ui::widget::block_editor::MAX_LIST_INDENT`].
+/// Same constant as [`ui::rich_edit::block_editor::MAX_LIST_INDENT`].
 pub const MAX_LIST_INDENT: u8 = 5;
 
 impl BlockSpec {
@@ -928,7 +928,7 @@ pub fn parse(md: &str) -> Vec<BlockSpec> {
         }
         if let Some(kind) = line
             .strip_prefix('>')
-            .and_then(ui::widget::CalloutKind::from_marker)
+            .and_then(ui::rich_edit::CalloutKind::from_marker)
         {
             let body = take_quoted_lines(&mut lines);
             blocks.push(BlockSpec::Callout {
@@ -1224,7 +1224,7 @@ fn serialize_paragraph(text: &InlineText) -> String {
 const EMPTY_PARAGRAPH: &str = "&nbsp;";
 
 /// A callout as a GitHub alert: its marker line, then its quoted text.
-fn serialize_callout(out: &mut String, kind: ui::widget::CalloutKind, text: &InlineText) {
+fn serialize_callout(out: &mut String, kind: ui::rich_edit::CalloutKind, text: &InlineText) {
     out.push_str("> ");
     out.push_str(&kind.marker());
     if !text.text.is_empty() {
@@ -1349,10 +1349,10 @@ fn serialize_blocks(blocks: &[BlockSpec]) -> String {
     out
 }
 
-/// Build a [`ui::widget::Block`] from a kind and plain text. Shared by
+/// Build a [`ui::rich_edit::Block`] from a kind and plain text. Shared by
 /// [`specs_to_blocks`]; marks/nesting/code-group are applied by the caller.
-fn block_from_kind(kind: ui::widget::BlockKind, text: &str) -> ui::widget::Block {
-    use ui::widget::{Block, BlockKind};
+fn block_from_kind(kind: ui::rich_edit::BlockKind, text: &str) -> ui::rich_edit::Block {
+    use ui::rich_edit::{Block, BlockKind};
     match kind {
         BlockKind::Paragraph => Block::paragraph(text),
         BlockKind::Quote => Block::quote(text),
@@ -1369,8 +1369,8 @@ fn block_from_kind(kind: ui::widget::BlockKind, text: &str) -> ui::widget::Block
 
 /// Map a simple (non-fence) editor kind + inline text back to a [`BlockSpec`].
 /// Fence rows need multi-line reassembly in [`blocks_to_specs`].
-fn spec_from_kind(kind: &ui::widget::BlockKind, inline: InlineText) -> Option<BlockSpec> {
-    use ui::widget::BlockKind;
+fn spec_from_kind(kind: &ui::rich_edit::BlockKind, inline: InlineText) -> Option<BlockSpec> {
+    use ui::rich_edit::BlockKind;
     match kind {
         BlockKind::Paragraph => Some(BlockSpec::Paragraph(inline)),
         BlockKind::Quote => Some(BlockSpec::Quote(inline)),
@@ -1404,10 +1404,10 @@ fn spec_from_kind(kind: &ui::widget::BlockKind, inline: InlineText) -> Option<Bl
 }
 
 /// Convert a list of [`BlockSpec`]s into a list of
-/// [`ui::widget::Block`]s suitable for handing to
-/// [`ui::widget::BlockEditor::set_blocks`]. Mark spans on each block
+/// [`ui::rich_edit::Block`]s suitable for handing to
+/// [`ui::rich_edit::BlockEditor::set_blocks`]. Mark spans on each block
 /// land on the inner `RichTextLine`'s mark list.
-pub fn specs_to_blocks(specs: &[BlockSpec]) -> Vec<ui::widget::Block> {
+pub fn specs_to_blocks(specs: &[BlockSpec]) -> Vec<ui::rich_edit::Block> {
     let mut groups = std::collections::HashMap::new();
     expanded_rows(specs)
         .into_iter()
@@ -1436,8 +1436,8 @@ pub fn specs_to_blocks(specs: &[BlockSpec]) -> Vec<ui::widget::Block> {
 /// Fenced code has one durable row per line, including one row for an empty fence.
 pub(crate) fn expanded_rows(
     specs: &[BlockSpec],
-) -> Vec<(ui::widget::BlockKind, InlineText, Option<usize>, u8)> {
-    use ui::widget::BlockKind;
+) -> Vec<(ui::rich_edit::BlockKind, InlineText, Option<usize>, u8)> {
+    use ui::rich_edit::BlockKind;
     let mut rows = Vec::new();
     for (fence, spec) in specs.iter().enumerate() {
         let (kind, text) = match spec {
@@ -1504,8 +1504,8 @@ pub(crate) fn expanded_rows(
 /// Inverse of [`specs_to_blocks`] — convert the editor's block list
 /// back into the spec representation so [`serialize`] can emit
 /// markdown that round-trips through the inline-marks layer.
-pub fn blocks_to_specs(blocks: &[ui::widget::Block]) -> Vec<BlockSpec> {
-    use ui::widget::BlockKind;
+pub fn blocks_to_specs(blocks: &[ui::rich_edit::Block]) -> Vec<BlockSpec> {
+    use ui::rich_edit::BlockKind;
     let mut out = Vec::with_capacity(blocks.len());
     let mut i = 0usize;
     while let Some(b) = blocks.get(i) {
@@ -1922,7 +1922,7 @@ Last paragraph.
 
         phase every_github_alert_round_trips_as_its_callout;
         {
-            use ui::widget::{BlockKind, CalloutKind};
+            use ui::rich_edit::{BlockKind, CalloutKind};
             let through_blocks = |md: &str| serialize(&blocks_to_specs(&specs_to_blocks(&parse(md))));
             for (marker, kind) in [
                 ("NOTE", CalloutKind::Note),
@@ -2013,7 +2013,7 @@ Last paragraph.
         phase literal_markup_characters_round_trip_as_text;
         // Text that reads like markup comes back as the same text, not marks.
         {
-            use ui::widget::Block;
+            use ui::rich_edit::Block;
             let texts = [
                 "*x*",
                 "**x**",
@@ -2066,7 +2066,7 @@ Last paragraph.
         // A nested line keeps the space its text starts with, and an empty
         // paragraph between others stays a paragraph.
         {
-            use ui::widget::Block;
+            use ui::rich_edit::Block;
             let mut nested = Block::paragraph(" indented by a space");
             nested.nesting = 1;
             let mut deeper = Block::paragraph("   three spaces");
@@ -2099,7 +2099,7 @@ Last paragraph.
 
     #[test]
     fn editor_blocks_round_trip_quotes_code_formulas_numbered_lists_and_tables() {
-        use ui::widget::BlockKind;
+        use ui::rich_edit::BlockKind;
         let through_blocks = |md: &str| serialize(&blocks_to_specs(&specs_to_blocks(&parse(md))));
 
         let markdown = "> A **useful** quotation\n";
@@ -2196,11 +2196,11 @@ sum_(i=1)^n frac(1, i^2)
         assert_eq!(through_blocks(md), md);
     }
 
-    fn export_import(blocks: &[ui::widget::Block]) -> Vec<ui::widget::Block> {
+    fn export_import(blocks: &[ui::rich_edit::Block]) -> Vec<ui::rich_edit::Block> {
         specs_to_blocks(&parse(&serialize(&blocks_to_specs(blocks))))
     }
 
-    fn shape(blocks: &[ui::widget::Block]) -> Vec<String> {
+    fn shape(blocks: &[ui::rich_edit::Block]) -> Vec<String> {
         blocks
             .iter()
             .map(|block| format!("{:?} {:?} {}", block.kind, block.text(), block.nesting))
@@ -2239,7 +2239,7 @@ sum_(i=1)^n frac(1, i^2)
     /// characters Markdown gives meaning to.
     #[test]
     fn export_then_import_keeps_every_block() {
-        use ui::widget::Block;
+        use ui::rich_edit::Block;
         for seed in 1..=3000u64 {
             let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
             let count = 1 + rng.below(10);

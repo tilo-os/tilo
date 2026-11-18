@@ -7814,6 +7814,12 @@ impl FrameHarness {
         self.send(&WindowEvent::Ime(winit::event::Ime::Commit(text.into())));
     }
 
+    /// How many device pixels each logical pixel of input is.
+    #[must_use]
+    pub fn input_scale(&self) -> f64 {
+        self.input_scale
+    }
+
     /// Set the display's scale: device pixels per logical pixel, by which input is scaled.
     pub fn set_input_scale(&mut self, scale: f64) -> Result<(), String> {
         self.invalidate_local();

@@ -4,7 +4,7 @@
 //! sidebar retained focus (after a row click) and swallowed the arrows.
 
 use crate::framework_support::{add_note, notes, open, send as dispatch, surface};
-use ui::widget::BlockKind;
+use ui::rich_edit::BlockKind;
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::NamedKey;
 
@@ -57,7 +57,7 @@ fn slash_menu_owns_arrow_and_enter_keys() {
                 .slash_menu()
                 .highlighted()
                 .cloned()),
-            Some(ui::widget::SlashCommand::Block(BlockKind::Paragraph)),
+            Some(ui::rich_edit::SlashCommand::Block(BlockKind::Paragraph)),
             "the menu starts on the first row"
         );
 
@@ -75,7 +75,7 @@ fn slash_menu_owns_arrow_and_enter_keys() {
                 .slash_menu()
                 .highlighted()
                 .cloned()),
-            Some(ui::widget::SlashCommand::Block(BlockKind::Heading(1))),
+            Some(ui::rich_edit::SlashCommand::Block(BlockKind::Heading(1))),
             "ArrowDown advances the block-menu highlight"
         );
 

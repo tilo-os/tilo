@@ -2329,7 +2329,7 @@ mod tests {
                 .expect("a note");
             let body: Vec<_> = (0..20)
                 .map(|paragraph| {
-                    ui::widget::BlockContent::paragraph(
+                    tilo_rich_edit::BlockContent::paragraph(
                         "",
                         format!(
                             "Part {paragraph} of the alpha release notes for the {at}th team: \
@@ -2547,7 +2547,7 @@ mod tests {
             notebook
                 .apply_action(&notes::actions::create_page_action(page, None, title))
                 .expect("a note");
-            let body = [ui::widget::BlockContent::paragraph("", text)];
+            let body = [tilo_rich_edit::BlockContent::paragraph("", text)];
             let written = notes::actions::write_body_action(page, &body);
             notebook
                 .apply(tilo_resource::Invoke::apply(&written).expect("a body"))

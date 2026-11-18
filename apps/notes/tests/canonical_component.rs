@@ -204,7 +204,7 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
         let first = app.main_panel_mut().editor().blocks()[0].id.clone();
         app.main_panel_mut()
             .editor_mut()
-            .focus_block(0, ui::widget::CursorPlacement::Byte(2));
+            .focus_block(0, ui::rich_edit::CursorPlacement::Byte(2));
         for _ in 0..3 {
             app.sync(&doc, &ROOT);
         }

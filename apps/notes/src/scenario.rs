@@ -754,7 +754,7 @@ fn show_members(driver: &mut FrameHarness) -> Result<(), String> {
         .into_iter()
         .nth(4)
         .ok_or("the presence scene needs five blocks")?;
-    let block = ui::widget::block_editor::block_presence_key(&fifth);
+    let block = ui::rich_edit::block_editor::block_presence_key(&fifth);
     presence.set_caret(&block, alice.clone(), 18);
     presence.record_peer_typing(
         alice,

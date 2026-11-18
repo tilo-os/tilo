@@ -82,7 +82,7 @@ tilo_test_env::scenario! {
         replica
             .apply(add_comment_action("c", None, Some("source-1"), "draft"))
             .expect("comment");
-        let mut bold = ui::widget::BlockContent::paragraph("", "plain bold");
+        let mut bold = ui::rich_edit::BlockContent::paragraph("", "plain bold");
         bold.marks = vec![ui::widget::MarkSpan::new(
             6..10,
             ui::widget::marks::Mark::Bold,

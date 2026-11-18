@@ -1057,14 +1057,9 @@ mod tests {
     }
 
     fn nested_message_scene(text: &mut TextRenderer, theme: &Theme, transform: Affine) -> Scene {
-        use crate::widget::{BlockContent, BlockEditor, Embedded};
-        let mut editor = BlockEditor::new()
-            .with_wrap_lines(true)
-            .with_compact_paragraph_spacing(true)
-            .with_block_handles(false)
-            .with_read_only(true);
-        editor.present_blocks(&[BlockContent::paragraph("message", "A preceding message")]);
-        let mut body = Embedded::new(editor);
+        use crate::widget::{Embedded, Text};
+        let message = Text::new("A preceding message");
+        let mut body = Embedded::new(message);
         body.layout(Rect::new(68.0, 28.0, 300.0, 28.0), theme, text);
         let mut scene = Scene::new();
         body.draw(&mut scene, transform, text, theme, &PresenceCtx::empty());

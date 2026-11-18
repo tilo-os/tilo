@@ -437,6 +437,8 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Secur
 tilo-component-scan = { version = "0.1.0", path = "../tilo-component-scan" }
 
 [dev-dependencies]
+# The menus and materials a document editor opens, drawn as the toolkit draws them.
+tilo-rich-edit = { version = "0.1.0", path = "../tilo-rich-edit", features = ["test-support"] }
 tilo-component-scan = { version = "0.1.0", path = "../tilo-component-scan" }
 # Hand-written painter modules for the wasm host's refusal and budget tests.
 wat = "1"

@@ -4,8 +4,6 @@
 crates/sdk/ui-core/src/chrome/page.rs pixel_const 1
 crates/sdk/ui-core/src/chrome/shell.rs pixel_const 8
 crates/sdk/ui-core/src/widget/activity_timeline.rs pixel_const 11
-crates/sdk/ui-core/src/widget/block_editor.rs pixel_const 11
-crates/sdk/ui-core/src/widget/block_editor_table.rs pixel_const 9
 crates/sdk/ui-core/src/widget/button.rs pixel_const 2
 crates/sdk/ui-core/src/widget/chart.rs pixel_const 1
 crates/sdk/ui-core/src/widget/chart_legend.rs pixel_const 5

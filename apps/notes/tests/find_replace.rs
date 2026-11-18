@@ -19,7 +19,10 @@ fn fixture() -> (TestApp<notes::NotesShell>, notes::PageId) {
     (app, page)
 }
 
-fn blocks(app: &TestApp<notes::NotesShell>, page: notes::PageId) -> Vec<ui::widget::BlockContent> {
+fn blocks(
+    app: &TestApp<notes::NotesShell>,
+    page: notes::PageId,
+) -> Vec<ui::rich_edit::BlockContent> {
     crate::framework_support::part_doc(app, page, |doc| read::page_blocks(doc, page))
 }
 

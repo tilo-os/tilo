@@ -3,7 +3,7 @@
 
 use ui::automerge::AutoCommit;
 use ui::resource::DocumentId;
-use ui::widget::BlockContent;
+use ui::rich_edit::BlockContent;
 use ui::widget::marks::{Mark, MarkSpan};
 
 use super::tests::{ADA, Talk, id};

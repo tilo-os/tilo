@@ -5,8 +5,8 @@
 use std::rc::Rc;
 
 use automerge::{AutoCommit, ObjId};
+use ui::rich_edit::BlockContent;
 use ui::tilo_resource::Resource;
-use ui::widget::BlockContent;
 
 use crate::actions::{Action, InlineMarkSpan, StoredBlock};
 use crate::model::{PageId, PageMeta, TagId, TagMeta, Workspace};

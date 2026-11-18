@@ -10,14 +10,14 @@
 
 use std::collections::BTreeMap;
 
-use super::*;
+use super::{Bound, BoundValue, Element, Event, Fired, Intent, LocalState, Source, Value};
 use crate::headless::FrameHarness;
 use crate::theme::Theme;
 use crate::widget::Widget;
 
 /// An instance as a test gives it: values by prop, the events it handles queued on `queue`, and the
 /// components in its parts.
-pub(super) struct Node {
+pub struct Node {
     kind: &'static str,
     key: String,
     props: BTreeMap<String, Value>,
@@ -28,7 +28,8 @@ pub(super) struct Node {
 }
 
 impl Node {
-    pub(super) fn new(kind: &'static str, key: &str, queue: &crate::Intents<Fired>) -> Self {
+    /// An instance of the component `kind` keyed `key`, its events queued on `queue`.
+    pub fn new(kind: &'static str, key: &str, queue: &crate::Intents<Fired>) -> Self {
         Self {
             kind,
             key: key.to_owned(),
@@ -40,22 +41,30 @@ impl Node {
         }
     }
 
-    pub(super) fn prop(mut self, name: &str, value: Value) -> Self {
+    /// Give the prop `name` the value `value`.
+    #[must_use]
+    pub fn prop(mut self, name: &str, value: Value) -> Self {
         self.props.insert(name.to_owned(), value);
         self
     }
 
-    pub(super) fn on(mut self, event: &'static str) -> Self {
+    /// Handle the event `event`.
+    #[must_use]
+    pub fn on(mut self, event: &'static str) -> Self {
         self.events.push(event);
         self
     }
 
-    pub(super) fn bound(mut self, bound: BoundValue) -> Self {
+    /// Offer `bound` as the instance's binding.
+    #[must_use]
+    pub fn bound(mut self, bound: BoundValue) -> Self {
         self.bound = Some(bound);
         self
     }
 
-    pub(super) fn holding(mut self, part: &'static str, child: Node) -> Self {
+    /// Hold `child` in the part `part`.
+    #[must_use]
+    pub fn holding(mut self, part: &'static str, child: Node) -> Self {
         self.parts.push((part, child));
         self
     }
@@ -114,20 +123,23 @@ impl Source for Node {
     }
 }
 
-pub(super) fn text(value: &str) -> Value {
+/// A text value.
+pub fn text(value: &str) -> Value {
     Value::Text(value.to_owned())
 }
 
-pub(super) fn resource(id: &str) -> Value {
+/// A value naming the resource `id`.
+pub fn resource(id: &str) -> Value {
     Value::Resource(id.to_owned())
 }
 
 /// The widget at a desktop-sized window, laid out in the light theme.
-pub(super) fn harness<W: Widget + 'static>(root: W) -> FrameHarness {
+pub fn harness<W: Widget + 'static>(root: W) -> FrameHarness {
     FrameHarness::for_root(crate::State::new(), root, (900, 600), Theme::light())
 }
 
-pub(super) fn fired(key: &str, event: &str, value: Option<Value>) -> Fired {
+/// The event `event` of the instance `key`, as the queue holds it.
+pub fn fired(key: &str, event: &str, value: Option<Value>) -> Fired {
     Fired {
         key: key.to_owned(),
         event: event.to_owned(),
@@ -136,11 +148,12 @@ pub(super) fn fired(key: &str, event: &str, value: Option<Value>) -> Fired {
 }
 
 /// The edits a control makes, queued as the `value` event of the instance `key`.
-pub(super) fn edits(queue: &crate::Intents<Fired>, key: &str) -> Option<Intent> {
+pub fn edits(queue: &crate::Intents<Fired>, key: &str) -> Option<Intent> {
     Some(Intent::new(queue, key, "value"))
 }
 
-pub(super) fn flag_bound(key: &str, on: bool, edits: Option<Intent>) -> BoundValue {
+/// A switch's binding, on or off.
+pub fn flag_bound(key: &str, on: bool, edits: Option<Intent>) -> BoundValue {
     BoundValue::Bool(Bound {
         state: LocalState::new(on),
         edits,
@@ -150,7 +163,8 @@ pub(super) fn flag_bound(key: &str, on: bool, edits: Option<Intent>) -> BoundVal
     })
 }
 
-pub(super) fn number_bound(key: &str, number: f64, edits: Option<Intent>) -> BoundValue {
+/// A number's binding.
+pub fn number_bound(key: &str, number: f64, edits: Option<Intent>) -> BoundValue {
     BoundValue::Float(Bound {
         state: LocalState::new(number),
         edits,
@@ -160,7 +174,8 @@ pub(super) fn number_bound(key: &str, number: f64, edits: Option<Intent>) -> Bou
     })
 }
 
-pub(super) fn text_bound(key: &str, value: &str, edits: Option<Intent>) -> BoundValue {
+/// A text's binding.
+pub fn text_bound(key: &str, value: &str, edits: Option<Intent>) -> BoundValue {
     BoundValue::Text(Bound {
         state: LocalState::new(value.to_owned()),
         edits,

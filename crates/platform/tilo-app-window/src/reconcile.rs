@@ -138,7 +138,7 @@ pub fn display(value: &Value) -> String {
         Value::Actor(who) => who.name.clone(),
         Value::Opt(Some(inner)) => display(inner),
         // As the person reading reads it: each reference as its chip reads for them.
-        Value::Rich(rich) => ui::widget::rich_doc::plain_text(rich),
+        Value::Rich(rich) => tilo_rich_edit::rich_doc::plain_text(rich),
         _ => String::new(),
     }
 }

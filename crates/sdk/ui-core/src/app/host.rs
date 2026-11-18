@@ -1221,7 +1221,3 @@ mod card_composition_tests;
 #[cfg(test)]
 #[path = "form_composition_tests.rs"]
 mod form_composition_tests;
-
-#[cfg(test)]
-#[path = "notes_rich_controls_tests.rs"]
-mod notes_rich_controls_tests;

@@ -12,9 +12,9 @@
 
 use serde::{Deserialize, Serialize};
 use ui::paint::with_alpha;
+use ui::rich_edit::BlockContent;
 use ui::tilo_resource::{self, JsonSchema, Model};
 use ui::tokens::colors::{PresenceHue, mix8};
-use ui::widget::BlockContent;
 use ui::widget::marks::{Mark, MarkSpan};
 use uuid::Uuid;
 use vello::peniko::Color;
@@ -962,7 +962,7 @@ fn seed_slide_goals() -> Slide {
                 .into_iter()
                 .map(|goal| {
                     let mut item = BlockContent::paragraph("", goal);
-                    item.kind = ui::widget::BlockKind::Bullet { indent: 0 };
+                    item.kind = ui::rich_edit::BlockKind::Bullet { indent: 0 };
                     item
                 })
                 .collect(),

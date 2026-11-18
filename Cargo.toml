@@ -190,6 +190,7 @@ members = [
     "crates/sdk/tilo-formats",
     "crates/sdk/tilo-resource",
     "crates/sdk/tilo-component-scan",
+    "crates/sdk/tilo-rich-edit",
     "crates/sdk/tilo-resource-macros",
     "crates/sdk/tilo-recurrence",
     "crates/sdk/ui-macros",

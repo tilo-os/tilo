@@ -11,6 +11,7 @@ description = "A tilolang app's window in the toolkit: the generic adapter, the 
 [dependencies]
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
+tilo-rich-edit = { version = "0.1.0", path = "../../sdk/tilo-rich-edit" }
 # Dates and clocks as the person set them: how a day or a time reads in a sentence, said the
 # same way a window's toolkit says it and an app process without the toolkit does.
 tilo-formats = { version = "0.1.0", path = "../../sdk/tilo-formats" }

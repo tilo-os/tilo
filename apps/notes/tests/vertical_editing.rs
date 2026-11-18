@@ -1,6 +1,7 @@
 use ui::headless::Framed;
+use ui::rich_edit::{BlockEditor, CursorPlacement};
 use ui::theme::Theme;
-use ui::widget::{BlockEditor, CursorPlacement, Widget};
+use ui::widget::Widget;
 use winit::event::{ElementState, Modifiers};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 

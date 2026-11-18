@@ -19,6 +19,25 @@ fn access_nodes(root: &mut dyn Widget) -> Vec<(AkNodeId, AkNode)> {
     build_tree_update(&*root, &node_map, None, 1.0).nodes
 }
 
+/// A filter menu of kinds of text, as an editor offers one when a person types `/`.
+fn kind_menu() -> super::FilterMenu<&'static str> {
+    static SPEC: super::filter_menu::MenuSpec = super::filter_menu::MenuSpec {
+        width: 248.0,
+        max_rows: 8,
+        placeholder: "slash-menu-filter",
+        access_name: "slash-menu-name",
+        widget_name: "KindMenu",
+        test_id: "kind_menu",
+    };
+    super::FilterMenu::with_spec(
+        &SPEC,
+        ["Paragraph", "Heading 1", "Heading 2", "Quote"]
+            .into_iter()
+            .map(|label| super::filter_menu::MenuEntry::plain(label.to_owned(), &[], label))
+            .collect(),
+    )
+}
+
 fn of_role(nodes: &[(AkNodeId, AkNode)], role: AkRole) -> Vec<&AkNode> {
     nodes
         .iter()
@@ -35,7 +54,7 @@ fn by_label<'a>(nodes: &'a [(AkNodeId, AkNode)], role: AkRole, label: &str) -> &
 }
 
 tilo_test_env::scenario! {
-    /// What the selection controls, gauges, slash menu and newer widgets say to assistive technology.
+    /// What the selection controls, gauges, filter menu and newer widgets say to assistive technology.
     /// Each phase was a test of its own and builds its own fixture.
     fn widgets_expose_their_semantics_to_the_accessibility_tree;
 
@@ -170,7 +189,7 @@ tilo_test_env::scenario! {
         toggle_group_exposes_each_segment_with_checked_state();
     }
 
-    phase gauges_and_slash_menu_expose_meters_and_menu_visibility;
+    phase gauges_and_filter_menu_expose_meters_and_menu_visibility;
     {
         fn ring_gauge_exposes_a_named_percentage_meter() {
             use super::gauge::ProgressRing;
@@ -194,9 +213,8 @@ tilo_test_env::scenario! {
             assert_eq!(plain_bar.value(), Some("25%"));
         }
 
-        fn slash_menu_open_exposes_menu_items() {
-            use super::slash_menu::SlashMenu;
-            let mut m = SlashMenu::new();
+        fn filter_menu_open_exposes_menu_items() {
+            let mut m = kind_menu();
             m.set_visible(true);
             let nodes = access_nodes(&mut m);
 
@@ -211,7 +229,7 @@ tilo_test_env::scenario! {
             assert_eq!(
                 items.len(),
                 m.visible_len(),
-                "every block-type row is exposed"
+                "every row is exposed"
             );
             let para = by_label(&nodes, AkRole::MenuItem, "Paragraph");
             assert_eq!(para.position_in_set(), Some(1));
@@ -233,9 +251,8 @@ tilo_test_env::scenario! {
             );
         }
 
-        fn slash_menu_closed_is_a_hidden_menu() {
-            use super::slash_menu::SlashMenu;
-            let mut m = SlashMenu::new(); // starts closed
+        fn filter_menu_closed_is_a_hidden_menu() {
+            let mut m = kind_menu(); // starts closed
             let nodes = access_nodes(&mut m);
             let menus = of_role(&nodes, AkRole::Menu);
             assert_eq!(menus.len(), 1);
@@ -249,8 +266,8 @@ tilo_test_env::scenario! {
 
         ring_gauge_exposes_a_named_percentage_meter();
         bar_gauge_prefers_the_caller_value_readout();
-        slash_menu_open_exposes_menu_items();
-        slash_menu_closed_is_a_hidden_menu();
+        filter_menu_open_exposes_menu_items();
+        filter_menu_closed_is_a_hidden_menu();
     }
 
     phase new_widgets_are_reachable_and_announced_from_the_window_root;
@@ -259,11 +276,10 @@ tilo_test_env::scenario! {
             use super::Column;
             use super::color_swatch::{ColorSwatch, ColorSwatchPicker};
             use super::gauge::{BarGauge, ProgressRing};
-            use super::slash_menu::SlashMenu;
             use super::toggle_group::{Segment, ToggleGroup};
 
-            let mut slash = SlashMenu::new();
-            slash.set_visible(true);
+            let mut menu = kind_menu();
+            menu.set_visible(true);
             let swatches = [ColorSwatch::named(
                 vello::peniko::Color::from_rgb8(0x4A, 0x8F, 0xE6),
                 "Blue",
@@ -282,7 +298,7 @@ tilo_test_env::scenario! {
                 ))
                 .push(Box::new(ProgressRing::new(0.9).caption("GPU")))
                 .push(Box::new(BarGauge::new(0.5).with_label("Battery", "50%")))
-                .push(Box::new(slash));
+                .push(Box::new(menu));
             let nodes = access_nodes(&mut col);
 
             // The presentational Column collapses; its interactive descendants reparent
@@ -305,7 +321,7 @@ tilo_test_env::scenario! {
                 2,
                 "two gauges"
             );
-            assert_eq!(of_role(&nodes, AkRole::Menu).len(), 1, "slash menu");
+            assert_eq!(of_role(&nodes, AkRole::Menu).len(), 1, "filter menu");
             assert!(nodes.iter().any(|(_, n)| n.label() == Some("GPU")));
             assert!(nodes.iter().any(|(_, n)| n.label() == Some("Battery")));
         }

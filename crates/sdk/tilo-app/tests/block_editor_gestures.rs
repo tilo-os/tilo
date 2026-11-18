@@ -38,9 +38,9 @@ fn renderer() -> ui::TextRenderer {
 /// height, the way a scrolling page lays its body out, its top-left corner
 /// at (50, 50), and run its first frame.
 fn layout_block_editor(
-    editor: ui::widget::BlockEditor,
+    editor: ui::rich_edit::BlockEditor,
     width: f32,
-) -> Framed<ui::widget::BlockEditor> {
+) -> Framed<ui::rich_edit::BlockEditor> {
     // Tall enough that the viewport cull never drops a fixture block.
     const HEIGHT: f32 = 10_000.0;
     const INSET: f32 = 50.0;
@@ -66,14 +66,14 @@ fn layout_block_editor(
     )
 }
 
-fn block_layout_fixture(markdown: &str, width: f32) -> Framed<ui::widget::BlockEditor> {
+fn block_layout_fixture(markdown: &str, width: f32) -> Framed<ui::rich_edit::BlockEditor> {
     layout_block_editor(
-        ui::widget::BlockEditor::from_markdown(markdown).with_wrap_lines(true),
+        ui::rich_edit::BlockEditor::from_markdown(markdown).with_wrap_lines(true),
         width,
     )
 }
 
-fn block_gesture_fixture() -> Framed<ui::widget::BlockEditor> {
+fn block_gesture_fixture() -> Framed<ui::rich_edit::BlockEditor> {
     block_layout_fixture("first\n\nsecond\n\nthird\n\nfourth", 400.0)
 }
 
@@ -81,23 +81,23 @@ fn block_gesture_fixture() -> Framed<ui::widget::BlockEditor> {
     clippy::needless_pass_by_value,
     reason = "test helper owns each synthetic event for immediate dispatch"
 )]
-fn block_event(editor: &mut Framed<ui::widget::BlockEditor>, event: WindowEvent) {
+fn block_event(editor: &mut Framed<ui::rich_edit::BlockEditor>, event: WindowEvent) {
     Framed::harness_mut(editor).dispatch_to_root_with(&event, &Modifiers::default());
 }
 
 /// Where every block's text starts: past the editor's handle column and
 /// the line's own inset.
-fn content_edge(editor: &Framed<ui::widget::BlockEditor>) -> f64 {
+fn content_edge(editor: &Framed<ui::rich_edit::BlockEditor>) -> f64 {
     editor.get_rect().x0 + editor.text_inset(&Theme::dark())
 }
 
 /// The x of a drag handle's centre, left of the content edge.
-fn handle_x(editor: &Framed<ui::widget::BlockEditor>) -> f64 {
+fn handle_x(editor: &Framed<ui::rich_edit::BlockEditor>) -> f64 {
     content_edge(editor) - 14.0
 }
 
 /// Run a frame and return the scene it drew.
-fn block_scene(editor: &mut Framed<ui::widget::BlockEditor>) -> Scene {
+fn block_scene(editor: &mut Framed<ui::rich_edit::BlockEditor>) -> Scene {
     let harness = Framed::harness_mut(editor);
     harness.relayout();
     harness.scene().clone()
@@ -105,7 +105,7 @@ fn block_scene(editor: &mut Framed<ui::widget::BlockEditor>) -> Scene {
 
 #[test]
 fn wrapped_block_caret_stays_on_one_baseline_when_moving_or_typing() {
-    use ui::widget::RichTextLine;
+    use ui::rich_edit::RichTextLine;
     for scale in [1.0, 1.5, 2.0] {
         let theme = Theme::dark().with_text_scale(scale);
         let mut renderer = renderer();
@@ -151,7 +151,7 @@ fn wrapped_block_caret_stays_on_one_baseline_when_moving_or_typing() {
 
 #[test]
 fn empty_wrapped_block_reserves_the_same_caret_band_as_first_character() {
-    use ui::widget::RichTextLine;
+    use ui::rich_edit::RichTextLine;
     let theme = Theme::dark();
     let mut renderer = renderer();
     let mut heights = Vec::new();
@@ -200,7 +200,7 @@ fn wrapped_paragraph_arrow_navigation_visits_each_visual_row() {
         210.0,
     );
     editor.set_focus(true);
-    editor.focus_block(0, ui::widget::CursorPlacement::Start);
+    editor.focus_block(0, ui::rich_edit::CursorPlacement::Start);
     block_scene(&mut editor);
     let initial = editor.blocks()[0].line.caret_rect(&Theme::dark(), 0);
     block_event(&mut editor, named_key(NamedKey::ArrowDown));
@@ -242,7 +242,7 @@ fn wrapped_paragraph_arrow_navigation_visits_each_visual_row() {
 #[test]
 fn modal_caret_suppression_preserves_editor_state_and_restores_caret() {
     let mut editor = block_layout_fixture("Editable note", 400.0);
-    editor.focus_block(0, ui::widget::CursorPlacement::End);
+    editor.focus_block(0, ui::rich_edit::CursorPlacement::End);
     editor.set_focus(true);
     let before = (
         editor.blocks()[0].line.cursor_pos(),
@@ -270,7 +270,8 @@ fn modal_caret_suppression_preserves_editor_state_and_restores_caret() {
 
 #[test]
 fn rich_block_drag_and_scroll_extent_include_the_whole_preview() {
-    use ui::widget::{Block, BlockEditor, Mark, MarkSpan};
+    use ui::rich_edit::{Block, BlockEditor};
+    use ui::widget::{Mark, MarkSpan};
     let mut embedded = Block::paragraph("Linked note");
     embedded.line.set_marks(vec![MarkSpan::new(
         0..11,
@@ -317,7 +318,7 @@ fn rich_block_drag_and_scroll_extent_include_the_whole_preview() {
 fn backward_selection_at_block_start_deletes_text_without_merging_blocks() {
     let mut editor = block_gesture_fixture();
     editor.set_focus(true);
-    editor.focus_block(1, ui::widget::CursorPlacement::Start);
+    editor.focus_block(1, ui::rich_edit::CursorPlacement::Start);
     editor.blocks_mut()[1].line.inner_mut().set_selection(6, 0);
     block_scene(&mut editor);
     block_event(&mut editor, named_key(NamedKey::Backspace));
@@ -360,7 +361,7 @@ fn caret_block_handle_shows_after_pointer_motion_and_follows_focus() {
     editor.suppress_caret_paint(true);
     editor.set_focus(false);
     let idle = block_scene(&mut editor).encoding().draw_tags.len();
-    editor.focus_block(1, ui::widget::CursorPlacement::End);
+    editor.focus_block(1, ui::rich_edit::CursorPlacement::End);
     editor.set_focus(true);
     assert_eq!(
         block_scene(&mut editor).encoding().draw_tags.len(),
@@ -387,7 +388,7 @@ fn caret_block_handle_shows_after_pointer_motion_and_follows_focus() {
         idle + 12,
         "a different hovered block also gets a handle"
     );
-    editor.focus_block(0, ui::widget::CursorPlacement::End);
+    editor.focus_block(0, ui::rich_edit::CursorPlacement::End);
     assert_eq!(
         block_scene(&mut editor).encoding().draw_tags.len(),
         idle + 6,
@@ -457,7 +458,7 @@ fn block_drag_previews_motion_and_drops_in_the_nearby_gap() {
         editor
             .blocks()
             .iter()
-            .map(ui::widget::Block::text)
+            .map(ui::rich_edit::Block::text)
             .collect::<Vec<_>>(),
         ["second", "first", "third", "fourth"]
     );
@@ -466,7 +467,7 @@ fn block_drag_previews_motion_and_drops_in_the_nearby_gap() {
 
 #[test]
 fn list_subtree_drop_marker_uses_parent_indentation_after_last_descendant() {
-    use ui::widget::{Block, BlockEditor};
+    use ui::rich_edit::{Block, BlockEditor};
     let mut editor = BlockEditor::new();
     editor.set_blocks(vec![
         Block::numbered(0, "Parent A"),
@@ -548,7 +549,7 @@ fn block_drag_escape_and_focus_loss_preserve_order() {
             editor
                 .blocks()
                 .iter()
-                .map(ui::widget::Block::text)
+                .map(ui::rich_edit::Block::text)
                 .collect::<Vec<_>>(),
             ["first", "second", "third", "fourth"]
         );

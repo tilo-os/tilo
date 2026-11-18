@@ -575,8 +575,8 @@ static WIDGET_CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
 .with_system_locale()
 .as_shared();
 
-/// Resolve a toolkit message in the host's locale.
-pub(crate) fn widget_format(key: &str, args: &[(&str, ArgValue)]) -> String {
+/// Resolve a toolkit message in the host's locale, with its arguments.
+pub fn widget_format(key: &str, args: &[(&str, ArgValue)]) -> String {
     if manager_id().is_some() {
         WIDGET_CATALOG.ensure();
     }

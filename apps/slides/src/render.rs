@@ -15,7 +15,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use tilo_rich_text::RichTextView;
-use ui::widget::BlockEditor;
+use ui::rich_edit::BlockEditor;
 
 use crate::assets::{ImageLookup, ImageState};
 use crate::model::{DeckLook, Element, ElementKind, Palette, SLIDE_W, Slide, TextAlign};

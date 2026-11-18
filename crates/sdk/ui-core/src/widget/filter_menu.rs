@@ -30,7 +30,7 @@ const FILTER_HEIGHT: f64 = 32.0;
 const FILTER_GAP: f64 = 4.0;
 
 /// What distinguishes one filter menu from another.
-pub(super) struct MenuSpec {
+pub struct MenuSpec {
     pub width: f64,
     pub max_rows: usize,
     pub placeholder: &'static str,
@@ -42,7 +42,7 @@ pub(super) struct MenuSpec {
 /// One row: its label, extra search keywords, the value it commits, and
 /// optionally a leading icon and a trailing hint (the Markdown that makes
 /// the same block, say).
-pub(super) struct MenuEntry<T> {
+pub struct MenuEntry<T> {
     pub label: String,
     pub keywords: &'static [&'static str],
     pub value: T,
@@ -52,7 +52,7 @@ pub(super) struct MenuEntry<T> {
 
 impl<T> MenuEntry<T> {
     /// A row with a label, keywords and a value, and no icon or hint.
-    pub(super) fn plain(label: String, keywords: &'static [&'static str], value: T) -> Self {
+    pub fn plain(label: String, keywords: &'static [&'static str], value: T) -> Self {
         Self {
             label,
             keywords,
@@ -101,7 +101,7 @@ pub struct FilterMenu<T> {
 }
 
 impl<T: Clone> FilterMenu<T> {
-    pub(super) fn with_spec(spec: &'static MenuSpec, entries: Vec<MenuEntry<T>>) -> Self {
+    pub fn with_spec(spec: &'static MenuSpec, entries: Vec<MenuEntry<T>>) -> Self {
         let mut menu = Self {
             dirty: true,
             spec,
@@ -127,7 +127,7 @@ impl<T: Clone> FilterMenu<T> {
         menu
     }
 
-    pub(super) fn set_entries(&mut self, entries: Vec<MenuEntry<T>>) {
+    pub fn set_entries(&mut self, entries: Vec<MenuEntry<T>>) {
         self.dirty = true;
         self.entries = entries;
         self.rebuild_visible();

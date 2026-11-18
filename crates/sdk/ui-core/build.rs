@@ -31,7 +31,11 @@ fn emit_component_registry() -> Result<(), Box<dyn std::error::Error>> {
         std::path::PathBuf::from(std::env::var_os("OUT_DIR").ok_or("missing build output")?);
     std::fs::write(
         output.join("component_registry.rs"),
-        tilo_component_scan::registry_source(&scan, "crate"),
+        tilo_component_scan::registry_source(
+            &scan,
+            "crate",
+            tilo_component_scan::Exports::TopModules,
+        ),
     )?;
     Ok(())
 }

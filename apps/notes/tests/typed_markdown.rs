@@ -5,7 +5,7 @@
 use crate::framework_support::with_note;
 use notes::{PageId, markdown, read};
 use ui::framework::testing::TestApp;
-use ui::widget::Block;
+use ui::rich_edit::Block;
 
 type App = TestApp<notes::NotesShell>;
 

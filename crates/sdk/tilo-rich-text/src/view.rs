@@ -7,8 +7,9 @@
 use tilo_doc::snapshot::BlockView;
 use ui::kurbo::{Affine, Rect};
 use ui::presence::PresenceCtx;
+use ui::rich_edit::{BlockContent, BlockEditor};
 use ui::vello::Scene;
-use ui::widget::{BlockContent, BlockEditor, Embedded};
+use ui::widget::Embedded;
 use ui::{TextRenderer, Theme};
 
 use crate::convert::content_of;
@@ -80,7 +81,7 @@ impl RichTextView {
             .widget()
             .blocks()
             .iter()
-            .map(ui::widget::Block::content)
+            .map(ui::rich_edit::Block::content)
             .collect()
     }
 

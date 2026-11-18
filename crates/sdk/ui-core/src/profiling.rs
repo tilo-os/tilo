@@ -2,8 +2,8 @@
 //! toolkit's five frame passes (`sync`, `build_layout`, `apply_layout`, `draw`, `handle_event` — see
 //! [`crate::widget::Widget`]) so frame cost can be **read off, not guessed**.
 
-#[cfg(test)]
-pub(crate) mod frame_probe;
+#[cfg(any(test, feature = "test-support"))]
+pub mod frame_probe;
 /// What the layout solver did, in counts rather than guesses.
 pub mod layout_counts;
 pub(crate) mod resource_trace;

@@ -8,8 +8,8 @@
 
 use serde::{Deserialize, Serialize};
 use tilo_document::{ClipBlock, RichText, RichTextAction};
+use ui::rich_edit::BlockContent;
 use ui::tilo_resource::{self, ActionCx, Atom, Collection, Id, Model, NonBlank, Refusal, resource};
-use ui::widget::BlockContent;
 use ui::widget::marks::Mark;
 
 use crate::model::{

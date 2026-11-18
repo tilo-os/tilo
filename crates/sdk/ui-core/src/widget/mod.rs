@@ -2261,23 +2261,11 @@ mod number_input;
 pub use number_input::{NumberInput, NumberInputProps, NumberStepperFace, StepperPart};
 pub mod marks;
 pub use marks::{Mark, MarkSpan};
+pub mod document_line;
+pub mod filter_menu;
 pub mod markdown_input;
-pub mod rich_text_line;
-pub use rich_text_line::{DeclaredLine, LineSignal, RichTextLine, RichTextLineProps};
-pub mod block_editor;
-mod block_editor_body;
 pub mod paint_damage;
-pub mod rich_doc;
-pub use block_editor::references::{BlockEditorProps, OPEN_REFERENCE};
-pub use block_editor::{
-    Block, BlockContent, BlockEditOp, BlockEditor, BlockKind, CalloutKind, CursorPlacement,
-    DocumentPosition, DocumentSelection, EditScope, PresenceKeyFn, SlashRequest,
-    TransclusionPreview, blocks_from_html, blocks_to_html, legacy_block_id,
-};
-mod filter_menu;
 pub use filter_menu::FilterMenu;
-pub mod slash_menu;
-pub use slash_menu::{SlashCommand, SlashHostCommand, SlashMenu};
 pub mod link_popover;
 pub use link_popover::{LinkPopover, PageEntry};
 pub mod page_sidebar;
@@ -2381,23 +2369,16 @@ pub use attached::{
     Attachments, ContextMenuProps, EmojiBarProps, HoverToolbarProps, MenuPart, MenuSeparatorProps,
     SwipeProps,
 };
-mod rich_input;
-pub use rich_input::{RichInput, RichInputProps};
 mod chat_parts;
 pub use chat_parts::{EmojiPickerButton, EmojiPickerProps, Quote, QuoteProps, ReactionsProps};
 pub use swipe_row::SwipeRow;
 mod pacer;
 pub use pacer::Pacer;
-pub(crate) mod block_editor_table;
 pub mod data_table;
 mod data_table_component;
 pub use data_table_component::{
     DataTableCellProps, DataTableColumnProps, DataTableProps, DataTableRowProps, DescribedTable,
 };
-pub mod table {
-    pub use super::block_editor_table::*;
-}
-pub use table::Table;
 mod window_group;
 pub(crate) use window_group::place_search as place_window_search;
 pub use window_group::{

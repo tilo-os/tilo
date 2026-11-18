@@ -5,12 +5,13 @@ use tilo_ui::time::Instant;
 
 use automerge::AutoCommit;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use tilo_rich_edit::{BlockEditor, CursorPlacement};
 use tilo_ui::State;
 use tilo_ui::bound_dispatch::BoundNodeMap;
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::widget::DrawChild;
-use tilo_ui::widget::{BlockEditor, CursorPlacement, Widget};
+use tilo_ui::widget::Widget;
 use tilo_ui::{TextRenderer, Theme};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};

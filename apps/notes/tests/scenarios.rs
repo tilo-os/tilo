@@ -17,7 +17,7 @@ use notes::scenario::{CONTINUATION, FIRST, HANDBOOK, SECOND};
 use ui::framework::ResourceApp;
 use ui::framework::testing::TestApp;
 use ui::headless::{FrameHarness, InspectionNode, SemanticExpectation};
-use ui::widget::{Block, BlockKind};
+use ui::rich_edit::{Block, BlockKind};
 use vello::kurbo::Rect;
 
 /// Bounds peak memory (each capture peaks near 260 MB in a debug build).

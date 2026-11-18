@@ -769,8 +769,8 @@ readers = [
 [[cargo]]
 package = "tilolang"
 # The multi-package tests resolve and compile the built-in packages, and the coverage check
-# reads the toolkit's sources for the components it describes.
-inputs = ["apps/tl/", "crates/sdk/ui-core/"]
+# reads the sources of the toolkit and the editor for the components they describe.
+inputs = ["apps/tl/", "crates/sdk/tilo-rich-edit/", "crates/sdk/ui-core/"]
 readers = [
   "crates/lang/tilolang/tests/it/coverage.rs",
   "crates/lang/tilolang/tests/it/multifile.rs",

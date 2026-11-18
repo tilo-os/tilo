@@ -1423,7 +1423,7 @@ const EVERYDAY_ICONS: &[Icon] = &[
 /// with its drag handles, checklist ticks and an embedded note.
 fn editor_blocks() -> Vec<Block> {
     vec![block("Block editor", 1100.0, 760.0, |_| {
-        let mut editor = tilo_ui::widget::BlockEditor::from_markdown(
+        let mut editor = tilo_rich_edit::BlockEditor::from_markdown(
             "What has to land before we ship.\n\n\
              - [x] Finalise the onboarding copy\n\
              - [ ] Write the migration guide\n\n\
@@ -1446,7 +1446,7 @@ fn editor_blocks() -> Vec<Block> {
         editor.set_transclusion_previews(
             [(
                 page,
-                tilo_ui::widget::TransclusionPreview {
+                tilo_rich_edit::TransclusionPreview {
                     title: "Reading list".to_owned(),
                     excerpt: "Things worth coming back to.".to_owned(),
                 },
@@ -1490,7 +1490,7 @@ fn embed_editor(_: &Theme) -> Element {
                 vec![tilo_ui::rich::Mark {
                     start: 0,
                     end: 9,
-                    name: tilo_ui::widget::rich_doc::EMBED_MARK.into(),
+                    name: tilo_rich_edit::rich_doc::EMBED_MARK.into(),
                     value: tilo_ui::rich::Attr::Text(GROCERIES.into()),
                 }],
             ),
@@ -1513,11 +1513,11 @@ fn embed_editor(_: &Theme) -> Element {
             },
         ],
     };
-    Box::new(tilo_ui::widget::BlockEditor::from_props(
+    Box::new(tilo_rich_edit::BlockEditor::from_props(
         "shot.embed",
-        tilo_ui::widget::BlockEditorProps {
+        tilo_rich_edit::BlockEditorProps {
             value: Some(rich),
-            ..tilo_ui::widget::BlockEditorProps::default()
+            ..tilo_rich_edit::BlockEditorProps::default()
         },
     ))
 }

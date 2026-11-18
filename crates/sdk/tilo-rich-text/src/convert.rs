@@ -11,14 +11,16 @@ use std::collections::BTreeMap;
 
 use tilo_doc::snapshot::BlockView;
 use tilo_document::action::{AttrVal as ActionAttr, MarkVal};
-use ui::widget::BlockContent;
-use ui::widget::BlockKind;
+use ui::rich_edit::BlockContent;
+use ui::rich_edit::BlockKind;
 use ui::widget::marks::Mark;
 
-pub(crate) use ui::widget::rich_doc::{
+pub(crate) use ui::rich_edit::rich_doc::{
     CALLOUT, PAGE_LINK_PREFIX, TABLE_SOURCE, bool_attr, int_attr,
 };
-pub use ui::widget::rich_doc::{RESOURCE_LINK_SCHEME, content_of, editor_mark, is_resource_link};
+pub use ui::rich_edit::rich_doc::{
+    RESOURCE_LINK_SCHEME, content_of, editor_mark, is_resource_link,
+};
 
 /// The character offset of byte `byte` in `text`.
 pub(crate) fn char_of_byte(text: &str, byte: usize) -> usize {
@@ -326,7 +328,7 @@ mod tests {
     use super::*;
     use tilo_doc::document::MarkSpan as DocMark;
     use tilo_doc::document::MarkValue;
-    use ui::widget::CalloutKind;
+    use ui::rich_edit::CalloutKind;
     use ui::widget::marks::MarkSpan;
 
     fn view(kind: &str, text: &str, attrs: &[(&str, tilo_doc::AttrVal)]) -> BlockView {

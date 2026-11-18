@@ -3,7 +3,7 @@
 
 use crate::framework_support::with_note;
 use notes::read;
-use ui::widget::BlockKind;
+use ui::rich_edit::BlockKind;
 
 /// Click into the open note's body and type `keys`, one key per entry.
 fn type_in_body(app: &mut ui::framework::testing::TestApp<notes::NotesShell>, keys: &[&str]) {

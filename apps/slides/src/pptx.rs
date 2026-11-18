@@ -390,8 +390,8 @@ fn slide_xml(
                                 .collect()
                         };
                         let marker = match block.kind {
-                            ui::widget::BlockKind::Bullet { .. } => Some(r#"<a:buChar char="•"/>"#),
-                            ui::widget::BlockKind::Numbered { .. } => {
+                            ui::rich_edit::BlockKind::Bullet { .. } => Some(r#"<a:buChar char="•"/>"#),
+                            ui::rich_edit::BlockKind::Numbered { .. } => {
                                 Some(r#"<a:buAutoNum type="arabicPeriod"/>"#)
                             }
                             _ => None,
@@ -436,7 +436,7 @@ struct Pending {
     fill: String,
     stroke: String,
     stroke_width: f64,
-    blocks: Vec<ui::widget::BlockContent>,
+    blocks: Vec<ui::rich_edit::BlockContent>,
 }
 impl Default for Pending {
     fn default() -> Self {
@@ -564,7 +564,8 @@ fn parse_slide(
                             if paragraph {
                                 c.text.push('\n');
                             }
-                            c.blocks.push(ui::widget::BlockContent::paragraph("", ""));
+                            c.blocks
+                                .push(ui::rich_edit::BlockContent::paragraph("", ""));
                         }
                         paragraph = true
                     }
@@ -604,9 +605,9 @@ fn parse_slide(
                         b"buChar" | b"buAutoNum" => {
                             if let Some(block) = c.blocks.last_mut() {
                                 block.kind = if n == b"buChar" {
-                                    ui::widget::BlockKind::Bullet { indent: 0 }
+                                    ui::rich_edit::BlockKind::Bullet { indent: 0 }
                                 } else {
-                                    ui::widget::BlockKind::Numbered { indent: 0 }
+                                    ui::rich_edit::BlockKind::Numbered { indent: 0 }
                                 };
                             }
                         }
@@ -1038,9 +1039,9 @@ mod tests {
             use ui::widget::marks::{Mark, MarkSpan};
             let content = ContentStore::memory();
             let mut deck = crate::model::seed_deck();
-            let mut first = ui::widget::BlockContent::paragraph("", "plain bold");
+            let mut first = ui::rich_edit::BlockContent::paragraph("", "plain bold");
             first.marks = vec![MarkSpan::new(6..10, Mark::Bold)];
-            let mut second = ui::widget::BlockContent::paragraph("", "slanted");
+            let mut second = ui::rich_edit::BlockContent::paragraph("", "slanted");
             second.marks = vec![MarkSpan::new(0..7, Mark::Italic)];
             let element = deck.slides[0]
                 .elements

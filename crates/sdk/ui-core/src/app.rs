@@ -944,6 +944,18 @@ impl App {
         self.root_widget.as_mut()
     }
 
+    /// The document the window shows, as a test reads it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn state_for_test(&mut self) -> &mut State {
+        &mut self.state
+    }
+
+    /// The text shaping the window did since the last call: `(hits, misses, nanoseconds)`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn take_shape_stats_for_test(&mut self) -> (u64, u64, u128) {
+        self.text_renderer.take_shape_stats()
+    }
+
     /// Capture/close embedded components while the host still owns their trees.
     /// Recovery reports stay owned by this host until explicitly transferred.
     pub fn close_components(&mut self) {
@@ -1198,8 +1210,10 @@ impl App {
         Self::with_parts(Some(wake_scope), state, root_widget, inputs())
     }
 
-    #[cfg(test)]
-    pub(crate) fn from_scoped_parts_with_controlled_inputs(
+    /// An app showing `root_widget` under its own wake scope, as an app embedded in a window is,
+    /// with the clock, fonts and settings a test controls.
+    #[cfg(any(test, all(feature = "native", feature = "test-support")))]
+    pub fn from_scoped_parts_with_controlled_inputs(
         wake_scope: crate::wake::WakeScope,
         state: State,
         root_widget: Box<dyn Widget>,
@@ -1212,8 +1226,10 @@ impl App {
         )
     }
 
-    #[cfg(test)]
-    pub(crate) fn new_with_controlled_inputs(state: State, root_widget: Box<dyn Widget>) -> Self {
+    /// An app showing `root_widget` over `state`, with the clock, fonts and settings a test
+    /// controls.
+    #[cfg(any(test, all(feature = "native", feature = "test-support")))]
+    pub fn new_with_controlled_inputs(state: State, root_widget: Box<dyn Widget>) -> Self {
         let _entry = crate::wake::WakeScope::enter_detached();
         Self::with_parts(
             None,

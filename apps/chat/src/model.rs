@@ -236,7 +236,7 @@ pub struct Message {
     pub text: String,
     /// The body as written, paragraphs with their marks; empty for a message
     /// written before bodies were rich, shown from `text` ([`Self::blocks`]).
-    pub body: Vec<ui::widget::BlockContent>,
+    pub body: Vec<ui::rich_edit::BlockContent>,
     pub edited: bool,
     pub history: Vec<EditEntry>,
     /// `Some(parent_id)` when this message is a threaded reply.
@@ -289,7 +289,7 @@ pub struct Message {
 impl Message {
     /// The body to show: as written, or for an older message its text with
     /// its mentions marked.
-    pub fn blocks(&self) -> Vec<ui::widget::BlockContent> {
+    pub fn blocks(&self) -> Vec<ui::rich_edit::BlockContent> {
         if self.body.is_empty() {
             crate::body::legacy(&self.id, &self.text, &self.mentions)
         } else {

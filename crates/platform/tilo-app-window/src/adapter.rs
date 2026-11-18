@@ -39,7 +39,9 @@ pub const PART: &str = "part";
 #[must_use]
 pub fn components() -> &'static ui::component::Registry {
     static COMPONENTS: OnceLock<ui::component::Registry> = OnceLock::new();
-    COMPONENTS.get_or_init(|| ui::component::Registry::of(&[&ui::component::TOOLKIT]))
+    COMPONENTS.get_or_init(|| {
+        ui::component::Registry::of(&[&ui::component::TOOLKIT, &tilo_rich_edit::COMPONENTS])
+    })
 }
 
 /// What every component a window builds is: the catalogue tilolang and the tools read as the
@@ -330,7 +332,7 @@ impl Adapter {
                     return Some(UiEvent::Fire(fired.key, fired.event, value));
                 }
                 // A reference in rich text the view gave nothing of its own to do: open it.
-                if fired.event == ui::widget::OPEN_REFERENCE {
+                if fired.event == tilo_rich_edit::OPEN_REFERENCE {
                     return match fired.value {
                         Some(Prop::Text(reference)) => Some(UiEvent::OpenReference(reference)),
                         _ => None,
@@ -794,7 +796,7 @@ impl Source for NodeSource<'_> {
     fn event(&mut self, name: &str) -> Event {
         let given = self.node.events.contains_key(name);
         let opens = (name == "activate" && presented(self.node, self.description).is_some())
-            || name == ui::widget::OPEN_REFERENCE;
+            || name == tilo_rich_edit::OPEN_REFERENCE;
         if given || opens {
             // An event that runs an action the app publishes runs it the one way every action runs:
             // the control is bound to it, and the window that owns the tree hands the invocation to
@@ -1355,8 +1357,8 @@ mod tests {
             "rich text is the block editor's"
         );
         let description = description_of(&body).expect("described");
-        let event =
-            NodeSource::new(&body, description, &mut reconciler).event(ui::widget::OPEN_REFERENCE);
+        let event = NodeSource::new(&body, description, &mut reconciler)
+            .event(tilo_rich_edit::OPEN_REFERENCE);
         event.fire(Some(ui::component::Value::Text(
             "{\"app\":\"a.b\"}".to_owned(),
         )));

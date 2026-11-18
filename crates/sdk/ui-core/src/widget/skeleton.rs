@@ -53,10 +53,7 @@ const PAGE_LINES: u8 = 12;
 /// near-black ground.
 #[must_use]
 pub fn skeleton_tone(ground: Color) -> Color {
-    crate::tokens::colors::composite(
-        crate::widget::data_table::tier_on(ground, TONE_ALPHA),
-        ground,
-    )
+    crate::tokens::colors::composite(crate::tokens::colors::tier_on(ground, TONE_ALPHA), ground)
 }
 
 const TONE_ALPHA: u8 = 32;

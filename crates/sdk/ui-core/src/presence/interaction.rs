@@ -200,7 +200,8 @@ impl PresenceCtx {
         self.apply_interaction_at(interaction, crate::time::now())
     }
 
-    pub(crate) fn apply_interaction_at(
+    /// [`Self::apply_interaction`] as of `now`.
+    pub fn apply_interaction_at(
         &mut self,
         interaction: SemanticInteraction,
         now: Instant,
@@ -2610,7 +2611,7 @@ impl PresenceCtx {
         let now = crate::time::now();
         let mut writers = Vec::new();
         for interaction in self.visible_interactions(now) {
-            let Some((start, end)) = written_in(&interaction, region, block, text) else {
+            let Some((start, end)) = interaction.written_in(region, block, text) else {
                 continue;
             };
             if let (Some(edited), Some(drawn)) =
@@ -2667,41 +2668,6 @@ pub(crate) fn written_under(anchor: &tilo_actions::InteractionAnchor) -> Option<
     };
     let (item, _) = ranges.first()?.block.split_once('/')?;
     (!item.is_empty()).then_some(item)
-}
-
-/// The characters an invocation writes into the text `text` of block `block` (in `region`, when
-/// one is named), as byte offsets in it: the `Text` range its anchor names there, counted in
-/// characters because a place counts them that way.
-pub(crate) fn written_in(
-    interaction: &SemanticInteraction,
-    region: Option<&str>,
-    block: &str,
-    text: &str,
-) -> Option<(usize, usize)> {
-    let tilo_actions::InteractionAnchor::Text {
-        region: written,
-        ranges,
-    } = &interaction.anchor
-    else {
-        return None;
-    };
-    if region.is_some_and(|region| region != written) {
-        return None;
-    }
-    // A caller may name a block by the start of its id, as the document resolves it: a write that
-    // landed named one block only.
-    let range = ranges.iter().find(|range| {
-        range.block == block || (!range.block.is_empty() && block.starts_with(&range.block))
-    })?;
-    let chars = text.chars().count();
-    let start = usize::try_from(range.start).ok()?.min(chars);
-    let end = usize::try_from(range.end).ok()?.min(chars).max(start);
-    let byte = |index: usize| {
-        text.char_indices()
-            .nth(index)
-            .map_or(text.len(), |(byte, _)| byte)
-    };
-    Some((byte(start), byte(end)))
 }
 
 /// The characters `changes`, one action's patches, wrote into a rich text, as the anchor an

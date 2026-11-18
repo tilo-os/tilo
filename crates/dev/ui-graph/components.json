@@ -318,87 +318,6 @@
       }
     },
     {
-      "name": "BlockEditor",
-      "doc": "A document: its paragraphs with their formatting, and each reference in it as the reader's own inline view of what it refers to (a person with their name, a channel, a task with its number), resolved under their permissions.",
-      "props": [
-        {
-          "name": "value",
-          "doc": "Rich text it shows read-only, when it binds nothing.",
-          "type": {
-            "option": "rich_text"
-          },
-          "positional": true
-        },
-        {
-          "name": "placeholder",
-          "doc": "What to type, shown while the editor is empty.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "links",
-          "doc": "The records a `[[` link offers, each as it reads for the person now: choosing one writes a reference to it in the text, which every reader reads as it reads now.",
-          "type": {
-            "list": "link"
-          }
-        },
-        {
-          "name": "commands",
-          "doc": "The commands the editor's slash menu offers besides the block kinds, by their labels: choosing one reports it as `command`.",
-          "type": {
-            "list": "text"
-          }
-        }
-      ],
-      "events": [
-        {
-          "name": "open_reference",
-          "doc": "A reference in the text was activated, carrying the reference.",
-          "value": "text"
-        },
-        {
-          "name": "links_open",
-          "doc": "The `[[` link picker opened or closed: what a view answering `links_query` keeps to offer records only while the picker shows them.",
-          "value": "bool"
-        },
-        {
-          "name": "links_query",
-          "doc": "The text typed into the open `[[` link picker, each time it changes: a view whose records are a collection asks the store for what it holds of it, and hands back `links` — a page of them, read when the picker shows it rather than on every frame of the document.",
-          "value": "text"
-        },
-        {
-          "name": "command",
-          "doc": "A command of `commands` was chosen, carrying its label: the view does what the label says, as it would for a button it placed.",
-          "value": "text"
-        },
-        {
-          "name": "headings",
-          "doc": "The document's headings, in the order they stand, each time they change.",
-          "value": {
-            "list": "text"
-          }
-        }
-      ],
-      "bindings": [
-        {
-          "name": "rich",
-          "doc": "The document it edits, as its paragraphs (a `RichText` field).",
-          "type": "rich_text",
-          "merge": "rich"
-        },
-        {
-          "name": "markdown",
-          "doc": "The document it edits, as Markdown (a `Text` field), the same text round-tripped.",
-          "type": "text",
-          "merge": "splice"
-        }
-      ],
-      "semantics": {
-        "role": "Document"
-      }
-    },
-    {
       "name": "Board",
       "doc": "Cards in lists, side by side: a kanban board, a pipeline, tasks by status.",
       "props": [
@@ -4571,130 +4490,6 @@
       }
     },
     {
-      "name": "RichInput",
-      "doc": "A field that types rich text, bound to what it edits: a reference a completion picks is written as a reference, which each reader renders as an inline view of what it names.",
-      "props": [
-        {
-          "name": "placeholder",
-          "doc": "What to type, shown while it is empty.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "enabled",
-          "doc": "Whether it can be typed into now.",
-          "type": "bool"
-        },
-        {
-          "name": "speakers",
-          "doc": "The people of the conversation it writes into, newest first, offered first in its `@` drawer; the view gives them from what the conversation has, and the drawer reads nothing else.",
-          "type": {
-            "list": "actor"
-          }
-        },
-        {
-          "name": "people",
-          "doc": "Who can read what it writes into: whom its `@` drawer offers; with no one, it offers the workspace's roster.",
-          "type": {
-            "list": "actor"
-          }
-        }
-      ],
-      "events": [
-        {
-          "name": "submit",
-          "doc": "Enter was pressed: what was written is done (a message is sent); with it, Enter sends and Shift+Enter breaks the line."
-        }
-      ],
-      "bindings": [
-        {
-          "name": "value",
-          "doc": "The rich text it edits.",
-          "type": "rich_text",
-          "merge": "rich"
-        }
-      ],
-      "semantics": {
-        "role": "TextInput",
-        "label": "placeholder"
-      }
-    },
-    {
-      "name": "RichTextLine",
-      "doc": "One line of text edited in place (a block editor's cell, a composer's message), with its inline marks, reporting the keys that end or break it so a host can split or join lines.",
-      "props": [
-        {
-          "name": "placeholder",
-          "doc": "What to type, shown while it is empty.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "role",
-          "doc": "How the text reads: `body` unless said.",
-          "type": {
-            "option": {
-              "choice": {
-                "name": "TextRole",
-                "cases": [
-                  "display",
-                  "large_title",
-                  "title",
-                  "heading",
-                  "subheading",
-                  "body",
-                  "label",
-                  "caption",
-                  "reading",
-                  "code"
-                ]
-              }
-            }
-          }
-        },
-        {
-          "name": "mono",
-          "doc": "The text is monospace (code).",
-          "type": "bool"
-        },
-        {
-          "name": "wrap",
-          "doc": "The line wraps to its width instead of scrolling.",
-          "type": "bool"
-        }
-      ],
-      "events": [
-        {
-          "name": "enter",
-          "doc": "Enter was pressed: the line ends at this byte.",
-          "value": "int"
-        },
-        {
-          "name": "soft_enter",
-          "doc": "Shift+Enter was pressed: the line breaks at this byte, a soft break.",
-          "value": "int"
-        },
-        {
-          "name": "backspace_at_start",
-          "doc": "Backspace at the start was pressed: the line joins the one before it."
-        }
-      ],
-      "bindings": [
-        {
-          "name": "value",
-          "doc": "The text it edits.",
-          "type": "text",
-          "merge": "splice"
-        }
-      ],
-      "semantics": {
-        "role": "TextInput",
-        "label": "placeholder"
-      }
-    },
-    {
       "name": "Scroll",
       "doc": "A body that scrolls under its column's fixed header, showing the part of the content the column fits.",
       "props": [
@@ -6291,6 +6086,211 @@
         "role": "Group",
         "label": "place",
         "not_in_gallery": "a well draws nothing: the place's own window is composited there, so a gallery window has no well to show"
+      }
+    },
+    {
+      "name": "BlockEditor",
+      "doc": "A document: its paragraphs with their formatting, and each reference in it as the reader's own inline view of what it refers to (a person with their name, a channel, a task with its number), resolved under their permissions.",
+      "props": [
+        {
+          "name": "value",
+          "doc": "Rich text it shows read-only, when it binds nothing.",
+          "type": {
+            "option": "rich_text"
+          },
+          "positional": true
+        },
+        {
+          "name": "placeholder",
+          "doc": "What to type, shown while the editor is empty.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "links",
+          "doc": "The records a `[[` link offers, each as it reads for the person now: choosing one writes a reference to it in the text, which every reader reads as it reads now.",
+          "type": {
+            "list": "link"
+          }
+        },
+        {
+          "name": "commands",
+          "doc": "The commands the editor's slash menu offers besides the block kinds, by their labels: choosing one reports it as `command`.",
+          "type": {
+            "list": "text"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "open_reference",
+          "doc": "A reference in the text was activated, carrying the reference.",
+          "value": "text"
+        },
+        {
+          "name": "links_open",
+          "doc": "The `[[` link picker opened or closed: what a view answering `links_query` keeps to offer records only while the picker shows them.",
+          "value": "bool"
+        },
+        {
+          "name": "links_query",
+          "doc": "The text typed into the open `[[` link picker, each time it changes: a view whose records are a collection asks the store for what it holds of it, and hands back `links` — a page of them, read when the picker shows it rather than on every frame of the document.",
+          "value": "text"
+        },
+        {
+          "name": "command",
+          "doc": "A command of `commands` was chosen, carrying its label: the view does what the label says, as it would for a button it placed.",
+          "value": "text"
+        },
+        {
+          "name": "headings",
+          "doc": "The document's headings, in the order they stand, each time they change.",
+          "value": {
+            "list": "text"
+          }
+        }
+      ],
+      "bindings": [
+        {
+          "name": "rich",
+          "doc": "The document it edits, as its paragraphs (a `RichText` field).",
+          "type": "rich_text",
+          "merge": "rich"
+        },
+        {
+          "name": "markdown",
+          "doc": "The document it edits, as Markdown (a `Text` field), the same text round-tripped.",
+          "type": "text",
+          "merge": "splice"
+        }
+      ],
+      "semantics": {
+        "role": "Document"
+      }
+    },
+    {
+      "name": "RichInput",
+      "doc": "A field that types rich text, bound to what it edits: a reference a completion picks is written as a reference, which each reader renders as an inline view of what it names.",
+      "props": [
+        {
+          "name": "placeholder",
+          "doc": "What to type, shown while it is empty.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "enabled",
+          "doc": "Whether it can be typed into now.",
+          "type": "bool"
+        },
+        {
+          "name": "speakers",
+          "doc": "The people of the conversation it writes into, newest first, offered first in its `@` drawer; the view gives them from what the conversation has, and the drawer reads nothing else.",
+          "type": {
+            "list": "actor"
+          }
+        },
+        {
+          "name": "people",
+          "doc": "Who can read what it writes into: whom its `@` drawer offers; with no one, it offers the workspace's roster.",
+          "type": {
+            "list": "actor"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "submit",
+          "doc": "Enter was pressed: what was written is done (a message is sent); with it, Enter sends and Shift+Enter breaks the line."
+        }
+      ],
+      "bindings": [
+        {
+          "name": "value",
+          "doc": "The rich text it edits.",
+          "type": "rich_text",
+          "merge": "rich"
+        }
+      ],
+      "semantics": {
+        "role": "TextInput",
+        "label": "placeholder"
+      }
+    },
+    {
+      "name": "RichTextLine",
+      "doc": "One line of text edited in place (a block editor's cell, a composer's message), with its inline marks, reporting the keys that end or break it so a host can split or join lines.",
+      "props": [
+        {
+          "name": "placeholder",
+          "doc": "What to type, shown while it is empty.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "role",
+          "doc": "How the text reads: `body` unless said.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "TextRole",
+                "cases": [
+                  "display",
+                  "large_title",
+                  "title",
+                  "heading",
+                  "subheading",
+                  "body",
+                  "label",
+                  "caption",
+                  "reading",
+                  "code"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "mono",
+          "doc": "The text is monospace (code).",
+          "type": "bool"
+        },
+        {
+          "name": "wrap",
+          "doc": "The line wraps to its width instead of scrolling.",
+          "type": "bool"
+        }
+      ],
+      "events": [
+        {
+          "name": "enter",
+          "doc": "Enter was pressed: the line ends at this byte.",
+          "value": "int"
+        },
+        {
+          "name": "soft_enter",
+          "doc": "Shift+Enter was pressed: the line breaks at this byte, a soft break.",
+          "value": "int"
+        },
+        {
+          "name": "backspace_at_start",
+          "doc": "Backspace at the start was pressed: the line joins the one before it."
+        }
+      ],
+      "bindings": [
+        {
+          "name": "value",
+          "doc": "The text it edits.",
+          "type": "text",
+          "merge": "splice"
+        }
+      ],
+      "semantics": {
+        "role": "TextInput",
+        "label": "placeholder"
       }
     },
     {

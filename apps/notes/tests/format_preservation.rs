@@ -1,7 +1,7 @@
 use crate::component_support::*;
 use notes::{markdown, read};
+use ui::rich_edit::{BlockEditor, BlockKind};
 use ui::widget::DrawChild;
-use ui::widget::{BlockEditor, BlockKind};
 
 #[allow(
     clippy::too_many_lines,
@@ -12,10 +12,8 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
     eprintln!("phase wrapped_marks_share_shaped_geometry_with_carets_and_measurement");
     {
         use taffy::{AvailableSpace, Size};
-        use ui::widget::{
-            RichTextLine,
-            marks::{Mark, MarkSpan},
-        };
+        use ui::rich_edit::RichTextLine;
+        use ui::widget::marks::{Mark, MarkSpan};
         use ui::{
             Widget,
             richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign},
@@ -144,7 +142,7 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
         )));
         let marks = editor.blocks()[1].line.marks().to_vec();
         assert_eq!(marks.len(), 3);
-        editor.focus_block(1, ui::widget::CursorPlacement::Byte(6));
+        editor.focus_block(1, ui::rich_edit::CursorPlacement::Byte(6));
         for kind in [
             BlockKind::Heading(2),
             BlockKind::Bullet { indent: 0 },

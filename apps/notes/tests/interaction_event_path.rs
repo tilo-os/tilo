@@ -25,14 +25,14 @@ use ui::theme::Theme;
 use ui::widget::Widget;
 
 fn layout_block_editor(
-    editor: ui::widget::BlockEditor,
+    editor: ui::rich_edit::BlockEditor,
     width: f32,
-) -> Framed<ui::widget::BlockEditor> {
+) -> Framed<ui::rich_edit::BlockEditor> {
     crate::component_support::framed_block_editor(editor, width, (50.0, 50.0), Theme::dark())
 }
 
 /// Lay an edited editor out again from scratch.
-fn relayout_block_editor(editor: &mut Framed<ui::widget::BlockEditor>) {
+fn relayout_block_editor(editor: &mut Framed<ui::rich_edit::BlockEditor>) {
     Framed::harness_mut(editor)
         .recompose()
         .expect("the block editor lays out");
@@ -43,7 +43,7 @@ fn relayout_block_editor(editor: &mut Framed<ui::widget::BlockEditor>) {
 fn rich_blocks_render_insets_copy_actions_and_contiguous_code() {
     eprintln!("phase code_copy_actions_follow_fences_through_reorder_and_first_row_deletion");
     {
-        use ui::widget::BlockEditor;
+        use ui::rich_edit::BlockEditor;
         let mut editor = BlockEditor::new();
         editor.set_blocks(notes::markdown::specs_to_blocks(&notes::markdown::parse(
             "```python\nfirst()\nkept()\n```\n\n```python\nother()\n```\n",
@@ -95,7 +95,7 @@ fn rich_blocks_render_insets_copy_actions_and_contiguous_code() {
     eprintln!("phase nested_table_and_quote_use_the_same_outline_inset_as_prose");
     {
         let source = "- Parent\n\n  Explanation\n\n  > Quoted child\n\n  | Key | Value |\n  | --- | --- |\n  | Name | Nested |\n";
-        let mut editor = ui::widget::BlockEditor::new().with_wrap_lines(true);
+        let mut editor = ui::rich_edit::BlockEditor::new().with_wrap_lines(true);
         editor.set_blocks(notes::markdown::specs_to_blocks(&notes::markdown::parse(
             source,
         )));
@@ -105,13 +105,13 @@ fn rich_blocks_render_insets_copy_actions_and_contiguous_code() {
         assert_eq!(
             blocks
                 .iter()
-                .map(ui::widget::Block::indent)
+                .map(ui::rich_edit::Block::indent)
                 .collect::<Vec<_>>(),
             [0, 1, 1, 1]
         );
         assert!(matches!(
             blocks[3].kind,
-            ui::widget::BlockKind::Table { visual: true }
+            ui::rich_edit::BlockKind::Table { visual: true }
         ));
         assert!((blocks[3].line.get_rect().x0 - blocks[1].line.get_rect().x0).abs() < 0.01);
         assert!((blocks[2].line.get_rect().x0 - blocks[1].line.get_rect().x0 - 16.0).abs() < 0.01);
@@ -137,7 +137,7 @@ fn rich_blocks_render_insets_copy_actions_and_contiguous_code() {
         let code_idx: Vec<usize> = blocks
             .iter()
             .enumerate()
-            .filter(|(_, b)| matches!(b.kind, ui::widget::BlockKind::CodeBlock { .. }))
+            .filter(|(_, b)| matches!(b.kind, ui::rich_edit::BlockKind::CodeBlock { .. }))
             .map(|(i, _)| i)
             .collect();
         assert_eq!(code_idx.len(), 3, "a 3-line fence yields 3 code cells");
@@ -353,7 +353,7 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
         assert!(
             matches!(
                 n(&mut app).main_panel_mut().editor().blocks()[0].kind,
-                ui::widget::BlockKind::Paragraph
+                ui::rich_edit::BlockKind::Paragraph
             ),
             "a bare `#` stays a paragraph until the space completes the prefix"
         );
@@ -363,7 +363,7 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
             let blocks = n(&mut app).main_panel_mut().editor().blocks();
             assert_eq!(blocks.len(), 1);
             assert!(
-                matches!(blocks[0].kind, ui::widget::BlockKind::Heading(1)),
+                matches!(blocks[0].kind, ui::rich_edit::BlockKind::Heading(1)),
                 "`# ` promotes the paragraph to an H1"
             );
             assert_eq!(
@@ -385,7 +385,7 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
             dispatch(&mut app, no_mods, &char_key(" "));
             let blocks = n(&mut app).main_panel_mut().editor().blocks();
             assert!(
-                matches!(blocks[0].kind, ui::widget::BlockKind::Heading(l) if l == level),
+                matches!(blocks[0].kind, ui::rich_edit::BlockKind::Heading(l) if l == level),
                 "`{hashes} ` promotes to a level-{level} heading"
             );
             assert_eq!(blocks[0].text(), "");
@@ -404,12 +404,12 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
         dispatch(&mut app, no_mods, &char_key(">"));
         assert!(matches!(
             n(&mut app).main_panel_mut().editor().blocks()[0].kind,
-            ui::widget::BlockKind::Paragraph
+            ui::rich_edit::BlockKind::Paragraph
         ));
         dispatch(&mut app, no_mods, &char_key(" "));
 
         let blocks = n(&mut app).main_panel_mut().editor().blocks();
-        assert!(matches!(blocks[0].kind, ui::widget::BlockKind::Quote));
+        assert!(matches!(blocks[0].kind, ui::rich_edit::BlockKind::Quote));
         assert_eq!(blocks[0].text(), "");
     }
 }
@@ -1175,7 +1175,7 @@ fn slash_commands_apply_block_kinds_and_continue_lists() {
             assert!(
                 matches!(
                     blocks[0].kind,
-                    ui::widget::BlockKind::Numbered { indent: 0 }
+                    ui::rich_edit::BlockKind::Numbered { indent: 0 }
                 ),
                 "the `/number` command converts the block to a numbered list"
             );
@@ -1206,12 +1206,12 @@ fn slash_commands_apply_block_kinds_and_continue_lists() {
         assert_eq!(blocks.len(), 3, "each Enter continues the numbered list");
         for b in blocks {
             assert!(
-                matches!(b.kind, ui::widget::BlockKind::Numbered { indent: 0 }),
+                matches!(b.kind, ui::rich_edit::BlockKind::Numbered { indent: 0 }),
                 "Enter on a numbered item yields another numbered item"
             );
         }
         assert_eq!(
-            ui::widget::block_editor::numbered_ordinals(blocks),
+            ui::rich_edit::block_editor::numbered_ordinals(blocks),
             vec![1, 2, 3],
             "the rendered ordinals increment down the list"
         );
@@ -1272,7 +1272,7 @@ fn slash_commands_apply_block_kinds_and_continue_lists() {
         let blocks = n(&mut app).main_panel_mut().editor().blocks();
         assert_eq!(blocks.len(), 1);
         assert!(
-            matches!(blocks[0].kind, ui::widget::BlockKind::Heading(1)),
+            matches!(blocks[0].kind, ui::rich_edit::BlockKind::Heading(1)),
             "the clicked command converts the block to a Heading 1"
         );
         assert_eq!(

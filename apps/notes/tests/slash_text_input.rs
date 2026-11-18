@@ -34,7 +34,7 @@ fn committed_slash_query_is_typed_into_the_note_and_conversion_is_one_undo_step(
     app.harness().key("Enter");
     let converted =
         crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
-    assert_eq!(converted[1].kind, ui::widget::BlockKind::Quote);
+    assert_eq!(converted[1].kind, ui::rich_edit::BlockKind::Quote);
     assert_eq!(converted[1].text, "");
     assert_eq!(converted[1].id, before[1].id);
     assert!(app.undo());
@@ -63,7 +63,7 @@ fn preedit_and_multi_character_commits_do_not_open_a_command() {
         .send(&WindowEvent::Ime(Ime::Commit("/quote".into())));
     let after = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     assert_eq!(after[1].text, "/quote");
-    assert_eq!(after[1].kind, ui::widget::BlockKind::Paragraph);
+    assert_eq!(after[1].kind, ui::rich_edit::BlockKind::Paragraph);
     app.harness().key("Enter");
     let split = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     assert_eq!(split[1], after[1]);
@@ -89,7 +89,7 @@ fn code_keeps_committed_slash_literal_and_escape_keeps_prose_source() {
             crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
         assert_eq!(after[1].text, "/quote", "code={code}");
         assert_eq!(
-            matches!(after[1].kind, ui::widget::BlockKind::CodeBlock { .. }),
+            matches!(after[1].kind, ui::rich_edit::BlockKind::CodeBlock { .. }),
             code
         );
     }
@@ -136,9 +136,9 @@ fn slash_replacing_local_selection_splits_at_the_trigger() {
             assert_eq!(
                 shown,
                 [
-                    (ui::widget::BlockKind::Paragraph, "Before"),
-                    (ui::widget::BlockKind::Paragraph, "Ä😀"),
-                    (ui::widget::BlockKind::Quote, "tail"),
+                    (ui::rich_edit::BlockKind::Paragraph, "Before"),
+                    (ui::rich_edit::BlockKind::Paragraph, "Ä😀"),
+                    (ui::rich_edit::BlockKind::Quote, "tail"),
                 ],
                 "committed={committed}, reverse={reverse}"
             );
@@ -168,7 +168,7 @@ fn slash_warn_turns_the_paragraph_into_a_warning_callout_keeping_its_text() {
     let after = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
     assert_eq!(
         after[1].kind,
-        ui::widget::BlockKind::Callout(ui::widget::CalloutKind::Warning)
+        ui::rich_edit::BlockKind::Callout(ui::rich_edit::CalloutKind::Warning)
     );
     assert_eq!(after[1].text, "Mind the gap");
     // Stored as a quote with its alert, it reads back as the callout and

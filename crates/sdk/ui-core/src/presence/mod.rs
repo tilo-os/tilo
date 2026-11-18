@@ -12,7 +12,6 @@ pub mod frame;
 mod geom;
 mod interaction;
 pub use interaction::written_by;
-pub(crate) use interaction::written_in;
 mod key;
 mod labels;
 mod layer;

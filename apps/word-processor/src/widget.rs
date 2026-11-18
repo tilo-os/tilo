@@ -28,11 +28,12 @@ use ui::ColorCompat;
 #[cfg(test)]
 use ui::clipboard_copy;
 use ui::permissions::MemberId;
+use ui::rich_edit::BlockEditor;
+use ui::widget::Embedded;
 #[cfg(test)]
 use ui::widget::Widget;
 use ui::widget::context_menu::{ContextMenu, EditingCommand};
 use ui::widget::toast::Notice;
-use ui::widget::{BlockEditor, Embedded};
 use ui::{PathSegment, PresenceKey};
 
 use crate::WpFormat;

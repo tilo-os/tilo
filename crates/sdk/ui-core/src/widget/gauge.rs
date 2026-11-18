@@ -22,7 +22,7 @@ const TRACK_ALPHA: u8 = 40;
 const BAR_TRACK_H: f64 = 8.0;
 
 fn track_color(theme: &Theme, alpha: u8) -> Color {
-    crate::widget::data_table::tier_on(theme.tokens.colors.surfaces.raised, alpha)
+    crate::tokens::colors::tier_on(theme.tokens.colors.surfaces.raised, alpha)
 }
 
 /// Paint options of a [`BarGauge`].

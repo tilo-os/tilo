@@ -2,7 +2,7 @@
 //!
 //! Drives `NotesApp::navigate_to` directly, the path the click handler
 //! takes after its per-glyph hit-test. The hit-test logic
-//! is unit-tested separately in `ui::widget::rich_text_line` via
+//! is unit-tested separately in `ui::rich_edit::rich_text_line` via
 //! `link_at_byte`.
 
 use crate::framework_support::{add_note, open, surface, with_note};
@@ -28,8 +28,8 @@ fn clicking_a_link_finds_it_by_byte_and_navigates_to_its_page() {
 
     eprintln!("phase link_at_byte_finds_link_in_block");
     {
+        use ui::rich_edit::rich_text_line::link_at_byte;
         use ui::widget::marks::{Mark, MarkSpan};
-        use ui::widget::rich_text_line::link_at_byte;
         let id = uuid::Uuid::from_u128(42);
         let marks = vec![MarkSpan::new(6..13, Mark::Link(id))];
         assert_eq!(link_at_byte(&marks, 8), Some(id));

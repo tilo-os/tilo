@@ -313,7 +313,7 @@ async fn shrink_image_asset(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
 /// the frame, waiting to go into the note.
 enum ShrunkImage {
     Pasted(
-        ui::widget::block_editor::ImagePasteRequest,
+        ui::rich_edit::block_editor::ImagePasteRequest,
         Result<Vec<u8>, String>,
     ),
     Dropped(String, Result<Vec<u8>, String>),
@@ -1205,7 +1205,7 @@ impl NotesApp {
             .set_transclusion_previews(self.transclusion_previews());
     }
 
-    fn transclusion_previews(&self) -> HashMap<PageId, ui::widget::TransclusionPreview> {
+    fn transclusion_previews(&self) -> HashMap<PageId, ui::rich_edit::TransclusionPreview> {
         const EXCERPT_LIMIT: usize = 180;
         let targets = self
             .workspace
@@ -1238,7 +1238,7 @@ impl NotesApp {
                 }
                 (
                     page.id,
-                    ui::widget::TransclusionPreview {
+                    ui::rich_edit::TransclusionPreview {
                         title: page.title.clone(),
                         excerpt,
                     },
@@ -1316,7 +1316,7 @@ impl NotesApp {
     /// Put the pasted image `bytes` (fit for an asset) where `request` says.
     fn insert_pasted_image(
         &mut self,
-        request: &ui::widget::block_editor::ImagePasteRequest,
+        request: &ui::rich_edit::block_editor::ImagePasteRequest,
         bytes: Result<Vec<u8>, String>,
     ) {
         let Some(page) = self.main.page_id() else {
@@ -1433,18 +1433,18 @@ impl NotesApp {
             return;
         };
         // A view's own command runs in the view that named it: a page's window answers none.
-        if let ui::widget::SlashHostCommand::Named(_) = request.command {
+        if let ui::rich_edit::SlashHostCommand::Named(_) = request.command {
             return;
         }
         let Some(page) = self.main.page_id() else {
             return;
         };
         match request.command {
-            ui::widget::SlashHostCommand::Image => {
+            ui::rich_edit::SlashHostCommand::Image => {
                 self.request(&NotesEffect::InsertImage { page });
             }
-            ui::widget::SlashHostCommand::Named(_) => {}
-            ui::widget::SlashHostCommand::Page => {
+            ui::rich_edit::SlashHostCommand::Named(_) => {}
+            ui::rich_edit::SlashHostCommand::Page => {
                 let title = request.text.trim();
                 let named = !title.is_empty();
                 let id = PageId::new_v4();
@@ -1602,7 +1602,7 @@ impl NotesApp {
     /// Hit-test the cached last-mouse-position against every link
     /// span in every block. Returns the page id of the first link
     /// covering that pixel, or `None` if the click missed.
-    fn link_under_last_mouse(&self) -> Option<ui::widget::block_editor::LinkTarget> {
+    fn link_under_last_mouse(&self) -> Option<ui::rich_edit::block_editor::LinkTarget> {
         self.main.editor().link_at_point(self.last_mouse)
     }
 
@@ -1715,7 +1715,7 @@ impl NotesApp {
             .editor()
             .blocks()
             .iter()
-            .map(ui::widget::Block::text)
+            .map(ui::rich_edit::Block::text)
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -2804,9 +2804,10 @@ impl ui::application_view::ApplicationViewState for NotesApp {
             if let Some(anchor) = plan.anchor {
                 self.main.editor_mut().select_document_range(anchor, caret);
             } else {
-                self.main
-                    .editor_mut()
-                    .focus_block(caret.block, ui::widget::CursorPlacement::Byte(caret.byte));
+                self.main.editor_mut().focus_block(
+                    caret.block,
+                    ui::rich_edit::CursorPlacement::Byte(caret.byte),
+                );
             }
         }
         self.main.finish_local_focus(plan.focus);
@@ -2864,11 +2865,11 @@ impl NotesApp {
                     .is_some_and(|bound| bound.line.value() == text)
             {
                 self.main.editor_mut().select_document_range(
-                    ui::widget::DocumentPosition {
+                    ui::rich_edit::DocumentPosition {
                         block: index,
                         byte: start,
                     },
-                    ui::widget::DocumentPosition {
+                    ui::rich_edit::DocumentPosition {
                         block: index,
                         byte: end,
                     },
@@ -3798,13 +3799,13 @@ impl NotesApp {
         let target = self.link_under_last_mouse();
         let Some(target) = target else { return false };
         let id = match target {
-            ui::widget::block_editor::LinkTarget::Page(id) => id,
-            ui::widget::block_editor::LinkTarget::External(url) => {
+            ui::rich_edit::block_editor::LinkTarget::Page(id) => id,
+            ui::rich_edit::block_editor::LinkTarget::External(url) => {
                 self.request(&NotesEffect::OpenLink { url });
                 *handled = true;
                 return true;
             }
-            ui::widget::block_editor::LinkTarget::Resource(href) => {
+            ui::rich_edit::block_editor::LinkTarget::Resource(href) => {
                 self.request(&NotesEffect::OpenResource { href });
                 *handled = true;
                 return true;
@@ -3968,7 +3969,7 @@ impl NotesApp {
                                 .blocks()
                                 .iter()
                                 .find(|block| &block.id == id)
-                                .map(ui::widget::Block::text)
+                                .map(ui::rich_edit::Block::text)
                         }) != self.note_menu_table_source.as_deref())
                 {
                     return;

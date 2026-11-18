@@ -51,7 +51,7 @@ fn element(bench: &Bench, id: &str) -> Element {
     bench.deck().slides[0].element(id).unwrap().clone()
 }
 
-fn words_editor(app: &SlidesApp) -> &ui::widget::BlockEditor {
+fn words_editor(app: &SlidesApp) -> &ui::rich_edit::BlockEditor {
     app.text_editor
         .as_ref()
         .filter(|editor| editor.focused)
@@ -513,18 +513,18 @@ fn the_toolbar_formats_the_selected_words_through_the_shared_editor() {
     bench.with(|app| app.apply_hit(Hit::ToggleList(false)));
     assert!(matches!(
         element(&bench, &id).blocks[0].kind,
-        ui::widget::BlockKind::Bullet { .. }
+        ui::rich_edit::BlockKind::Bullet { .. }
     ));
     bench.read(|app| assert!(app.list_on(false)));
     bench.with(|app| app.apply_hit(Hit::ToggleList(true)));
     assert!(matches!(
         element(&bench, &id).blocks[0].kind,
-        ui::widget::BlockKind::Numbered { .. }
+        ui::rich_edit::BlockKind::Numbered { .. }
     ));
     bench.with(|app| app.apply_hit(Hit::ToggleList(true)));
     assert_eq!(
         element(&bench, &id).blocks[0].kind,
-        ui::widget::BlockKind::Paragraph,
+        ui::rich_edit::BlockKind::Paragraph,
         "the list's button again: a paragraph"
     );
     // A format is one undo step.
@@ -532,7 +532,7 @@ fn the_toolbar_formats_the_selected_words_through_the_shared_editor() {
     assert!(bench.undo());
     assert_eq!(
         element(&bench, &id).blocks[0].kind,
-        ui::widget::BlockKind::Paragraph
+        ui::rich_edit::BlockKind::Paragraph
     );
 }
 
@@ -578,7 +578,7 @@ fn a_selected_box_is_formatted_whole_from_the_toolbar() {
     assert!(
         el.blocks
             .iter()
-            .all(|block| matches!(block.kind, ui::widget::BlockKind::Numbered { .. })),
+            .all(|block| matches!(block.kind, ui::rich_edit::BlockKind::Numbered { .. })),
         "{:?}",
         el.blocks
     );
@@ -587,7 +587,7 @@ fn a_selected_box_is_formatted_whole_from_the_toolbar() {
         element(&bench, &id)
             .blocks
             .iter()
-            .all(|block| block.kind == ui::widget::BlockKind::Paragraph)
+            .all(|block| block.kind == ui::rich_edit::BlockKind::Paragraph)
     );
 }
 

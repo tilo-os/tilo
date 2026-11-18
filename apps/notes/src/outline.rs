@@ -99,7 +99,7 @@ impl NotesOutline {
             .blocks()
             .iter()
             .filter_map(|block| match block.kind {
-                ui::widget::BlockKind::Heading(level) => Some(Heading {
+                ui::rich_edit::BlockKind::Heading(level) => Some(Heading {
                     id: block.id.clone(),
                     level,
                     text: block.text().to_owned(),
@@ -268,7 +268,7 @@ mod tests {
                 .editor()
                 .blocks()
                 .iter()
-                .filter(|block| matches!(block.kind, ui::widget::BlockKind::Heading(_)))
+                .filter(|block| matches!(block.kind, ui::rich_edit::BlockKind::Heading(_)))
                 .count(),
             3
         );

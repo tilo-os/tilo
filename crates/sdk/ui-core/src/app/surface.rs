@@ -1733,7 +1733,6 @@ mod tests {
     }
 
     include!("native_publication_scroll_tests.rs");
-    include!("semantic_publication_tests.rs");
 
     #[cfg(feature = "native")]
     mod input_phase_profile {

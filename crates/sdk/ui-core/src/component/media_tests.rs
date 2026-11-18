@@ -13,9 +13,8 @@ use crate::component::{Component, Described, PropType};
 use crate::headless::FrameHarness;
 use crate::theme::Theme;
 use crate::widget::{
-    CodeEditor, CodeEditorProps, DeclaredLine, DropZone, DropZoneProps, Image, ImageProps,
-    MediaCardProps, MediaGrid, MediaGridProps, PagePreview, PagePreviewProps, QrProps, QrWidget,
-    RichTextLineProps, Widget,
+    CodeEditor, CodeEditorProps, DropZone, DropZoneProps, Image, ImageProps, MediaCardProps,
+    MediaGrid, MediaGridProps, PagePreview, PagePreviewProps, QrProps, QrWidget, Widget,
 };
 use std::sync::Arc;
 
@@ -227,18 +226,4 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_rich_text_line_edits_its_bound_text;
-    {
-        let queue = crate::Intents::default();
-        let mut node = Node::new("RichTextLine", "line", &queue)
-            .prop("placeholder", text("Write here"))
-            .prop("role", Value::Choice("body".into()))
-            .on("enter");
-        let props = RichTextLineProps::from_source(&mut node).expect("reads");
-        let mut host = harness(DeclaredLine::from_props("line", props));
-        assert_eq!(
-            host.root_mut::<DeclaredLine>().line().name(),
-            "RichTextLine"
-        );
-    }
 }

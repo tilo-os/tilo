@@ -54,6 +54,7 @@
 "crates/packaging/launcher/src/run.rs" = 5500
 "crates/runtime/runtime-identity/src/unix.rs" = 3500
 "crates/sdk/tilo-resource/src/table.rs" = 4000
+"crates/sdk/tilo-rich-edit/src/block_editor.rs" = 13000
 "crates/sdk/ui-core/src/action_palette.rs" = 4000
 "crates/sdk/ui-core/src/app.rs" = 4500
 "crates/sdk/ui-core/src/app/actions.rs" = 3500
@@ -70,7 +71,6 @@
 "crates/sdk/ui-core/src/text_render.rs" = 5500
 "crates/sdk/ui-core/src/ui_graph.rs" = 3500
 "crates/sdk/ui-core/src/widget/activity_timeline.rs" = 4500
-"crates/sdk/ui-core/src/widget/block_editor.rs" = 13000
 "crates/sdk/ui-core/src/widget/cartesian_plot.rs" = 4000
 "crates/sdk/ui-core/src/widget/data_table.rs" = 6000
 "crates/sdk/ui-core/src/widget/file_picker.rs" = 4435

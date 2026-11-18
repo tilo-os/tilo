@@ -17400,6 +17400,7 @@ dependencies = [
  "tilo-paths",
  "tilo-reference",
  "tilo-resource",
+ "tilo-rich-edit",
  "tilo-runner-native",
  "tilo-seal",
  "tilo-search",
@@ -17656,6 +17657,7 @@ dependencies = [
  "tilo-formats",
  "tilo-render-protocol",
  "tilo-resource",
+ "tilo-rich-edit",
  "tilo-ui",
  "tilo-ui-graph",
  "tracing",
@@ -21076,6 +21078,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-rich-edit"
+version = "0.1.0"
+dependencies = [
+ "collab-types",
+ "cosmic-text",
+ "fnv",
+ "image",
+ "jiff",
+ "rustc-hash 2.1.3",
+ "serde",
+ "serde_json",
+ "taffy",
+ "tilo-actions",
+ "tilo-automerge-fork",
+ "tilo-component-scan",
+ "tilo-doc",
+ "tilo-reference",
+ "tilo-resource",
+ "tilo-sort",
+ "tilo-test-env",
+ "tilo-ui",
+ "tilo-ui-graph",
+ "tilo-vello",
+ "tilo-vello-encoding",
+ "tilo-winit",
+ "tracing",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-rich-text"
 version = "0.1.0"
 dependencies = [
@@ -21808,6 +21841,7 @@ dependencies = [
  "tilo-render-protocol",
  "tilo-render-service",
  "tilo-resource",
+ "tilo-rich-edit",
  "tilo-rt",
  "tilo-runtime",
  "tilo-seal",
@@ -22510,6 +22544,7 @@ dependencies = [
  "tilo-reference",
  "tilo-render-protocol",
  "tilo-resource",
+ "tilo-rich-edit",
  "tilo-rt",
  "tilo-search",
  "tilo-sort",
@@ -23416,6 +23451,7 @@ dependencies = [
  "tilo-paths",
  "tilo-process",
  "tilo-render-protocol",
+ "tilo-rich-edit",
  "tilo-test-env",
  "tilo-ui",
  "tilolang",
@@ -24753,6 +24789,7 @@ dependencies = [
  "tilo-desktop-surface",
  "tilo-doc",
  "tilo-resource",
+ "tilo-rich-edit",
  "tilo-ui",
  "tilo-vello",
  "tilo-winit",

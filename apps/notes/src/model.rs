@@ -343,8 +343,8 @@ mod tests {
 
     use tilo_document::RichTextAction;
     use tilo_document::action::RegionKind;
+    use ui::rich_edit::BlockContent;
     use ui::tilo_resource::{Invoke, Replica};
-    use ui::widget::BlockContent;
 
     use super::{PageId, Workspace};
     use crate::actions;

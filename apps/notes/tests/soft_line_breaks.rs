@@ -1,6 +1,6 @@
 use crate::component_support::*;
 use notes::{markdown, read};
-use ui::widget::{BlockEditor, BlockKind};
+use ui::rich_edit::{BlockEditor, BlockKind};
 
 #[test]
 fn soft_and_hard_line_breaks_round_trip_in_paragraphs_and_lists() {
@@ -84,10 +84,10 @@ fn soft_and_hard_line_breaks_round_trip_in_paragraphs_and_lists() {
     eprintln!("phase mixed_nested_export_resumes_outer_numbering");
     {
         let blocks = vec![
-            ui::widget::Block::numbered(0, "First"),
-            ui::widget::Block::bullet(1, "Child"),
-            ui::widget::Block::checklist(2, false, "Task"),
-            ui::widget::Block::numbered(0, "Second"),
+            ui::rich_edit::Block::numbered(0, "First"),
+            ui::rich_edit::Block::bullet(1, "Child"),
+            ui::rich_edit::Block::checklist(2, false, "Task"),
+            ui::rich_edit::Block::numbered(0, "Second"),
         ];
         let exported = markdown::serialize(&markdown::blocks_to_specs(&blocks));
         assert!(exported.contains("2. Second"), "{exported}");
@@ -101,7 +101,7 @@ fn soft_and_hard_line_breaks_round_trip_in_paragraphs_and_lists() {
             }
         );
         assert_eq!(
-            ui::widget::block_editor::numbered_ordinals(&restored),
+            ui::rich_edit::block_editor::numbered_ordinals(&restored),
             vec![1, 0, 0, 2]
         );
     }

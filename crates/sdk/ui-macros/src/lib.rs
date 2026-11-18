@@ -451,33 +451,6 @@ fn expand(input: &DeriveInput) -> syn::Result<Tokens> {
                 Ok(props)
             }
         }
-
-        /// A part that accepts only this component reads its props.
-        impl #impl_generics #k::PartType for ::core::option::Option<#ident #ty_generics> #where_clause {
-            const MANY: bool = false;
-
-            fn accepts() -> #k::Accepts {
-                #k::Accepts::Component(#name.into())
-            }
-
-            fn fill(
-                &mut self,
-                source: &mut dyn #k::Source,
-                part: &str,
-            ) -> ::core::result::Result<(), ::std::string::String> {
-                let mut read = None;
-                let count = source.components(part, &mut |child| {
-                    read = Some(<#ident #ty_generics as #k::Component>::from_source(child)
-                        .map_err(|error| error.to_string())?);
-                    Ok(())
-                })?;
-                if count > 1 {
-                    return Err(format!("holds one {}, not {count}", #name));
-                }
-                *self = read;
-                Ok(())
-            }
-        }
     })
 }
 

@@ -18,10 +18,11 @@ use tilo_rich_text::{
     Draft, FieldOutcome, PersonField, RichTextComposer, RichTextSource, RichTextSurface, SubmitKey,
 };
 use ui::framework::PersonResource;
+use ui::rich_edit::{BlockContent, BlockEditor, PresenceKeyFn};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::EditOp;
-use ui::widget::{BlockContent, BlockEditor, PresenceKeyFn, Widget};
+use ui::widget::Widget;
 use ui::{LocalState, PresenceCtx};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
@@ -440,7 +441,7 @@ impl MessageEditor {
         surface.present_now();
         surface
             .editor_mut()
-            .focus_block(usize::MAX, ui::widget::CursorPlacement::End);
+            .focus_block(usize::MAX, ui::rich_edit::CursorPlacement::End);
     }
 
     /// Put `text` in as one paragraph (a staged edit, a test).
@@ -467,7 +468,7 @@ impl<S: RichTextSource + 'static> Composer<S> {
             .editor()
             .blocks()
             .iter()
-            .map(ui::widget::Block::content)
+            .map(ui::rich_edit::Block::content)
             .collect()
     }
 
@@ -509,7 +510,7 @@ impl<S: RichTextSource + 'static> Composer<S> {
         }
         let editor = self.host.widget_mut().editor_mut();
         if focused && editor.focused_index().is_none() {
-            editor.focus_block(usize::MAX, ui::widget::CursorPlacement::End);
+            editor.focus_block(usize::MAX, ui::rich_edit::CursorPlacement::End);
         }
     }
 
@@ -663,7 +664,7 @@ impl<S: RichTextSource + 'static> Composer<S> {
     fn caret_somewhere(&mut self) {
         let editor = self.host.widget_mut().editor_mut();
         if editor.focused_index().is_none() {
-            editor.focus_block(usize::MAX, ui::widget::CursorPlacement::End);
+            editor.focus_block(usize::MAX, ui::rich_edit::CursorPlacement::End);
         }
     }
 
@@ -695,7 +696,7 @@ impl<S: RichTextSource + 'static> Composer<S> {
     }
 
     /// Where paragraph `index` starts in [`Self::value`].
-    fn block_offset(blocks: &[ui::widget::Block], index: usize) -> usize {
+    fn block_offset(blocks: &[ui::rich_edit::Block], index: usize) -> usize {
         blocks
             .iter()
             .take(index)
@@ -709,7 +710,7 @@ impl<S: RichTextSource + 'static> Composer<S> {
         let editor = self.host.widget().editor();
         let blocks = editor.blocks();
         if let Some(selection) = editor.document_selection() {
-            let at = |position: ui::widget::DocumentPosition| {
+            let at = |position: ui::rich_edit::DocumentPosition| {
                 Self::block_offset(blocks, position.block).saturating_add(position.byte)
             };
             return (at(selection.anchor), at(selection.cursor));
@@ -748,8 +749,8 @@ impl<S: RichTextSource + 'static> Composer<S> {
             return;
         };
         self.host.widget_mut().editor_mut().select_document_range(
-            ui::widget::DocumentPosition { block, byte: from },
-            ui::widget::DocumentPosition {
+            ui::rich_edit::DocumentPosition { block, byte: from },
+            ui::rich_edit::DocumentPosition {
                 block: same,
                 byte: to,
             },

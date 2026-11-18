@@ -18,6 +18,16 @@ pub struct Remount<'a> {
 }
 
 impl<'a> Remount<'a> {
+    /// [`Self::new`], for the tests of a widget outside the toolkit that remount it by hand.
+    #[cfg(feature = "test-support")]
+    pub fn for_test(
+        taffy: &'a mut TaffyTree<()>,
+        theme: &'a Theme,
+        node_map: &'a mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> Self {
+        Self::new(taffy, theme, node_map)
+    }
+
     /// A remount of the tree `taffy`, whose widgets `node_map` maps.
     pub(crate) fn new(
         taffy: &'a mut TaffyTree<()>,

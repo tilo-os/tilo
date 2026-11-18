@@ -334,7 +334,7 @@ impl Default for Typography {
 
 /// The stock typography, built once: what a retained widget resolves its role against
 /// before it has seen the active theme.
-pub(crate) fn stock() -> &'static Typography {
+pub fn stock() -> &'static Typography {
     static STOCK: std::sync::LazyLock<Typography> =
         std::sync::LazyLock::new(|| crate::theme::Theme::default().tokens.typography);
     &STOCK

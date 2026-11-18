@@ -3,12 +3,12 @@
 //! toolkit does not describe yet says why, in a list that only shrinks
 //! (`crates/sdk/ui-core/src/component/not_yet_described.txt`).
 //!
-//! The widget list is read from the toolkit's own sources (`tilo-component-scan`, the same reading
-//! that generates the component registry), never hand-kept: a widget the toolkit gains, or a
-//! component it describes that tilolang does not reach, fails here. Plumbing is out by rule, not
-//! by name: a widget counts only when it is public through the toolkit's widget tree (`widget`,
-//! `search`, what an app draws with), and the toolkit says where each host, root and part sits
-//! outside a view (`#[not_a_component(kind, "why")]` at the widget).
+//! The widget list is read from the sources of the toolkit and of the widget crates above it
+//! (`tilo-component-scan`, the same reading that generates each component registry), never
+//! hand-kept: a widget the toolkit gains, or a component it describes that tilolang does not
+//! reach, fails here. Plumbing is out by rule, not by name: a widget counts only when it is public
+//! through the toolkit's widget tree (`widget`, `search`, what an app draws with), and the toolkit
+//! says where each host, root and part sits outside a view (`#[not_a_component(kind, "why")]` at the widget).
 //!
 //! That every *described* component lays out from a view is held by the gallery
 //! (`crates/lang/tilolang-cli/tests/layout_check.rs`); this holds the components the toolkit has
@@ -23,6 +23,11 @@ fn toolkit_src() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/ui-core/src")
 }
 
+/// The sources of the widget crates whose components a window builds besides the toolkit's.
+fn widget_crate_srcs() -> [PathBuf; 1] {
+    [Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/tilo-rich-edit/src")]
+}
+
 /// The components tilolang reaches as `ui.<Name>`: the toolkit's catalogue, which is what the
 /// checker reads a `ui.<Name>(...)` call against.
 fn bound() -> BTreeSet<String> {
@@ -33,9 +38,19 @@ fn bound() -> BTreeSet<String> {
         .collect()
 }
 
-/// What the toolkit's sources declare: its public widgets and the ones it describes.
+/// What the toolkit's sources and those of the widget crates above it declare: their public
+/// widgets and the ones they describe.
 fn toolkit() -> component_scan::Scan {
-    component_scan::scan(&toolkit_src()).expect("the toolkit's sources read")
+    let mut scan = component_scan::scan(&toolkit_src()).expect("the toolkit's sources read");
+    for src in widget_crate_srcs() {
+        let more = component_scan::scan(&src).expect("a widget crate's sources read");
+        scan.described.extend(more.described);
+        scan.props.extend(more.props);
+        scan.custom.extend(more.custom);
+        scan.widgets.extend(more.widgets);
+        scan.files.extend(more.files);
+    }
+    scan
 }
 
 /// The log: each public app-facing widget the toolkit has not described yet, with the reason

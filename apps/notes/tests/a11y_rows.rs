@@ -147,7 +147,7 @@ fn every_block_is_a_named_item_and_a_checklist_box_ticks_it() {
             .any(|block| {
                 matches!(
                     block.kind,
-                    ui::widget::BlockKind::Checklist { done: true, .. }
+                    ui::rich_edit::BlockKind::Checklist { done: true, .. }
                 )
             })
     });

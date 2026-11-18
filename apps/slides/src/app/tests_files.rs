@@ -504,7 +504,7 @@ fn a_saved_box_is_as_tall_as_its_words_show_it() {
 
 #[test]
 fn lists_survive_saving_and_opening() {
-    use ui::widget::{BlockContent, BlockKind};
+    use ui::rich_edit::{BlockContent, BlockKind};
     let item = |text: &str, kind: BlockKind| {
         let mut block = BlockContent::paragraph("", text);
         block.kind = kind;

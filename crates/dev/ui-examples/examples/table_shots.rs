@@ -3,7 +3,7 @@
     reason = "migration stack lint debt is scoped to this target"
 )]
 
-//! Offscreen shots for the editable [`tilo_ui::widget::table::Table`].
+//! Offscreen shots for the editable [`tilo_rich_edit::table::Table`].
 //! Run:  `cargo run -p ui-examples --example ui-shots -- table_shots`
 
 use std::collections::HashMap;
@@ -15,13 +15,13 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use winit::event::{Modifiers, WindowEvent};
 
+use tilo_rich_edit::table::{self, Table};
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::Widget;
 use tilo_ui::widget::solve_built_layout;
-use tilo_ui::widget::table::{self, Table};
 
 const MARGIN: f64 = 28.0;
 const LEFT_GUTTER: f64 = 24.0;

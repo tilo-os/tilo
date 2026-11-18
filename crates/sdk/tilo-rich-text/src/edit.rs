@@ -22,9 +22,9 @@ use std::collections::{HashMap, HashSet};
 use tilo_doc::snapshot::BlockView;
 use tilo_document::action::{RegionKind, Span};
 use tilo_document::{RichTextAction, RichTextState};
+use ui::rich_edit::{BlockContent, BlockKind};
 use ui::tilo_actions::ActionError;
 use ui::widget::marks::{self, MarkSpan};
-use ui::widget::{BlockContent, BlockKind};
 
 use crate::convert::{self, KindSpec, chars};
 

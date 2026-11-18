@@ -197,13 +197,13 @@ const THINKING: &str = "Thinking\u{2026}";
 /// list, a heading a heading), through the toolkit's own reading of Markdown
 /// (`BlockEditor::reading_markdown`), shown read-only as a document is.
 pub(super) fn prose(key: &str, markdown: &str) -> Node {
-    let reading = sdk::widget::BlockEditor::reading_markdown(markdown);
-    let blocks: Vec<sdk::widget::BlockContent> = reading
+    let reading = sdk::rich_edit::BlockEditor::reading_markdown(markdown);
+    let blocks: Vec<sdk::rich_edit::BlockContent> = reading
         .blocks()
         .iter()
-        .map(sdk::widget::Block::content)
+        .map(sdk::rich_edit::Block::content)
         .collect();
-    let rich = sdk::widget::rich_doc::rich_of_blocks(
+    let rich = sdk::rich_edit::rich_doc::rich_of_blocks(
         &blocks,
         &tilo_view::patch::rich::RichText::default(),
     );

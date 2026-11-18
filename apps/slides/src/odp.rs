@@ -28,7 +28,7 @@ use std::path::Path;
 
 use bounded_zip::{BoundedArchive, ZipError, ZipLimits};
 use tilo_content::ContentStore;
-use ui::widget::BlockContent;
+use ui::rich_edit::BlockContent;
 use vello::peniko::Color;
 
 use crate::model::{
@@ -312,8 +312,8 @@ fn push_element(
                 let mut list: Option<&str> = None;
                 for block in el.rich_blocks() {
                     let style = match block.kind {
-                        ui::widget::BlockKind::Bullet { .. } => Some("qsL"),
-                        ui::widget::BlockKind::Numbered { .. } => Some("qsN"),
+                        ui::rich_edit::BlockKind::Bullet { .. } => Some("qsL"),
+                        ui::rich_edit::BlockKind::Numbered { .. } => Some("qsN"),
                         _ => None,
                     };
                     if list.is_some() && list != style {
@@ -660,9 +660,9 @@ fn parse_content(xml: &str) -> Option<Deck> {
                         if let Some(&numbered) = lists.last() {
                             let indent = u8::try_from(lists.len() - 1).unwrap_or(u8::MAX);
                             p_block.kind = if numbered {
-                                ui::widget::BlockKind::Numbered { indent }
+                                ui::rich_edit::BlockKind::Numbered { indent }
                             } else {
-                                ui::widget::BlockKind::Bullet { indent }
+                                ui::rich_edit::BlockKind::Bullet { indent }
                             };
                         }
                         cur_lines.push(std::mem::take(&mut p_buf));
@@ -686,7 +686,7 @@ fn parse_content(xml: &str) -> Option<Deck> {
                             // a box written before runs keeps its own flags.
                             if cur_blocks.iter().any(|block| {
                                 !block.marks.is_empty()
-                                    || block.kind != ui::widget::BlockKind::Paragraph
+                                    || block.kind != ui::rich_edit::BlockKind::Paragraph
                             }) {
                                 el.set_blocks(std::mem::take(&mut cur_blocks));
                             }
@@ -919,9 +919,9 @@ mod tests {
             use ui::widget::marks::{Mark, MarkSpan};
             let content = ContentStore::memory();
             let mut deck = crate::model::seed_deck();
-            let mut first = ui::widget::BlockContent::paragraph("", "plain bold");
+            let mut first = ui::rich_edit::BlockContent::paragraph("", "plain bold");
             first.marks = vec![MarkSpan::new(6..10, Mark::Bold)];
-            let mut second = ui::widget::BlockContent::paragraph("", "slanted");
+            let mut second = ui::rich_edit::BlockContent::paragraph("", "slanted");
             second.marks = vec![MarkSpan::new(0..7, Mark::Italic)];
             let element = deck.slides[0]
                 .elements

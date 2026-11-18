@@ -254,7 +254,7 @@ impl NotesApp {
     ) -> Result<(), String> {
         let block = anchor.and_then(|anchor| {
             state.bodies.get(&page)?.iter().find_map(|stored| {
-                (matches!(stored.kind, ui::widget::BlockKind::Heading { .. })
+                (matches!(stored.kind, ui::rich_edit::BlockKind::Heading { .. })
                     && crate::markdown::heading_anchor(&stored.text) == anchor)
                     .then(|| stored.id.clone())
             })

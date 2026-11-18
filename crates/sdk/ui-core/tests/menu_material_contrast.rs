@@ -263,7 +263,8 @@ fn a_menus_text_keeps_its_contrast_over_any_backdrop() {
 // not the words'.
 #[test]
 fn the_words_menu_of_dark_words_on_a_light_slide_reads_in_the_dark_theme() {
-    use tilo_ui::widget::{BlockContent, BlockEditor, Embedded};
+    use tilo_rich_edit::{BlockContent, BlockEditor};
+    use tilo_ui::widget::Embedded;
     let _settled = tilo_ui::motion::testing::settled();
     let theme = Theme::dark();
     let presence = PresenceCtx::default();

@@ -21,11 +21,11 @@ use std::rc::Rc;
 
 use tilo_document::action::RegionKind;
 use tilo_document::{ClipBlock, RichText, RichTextAction};
+use ui::rich_edit::BlockContent;
 use ui::tilo_resource::{
     self, ActionCx, Bytes, Collection, Id, Map, MemberId, Model, NonBlank, Origin, Reactions,
     Refusal, resource,
 };
-use ui::widget::BlockContent;
 use ui::widget::marks::Mark;
 
 use crate::metadata::CATALOG;
@@ -343,7 +343,7 @@ fn seed(
     });
     crate::markdown::specs_to_blocks(&specs)
         .iter()
-        .map(ui::widget::Block::content)
+        .map(ui::rich_edit::Block::content)
         .collect()
 }
 

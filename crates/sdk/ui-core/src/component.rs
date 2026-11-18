@@ -176,6 +176,19 @@ pub(crate) fn wrong(want: &Type, found: &Value) -> String {
     format!("takes {}, not {}", want.show(), found.kind())
 }
 
+impl PropType for tilo_ui_graph::rich::RichText {
+    fn ty() -> Type {
+        Type::RichText
+    }
+
+    fn from_value(value: &Value) -> Result<Self, String> {
+        match value {
+            Value::Rich(rich) => Ok(rich.clone()),
+            other => Err(format!("takes RichText, not {}", other.kind())),
+        }
+    }
+}
+
 impl PropType for String {
     fn ty() -> Type {
         Type::Text
@@ -928,6 +941,28 @@ pub trait PartType {
     fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String>;
 }
 
+/// A part that accepts only one component reads its props.
+impl<P: Component> PartType for Option<P> {
+    const MANY: bool = false;
+
+    fn accepts() -> Accepts {
+        Accepts::Component(P::NAME.into())
+    }
+
+    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
+        let mut read = None;
+        let count = source.components(part, &mut |child| {
+            read = Some(P::from_source(child).map_err(|error| error.to_string())?);
+            Ok(())
+        })?;
+        if count > 1 {
+            return Err(format!("holds one {}, not {count}", P::NAME));
+        }
+        *self = read;
+        Ok(())
+    }
+}
+
 impl PartType for Option<Element> {
     const MANY: bool = false;
 
@@ -1381,8 +1416,8 @@ impl Registry {
 
 pub mod gallery;
 
-#[cfg(test)]
-mod testing;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 
 #[cfg(test)]
 mod tests;

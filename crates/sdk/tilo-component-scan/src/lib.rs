@@ -555,12 +555,20 @@ fn widget_impls_of(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Where a crate's described widgets are named from: its top modules re-export them (the toolkit's
+/// `widget`), or its root does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Exports {
+    TopModules,
+    Root,
+}
+
 /// The source of a crate's set of described widgets (`component::Set`): `generated_entries()` and
 /// `GENERATED_PARTS`, naming the toolkit's component module through `toolkit` (`crate` in the
 /// toolkit itself, `::tilo_ui` in a crate of widgets above it).
-pub fn registry_source(scan: &Scan, toolkit: &str) -> String {
+pub fn registry_source(scan: &Scan, toolkit: &str, exports: Exports) -> String {
     let path = |top: &str, name: &str| {
-        if top.is_empty() {
+        if top.is_empty() || exports == Exports::Root {
             format!("crate::{name}")
         } else {
             format!("crate::{top}::{name}")

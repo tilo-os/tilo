@@ -15,11 +15,11 @@ use std::collections::HashMap;
 
 use tilo_document::action::{RegionKind, Span};
 use tilo_document::{ClipBlock, RichText, RichTextAction};
+use ui::rich_edit::BlockContent;
 use ui::tilo_resource::{
     self, ActionCx, Atom, Bytes, Collection, Id, Map, Model, Origin, Reactions, Refusal, Set,
     resource,
 };
-use ui::widget::BlockContent;
 use ui::widget::marks::Mark;
 
 use crate::model::PageId;
