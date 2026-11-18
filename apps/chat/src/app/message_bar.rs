@@ -185,6 +185,10 @@ impl ChatApp {
             } else if crate::moderation::bannable(&author) {
                 items.push(MenuAction::BanAuthor);
             }
+            // A share their own agent made for them is theirs to end.
+            if self.may_end_share(message) {
+                items.insert(0, MenuAction::StopSharing);
+            }
             items
         };
         // The link of what the message's chip shows, as the chip's own menu offers it.
