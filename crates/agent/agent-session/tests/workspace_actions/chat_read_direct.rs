@@ -14,6 +14,12 @@ const CYS: &str = "My bicycle's lock opens with plover.";
 const OPEN: &str = "Lunch is at noon in the atrium.";
 /// One word of each of the three sentences: Ada's to her agent, Cy's to it, the open chat's.
 const WORDS: [&str; 3] = ["heron", "plover", "atrium"];
+/// What Ada tells her agent once every agent has read Chat.
+const HERS_LATER: &str = "The spare key hangs behind the dunlin print.";
+/// What Ada says in the open chat after that.
+const OPEN_LATER: &str = "The fire drill gathers at the fountain.";
+/// One word of each of the two later sentences: Ada's to her agent, the open chat's.
+const LATER_WORDS: [&str; 2] = ["dunlin", "fountain"];
 
 /// Admit the person of `device` to `workspace` with `role`: the server issues them an
 /// invitation and their device redeems it.
@@ -183,6 +189,61 @@ async fn a_read_of_chat_gives_an_agent_no_direct_conversation_its_person_takes_n
         ("an editor's agent outside a turn", [false, true, true]),
         ("the owner's agent on a turn", [true, false, true]),
         ("the owner's agent outside a turn", [true, false, true]),
+    ];
+    assert_eq!(
+        seen,
+        expected,
+        "what each was answered:\n{}",
+        said.join("\n")
+    );
+    page.peer.close();
+}
+
+/// A direct conversation that grows stays kept from whoever takes no part in it. Every agent
+/// has read Chat twice when Ada says more to her agent and then in the open chat, so each is
+/// answered from what the service kept of its earlier reading and has followed since. The read
+/// after that gives her new sentence to the agent acting for her and to nobody else's, the
+/// open chat's new sentence to all of them, and of what was said before exactly what it gave
+/// before. On a turn and outside one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn what_is_said_later_in_a_direct_conversation_stays_kept_from_agents_of_others() {
+    let mut served = Served::start(1).await;
+    let (workspace, page, readers, [hers, _, open]) = three_things_said(&mut served).await;
+    for (_, caller) in &readers {
+        for _ in 0..2 {
+            let _ = messages_read(&served, &workspace, caller, OPEN).await;
+        }
+    }
+    let now = i64::try_from(tilo_clock::unix_now_ns() / 1_000_000_000).unwrap();
+    served
+        .said_at(&workspace, &served.ada, &hers, (HERS_LATER, now - 20))
+        .await;
+    served
+        .said_at(&workspace, &served.ada, &open, (OPEN_LATER, now - 10))
+        .await;
+    let mut seen: Vec<(&str, [bool; 2], [bool; 3])> = Vec::new();
+    let mut said: Vec<String> = Vec::new();
+    for (who, caller) in &readers {
+        let read = messages_read(&served, &workspace, caller, OPEN_LATER).await;
+        seen.push((
+            *who,
+            LATER_WORDS.map(|word| read.contains(word)),
+            WORDS.map(|word| read.contains(word)),
+        ));
+        said.push(format!("{who} reads of Chat: {read}"));
+    }
+    // Each: Ada's later sentence to her agent and the open chat's later one; then the three
+    // said before, as the first read gave them.
+    let others = ([false, true], [false, false, true]);
+    let cys = ([false, true], [false, true, true]);
+    let hers = ([true, true], [true, false, true]);
+    let expected = vec![
+        ("a viewer's agent on a turn", others.0, others.1),
+        ("a viewer's agent outside a turn", others.0, others.1),
+        ("an editor's agent on a turn", cys.0, cys.1),
+        ("an editor's agent outside a turn", cys.0, cys.1),
+        ("the owner's agent on a turn", hers.0, hers.1),
+        ("the owner's agent outside a turn", hers.0, hers.1),
     ];
     assert_eq!(
         seen,
