@@ -427,6 +427,26 @@ async fn a_calendar_server_that_refuses_the_password_is_said_so_and_no_item_is_k
     hosted.page.peer.close();
 }
 
+/// She says no address, only who she is there: her mail address. The server takes it as she
+/// says it, looks for her calendar under the name her address ends in, and asks her for the
+/// password with a question that names that server before she types anything. Nothing is
+/// connected and nothing is kept before she does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_mail_address_alone_is_asked_for_at_the_server_of_its_name() {
+    let mut hosted = Hosted::start().await;
+    // This server's operator lets it call its own network, so no name is looked up here.
+    hosted.workspaces.call_private_model_addresses(true);
+    let (_, held) = she_tells_and_is_asked(&hosted, "ada@calendar.example.test").await;
+    assert!(
+        held.text.contains("https://calendar.example.test"),
+        "the question names the server her address belongs to: {}",
+        held.text
+    );
+    assert!(her_accounts(&mut hosted).await.is_empty());
+    assert!(her_vault(&mut hosted).await.is_empty());
+    hosted.page.peer.close();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn what_a_telling_is_refused_for_asks_nobody_and_connects_nothing() {
     let mut hosted = Hosted::start().await;
