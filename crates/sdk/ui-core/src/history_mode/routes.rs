@@ -49,34 +49,6 @@ impl MergedRemote {
     }
 }
 
-/// Apply a mutation the host has already committed. Bytes from peers reach an app only after the host
-/// admitted them through `tilo_automerge_isolate`, so this applies in the app's own process.
-pub(crate) fn merge_committed(
-    doc: &mut AutoCommit,
-    incoming: Incoming<'_>,
-) -> Result<bool, RemoteApplyError> {
-    ready(doc)?;
-    let before = super::sorted_heads(doc.base_heads());
-    let _phase = tilo_resource::profiling::Phase::start("committed.merge");
-    match incoming {
-        // Merge preserves actor, causal history and identity; the document
-        // was loaded where it arrived.
-        Incoming::Whole(loaded) => {
-            doc.take_loaded(loaded)
-                .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?;
-        }
-        // Decoded into a clone first so malformed changes cannot partly
-        // mutate the real owner.
-        Incoming::Changes(bytes) => {
-            let mut incoming = doc.clone();
-            load_incremental(&mut incoming, bytes)?;
-            doc.merge_incoming(&mut incoming)
-                .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?;
-        }
-    }
-    Ok(before != super::sorted_heads(doc.base_heads()))
-}
-
 /// `mutation`, as a peer's route delivered it, handed to `apply`: its whole
 /// document loaded here.
 pub(crate) fn with_mutation<T>(
@@ -88,13 +60,14 @@ pub(crate) fn with_mutation<T>(
         .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?
 }
 
-/// [`merge_committed`] into `candidate`, a copy its caller keeps only when the mutation applied and
-/// validated: the changes load straight into it, with no second copy of the document and no merge of a
-/// whole one.
-pub(crate) fn merge_committed_into_copy(
+/// Apply what the host has already committed to `candidate`: changes whole or not at all, a whole
+/// document by merging only what it adds. Bytes from peers reach an app only after the host admitted
+/// them through `tilo_automerge_isolate`, so this applies in the app's own process.
+pub(crate) fn merge_committed(
     candidate: &mut AutoCommit,
     incoming: Incoming<'_>,
 ) -> Result<bool, RemoteApplyError> {
+    let _phase = tilo_resource::profiling::Phase::start("committed.merge");
     ready(candidate)?;
     let before = super::sorted_heads(candidate.base_heads());
     match incoming {
@@ -598,7 +571,7 @@ mod committed_changes_tests {
             let mutation = DocumentMutation::Incremental(delta);
             let mut changed = None;
             let errors = errors_during(|| {
-                changed = Some(with_mutation(&mutation, |incoming| merge_committed_into_copy(&mut held, incoming)).unwrap());
+                changed = Some(with_mutation(&mutation, |incoming| merge_committed(&mut held, incoming)).unwrap());
             });
             assert_eq!(errors, "", "a valid delta logged an error");
             assert_eq!(changed, Some(true));
@@ -615,7 +588,7 @@ mod committed_changes_tests {
             let before = held.get_heads();
             for end in 1..delta.len() {
                 let mutation = DocumentMutation::Incremental(delta[..end].to_vec());
-                let refused = with_mutation(&mutation, |incoming| merge_committed_into_copy(&mut held, incoming));
+                let refused = with_mutation(&mutation, |incoming| merge_committed(&mut held, incoming));
                 assert!(
                     matches!(refused, Err(RemoteApplyError::InvalidMutation(_))),
                     "truncated at {end}"

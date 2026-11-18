@@ -42,12 +42,6 @@ impl Incoming<'_> {
         }
     }
 
-    /// Whether it is the whole document.
-    #[must_use]
-    pub fn is_whole(&self) -> bool {
-        matches!(self, Incoming::Whole(_))
-    }
-
     /// Take it into `document`, merged with what `document` holds: whether
     /// `document` gained anything. Changes apply whole or not at all.
     ///

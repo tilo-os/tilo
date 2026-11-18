@@ -1026,6 +1026,57 @@ mod tests {
             );
         }
     }
+    /// A whole read reaches its owner as the document, loaded where it
+    /// arrived: the owner's thread only merges what it adds.
+    #[tokio::test]
+    async fn a_whole_read_reaches_its_owner_loaded() {
+        use automerge::{ReadDoc as _, transaction::Transactable};
+        let mut workspace = automerge::AutoCommit::new();
+        for at in 0..50 {
+            workspace
+                .put(automerge::ROOT, format!("message-{at}"), "words")
+                .unwrap();
+            workspace.commit();
+        }
+        let mut owner = workspace.fork();
+        owner.put(automerge::ROOT, "mine", "unsent").unwrap();
+        owner.commit();
+        workspace.put(automerge::ROOT, "theirs", "new").unwrap();
+        workspace.commit();
+        let bytes = workspace.save();
+        let budget = ByteBudget::new();
+        let (read, _) = read_capture_using(
+            Reply::Chunk {
+                capture: 1,
+                revision: [7; 32],
+                total: u32::try_from(bytes.len()).unwrap(),
+                offset: 0,
+                bytes,
+                token: [3; 16],
+            },
+            &budget,
+            async |_| Ok(Reply::Cancelled),
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(&*read.data.whole.lock_recover(), Some(Ok(_))),
+            "the document is loaded before any owner takes it"
+        );
+        assert_eq!(read.take_into(&mut owner), Some(true));
+        assert!(owner.get(automerge::ROOT, "mine").unwrap().is_some());
+        assert!(owner.get(automerge::ROOT, "theirs").unwrap().is_some());
+        assert!(
+            read.data.whole.lock_recover().is_none(),
+            "a merged read lets its loaded document go"
+        );
+        assert_eq!(
+            read.take_into(&mut owner),
+            None,
+            "the same read delivered again brings nothing"
+        );
+        assert!(!read.was_refused(), "nor is it refused");
+    }
     #[tokio::test]
     async fn committed_document_downgrade_excludes_unapplied_owner_handoff() {
         use automerge::transaction::Transactable;
