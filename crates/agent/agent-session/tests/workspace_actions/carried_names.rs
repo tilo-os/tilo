@@ -19,7 +19,7 @@ const NEW_CHANNEL: &str = "create-channel";
 
 /// A document of `app` begun on the page and written to the workspace; `None` for an app that
 /// begins no document of its own here.
-fn begun(browser: &mut Browser, app: &str) -> Option<DocumentRoute> {
+fn begun(browser: &Browser, app: &str) -> Option<DocumentRoute> {
     let mut page = crate::common::open_in(
         &browser.cluster_id,
         app,
@@ -159,12 +159,12 @@ async fn a_carrier_names_no_edit_its_caller_is_then_refused() {
     let guest_device = enrol(&guest, "guest-browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let server = start(&root, &device, state.path()).await;
-    let mut browser = Browser::open(&server, &browser_device, &device).await;
+    let browser = Browser::open(&server, &browser_device, &device).await;
     let mut providers = Vec::new();
     let mut not_begun = Vec::new();
     for definition in crate::common::catalogue().iter() {
         let app = definition.app_id();
-        match begun(&mut browser, app) {
+        match begun(&browser, app) {
             Some(route) => providers.push((
                 app.to_owned(),
                 format!(
@@ -195,11 +195,10 @@ async fn a_carrier_names_no_edit_its_caller_is_then_refused() {
 
     // Chat, by calls. The typed edit is found in a moderator's listing, with the value that
     // names a new channel written as its parameter's schema takes it.
-    let chat = providers
-        .iter()
-        .find(|(app, _)| app == CHAT)
-        .map(|(_, provider)| provider.clone())
-        .unwrap_or_else(|| panic!("Chat is begun; not begun: {not_begun:?}"));
+    let Some((_, chat)) = providers.iter().find(|(app, _)| app == CHAT) else {
+        panic!("Chat is begun; not begun: {not_begun:?}")
+    };
+    let chat = chat.clone();
     membership.set_role(Some(Role::Moderator));
     let new_channel = |listing: &[tilo_actions::ActionDescriptor], name: &str| {
         listing.iter().find_map(|carrier| {
