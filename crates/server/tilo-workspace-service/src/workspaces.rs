@@ -643,6 +643,35 @@ impl GovernedWorkspace {
         Ok(())
     }
 
+    /// Make `change` to the workspace's governance and commit it as
+    /// [`Self::commit`] does, staged from the replica (which `change` reads as
+    /// it stands) held until the change
+    /// commits: a member's write the workspace's link takes in meanwhile
+    /// waits, rather than landing between the copy the change was made on and
+    /// the commit, which would refuse the change for dropping that write.
+    /// Answers what `change` answers; nothing is committed when it changed
+    /// nothing.
+    fn change_held<T>(
+        &mut self,
+        key: &SigningKey,
+        now: SystemTime,
+        change: impl FnOnce(&StatePeer, &mut StatePeer) -> Result<(T, bool), String>,
+        state: impl FnOnce(
+            &WorkspaceDocumentEntry,
+            &StatePeer,
+        ) -> Result<collaboration::CollaborationState, String>,
+    ) -> Result<T, String> {
+        let shared = self.peer.shared();
+        let mut replica = shared.lock();
+        let mut candidate = replica.clone();
+        let (answer, changed) = change(&replica, &mut candidate)?;
+        if changed {
+            self.commit_held(&mut replica, candidate, (key, now), Change::Other, state)?;
+        }
+        drop(replica);
+        Ok(answer)
+    }
+
     /// Commit a governance change of `candidate`: sign it as the workspace's next
     /// generation, append its publication, and persist it with the
     /// collaboration state `state` derives from the committed workspace, all in
@@ -2152,10 +2181,7 @@ impl Workspaces {
         // actions it runs for members (a visitor linking their Discord
         // account) are committed as that device, and the governor's copy,
         // which the workspace's bots read, must take them in like any member's.
-        // Its notices it made itself, so it has them already. A device
-        // hosting its own workspaces is also their member under the same key, and
-        // that member's windows (its topology) are its own to send: those
-        // are taken in like any member's.
+        // Its notices it made itself, so it has them already.
         // A host told of its device's channel service retains its own
         // device's channel governance like any member's, for the other
         // key holders: the host keeps no channels to have it already.
@@ -2231,40 +2257,45 @@ impl Workspaces {
         // created a record founded here in the clear: the server retains a
         // member's changes only as a tail of a checkpoint that resolves their
         // dependencies.
-        let mut candidate = workspace.peer().clone();
-        if !envelope.is_whole_resource() {
-            candidate.publication_mut().publish_document(
-                &app_id,
-                &document_id,
-                automerge::AutoCommit::new().save(),
-                &host.key,
-                now,
-            )?;
-        }
-        candidate
-            .receive_from(
-                TransportOrigin::RetainedServerDelta(author),
-                message.clone(),
-                now,
-            )
-            .map_err(|error| error.to_string())?;
-        // A sealed write stays in the record's sealed history; a readable
-        // one is folded into the governor's checkpoint.
-        if !sealed {
-            let written = candidate
-                .document(&app_id, &document_id)
-                .ok_or("created record missing")?;
-            candidate.publication_mut().publish_document(
-                &app_id,
-                &document_id,
-                written,
-                &host.key,
-                now,
-            )?;
-        }
-        workspace.commit(candidate, &host.key, now, |record, _| {
-            Ok(record.collaboration.clone())
-        })?;
+        let whole = envelope.is_whole_resource();
+        workspace.change_held(
+            &host.key,
+            now,
+            |_, candidate| {
+                if !whole {
+                    candidate.publication_mut().publish_document(
+                        &app_id,
+                        &document_id,
+                        automerge::AutoCommit::new().save(),
+                        &host.key,
+                        now,
+                    )?;
+                }
+                candidate
+                    .receive_from(
+                        TransportOrigin::RetainedServerDelta(author),
+                        message.clone(),
+                        now,
+                    )
+                    .map_err(|error| error.to_string())?;
+                // A sealed write stays in the record's sealed history; a
+                // readable one is folded into the governor's checkpoint.
+                if !sealed {
+                    let written = candidate
+                        .document(&app_id, &document_id)
+                        .ok_or("created record missing")?;
+                    candidate.publication_mut().publish_document(
+                        &app_id,
+                        &document_id,
+                        written,
+                        &host.key,
+                        now,
+                    )?;
+                }
+                Ok(((), true))
+            },
+            |record, _| Ok(record.collaboration.clone()),
+        )?;
         // The write that starts a document is told like every write after
         // it: an agent a person's first message asks is woken by it.
         self.tell_followers(&workspace, (app_id, document_id), &message)
@@ -2364,36 +2395,47 @@ impl Workspaces {
             }
         }
         let now = tilo_clock::wall();
-        let mut candidate = workspace.peer().clone();
-        let outcome = candidate
-            .receive_from(TransportOrigin::RetainedServerDelta(author), message, now)
-            .map_err(|error| error.to_string())?;
-        if !outcome.changed {
+        let removed = std::cell::RefCell::new(std::collections::BTreeSet::new());
+        let mut author_person = None;
+        let changed = workspace.change_held(
+            &host.key,
+            now,
+            |replica, candidate| {
+                let outcome = candidate
+                    .receive_from(TransportOrigin::RetainedServerDelta(author), message, now)
+                    .map_err(|error| error.to_string())?;
+                if !outcome.changed {
+                    return Ok((false, false));
+                }
+                // A member removed takes every way in the workspace handed them
+                // with them: an invitation issued to them before, still
+                // unredeemed, would otherwise admit them again at once.
+                *removed.borrow_mut() = member_roots(replica, now)
+                    .difference(&member_roots(candidate, now))
+                    .copied()
+                    .collect();
+                // The person `author` writes for, when `author` is one of them:
+                // who left the workspace themselves is not kept out of it.
+                author_person = replica
+                    .governance()
+                    .governed_members(now)
+                    .ok()
+                    .and_then(|list| {
+                        list.member_of(&author)
+                            .and_then(tilo_peer_state::Member::root)
+                    });
+                Ok((true, true))
+            },
+            |record, _| {
+                let mut state = record.collaboration.clone();
+                state.withdraw_invitations(&removed.borrow());
+                Ok(state)
+            },
+        )?;
+        if !changed {
             return Ok(true);
         }
-        // A member removed takes every way in the workspace handed them with
-        // them: an invitation issued to them before, still unredeemed,
-        // would otherwise admit them again at once.
-        let removed: std::collections::BTreeSet<_> = member_roots(&workspace.peer(), now)
-            .difference(&member_roots(&candidate, now))
-            .copied()
-            .collect();
-        // The person `author` writes for, when `author` is one of them: who
-        // left the workspace themselves is not kept out of it.
-        let author_person = workspace
-            .peer()
-            .governance()
-            .governed_members(now)
-            .ok()
-            .and_then(|list| {
-                list.member_of(&author)
-                    .and_then(tilo_peer_state::Member::root)
-            });
-        workspace.commit(candidate, &host.key, now, |record, _| {
-            let mut state = record.collaboration.clone();
-            state.withdraw_invitations(&removed);
-            Ok(state)
-        })?;
+        let removed = removed.into_inner();
         workspace.keep_out_removed(&removed, author_person, tilo_clock::unix_now_ns())?;
         self.settle(workspace).await?;
         Ok(true)
@@ -2577,16 +2619,20 @@ impl Workspaces {
     ) -> Result<(), String> {
         let host = &self.inner.host;
         let now = tilo_clock::wall();
-        let mut candidate = workspace.peer().clone();
-        let filed = candidate
-            .workspace_mut()
-            .refuse_write(&host.cert, message, reason, &host.key, now)?;
+        let filed = workspace.change_held(
+            &host.key,
+            now,
+            |_, candidate| {
+                let filed = candidate
+                    .workspace_mut()
+                    .refuse_write(&host.cert, message, reason, &host.key, now)?;
+                Ok((filed, filed))
+            },
+            |record, _| Ok(record.collaboration.clone()),
+        )?;
         if !filed {
             return Ok(());
         }
-        workspace.commit(candidate, &host.key, now, |record, _| {
-            Ok(record.collaboration.clone())
-        })?;
         self.settle(workspace).await
     }
 

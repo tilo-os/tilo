@@ -410,14 +410,21 @@ impl Workspaces {
         // A key whose grant this workspace records as revoked never enters it
         // again, whichever API server it comes through.
         refuse_revoked(&workspace, device)?;
-        let mut candidate = workspace.peer().clone();
-        let admitted =
-            candidate.admit_certificate(device.clone(), &self.inner.host.key, system_time(now))?;
+        let state = workspace.collaboration().clone();
+        let admitted = workspace.change_held(
+            &self.inner.host.key,
+            system_time(now),
+            |_, candidate| {
+                let admitted = candidate.admit_certificate(
+                    device.clone(),
+                    &self.inner.host.key,
+                    system_time(now),
+                )?;
+                Ok((admitted, admitted))
+            },
+            |_, _| Ok(state),
+        )?;
         if admitted {
-            let state = workspace.collaboration().clone();
-            workspace.commit(candidate, &self.inner.host.key, system_time(now), |_, _| {
-                Ok(state)
-            })?;
             self.settle(&mut workspace).await?;
         } else if !self
             .inner
@@ -1183,16 +1190,20 @@ impl Workspaces {
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
         let key = self.inner.host.key.clone();
-        let mut candidate = workspace.peer().clone();
-        let before = candidate.workspace_heads().unwrap_or_default();
-        let answer = change(&mut candidate)?;
-        if candidate.workspace_heads().unwrap_or_default() == before {
-            return Ok(answer);
+        let (answer, changed) = workspace.change_held(
+            &key,
+            now,
+            |_, candidate| {
+                let before = candidate.workspace_heads().unwrap_or_default();
+                let answer = change(candidate)?;
+                let changed = candidate.workspace_heads().unwrap_or_default() != before;
+                Ok(((answer, changed), changed))
+            },
+            |record, _| Ok(record.collaboration.clone()),
+        )?;
+        if changed {
+            self.settle(&mut workspace).await?;
         }
-        workspace.commit(candidate, &key, now, |record, _| {
-            Ok(record.collaboration.clone())
-        })?;
-        self.settle(&mut workspace).await?;
         Ok(answer)
     }
 
