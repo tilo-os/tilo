@@ -153,8 +153,7 @@ impl ServerTurns {
         sink: &mut dyn FnMut(StreamEvent),
     ) -> Result<ModelResponse, ModelError> {
         use tilo_actions::remote::{
-            ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, UpdateMark,
-            settle_with,
+            Caller, InvokeArgument, InvokeRequest, ReceiptStatus, UpdateMark, settle_with,
         };
         let unreachable = || ModelError {
             kind: ErrorKind::Unavailable,
