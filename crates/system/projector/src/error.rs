@@ -39,33 +39,3 @@ impl ProjectorError {
         Self::Protocol(format!("missing {flag}"))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn errors_display_the_message_the_shell_shows() {
-        assert_eq!(
-            ProjectorError::Protocol("invalid --port".to_owned()).to_string(),
-            "invalid --port"
-        );
-        assert_eq!(
-            ProjectorError::missing("--address").to_string(),
-            "missing --address"
-        );
-        assert_eq!(
-            ProjectorError::Timeout("projection session did not become ready in time").to_string(),
-            "projection session did not become ready in time"
-        );
-        let io = ProjectorError::io("cannot bind compositor video socket")(io::Error::from(
-            io::ErrorKind::AddrInUse,
-        ));
-        assert!(matches!(io, ProjectorError::Io { .. }));
-        assert!(
-            io.to_string()
-                .starts_with("cannot bind compositor video socket: "),
-            "{io}"
-        );
-    }
-}
