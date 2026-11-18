@@ -341,8 +341,8 @@ enum Cmd {
                       your browser: this computer gets a device key of its own, which that tab certifies. On a \
                       computer already set up, a sign-in code (\"Sign in with your agent\") signs that tab in as you.")]
     Login {
-        /// The code your Tilo tab shows, like K7Q-MX2P.
-        #[arg(required_unless_present = "new_identity")]
+        /// The code your Tilo tab shows, like K7Q-MX2P. Not needed on a computer that holds your
+        /// identity (`--new-identity`): it logs itself in, into -w or your own workspace.
         code: Option<String>,
         /// Instead: make a Tilo identity whose root this computer holds (or
         /// say it has one), and print its user public key. A host's operator
@@ -1124,6 +1124,27 @@ fn list_actions(filter: Vec<String>, spelling: &tilo_control::front::Spelling) -
 
 fn run(cli: Cli) -> Result<ExitCode> {
     let spelling = tilo_control::front::Spelling::tilo();
+    if let Cmd::Login {
+        code: None,
+        new_identity: false,
+        agent,
+        site,
+        ..
+    } = &cli.cmd
+    {
+        let Some(person) = identity::held()? else {
+            bail!(
+                "Give the code your Tilo tab shows, like `tilo login K7Q-MX2P` (in Tilo, choose \"Set \
+                 up with your agent\"). Only a computer that holds your identity logs in without one."
+            );
+        };
+        return login::login_held(
+            &person,
+            agent.as_deref(),
+            site.as_deref(),
+            cli.workspace.as_deref(),
+        );
+    }
     let workspace = workspace_or_entered(&cli)?;
     let cmd = match run_hosted(
         cli.api.as_deref(),
