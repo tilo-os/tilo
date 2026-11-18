@@ -12,7 +12,7 @@ use crate::tilo_actions::{InvocationId, InvocationUpdate};
 /// The workspace's history as a session serves it for a window whose resource is a test's
 /// document: each of its changes, under its own id, named as its own history names its author, and
 /// served again each time the session takes up a newer state of the document ([`Self::write`]).
-pub(crate) struct ServedHistory {
+pub struct ServedHistory {
     /// The feed as last read, under the sequence of that reading.
     feed: std::sync::Mutex<(u64, wire::Feed)>,
     /// Followers waiting for the next reading.
@@ -96,7 +96,7 @@ thread_local! {
 
 /// Serve the history of `doc` to every History this test opens: each test is a process of its
 /// own, so the provider stays entered until it ends.
-pub(crate) fn serve(doc: &automerge::AutoCommit) {
+pub fn serve(doc: &automerge::AutoCommit) {
     let served = std::sync::Arc::new(ServedHistory::new(doc));
     SERVED.with(|current| *current.borrow_mut() = Some(served.clone()));
     std::mem::forget(crate::remote_actions::RemoteActions::enter(
@@ -108,7 +108,7 @@ pub(crate) fn serve(doc: &automerge::AutoCommit) {
 /// The session took up `doc` as it is now: what this thread serves ([`serve`]) answers every
 /// History that follows it again.
 #[cfg(test)]
-pub(crate) fn sync(doc: &automerge::AutoCommit) {
+pub fn sync(doc: &automerge::AutoCommit) {
     let served = SERVED.with(|current| current.borrow().clone());
     served.expect("a history is served").write(doc);
 }
