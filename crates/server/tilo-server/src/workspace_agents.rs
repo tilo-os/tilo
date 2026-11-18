@@ -125,8 +125,6 @@ const IDLE: Duration = Duration::from_secs(60);
 const READINGS: usize = 3;
 /// How long one model turn may take.
 const TURN_TIME: Duration = Duration::from_secs(180);
-/// The longest a tool's answer the model is shown, in bytes.
-const MOST_RESULT_BYTES: usize = 24 * 1024;
 /// How long one of the agent's tools may take before the model is told it did not answer.
 const TOOL_TIME: Duration = Duration::from_secs(120);
 /// How long the host waits for one of its own record writes (the reply, the comment) to be taken.
@@ -2703,7 +2701,8 @@ fn view_tool(turn: &Turn) -> Option<ToolDefinition> {
 }
 
 /// Run tool `name` with `arguments` on the turn's server: what it answered, as the model reads it,
-/// and whether it failed.
+/// and whether it failed. The answer is handed on whole: the tools page their own answers and
+/// say on each page how to read on, and nothing here shortens one.
 async fn call_tool(
     server: &McpServer<WorkspaceActionProvider>,
     name: &str,
@@ -2746,14 +2745,6 @@ async fn call_tool(
         .unwrap_or_default();
     if text.is_empty() {
         text = result.to_string();
-    }
-    if text.len() > MOST_RESULT_BYTES {
-        let mut end = MOST_RESULT_BYTES;
-        while !text.is_char_boundary(end) {
-            end = end.saturating_sub(1);
-        }
-        text.truncate(end);
-        text.push_str("\n…(cut: ask for less)");
     }
     (text, is_error)
 }

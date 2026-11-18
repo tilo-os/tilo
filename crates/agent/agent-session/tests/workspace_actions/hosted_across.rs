@@ -634,3 +634,7 @@ mod list;
 /// An app named as a model writes it reaches nothing more.
 #[path = "hosted_across_spelled.rs"]
 mod spelled;
+
+/// What a tool answers reaches the turn's model whole.
+#[path = "hosted_tool_answers.rs"]
+mod tool_answers;
