@@ -88,6 +88,8 @@ const DEEP_READS: usize = 16;
 const NAME_BYTES: usize = 256;
 /// Lines `tilo_ls` answers before a cursor.
 const LS_LINES: usize = 40;
+/// Root-resource read searches a session keeps, by app and directory revision.
+const SWEPT_READS: usize = 256;
 /// Hits `tilo_find` answers.
 const FIND_HITS: usize = 15;
 /// Characters of a read answered before the rest is cut.
@@ -1768,6 +1770,21 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // own actions, a line each. A page is a window of them.
         let mut entries: Vec<(String, Option<Value>)> = Vec::new();
         if want_resources {
+            // Whether a read answers the rows listed here without their
+            // offering one: the resource they are listed under reads one of
+            // its items at a time, as a notebook reads its notes. A row
+            // neither that nor its own actions read is only a place inside
+            // what lists it (an option, a choice), which the row says.
+            let inherited_read = read
+                .as_ref()
+                .map(|(level, _)| &level.own)
+                .or_else(|| resolved.node.is_none().then_some(&resolved.actions))
+                .and_then(|own| reads_action(own))
+                .is_some_and(|read| {
+                    read.params
+                        .iter()
+                        .any(|param| param.name.as_ref() == "item")
+                });
             let mut named: Vec<Node> = children.clone();
             named.extend(resolved.node.clone());
             let shared = shared_names(&children, &named);
@@ -1806,6 +1823,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     &resolved.path,
                     &name,
                     forms.kind(&child.kind).unwrap_or(&child.kind),
+                    inherited_read || reads_action(&child.actions).is_some(),
                 );
                 entries.push((line, Some(row)));
             }
@@ -2186,6 +2204,18 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // names no item answers a document whole, and a resource inside it is
         // that read's to answer: a listing that takes no item would answer
         // every item with the whole document.
+        //
+        // Which root resource that is depends on the app's directory alone, so
+        // it is looked for once an app's directory stands still: a path that no
+        // root resource reads otherwise reads every one of them, and a walk
+        // over an app's empty places would pay that for each.
+        let sweep = (resolved.provider.clone(), resolved.revision.clone());
+        if !sweep.1.is_empty()
+            && let Some(known) = self.swept_reads.lock_recover().get(&sweep).cloned()
+        {
+            return Ok(known);
+        }
+        let root = self.level(&resolved.provider, "", levels).await?;
         let reading_item = |found: &ActionDescriptor| {
             resolved.node.is_none()
                 || found
@@ -2193,17 +2223,25 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     .iter()
                     .any(|param| param.name.as_ref() == "item")
         };
-        let root = self.level(&resolved.provider, "", levels).await?;
+        let mut found = None;
         for node in &root.children {
             let level = self.level(&resolved.provider, &node.id, levels).await?;
-            if let Some(found) = reads_action(&level.own)
+            if let Some(reading) = reads_action(&level.own)
                 .or_else(|| reads_action(&node.actions))
-                .filter(|found| reading_item(found))
+                .filter(reading_item)
             {
-                return Ok(Some((node.id.clone(), found)));
+                found = Some((node.id.clone(), reading));
+                break;
             }
         }
-        Ok(None)
+        if !sweep.1.is_empty() {
+            let mut swept = self.swept_reads.lock_recover();
+            if swept.len() >= SWEPT_READS {
+                swept.clear();
+            }
+            swept.insert(sweep, found.clone());
+        }
+        Ok(found)
     }
 
     async fn agent_do(&self, args: DoArgs, structured: bool) -> Result<Reply, Failure> {

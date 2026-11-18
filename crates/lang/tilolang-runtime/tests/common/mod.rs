@@ -705,14 +705,7 @@ pub fn of_kind<'a>(
     node: &'a tilolang_runtime::UiNode,
     kind: &str,
 ) -> Vec<&'a tilolang_runtime::UiNode> {
-    let mut out = Vec::new();
-    if node.kind == kind {
-        out.push(node);
-    }
-    for c in &node.children {
-        out.extend(of_kind(c, kind));
-    }
-    out
+    node.of_kind(kind)
 }
 
 /// The resource an action returned.

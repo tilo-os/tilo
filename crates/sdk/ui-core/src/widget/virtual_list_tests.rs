@@ -317,6 +317,9 @@ tilo_test_env::scenario! {
         }
 
         {
+            // The pinned frame clock shows an answer as it lands: wall time between the two
+            // syncs would otherwise hold a skeleton first on a loaded machine.
+            let _frame = crate::motion::pin_frame();
             let states = Rc::new(RefCell::new(HashMap::new()));
             let model = PagedList {
                 count: 1,

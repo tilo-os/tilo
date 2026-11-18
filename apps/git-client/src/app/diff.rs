@@ -336,9 +336,7 @@ impl GitClientState {
             return;
         }
         let shared = crate::shared::SharedRepo::from_model(&self.model);
-        self.submit(Ok(
-            crate::resource::GitClient::RECORD_REPOSITORY.with(shared)
-        ));
+        self.submit(Ok(crate::resource::GitClient::STORE_REPOSITORY.with(shared)));
         self.shared_repo_fingerprint = Some(fingerprint);
     }
 

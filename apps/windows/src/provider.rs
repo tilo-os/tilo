@@ -639,6 +639,46 @@ impl LiveProvider {
         self.pending_vm_install_confirmation = None;
         Ok(pending)
     }
+
+    /// Show `source_name` as installing while its setup goes on: the service lists it once
+    /// setup ended, and the window says meanwhile that something is happening.
+    fn show_installing(&mut self, source_name: &str) {
+        let name = source_name
+            .strip_suffix(".exe")
+            .or_else(|| source_name.strip_suffix(".msi"))
+            .unwrap_or(source_name);
+        self.cached.apps.push(WindowsApp {
+            id: format!("installing-{}", self.cached.apps.len()),
+            name: name.replace(['_', '-'], " "),
+            publisher: "Imported application".into(),
+            route: Route::Wine,
+            recommended_route: Route::Wine,
+            runner: "Choosing…".into(),
+            capsule: "Pending private capsule".into(),
+
+            catalogue_source: "Checking the installer…".into(),
+            confidence: Confidence::Heuristic,
+            reason: "Tilo is checking the installer and choosing how to run it.".into(),
+            status: AppStatus::Installing,
+            grants: Vec::new(),
+            fallback_detail: "Setup can't reach anything else on this computer.".into(),
+            launch_available: false,
+            launch_unavailable_reason: Some("Setup is still running.".into()),
+            portal_file_open_available: false,
+            portal_file_open_unavailable_reason: Some("Setup is still running.".into()),
+            route_override_available: false,
+            route_override_unavailable_reason: None,
+            can_retry_install: false,
+            can_escalate_install_to_vm: false,
+            can_remove_launcher: false,
+            can_vendor_uninstall: false,
+            can_delete_data: false,
+            can_publish_vm_candidate: false,
+            installation_detail: Some("Installing…".into()),
+            vm_fallback_available: false,
+            vm_fallback_unavailable_reason: Some("Setup is still running.".into()),
+        });
+    }
 }
 
 impl CompatibilityProvider for LiveProvider {
@@ -686,41 +726,6 @@ impl CompatibilityProvider for LiveProvider {
     }
 
     fn install(&mut self, source: File, source_name: &str) -> Result<(), String> {
-        let name = source_name
-            .strip_suffix(".exe")
-            .or_else(|| source_name.strip_suffix(".msi"))
-            .unwrap_or(source_name);
-        self.cached.apps.push(WindowsApp {
-            id: format!("installing-{}", self.cached.apps.len()),
-            name: name.replace(['_', '-'], " "),
-            publisher: "Imported application".into(),
-            route: Route::Wine,
-            recommended_route: Route::Wine,
-            runner: "Choosing…".into(),
-            capsule: "Pending private capsule".into(),
-
-            catalogue_source: "Checking the installer…".into(),
-            confidence: Confidence::Heuristic,
-            reason: "Tilo is checking the installer and choosing how to run it.".into(),
-            status: AppStatus::Installing,
-            grants: Vec::new(),
-            fallback_detail: "Setup can't reach anything else on this computer.".into(),
-            launch_available: false,
-            launch_unavailable_reason: Some("Setup is still running.".into()),
-            portal_file_open_available: false,
-            portal_file_open_unavailable_reason: Some("Setup is still running.".into()),
-            route_override_available: false,
-            route_override_unavailable_reason: None,
-            can_retry_install: false,
-            can_escalate_install_to_vm: false,
-            can_remove_launcher: false,
-            can_vendor_uninstall: false,
-            can_delete_data: false,
-            can_publish_vm_candidate: false,
-            installation_detail: Some("Installing…".into()),
-            vm_fallback_available: false,
-            vm_fallback_unavailable_reason: Some("Setup is still running.".into()),
-        });
         self.send(WorkerCommand::Install {
             source,
             source_name: source_name.to_string(),
@@ -729,6 +734,7 @@ impl CompatibilityProvider for LiveProvider {
 
     fn confirm_capsule_install(&mut self) -> Result<(), String> {
         let (source, source_name) = self.take_pending_install()?;
+        self.show_installing(&source_name);
         self.send(WorkerCommand::InstallInCapsule {
             source,
             source_name,
@@ -737,6 +743,7 @@ impl CompatibilityProvider for LiveProvider {
 
     fn confirm_vm_install(&mut self) -> Result<(), String> {
         let (source, source_name) = self.take_pending_install()?;
+        self.show_installing(&source_name);
         self.send(WorkerCommand::InstallInVm {
             source,
             source_name,

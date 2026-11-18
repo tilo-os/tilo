@@ -3,7 +3,6 @@
 # or (in a session surface) lays out its own ground, words, geometry or
 # scrolling (tools/policy/check_primitives.py). Counts only shrink.
 glyph-icon 1 apps/canvas/src/panels/shortcuts.rs
-glyph-icon 1 apps/diffmerge-model/src/doc.rs
 glyph-icon 3 apps/file-explorer/src/files_app.rs
 glyph-icon 1 apps/imager/src/app.rs
 glyph-icon 3 apps/logs/src/journal.rs
@@ -19,7 +18,7 @@ glyph-join 3 apps/chat/src/render_chat/members.rs
 glyph-join 1 apps/chat/src/resource.rs
 glyph-join 2 apps/code-editor/src/sample_project.rs
 glyph-join 1 apps/containers/src/app.rs
-glyph-join 1 apps/containers/src/model.rs
+glyph-join 1 apps/containers-model/src/model.rs
 glyph-join 2 apps/containers/src/resource.rs
 glyph-join 1 apps/discord/src/outbound.rs
 glyph-join 1 apps/ebook/src/app/stage.rs
@@ -92,7 +91,7 @@ hand-text 2 crates/session/desktop/src/display_identify.rs
 hand-text 2 crates/session/desktop/src/feedback_picker.rs
 hand-text 5 crates/session/desktop/src/launchpad.rs
 hand-text 3 crates/session/desktop/src/osd.rs
-hand-text 10 crates/session/desktop/src/overview_panel/paint.rs
+hand-text 9 crates/session/desktop/src/overview_panel/paint.rs
 hand-text 3 crates/session/desktop/src/overview_picture.rs
 hand-text 1 crates/session/desktop/src/strip_switcher.rs
 hand-text 2 crates/session/desktop/src/window_switcher.rs

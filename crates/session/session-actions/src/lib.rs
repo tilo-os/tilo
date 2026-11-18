@@ -577,6 +577,17 @@ pub async fn ask<H: ActionProvider + Clone + Send + Sync + 'static>(
 }
 
 impl SessionActions {
+    /// Admit and start one invocation on the session's connection, as
+    /// [`ActionProvider::invoke`] does, for a caller that names what it asks without importing
+    /// the provider trait.
+    pub fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Answered<InvocationReceipt>> {
+        ActionProvider::invoke(self, caller, request)
+    }
+
     /// Wait on the device for the next change of what a watch of its workspace follows
     /// ([`ActionProvider::changed`]), asked as a held request: the device answers when a write
     /// lands in the workspace's records, or when who is in it moves.

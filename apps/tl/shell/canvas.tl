@@ -197,9 +197,10 @@ view model_choice() {
     }
 }
 
-/// How tall the composer stands, in canvas pixels: its one line and the card around it.
+/// How tall the composer stands, in canvas pixels: its one line, at the target a finger presses
+/// where the window is held in the hand, and the card's padding.
 fn composer_height() -> Int {
-    56
+    64
 }
 
 /// How far the composer's field stands inside its card, in canvas pixels: the card's padding.

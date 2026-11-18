@@ -2,7 +2,7 @@
 //! note made stands at the end of them.
 
 use automerge::AutoCommit;
-use tilolang_runtime::{Actor, UiNode, Value, ViewInstance};
+use tilolang_runtime::{Actor, Value, ViewInstance};
 
 use crate::fixtures::Replica;
 
@@ -22,26 +22,12 @@ fn packages() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
-fn all<'a>(node: &'a UiNode, kind: &str) -> Vec<&'a UiNode> {
-    let mut out = Vec::new();
-    walk(node, kind, &mut out);
-    out
-}
-
-fn walk<'a>(node: &'a UiNode, kind: &str, out: &mut Vec<&'a UiNode>) {
-    if node.kind == kind {
-        out.push(node);
-    }
-    for child in &node.children {
-        walk(child, kind, out);
-    }
-}
-
 /// The notes as the notebook's tree holds them: what each row is called, in the order the store
 /// keeps them.
 fn titled(view: &mut ViewInstance) -> Vec<String> {
     view.poll_patches().unwrap();
-    all(view.tree(), "ui.TreeViewNode")
+    view.tree()
+        .of_kind("ui.TreeViewNode")
         .into_iter()
         .filter_map(|node| match node.props.get("label") {
             Some(Value::Text(label)) => Some(label.clone()),

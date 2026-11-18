@@ -198,12 +198,6 @@ macro_rules! decorator_trait {
         impl<T: Decorator> Widget for T {
             $($impl_items)*
 
-            /// What it shows, as its inner widget shows it: a decorator is its inner widget
-            /// plus what it adds.
-            fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-                Decorator::html(self, cx)
-            }
-
             $(
                 $(#[$ref_attr])*
                 fn $ref(&self, $($ref_arg: $ref_ty),*) $(-> $ref_ret)? {
@@ -268,10 +262,6 @@ macro_rules! decorator_trait {
 
                     impl<$d ($d generic)*> Widget for $d ty {
                         $($impl_items)*
-
-                        fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-                            Decorator::html(self, cx)
-                        }
 
                         $(
                             $(#[$ref_attr])*
@@ -404,6 +394,12 @@ decorator_trait! {
     /// Every decorator is a widget: each method is the decorator's own, which
     /// forwards to the inner widget unless the decorator overrides it.
     impl {
+        /// What it shows, as its inner widget shows it: a decorator is its inner widget
+        /// plus what it adds.
+        fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+            Decorator::html(self, cx)
+        }
+
         #[doc(hidden)]
         fn concrete_type_name(&self) -> &'static str {
             Decorator::concrete_type_name(self)

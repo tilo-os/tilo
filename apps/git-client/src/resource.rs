@@ -10,66 +10,14 @@ use ui::headless::FrameHarness;
 use ui::i18n::EmbeddedCatalog;
 
 use crate::i18n::t;
-use ui::tilo_resource::{self, Atom, Invoke, Model, resource};
+use ui::tilo_resource::Invoke;
 use ui::widget::Element;
 
 use crate::app::GitClientApp;
 #[cfg(feature = "samples")]
 use crate::model::{DiffMap, RepoModel};
-use crate::shared::SharedRepo;
 
-/// The record: the repository it opens and what members see of it.
-/// Working-tree rows and in-flight fetch/push are live.
-#[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct GitClient {
-    /// Repository
-    ///
-    /// The path of the repository the resource opens; empty until one was
-    /// opened, when the client looks around its working directory.
-    pub repository: Atom,
-    /// Shared history
-    ///
-    /// Branches, history, remotes and identity as the repository on disk
-    /// last held them, for members and past versions.
-    #[model(readonly)]
-    pub shared: SharedRepo,
-}
-
-impl GitClient {
-    pub fn opened(&self) -> Option<&str> {
-        Some(self.repository.0.as_str()).filter(|path| !path.is_empty())
-    }
-}
-
-impl GitClient {
-    /// What the resource holds, answered through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads it as it reads any app's resource, and a named item is read from the
-    /// resource's table or by the read its own type gives it.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
-#[resource(
-    kind = "git_client.repo",
-    read_content = GitClient::read_document
-)]
-impl GitClient {
-    /// Record what the repository on disk holds now
-    ///
-    /// Its branches, history, remotes and identity, for members and
-    /// past versions. Read from the repository, nobody's edit.
-    #[action(external)]
-    pub fn record_repository(
-        &mut self,
-        #[param("The repository's branches, history, remotes and identity")] shared: SharedRepo,
-    ) {
-        self.shared = shared;
-    }
-}
+pub use git_client_model::GitClient;
 
 /// The bundled repository a screenshot shows instead of whatever repository
 /// the machine taking it has.
@@ -126,7 +74,14 @@ impl ResourceApp for GitClientShell {
                     .to_string_lossy()
                     .into_owned()
             })
-            .and_then(|path| Invoke::edit(&GitClient::paths().repository.set(Atom(path))).ok())
+            .and_then(|path| {
+                Invoke::edit(
+                    &GitClient::paths()
+                        .repository
+                        .set(ui::tilo_resource::Atom(path)),
+                )
+                .ok()
+            })
             .into_iter()
             .collect()
     }
@@ -421,13 +376,13 @@ mod tests {
             Invoke::edit(
                 &GitClient::paths()
                     .repository
-                    .set(Atom("/srv/repos/tilo".into())),
+                    .set(ui::tilo_resource::Atom("/srv/repos/tilo".into())),
             )
             .unwrap(),
         )
         .unwrap();
         theirs
-            .apply(GitClient::RECORD_REPOSITORY.with(SharedRepo::from_model(&model)))
+            .apply(GitClient::STORE_REPOSITORY.with(SharedRepo::from_model(&model)))
             .unwrap();
         ours.sync_with(&mut theirs).unwrap();
         assert_eq!(ours.state().unwrap(), theirs.state().unwrap());
@@ -453,7 +408,7 @@ mod tests {
         let agent = ActionInvoker::agent("claude").acting_for("ada");
         let open = GitClient::paths()
             .repository
-            .set(Atom("/srv/repos/tilo".into()));
+            .set(ui::tilo_resource::Atom("/srv/repos/tilo".into()));
         app.call_by(
             agent,
             <GitClient as ui::tilo_resource::Resource>::KIND,

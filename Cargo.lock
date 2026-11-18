@@ -5151,6 +5151,7 @@ dependencies = [
  "cloud-source",
  "ed25519-dalek 3.0.0",
  "file-explorer",
+ "file-explorer-model",
  "fs-protocol",
  "fuser",
  "hex",
@@ -5197,6 +5198,17 @@ dependencies = [
  "wire-frame",
  "workspace-hack",
  "zip",
+]
+
+[[package]]
+name = "file-explorer-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-resource",
+ "tilo-test-env",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -5977,6 +5989,7 @@ dependencies = [
  "bounded-command",
  "futures-util",
  "git-client",
+ "git-client-model",
  "git2",
  "hex",
  "jiff",
@@ -6003,6 +6016,16 @@ dependencies = [
  "url",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "git-client-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-resource",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -9798,6 +9821,7 @@ dependencies = [
  "jiff",
  "lru 0.18.3",
  "maps",
+ "maps-model",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -9811,6 +9835,17 @@ dependencies = [
  "tilo-vello",
  "tilo-winit",
  "tracing",
+ "workspace-hack",
+]
+
+[[package]]
+name = "maps-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-resource",
+ "tilo-test-env",
  "workspace-hack",
 ]
 

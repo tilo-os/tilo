@@ -21,11 +21,15 @@ pub fn entries<'a>(
                     "circle-dot"
                 })
                 .field(reference(issue.number), SearchWeight::Identity)
-                .facet("status", "Status", status_name(issue.status));
+                .facet(
+                    "status",
+                    tilo_resource::word!("tasks-facet-status").read(),
+                    status_name(issue.status),
+                );
             for label in issue.labels.iter() {
                 entry = entry.field(label.clone(), SearchWeight::Metadata).facet(
                     "label",
-                    "Label",
+                    tilo_resource::word!("tasks-facet-label").read(),
                     label.clone(),
                 );
             }
@@ -48,13 +52,13 @@ pub fn number(reference: &str) -> Option<u64> {
     reference.trim().trim_start_matches('#').parse().ok()
 }
 
-fn status_name(status: crate::model::Status) -> &'static str {
+fn status_name(status: crate::model::Status) -> String {
     match status {
-        crate::model::Status::Backlog => "Backlog",
-        crate::model::Status::Todo => "Todo",
-        crate::model::Status::InProgress => "In progress",
-        crate::model::Status::InReview => "In review",
-        crate::model::Status::Done => "Done",
-        crate::model::Status::Cancelled => "Cancelled",
+        crate::model::Status::Backlog => tilo_resource::word!("tasks-status-backlog").read(),
+        crate::model::Status::Todo => tilo_resource::word!("tasks-status-todo").read(),
+        crate::model::Status::InProgress => tilo_resource::word!("tasks-status-in-progress").read(),
+        crate::model::Status::InReview => tilo_resource::word!("tasks-status-in-review").read(),
+        crate::model::Status::Done => tilo_resource::word!("tasks-status-done").read(),
+        crate::model::Status::Cancelled => tilo_resource::word!("tasks-status-cancelled").read(),
     }
 }

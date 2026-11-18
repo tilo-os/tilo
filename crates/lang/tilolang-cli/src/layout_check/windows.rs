@@ -55,30 +55,9 @@ fn named<'a>(root: &'a dyn Widget, name: &str) -> Vec<&'a dyn Widget> {
     out
 }
 
-/// Every node of `kind` under `node`, in drawing order.
-fn nodes<'a>(
-    node: &'a tilo_app_window::UiNode,
-    kind: &str,
-    out: &mut Vec<&'a tilo_app_window::UiNode>,
-) {
-    if node.kind == kind {
-        out.push(node);
-    }
-    for child in &node.children {
-        nodes(child, kind, out);
-    }
-}
-
-/// Every node of `kind` under `node`.
-fn nodes_of<'a>(node: &'a tilo_app_window::UiNode, kind: &str) -> Vec<&'a tilo_app_window::UiNode> {
-    let mut out = Vec::new();
-    nodes(node, kind, &mut out);
-    out
-}
-
 /// What the menus under `node` say, in drawing order.
 fn menu_labels(node: &tilo_app_window::UiNode) -> Vec<String> {
-    nodes_of(node, "ui.MenuItem")
+    node.of_kind("ui.MenuItem")
         .into_iter()
         .filter_map(|item| match item.props.get("label") {
             Some(tilo_render_protocol::patch::Value::Text(label)) => Some(label.clone()),
@@ -100,7 +79,8 @@ fn the_catch_up_names_each_item_it_changed(window: &tilo_app_window::UiNode) {
         })
         .and_then(|part| part.children.first())
         .unwrap_or_else(|| panic!("the window's mark opens a catch-up: {window:?}"));
-    let labels: Vec<String> = nodes_of(content, "ui.Button")
+    let labels: Vec<String> = content
+        .of_kind("ui.Button")
         .into_iter()
         .filter_map(|button| match button.props.get("label") {
             Some(tilo_render_protocol::patch::Value::Text(label)) => Some(label.clone()),
@@ -118,13 +98,12 @@ fn the_catch_up_names_each_item_it_changed(window: &tilo_app_window::UiNode) {
         "the catch-up names each item it changed, newest first, then the one move"
     );
     assert!(
-        !nodes_of(content, "ui.Avatar").is_empty() && !nodes_of(content, "ui.Time").is_empty(),
+        !content.of_kind("ui.Avatar").is_empty() && !content.of_kind("ui.Time").is_empty(),
         "each step says who made it and when: {content:?}"
     );
     // A row's line reads as history writes a sentence: the name first, then what they did
     // ("Scout marked it done"). A face alone does not say who.
-    let mut rows = Vec::new();
-    nodes(content, "row", &mut rows);
+    let rows = content.of_kind("row");
     let steps: Vec<&tilo_app_window::UiNode> = rows
         .into_iter()
         .filter(|row| row.key.ends_with("~step"))
@@ -135,7 +114,8 @@ fn the_catch_up_names_each_item_it_changed(window: &tilo_app_window::UiNode) {
     );
     let mut lines = Vec::new();
     for step in &steps {
-        let texts: Vec<(&str, String)> = nodes_of(step, "ui.Text")
+        let texts: Vec<(&str, String)> = step
+            .of_kind("ui.Text")
             .into_iter()
             .map(|text| {
                 let role = match text.props.get("role") {
@@ -276,8 +256,7 @@ fn shown_floating_rect(staged: &stage::Staged, name: &str) -> Option<Rect> {
 fn row_marks(rows: &[(String, tilo_app_window::UiNode)]) -> Vec<tilo_app_window::UiNode> {
     let mut out = Vec::new();
     for (_, row) in rows {
-        let mut marks = Vec::new();
-        nodes(row, "ui.ChangeMark", &mut marks);
+        let marks = row.of_kind("ui.ChangeMark");
         out.extend(marks.into_iter().cloned());
     }
     out
@@ -290,7 +269,7 @@ fn staged_changes(staged: &mut stage::Staged) -> Vec<(String, tilo_actions::Acto
     let rows = staged.rows();
     let mut changes = Vec::new();
     for (key, row) in &rows {
-        for mark in nodes_of(row, "ui.ChangeMark") {
+        for mark in row.of_kind("ui.ChangeMark") {
             let identity = match mark.props.get("by") {
                 Some(tilo_render_protocol::patch::Value::Actor(who)) => who.id.clone(),
                 other => panic!("a marked row names who changed it: {other:?}"),
@@ -544,8 +523,7 @@ fn the_windows_header_mark(staged: &mut stage::Staged, count: i64) -> tilo_app_w
     the_catch_up_names_each_item_it_changed(&window);
     // The list is the window's content, so its header is the window's: the mark stands among the
     // header actions, first, in the row that carries the title it counts.
-    let mut parts = Vec::new();
-    nodes(&composed, "part", &mut parts);
+    let parts = composed.of_kind("part");
     let header = parts
         .iter()
         .find(|part| {
@@ -565,8 +543,7 @@ fn the_windows_header_mark(staged: &mut stage::Staged, count: i64) -> tilo_app_w
 
 /// The mark a window's header carries: what changed in what it shows, and by whom.
 fn window_mark(tree: &tilo_app_window::UiNode) -> Option<tilo_app_window::UiNode> {
-    let mut marks = Vec::new();
-    nodes(tree, "ui.ChangeMark", &mut marks);
+    let marks = tree.of_kind("ui.ChangeMark");
     marks
         .into_iter()
         .find(|mark| {
@@ -594,8 +571,7 @@ fn catch_up_rows(tree: &tilo_app_window::UiNode) -> Vec<String> {
         Some(tilo_render_protocol::patch::Value::Text(value)) => Some(value.clone()),
         _ => None,
     };
-    let mut found = Vec::new();
-    nodes(content, "stack", &mut found);
+    let found = content.of_kind("stack");
     let mut rows: Vec<&tilo_app_window::UiNode> = found
         .into_iter()
         .filter(|stack| {
@@ -609,8 +585,7 @@ fn catch_up_rows(tree: &tilo_app_window::UiNode) -> Vec<String> {
     rows.into_iter()
         .map(|stack| {
             let mut words = Vec::new();
-            let mut inside = Vec::new();
-            nodes(stack, "ui.Text", &mut inside);
+            let inside = stack.of_kind("ui.Text");
             for node in inside {
                 if node.kind == "ui.Text"
                     && (node.key.contains("~step") || node.key.ends_with("~changes"))
@@ -1423,8 +1398,7 @@ fn a_notebook_is_a_tree_beside_the_note_it_opens() {
     // One control starts a note: the window's bar offers it as the window's own action, and the
     // sidebar's header keeps the file commands, never a second button for what the bar has.
     let tree = staged.composed().expect("the window composes");
-    let mut shells = Vec::new();
-    nodes(&tree, "ui.NavShell", &mut shells);
+    let shells = tree.of_kind("ui.NavShell");
     let shell = shells.first().expect("the window is a shell");
     let part = |name: &str| {
         shell
@@ -1437,8 +1411,7 @@ fn a_notebook_is_a_tree_beside_the_note_it_opens() {
             })
             .unwrap_or_else(|| panic!("the shell has its {name} part: {shell:?}"))
     };
-    let mut buttons = Vec::new();
-    nodes(shell, "ui.Button", &mut buttons);
+    let buttons = shell.of_kind("ui.Button");
     let starts: Vec<&tilo_app_window::UiNode> = buttons
         .iter()
         .filter(|button| {
@@ -1447,8 +1420,7 @@ fn a_notebook_is_a_tree_beside_the_note_it_opens() {
         .copied()
         .collect();
     assert_eq!(starts.len(), 1, "one control starts a note: {starts:?}");
-    let mut in_bar = Vec::new();
-    nodes(part("actions"), "ui.Button", &mut in_bar);
+    let in_bar = (part("actions")).of_kind("ui.Button");
     assert!(
         in_bar
             .iter()
@@ -1456,14 +1428,12 @@ fn a_notebook_is_a_tree_beside_the_note_it_opens() {
                 == Some(&tilo_render_protocol::patch::Value::text("New note"))),
         "the window's bar starts a note"
     );
-    let mut in_sidebar = Vec::new();
-    nodes(part("sidebar_actions"), "ui.Button", &mut in_sidebar);
+    let in_sidebar = (part("sidebar_actions")).of_kind("ui.Button");
     assert!(
         in_sidebar.is_empty(),
         "the sidebar's header offers no second button of the window's: {in_sidebar:?}"
     );
-    let mut menus = Vec::new();
-    nodes(part("sidebar_actions"), "ui.MenuButton", &mut menus);
+    let menus = (part("sidebar_actions")).of_kind("ui.MenuButton");
     assert!(
         menus.iter().any(|menu| menu.props.get("label")
             == Some(&tilo_render_protocol::patch::Value::text("File"))),
@@ -1825,8 +1795,7 @@ fn a_channels_messages_the_person_has_not_seen_take_no_mark_of_their_own(
     tree: &tilo_app_window::UiNode,
 ) {
     // The transcript is told where the part the person has not read starts.
-    let mut lists = Vec::new();
-    nodes(tree, "ui.VirtualList", &mut lists);
+    let lists = tree.of_kind("ui.VirtualList");
     let unseen = lists
         .iter()
         .find(|list| list.props.contains_key("unseen_from"));
@@ -1915,7 +1884,8 @@ fn a_channels_header_says_what_the_person_has_not_seen_of_it_by_whom(
     );
     // And the channel's row in the sidebar says the same number: one count of what is new in a
     // conversation, never two numbers a person has to tell apart.
-    let place = nodes_of(tree, "ui.NavItem")
+    let place = tree
+        .of_kind("ui.NavItem")
         .into_iter()
         .find(|place| {
             matches!(
@@ -2390,8 +2360,7 @@ fn a_task_two_people_changed_names_them_both_in_its_catch_up() {
         })
         .and_then(|part| part.children.first())
         .unwrap_or_else(|| panic!("the mark opens its catch-up: {window:?}"));
-    let mut rows = Vec::new();
-    nodes(content, "row", &mut rows);
+    let rows = content.of_kind("row");
     let steps: Vec<&tilo_app_window::UiNode> = rows
         .into_iter()
         .filter(|row| row.key.ends_with("~step"))
@@ -2402,7 +2371,8 @@ fn a_task_two_people_changed_names_them_both_in_its_catch_up() {
         "the task stands as one row, not one per change: {content:?}"
     );
     let step = steps[0];
-    let faces = nodes_of(step, "ui.Avatar")
+    let faces = step
+        .of_kind("ui.Avatar")
         .into_iter()
         .filter(|face| {
             matches!(
@@ -2415,7 +2385,8 @@ fn a_task_two_people_changed_names_them_both_in_its_catch_up() {
         faces, 2,
         "a face for each of the two who changed it: {step:?}"
     );
-    let words: Vec<String> = nodes_of(step, "ui.Text")
+    let words: Vec<String> = step
+        .of_kind("ui.Text")
         .into_iter()
         .filter_map(|text| match text.props.get("value") {
             Some(tilo_render_protocol::patch::Value::Text(value)) => Some(value.clone()),

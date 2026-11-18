@@ -123,11 +123,13 @@ impl Workspace {
             )
             .anchored(item_resource_id::<Self>("connections", id))
         });
-        let queries =
-            self.saved_queries.iter().map(|(id, saved)| {
-                SearchEntry::new(&saved.name, "Collaborative saved query")
-                    .anchored(item_resource_id::<Self>("saved_queries", id))
-            });
+        let queries = self.saved_queries.iter().map(|(id, saved)| {
+            SearchEntry::new(
+                &saved.name,
+                tilo_resource::word!("db-client-search-saved-query").read(),
+            )
+            .anchored(item_resource_id::<Self>("saved_queries", id))
+        });
         connections.chain(queries).collect()
     }
 }

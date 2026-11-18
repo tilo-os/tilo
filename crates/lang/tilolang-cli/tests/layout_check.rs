@@ -397,6 +397,48 @@ fn a_view_that_is_one_branch_is_reached_whether_or_not_it_draws() {
     );
 }
 
+/// A window shows one page of its own list, so the views behind the others are reached only by
+/// choosing a destination, as a person does: the check chooses each and lays out what it shows.
+#[test]
+fn a_page_behind_the_windows_own_list_is_reached_by_choosing_it() {
+    let report = layout_check::check(&Options {
+        dirs: vec![manifest().join("tests/layout_check/navigation")],
+        ..Options::default()
+    })
+    .expect("the fixture lays out");
+    assert!(
+        report.unreached.is_empty(),
+        "choosing the destination the window does not open on reaches its page:\n{}",
+        layout_check::render(&report)
+    );
+    assert!(
+        report.findings.is_empty(),
+        "the fixture is laid out right:\n{}",
+        layout_check::render(&report)
+    );
+}
+
+/// A window that draws on a surface shows what the person pointed at, which no first frame has: the
+/// check taps the surface where nothing else stands and lays the page at that point out.
+#[test]
+fn a_page_at_a_point_a_person_tapped_is_reached_by_tapping_the_surface() {
+    let report = layout_check::check(&Options {
+        dirs: vec![manifest().join("tests/layout_check/surface")],
+        ..Options::default()
+    })
+    .expect("the fixture lays out");
+    assert!(
+        report.unreached.is_empty(),
+        "tapping the surface reaches the page it shows at the point:\n{}",
+        layout_check::render(&report)
+    );
+    assert!(
+        report.findings.is_empty(),
+        "the fixture is laid out right:\n{}",
+        layout_check::render(&report)
+    );
+}
+
 /// Held strictly, an allow-list line whose finding no longer shows fails the run: a fixed problem
 /// whose line stays behind reads to the next person as a problem still there.
 #[test]

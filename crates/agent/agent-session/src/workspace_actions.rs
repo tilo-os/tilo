@@ -2671,7 +2671,7 @@ impl Worker {
         reason = "a failure here is the action API's Outcome, handed back to its caller unchanged"
     )]
     fn source_read(
-        &self,
+        &mut self,
         workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
@@ -2792,7 +2792,7 @@ impl Worker {
     }
 
     fn try_registered_read(
-        &self,
+        &mut self,
         workspace: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
@@ -2800,7 +2800,7 @@ impl Worker {
         let Some(hint) = resource_of(&request.target.provider, "") else {
             return Ok(None);
         };
-        let Some(link) = self.shared.link.get() else {
+        let Some(link) = self.shared.link.get().cloned() else {
             return Ok(None);
         };
         let Some(policy) = link.view_read_policy(workspace, caller, &hint.app_id, &hint.document)
@@ -2811,6 +2811,54 @@ impl Worker {
             cluster_id: policy.workspace,
             ..hint
         };
+        let arguments = match &request.argument {
+            InvokeArgument::None => serde_json::Map::new(),
+            InvokeArgument::Json(arguments) => arguments.clone(),
+            InvokeArgument::Text(_) => {
+                return Err(Box::new(Outcome::Rejected(
+                    ActionCallError::InvalidRequest {
+                        reason: "a registered read requires typed arguments".into(),
+                    },
+                )));
+            }
+        };
+        let revision = request.revision.clone();
+        // The read a listing of this document already prepared answers it
+        // too, while the document stands where it was: a worker on the
+        // document's retained source is a process, and one per call made
+        // every read of such a document cost its start.
+        let heads = self
+            .mounted
+            .get(&self.holder_of(&route))
+            .and_then(|mounted| mounted.merged.clone());
+        if let Some(read) = self.canonical.offering(
+            link.as_ref(),
+            workspace,
+            caller,
+            &route,
+            heads.as_deref(),
+            &request.target.address,
+        ) {
+            if revision
+                .as_deref()
+                .is_some_and(|revision| revision != read.revision())
+            {
+                return Err(Box::new(Outcome::Rejected(ActionCallError::Refused {
+                    reason: "the committed source changed".into(),
+                })));
+            }
+            return read
+                .invoke(
+                    link.as_ref(),
+                    workspace,
+                    caller,
+                    &route,
+                    &request.target.address,
+                    &arguments,
+                )
+                .map(Some)
+                .map_err(|error| Box::new(api_outcome(&error)));
+        }
         let Ok(mut read) = reads::CanonicalRead::prepare(
             &self.catalogue,
             link.as_ref(),
@@ -2829,8 +2877,7 @@ impl Worker {
         {
             return Ok(None);
         }
-        if request
-            .revision
+        if revision
             .as_deref()
             .is_some_and(|revision| revision != read.revision())
         {
@@ -2838,17 +2885,6 @@ impl Worker {
                 reason: "the committed source changed".into(),
             })));
         }
-        let arguments = match &request.argument {
-            InvokeArgument::None => serde_json::Map::new(),
-            InvokeArgument::Json(arguments) => arguments.clone(),
-            InvokeArgument::Text(_) => {
-                return Err(Box::new(Outcome::Rejected(
-                    ActionCallError::InvalidRequest {
-                        reason: "a registered read requires typed arguments".into(),
-                    },
-                )));
-            }
-        };
         read.invoke(
             link.as_ref(),
             workspace,

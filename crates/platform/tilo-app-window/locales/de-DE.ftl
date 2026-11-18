@@ -22,6 +22,7 @@ tilolang-ask-denied = Diese Änderung ist hier nicht erlaubt.
 tilolang-ask-needs-approval = Diese Änderung muss zuerst bestätigt werden.
 tilolang-change-kept = Deine Änderung bleibt auf diesem Gerät, bis der Arbeitsbereich sie annimmt.
 tilolang-did-changed = hat { $field } geändert
+tilolang-did-renamed = hat es umbenannt
 tilolang-did-created = hat es erstellt
 tilolang-did-removed = hat es entfernt
 tilolang-did-moved = hat es verschoben nach

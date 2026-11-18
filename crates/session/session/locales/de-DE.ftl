@@ -555,6 +555,7 @@ so-tilo-desktop-window-menu-open = Das Fenstermenü öffnen
 machines-waiting-source = Deine Geräte
 machines-waiting-title = Ein neues Gerät wartet
 machines-waiting-body = { $machine } möchte beitreten und zeigt Code { $code }
+machines-waiting-body-hardware = { $machine } ({ $hardware }) möchte beitreten und zeigt Code { $code }
 machines-waiting-review = Ansehen, was beitreten will
 machines-waiting-approve = { $code } bestätigen
 machines-waiting-decline = Ablehnen

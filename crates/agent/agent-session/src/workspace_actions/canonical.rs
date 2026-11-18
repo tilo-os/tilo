@@ -13,6 +13,7 @@
 use std::collections::{HashMap, HashSet};
 
 use tilo_actions::ActionDescriptor;
+use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::Caller;
 use tilo_server_protocol::WorkspaceId;
 
@@ -104,5 +105,42 @@ impl CanonicalReads {
     /// Let go of what is kept of `workspace`'s records.
     pub(super) fn forget(&mut self, of: impl Fn(&DocumentRoute) -> bool) {
         self.kept.retain(|route, _| !of(route));
+    }
+
+    /// The registered read of the document at `route` for `caller` that
+    /// offers `address`, kept between calls while the document stands where
+    /// it was: the read a caller invoking it reuses rather than preparing its
+    /// own. `None` for an app that registers no reader, for a document whose
+    /// kept read is not known to stand where it did, and for one that offers
+    /// no such read — which is the caller's to answer otherwise.
+    pub(super) fn offering(
+        &mut self,
+        link: &dyn WorkspaceDocumentsLink,
+        workspace: WorkspaceId,
+        caller: &Caller,
+        route: &DocumentRoute,
+        heads: Option<&[[u8; 32]]>,
+        address: &ActionAddress,
+    ) -> Option<&mut reads::CanonicalRead> {
+        if self.none.contains(&route.app_id) {
+            return None;
+        }
+        let heads = heads?;
+        self.clock = self.clock.wrapping_add(1);
+        let kept = self
+            .kept
+            .get_mut(route)
+            .filter(|kept| kept.heads == heads)?;
+        kept.used = self.clock;
+        if kept.read.recheck(link, workspace, caller, route).is_ok()
+            && kept
+                .read
+                .operations()
+                .iter()
+                .any(|entry| &entry.address == address)
+        {
+            return Some(&mut kept.read);
+        }
+        None
     }
 }

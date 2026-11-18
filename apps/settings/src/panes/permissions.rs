@@ -542,14 +542,17 @@ fn device_answers_card(cx: &ViewCx<Settings>, answers: &[DeviceAnswer]) -> Setti
             "input" => t("perm-kind-remote"),
             other => other.to_owned(),
         };
-        let mut details = vec![if answer.this_device {
-            t("perm-device-answer-here")
-        } else {
-            t_args(
-                "perm-device-answer-on",
-                &[("device", answer.device_label.clone().into())],
-            )
-        }];
+        let mut details = vec![
+            what,
+            if answer.this_device {
+                t("perm-device-answer-here")
+            } else {
+                t_args(
+                    "perm-device-answer-on",
+                    &[("device", answer.device_label.clone().into())],
+                )
+            },
+        ];
         if answer.answer != tilo_action_policy::Answer::Allow {
             details.push(t("perm-device-answer-refused"));
         }

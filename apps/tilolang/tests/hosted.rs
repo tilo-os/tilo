@@ -2811,26 +2811,12 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
 /// requirement it does not meet is the reason the person reads, beside the name it announces.
 #[test]
 fn a_header_button_for_an_action_that_cannot_run_is_disabled_with_its_reason() {
-    /// Every node of `kind` under `node`, its own first.
-    fn of_kind<'a>(
-        node: &'a tilo_app_window::UiNode,
-        kind: &str,
-        out: &mut Vec<&'a tilo_app_window::UiNode>,
-    ) {
-        if node.kind == kind {
-            out.push(node);
-        }
-        for child in &node.children {
-            of_kind(child, kind, out);
-        }
-    }
     let _settled = ui::motion::testing::settled();
     let mut session = Session::tasks();
     session.settle();
     let view = session.hosted().view().expect("the window is connected");
     let tree = view.root_tree().expect("the window has a tree");
-    let mut buttons = Vec::new();
-    of_kind(&tree, "ui.Button", &mut buttons);
+    let buttons = tree.of_kind("ui.Button");
     let button = |label: &str| {
         buttons
             .iter()

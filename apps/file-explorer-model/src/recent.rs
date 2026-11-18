@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use ui::prelude::{Model, resource, tilo_resource};
-use ui::tilo_resource::{AbsolutePath, JsonSchema};
+use tilo_resource::{self, Model, resource};
+use tilo_resource::{AbsolutePath, JsonSchema};
 
 pub const RECENT_LOCATION: &str = "recent://";
 
@@ -35,7 +35,7 @@ pub struct RecentItem {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecentFiles {
     #[serde(default)]
-    items: ui::tilo_resource::Recents<RecentItem, 200>,
+    items: tilo_resource::Recents<RecentItem, 200>,
 }
 
 impl RecentFiles {

@@ -59,17 +59,17 @@ impl ZoneKind {
 
     /// The zone as places and search show it, in words every device reads the
     /// same, with the acronym kept.
-    pub fn title(self) -> &'static str {
+    pub fn title(self) -> String {
         match self {
-            ZoneKind::Drop => "Drop",
-            ZoneKind::Block => "Block",
-            ZoneKind::Public => "Public",
-            ZoneKind::External => "External",
-            ZoneKind::Dmz => "DMZ",
-            ZoneKind::Work => "Work",
-            ZoneKind::Home => "Home",
-            ZoneKind::Internal => "Internal",
-            ZoneKind::Trusted => "Trusted",
+            ZoneKind::Drop => tilo_resource::word!("firewall-zone-drop-title").read(),
+            ZoneKind::Block => tilo_resource::word!("firewall-zone-block-title").read(),
+            ZoneKind::Public => tilo_resource::word!("firewall-zone-public-title").read(),
+            ZoneKind::External => tilo_resource::word!("firewall-zone-external-title").read(),
+            ZoneKind::Dmz => tilo_resource::word!("firewall-zone-dmz-title").read(),
+            ZoneKind::Work => tilo_resource::word!("firewall-zone-work-title").read(),
+            ZoneKind::Home => tilo_resource::word!("firewall-zone-home-title").read(),
+            ZoneKind::Internal => tilo_resource::word!("firewall-zone-internal-title").read(),
+            ZoneKind::Trusted => tilo_resource::word!("firewall-zone-trusted-title").read(),
         }
     }
 
@@ -263,7 +263,9 @@ impl Matcher {
     pub fn title(&self) -> String {
         match self {
             Matcher::Service(s) => ServiceCatalog::name_of(s).to_string(),
-            Matcher::Port { port, .. } => format!("Port {port}"),
+            Matcher::Port { port, .. } => {
+                tilo_resource::word!("firewall-rule-port-title", port = port.clone()).read()
+            }
         }
     }
 

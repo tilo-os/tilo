@@ -27,6 +27,8 @@ tilolang-change-kept = Your change is kept on this device until the workspace ta
 # and after: a sentence goes on with it after who made it ("You moved this to Friday"). `$field`
 # is the field's name in a sentence ("due", "priority").
 tilolang-did-changed = changed { $field }
+# A write of the field a resource is named by (a task's title), whatever its type.
+tilolang-did-renamed = renamed
 tilolang-did-created = created it
 tilolang-did-removed = removed it
 tilolang-did-moved = moved it to

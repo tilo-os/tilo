@@ -65,6 +65,11 @@ pub type Observation = std::sync::Arc<
         + Sync,
 >;
 
+/// The root resource whose read answers a path, and that read: what an app's
+/// directory answered once its root resources were read for one that answers
+/// a place offering no read of its own.
+type SweptRead = Option<(String, tilo_actions::ActionDescriptor)>;
+
 /// One MCP session. Its requests are answered through `&self`, so a client
 /// may overlap them: a `tilo_status`, reading or cancelling, answers while a
 /// `tilo_do` of the same session waits for its action.
@@ -145,6 +150,11 @@ pub struct McpServer<H> {
     /// or moved is refused by the server, and resolved again then.
     resolved_paths:
         std::sync::Mutex<std::collections::HashMap<String, agent::resolved::ResolvedAction>>,
+    /// The root resource whose read answers a path an app's directory holds
+    /// none of its own for, by the app and the revision its directory was read
+    /// at: reading every root resource to find it is done once, not once a
+    /// call.
+    swept_reads: std::sync::Mutex<std::collections::HashMap<(String, String), SweptRead>>,
     /// The documents whose window this session's changes showed the person
     /// ([`McpServer::changed_shown`]).
     showed: std::sync::Mutex<std::collections::HashSet<String>>,
@@ -604,6 +614,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             acted: std::sync::Mutex::default(),
             changing: std::sync::Mutex::default(),
             resolved_paths: std::sync::Mutex::default(),
+            swept_reads: std::sync::Mutex::default(),
             showed: std::sync::Mutex::default(),
             invocations: std::sync::Mutex::default(),
             invocation_waiters: std::sync::Mutex::default(),

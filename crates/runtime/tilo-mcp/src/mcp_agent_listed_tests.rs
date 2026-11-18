@@ -84,3 +84,81 @@ async fn a_typed_listing_names_no_action_its_text_does_not() {
         );
     }
 }
+
+/// A typed listing says which of its rows a read answers as a resource of
+/// its own: a note its notebook reads one at a time is one, though it offers
+/// no read itself, and a place inside what lists it (an option, a choice) is
+/// not, so a walk that reads resources one by one reads only the rows that
+/// are.
+#[tokio::test]
+async fn a_typed_listing_says_which_rows_a_read_answers() {
+    let notes = Notes::new(true);
+    let mut rows = notes.rows("1");
+    // The reading settings beside the notes, offering nothing a read answers
+    // of its own, with a font inside them.
+    rows.push(notes.row(
+        NOTEBOOK,
+        "settings",
+        "settings",
+        "Reading settings",
+        None,
+        true,
+    ));
+    rows.push(notes.row("settings", "font:sans", "font", "Sans", None, false));
+    *notes.published_kinds.lock().unwrap() = Some(rows);
+    let server = agent(&notes);
+    let (listing, failed) =
+        typed_calls::answer(&server, "tilo_ls", json!({"path": "notes/Notebook"})).await;
+    assert!(!failed, "{listing}");
+    let reads = |listing: &Value, name: &str| {
+        listing["rows"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["name"] == name))
+            .map(|row| row["reads"].clone())
+    };
+    assert_eq!(
+        reads(&listing, "Todo"),
+        Some(json!(true)),
+        "the notebook reads its notes one at a time: {listing}"
+    );
+    let (fonts, failed) = typed_calls::answer(
+        &server,
+        "tilo_ls",
+        json!({"path": "notes/Notebook/Reading settings"}),
+    )
+    .await;
+    assert!(!failed, "{fonts}");
+    assert_eq!(
+        reads(&fonts, "Sans"),
+        Some(json!(false)),
+        "a font is part of the settings' read: {fonts}"
+    );
+}
+
+/// A path naming a place inside a resource answers no read of its own: the
+/// root resources are read once to find the read that could answer such a
+/// path, not once for every place a walk asks about.
+#[tokio::test]
+async fn a_read_of_a_place_answers_no_read_without_reading_the_apps_root_again() {
+    let notes = Notes::new(true);
+    let mut rows = vec![
+        notes.row("", "font", "place", "Fonts", None, false),
+        notes.row("", "theme", "place", "Themes", None, false),
+        notes.row("", "folder", "place", "Folders", None, false),
+        notes.row("", "voice", "place", "Voices", None, false),
+    ];
+    rows.extend(notes.rows("1"));
+    *notes.published_kinds.lock().unwrap() = Some(rows);
+    let server = agent(&notes);
+    let (_, _) = tool(&server, "tilo_read", json!({"path": "notes/font"})).await;
+    notes.take_asked();
+    let (_, _) = tool(&server, "tilo_read", json!({"path": "notes/theme"})).await;
+    let asked = notes.take_asked();
+    for place in ["font", "folder", "voice"] {
+        let id = notes.id(place);
+        assert!(
+            !asked.iter().any(|ask| ask.contains(&format!("under {id}"))),
+            "{place} was read again looking for a read it does not answer: {asked:?}"
+        );
+    }
+}

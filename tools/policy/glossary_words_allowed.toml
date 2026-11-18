@@ -1093,3 +1093,8 @@ reason = "`MemberQuestions`'s `host` field and tokio's `unbounded_channel`: the 
 words = ["host", "channel"]
 identifiers = ["host", "unbounded_channel"]
 paths = ["crates/agent/agent-session/tests/workspace_actions/packaged_model.rs"]
+
+[[allow]]
+reason = "A lane of a commit graph, as the stored history names it: a column a commit sits in, outside Tilo's vocabulary."
+words = ["lane"]
+paths = ["apps/git-client-model/src/model.rs"]

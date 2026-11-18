@@ -244,6 +244,11 @@ pub struct ActionRow {
     pub kind: String,
 }
 
+/// What a row a listing does not speak for is: a resource of its own, read.
+const fn a_resource() -> bool {
+    true
+}
+
 /// One row of a listing: a resource under the path listed, or an app.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct Row {
@@ -258,8 +263,18 @@ pub struct Row {
     pub label: String,
     /// The app's type of it, or `app`.
     pub kind: String,
+    /// Whether a query with this row as its parent answers rows the workspace
+    /// holds now. An app holding no document here says no, though listing it
+    /// would start it on a new one; a walk reads what is there and starts
+    /// nothing.
     #[serde(default)]
     pub has_children: bool,
+    /// Whether a read answers the row as a resource of its own. A row that is
+    /// only a place inside it (an option or a choice, like a reading font or a
+    /// built-in folder) is part of what lists it and is never read alone; a
+    /// listing that does not say is read as it always was, every row read.
+    #[serde(default = "a_resource")]
+    pub reads: bool,
     /// The ids of the actions it offers, each described once in the
     /// listing's `kinds` under the row's `kind`.
     #[serde(default)]

@@ -1556,7 +1556,7 @@ impl Reconciler {
             .children
             .iter()
             .map(|item| {
-                let row = crate::rows::find_kind(item, &row_kind).unwrap_or(item);
+                let row = item.first_of_kind(&row_kind).unwrap_or(item);
                 self.build(row)
             })
             .collect();

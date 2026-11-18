@@ -1419,37 +1419,48 @@ async fn write_export<S: ExportSource>(
             };
             // The page's rows are read side by side, and written in the
             // order the listing names them, so a workspace's export reads
-            // the same however fast each resource answers.
-            let fresh = listing
+            // the same however fast each resource answers. A row the listing
+            // says is no resource of its own (an option, a choice) is part of
+            // what lists it: nothing there is that row's to read, so it is
+            // walked past without a read, and only a row that holds children
+            // is listed on from.
+            let fresh: Vec<answers::Row> = listing
                 .rows
                 .into_iter()
-                .filter(|row| seen.insert(row.path.clone()));
-            let mut reads = futures_util::stream::iter(fresh)
-                .map(|row| async move {
-                    let read = source.read_whole(&row.path).await;
-                    (row, read)
-                })
+                .filter(|row| seen.insert(row.path.clone()))
+                .collect();
+            let reading: Vec<String> = fresh
+                .iter()
+                .filter(|row| row.reads)
+                .map(|row| row.path.clone())
+                .collect();
+            let mut reads = futures_util::stream::iter(reading)
+                .map(|path| async move { source.read_whole(&path).await })
                 .buffered(EXPORT_READS_AT_ONCE);
-            while let Some((row, read)) = reads.next().await {
-                match read {
-                    Ok(resource) => {
-                        let mut piece = String::new();
-                        if !first {
-                            piece.push(',');
+            for row in &fresh {
+                if row.reads
+                    && let Some(read) = reads.next().await
+                {
+                    match read {
+                        Ok(resource) => {
+                            let mut piece = String::new();
+                            if !first {
+                                piece.push(',');
+                            }
+                            first = false;
+                            piece.push_str(&json_of(&resource));
+                            if sender.send(piece.into()).await.is_err() {
+                                return;
+                            }
                         }
-                        first = false;
-                        piece.push_str(&json_of(&resource));
-                        if sender.send(piece.into()).await.is_err() {
-                            return;
-                        }
+                        Err(refused) => unread.push(answers::Unread {
+                            path: row.path.clone(),
+                            error: refused.body.message.clone(),
+                        }),
                     }
-                    Err(refused) => unread.push(answers::Unread {
-                        path: row.path.clone(),
-                        error: refused.body.message.clone(),
-                    }),
                 }
                 if row.has_children {
-                    pending.push_back(Some(row.path));
+                    pending.push_back(Some(row.path.clone()));
                 }
             }
             match listing.next_cursor {
@@ -1827,8 +1838,19 @@ mod export_tests {
             label: path.to_owned(),
             kind: "page".to_owned(),
             has_children,
+            reads: true,
             actions: Vec::new(),
             state: None,
+        }
+    }
+
+    /// A row that is only a place inside what lists it: an option, or a
+    /// choice, which no read answers as a resource of its own.
+    fn option(path: &str, has_children: bool) -> answers::Row {
+        answers::Row {
+            reads: false,
+            kind: "option".to_owned(),
+            ..row(path, has_children)
         }
     }
 
@@ -1965,6 +1987,41 @@ mod export_tests {
                 ("notes", "notes holds nothing")
             ]
         );
+    }
+
+    /// A row a listing says is no resource of its own (an option, a choice) is
+    /// not read: what holds it already answered it. Its children are walked
+    /// for resources of their own, and the row is neither exported nor
+    /// reported unread.
+    #[tokio::test]
+    async fn an_export_walks_past_a_row_that_is_no_resource_of_its_own() {
+        let mut fake = Fake::default();
+        fake.listings
+            .insert(None, vec![row("books", true), row("settings", true)]);
+        fake.listings.insert(
+            Some("books".to_owned()),
+            vec![row("books/a", false), option("books/B", false)],
+        );
+        fake.listings.insert(
+            Some("settings".to_owned()),
+            vec![option("settings/fonts", true)],
+        );
+        fake.listings.insert(
+            Some("settings/fonts".to_owned()),
+            vec![row("settings/fonts/Serif", false)],
+        );
+        // A read of an option would be a failure, as it is of the app: no
+        // read is asked for, so none is refused.
+        fake.refusals.insert(
+            "settings/fonts".to_owned(),
+            "settings/fonts has no read action".to_owned(),
+        );
+        let export = exported(fake).await;
+        assert_eq!(
+            paths(&export),
+            ["books", "settings", "books/a", "settings/fonts/Serif"]
+        );
+        assert!(export.unread.is_empty(), "{:?}", export.unread);
     }
 
     /// The document is written as it is read: a resource is sent before the

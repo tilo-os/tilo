@@ -346,15 +346,16 @@ pub(crate) fn review_of(action: &str) -> Option<String> {
 /// What a machine waiting to join is called in the person's words: its name,
 /// what it is, and the code both sides show.
 pub(crate) fn described(machine: &Waiting) -> String {
-    let details = if machine.hardware.is_empty() {
-        machine.label.clone()
+    let key = if machine.hardware.is_empty() {
+        "machines-waiting-body"
     } else {
-        format!("{} · {}", machine.label, machine.hardware)
+        "machines-waiting-body-hardware"
     };
     t_args(
-        "machines-waiting-body",
+        key,
         &[
-            ("machine", details.into()),
+            ("machine", machine.label.clone().into()),
+            ("hardware", machine.hardware.clone().into()),
             ("code", machine.code.clone().into()),
         ],
     )

@@ -203,6 +203,14 @@ async fn work(api: &Arc<Server>, mcp_url: &str, token: &str, title: &str) -> (St
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_backend_keeps_a_labelled_workspace_and_a_key_per_customer() {
+    // Where the time goes, as the service logs it, when `RUST_LOG` asks.
+    if std::env::var_os("RUST_LOG").is_some() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_timer(tracing_subscriber::fmt::time::uptime())
+            .with_writer(std::io::stderr)
+            .try_init();
+    }
     let on_server = api_on_server(ISSUER).await;
     let api = Arc::clone(&on_server.api);
     let key = server_key(&on_server, "Ada").await;

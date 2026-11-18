@@ -21,3 +21,12 @@ diffmerge-effects-show-merge = Drei-Wege-Zusammenführung
 diffmerge-effects-previous-change = Vorherige Änderung
 diffmerge-effects-next-change = Nächste Änderung
 diffmerge-effects-show = Änderung anzeigen
+
+## Die Titel, die das Fenster für das Geöffnete zeigt.
+
+merge-title = Zusammenführung von { $name }
+comparison-title = Vergleich von { $left } und { $right }
+comparison-title-one = Vergleich von { $name }
+merge-title-pair = Zusammenführung von { $ours } und { $theirs }
+merge-title-empty = Zusammengeführtes Ergebnis
+diffmerge-comparison = Vergleich

@@ -472,7 +472,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             let path = format!("{name}@{provider}");
             lines.push(format!("{path}/  {label}"));
             rows.push(json!({"path": path, "name": label, "label": label,
-                "kind": resolved.app_id, "has_children": true, "actions": []}));
+                "kind": resolved.app_id, "has_children": true, "reads": true, "actions": []}));
         }
     }
 

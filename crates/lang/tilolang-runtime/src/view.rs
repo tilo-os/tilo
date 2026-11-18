@@ -116,6 +116,24 @@ impl UiNode {
         })
     }
 
+    /// Every node of `kind` in the subtree, this one included, in the order the tree holds them.
+    pub fn of_kind(&self, kind: &str) -> Vec<&Self> {
+        let mut out = Vec::new();
+        let mut at = vec![self];
+        while let Some(node) = at.pop() {
+            if node.kind == kind {
+                out.push(node);
+            }
+            at.extend(node.children.iter().rev());
+        }
+        out
+    }
+
+    /// The first node of `kind` in the subtree, this one included ([`Self::of_kind`]).
+    pub fn first_of_kind(&self, kind: &str) -> Option<&Self> {
+        self.of_kind(kind).into_iter().next()
+    }
+
     /// Number of nodes in the subtree.
     pub fn count(&self) -> usize {
         self.children

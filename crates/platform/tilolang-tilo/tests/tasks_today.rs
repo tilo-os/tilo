@@ -5,7 +5,7 @@ use tilolang_runtime::{Actor, Value, ViewInstance};
 
 use crate::fixtures::{Replica, field_id};
 use crate::tasks::{
-    APP, PACKAGES, all, call, count, create, go_to, home_list_titles, home_row_of, places, read,
+    APP, PACKAGES, call, count, create, go_to, home_list_titles, home_row_of, places, read,
     shown_count, target, task, workspace,
 };
 use automerge::AutoCommit;
@@ -247,7 +247,9 @@ fn the_day_turns_at_the_persons_midnight_and_the_view_waits_for_it() {
 /// Whether each row the window's list shows is an item the person has finished with.
 fn rows_done(view: &mut ViewInstance) -> Vec<bool> {
     view.poll_patches().unwrap();
-    let Some(list) = all(view.tree(), "ui.VirtualList")
+    let Some(list) = view
+        .tree()
+        .of_kind("ui.VirtualList")
         .first()
         .map(|list| list.key.clone())
     else {
@@ -258,7 +260,7 @@ fn rows_done(view: &mut ViewInstance) -> Vec<bool> {
         let Some(row) = view.row(&list, index).unwrap().cloned() else {
             continue;
         };
-        let Some(item) = all(&row, "ui.ListItem").first().copied() else {
+        let Some(item) = row.of_kind("ui.ListItem").first().copied() else {
             continue;
         };
         out.push(matches!(

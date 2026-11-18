@@ -538,8 +538,9 @@ pub fn parse_bytes(text: &str) -> Result<Vec<u8>, String> {
     if text.trim().is_empty() {
         return Ok(Vec::new());
     }
-    parse_hex_query(text)
-        .ok_or_else(|| format!("{text:?} is not hexadecimal bytes (e.g. `de ad be ef`)"))
+    parse_hex_query(text).ok_or_else(|| {
+        tilo_resource::word!("hex-editor-not-hex-bytes", text = text.to_owned()).read()
+    })
 }
 #[cfg(test)]
 mod tests {

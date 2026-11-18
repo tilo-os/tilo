@@ -1,0 +1,7 @@
+## The resources and their verbs.
+
+files-recent-forget = Remove from Recent
+files-recent = Recent files
+files-recent-note = Note recent file
+files-recent-moved = Note a moved file
+files-workspace-window = Files window
