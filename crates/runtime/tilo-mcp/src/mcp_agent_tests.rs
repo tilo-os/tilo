@@ -1236,8 +1236,12 @@ where
         .with_agent_session("mcp:test")
 }
 
+/// A session is offered what it can use. This server starts no programs, as the one a server
+/// takes a person's turn through does not, so `tilo`, the tool for them, is not among its
+/// tools: offered it, a model calls it and is refused. A server that starts them offers it
+/// (`a_name_read_off_a_listing_walks_back_to_its_resource` asks one).
 #[test]
-fn an_agent_is_offered_nine_small_tools_and_no_classic_ones() {
+fn an_agent_is_offered_the_small_tools_it_can_use_and_no_classic_ones() {
     let host = Notes::new(true);
     run(async {
         let reply = agent(&host)
@@ -1258,7 +1262,6 @@ fn an_agent_is_offered_nine_small_tools_and_no_classic_ones() {
                 "tilo_link",
                 "tilo_view",
                 "tilo_find",
-                "tilo",
                 "tilo_watch",
                 "tilo_status"
             ]
@@ -1972,6 +1975,17 @@ tilo_test_env::scenario! {
         run(async {
             let (listed, failed) = tool(&server, "tilo_ls", json!({"path": "notes"})).await;
             assert!(!failed, "{listed}");
+            // This server starts programs, so it offers the tool for them.
+            let offered = server
+                .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
+                .await
+                .unwrap();
+            assert!(
+                offered["result"]["tools"]
+                    .as_array()
+                    .is_some_and(|tools| tools.iter().any(|tool| tool["name"] == "tilo")),
+                "{offered}"
+            );
             // The row prints its type as a program types it, not as the app publishes it.
             let row = listed
                 .lines()
