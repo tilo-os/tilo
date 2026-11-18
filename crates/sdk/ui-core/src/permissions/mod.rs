@@ -1465,7 +1465,11 @@ mod tests {
                     "/var/workspace/secret.png",
                     Access::Read
                 )));
-                assert_eq!(ctx.capabilities().len(), 4);
+                assert_eq!(
+                    ctx.capabilities().len(),
+                    3 + collab_types::caps::DeviceCap::ALL.len(),
+                    "every path, site and file, and every device by its type"
+                );
                 assert_eq!(ctx.capabilities()[0].access, Access::Write);
                 assert_eq!(ctx.capabilities()[0].scope, Scope::FsPath("/".into()));
                 assert!(ctx.check(&PermissionScope::app("notes", ActionKind::Outside)));

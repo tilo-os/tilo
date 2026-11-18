@@ -768,8 +768,22 @@ tilo_test_env::scenario! {
             [WorkspaceSettingsEffect::Grant {
                 subject: "member:ada".to_owned(),
                 permission: "camera".to_owned(),
-                expiry: "session".to_owned(),
+                until: None,
             }]
+        );
+    }
+
+    phase a_permission_until_a_time_waits_for_the_day_and_time_it_ends;
+    {
+        let (mut app, state) = mounted("permissions");
+        press(&mut app, "ws-grant-expiry:segment:1");
+        let _ = app
+            .harness()
+            .perform_named("ws-grant", &A11yAction::Activate);
+        app.settle();
+        assert!(
+            state.take_asked().is_empty(),
+            "nothing is given before the person picks when it ends"
         );
     }
 

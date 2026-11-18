@@ -184,8 +184,8 @@ pub enum WorkspaceSettingsEffect {
         subject: String,
         #[param("What it allows, by its key in the composer")]
         permission: String,
-        #[param("never, session or once")]
-        expiry: String,
+        #[param("When it ends, in Unix milliseconds; none keeps it until it is revoked")]
+        until: Option<u64>,
     },
     /// Revoke a permission the workspace gives
     #[effect(destructive, attended)]
@@ -566,6 +566,7 @@ impl ResourceApp for WorkspaceSettingsApp {
             "agents-empty",
             "agent-review",
             "permissions",
+            "permissions-until",
             "permissions-revoking",
             "apps",
             "apps-empty",
@@ -582,6 +583,19 @@ impl ResourceApp for WorkspaceSettingsApp {
                     grant: "grant-2".to_owned(),
                     holder: "Ada Lovelace-Byron".to_owned(),
                 }),
+                ..Local::default()
+            });
+        }
+        if fixture.scenario() == Some("permissions-until") {
+            fixture.provide(Local {
+                draft: permissions::Draft {
+                    expiry: Some("until".to_owned()),
+                    until: (
+                        ui::clock::today().tomorrow().ok(),
+                        ui::format::Time::new(17, 30, 0, 0).ok(),
+                    ),
+                    ..permissions::Draft::default()
+                },
                 ..Local::default()
             });
         }
@@ -649,7 +663,7 @@ pub fn scenario(name: Option<&str>) -> Settings {
             },
             ..sample()
         },
-        Some("permissions" | "permissions-revoking") => Settings {
+        Some("permissions" | "permissions-until" | "permissions-revoking") => Settings {
             tab: Tab::Permissions,
             ..sample()
         },
