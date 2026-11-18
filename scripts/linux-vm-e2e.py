@@ -83,21 +83,33 @@ def wait_until(description: str, predicate, deadline: float = DEADLINE):
     raise Failure(f"timed out waiting for {description}{suffix}")
 
 
-def complete_onboarding(control: Control) -> None:
-    """Create a throwaway identity through the same UI a first boot uses."""
-    names = wait_until("onboarding or desktop layout", control.target_names)
-    if "onboarding.begin.button" not in names:
-        return
-    control.send({"op": "click_named", "name": "onboarding.begin.button"})
-    wait_until("onboarding acknowledgement",
-               lambda: "onboarding.create.button" in control.target_names())
-    control.send({"op": "click_at", "x": 480, "y": 618})
-    control.send({"op": "click_named", "name": "onboarding.create.button"})
-    wait_until("onboarding completion action",
-               lambda: "onboarding.finish.button" in control.target_names())
-    control.send({"op": "click_named", "name": "onboarding.finish.button"})
-    wait_until("desktop after onboarding",
-               lambda: "onboarding.finish.button" not in control.target_names())
+def start_session(session: Path, env: dict, log) -> subprocess.Popen:
+    return subprocess.Popen(
+        [str(session), "--backend", "headless", "--size", f"{SCREEN[0]}x{SCREEN[1]}"],
+        env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+    )
+
+
+def mint_identity(session: Path, env: dict, control: Control, log: Path) -> None:
+    """Give the person a throwaway identity, as a development session mints one, so the session
+    under test opens on the desktop rather than on onboarding, which covers every window."""
+    with log.open("wb") as output:
+        minting = start_session(session, env, output)
+        try:
+            wait_until("the minting session's test-control socket", control.path.exists, 120)
+            wait_until("the minting session", lambda: control.send({"op": "state_dump"}), 120)
+            minted = control.send({"op": "provision_test_identity"})
+            check(bool(minted.get("answer", {}).get("throwaway")),
+                  f"a throwaway identity is minted ({json.dumps(minted)[:200]})")
+        finally:
+            terminate(minting)
+    control.path.unlink(missing_ok=True)
+
+
+def on_the_desktop(control: Control) -> bool:
+    """The session shows its desktop: controls, none of them onboarding's."""
+    names = control.target_names()
+    return bool(names) and not any(name.startswith("onboarding.") for name in names)
 
 
 def wayland_display(log: Path) -> str | None:
@@ -267,13 +279,11 @@ def run(args: argparse.Namespace) -> None:
     foot_log = (artifacts / "foot.log").open("wb")
     control = Control(control_path)
     try:
-        compositor = subprocess.Popen(
-            [str(args.session), "--backend", "headless", "--size", f"{SCREEN[0]}x{SCREEN[1]}"],
-            env=env, stdout=compositor_log, stderr=subprocess.STDOUT, start_new_session=True,
-        )
+        mint_identity(args.session, env, control, artifacts / "identity.log")
+        compositor = start_session(args.session, env, compositor_log)
         wait_until("test-control socket", control_path.exists, 120)
         wait_until("initial workspace", lambda: control.send({"op": "state_dump"}), 120)
-        complete_onboarding(control)
+        wait_until("the desktop, past onboarding", lambda: on_the_desktop(control), 120)
         env["WAYLAND_DISPLAY"] = wait_until(
             "published Wayland display", lambda: wayland_display(args.artifacts / "compositor.log"))
 
