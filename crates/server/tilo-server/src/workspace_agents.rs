@@ -2457,8 +2457,11 @@ async fn run_calls(
         // What the step costs is said in the log when it ends ([`steps`]).
         let mut step = steps::Step::begin(&call.name, (nth, of), noting);
         if noting == steps::Note::Before {
+            // Waited for, as it always was: handed on, it would stand in front of the tool's
+            // own action on the workspace's thread, inside what the tool waits for that action.
             unsaid = None;
-            step.notes(|| reply.notes(&call.name));
+            reply.doing(&call.name).await;
+            step.noted();
         }
         // What the turn keeps about its keeper is carried out here; every other
         // tool is the agent tools'.
