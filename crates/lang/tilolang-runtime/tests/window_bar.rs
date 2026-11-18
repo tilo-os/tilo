@@ -151,7 +151,7 @@ mod cases {
 
     /// The window's actions: the content's own part, and the overview's where the window lists
     /// items beside what they show.
-    fn bar<'a>(shell: &'a UiNode) -> Vec<&'a UiNode> {
+    fn bar(shell: &UiNode) -> Vec<&UiNode> {
         let mut actions = part(shell, "actions");
         actions.extend(part(shell, "overview_actions"));
         actions
