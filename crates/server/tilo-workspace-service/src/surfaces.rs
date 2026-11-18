@@ -328,7 +328,7 @@ pub(crate) fn own_refusal(
 pub(crate) fn governance_named(
     payloads: &dyn crate::payloads::ShellPayloads,
     delta: &[u8],
-) -> Vec<[u8; 32]> {
+) -> Vec<[u8; 4]> {
     crate::coedit::retention_view(delta)
         .and_then(|(_, _, body)| payloads.open_document(body))
         .map(|(_, envelope)| envelope.governance)

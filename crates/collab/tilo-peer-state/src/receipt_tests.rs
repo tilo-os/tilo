@@ -1898,7 +1898,7 @@ fn guest_write_under(
     peer: &StatePeer,
     key: &SigningKey,
     value: &str,
-    governance: Vec<[u8; 32]>,
+    governance: &[[u8; 32]],
 ) -> NeighbourMsg {
     let mut message = guest_write(
         peer,
@@ -1910,7 +1910,7 @@ fn guest_write_under(
     let NeighbourMsg::AppDocument { envelope, .. } = &mut message else {
         panic!("the guest's write is a document write")
     };
-    envelope.governance = governance;
+    envelope.governance = governance.iter().map(collab_types::governance_head).collect();
     collab_types::sign_op(envelope, key).unwrap();
     message
 }
@@ -1939,7 +1939,7 @@ fn a_write_under_a_role_given_a_moment_ago_waits_for_it_then_applies() {
         &governor,
         &guest_key,
         "edited",
-        governor.governance().heads(),
+        &governor.governance().heads(),
     );
     receive(&mut peer, &guest, write).expect("held, not refused");
     assert_eq!(value(&peer), before, "nothing of it is taken in yet");
@@ -1962,7 +1962,7 @@ fn a_write_citing_governance_from_before_its_writers_removal_is_refused() {
     let (mut peer, guest_key, guest) = workspace_with(Role::Editor);
     let (owner_key, _) = owner();
     let before_removal = peer.governance().heads();
-    let write = guest_write_under(&peer, &guest_key, "edited", before_removal);
+    let write = guest_write_under(&peer, &guest_key, "edited", &before_removal);
     peer.governance_mut()
         .remove_member(guest.user_public_key, &owner_key, now())
         .unwrap();

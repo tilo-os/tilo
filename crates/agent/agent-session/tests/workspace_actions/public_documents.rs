@@ -168,26 +168,22 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
         !page.rows.is_empty(),
         "the note publishes its actions to the member"
     );
-    // The note is a page of the record: it is listed where it stands, under
-    // the notebook the record publishes.
-    let Some(notebook) = page
+    // The note is a page of the app's resource: the notebook stands at that
+    // resource's own level, and beside it the chain its notes are kept in,
+    // which a caller reading a level at a time goes on into.
+    assert!(
+        page.rows
+            .iter()
+            .any(|row| row.resource.id == "notes.notebook"),
+        "the service lists the notebook the note is in: {page:?}"
+    );
+    let Some(kept) = page
         .rows
         .iter()
-        .find(|row| row.resource.id == "notes.notebook")
+        .find(|row| row.resource.kind == "notes.pages" && row.has_children)
         .map(|row| row.resource.id.clone())
     else {
-        panic!("the host lists the notebook the note is in: {page:?}");
-    };
-    let beside = catalogue_under(&mut member, &provider, Some(&notebook))
-        .await
-        .expect("the host serves the record the member wrote");
-    let Some(kept) = beside
-        .rows
-        .iter()
-        .find(|row| row.resource.kind == "notes.pages")
-        .map(|row| row.resource.id.clone())
-    else {
-        panic!("the host lists the notes the notebook keeps: {beside:?}");
+        panic!("the service lists the chain the notebook's notes are kept in: {page:?}");
     };
     let pages = catalogue_under(&mut member, &provider, Some(&kept))
         .await
@@ -411,7 +407,9 @@ async fn the_hosts_action_service_lists_a_public_workspaces_chat_it_was_never_se
             InvokeArgument::Json(arguments),
         )
     };
-    let receipt = member.invoke(posted("c_general")).await;
+    // A post follows its receipt as a page does: the service answers accepted
+    // while the change's save is still landing.
+    let receipt = member.invoke_settled(posted("c_general")).await;
     assert!(
         matches!(receipt.status, ReceiptStatus::Completed { .. }),
         "the post reached the workspace's own chat: {:?}",
@@ -419,7 +417,7 @@ async fn the_hosts_action_service_lists_a_public_workspaces_chat_it_was_never_se
     );
     // A channel the workspace's chat does not have is refused: the service read
     // the chat the workspace holds, not one of its own.
-    let refused = member.invoke(posted("c_missing")).await;
+    let refused = member.invoke_settled(posted("c_missing")).await;
     assert!(
         !matches!(refused.status, ReceiptStatus::Completed { .. }),
         "a channel the chat has not got took a post: {:?}",

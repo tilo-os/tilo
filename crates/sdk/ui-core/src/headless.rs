@@ -2170,14 +2170,16 @@ impl FrameHarness {
 
     /// Whether the frame, having drawn, leaves the next one work that changes what it shows: a
     /// composition a widget rebuilt or replaced while the frame ran (a slide landing drops the
-    /// parts its last pose hid), a store whose sync still owes, a press or control answer the
-    /// host has yet to run, or an owner-service layout the next frame readmits. A widget's tick
-    /// runs after the paint, so these can arrive once the frame has decided to sync nothing, and
-    /// a frame that leaves them is no frame at rest.
+    /// parts its last pose hid), a store whose sync still owes, an owner wake a component queued
+    /// (a save that landed), a press or control answer the window has yet to take up, or an
+    /// owner-service layout the next frame readmits. A widget's tick comes after the paint, so
+    /// these can arrive once the frame has decided to sync nothing, and a frame that leaves them
+    /// is no frame at rest.
     fn owes_the_next_frame(&mut self) -> bool {
         self.layout_requested
             || self.owner_service_layout_retired
             || self.root.needs_idle_sync()
+            || self.has_pending_owner_models()
             || crate::widget::press_waiting()
             || !self.bound_invocations.is_empty()
             || !self.pending_control_invocations.is_empty()
@@ -2311,7 +2313,13 @@ impl FrameHarness {
             return;
         }
         self.drain_component_wakes();
-        if self.wake_pending() || crate::i18n::I18nManager::revision() != locale {
+        // A store's write that landed while this pass ran wakes the window it
+        // belongs to, a component's through its owner queue: its save is the
+        // next frame's to show, not proof this frame skipped one.
+        if self.wake_pending()
+            || self.has_pending_owner_models()
+            || crate::i18n::I18nManager::revision() != locale
+        {
             self.request_layout();
             return;
         }
@@ -8150,6 +8158,7 @@ impl FrameHarness {
         confirm: bool,
         confirmation_phrase: Option<&str>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+        self.invalidate_local();
         let author = tilo_actions::Actor::Member(self.author.clone());
         self.invoke_action_as(&author, address, arguments, confirm, confirmation_phrase)
     }

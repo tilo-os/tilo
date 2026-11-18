@@ -147,9 +147,12 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
         let phases: Vec<tilo_actions::InteractionPhase> = browser
             .narrated
             .iter()
+            // The work is its member's: the agent the serving device speaks
+            // for, as the board names it, not the device key that says it.
             .filter(|(_, work)| {
                 run.as_ref()
-                    .is_some_and(|run| work.actor.agent_id() == Some(run.publisher.as_str()))
+                    .and_then(collab_types::presence::Shown::member_id)
+                    .is_some_and(|member| work.actor.agent_id() == member.agent_id())
             })
             .filter(|(record, work)| {
                 work.action.id == "new-sheet"

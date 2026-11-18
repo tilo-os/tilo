@@ -1215,16 +1215,34 @@ async fn a_find_answers_from_the_index_kept_as_documents_land() {
         assert!(!failed, "{file}: {answered}");
     }
     // The index is kept as the documents land: no find is asked, and the service reads them
-    // between the requests that wrote them, on a thread of its own: it is done when every
-    // document was read and none is still being read.
+    // between the requests that wrote them, on a thread of its own. The last documents are
+    // queued as the last write is answered, so they are read only as requests come: a listing
+    // that asks for nothing drives the pass on, until nothing waits to be read and nothing is
+    // still being read.
     let deadline = tilo_test_env::hang_deadline();
-    while served.actions.search_documents_warmed() < notes as u64
-        || served.actions.search_documents_reading() > 0
-    {
+    let probe = CatalogueQuery {
+        max_results: 0,
+        ..CatalogueQuery::default()
+    };
+    let mut settled = 0;
+    let mut warmed = served.actions.search_documents_warmed();
+    loop {
+        let _ = service!(served, &workspace)
+            .query(&ada, probe.clone())
+            .await;
+        let now = served.actions.search_documents_warmed();
+        if now == warmed && served.actions.search_documents_reading() == 0 {
+            settled += 1;
+            if settled >= 3 && now >= notes as u64 {
+                break;
+            }
+        } else {
+            settled = 0;
+        }
+        warmed = now;
         assert!(
             Instant::now() < deadline,
-            "the documents are read for the index: {} of {notes} read",
-            served.actions.search_documents_warmed()
+            "the documents are read for the index: {warmed} of {notes} read"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }

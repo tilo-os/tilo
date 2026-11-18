@@ -597,6 +597,19 @@ mod claims_wire {
 /// none is decided at once.
 pub const MAX_GOVERNANCE_HEADS: usize = 8;
 
+/// How an op names the governance change whose hash is `hash`
+/// ([`SignedOp::governance`]): by the first four bytes of the hash, as a short
+/// commit id names a commit. Every op a member writes carries its governance
+/// heads, so each costs what tells one workspace's governance changes apart,
+/// not a whole 32-byte hash on every keystroke. A receiver looks a head up
+/// only for a change it would otherwise refuse, and two changes sharing these
+/// bytes cost nothing but timing: the receiver then decides the op at once,
+/// as it decides an op naming no heads.
+#[must_use]
+pub fn governance_head(hash: &[u8; 32]) -> [u8; 4] {
+    hash.first_chunk::<4>().copied().unwrap_or_default()
+}
+
 /// Why a write that waited for the governance it was written under is
 /// refused when that governance did not come in time.
 pub const GOVERNANCE_NEVER_ARRIVED: &str = "the role change it depends on never arrived";
@@ -653,8 +666,9 @@ pub struct SignedOp {
     /// refuse the op while some of these are not in its governance yet holds
     /// it until they are, then decides it against all the governance it holds
     /// by then, revocations made since included: the heads say when to decide,
-    /// never what against. At most [`MAX_GOVERNANCE_HEADS`].
-    pub governance: Vec<[u8; 32]>,
+    /// never what against. At most [`MAX_GOVERNANCE_HEADS`], each named as
+    /// [`governance_head`] names it.
+    pub governance: Vec<[u8; 4]>,
     /// Detached Ed25519 signature by `author` over the canonical-bytes view
     /// of every other field. See `SignedOp::signing_bytes`.
     pub signature: Signature,
@@ -736,11 +750,11 @@ impl SignedOp {
     /// ([`Self::governance`]); past [`MAX_GOVERNANCE_HEADS`] of them it names
     /// none, and is decided at once as before.
     #[must_use]
-    pub fn with_governance(mut self, heads: Vec<[u8; 32]>) -> Self {
+    pub fn with_governance(mut self, heads: &[[u8; 32]]) -> Self {
         self.governance = if heads.len() > MAX_GOVERNANCE_HEADS {
             Vec::new()
         } else {
-            heads
+            heads.iter().map(governance_head).collect()
         };
         self
     }
@@ -775,7 +789,7 @@ impl SignedOp {
             encryption: &'a Option<EncryptionMetadata>,
             claims: &'a [crate::claim::ChangeClaim],
             surface: &'a Option<[u8; 32]>,
-            governance: &'a [[u8; 32]],
+            governance: &'a [[u8; 4]],
         }
         canonical_bytes(&View {
             payload: &self.payload,
@@ -916,7 +930,7 @@ mod tests {
                 invoker: None,
             }])
             .with_surface(Some([5; 32]))
-            .with_governance(vec![[6; 32]]);
+            .with_governance(&[[6; 32]]);
             crate::crypto::sign_op(&mut op, &key).unwrap();
             let bytes = canonical_bytes(&op).unwrap();
             assert_eq!(from_canonical_bytes::<SignedOp>(&bytes).unwrap(), op);
@@ -926,7 +940,7 @@ mod tests {
             );
             assert_eq!(
                 hex::encode(sha2::Sha256::digest(&bytes)),
-                "a1e378b555d485b52b46558e54ceb769b778b8dd7e4edb677ac767f384416d4c",
+                "15f9d40de991b2176a1982bb360b0431dba89f8a6caa45666878ac7586d32f41",
                 "{}",
                 hex::encode(&bytes)
             );

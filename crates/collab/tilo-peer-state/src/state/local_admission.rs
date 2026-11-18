@@ -192,7 +192,7 @@ impl StatePeer {
                 seq,
             )
             .with_surface(surface)
-            .with_governance(self.governance_heads()));
+            .with_governance(&self.governance_heads()));
         };
         // A change needs the record it changes, held or drafted before it; a checkpoint is the
         // whole record, so it is all a route it founds needs.
@@ -243,7 +243,7 @@ impl StatePeer {
         )
         .with_claims(claims)
         .with_surface(surface)
-        .with_governance(self.governance_heads()))
+        .with_governance(&self.governance_heads()))
     }
 
     /// Admit `envelope`, a local app's signed write to `record`, as a new
