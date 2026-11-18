@@ -12,7 +12,6 @@
 //! [`session`] holds the server co-edit session with that host.
 mod behind;
 mod certified;
-mod create;
 mod document_read;
 mod effect_history;
 mod effect_receipt;
@@ -26,8 +25,6 @@ mod file_store;
 pub(crate) mod fixture;
 #[cfg(not(target_arch = "wasm32"))]
 mod history_content;
-#[cfg(not(target_arch = "wasm32"))]
-mod join_service;
 mod journal;
 mod journaled;
 mod limits;
@@ -52,8 +49,6 @@ pub use document_read::{
 pub use file_store::{FileHost, open_file, open_file_with, owner_file_of, read_file};
 #[cfg(not(target_arch = "wasm32"))]
 pub use history_content::HistoryContent;
-#[cfg(not(target_arch = "wasm32"))]
-pub use join_service::OwnerJoinWorkspaces;
 pub use journaled::{JournalParts, Journaled};
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES};
 pub use publication::{
@@ -1004,21 +999,6 @@ impl NativeWorkspaceOwner {
             replica, record, ..
         } = candidate;
         self.publish(workspace, &replica, record, enrollment)
-    }
-
-    /// Publish `workspace`'s record as `change` leaves a copy of it, keeping
-    /// this device's live replica: a change of this device's record alone.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn change_document<T>(
-        &self,
-        workspace: WorkspaceId,
-        change: impl FnOnce(&NativeCommittedView, &mut stored::StoredWorkspace) -> Result<T, String>,
-    ) -> Result<T, String> {
-        let view = self.view(workspace)?;
-        let mut record = view.record.clone();
-        let answer = change(&view, &mut record)?;
-        self.publish_document(workspace, &view, record, None)?;
-        Ok(answer)
     }
 
     /// Publish `record` for `workspace`, leaving this device's live replica as

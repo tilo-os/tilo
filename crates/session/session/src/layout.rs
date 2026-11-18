@@ -2708,6 +2708,7 @@ mod tests {
         let state = tempfile::tempdir().expect("a state directory");
         let root = SigningKey::from_bytes(&[0x30; 32]);
         let key = SigningKey::from_bytes(&[0x31; 32]);
+        let signing = key.clone();
         let cert = tilo_peer_state::owner::testing::certificate(&root, &key, "Laptop");
         let hold = Arc::new(Hold::default());
         let theirs = Arc::clone(&hold);
@@ -2725,8 +2726,9 @@ mod tests {
         );
         let salt = tilo_desktop_model::ids::device_salt_of_key(&cert.device_public_key);
         let person = hex::encode(cert.user_public_key);
-        let workspace = WorkspaceId::new();
-        pollster::block_on(engine.found(workspace, "Layout"));
+        let workspace = tilo_peer_state::owner::testing::founded(engine.owner(), &cert, &signing)
+            .expect("the layout's workspace is founded");
+        engine.bind(workspace);
         assert!(
             engine.holds(workspace),
             "the layout's workspace is held here"

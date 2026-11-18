@@ -909,7 +909,7 @@ fn this_computer(
 
 /// The session this computer keeps under `state` .
 fn session_keeping(state: &std::path::Path) -> crate::Session {
-    crate::Session::headless(
+    let session = crate::Session::headless(
         crate::Options {
             presentation: ui::headless::fixture_runner_inputs,
             collab: false,
@@ -918,7 +918,11 @@ fn session_keeping(state: &std::path::Path) -> crate::Session {
         },
         &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
     )
-    .expect("a session")
+    .expect("a session");
+    if let Some(engine) = &session.shared.engine {
+        crate::founding_fixture::serve(engine);
+    }
+    session
 }
 
 /// A bot a member asks the workspace's host for is listed in the settings sheet, and Remove
@@ -1526,129 +1530,6 @@ fn an_agent_cannot_change_a_workspaces_people() {
             .iter()
             .all(|held| held.id.person_id() != Some(hex::encode(stranger).as_str())),
         "the agent's change is not the workspace's"
-    );
-}
-
-/// An invitation this device's person makes into `workspace_id` from their own device: the
-/// workspace's record has it, and the link it signed.
-fn invite_from_this_device(
-    state: &std::path::Path,
-    workspace_id: WorkspaceId,
-    cert: &tilo_user_identity::DeviceCert,
-    key: &SigningKey,
-) -> tilo_peer_state::join::invitations::IssuedInvitation {
-    use tilo_peer_state::join::invitations::IssueInvitationRequest;
-
-    let engine = Engine::open(
-        identity(cert, key),
-        Some(state),
-        [workspace_id],
-        crate::platform::membership_check::of_this_session(),
-    )
-    .expect("this computer's engine opens");
-    let now = tilo_clock::wall();
-    let request = IssueInvitationRequest {
-        request_id: [0x71; 32],
-        role: Role::Editor,
-        recipient_user_public_key: None,
-        invitee_name: Some("Ada".into()),
-        expires_at_ns: tilo_clock::unix_now_ns()
-            .checked_add(60_000_000_000)
-            .expect("an expiry"),
-        inviter_name: None,
-    };
-    let owner = engine.owner();
-    let issued = owner.issue_invitation(workspace_id, cert, &request, false, &[], key, now);
-    pollster::block_on(issued).expect("this device issues the link")
-}
-
-/// The invitations the session's own action lists for the workspace `workspace` .
-fn listed_invitations(session: &mut crate::Session, workspace: &str) -> Vec<serde_json::Value> {
-    let mut arguments = serde_json::Map::new();
-    arguments.insert("workspace".into(), workspace.into());
-    let listed = session
-        .invoke(
-            tilo_actions::remote::session_actions::INVITE_RESOURCE,
-            "invitations",
-            &arguments,
-        )
-        .expect("the session lists the invitations it made")
-        .completed()
-        .expect("listing finishes on return")
-        .value
-        .expect("the listing's invitations");
-    serde_json::from_value(listed).expect("a list of invitations")
-}
-
-/// Whether the session's own action cancelling `invite` changed the workspace.
-fn cancelled_at_the_shell(session: &mut crate::Session, workspace: &str, invite: &str) -> bool {
-    let mut arguments = serde_json::Map::new();
-    arguments.insert("workspace".into(), workspace.into());
-    arguments.insert("invite".into(), invite.into());
-    let answer = session
-        .invoke(
-            tilo_actions::remote::session_actions::INVITE_RESOURCE,
-            "cancel-invitation",
-            &arguments,
-        )
-        .expect("the session cancels the link this device made")
-        .completed()
-        .expect("cancelling finishes on return")
-        .value
-        .expect("whether the workspace changed");
-    answer["cancelled"]
-        .as_bool()
-        .expect("whether the workspace changed")
-}
-
-/// An invitation this device's person made into a workspace is listed by the session's own action
-/// and cancelled there, and the session lists none afterwards: inviting and taking a link back
-/// need no host, only the device that made it.
-#[test]
-fn the_shell_lists_and_cancels_the_invitations_this_device_made() {
-    let mut env = tilo_test_env::ScopedEnv::new();
-    let (_identity, key, cert) = this_computer(&mut env);
-    let state = tempfile::tempdir().expect("a state directory");
-    let workspace_id = {
-        let mut session = session_keeping(state.path());
-        session
-            .step(std::time::Duration::from_millis(1))
-            .expect("a frame");
-        session
-            .handle()
-            .read(|tree| tree.workspaces.first().map(Workspace::id))
-            .expect("a workspace on the session")
-    };
-    let invitation = invite_from_this_device(state.path(), workspace_id, &cert, &key);
-    let mut session = session_keeping(state.path());
-    session
-        .step(std::time::Duration::from_millis(1))
-        .expect("a frame");
-    let workspace = session
-        .handle()
-        .read(|tree| {
-            tree.workspaces
-                .first()
-                .map(|workspace| workspace.id().to_string())
-        })
-        .expect("a workspace on the session");
-    let listed = listed_invitations(&mut session, &workspace);
-    assert_eq!(listed.len(), 1, "the one link this device made");
-    assert_eq!(listed[0]["invite"], hex::encode(invitation.invite_id));
-    assert_eq!(listed[0]["role"], "editor");
-    assert_eq!(listed[0]["invitee_name"], "Ada");
-    let invite = hex::encode(invitation.invite_id);
-    assert!(
-        cancelled_at_the_shell(&mut session, &workspace, &invite),
-        "the link is cancelled"
-    );
-    assert!(
-        !cancelled_at_the_shell(&mut session, &workspace, &invite),
-        "cancelling it again changes nothing"
-    );
-    assert!(
-        listed_invitations(&mut session, &workspace).is_empty(),
-        "the cancelled link is not listed"
     );
 }
 

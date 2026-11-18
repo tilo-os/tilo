@@ -943,7 +943,6 @@ impl Session {
             person: options.person.clone(),
             activities: Rc::clone(&activities),
             surfaces,
-            sync: sync.clone(),
             tray: tray.clone(),
             engine: engine.clone(),
             // The invite sheet is the session's own surface: the shell asks for it here.

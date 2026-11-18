@@ -1528,13 +1528,15 @@ mod tests {
         state: &tempfile::TempDir,
         identity: &tilo_identity::identity_store::HostIdentity,
     ) -> Engine {
-        Engine::open(
+        let engine = Engine::open(
             identity.clone(),
             Some(state.path()),
             Vec::new(),
             crate::platform::membership_check::of_this_session(),
         )
-        .expect("this device's engine opens")
+        .expect("this device's engine opens");
+        crate::founding_fixture::serve(&engine);
+        engine
     }
 
     fn identity() -> tilo_identity::identity_store::HostIdentity {

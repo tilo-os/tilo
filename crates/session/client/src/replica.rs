@@ -553,12 +553,10 @@ mod tests {
     {
         let (key, certificate) = device();
         let store: Arc<dyn PeerStore> = Arc::new(crate::MemoryPeerStore::default());
-        let now = testing::now();
         let workspace = {
             let replicas = Replicas::new(certificate.clone(), Arc::clone(&store));
             let owner = replicas.owner();
-            let workspace =
-                pollster::block_on(testing::founded(&owner, "Company", &certificate, &key, now))?;
+            let workspace = testing::founded(&owner, &certificate, &key)?;
             if !owner.storage().held().any(|(held, _)| held == workspace) {
                 return Err("the page does not hold the workspace it founded".into());
             }

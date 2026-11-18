@@ -438,3 +438,22 @@ pub(crate) fn ns(now: SystemTime) -> Result<u64, String> {
     )
     .map_err(|e| e.to_string())
 }
+
+impl NativeWorkspaceOwner {
+    /// The invitations into `workspace` still redeemable at `now`, as this
+    /// device holds them: what the person who invited others sees, without
+    /// asking a host.
+    ///
+    /// # Errors
+    ///
+    /// This device holds no such workspace, `now` is not a clock reading, or
+    /// the workspace's record cannot be read.
+    pub fn pending_invitations(
+        &self,
+        workspace: WorkspaceId,
+        now: SystemTime,
+    ) -> Result<Vec<crate::join::invitations::PendingInvitation>, String> {
+        let now = ns(now)?;
+        self.with_current(workspace, |view| Ok(view.record.join_log.pending(now)))
+    }
+}

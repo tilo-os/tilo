@@ -15,7 +15,6 @@ use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_peer_state::join::Role;
-use tilo_peer_state::join::invitations::PendingInvitation;
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
 
@@ -405,8 +404,6 @@ pub(crate) struct DeviceLists {
     pub(crate) person: String,
     /// The surfaces the shell shows over its windows, and where they stand.
     pub(crate) surfaces: Surfaces,
-    /// Who is here, when this session takes part in the peer network.
-    pub(crate) sync: Option<Rc<crate::sync::Client>>,
     /// The apps' live activities: Clocks' timer is the bar's clock beside the time, and the person
     /// putting the floating one away hides it until Clocks shows something new.
     pub(crate) activities: Rc<crate::chrome::Activities>,
@@ -438,7 +435,6 @@ pub(crate) struct Shared {
     pub(crate) person: String,
     pub(crate) activities: Rc<crate::chrome::Activities>,
     pub(crate) surfaces: Surfaces,
-    pub(crate) sync: Option<Rc<crate::sync::Client>>,
     pub(crate) tray: Option<std::sync::Arc<tilo_tray::Tray>>,
     pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
     pub(crate) asks: Rc<std::cell::RefCell<Vec<tilo_desktop::desktop_host::DesktopAsk>>>,
@@ -455,7 +451,6 @@ pub(crate) fn device_lists_from(shared: Shared) -> impl Fn() -> DeviceLists {
         person: shared.person.clone(),
         activities: Rc::clone(&shared.activities),
         surfaces: shared.surfaces.clone(),
-        sync: shared.sync.clone(),
         tray: shared.tray.clone(),
         engine: shared.engine.clone(),
         asks: Rc::clone(&shared.asks),
@@ -612,14 +607,7 @@ impl DeviceLists {
         ) {
             return Ok(answered_by_service(asked, Ok));
         }
-        let invitations = engine
-            .invitations(&workspace_id.to_string(), std::time::SystemTime::now())
-            .map_err(ApiError::Failed)?;
-        let value = Value::Array(invitations.iter().map(invitation_json).collect());
-        Ok(Started::Done(tilo_actions::ActionOutput {
-            value: Some(value),
-            resources: Vec::new(),
-        }))
+        Err(held_elsewhere())
     }
 
     /// Cancel one of them, from the device that issued it: the link admits nobody from now on.
@@ -639,17 +627,7 @@ impl DeviceLists {
         ) {
             return Ok(answered_by_service(asked, Ok));
         }
-        let cancelled = engine
-            .cancel_invitation(
-                &workspace_id.to_string(),
-                invite,
-                std::time::SystemTime::now(),
-            )
-            .map_err(ApiError::Failed)?;
-        Ok(Started::Done(tilo_actions::ActionOutput {
-            value: Some(serde_json::json!({"cancelled": cancelled})),
-            resources: Vec::new(),
-        }))
+        Err(held_elsewhere())
     }
 
     /// Hand out a link into a workspace, made by this device's own person: the invitation the shell
@@ -733,51 +711,7 @@ impl DeviceLists {
                 }))
             }));
         }
-        // The link names this device, which answers whoever redeems it: a session taking part in no
-        // transport has no address to name, and one that has says where it is reached through its
-        // relay, so the link works from behind any network ([`crate::sync::Client::invitation_addr`]).
-        let endpoint = self
-            .sync
-            .as_ref()
-            .map(|sync| sync.invitation_addr())
-            .ok_or_else(|| {
-                ApiError::Failed(
-                    "this session takes part in no transport, so no link can name it".to_owned(),
-                )
-            })?;
-        // The link is made once this device is reached through its relay, and signed by this
-        // device's signer, which may answer only later: the asker hears it once signed, and the
-        // loop goes on meanwhile.
-        let engine = std::sync::Arc::clone(engine);
-        let workspace_id = workspace_id.to_string();
-        Ok(Started::Later(crate::landing::off_loop(async move {
-            let endpoint = endpoint.await;
-            let issued = engine
-                .issue_invitation(
-                    &workspace_id,
-                    tilo_session_client::engine::Part {
-                        role,
-                        administrator: makes_administrator,
-                    },
-                    invitee_name,
-                    recipient,
-                    expires_in,
-                    &endpoint,
-                    std::time::SystemTime::now(),
-                )
-                .await
-                .map_err(ApiError::Failed)?;
-            Ok(tilo_actions::ActionOutput {
-                value: Some(serde_json::json!({
-                    "invite": issued.invite,
-                    "link": issued.link,
-                    "role": issued.role.key(),
-                    "administrator": makes_administrator,
-                    "expires_at_ns": issued.expires_at_ns,
-                })),
-                resources: Vec::new(),
-            })
-        })))
+        Err(held_elsewhere())
     }
 
     /// What an invitation verb answers, when `effect` is one of them: the links that still work,
@@ -811,6 +745,12 @@ impl DeviceLists {
             .as_ref()
             .ok_or_else(|| ApiError::Failed("this session holds no workspace's record".to_owned()))
     }
+}
+
+/// What an invitation verb answers for a workspace this device's own workspace service does not
+/// hold: its invitations are made, listed and taken back where it is held.
+fn held_elsewhere() -> ApiError {
+    ApiError::Failed("only the workspace's holder issues its invitations".to_owned())
 }
 
 impl DeviceLists {
@@ -870,16 +810,6 @@ fn answered_by_service(
             resources: Vec::new(),
         })
     }))
-}
-
-fn invitation_json(invitation: &PendingInvitation) -> Value {
-    serde_json::json!({
-        "invite": hex::encode(invitation.invite_id),
-        "role": invitation.role.key(),
-        "recipient": invitation.recipient_user_public_key.map(hex::encode),
-        "invitee_name": invitation.invitee_name,
-        "expires_at_ns": invitation.expires_at_ns,
-    })
 }
 
 /// How long an invitation the shell hands out without being told otherwise works for: an hour, as a

@@ -191,11 +191,6 @@ pub struct HomePeerExpectation {
 
 #[derive(Debug)]
 pub enum NetCmd {
-    /// Server between the devices that take part in this device's workspaces
-    /// through it, as their workspace's host, and the rest of each workspace:
-    /// what they write reaches this device's apps and the workspace's own
-    /// host, and what reaches this device of the workspace reaches them.
-    ServeMembers(tilo_peer_state::direct::Owning),
     /// Ask the host of the joined workspace on `ws` to replay what it retains:
     /// something an app message let go earlier waited for has arrived, and
     /// the message is decided again when it comes back.
@@ -499,13 +494,6 @@ enum InternalEvent {
     /// A workspace's link brought a frame into this device's owner.
     NativeHeard {
         ws: WorkspaceId,
-        heard: tilo_peer_state::direct::Heard,
-    },
-    /// A device that takes part in workspace `ws` through this one brought a
-    /// frame into this device's owner over its link.
-    MemberHeard {
-        ws: WorkspaceId,
-        workspace: tilo_desktop_model::WorkspaceId,
         heard: tilo_peer_state::direct::Heard,
     },
     /// A workspace's link has the host's retained history in hand.
@@ -994,12 +982,6 @@ struct ActorState {
     host_sessions: HashMap<(WorkspaceId, EndpointId), HostRuntime>,
     /// Each joined workspace's link, on the direct connection.
     native_links: HashMap<WorkspaceId, native_ingress::NativeLink>,
-    /// The devices that take part in this device's workspaces through it
-    /// ([`NetCmd::ServeMembers`]).
-    members: Option<tilo_peer_state::direct::Owning>,
-    /// What this device's apps take the members' frames of each workspace under while no link of
-    /// it is up, as they take a link's: a workspace this device hosts itself has none.
-    member_scopes: HashMap<WorkspaceId, Arc<native_ingress::Scope>>,
     connecting_hosts: HashSet<(WorkspaceId, EndpointId)>,
     content_discovery_tasks: HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
     /// Approver sessions that put this person's agents' questions on the
@@ -1184,7 +1166,6 @@ impl ActorState {
                 let _ = reply.send(Arc::clone(&self.tally));
             }
             Some(NetCmd::NativeConnect(connect)) => self.native_connect(connect),
-            Some(NetCmd::ServeMembers(members)) => self.serve_members(members),
             Some(NetCmd::OwnServiceReady) => self.retry_native_routes(),
             Some(NetCmd::NativePublish { ws }) => self.drive_native_publication(ws),
             Some(NetCmd::JoinWorkspace { ws, on_event }) => {
@@ -1267,7 +1248,6 @@ impl ActorState {
             }
             Some(NetCmd::Publish { ws, msg }) => {
                 remember_governance(&mut self.governance, ws, &msg);
-                self.carry_own(&msg);
                 if self.native_routes.contains(ws) {
                     match native_ingress::carried(&msg) {
                         Some(native_ingress::Carried::Link) => {
@@ -1931,11 +1911,6 @@ impl ActorState {
             Some(InternalEvent::NativeHeard { ws, heard }) => {
                 self.native_heard(ws, heard).await;
             }
-            Some(InternalEvent::MemberHeard {
-                ws,
-                workspace,
-                heard,
-            }) => self.member_heard(ws, workspace, heard).await,
             Some(InternalEvent::NativeReady { ws }) => self.native_ready(ws).await,
             Some(InternalEvent::NativeAnswered { ws, answers }) => {
                 self.native_answered(ws, answers);
@@ -2900,8 +2875,6 @@ async fn run(
         hosts: HashMap::new(),
         host_sessions: HashMap::new(),
         native_links: HashMap::new(),
-        members: None,
-        member_scopes: HashMap::new(),
         connecting_hosts: HashSet::new(),
         content_discovery_tasks: HashMap::new(),
         agent_questions: services::approvers(),
@@ -3837,10 +3810,3 @@ fn record_content_event(from: &[u8; 32], frame: &[u8]) -> Option<HostEvent> {
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 mod tests;
-
-#[cfg(test)]
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "a test's device keeps its owner and its links for the whole run"
-)]
-mod member_apps_tests;

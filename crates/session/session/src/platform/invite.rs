@@ -153,8 +153,12 @@ impl Workspace for InviteWorkspace {
         // out: it brings one of their own devices in, and the sheet lists
         // only what they gave others.
         let own = engine.identity().device_cert.user_public_key;
+        let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&workspace) else {
+            return Vec::new();
+        };
         engine
-            .invitations(&workspace, SystemTime::now())
+            .owner()
+            .pending_invitations(workspace, SystemTime::now())
             .unwrap_or_default()
             .into_iter()
             .filter(|invite| invite.recipient_user_public_key != Some(own))

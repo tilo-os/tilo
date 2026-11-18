@@ -120,29 +120,6 @@ fn attach_bound(
         .map(|live| Arc::new(live.saying()) as Arc<dyn SayPresence>)
 }
 
-/// Name each change of the relays this device answers through in the records of the workspaces it
-/// hosts ([`tilo_endpoint_reachability::follow`]): what a workspace says of its own host, and the
-/// address a link made later carries, is where the device answers now.
-#[cfg(target_os = "linux")]
-fn follow_own_address(
-    endpoint: Option<&iroh::Endpoint>,
-    engine: Option<Arc<Engine>>,
-) -> Option<tokio::task::AbortHandle> {
-    let endpoint = endpoint?;
-    Some(tilo_endpoint_reachability::follow(
-        endpoint,
-        tilo_rt::app().handle(),
-        move |addr| {
-            let naming = engine.clone();
-            async move {
-                if let Some(engine) = naming {
-                    engine.name_own_hosts(&addr);
-                }
-            }
-        },
-    ))
-}
-
 /// One window stream's message as it reached this device: another member's shared window, or a
 /// member's ask to view one of this device's.
 #[derive(Clone, Debug)]
@@ -1300,11 +1277,6 @@ pub struct Client {
     /// The thread running the peer actor, stopped when this drops.
     #[cfg(target_os = "linux")]
     thread: Option<std::thread::JoinHandle<()>>,
-    /// What follows the relays this device answers through
-    /// ([`tilo_endpoint_reachability::follow`]), aborted with it: it holds the endpoint's address
-    /// watcher, which keeps the endpoint's socket open until it goes.
-    #[cfg(target_os = "linux")]
-    own_address: Option<tokio::task::AbortHandle>,
     /// Where this device was given and reached its hosts ([`live_session::Reached`]).
     #[cfg(target_os = "linux")]
     reached: network::Reached,
@@ -1330,9 +1302,6 @@ impl Drop for Client {
         {
             // The live sessions dial through this endpoint: they end before it does,
             // and before the thread that holds it joins.
-            if let Some(following) = self.own_address.take() {
-                following.abort();
-            }
             self.hosting.local.live.borrow_mut().take();
             let _ = self.outgoing.send(Cmd::Stop);
             if let Some(thread) = self.thread.take() {
@@ -1449,7 +1418,6 @@ impl Client {
                 );
             })?;
         let (publisher, endpoint, reachability) = wait_for_bound(&bound)?;
-        let own_address = follow_own_address(endpoint_handle.get(), engine.clone());
         let saying = attach_bound(&mut live, link.as_ref(), link_outbox, endpoint_handle.get());
         let inner = SessionClient::over(
             Transport {
@@ -1485,7 +1453,6 @@ impl Client {
             hosting,
             outgoing,
             thread: Some(thread),
-            own_address,
             reached,
         };
         // The person's other devices are heard from the start, so a list one of them published is
@@ -1527,7 +1494,6 @@ impl Client {
             #[cfg(target_os = "linux")]
             thread: None,
             #[cfg(target_os = "linux")]
-            own_address: None,
             #[cfg(target_os = "linux")]
             reached: network::Reached::default(),
         }
@@ -1591,7 +1557,6 @@ impl Client {
             hosting,
             outgoing: outbox,
             thread: None,
-            own_address: None,
             reached: network::Reached::default(),
         };
         for host in hosts {
@@ -1841,27 +1806,6 @@ impl Client {
     #[must_use]
     pub fn endpoint(&self) -> Option<iroh::Endpoint> {
         self.inner.endpoint()
-    }
-
-    /// Where a link this device hands out names it, as whoever redeems it dials: its address once
-    /// it is reached through a relay. An invitation goes to someone who may be behind any network,
-    /// so the relays wake for it and the answer waits until the endpoint is connected to one
-    /// ([`tilo_endpoint_reachability::Reachability::reached_addr`]): an address signed before then
-    /// names only this device's own network, and reaches nobody there. A device holding no relays
-    /// back names the address it has. The wait runs where the answer is awaited, never on the loop.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn invitation_addr(
-        &self,
-    ) -> impl std::future::Future<Output = EndpointAddr> + Send + use<> {
-        let reachability = self.hosting.local.reachability.borrow().clone();
-        let reached = reachability.reached_addr("an invitation is this device's to hand out");
-        let own = self.endpoint_addr();
-        async move {
-            match reached {
-                Some(reached) => reached.await,
-                None => own,
-            }
-        }
     }
 
     /// Hand the workspace check the session this session shows: whose workspaces' policies hold every

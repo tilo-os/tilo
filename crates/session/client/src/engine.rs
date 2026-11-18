@@ -30,10 +30,6 @@ use tilo_identity::identity_store::HostIdentity;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_peer_state::join::Role;
-#[cfg(target_os = "linux")]
-use tilo_peer_state::join::invitations::{
-    CancelInvitationRequest, IssueInvitationRequest, PendingInvitation,
-};
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_peer_state::owner::Change;
 use tilo_peer_state::owner::NativeWorkspaceOwner;
@@ -217,10 +213,6 @@ pub struct Engine {
     /// The layout's workspaces being founded now: a pass that comes while one is signed founds it
     /// no second time.
     founding: std::sync::Mutex<std::collections::BTreeSet<WorkspaceId>>,
-    /// This device's workspaces as its other devices reach them, when it keeps a state directory to
-    /// hold their frames in.
-    #[cfg(not(target_arch = "wasm32"))]
-    directed: Option<tilo_peer_state::direct::Owning>,
     /// What lands here from the workspaces' other devices: what a read waiting for a record it
     /// holds none of wakes on.
     arrivals: Arc<crate::arrivals::Arrivals>,
@@ -235,9 +227,6 @@ pub struct Engine {
     /// Sealed records as this device last opened them for a reader, so the next read opens only
     /// what was sealed since: a record its apps follow is opened once per write, not whole per read.
     kept: std::sync::Mutex<KeptRecords>,
-    /// What this device last named its workspaces' hosts as: the address it wrote, and which
-    /// workspaces it wrote it to ([`Self::name_own_hosts`]).
-    named_hosts: std::sync::Mutex<NamedHosts>,
     /// Where this device's own workspace service keeps the workspaces it holds, under the state
     /// the engine was opened on; `None` for an engine that keeps no state.
     service_root: Option<std::path::PathBuf>,
@@ -271,14 +260,6 @@ pub trait Founder: Send + Sync {
     ) -> Option<ServiceAnswer>;
 }
 
-/// What [`Engine::name_own_hosts`] last named: the address of the endpoint it named, and the
-/// workspaces that were hosted then.
-#[derive(Default)]
-struct NamedHosts {
-    endpoint: Option<iroh_base::EndpointAddr>,
-    workspaces: Vec<WorkspaceId>,
-}
-
 /// The sealed records this device keeps opened, by workspace, app and record, with the keys that
 /// opened each.
 type KeptRecords = BTreeMap<(WorkspaceId, String, String), (KeysUsed, KeptDocument)>;
@@ -304,13 +285,6 @@ type OpenSealed<'a> = &'a mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u
 
 /// How many sealed records [`Engine::read_resource`] keeps opened between reads.
 const KEPT_RECORDS: usize = 64;
-
-/// How much of the workspaces' sealed history this device keeps to hand their other devices: every
-/// frame that passes through it, oldest retired first once it holds this much.
-#[cfg(not(target_arch = "wasm32"))]
-const FRAMES_KEPT: tilo_peer_state::store::Appetite = tilo_peer_state::store::Appetite::Bounded {
-    max_bytes: 512 * 1024 * 1024,
-};
 
 /// A record's bytes, with the heads they were last saved at: what [`Engine::record_since`] answers
 /// when the record changed since the caller last read it.
@@ -462,14 +436,11 @@ impl Engine {
             link: std::sync::Mutex::new(None),
             unfounded: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             founding: std::sync::Mutex::new(std::collections::BTreeSet::new()),
-            #[cfg(not(target_arch = "wasm32"))]
-            directed: None,
             arrivals: Arc::new(crate::arrivals::Arrivals::default()),
             handed,
             group_keys: std::sync::Mutex::default(),
             held: HeldWrites::default(),
             kept: std::sync::Mutex::default(),
-            named_hosts: std::sync::Mutex::default(),
             service_root: None,
             founder: std::sync::OnceLock::new(),
         }
@@ -493,35 +464,8 @@ impl Engine {
             workspaces.into_iter().collect(),
         )));
         let owner = open_file_with(&path, Arc::clone(&shown) as Arc<dyn FileHost>)?;
-        let mut engine = Self::holding(owner.clone(), shown, identity, ownership);
+        let mut engine = Self::holding(owner, shown, identity, ownership);
         engine.service_root = Some(state.join("tilo").join("workspace-service"));
-        // What the workspaces' other devices reach this one at, keeping the frames each brings: a
-        // device that holds a workspace is a store device of it.
-        engine.directed = match tilo_peer_state::store::Store::open(frames_path(state), FRAMES_KEPT)
-        {
-            Ok(store) => {
-                // A member that links is handed what this device's channels hold of the workspace
-                // then, as a host that keeps a channel's newest frame replays it: the channel
-                // service publishes a commit once, to the members linked at that moment.
-                let keys = engine.keys.clone();
-                Some(
-                    tilo_peer_state::direct::Owning::new(
-                        owner,
-                        Arc::clone(&engine.identity.signer),
-                        Arc::new(store),
-                    )
-                    .with_channel_history(Arc::new(move |workspace| {
-                        keys.get()
-                            .map(|channels| channels.current_governance(workspace))
-                            .unwrap_or_default()
-                    })),
-                )
-            }
-            Err(error) => {
-                tracing::warn!(%error, "this device serves no workspace to its other devices");
-                None
-            }
-        };
         Ok(engine)
     }
 
@@ -1439,48 +1383,7 @@ impl Engine {
             .filter(|name| !name.is_empty())
     }
 
-    /// The invitations into `workspace` this device's person issued that are still
-    /// redeemable: a link is answered by the device that signed it.
-    /// # Errors
-    /// The workspace is not held here, or its join log cannot be read now.
-    #[cfg(target_os = "linux")]
-    pub fn invitations(
-        &self,
-        workspace: &str,
-        now: SystemTime,
-    ) -> Result<Vec<PendingInvitation>, String> {
-        let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
-        self.owner.pending_invitations(workspace, now)
-    }
-
-    /// Cancel the invitation `invitation` into `workspace`, as the person who issued it:
-    /// the link admits nobody from now on.
-    /// # Errors
-    /// The workspace is not held here, the invitation was not issued from this device's
-    /// person, or the workspace cannot be published.
-    #[cfg(target_os = "linux")]
-    pub fn cancel_invitation(
-        &self,
-        workspace: &str,
-        invitation: &str,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
-        let invite_id = invitation_id(invitation)?;
-        let identity = self.identity();
-        self.owner.cancel_invitation(
-            workspace,
-            &CancelInvitationRequest {
-                request_id: cancellation_id(invite_id),
-                invite_id,
-            },
-            identity.signer.as_ref(),
-            now,
-        )
-    }
-
     /// Whether this device's person may invite into `workspace` , as its governance answers it.
-    /// [`Self::issue_invitation`] asks again, with the part its link hands out.
     #[must_use]
     pub fn may_invite(&self, workspace: &str) -> bool {
         let Some(workspace) = WorkspaceId::parse(workspace) else {
@@ -1585,72 +1488,6 @@ impl Engine {
             .unwrap_or_default()
     }
 
-    /// An invitation into `workspace` this device's person makes, at the part `role`
-    /// names, redeemable until `expires_in_seconds` from `now`: the link to hand to
-    /// whoever is invited. A link is worth as much as the device that signed it being
-    /// reachable; when `recipient_user_public_key` names someone, only a device
-    /// certified for that person may redeem it. With `makes_administrator`, the link
-    /// also makes whoever redeems it an administrator: an Editor's invitation, which
-    /// only someone who may make administrators can issue.
-    /// # Errors
-    /// The workspace is not held here, this device's person may not invite into it or
-    /// hand out that part, may not make administrators when asked to, or the workspace
-    /// cannot be published.
-    #[cfg(target_os = "linux")]
-    pub async fn issue_invitation(
-        &self,
-        workspace: &str,
-        part: Part,
-        invitee_name: Option<String>,
-        recipient_user_public_key: Option<[u8; 32]>,
-        expires_in_seconds: u64,
-        endpoint: &iroh_base::EndpointAddr,
-        now: SystemTime,
-    ) -> Result<Issued, String> {
-        let workspace_id = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
-        let identity = self.identity();
-        // What the joiner dials: this device's endpoint, signed by the device the grant names, as a
-        // host of its own workspace. A link is handed to someone who may be anywhere, so it names
-        // the addresses anyone can dial and the relay this device is reached through, never the
-        // ones only this device's own network knows.
-        let reachable = tilo_delivery_protocol::workspace_join::reachable(endpoint);
-        let hint = self.own_host_hint(workspace, &reachable)?;
-        let now_ns: u64 = now
-            .duration_since(tilo_clock::time::UNIX_EPOCH)
-            .map_err(|error| error.to_string())?
-            .as_nanos()
-            .try_into()
-            .map_err(|_| "this clock is past what an invitation records".to_owned())?;
-        let expires_at_ns = now_ns.saturating_add(expires_in_seconds.saturating_mul(1_000_000_000));
-        let mut request_id = [0; 32];
-        getrandom::fill(&mut request_id).map_err(|error| error.to_string())?;
-        let issued = self
-            .owner
-            .issue_invitation(
-                workspace_id,
-                &identity.device_cert,
-                &IssueInvitationRequest {
-                    request_id,
-                    role: part.role,
-                    recipient_user_public_key,
-                    invitee_name,
-                    expires_at_ns,
-                    inviter_name: None,
-                },
-                part.administrator,
-                &[hint],
-                identity.signer.as_ref(),
-                now,
-            )
-            .await?;
-        Ok(Issued {
-            invite: hex::encode(issued.invite_id),
-            link: tilo_peer_state::join::encode_invitation_text(&issued.signed_invitation),
-            role: part.role,
-            expires_at_ns,
-        })
-    }
-
     /// The revocations the workspace's governance records, as it last admitted them. `None` when
     /// this device holds no such workspace. What is checked against this is whether a shortcut's
     /// saver may still start it here.
@@ -1731,35 +1568,6 @@ impl Engine {
         &self.owner
     }
 
-    /// What this device answers for the workspaces it holds, beside the peer networks its endpoint already
-    /// serves: the direct link their other devices sync on, and catch up from the frames this one
-    /// kept.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn direct_protocols(&self) -> Vec<(Vec<u8>, Box<dyn iroh::protocol::DynProtocolHandler>)> {
-        // Every version of the link a device dials, newest first: one of an older build dials the
-        // link before writes were answered.
-        self.directed.as_ref().map_or_else(Vec::new, |directed| {
-            tilo_peer_state::direct::DIRECT_ALPNS
-                .iter()
-                .map(|alpn| {
-                    (
-                        alpn.to_vec(),
-                        Box::<dyn iroh::protocol::DynProtocolHandler>::from(directed.clone()),
-                    )
-                })
-                .collect()
-        })
-    }
-
-    /// The devices that take part in this device's workspaces through it, as their workspace's host
-    /// ([`Self::direct_protocols`]): what they write reaches this device's apps and the workspace's
-    /// own host through this device, and what the workspace writes elsewhere reaches them through
-    /// it too.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn members(&self) -> Option<tilo_peer_state::direct::Owning> {
-        self.directed.clone()
-    }
-
     /// Where `workspace` 's host is reached and the device its enrollment pins: the address its
     /// live session is dialled at.
     #[cfg(target_os = "linux")]
@@ -1803,19 +1611,6 @@ impl Engine {
     /// Where a read asks the workspaces' hosts for a record they send only once asked: the peer network
     /// this session's channels travel on.
     pub fn attach_link(&self, link: Arc<workspace_keys::KeyLink>) {
-        // The devices that take part in a workspace through this one hear its channels' governance
-        // through this one alone, and what they say reaches the channels here and the workspace's
-        // own host through it.
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(directed) = &self.directed {
-            link.serve_members(Arc::new(directed.clone()));
-            let members = Arc::downgrade(&link);
-            directed.hear(Arc::new(move |_, heard| {
-                if let Some(link) = members.upgrade() {
-                    link.heard_from_member(&heard.message);
-                }
-            }));
-        }
         *self.link.lock_recover() = Some(link);
     }
 
@@ -1846,36 +1641,6 @@ impl Engine {
     /// the certificate that says whose it is.
     pub fn identity(&self) -> &HostIdentity {
         &self.identity
-    }
-
-    /// Where this device's own host of `workspace` is reached at `endpoint`,
-    /// signed by this device: what an invitation names for the joiner, and
-    /// what a workspace founded here records of its own host.
-    #[cfg(target_os = "linux")]
-    fn own_host_hint(
-        &self,
-        workspace: &str,
-        endpoint: &iroh_base::EndpointAddr,
-    ) -> Result<tilo_peer_state::join::TransportHint, String> {
-        let workspace_id = WorkspaceId::parse(workspace)
-            .ok_or_else(|| "the workspace is not a workspace id".to_string())?;
-        let identity = self.identity();
-        let packet_relay_url = endpoint
-            .relay_urls()
-            .next()
-            .map_or_else(|| "iroh:direct".to_owned(), ToString::to_string);
-        tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1 {
-            version: 1,
-            holds_keys: true,
-            runs_work: false,
-            workspace_id,
-            endpoint_addr: endpoint.clone(),
-            user_public_key: identity.device_cert.user_public_key,
-            device_certificate: identity.device_cert.clone(),
-            packet_relay_url,
-        }
-        .transport_hint(identity.signer.as_ref())
-        .map_err(|error| error.to_string())
     }
 
     /// Found `workspace`, made on this layout under `name`, when this device made it and nothing
@@ -1929,58 +1694,6 @@ impl Engine {
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Option<ServiceAnswer> {
         self.founder.get()?.ask(workspace, action, arguments)
-    }
-
-    /// Name where this device's own host of each workspace it hosts is reached at `endpoint`:
-    /// where members and anyone a link reaches dial it. A record that says nothing gets the
-    /// address, and one naming another server gets it again ([`NativeWorkspaceOwner::name_host`]),
-    /// so what a workspace says keeps up with the relays this device answers through.
-    #[cfg(target_os = "linux")]
-    pub fn name_own_hosts(&self, endpoint: &iroh_base::EndpointAddr) {
-        // Nothing it would write moved since it last wrote: the address is the one it named and
-        // the same workspaces are hosted, so every record already says this. Naming them again
-        // would sign a hint per workspace and wait on each record's turn for no change — on the
-        // pass, once per workspace, while the person types into one of them.
-        let hosted = self.owner.hosted();
-        if self.named(&hosted, endpoint) {
-            return;
-        }
-        let mut named = true;
-        for workspace in &hosted {
-            let hint = match self.own_host_hint(&workspace.to_string(), endpoint) {
-                Ok(hint) => hint,
-                Err(error) => {
-                    tracing::warn!(%error, %workspace, "this device's own host could not be named");
-                    named = false;
-                    continue;
-                }
-            };
-            match self.owner.name_host(*workspace, hint) {
-                Ok(true) => {
-                    tracing::info!(%workspace, "the workspace's own host is named in its record");
-                }
-                Ok(false) => {}
-                Err(error) => {
-                    tracing::warn!(%error, %workspace, "the workspace's own host was not named");
-                    named = false;
-                }
-            }
-        }
-        // Only what every one of them took is named: a workspace that refused is asked again on
-        // the next pass rather than waiting for the address to move.
-        if named {
-            *self.named_hosts.lock_recover() = NamedHosts {
-                endpoint: Some(endpoint.clone()),
-                workspaces: hosted,
-            };
-        }
-    }
-
-    /// Whether `hosted` at `endpoint` is what this device last named.
-    #[cfg(target_os = "linux")]
-    fn named(&self, hosted: &[WorkspaceId], endpoint: &iroh_base::EndpointAddr) -> bool {
-        let named = self.named_hosts.lock_recover();
-        named.endpoint.as_ref() == Some(endpoint) && named.workspaces.as_slice() == hosted
     }
 
     /// Whether this device holds a link into a workspace that still admits someone: a person who
@@ -2063,22 +1776,6 @@ impl tilo_broker_core::owner_service::OwnerService for Engine {
     }
 }
 
-/// The id a listing reports for an invitation, as its 32 bytes: 64 hex characters.
-fn invitation_id(text: &str) -> Result<[u8; 32], String> {
-    let bytes = hex::decode(text).map_err(|error| error.to_string())?;
-    <[u8; 32]>::try_from(bytes.as_slice())
-        .map_err(|_| "an invitation's id is 64 hex characters".to_owned())
-}
-
-/// The id cancelling `invite_id` asks under: the link is what is cancelled, so asking again about
-/// the same link is the same request.
-fn cancellation_id(invite_id: [u8; 32]) -> [u8; 32] {
-    *blake3::Hasher::new_derive_key("Tilo invitation cancellation v1")
-        .update(&invite_id)
-        .finalize()
-        .as_bytes()
-}
-
 /// A workspace's revocations, as the threads beside the session's loop ask for them: the broker
 /// decides on its own thread and the automation host arms shortcuts on the loop, and both refuse a
 /// device the workspace revoked.
@@ -2125,12 +1822,6 @@ pub fn owner_path(state: &Path) -> Result<PathBuf, String> {
         std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
     }
     Ok(owner_file_of(&path))
-}
-
-/// Where this device keeps the frames of the workspaces it holds, for the devices of theirs that
-/// catch up from it: beside the record that holds the workspaces themselves.
-fn frames_path(state: &Path) -> PathBuf {
-    state.join("tilo").join("frames")
 }
 
 #[cfg(test)]
@@ -2208,226 +1899,22 @@ mod tests {
         Engine::open(identity, Some(state), Vec::new(), Arc::new(Kept)).expect("an engine")
     }
 
-    /// Where a layout's own host is reached: its device's endpoint.
-    fn endpoint(identity: &HostIdentity) -> iroh_base::EndpointAddr {
-        iroh_base::EndpointAddr::new(
-            iroh_base::EndpointId::from_bytes(&identity.device_cert.device_public_key)
-                .expect("a device endpoint"),
-        )
-    }
-
-    tilo_test_env::scenario! {
-        fn a_device_founds_and_hosts_its_layouts_workspaces;
-
-        phase a_layout_workspace_is_founded_under_the_identity_the_layout_made;
-        {
-            let state = tempfile::tempdir().expect("a state directory");
-            let (identity, person) = identity(DeviceCapabilities::member());
-            let at = endpoint(&identity);
-            let engine = engine(state.path(), identity);
-            let workspace = WorkspaceId::new();
-
-            pollster::block_on(engine.found(workspace, "Office"));
-            // Again, as every pass over the layout does: one workspace, still the one the layout made.
-            pollster::block_on(engine.found(workspace, "Office"));
-
-            assert!(
-                engine.holds(workspace),
-                "a workspace made on the layout is held here"
-            );
-            assert_eq!(engine.workspaces(), vec![workspace]);
-            assert_eq!(
-                engine.owner_of(&workspace.to_string()),
-                Ok(hex::encode(person)),
-                "the workspace is the person's at this device"
-            );
-            assert!(
-                engine.may_invite(&workspace.to_string()),
-                "its owner may invite into it"
-            );
-            assert!(
-                engine.may_invite_administrator(&workspace.to_string()),
-                "its owner may make administrators of it"
-            );
-        }
-
-        phase a_workspace_this_device_hosts_names_its_own_host_and_commits_here;
-        {
-            use tilo_broker_core::owner_service::OwnerService as _;
-
-            let state = tempfile::tempdir().expect("a state directory");
-            let (identity, _) = identity(DeviceCapabilities::member());
-            let at = endpoint(&identity);
-            let host = identity.device_cert.device_public_key;
-            let engine = engine(state.path(), identity);
-            let workspace = WorkspaceId::new();
-            pollster::block_on(engine.found(workspace, "Office"));
-
-            let hint = engine
-                .owner
-                .with_current(workspace, |view| view.transport_hint().cloned())
-                .expect("a workspace this device founded names where its host is reached");
-            assert_eq!(
-                hint.host.device_public_key, host,
-                "the host it names is this device, whose host is in this process"
-            );
-            engine
-                .check_ownership(&engine.owner, workspace)
-                .expect("its own member acts there, its host being in this process");
-        }
-
-        phase the_host_hints_a_device_tells_decode_as_hints;
-        // What this device tells its siblings of where its workspaces are hosted reads back as the
-        // hint itself: a sibling decodes a `TransportHint` from each, and enters the workspace at the
-        // host it names.
-        {
-            let state = tempfile::tempdir().expect("a state directory");
-            let (identity, _) = identity(DeviceCapabilities::member());
-            let at = endpoint(&identity);
-            let host = identity.device_cert.device_public_key;
-            let engine = engine(state.path(), identity);
-            let workspace = WorkspaceId::new();
-            pollster::block_on(engine.found(workspace, "Office"));
-
-            let hints = engine.host_hints();
-            assert_eq!(hints.len(), 1, "one hint for the one workspace held");
-            let (named, bytes) = &hints[0];
-            assert_eq!(named, &workspace.to_string());
-            let hint = postcard::from_bytes::<tilo_peer_state::join::TransportHint>(bytes)
-                .expect("the hint decodes as the device that reads it decodes it");
-            assert_eq!(hint.host.device_public_key, host);
-        }
-
-        phase a_workspace_this_device_hosts_without_an_address_commits_here;
-        {
-            use tilo_broker_core::owner_service::OwnerService as _;
-
-            let state = tempfile::tempdir().expect("a state directory");
-            let (identity, _) = identity(DeviceCapabilities::member());
-            let engine = engine(state.path(), identity);
-            let workspace = WorkspaceId::new();
-            pollster::block_on(engine.found(workspace, "Office"));
-
-            assert!(
-                engine.holds(workspace),
-                "a session with nowhere other devices reach it founds its layout's workspace"
-            );
-            assert!(
-                engine
-                    .owner
-                    .with_current(workspace, |view| Ok(view.transport_hint().is_err()))
-                    .expect("the workspace is held here"),
-                "its record names no host to reach until this device has one"
-            );
-            engine
-                .check_ownership(&engine.owner, workspace)
-                .expect("its own member acts there, its host being in this process");
-        }
-
-        phase a_device_that_may_not_own_workspaces_founds_none;
-        {
-            let state = tempfile::tempdir().expect("a state directory");
-            let (identity, _) = identity(DeviceCapabilities::member());
-            let mut identity = identity;
-            identity.device_cert.capabilities.can_own_workspaces = false;
-            let at = endpoint(&identity);
-            let engine = engine(state.path(), identity);
-            let workspace = WorkspaceId::new();
-
-            pollster::block_on(engine.found(workspace, "Office"));
-
-            assert!(!engine.holds(workspace));
-            assert!(!engine.may_invite(&workspace.to_string()));
-        }
-    }
-
-    tilo_test_env::scenario! {
-        #[cfg(target_os = "linux")]
-        fn an_owners_device_issues_invitations_and_names_its_hosts;
-
-        phase an_owner_issues_an_invitation_that_makes_an_administrator;
-        // An owner's layout makes an administrator's invitation: an Editor's link
-        // that also makes whoever redeems it an administrator.
-        {
-            let state = tempfile::tempdir().expect("a state directory");
-            let (identity, _) = identity(DeviceCapabilities::member());
-            let at = endpoint(&identity);
-            let engine = engine(state.path(), identity);
-            let workspace = WorkspaceId::new();
-            pollster::block_on(engine.found(workspace, "Office"));
-
-            let issued = pollster::block_on(engine.issue_invitation(
-                &workspace.to_string(),
-                Part::administrator(),
-                None,
-                None,
-                600,
-                &at,
-                SystemTime::now(),
-            ))
-            .expect("the owner issues an administrator's invitation");
-            assert_eq!(issued.role, Role::Editor);
-            let verified = tilo_peer_state::join::decode_and_verify_invitation_text(
-                &issued.link,
-                None,
-                &tilo_user_identity::RevocationList::new(),
-                tilo_clock::unix_now_ns(),
-            )
-            .expect("the link hands over the invitation");
-            assert!(
-                verified.administrator(),
-                "redeeming it makes the person an administrator"
-            );
-        }
-
-        phase a_pass_names_the_hosts_of_its_workspaces_only_when_the_address_moves;
-        // A pass names the host of the workspaces this device hosts only when what it would name
-        // moved: the same address on the next pass signs nothing and waits on no record's turn.
-        {
-            let state = tempfile::tempdir().expect("a state directory");
-            let (identity, _) = identity(DeviceCapabilities::member());
-            let at = endpoint(&identity);
-            let device = iroh_base::EndpointId::from_bytes(&identity.device_cert.device_public_key)
-                .expect("a device endpoint");
-            let engine = engine(state.path(), identity);
-            let workspace = WorkspaceId::new();
-            pollster::block_on(engine.found(workspace, "Office"));
-            let named = || {
-                engine
-                    .owner
-                    .with_current(workspace, |view| Ok(view.transport_hint().cloned()))
-                    .expect("a workspace this device founded")
-            };
-            let first = named();
-
-            engine.name_own_hosts(&at);
-            assert!(
-                engine.named(&[workspace], &at),
-                "the address it named is the one it keeps"
-            );
-            // The record says something else now, as a net report of the address beside the same
-            // server would have it: one more pass at the same address writes nothing, and the pass
-            // after an address that moved names it again.
-            let elsewhere = iroh_base::EndpointAddr::new(device)
-                .with_relay_url("https://relay.example.com/".parse().expect("a relay"));
-            engine.name_own_hosts(&at);
-            assert_eq!(
-                named(),
-                first,
-                "a pass with the same address writes nothing"
-            );
-            assert!(
-                !engine.named(&[workspace], &elsewhere),
-                "an address that moved is not what it last named"
-            );
-            engine.name_own_hosts(&elsewhere);
-            assert_ne!(
-                named(),
-                first,
-                "a pass with an address that moved writes it"
-            );
-            assert!(engine.named(&[workspace], &elsewhere));
-        }
+    /// A workspace held on `engine` as a member, the device's person its owner: what founding it on
+    /// this device's own workspace service leaves the engine holding.
+    fn founded(engine: &Engine) -> WorkspaceId {
+        let certificate = engine.identity().device_cert.clone();
+        let key = ed25519_dalek::SigningKey::from_bytes(
+            &engine
+                .identity()
+                .signer
+                .endpoint_secret()
+                .expect("a kept key"),
+        );
+        let workspace =
+            tilo_peer_state::owner::testing::founded(engine.owner(), &certificate, &key)
+                .expect("the workspace is held here");
+        engine.bind(workspace);
+        workspace
     }
 
     tilo_test_env::scenario! {
@@ -2437,10 +1924,8 @@ mod tests {
         {
             let state = tempfile::tempdir().expect("a state directory");
             let (identity, _) = identity(DeviceCapabilities::member());
-            let at = endpoint(&identity);
             let engine = engine(state.path(), identity);
-            let workspace = WorkspaceId::new();
-            pollster::block_on(engine.found(workspace, "Office"));
+            let workspace = founded(&engine);
 
             assert!(
                 engine.may_delete(workspace),
@@ -2476,8 +1961,10 @@ mod tests {
     fn a_copy_awaiting_its_host_reads_what_it_holds_and_writes_nothing() {
         let state = tempfile::tempdir().expect("a state directory");
         let (laptop, _) = identity(DeviceCapabilities::member());
-        let at = endpoint(&laptop);
-        let workspace = WorkspaceId::new();
+        let workspace = {
+            let engine = engine(state.path(), laptop.clone());
+            founded(&engine)
+        };
         let mut note = automerge::AutoCommit::new();
         automerge::transaction::Transactable::put(&mut note, automerge::ROOT, "title", "Kept")
             .expect("a note");
@@ -2490,7 +1977,6 @@ mod tests {
         .expect("the group's keys");
         {
             let engine = engine(state.path(), laptop);
-            pollster::block_on(engine.found(workspace, "Office"));
             engine.hand_keys(workspace, keys.clone());
             pollster::block_on(engine.write_resource(
                 workspace,
