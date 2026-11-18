@@ -142,3 +142,18 @@ impl ChainState {
         self.core.looked.set(None);
     }
 }
+
+/// What a write whose verb declares no answer still tells its caller: the ids
+/// it minted and the items it made
+/// ([`tilo_actions::contract::MADE_FIELDS`]), never the words of an answer its
+/// verb does not declare. `None` when it made nothing.
+pub(super) fn only_made(value: Option<serde_json::Value>) -> Option<serde_json::Value> {
+    let Some(serde_json::Value::Object(fields)) = value else {
+        return None;
+    };
+    let made: serde_json::Map<String, serde_json::Value> = fields
+        .into_iter()
+        .filter(|(field, _)| tilo_actions::contract::MADE_FIELDS.contains(&field.as_str()))
+        .collect();
+    (!made.is_empty()).then_some(serde_json::Value::Object(made))
+}

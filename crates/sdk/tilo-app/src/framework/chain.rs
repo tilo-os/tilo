@@ -2941,8 +2941,12 @@ impl Chains {
         let output = api.apply_in(&request.action, &invoker, live);
         ASKED.with(|asking| asking.replace(asked));
         let mut output = output?;
+        // A verb declared to answer nothing answers nothing of its own
+        // ([`Self::answering`] kept only what the write made), which a caller
+        // still needs: a create's made items are the ids of what it made, and
+        // without them it cannot learn the id it created.
         if request.quiet {
-            output.value = None;
+            output.value = api::only_made(output.value);
         }
         Ok(output)
     }
