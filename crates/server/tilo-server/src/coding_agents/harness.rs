@@ -36,7 +36,7 @@ pub struct Start {
 
 /// A harness's program, ready for the machine: its endpoints stand in its
 /// arguments and variables as placeholders
-/// ([`legacy_agent_protocol::served::placeholder`]).
+/// ([`linux_vm_protocol::served::placeholder`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Program {
     pub argv: Vec<String>,

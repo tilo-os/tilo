@@ -213,7 +213,7 @@ images verify `cosign.pub` itself and would refuse the new key.
    the jobs that sign with it at the new key.
 4. CI's own checks pin `keys/cosign.pub`, so artifacts still pinned under the
    old key (`os/kernel-snapshot.env`, `os/kernel-buildroot-snapshot.env`,
-   `os/legacy-guest-snapshot.env`, the RPM and env-runtime snapshots) must be
+   `os/linux-guest-snapshot.env`, the RPM and env-runtime snapshots) must be
    rebuilt and re-pinned after the swap. Then disable the old KMS key and
    schedule its deletion.
 
@@ -249,7 +249,7 @@ images verify `cosign.pub` itself and would refuse the new key.
 Images built before the root commit verify updates against `cosign.pub` and
 require a log entry naming that key, which a certificate entry never matches.
 So `tools/ci/publish/oci-sign.sh` gives every release of a repository installed
-systems verify (the OS and legacy-guest images, `device_verified` in
+systems verify (the OS and linux-guest images, `device_verified` in
 `tools/ci/publish/lib.sh`) both a bare signature by the release key and one
 certified signature per operational certificate. Installed systems
 cross over by installing any update built after the root commit. Once no

@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use legacy_vm::hosted::control::{self, OpenBrowser, Reply, Request};
+use linux_vm::hosted::control::{self, OpenBrowser, Reply, Request};
 use tilo_runtime::standalone::take_work;
 use tilo_server::placed_browsers::{OpenError, PlacedBrowsers};
 use tilo_server::placed_shells::{Member, Members, PlacedShells};
@@ -102,11 +102,11 @@ fn placer() -> (String, Arc<AtomicUsize>) {
             };
             assert_eq!(
                 (vm.environment.as_str(), vm.size),
-                ("default", legacy_vm::hosted::size::VmSize::Small),
+                ("default", linux_vm::hosted::size::VmSize::Small),
                 "the server places Browser in the workspace's VM, where its shells run"
             );
             let reply = if counted.fetch_add(1, Ordering::SeqCst) == 0 {
-                Reply::Busy(legacy_vm::hosted::service::BUSY.into())
+                Reply::Busy(linux_vm::hosted::service::BUSY.into())
             } else {
                 Reply::Placed {
                     host: VM_HOST.into(),
@@ -176,7 +176,7 @@ async fn placed() -> Placed {
         placer,
         members,
         "acct-1".into(),
-        legacy_vm::hosted::size::VmSize::Small,
+        linux_vm::hosted::size::VmSize::Small,
     ));
     shells.ask_from(
         hosted.host.workspaces().action_service(),
@@ -240,7 +240,7 @@ async fn a_workspace_opens_browser_where_its_vm_host_is() {
         "127.0.0.1:1".into(),
         Members::default(),
         "acct-1".into(),
-        legacy_vm::hosted::size::VmSize::Small,
+        linux_vm::hosted::size::VmSize::Small,
     )))
     .with_patience(Duration::from_millis(50));
     let refused = tokio::task::block_in_place(|| impatient.open(&workspace, "{}"));

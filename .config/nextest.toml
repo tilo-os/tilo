@@ -103,12 +103,12 @@ filter = "package(tilo-session) and binary(it) and test(lounge_e2e::)"
 setup = "lounge-siblings"
 
 # The server's coding-agent tests start the guest's own agent program in its
-# serving mode (`tilo-legacy-agent serve-run`), as a workspace's machine starts
+# serving mode (`tilo-linux-vm-agent serve-run`), as a workspace's machine starts
 # it: a program of another package, which Cargo builds for no test of the server's.
 [scripts.setup.machine-siblings]
 command = [
     "bash", "tools/build-sibling-binaries.sh",
-    "legacy-agent:tilo-legacy-agent",
+    "linux-vm-agent:tilo-linux-vm-agent",
 ]
 
 [[profile.default.scripts]]

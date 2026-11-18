@@ -2,7 +2,7 @@
 //! runs it (`docs/hosted-browser.md`, "Placement and routing").
 //!
 //! Browser runs as a headless session in the workspace's own VM, the one its
-//! shells run in ([`legacy_vm::hosted::browser`]). This host only routes: it
+//! shells run in ([`linux_vm::hosted::browser`]). This host only routes: it
 //! asks the placer for the host of that VM, as a shell does, and asks that
 //! host's member device, over the device action service as this host's own device, to
 //! open Browser there ([`tilo_actions::remote::browser`]), handing it what the

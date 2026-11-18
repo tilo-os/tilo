@@ -154,7 +154,7 @@ fn reconnect_delay(attempt: u32) -> std::time::Duration {
 pub(crate) struct BarInputs {
     target: Option<crate::target::SessionTarget>,
     environments: Vec<crate::target::EnvironmentSummary>,
-    legacy_vms: Vec<String>,
+    linux_vms: Vec<String>,
 }
 
 impl BarInputs {
@@ -162,14 +162,14 @@ impl BarInputs {
         Self {
             target: sessions.target.clone(),
             environments: sessions.environments.clone(),
-            legacy_vms: sessions.legacy_vms.clone(),
+            linux_vms: sessions.linux_vms.clone(),
         }
     }
 
     fn matches(&self, sessions: &crate::sessions::Sessions) -> bool {
         self.target == sessions.target
             && self.environments == sessions.environments
-            && self.legacy_vms == sessions.legacy_vms
+            && self.linux_vms == sessions.linux_vms
     }
 }
 

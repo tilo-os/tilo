@@ -44,7 +44,7 @@ fn main() -> ExitCode {
         }
         "ush" => host(rest),
         ush::shell_host::SHELL_COMMAND => Ok(ush::shell_host::main(rest)),
-        name if guest::is_legacy_shim(name) => guest::legacy_launch(name, rest),
+        name if guest::is_linux_vm_shim(name) => guest::linux_vm_launch(name, rest),
         _ => dispatch(rest),
     };
 
@@ -345,7 +345,7 @@ Examples:\n  tilo app u browser\n  tilo system status\n  tilo update\n\n\
 Unavailable providers are skipped by `tilo update`; explicit provider commands\n\
 explain when the host does not offer them.\n";
 
-    pub fn is_legacy_shim(name: &str) -> bool {
+    pub fn is_linux_vm_shim(name: &str) -> bool {
         !name.is_empty()
             && name != "tilo-ush"
             && !ush::GUEST_COMMANDS.contains(&name)
@@ -353,9 +353,9 @@ explain when the host does not offer them.\n";
             && Path::new(ush::GUEST_BROKER_SOCK).exists()
     }
 
-    pub fn legacy_launch(app: &str, args: &[String]) -> anyhow::Result<i32> {
+    pub fn linux_vm_launch(app: &str, args: &[String]) -> anyhow::Result<i32> {
         let cwd = std::env::current_dir()?;
-        let request = Request::LegacyLaunch {
+        let request = Request::LinuxVmLaunch {
             app: app.to_string(),
             args: args.to_vec(),
             cwd,
@@ -966,7 +966,7 @@ explain when the host does not offer them.\n";
                         ush::GUEST_COMMANDS.contains(&name),
                         "{name} is not put on the guest's PATH"
                     );
-                    assert!(!is_legacy_shim(name), "{name} is not a legacy app");
+                    assert!(!is_linux_vm_shim(name), "{name} is not a Linux VM app");
                 }
                 assert!(ush::GUEST_COMMANDS.contains(&"history"));
             }

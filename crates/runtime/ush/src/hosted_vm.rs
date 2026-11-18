@@ -2,7 +2,7 @@
 //! serves other people's workspaces: a stranger's `cargo` or `python` never runs in a
 //! guest sharing the host's kernel.
 //!
-//! [`HostedPrograms`] asks the hosted-VM service ([`legacy_vm::hosted`]) for the
+//! [`HostedPrograms`] asks the hosted-VM service ([`linux_vm::hosted`]) for the
 //! workspace environment's VM, which it boots on first use and restores from its snapshot
 //! after it went idle, and runs each program there through the VM's agent with the
 //! environment's granted directories at the same paths. The shell, its own commands and
@@ -26,13 +26,13 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use legacy_agent_protocol::client::{self, LaunchIo, LaunchSignals};
-use legacy_agent_protocol::link::{AgentLink, AgentStream};
-use legacy_agent_protocol::{
+use linux_vm::hosted::control::{self, Reply, Request, ShareRequest, VmRequest};
+use linux_vm::hosted::size::VmSize;
+use linux_vm_protocol::client::{self, LaunchIo, LaunchSignals};
+use linux_vm_protocol::link::{AgentLink, AgentStream};
+use linux_vm_protocol::{
     AGENT_PORT, Display, Launch, ProtocolError, Signal, Stdio as Relay, TerminalSize,
 };
-use legacy_vm::hosted::control::{self, Reply, Request, ShareRequest, VmRequest};
-use legacy_vm::hosted::size::VmSize;
 use tilo_actions::remote::server_account;
 use ush_shell::{Input, Output, Program, Std, Stdio};
 use ush_tilo::Programs;
@@ -619,14 +619,14 @@ pub(crate) mod testing {
         use std::io::BufRead as _;
         let socket = dir.join("v.sock");
         let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-        let user = legacy_agent::user::GuestUser {
+        let user = linux_vm_agent::user::GuestUser {
             name: "me".into(),
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
             home: std::env::temp_dir(),
             shell: "/bin/sh".into(),
         };
-        let agent = std::sync::Arc::new(legacy_agent::server::Agent::new(user, "boot".into()));
+        let agent = std::sync::Arc::new(linux_vm_agent::server::Agent::new(user, "boot".into()));
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let mut stream = stream.unwrap();
@@ -655,9 +655,7 @@ pub(crate) mod testing {
                     .write_value(
                         &mut stream,
                         &Reply::Ready {
-                            link: legacy_agent_protocol::link::AgentLink::Hybrid {
-                                socket: vm.clone(),
-                            },
+                            link: linux_vm_protocol::link::AgentLink::Hybrid { socket: vm.clone() },
                             woke_ms: None,
                         },
                     )

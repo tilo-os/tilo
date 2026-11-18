@@ -8,7 +8,7 @@ description = "A server's offers to a person's account, read from what its hoste
 
 [dependencies]
 jiff.workspace = true
-legacy-vm = { path = "../../runtime/legacy-vm" }
+linux-vm = { path = "../../runtime/linux-vm" }
 serde.workspace = true
 serde_json.workspace = true
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }

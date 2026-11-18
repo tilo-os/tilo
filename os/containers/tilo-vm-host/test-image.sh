@@ -27,8 +27,8 @@ grep -q 'v1.17.0' <<<"$(inside jailer --version)" || die 'not the jailer of Fire
 inside pasta --version >/dev/null || die 'no pasta'
 inside skopeo --version >/dev/null || die 'no skopeo'
 inside curl --version >/dev/null || die 'no curl for the placer'
-hosted_help=$(inside tilo-legacy hosted help)
-grep -q -- 'place --listen' <<<"$hosted_help" || die 'tilo-legacy hosted lacks place'
+hosted_help=$(inside tilo-linux-vm hosted help)
+grep -q -- 'place --listen' <<<"$hosted_help" || die 'tilo-linux-vm hosted lacks place'
 inside mkfs.xfs -V >/dev/null || die 'no mkfs.xfs'
 inside tar --version >/dev/null || die 'no tar, which unpacks the member identity'
 [[ -x $root/usr/local/bin/tilo-runtime ]] || die 'no tilo-runtime, the member that takes the server'"'"'s runs'
@@ -38,8 +38,8 @@ grep -q 'tilo-hosted-prepare$' "$root/usr/local/bin/tilo-vm-host" \
   || die 'the start does not run the shared machine setup'
 grep -q 'exec tilo-hosted-serve --state' "$root/usr/local/bin/tilo-vm-host" \
   || die 'the start does not end in the shared serve step'
-grep -q -- '--evict-notice' <<<"$hosted_help" || die 'tilo-legacy hosted lacks --evict-notice'
-grep -q -- '--memory-mib' <<<"$hosted_help" || die 'tilo-legacy hosted lacks --memory-mib'
+grep -q -- '--evict-notice' <<<"$hosted_help" || die 'tilo-linux-vm hosted lacks --evict-notice'
+grep -q -- '--memory-mib' <<<"$hosted_help" || die 'tilo-linux-vm hosted lacks --memory-mib'
 # The start's own mkfs.xfs line, on a scratch file: the state disk's filesystem is made only
 # on a node, the first time, so a bad option there would otherwise first fail in production.
 mkfs=$(grep -E '^\s*mkfs\.xfs ' "$root/usr/local/bin/tilo-vm-host" | sed 's/"\$state_device"/\/tmp\/state.img/')

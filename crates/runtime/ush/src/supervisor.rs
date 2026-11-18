@@ -295,7 +295,7 @@ impl Session {
             grant_root: self.store.grant_root().map(Path::to_path_buf),
             runtime_bin,
             helper_runtime,
-            legacy_commands: crate::legacy_commands(),
+            linux_vm_commands: crate::linux_vm_commands(),
             broker_socket,
             seccomp_blob,
             command: self.opts.command.clone(),

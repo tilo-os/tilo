@@ -18,7 +18,7 @@ rpms=${2:?$usage}
 binaries=${3:?$usage}
 out=${4:?$usage}
 cd "$repo_root"
-for bin in tilo-server tilo-server-admin tilo-enroll fs tilo-legacy tilo-hosted-jail tilo-api \
+for bin in tilo-server tilo-server-admin tilo-enroll fs tilo-linux-vm tilo-hosted-jail tilo-api \
   tilo-esp-write tilo-image-policy-check tilo-image-trust tilo-board-successor; do
   [[ -x $binaries/$bin ]] || die "no $bin in $binaries"
 done

@@ -70,7 +70,7 @@ pub struct Sessions {
     recent: RecentTarget,
     pub environments: Vec<EnvironmentSummary>,
     pub directory: Directory,
-    pub legacy_vms: Vec<String>,
+    pub linux_vms: Vec<String>,
     allow: Option<Rc<RefCell<ui::widget::HostShellAllow>>>,
     intent: Option<ui::widget::AppProcessIntent>,
     listing: Option<std::sync::mpsc::Receiver<Listing>>,
@@ -79,7 +79,7 @@ pub struct Sessions {
 
 struct Listing {
     environments: Result<Vec<EnvironmentSummary>, String>,
-    legacy_vms: Vec<String>,
+    linux_vms: Vec<String>,
 }
 
 impl std::fmt::Debug for Sessions {
@@ -108,7 +108,7 @@ impl Sessions {
             recent,
             environments: Vec::new(),
             directory: Directory::Unasked,
-            legacy_vms: Vec::new(),
+            linux_vms: Vec::new(),
             allow: None,
             intent: None,
             listing: None,
@@ -306,8 +306,8 @@ impl Sessions {
             return;
         }
         if matches!(self.source, Source::Hosted { .. }) {
-            self.legacy_vms = tilo_paths::xdg::data_home()
-                .map(|data| legacy_vms_under(&data))
+            self.linux_vms = tilo_paths::xdg::data_home()
+                .map(|data| linux_vms_under(&data))
                 .unwrap_or_default();
         }
         if !self.environments_available() {
@@ -340,8 +340,8 @@ impl Sessions {
         let spawned = std::thread::Builder::new()
             .name("tilo-terminal-list-places".into())
             .spawn(move || {
-                let legacy_vms = tilo_paths::xdg::data_home()
-                    .map(|data| legacy_vms_under(&data))
+                let linux_vms = tilo_paths::xdg::data_home()
+                    .map(|data| linux_vms_under(&data))
                     .unwrap_or_default();
                 let environments = crate::HostedProcessServices::ask(
                     &serde_json::json!({"op": "list-environments"}),
@@ -350,7 +350,7 @@ impl Sessions {
                 .and_then(|reply| parse_directory_reply(&reply));
                 let _ = send.send(Listing {
                     environments,
-                    legacy_vms,
+                    linux_vms,
                 });
                 crate::inner::request_terminal_wake(&waker);
             });
@@ -372,7 +372,7 @@ impl Sessions {
             }
         };
         self.listing = None;
-        self.legacy_vms = listing.legacy_vms;
+        self.linux_vms = listing.linux_vms;
         self.take_listing(listing.environments);
         true
     }
@@ -505,12 +505,12 @@ pub(crate) fn parse_directory_reply(reply: &str) -> Result<Vec<EnvironmentSummar
     }
 }
 
-pub(crate) fn legacy_vms_under(data_home: &std::path::Path) -> Vec<String> {
+pub(crate) fn linux_vms_under(data_home: &std::path::Path) -> Vec<String> {
     ["linux", "windows"]
         .into_iter()
         .filter(|guest| {
             data_home
-                .join("tilo/legacy")
+                .join("tilo/linux-vm")
                 .join(guest)
                 .join("disk.qcow2")
                 .is_file()

@@ -178,7 +178,7 @@ pub struct ServerAdvertisement {
 pub enum ComputeAccelerator {
     /// A sandbox-approved render/compute node selected by the launcher.
     Gpu,
-    /// Hardware virtualisation (`/dev/kvm`): the worker runs legacy VMs.
+    /// Hardware virtualisation (`/dev/kvm`): the worker runs Linux VMs.
     Kvm,
 }
 

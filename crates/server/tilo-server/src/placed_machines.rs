@@ -34,7 +34,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::workspaces::WorkspaceMachines;
-use legacy_vm::hosted::control::{self, ENVIRONMENT, Reply, Request, VmRequest};
+use linux_vm::hosted::control::{self, ENVIRONMENT, Reply, Request, VmRequest};
 use tilo_actions::remote::environment_machines::{
     self, BranchMachine, DeleteMachine, MachineBranched,
 };

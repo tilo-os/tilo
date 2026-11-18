@@ -131,7 +131,7 @@ env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "
 # this family's build makes the cdylib and every shard is told its file as T_STARTED_CDYLIB_pam_tilo.
 # The server's coding-agent tests start the guest's own agent program in its serving mode, as the
 # machine-siblings setup names it.
-starts = { tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "chat:chat", "launcher:tilo-launcher", "tilo-runtime:tilo-runtime", "tasks:tasks", "passwords:passwords", "model-providers:model-providers", "tilo-server:bin:tilo-server=agents", "tilolang-process:tilolang-process"], tilo-session-client = ["tilo-server:bin:tilo-server=agents"], tilo-quick-settings = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings"], app-process = ["install:tilo-install"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], settings = ["tilo-test-env:tilo-capability-probe"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe"], tilo-server = ["legacy-agent:tilo-legacy-agent"] }
+starts = { tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "chat:chat", "launcher:tilo-launcher", "tilo-runtime:tilo-runtime", "tasks:tasks", "passwords:passwords", "model-providers:model-providers", "tilo-server:bin:tilo-server=agents", "tilolang-process:tilolang-process"], tilo-session-client = ["tilo-server:bin:tilo-server=agents"], tilo-quick-settings = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings"], app-process = ["install:tilo-install"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], settings = ["tilo-test-env:tilo-capability-probe"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe"], tilo-server = ["linux-vm-agent:tilo-linux-vm-agent"] }
 
 # The same packages' tests once per architecture: a result on one says nothing about the other.
 # It declares `unify` like `test`: these packages' shared libraries resolve as the whole builds of
@@ -160,7 +160,7 @@ env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "
 # handed them as the test family's are; tools/ci/nextest.sh built them only where it was named
 # the package, and a shard names none. So is the capability probe a run of a package
 # .config/nextest-capabilities.toml names runs first.
-starts = { app-cli = ["install:tilo-install"], tilo-agent-session = ["tilo-video-render:tilo-video-render", "legacy-agent:tilo-legacy-agent", "tilolang-process:tilolang-process"], env-tools = ["tilo-test-env:tilo-capability-probe"], runtime-bundle = ["tilo-test-env:tilo-capability-probe"], ush = ["tilo-test-env:tilo-capability-probe", "legacy-agent:tilo-legacy-agent"] }
+starts = { app-cli = ["install:tilo-install"], tilo-agent-session = ["tilo-video-render:tilo-video-render", "linux-vm-agent:tilo-linux-vm-agent", "tilolang-process:tilolang-process"], env-tools = ["tilo-test-env:tilo-capability-probe"], runtime-bundle = ["tilo-test-env:tilo-capability-probe"], ush = ["tilo-test-env:tilo-capability-probe", "linux-vm-agent:tilo-linux-vm-agent"] }
 matrix = { arch = ["x86_64", "aarch64"] }
 
 # The packages whose tests cost main a lot for what they catch: on main's newest head when t has
@@ -3384,40 +3384,40 @@ on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
 secrets = ["TILO_PACKAGES_TOKEN"]
 
 [[check]]
-name = "image-legacy-guest"
+name = "image-linux-guest"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/publish/legacy-guest.sh build /target/publish/legacy-guest/agent /target/publish/legacy-guest/image"
-needs = ["legacy-guest-agent", "signing-tools"]
+run = "bash tools/ci/publish/linux-guest.sh build /target/publish/linux-guest/agent /target/publish/linux-guest/image"
+needs = ["linux-guest-agent", "signing-tools"]
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
-outputs = ["/target/publish/legacy-guest/image/image.oci.tar", "/target/publish/legacy-guest/image/digest"]
+outputs = ["/target/publish/linux-guest/image/image.oci.tar", "/target/publish/linux-guest/image/digest"]
 timeout_secs = 9000
 default = false
 
 [[check]]
-name = "sign-legacy-guest"
+name = "sign-linux-guest"
 # Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/legacy-guest /target/publish/legacy-guest/image"
-needs = ["image-legacy-guest", "legacy-guest-e2e", "signing-tools"]
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/linux-guest /target/publish/linux-guest/image"
+needs = ["image-linux-guest", "linux-guest-e2e", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
-outputs = ["/target/publish/legacy-guest/image/payload.json", "/target/publish/legacy-guest/image/signature", "/target/publish/legacy-guest/image/dry-run.pub", "/target/publish/legacy-guest/image/bundle.json", "/target/publish/legacy-guest/image/certified/**"]
+outputs = ["/target/publish/linux-guest/image/payload.json", "/target/publish/linux-guest/image/signature", "/target/publish/linux-guest/image/dry-run.pub", "/target/publish/linux-guest/image/bundle.json", "/target/publish/linux-guest/image/certified/**"]
 on = ["dispatch"]
 id_token = ["sts.amazonaws.com"]
 
 [[check]]
-name = "publish-legacy-guest"
+name = "publish-linux-guest"
 # Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/legacy-guest /target/publish/legacy-guest/image 'x86_64-{commit}'\nbash tools/ci/publish/legacy-guest.sh pins /target/publish/legacy-guest/image\n"
-needs = ["image-legacy-guest", "legacy-guest-e2e", "sign-legacy-guest", "signing-tools"]
+run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/linux-guest /target/publish/linux-guest/image 'x86_64-{commit}'\nbash tools/ci/publish/linux-guest.sh pins /target/publish/linux-guest/image\n"
+needs = ["image-linux-guest", "linux-guest-e2e", "sign-linux-guest", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-outputs = ["/target/publish/legacy-guest/image/receipt.json", "/target/publish/legacy-guest/image/pins.env"]
+outputs = ["/target/publish/linux-guest/image/receipt.json", "/target/publish/linux-guest/image/pins.env"]
 on = ["dispatch"]
 id_token = ["registry.tilo.so"]
-pointers = { legacy-guest = "/target/publish/legacy-guest/image/pins.env" }
+pointers = { linux-guest = "/target/publish/linux-guest/image/pins.env" }
 
 [[check]]
 name = "hosted-guest-kernel"
@@ -3437,7 +3437,7 @@ name = "hosted-guest-agent"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/hosted-guest.sh agent /target/publish/hosted-guest/agent"
 requires = ["arch=x86_64"]
-outputs = ["/target/publish/hosted-guest/agent/tilo-legacy-agent"]
+outputs = ["/target/publish/hosted-guest/agent/tilo-linux-vm-agent"]
 default = false
 
 # The guest's Tilo session (docs/hosted-browser.md): this repository's own
@@ -3907,29 +3907,29 @@ dispatch_inputs = { proof = "full" }
 arch = ["x86_64", "aarch64"]
 
 [[check]]
-name = "legacy-guest-agent"
+name = "linux-guest-agent"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/publish/legacy-guest.sh agent /target/publish/legacy-guest/agent"
+run = "bash tools/ci/publish/linux-guest.sh agent /target/publish/linux-guest/agent"
 requires = ["arch=x86_64"]
-outputs = ["/target/publish/legacy-guest/agent/tilo-legacy-agent"]
+outputs = ["/target/publish/linux-guest/agent/tilo-linux-vm-agent"]
 default = false
 
 [[check]]
-name = "legacy-guest-e2e-binaries"
+name = "linux-guest-e2e-binaries"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/publish/legacy-guest.sh binaries /target/publish/legacy-guest/e2e-bin"
+run = "bash tools/ci/publish/linux-guest.sh binaries /target/publish/linux-guest/e2e-bin"
 requires = ["arch=x86_64"]
-outputs = ["/target/publish/legacy-guest/e2e-bin/*"]
+outputs = ["/target/publish/linux-guest/e2e-bin/*"]
 default = false
 
 [[check]]
-name = "legacy-guest-e2e"
+name = "linux-guest-e2e"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/publish/legacy-guest-e2e.sh /target/publish/legacy-guest/image /target/publish/legacy-guest/e2e-bin"
-needs = ["image-legacy-guest", "legacy-guest-e2e-binaries"]
+run = "bash tools/ci/publish/linux-guest-e2e.sh /target/publish/linux-guest/image /target/publish/linux-guest/e2e-bin"
+needs = ["image-linux-guest", "linux-guest-e2e-binaries"]
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 timeout_secs = 5400

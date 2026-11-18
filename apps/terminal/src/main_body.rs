@@ -5202,8 +5202,8 @@ pub fn decide_route(
     can_self_host: bool,
     runtime: Option<std::path::PathBuf>,
 ) -> ConfineRoute {
-    if let SessionTarget::Legacy { .. } = target {
-        return ConfineRoute::Unavailable("The legacy VM service is not running".into());
+    if let SessionTarget::LinuxVm { .. } = target {
+        return ConfineRoute::Unavailable("The Linux VM service is not running".into());
     }
     if service_available {
         return ConfineRoute::Service;

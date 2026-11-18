@@ -67,7 +67,7 @@ type FilesOf = dyn Fn(&str) -> PathBuf + Send + Sync;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Payer {
     pub account: String,
-    pub size: legacy_vm::hosted::size::VmSize,
+    pub size: linux_vm::hosted::size::VmSize,
 }
 
 /// What a caller is shown of a command while it runs: everything it printed
@@ -161,7 +161,7 @@ impl WorkspaceShells {
     }
 
     #[must_use]
-    pub fn hosted_size(&self) -> legacy_vm::hosted::size::VmSize {
+    pub fn hosted_size(&self) -> linux_vm::hosted::size::VmSize {
         self.vms
             .as_ref()
             .map(|target| target.size)

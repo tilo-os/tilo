@@ -82,7 +82,7 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/assets,ro \
 COPY bin/tilo-server bin/tilo-server-admin bin/tilo-enroll /usr/libexec/tilo/
 COPY bin/fs /usr/bin/fs
 COPY bin/tilo-api /usr/libexec/tilo/tilo-api
-COPY bin/tilo-legacy /usr/libexec/tilo/tilo-legacy
+COPY bin/tilo-linux-vm /usr/libexec/tilo/tilo-linux-vm
 COPY bin/tilo-hosted-jail /usr/libexec/tilo/tilo-hosted-jail
 COPY bin/tilo-esp-write /usr/libexec/tilo-esp-write
 COPY bin/tilo-image-trust /usr/libexec/tilo/tilo-image-trust
@@ -99,10 +99,10 @@ RUN chown 0:10001 /usr/libexec/tilo/tilo-hosted-jail \
     && chmod 0750 /usr/libexec/tilo/tilo-hosted-jail \
     && chmod 0755 /usr/libexec/tilo/tilo-server /usr/libexec/tilo/tilo-server-admin \
         /usr/libexec/tilo/tilo-enroll /usr/libexec/tilo/tilo-api \
-        /usr/libexec/tilo/tilo-legacy /usr/libexec/tilo/tilo-image-trust \
+        /usr/libexec/tilo/tilo-linux-vm /usr/libexec/tilo/tilo-image-trust \
         /usr/libexec/tilo-esp-write /usr/libexec/tilo-image-policy-check \
         /usr/libexec/tilo-board-successor /usr/bin/fs \
-    && for name in tilo-server tilo-server-admin tilo-enroll tilo-legacy; do \
+    && for name in tilo-server tilo-server-admin tilo-enroll tilo-linux-vm; do \
          ln -s ../libexec/tilo/"$name" /usr/bin/"$name"; \
        done \
     && ln -s ../libexec/tilo/tilo-image-trust /usr/bin/tilo-image-trust \

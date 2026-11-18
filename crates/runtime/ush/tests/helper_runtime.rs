@@ -22,7 +22,7 @@ fn plan(root: &Path) -> std::io::Result<ush::guest::GuestPlan> {
         grant_root: None,
         runtime_bin,
         helper_runtime,
-        legacy_commands: Vec::new(),
+        linux_vm_commands: Vec::new(),
         broker_socket: root.join("not-a-broker"),
         seccomp_blob: root.join("unused"),
         command: Vec::new(),

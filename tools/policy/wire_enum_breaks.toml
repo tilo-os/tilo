@@ -204,7 +204,7 @@ enum = "GovernanceRow"
 reason = "the rows a writer's operation names are new in this type and no build writes an operation naming `Layout`: the workspace's shared layout is no longer a governed row, and every operation stored before it is one that names a row that still exists"
 
 [[break]]
-file = "crates/runtime/legacy-vm/src/hosted/size.rs"
+file = "crates/runtime/linux-vm/src/hosted/size.rs"
 enum = "VmSize"
 reason = "drops `Browser`, its last variant, so every other variant keeps its position: only a browser environment's VM was of that size, and its meter was deleted with it when it stopped and it billed no log, so no stored byte names it; the hosted-VM socket that carried it is between one host's service and its member, which ship together"
 
@@ -470,3 +470,13 @@ reason = "the ten private action-connection frames went with the broker that ope
 file = "crates/collab/actions/src/remote.rs"
 enum = "RemoteActionMessage"
 reason = "the record-request and record-watch frames went with the record API they served, and the variants after them move up; the remote-action envelope version is bumped from 1 to 2 with the removal, so the server refuses an older endpoint's frame as undeliverable instead of forwarding it to be read at the wrong positions"
+
+[[break]]
+file = "apps/terminal/src/target.rs"
+enum = "SessionTarget"
+reason = "the variant is renamed from `Legacy` to `LinuxVm` because that is the VM's name. A target is JSON in the terminal's own session record, where an unknown kind decodes as no target and the tab opens its default, so a record written by another build cannot be misread; nothing else sends it (the supervisor's target type does not carry a VM target)"
+
+[[break]]
+file = "crates/runtime/ush/src/broker.rs"
+enum = "Request"
+reason = "the variant is renamed from `LegacyLaunch` to `LinuxVmLaunch` because that is the VM's name. A request is one JSON frame on the runtime's local broker socket, written and read by the same executable: nothing keeps it and nothing at another version sends it"

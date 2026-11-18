@@ -43,7 +43,7 @@ pub const DEFAULT_TRUST_DIR: &str = "/usr/share/tilo/release";
 pub const PINNED_KEY: &str = "/usr/share/tilo/cosign.pub";
 pub const INSTALLED_ROOT: &str = "/usr/share/tilo/release/root.crt";
 pub const INSTALLED_REKOR: &str = "/usr/share/tilo/release/rekor.pub";
-/// The purpose OS images and the legacy guest are signed under.
+/// The purpose OS images and the Linux VM guest are signed under.
 pub const PURPOSE: &str = "os-images";
 /// The scopes Tilo OS images are pulled and updated from.
 pub const REQUIRED_SCOPES: [&str; 2] = ["registry.tilo.so/tilo/tilo", "code.tilo.so/tilo/tilo"];
@@ -61,7 +61,7 @@ pub const TILO_NAMESPACE_ROOTS: [&str; 4] = [
 /// Tilo repositories whose effective rule must be the release signature or a
 /// reject, whichever scope supplies it.
 pub const GUARDED_REPOSITORIES: [&str; 8] = [
-    "registry.tilo.so/tilo/legacy-guest",
+    "registry.tilo.so/tilo/linux-guest",
     "registry.tilo.so/tilo/hosted-guest",
     "registry.tilo.so/tilo/tilo-vm",
     "registry.tilo.so/tilo/tilo-ci",

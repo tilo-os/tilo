@@ -1,7 +1,7 @@
 terminal-find-scrollback = Im Terminalverlauf suchen
 terminal-target-host = Deine Shell auf diesem Gerät
 terminal-target-default = Standardumgebung
-terminal-target-legacy = Virtuelle Maschine { $vm }
+terminal-target-linux-vm = Virtuelle Maschine { $vm }
 terminal-target-manage = Umgebungen verwalten…
 terminal-target-choose = Wählen, wo dies läuft
 terminal-start-failed-title = Die Shell konnte nicht starten

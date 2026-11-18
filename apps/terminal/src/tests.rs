@@ -3783,7 +3783,7 @@ tilo_test_env::scenario! {
             assert_eq!(decide_route(&env, true, false, None), ConfineRoute::Service);
             assert!(matches!(
                 decide_route(
-                    &SessionTarget::Legacy { vm: "linux".into() },
+                    &SessionTarget::LinuxVm { vm: "linux".into() },
                     true,
                     true,
                     Some(bin)

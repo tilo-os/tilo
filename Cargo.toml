@@ -380,9 +380,9 @@ members = [
 
     # Runtime
     "crates/runtime/cli",
-    "crates/runtime/legacy-agent",
-    "crates/runtime/legacy-agent-protocol",
-    "crates/runtime/legacy-vm",
+    "crates/runtime/linux-vm-agent",
+    "crates/runtime/linux-vm-protocol",
+    "crates/runtime/linux-vm",
     "crates/runtime/runtime-collab",
     # Opt-in dynamic SDK; excluded from default-members.
     "crates/runtime/runtime-dylib",

@@ -62,7 +62,7 @@ if (( run_cargo )); then
     ( cd "$repo_root" && cargo build --release --locked --lib \
         -p launcher -p tilo-unlock-helper -p tilo-flight-log -p tilo-app-package-cli -p install -p runtime-bundle \
         -p cli-shim -p app-process -p app-cli -p ush -p local-model-service -p tilo-model-gateway \
-        -p imager -p tilo-server -p tilo-fs -p legacy-vm -p tilo-cli -p tilolang-process \
+        -p imager -p tilo-server -p tilo-fs -p linux-vm -p tilo-cli -p tilolang-process \
         --features tilo-model-gateway/local-models,tilo-model-gateway/host-backend,imager/installation \
         --bin tilo --bin tilo-launcher --bin tilo-signal-provider --bin tilo-unlock-helper \
         --bin tilo-flight-recorder --bin tilo-session-report \
@@ -70,7 +70,7 @@ if (( run_cargo )); then
         --bin tilo-cli-shim --bin tilo-app-process --bin app --bin tilo-ush \
         --bin tilo-model-catalog --bin tilo-model-manager --bin tilo-speech-worker \
         --bin tilo-model-gateway --bin tilo-model-http --bin imager \
-        --bin tilo-server-admin --bin tilo-enroll --bin fs --bin tilo-legacy --bin tilolang-process )
+        --bin tilo-server-admin --bin tilo-enroll --bin fs --bin tilo-linux-vm --bin tilolang-process )
     say "cargo build --release (runtime host, no default features)"
     # The runtime package also owns developer tools such as `tilo-control`.
     # Building the package without an explicit target compiles and LTO-links
@@ -90,7 +90,7 @@ target_dir=$(realpath -m "$target_dir")
 rel=${TILO_BIN_DIR:-$target_dir/release}
 for bin in tilo-session tilolang-process fs tilo-server-admin tilo-enroll imager tilo-launcher tilo-unlock-helper tilo-flight-recorder tilo-session-report tilo-install tilo-runtime-bundle \
            tilo-cli-shim tilo-app-process tilo-ush tilo-model-manager tilo-model-gateway tilo-model-http \
-           tilo-legacy app; do
+           tilo-linux-vm app; do
     [[ -x $rel/$bin ]] || { echo "missing $rel/$bin — run without --no-cargo" >&2; exit 1; }
 done
 (( run_cargo )) || check_rpmbuild
@@ -152,7 +152,7 @@ install -pm 0755 "$rel/tilo-model-http" "$app_stage/bin/tilo-model-http"
 install -pm 0755 "$rel/tilo-cli-shim" "$app_stage/libexec/tilo-cli-shim"
 install -pm 0755 "$rel/tilo-app-process" "$app_stage/libexec/tilo-app-process"
 install -pm 0755 "$rel/tilo-ush" "$app_stage/libexec/tilo-ush"
-install -pm 0755 "$rel/tilo-legacy" "$app_stage/bin/tilo-legacy"
+install -pm 0755 "$rel/tilo-linux-vm" "$app_stage/bin/tilo-linux-vm"
 install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-app-process.service" \
     "$app_stage/systemd-user/tilo-app-process.service"
 install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-models.service" \

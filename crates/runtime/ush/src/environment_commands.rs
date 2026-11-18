@@ -290,7 +290,7 @@ impl Inner {
             let stopping = || stop.load(Ordering::SeqCst);
             let payer = Payer {
                 account: asked.account.clone(),
-                size: legacy_vm::hosted::size::VmSize::parse(&asked.size).unwrap_or_default(),
+                size: linux_vm::hosted::size::VmSize::parse(&asked.size).unwrap_or_default(),
             };
             let ran = inner.shells.run_for(
                 &workspace,
@@ -446,8 +446,8 @@ fn branch_machine(
     workspace: &str,
     asked: &BranchMachine,
 ) -> Result<bool, String> {
-    use legacy_vm::hosted::control::{ENVIRONMENT, Reply, Request, VmRequest};
-    let size = legacy_vm::hosted::size::VmSize::parse(&asked.size)
+    use linux_vm::hosted::control::{ENVIRONMENT, Reply, Request, VmRequest};
+    let size = linux_vm::hosted::size::VmSize::parse(&asked.size)
         .ok_or_else(|| format!("{:?} is not a machine's size", asked.size))?;
     let request = Request::Branch {
         vm: VmRequest {
@@ -475,7 +475,7 @@ fn branch_machine(
 
 /// Delete `workspace`'s machine on the hosted-VM service at `socket`: done too when it had none.
 fn delete_machine(socket: &std::path::Path, workspace: &str) -> Result<(), String> {
-    use legacy_vm::hosted::control::{ENVIRONMENT, Reply, Request};
+    use linux_vm::hosted::control::{ENVIRONMENT, Reply, Request};
     let request = Request::Delete {
         workspace: workspace.to_owned(),
         environment: ENVIRONMENT.to_owned(),
@@ -489,9 +489,9 @@ fn delete_machine(socket: &std::path::Path, workspace: &str) -> Result<(), Strin
 
 fn ask_service(
     socket: &std::path::Path,
-    request: &legacy_vm::hosted::control::Request,
-) -> Result<legacy_vm::hosted::control::Reply, String> {
-    legacy_vm::hosted::control::ask(socket, request, MACHINE_PATIENCE)
+    request: &linux_vm::hosted::control::Request,
+) -> Result<linux_vm::hosted::control::Reply, String> {
+    linux_vm::hosted::control::ask(socket, request, MACHINE_PATIENCE)
         .map_err(|error| format!("the hosted-VM service at {}: {error}", socket.display()))?
         .ok_or_else(|| {
             format!(

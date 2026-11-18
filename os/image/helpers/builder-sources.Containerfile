@@ -38,7 +38,7 @@ COPY tools/test-assets-build.rs /build/tools/test-assets-build.rs
 COPY tools/test-assets.py /build/tools/test-assets.py
 COPY tools/font-catalog.py /build/tools/font-catalog.py
 COPY tools/apps/language_packs.py tools/apps/stage_sdk_services.py /build/tools/apps/
-COPY os/legacy-guest-snapshot.env /build/os/legacy-guest-snapshot.env
+COPY os/linux-guest-snapshot.env /build/os/linux-guest-snapshot.env
 COPY os/hosted-guest-snapshot.env /build/os/hosted-guest-snapshot.env
 # The empty workspace-hack the greeter's initramfs build links (compile.sh,
 # phase rust-boot-greeter).

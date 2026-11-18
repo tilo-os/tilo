@@ -2,7 +2,7 @@
 
 The check runs this on the stack's machine after the agent filled the form:
 it runs `integration/vm-proofs.sh` inside the workspace's VM (through the VM
-host's own `tilo-legacy hosted run`, the path an operator's check takes) and
+host's own `tilo-linux-vm hosted run`, the path an operator's check takes) and
 prints what it found as a table, failing on anything wrong:
 
   - every renderer of the engine host is sandboxed: Seccomp 2, NoNewPrivs 1,
@@ -17,7 +17,7 @@ usage: vm-proofs.py WORKSPACE ACCOUNT OUT_DIR [BROWSER_USER]
 
 The VM host's container is named by VM_HOST_CONTAINER (the stack's
 `tilo-sh-vm-host-0`), and the command that reaches a workspace's VM by
-VM_HOST_RUN (a prefix that runs the operator's `tilo-legacy` in it).
+VM_HOST_RUN (a prefix that runs the operator's `tilo-linux-vm` in it).
 """
 
 from __future__ import annotations
@@ -31,12 +31,12 @@ import time
 WORKSPACE, ACCOUNT, OUT = sys.argv[1:4]
 BROWSER_USER = sys.argv[4] if len(sys.argv) > 4 else "tilo-browser"
 CONTAINER = os.environ.get("VM_HOST_CONTAINER", "tilo-sh-vm-host-0")
-# What runs the host's own `tilo-legacy` as its service: root on the stack's
+# What runs the host's own `tilo-linux-vm` as its service: root on the stack's
 # machine reaches the container, which runs the service as uid 10001.
 RUN = os.environ.get(
     "VM_HOST_RUN",
     f"podman exec {CONTAINER} setpriv --reuid=10001 --regid=10001 --init-groups "
-    "--inh-caps=-all tilo-legacy",
+    "--inh-caps=-all tilo-linux-vm",
 )
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vm-proofs.sh")
 

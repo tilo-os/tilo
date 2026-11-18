@@ -65,10 +65,10 @@ tilo-sandbox-core = { path = "../../system/sandbox-core" }
 # The guest's own network namespace: a DNS stub that answers only the
 # record's NetHost grants, and nftables that admit only what it answered.
 tilo-egress = { path = "../egress" }
-# Installed legacy apps become commands in every guest (`LegacyLaunch`);
+# Installed Linux apps become commands in every guest (`LinuxVmLaunch`);
 # a hosted workspace's programs run in its own VM (`hosted_vm`).
-legacy-vm = { path = "../legacy-vm" }
-legacy-agent-protocol = { path = "../legacy-agent-protocol" }
+linux-vm = { path = "../linux-vm" }
+linux-vm-protocol = { path = "../linux-vm-protocol" }
 
 anyhow.workspace = true
 tilo-paths.workspace = true
@@ -97,7 +97,7 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 # The real guest agent behind a fake VM link: a hosted program's terminal
 # server is tested against what serves it in the VM.
-legacy-agent = { path = "../legacy-agent" }
+linux-vm-agent = { path = "../linux-vm-agent" }
 ed25519-dalek.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

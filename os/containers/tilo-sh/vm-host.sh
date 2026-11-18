@@ -328,7 +328,7 @@ up() {
     --user 10001:10001 --read-only --tmpfs /tmp \
     --security-opt no-new-privileges --cap-drop ALL \
     -v "$vm/placer:/var/lib/tilo-placer" \
-    --entrypoint tilo-legacy "$image" \
+    --entrypoint tilo-linux-vm "$image" \
     hosted place --listen "127.0.0.1:$place_port" \
     --record /var/lib/tilo-placer/placements.json \
     --hosts "$pod=127.0.0.1:$status_port" >/dev/null
@@ -383,7 +383,7 @@ status() {
   if podman container exists "$host_container" 2>/dev/null; then
     # Every VM the host holds, with its phase and its memory budget.
     podman exec "$host_container" setpriv --reuid=10001 --regid=10001 --init-groups \
-      --inh-caps=-all tilo-legacy hosted status --run /run/tilo-hosted || true
+      --inh-caps=-all tilo-linux-vm hosted status --run /run/tilo-hosted || true
   fi
 }
 

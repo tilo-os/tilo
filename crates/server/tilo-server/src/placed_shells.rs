@@ -1,7 +1,7 @@
 //! A workspace's shell, run on the member device that holds its VM.
 //!
 //! With more than one VM host, a workspace's VM stays on the host that first
-//! woke it, where its disk is (`legacy_vm::hosted::placement`). Each VM host
+//! woke it, where its disk is (`linux_vm::hosted::placement`). Each VM host
 //! is a member device that takes its workspaces' work: a Tilo device of the
 //! operator, admitted to the workspaces it serves, holding their files as
 //! any member does. So the shell runs there, beside the VM, and this host
@@ -29,8 +29,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use iroh::{Endpoint, EndpointAddr, EndpointId};
-use legacy_vm::hosted::control::{self, ENVIRONMENT, Reply, Request, VmRequest};
-use legacy_vm::hosted::size::VmSize;
+use linux_vm::hosted::control::{self, ENVIRONMENT, Reply, Request, VmRequest};
+use linux_vm::hosted::size::VmSize;
 use serde::Deserialize;
 use tilo_actions::remote::environment_commands::{self, CommandOutput, CommandRan, CommandRequest};
 use tilo_actions::remote::{ActionProvider, Caller, InvokeArgument, InvokeRequest, ReceiptStatus};

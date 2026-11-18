@@ -34,9 +34,9 @@ class ImageInterpreterTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.git("init", "-q")
-        self.write("os/usr/libexec/tilo-legacy", "#!/usr/bin/env python3\nprint()\n")
+        self.write("os/usr/libexec/tilo-linux-vm", "#!/usr/bin/env python3\nprint()\n")
         self.write("os/usr/libexec/tilo-compiled-wrapper", "#!/bin/bash\nexec true\n")
-        self.baseline("os/usr/libexec/tilo-legacy  # predates the rule\n")
+        self.baseline("os/usr/libexec/tilo-linux-vm  # predates the rule\n")
 
     def git(self, *args: str) -> None:
         subprocess.run(
@@ -104,26 +104,26 @@ class ImageInterpreterTests(unittest.TestCase):
         self.assertEqual(new, ["os/usr/lib/tilo/helper.py", "os/usr/share/tilo/panel.mjs"])
 
     def test_renaming_a_baselined_script_does_not_admit_it(self) -> None:
-        self.git("mv", "os/usr/libexec/tilo-legacy", "os/usr/libexec/tilo-renamed")
+        self.git("mv", "os/usr/libexec/tilo-linux-vm", "os/usr/libexec/tilo-renamed")
         self.assertEqual(
             checker.check(self.root),
-            (["os/usr/libexec/tilo-renamed"], ["os/usr/libexec/tilo-legacy"]),
+            (["os/usr/libexec/tilo-renamed"], ["os/usr/libexec/tilo-linux-vm"]),
         )
 
     def test_stale_entry_fails_and_names_its_line(self) -> None:
-        self.git("rm", "-qf", "os/usr/libexec/tilo-legacy")
-        self.assertEqual(checker.check(self.root), ([], ["os/usr/libexec/tilo-legacy"]))
+        self.git("rm", "-qf", "os/usr/libexec/tilo-linux-vm")
+        self.assertEqual(checker.check(self.root), ([], ["os/usr/libexec/tilo-linux-vm"]))
         out = io.StringIO()
         with mock.patch.object(checker, "ROOT", self.root), contextlib.redirect_stdout(out):
             self.assertEqual(checker.main(), 1)
         self.assertIn(
-            f"{checker.BASELINE}:3: os/usr/libexec/tilo-legacy no longer ships",
+            f"{checker.BASELINE}:3: os/usr/libexec/tilo-linux-vm no longer ships",
             out.getvalue(),
         )
 
     def test_ported_script_is_stale(self) -> None:
-        self.write("os/usr/libexec/tilo-legacy", "#!/bin/sh\nexec /usr/libexec/tilo/tilo-legacy\n")
-        self.assertEqual(checker.check(self.root), ([], ["os/usr/libexec/tilo-legacy"]))
+        self.write("os/usr/libexec/tilo-linux-vm", "#!/bin/sh\nexec /usr/libexec/tilo/tilo-linux-vm\n")
+        self.assertEqual(checker.check(self.root), ([], ["os/usr/libexec/tilo-linux-vm"]))
 
     def test_build_and_ci_scripts_outside_the_overlay_are_ignored(self) -> None:
         self.write("os/scripts/build-step.py", "#!/usr/bin/env python3\n")
@@ -170,14 +170,14 @@ class ImageInterpreterTests(unittest.TestCase):
         )
 
     def test_baseline_entry_needs_a_reason(self) -> None:
-        self.baseline("os/usr/libexec/tilo-legacy\n")
+        self.baseline("os/usr/libexec/tilo-linux-vm\n")
         with self.assertRaisesRegex(checker.BaselineError, "needs a reason"):
             checker.check(self.root)
 
     def test_duplicate_baseline_entry_fails(self) -> None:
         self.baseline(
-            "os/usr/libexec/tilo-legacy  # predates the rule\n"
-            "os/usr/libexec/tilo-legacy  # again\n"
+            "os/usr/libexec/tilo-linux-vm  # predates the rule\n"
+            "os/usr/libexec/tilo-linux-vm  # again\n"
         )
         with self.assertRaisesRegex(checker.BaselineError, "already listed on line 3"):
             checker.check(self.root)

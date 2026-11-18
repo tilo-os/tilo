@@ -12,8 +12,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use legacy_vm::hosted::control::{self, Reply, Request, VmRequest};
-use legacy_vm::hosted::size::VmSize;
+use linux_vm::hosted::control::{self, Reply, Request, VmRequest};
+use linux_vm::hosted::size::VmSize;
 use tilo_peer_state::actions::{ActionService, NoActions};
 use tilo_runtime::standalone::take_work;
 use tilo_server::placed_machines::PlacedMachines;

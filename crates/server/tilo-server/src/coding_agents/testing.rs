@@ -222,8 +222,8 @@ impl TestMachine {
     ) -> Arc<Self> {
         let endpoints: Vec<&str> = endpoints.iter().map(String::as_str).collect();
         let mut command = Command::new(tilo_test_env::sibling_binary(
-            "legacy-agent",
-            "tilo-legacy-agent",
+            "linux-vm-agent",
+            "tilo-linux-vm-agent",
         ));
         command
             .args(wire::arguments(&endpoints, stop_grace, argv))

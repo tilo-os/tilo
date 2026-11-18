@@ -30,10 +30,10 @@
 4 crates/platform/tilo-process/src/rendezvous.rs
 1 crates/platform/tilo-secrets/src/linux/chromium.rs
 1 crates/runtime/env-tools/src/delegated.rs
-1 crates/runtime/legacy-agent-protocol/src/link.rs
-1 crates/runtime/legacy-vm/src/control.rs
-1 crates/runtime/legacy-vm/src/stream.rs
-1 crates/runtime/legacy-vm/src/supervisor.rs
+1 crates/runtime/linux-vm-protocol/src/link.rs
+1 crates/runtime/linux-vm/src/control.rs
+1 crates/runtime/linux-vm/src/stream.rs
+1 crates/runtime/linux-vm/src/supervisor.rs
 1 crates/runtime/runtime-portal/src/agent_transport.rs
 1 crates/runtime/runtime-portal/src/local_socket.rs
 2 crates/runtime/runtime-portal/src/request_rendezvous.rs

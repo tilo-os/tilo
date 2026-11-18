@@ -1,7 +1,7 @@
 #!/bin/sh
 # Start the hosted-VM service on the machine that owns its VMs (crates/runtime/
-# legacy-vm/src/hosted): fetch the guest this build pins, then
-# `tilo-legacy hosted serve` as the service's own account.
+# linux-vm/src/hosted): fetch the guest this build pins, then
+# `tilo-linux-vm hosted serve` as the service's own account.
 #
 #   tilo-hosted-serve --state DIR --run DIR
 #
@@ -40,9 +40,9 @@ fi
 # The guest: the image the release key signed, fetched once per digest
 # (TILO_VM_GUEST_REF overrides the one this build pins).
 if [ -n "${TILO_VM_GUEST_REF:-}" ]; then
-  guest=$(as_service tilo-legacy hosted fetch-guest --images "$data/images" --ref "$TILO_VM_GUEST_REF")
+  guest=$(as_service tilo-linux-vm hosted fetch-guest --images "$data/images" --ref "$TILO_VM_GUEST_REF")
 else
-  guest=$(as_service tilo-legacy hosted fetch-guest --images "$data/images")
+  guest=$(as_service tilo-linux-vm hosted fetch-guest --images "$data/images")
 fi
 kernel=$(printf '%s\n' "$guest" | sed -n 's/^kernel //p')
 rootfs=$(printf '%s\n' "$guest" | sed -n 's/^rootfs //p')
@@ -80,6 +80,6 @@ fi
 # The cgroup tree every VM's cgroup is made in was handed down by
 # tilo-hosted-prepare, which runs as root before this on both machines.
 if [ "$(id -u)" = "$uid" ]; then
-  HOME=$data exec tilo-legacy hosted serve "$@"
+  HOME=$data exec tilo-linux-vm hosted serve "$@"
 fi
-HOME=$data exec setpriv --reuid=$uid --regid=$gid --init-groups --inh-caps=-all -- tilo-legacy hosted serve "$@"
+HOME=$data exec setpriv --reuid=$uid --regid=$gid --init-groups --inh-caps=-all -- tilo-linux-vm hosted serve "$@"

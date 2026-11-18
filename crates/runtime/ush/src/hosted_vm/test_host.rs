@@ -1,8 +1,8 @@
 //! A host that sells Linux VMs, for tests: everything a hosted session meets, with no
 //! hypervisor and no payment provider.
 //!
-//! It answers the hosted-VM service's socket ([`legacy_vm::hosted::control`]) by admitting
-//! each wake through the real plan guard ([`legacy_vm::hosted::plan::admit`]) against its
+//! It answers the hosted-VM service's socket ([`linux_vm::hosted::control`]) by admitting
+//! each wake through the real plan guard ([`linux_vm::hosted::plan::admit`]) against its
 //! plans file, which sells a "Pro" plan. An account it does not name has no card on file,
 //! and [`TestHost::add_card`] writes it into the plans file as the provider does. An
 //! admitted program runs in a stand-in for the VM's agent that answers `ran <argv>` with
@@ -18,13 +18,13 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use legacy_agent_protocol::link::AgentLink;
-use legacy_agent_protocol::{
+use linux_vm::hosted::control::{FRAMING, Reply, Request};
+use linux_vm::hosted::plan::{Plan, Plans, Sells, admit};
+use linux_vm::hosted::size::VmSize;
+use linux_vm_protocol::link::AgentLink;
+use linux_vm_protocol::{
     AgentHello, ExitStatus, GuestMessage, GuestOs, HostMessage, PROTOCOL_MAJOR, recv, send,
 };
-use legacy_vm::hosted::control::{FRAMING, Reply, Request};
-use legacy_vm::hosted::plan::{Plan, Plans, Sells, admit};
-use legacy_vm::hosted::size::VmSize;
 use tilo_actions::remote::server_account::{Limits, PlanOffer};
 
 use super::HostedTarget;
@@ -176,7 +176,7 @@ fn answer(
                 *full = full.saturating_sub(1);
                 let _ = FRAMING.write_value(
                     &mut stream,
-                    &Reply::Busy(legacy_vm::hosted::service::BUSY.to_owned()),
+                    &Reply::Busy(linux_vm::hosted::service::BUSY.to_owned()),
                 );
                 return;
             }

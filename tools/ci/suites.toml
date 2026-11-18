@@ -1384,11 +1384,11 @@ inputs = ["os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json"]
 readers = ["crates/system/os-actions/src/windows_compat.rs"]
 
 [[cargo]]
-package = "legacy-vm"
-inputs = ["os/legacy-guest-snapshot.env", "os/hosted-guest-snapshot.env"]
+package = "linux-vm"
+inputs = ["os/linux-guest-snapshot.env", "os/hosted-guest-snapshot.env"]
 readers = [
-  "crates/runtime/legacy-vm/src/image.rs",
-  "crates/runtime/legacy-vm/src/hosted/guest.rs",
+  "crates/runtime/linux-vm/src/image.rs",
+  "crates/runtime/linux-vm/src/hosted/guest.rs",
 ]
 
 [[cargo]]

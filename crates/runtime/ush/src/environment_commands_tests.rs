@@ -218,7 +218,7 @@ fn browser_member(dir: &std::path::Path, socket: std::path::PathBuf) -> Environm
             Some(crate::hosted_vm::HostedTarget {
                 socket,
                 account: "acct-1".into(),
-                size: legacy_vm::hosted::size::VmSize::Small,
+                size: linux_vm::hosted::size::VmSize::Small,
                 plans: None,
             }),
         )
@@ -229,12 +229,12 @@ fn browser_member(dir: &std::path::Path, socket: std::path::PathBuf) -> Environm
 
 fn fake_hosted(
     dir: &std::path::Path,
-    replies: Vec<legacy_vm::hosted::control::Reply>,
+    replies: Vec<linux_vm::hosted::control::Reply>,
 ) -> (
     std::path::PathBuf,
-    std::sync::Arc<std::sync::Mutex<Vec<legacy_vm::hosted::control::Request>>>,
+    std::sync::Arc<std::sync::Mutex<Vec<linux_vm::hosted::control::Request>>>,
 ) {
-    use legacy_vm::hosted::control;
+    use linux_vm::hosted::control;
     let socket = dir.join("hosted.sock");
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
     let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -305,7 +305,7 @@ fn opened(
 
 #[test]
 fn opening_browser_asks_the_hosts_service_for_the_workspaces_vm() {
-    use legacy_vm::hosted::control::{OpenBrowser, Reply, Request};
+    use linux_vm::hosted::control::{OpenBrowser, Reply, Request};
     let dir = tempfile::tempdir().unwrap();
     let (socket, asked) = fake_hosted(
         dir.path(),
@@ -348,7 +348,7 @@ fn opening_browser_asks_the_hosts_service_for_the_workspaces_vm() {
     );
     assert_eq!(
         *size,
-        legacy_vm::hosted::size::VmSize::Small,
+        linux_vm::hosted::size::VmSize::Small,
         "in the workspace's VM, at the size its shells run at"
     );
     assert!(
@@ -423,7 +423,7 @@ fn ended(
 
 #[test]
 fn only_the_hosts_own_devices_branch_and_delete_a_workspaces_machine() {
-    use legacy_vm::hosted::control::{Reply, Request, VmRequest};
+    use linux_vm::hosted::control::{Reply, Request, VmRequest};
     use tilo_actions::remote::environment_machines::MachineBranched;
     let dir = tempfile::tempdir().unwrap();
     let (socket, asked) = fake_hosted(
@@ -478,7 +478,7 @@ fn only_the_hosts_own_devices_branch_and_delete_a_workspaces_machine() {
             workspace: "ws-1".into(),
             environment: "default".into(),
             account: "acct-1".into(),
-            size: legacy_vm::hosted::size::VmSize::Small,
+            size: linux_vm::hosted::size::VmSize::Small,
         },
         from: "ws-0".into(),
     };
@@ -513,7 +513,7 @@ fn a_member_that_runs_no_vms_has_no_machine_to_branch_or_delete() {
 
 #[test]
 fn a_member_whose_environment_names_no_account_runs_programs_for_the_account_asked() {
-    use legacy_vm::hosted::control::{Reply, Request};
+    use linux_vm::hosted::control::{Reply, Request};
     let dir = tempfile::tempdir().unwrap();
     let (socket, asked) = fake_hosted(
         dir.path(),
@@ -542,14 +542,14 @@ fn a_member_whose_environment_names_no_account_runs_programs_for_the_account_ask
     };
     assert_eq!(
         (vm.workspace.as_str(), vm.account.as_str(), vm.size),
-        ("ws-1", "acct-1", legacy_vm::hosted::size::VmSize::Small),
+        ("ws-1", "acct-1", linux_vm::hosted::size::VmSize::Small),
         "the caller's workspace's VM, paid for by the account the run named, at its size"
     );
 }
 
 #[test]
 fn an_account_without_a_card_is_refused_before_anything_runs_in_its_vm() {
-    use legacy_vm::hosted::control::{Reply, Request};
+    use linux_vm::hosted::control::{Reply, Request};
     use tilo_actions::remote::server_account::{Reason, Refusal};
     let dir = tempfile::tempdir().unwrap();
     // The hosted-VM service reads its plans file for the account the request

@@ -98,22 +98,22 @@ pub const GUEST_COMMANDS: &[&str] = &[
     "ush-sh",
 ];
 
-/// Commands for the user's installed legacy apps, from the legacy VM's
+/// Commands for the user's installed Linux apps, from the Linux VM's
 /// registry. A name the runtime already answers to keeps its meaning.
-pub fn legacy_commands() -> Vec<String> {
-    let Some(paths) = legacy_vm::config::Paths::for_user(legacy_vm::GuestOs::Linux) else {
+pub fn linux_vm_commands() -> Vec<String> {
+    let Some(paths) = linux_vm::config::Paths::for_user(linux_vm::GuestOs::Linux) else {
         return Vec::new();
     };
-    legacy_command_names(&legacy_vm::apps::Registry::load(&paths.apps()))
+    linux_vm_command_names(&linux_vm::apps::Registry::load(&paths.apps()))
 }
 
-pub fn legacy_command_names(registry: &legacy_vm::apps::Registry) -> Vec<String> {
+pub fn linux_vm_command_names(registry: &linux_vm::apps::Registry) -> Vec<String> {
     let mut names: Vec<String> = registry
         .apps
         .iter()
         .map(|app| app.command.clone())
         .filter(|name| {
-            legacy_vm::apps::valid_app_id(name)
+            linux_vm::apps::valid_app_id(name)
                 && name != "tilo-ush"
                 && !GUEST_COMMANDS.contains(&name.as_str())
         })
@@ -179,22 +179,22 @@ mod tests {
             assert!(guest_command_available(dir.path(), "system"));
         }
 
-        phase legacy_apps_never_shadow_the_runtimes_own_commands;
+        phase linux_vm_apps_never_shadow_the_runtimes_own_commands;
         {
-            let registry = legacy_vm::apps::Registry::from_guest(
-                legacy_vm::GuestOs::Linux,
+            let registry = linux_vm::apps::Registry::from_guest(
+                linux_vm::GuestOs::Linux,
                 &[
                     installed_app("com.visualstudio.code"),
                     installed_app("org.example.pkg"),
                 ],
                 &[],
             );
-            assert_eq!(legacy_command_names(&registry), ["code"]);
+            assert_eq!(linux_vm_command_names(&registry), ["code"]);
         }
     }
 
-    fn installed_app(id: &str) -> legacy_vm::apps::InstalledApp {
-        legacy_vm::apps::InstalledApp {
+    fn installed_app(id: &str) -> linux_vm::apps::InstalledApp {
+        linux_vm::apps::InstalledApp {
             id: id.into(),
             name: id.into(),
             window_class: None,
