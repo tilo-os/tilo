@@ -2400,10 +2400,14 @@ impl ActionSpec {
 
     /// Declare that this action carries the resource's other actions (a
     /// generic typed edit, a group of edits): history records the actions
-    /// it carried, never this one.
+    /// it carried, never this one. The contract advertises
+    /// [`CARRIER_TAG`](crate::CARRIER_TAG), so whoever decides for it or words
+    /// it for a person reads what it carries. Call after
+    /// [`with_contract`](Self::with_contract), which replaces the tags.
     #[must_use]
     pub fn carrying(mut self) -> Self {
         self.type_mut().carrier = true;
+        push_tag(&mut self.type_mut().contract, crate::contract::CARRIER_TAG);
         self
     }
 
