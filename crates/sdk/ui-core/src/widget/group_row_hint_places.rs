@@ -306,9 +306,9 @@ mod tests {
                     "the window's trailing edge, a card's margin in: {first:?}"
                 );
                 assert_eq!(
-                    first.y0,
-                    content.y0 + 12.0,
-                    "the top of its content: {first:?}"
+                    first.y1,
+                    content.y1 - 12.0,
+                    "the bottom of its content, where the column rises from: {first:?}"
                 );
                 assert!(content.contains_rect(first), "{first:?} in {content:?}");
             }
