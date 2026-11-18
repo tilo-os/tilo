@@ -261,7 +261,7 @@ mod mcp_agent_tools;
 )]
 mod mcp_agent_pick;
 
-use mcp_agent_node::{Level, Node, level_of, shared_titles};
+use mcp_agent_node::{Level, Node, level_of, shared_names};
 use mcp_agent_paths::{CLOSE_MATCHES, ParsedPath, close_matches, kind_address, parse_path};
 use mcp_agent_pick::{
     action_rank, is_program_form, named_beyond_its_start, only_by_id, pick, pick_action,
@@ -1639,7 +1639,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if want_resources {
             let mut named: Vec<Node> = children.clone();
             named.extend(resolved.node.clone());
-            let shared = shared_titles(&children);
+            let shared = shared_names(&children, &named);
             entries.resize(first, (String::new(), None));
             for (index, child) in children.iter().enumerate() {
                 let index = first.saturating_add(index);
@@ -1665,7 +1665,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 let name = child.name(&named);
                 // A title two rows share does not say which is which: the row's
                 // own id does, beside it.
-                if shared.contains(&child.label.trim().to_lowercase()) {
+                if shared.contains(&name.trim().to_lowercase()) {
                     let _ = write!(line, "  {}", child.id);
                 }
                 if !child.actions.is_empty() {

@@ -83,6 +83,7 @@ mod part;
 mod place;
 mod reading;
 mod shares;
+mod tree;
 mod waiting;
 
 use super::made::Made;
@@ -93,6 +94,7 @@ use part::{HeldPart, PartType, live_of};
 pub(crate) use reading::PastPart;
 use reading::{ChainRead, offer_nested_reads, parse_read_cursor, read_cursor, read_spec};
 use shares::Written;
+use tree::nest;
 
 pub(crate) use place::ItemIndex;
 pub use place::{PART_BYTES, PART_ITEMS, PartLimits, placed};
@@ -155,6 +157,20 @@ pub trait Chained: Resource {
         parts: &[(u64, Rc<Self::State>)],
     ) -> Vec<tilo_resource::Derived<Self>> {
         let _ = (base, parts);
+        Vec::new()
+    }
+
+    /// Each item's place in the tree the chain publishes: the item it sits
+    /// under, by its id (`None` at the top). A kind whose items nest (a
+    /// notebook's pages) returns every item it shows; the chain then
+    /// publishes each under the one it sits under, and only the roots beside
+    /// its own children. Empty (the default) for a kind whose items all sit
+    /// at the top. An item whose parent is not among those published stays at
+    /// the top, so a note whose parent is gone is never lost.
+    fn tree(
+        parts: &[(u64, Rc<Self::State>)],
+    ) -> Vec<(tilo_resource::Id, Option<tilo_resource::Id>)> {
+        let _ = parts;
         Vec::new()
     }
 
@@ -761,6 +777,7 @@ impl ChainCore {
         head: &PartPublished,
         earlier: Vec<Rc<PartPublished>>,
         places: Vec<tilo_actions::ResourceSpec>,
+        tree: &[(tilo_resource::Id, Option<tilo_resource::Id>)],
         hidden: &std::collections::HashSet<String>,
         table: Option<&'static tilo_resource::table::ModelTable>,
     ) -> ui_core::published::SharedResource {
@@ -825,6 +842,7 @@ impl ChainCore {
         if !hidden.is_empty() {
             items.retain(|item| !hidden.contains(item.id()));
         }
+        let items = nest(items, tree);
         ui_core::published::SharedResource::new(
             published,
             ui_core::published::SharedChildren::new(items),
@@ -2114,8 +2132,9 @@ impl ChainState {
             .collect();
         let typed = (part.typed)(&parts);
         // The places the app derives from everything the chain holds, at the
-        // address each is published under.
+        // address each is published under, and the tree its items make.
         let places = (part.places)(&*(self.base)(), &*typed);
+        let tree = (part.tree)(&*typed);
         let held: Vec<u64> = parts.iter().map(|(index, _)| *index).collect();
         self.core.forget_unheld(&held);
         // What the chain does not show (`Chained::hidden`) is left out of what it publishes.
@@ -2123,6 +2142,7 @@ impl ChainState {
             &newest,
             earlier,
             places,
+            &tree,
             &(part.hidden)(&*typed),
             part.table,
         );

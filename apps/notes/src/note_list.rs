@@ -1988,6 +1988,17 @@ impl ui::framework::Chained for NoteList {
         }
     }
 
+    /// The pages as the tree they make: each under the note it sits under,
+    /// by the resource each is published as.
+    fn tree(parts: &[(u64, Rc<Self>)]) -> Vec<(Id, Option<Id>)> {
+        let resource =
+            |id: &Id| Id::from(tilo_resource::items::item_resource_id::<Self>("pages", id));
+        Pages::of(parts)
+            .iter()
+            .map(|(id, page)| (resource(id), page.parent.as_ref().map(resource)))
+            .collect()
+    }
+
     fn prepare(
         actions: &mut [Self::Action],
         notebook: &Notebook,

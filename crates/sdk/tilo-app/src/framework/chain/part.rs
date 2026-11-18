@@ -131,6 +131,8 @@ pub(super) struct PartType {
     pub(super) resource: fn() -> super::super::root::ResourceType,
     /// [`Chained::places`] published, from the app's resource and the parts.
     pub(super) places: fn(&dyn Any, &dyn Any) -> Vec<tilo_actions::ResourceSpec>,
+    /// [`Chained::tree`] of the parts held: each item's parent among them.
+    pub(super) tree: fn(&dyn Any) -> Vec<(tilo_resource::Id, Option<tilo_resource::Id>)>,
     pub(super) search: fn(&dyn Any) -> Vec<tilo_resource::SearchEntry>,
     pub(super) search_over: fn(&dyn Any, &dyn Any) -> Vec<tilo_resource::SearchEntry>,
     pub(super) prepare_read: fn(&mut Filter, &dyn Any, &dyn Any) -> Result<(), String>,
@@ -186,6 +188,7 @@ impl<P: Chained> Of<P> {
         children: children::<P>,
         resource: super::super::root::ResourceType::of::<P>,
         places: places::<P>,
+        tree: tree::<P>,
         search: search::<P>,
         search_over: search_over::<P>,
         prepare_read: prepare_read::<P>,
@@ -535,6 +538,10 @@ fn places<P: Chained>(base: &dyn Any, parts: &dyn Any) -> Vec<tilo_actions::Reso
         return Vec::new();
     };
     tilo_resource::derived::published::<P>(P::places(base, parts_of::<P>(parts))).to_resources()
+}
+
+fn tree<P: Chained>(parts: &dyn Any) -> Vec<(tilo_resource::Id, Option<tilo_resource::Id>)> {
+    P::tree(parts_of::<P>(parts))
 }
 
 fn search<P: Chained>(state: &dyn Any) -> Vec<tilo_resource::SearchEntry> {

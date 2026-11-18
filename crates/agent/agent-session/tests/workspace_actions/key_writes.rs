@@ -633,3 +633,123 @@ async fn an_imported_tree_sent_as_import_then_move_groups_is_kept_nested() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }
+
+/// The agent's server over a computer of the person's, as that other test
+/// starts it: a workspace made for it and the projection of that workspace
+/// the agent calls.
+async fn agent_on_a_server() -> (
+    OnServer,
+    tilo_mcp::McpServer<tilo_session_client::remote::SessionActions>,
+) {
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
+    let (root, token) = person(&on_server, "Ada").await;
+    let key = Key { api: &api, token };
+    let (status, made) = key
+        .post("/v1/workspaces", &json!({"name": "Company"}), &[])
+        .await;
+    assert_eq!(status, 201, "{made}");
+    let workspace = made["id"].as_str().unwrap().to_owned();
+    let computer = enrol(&root, "Ada's laptop", DeviceCapabilities::member());
+    let agent = super::resource_support::open_admitted_peer(
+        &on_server.hosted,
+        &computer,
+        &on_server.host,
+        &workspace,
+    )
+    .await;
+    let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Your agent").await;
+    let person = hex::encode(root.verifying_key().to_bytes());
+    let server = tilo_mcp::McpServer::new(
+        tilo_session_client::remote::SessionActions::new(
+            &agent.peer,
+            agent.workspace,
+            on_server.host.cert.device_public_key,
+        ),
+        workspace,
+        person,
+    )
+    .with_agent_session("migrate", "Your agent");
+    (on_server, server)
+}
+
+/// A notebook imported as a tree lists as one: the collection lists its root
+/// pages only, a page lists its child pages beside its body, and two pages
+/// with the same title are told apart by a readable name the path takes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_imported_notebook_lists_as_the_tree_it_is() {
+    let (_on_server, server) = agent_on_a_server().await;
+    did(&server, "tilo_do", json!({"path": "notes#open"})).await;
+    let make = |title: &str| json!({"path": "notes#new-note", "args": {"title": title}});
+    let tilo = page_in(&did(&server, "tilo_do", make("Tilo")).await);
+    let other = page_in(&did(&server, "tilo_do", make("Other")).await);
+    // Three pages titled alike, each with words of its own: two under one
+    // parent, one under another.
+    let todos: Vec<String> = (0..3).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+    let imports = json!({"actions": todos.iter().enumerate().map(|(at, note)| {
+        json!({"action": "import-markdown", "args": {
+            "title": "TODO", "markdown": format!("the {at} todo"), "images": [],
+            "note": note, "origin": null,
+        }})
+    }).collect::<Vec<_>>()});
+    did(
+        &server,
+        "tilo_do",
+        json!({"path": "notes#group", "args": imports}),
+    )
+    .await;
+    let moves = json!({"actions": [
+        {"action": "move-note", "args": {"page": todos[0], "parent": tilo}},
+        {"action": "move-note", "args": {"page": todos[1], "parent": other}},
+        {"action": "move-note", "args": {"page": todos[2], "parent": tilo}},
+    ]});
+    did(
+        &server,
+        "tilo_do",
+        json!({"path": "notes#group", "args": moves}),
+    )
+    .await;
+
+    // The collection lists the pages at its top, and nothing under them.
+    let roots = did(&server, "tilo_ls", json!({"path": "notes/Notes"})).await;
+    assert!(roots.lines().any(|line| line.contains("Tilo")), "{roots}");
+    assert!(roots.lines().any(|line| line.contains("Other")), "{roots}");
+    assert!(
+        !roots.contains("TODO"),
+        "a child page is not at the collection's top: {roots}"
+    );
+    // A page lists its own children beside its body.
+    let under_tilo = did(&server, "tilo_ls", json!({"path": "notes/Notes/Tilo"})).await;
+    assert!(
+        under_tilo.lines().any(|line| line.contains("TODO")),
+        "{under_tilo}"
+    );
+    assert!(
+        under_tilo.lines().any(|line| line.contains("Body of Tilo")),
+        "{under_tilo}"
+    );
+    // Two pages titled alike under one parent are told apart by their place
+    // among them, and that name is a path.
+    assert!(
+        under_tilo.lines().any(|line| line.contains("TODO 2")),
+        "the second TODO wears its place: {under_tilo}"
+    );
+    assert!(
+        !under_tilo.contains(&todos[0]) && !under_tilo.contains(&todos[2]),
+        "no page is named by its id: {under_tilo}"
+    );
+    let second_todo = did(
+        &server,
+        "tilo_read",
+        json!({"path": "notes/Notes/Tilo/TODO 2"}),
+    )
+    .await;
+    assert!(second_todo.contains("the 2 todo"), "{second_todo}");
+    // Another parent's page keeps the title to itself.
+    let under_other = did(&server, "tilo_ls", json!({"path": "notes/Notes/Other"})).await;
+    assert!(
+        under_other.lines().any(|line| line.contains("TODO")),
+        "{under_other}"
+    );
+    assert!(!under_other.contains("TODO 2"), "{under_other}");
+}
