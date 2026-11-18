@@ -429,9 +429,19 @@ Attachments and dictation stand under the field, and dictation is the shell's.
 **A file in a message** is shown with the name and the size Chat gives. In Tilo a file that a
 message carries is content its workspace keeps and the message names (Chat's `attachments`):
 `ChatMessage.files` reads them, `TiloFiles` hands them to the views, and a file's tag says its
-name and its size (`Attachment.words`). The app keeps nothing of a file. Tilo's page hands a
-native app no way to be handed a file's content yet, so pressing a file says so in a
-sentence, and nothing is fetched.
+name and its size (`Attachment.words`). The app keeps nothing of a file.
+
+**A file opens** by a link. A press on a file's tag reads its message again and asks Tilo's
+page for a link to the content (`TiloEngine.contentLink`, the page's `link`: an address on the
+app's own site, good for a short time; one that leads anywhere else is not followed). The
+system downloads it straight into a file under the app's temporary folder, named by the last
+part of the file's name alone, and the system's own viewer shows it: Quick Look on the Mac,
+the same on the iPhone (`quickLookPreview`). A file is looked at there and nothing in it is
+started. The link is in no log and in nothing the app keeps; every press asks for a new one,
+and what was opened more than an hour ago is removed at the next press. The page of a site
+whose code is older hands no link: the app says "A file cannot be fetched into this app yet".
+`FileOpeningTests` checks this with a download of its own making, not with Tilo's own page,
+its server or the viewer on a screen.
 
 **A file is sent** through Tilo's page. The plus under the message field, or a file dropped on
 it, puts a file under the draft. Send puts each file into the person's workspace a piece at a

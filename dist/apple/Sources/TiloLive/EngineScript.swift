@@ -407,6 +407,22 @@ public enum EngineScript {
             return JSON.stringify({ok: {content: (await put.finish(of?.upload))?.content ?? null}});
           } catch (error) { return JSON.stringify({error: failure(error)}); }
         },
+        // A file a message carries is fetched by a link: an address on this page's own site
+        // that serves the content for a short time, which the page hands a native app for it
+        // (`link`). With nothing named it asks nothing of anyone: it says whether this page
+        // hands such a way at all. Only the app's own code reaches this, with the engine's
+        // pass. The link is the answer and nothing else here: it is posted to nobody, kept
+        // nowhere and said to no log.
+        async link(given, of) {
+          if (!holds(given)) return unknown('tilo.content', 'link');
+          if (!device) return noDevice();
+          if (typeof device.link !== 'function') return unknown('tilo.content', 'link');
+          if (of === null || of === undefined) return JSON.stringify({ok: true});
+          try {
+            const link = await device.link(String(of.content ?? ''), String(of.name ?? ''));
+            return JSON.stringify({ok: {path: String(link?.path ?? ''), expiresInSecs: Number(link?.expiresInSecs) || 0}});
+          } catch (error) { return JSON.stringify({error: failure(error)}); }
+        },
         // The person's answer to what the page asks before it pairs, handed on as a press of
         // the page's own button. Only the app's own code reaches this, with the engine's
         // pass, and the app calls it only from its person's press.

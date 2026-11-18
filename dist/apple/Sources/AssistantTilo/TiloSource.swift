@@ -1581,8 +1581,15 @@ public final class TiloSource: AssistantSource {
         if let failure { throw failure }
     }
 
+    /// How a file's link is fetched to this device: the system's own download. A check hands
+    /// in one of its own making.
+    var download: TiloFiles.Download = TiloFiles.download
+
     public func file(of attachment: Attachment.ID) async throws -> URL {
-        throw SourceProblem.refused("A file cannot be fetched into this app yet")
+        var fetched: URL?
+        try await taken { fetched = try await TiloFiles.fetch(attachment, through: self.engine, by: self.download) }
+        guard let fetched else { throw SourceProblem.unreachable }
+        return fetched
     }
 
     // MARK: Sub-agents

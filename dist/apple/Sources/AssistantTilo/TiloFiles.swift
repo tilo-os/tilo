@@ -8,9 +8,9 @@ import UniformTypeIdentifiers
 /// with the name and the size Chat gives, and keeps nothing of it.
 ///
 /// A picked file is sent through Tilo's page: its bytes go into the person's workspace a piece
-/// at a time, and the message that carries it names it as Chat does (`carried`). Tilo's page
-/// hands a native app no way to be handed a file's content yet, so a file cannot be opened
-/// from here, and pressing one says so in plain words.
+/// at a time, and the message that carries it names it as Chat does (`carried`). A file in a
+/// message is opened by a link Tilo's page hands the app, which the system downloads into a
+/// file of this device (`fetch`).
 enum TiloFiles {
     /// The files a message carries, as the views show them. Each is named by its message's item
     /// and its place among what the message carries: nothing of a file is kept here.
@@ -95,5 +95,88 @@ extension TiloFiles {
         let numbers = reason.split(whereSeparator: { !($0.isASCII && $0.isNumber) }).compactMap { Int($0) }
         guard let most = numbers.first(where: { $0 > 0 }) else { return "\(name) is too large to send: \(reason)" }
         return "\(name) is \(written(size)), and a file sent from here can be \(written(most)) at most"
+    }
+}
+
+/// Opening. A file a message carries is fetched by a link: an address on the app's own Tilo
+/// site that serves the content for a short time, asked of the workspace's server through
+/// Tilo's page as the person on this device. The system downloads it straight into a file,
+/// so nothing of it crosses the page or this app's memory. The link is in no log and in
+/// nothing the app keeps: every opening asks for a new one.
+extension TiloFiles {
+    /// What a person reads where Tilo's page hands the app no link to a file: the page of a
+    /// site whose code is older.
+    static let cannotOpen = "A file cannot be fetched into this app yet"
+
+    /// How a link becomes a file on this device: it answers where the fetched bytes lie, a
+    /// file whoever asked then owns.
+    typealias Download = @Sendable (URL) async throws -> URL
+
+    /// The system's own download. Its session keeps nothing: no cache, no cookie, nothing to
+    /// sign in with.
+    static let download: Download = { link in
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.finishTasksAndInvalidate() }
+        let (file, response) = try await session.download(from: link)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            try? FileManager.default.removeItem(at: file)
+            throw URLError(.badServerResponse)
+        }
+        return file
+    }
+
+    /// Where opened files lie: a folder of the app's own under its temporary folder.
+    static var opened: URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("so.tilo.assistant.opened", isDirectory: true)
+    }
+
+    /// The file `attachment` names, on this device. A file is named by its message's item and
+    /// its place among what the message carries; the message is read again, so what it
+    /// carries now is what is opened. A page that hands the app no link is asked for nothing.
+    @MainActor
+    static func fetch(_ attachment: Attachment.ID, through engine: TiloEngine, by download: Download) async throws -> URL {
+        guard try await engine.linkIsOffered() else { throw SourceProblem.refused(cannotOpen) }
+        let gone = SourceProblem.refused("This file is no longer in the conversation")
+        let named = attachment.value
+        guard let cut = named.lastIndex(of: "#"), let index = Int(named[named.index(after: cut)...]) else { throw gone }
+        let message: ChatMessage?
+        do {
+            message = try await engine.chatMessage(String(named[..<cut]))
+        } catch TiloEngine.Problem.refused {
+            message = nil
+        }
+        guard let file = message?.files.first(where: { $0.index == index }) else { throw gone }
+        let link = try await engine.contentLink(to: file.content, named: file.name)
+        let fetched: URL
+        do {
+            fetched = try await download(link)
+        } catch {
+            // Why it did not come may name the link: a person reads the file's name alone.
+            throw SourceProblem.refused("\(file.name) could not be fetched")
+        }
+        do {
+            return try keep(fetched, as: file.name)
+        } catch {
+            try? FileManager.default.removeItem(at: fetched)
+            throw SourceProblem.refused("\(file.name) could not be kept on this device")
+        }
+    }
+
+    /// Move what was fetched to where opened files lie, in a folder of its own, under the
+    /// last part of the file's name alone: a name never says where on this device a file
+    /// goes. What was opened more than an hour ago is removed first.
+    static func keep(_ fetched: URL, as name: String) throws -> URL {
+        let files = FileManager.default
+        let old = (try? files.contentsOfDirectory(at: opened, includingPropertiesForKeys: [.creationDateKey])) ?? []
+        for folder in old {
+            let made = (try? folder.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? .distantPast
+            if made < Date().addingTimeInterval(-3600) { try? files.removeItem(at: folder) }
+        }
+        let last = (name as NSString).lastPathComponent
+        let folder = opened.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try files.createDirectory(at: folder, withIntermediateDirectories: true)
+        let place = folder.appendingPathComponent(["", ".", "..", "/"].contains(last) ? "file" : last, isDirectory: false)
+        try files.moveItem(at: fetched, to: place)
+        return place
     }
 }
