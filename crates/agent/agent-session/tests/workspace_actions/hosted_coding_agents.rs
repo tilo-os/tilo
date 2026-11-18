@@ -1023,8 +1023,8 @@ on_both_kinds! {
     let read = answers(&said_by(&workspaces, &workspace, (&own, "fix-hello")).await);
     assert_eq!(read.len(), 1, "{read:?}");
     assert!(
-        read[0].contains("chat/Messages has no read action"),
-        "its read of the chat is not offered to it: {}",
+        read[0].contains("not_permitted: not allowed"),
+        "its read of the chat is refused as not allowed: {}",
         read[0]
     );
 
@@ -1045,10 +1045,9 @@ on_both_kinds! {
     reply_of(&workspaces, &workspace, &writes, "fix-hello").await;
     let wrote = answers(&said_by(&workspaces, &workspace, (&own, "fix-hello")).await);
     assert_eq!(wrote.len(), 2, "{wrote:?}");
-    let refused = wrote.iter().find(|text| **text != read[0]).unwrap();
     assert!(
-        refused_in_words(refused),
-        "its write into the main thread is refused: {refused}"
+        wrote.iter().all(|text| refused_in_words(text)),
+        "its read and its write into the main thread are both refused: {wrote:?}"
     );
     assert!(
         said_there(&workspaces, &workspace, thread.as_str())

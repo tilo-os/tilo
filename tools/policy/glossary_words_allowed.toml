@@ -441,3 +441,9 @@ paths = ["crates/runtime/tilo-mcp/src/mcp_put_tests.rs"]
 reason = "tokio's LocalSet method that drives a future to completion."
 words = ["run"]
 identifiers = ["run_until"]
+
+[[allow]]
+reason = "The MCP bridge's error variant for what the workspace answered; the test names it to build that answer."
+words = ["host"]
+identifiers = ["Host"]
+paths = ["crates/runtime/tilo-mcp/src/mcp_serve_tests.rs"]

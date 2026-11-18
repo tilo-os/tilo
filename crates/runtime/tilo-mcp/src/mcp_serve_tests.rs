@@ -88,4 +88,19 @@ tilo_test_env::scenario! {
             assert!(invoked.lock().unwrap().is_empty());
         }
     }
+
+    phase a_permission_refusal_says_not_allowed_and_where_it_is_changed;
+    // Whichever check refused the call, the workspace's permissions are named as the reason,
+    // never an action the caller cannot name, with where the person changes them.
+    {
+        let said = String::from(BridgeError::Host(
+            tilo_actions::remote::ActionCallError::NotPermitted,
+        ));
+        assert!(
+            said.starts_with("not_permitted: not allowed: this workspace's permissions")
+                && said.contains("under Agents")
+                && !said.contains("may not invoke"),
+            "{said}"
+        );
+    }
 }
