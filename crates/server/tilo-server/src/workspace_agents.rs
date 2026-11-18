@@ -1293,7 +1293,16 @@ impl HostAgents {
     /// End `turn` as `outcome` without working on it: its reply says how it ended.
     async fn end(&self, workspace: &str, turn: &Turn, outcome: &Outcome) -> Result<(), String> {
         let acting = self.scope(workspace, turn).await?;
-        let ended = acting.reply(turn).finished(outcome).await;
+        let reply = acting.reply(turn);
+        // An answer that went on past one message ends in each of its messages.
+        if let Ask::Message { part, .. } = &turn.ask
+            && let Ok(Some(held)) = self
+                .read::<chat::parts::ChatPart>(workspace, CHAT, part)
+                .await
+        {
+            reply.written.follows_from(&held);
+        }
+        let ended = reply.finished(outcome).await;
         self.sub_ended(&acting, turn, outcome, false).await;
         ended
     }
@@ -1799,12 +1808,20 @@ impl TurnScope {
                 tilo_action_policy::turn::Turn::new(turn.conversation.clone(), turn.cause.clone()),
                 turn.agent.turn_rules(&self.workspace),
             );
+        // A sub-agent's turn grows the messages its answer goes on in, and whoever keeps it
+        // to its own writes reads which those are.
+        let followed = self
+            .provider
+            .kept_to
+            .as_ref()
+            .and_then(|own| own.followed_by(written::reply_of(turn).as_deref()))
+            .unwrap_or_default();
         Reply {
             provider: self.provider.clone(),
             caller,
             workspace: self.workspace.clone(),
             ask: turn.ask.clone(),
-            written: written::Written::of(turn),
+            written: written::Written::of(turn, followed),
         }
     }
 }
