@@ -1,7 +1,7 @@
 //! The app's resource of the workspace: which changes History shows.
 
-use ui::prelude::*;
-use ui::tilo_actions::remote::workspace_activity as wire;
+use tilo_actions::remote::workspace_activity as wire;
+use tilo_resource::{self, Model, resource};
 
 /// Which changes History shows.
 #[derive(Model, Default, Debug, Clone, PartialEq, Eq)]

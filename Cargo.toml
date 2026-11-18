@@ -98,6 +98,7 @@ members = [
 
     # Applications
     "apps/activity",
+    "apps/activity-model",
     "apps/console",
     "apps/console-model",
     "apps/agent",
