@@ -155,6 +155,10 @@ macro_rules! service {
 #[path = "chat_read_direct.rs"]
 mod chat_read_direct;
 
+/// What each tool step of a turn says in the server's log.
+#[path = "hosted_step_timing.rs"]
+mod step_timing;
+
 impl Served {
     /// A server with `count` workspaces on it, Ada's page open on each.
     async fn start(count: usize) -> Self {
