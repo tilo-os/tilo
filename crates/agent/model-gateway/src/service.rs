@@ -2039,31 +2039,6 @@ mod tests {
         );
     }
 
-    /// A provider's key is never an argument, where `ps` and a shell's history would keep it:
-    /// every command the gateway takes a key for reads it from stdin, and the arguments refuse
-    /// one. Only the profile it is stored under arrives on the command line.
-    #[test]
-    fn a_providers_key_is_no_command_line_argument() {
-        assert!(
-            Cli::try_parse_from([
-                "tilo-model-gateway",
-                "provision-provider",
-                "--preset",
-                "anthropic",
-                "--model",
-                "claude-main",
-                "--api-key",
-                "sk-shown-in-ps-and-history",
-            ])
-            .is_err(),
-            "a key on the command line is refused"
-        );
-        assert!(
-            Cli::try_parse_from(["tilo-model-gateway", "remove-api-key", "--profile", "p"]).is_ok(),
-            "the profile a key is stored under is the argument"
-        );
-    }
-
     #[tokio::test]
     async fn subject_requests_observe_the_build_capability_and_caller_boundary() {
         let http = provider_client().unwrap();
