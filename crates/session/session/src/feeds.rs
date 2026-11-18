@@ -34,18 +34,22 @@ impl crate::Session {
         }
     }
 
-    /// Publish the session's file access list to the Files daemon, and end what
-    /// apps may no longer hold, whenever the session changed.
+    /// Publish the session's file access list to the Files daemon, and end what apps may no
+    /// longer hold, whenever the session or the person's own store changed.
     ///
-    /// Both follow the same revision because both are the same decision: what
-    /// an app was allowed when it was launched is not what it is allowed now.
+    /// Both follow the same revision because both are the same decision: what an app was allowed
+    /// when it was launched is not what it is allowed now. The person's store holds their device
+    /// answers, which they take back on any of their devices.
     ///
-    /// A take-away reaches the app where it acts — its next file open is
-    /// refused by the mount, its next capture ask is refused by the broker,
-    /// and a stream it already holds is stopped — while the app itself keeps
-    /// running: nothing here closes, pauses or restarts it.
+    /// A take-away reaches the app where it acts — its next file open is refused by the mount, its
+    /// next capture ask is refused, and a stream, input capture or remote control it already holds
+    /// is ended — while the app itself keeps running: nothing here closes, pauses or restarts it.
     pub(crate) fn feed_capabilities(&self) {
-        let revision = self.shared.handle.revision();
+        let portal = self.desktop.as_ref().and_then(|desktop| desktop.portal());
+        let personal = portal
+            .and_then(|portal| portal.consents().grants().changes())
+            .map_or(0, |changes| *changes.borrow());
+        let revision = (self.shared.handle.revision(), personal);
         // A list the daemon did not take stands for nothing: until one does,
         // the session hands the same revision over again.
         let unpublished = self
@@ -65,16 +69,21 @@ impl crate::Session {
                 crate::fs_authority::device_key(),
             ));
         }
-        let Some(portal) = self.desktop.as_ref().and_then(|desktop| desktop.portal()) else {
+        let Some(portal) = portal else {
             return;
         };
-        let grants = portal.consents().grants().clone();
-        let now = tilo_clock::unix_now_ms();
-        let ended = portal.captures().keep_only(|app, workspace, kind| {
-            crate::capture_grants::still_allowed(&tree, &grants, app, workspace, kind, now)
+        let grants = portal.consents().grants();
+        grants.refuse_in(crate::capture_grants::refusals(
+            &tree,
+            tilo_clock::unix_now_ms(),
+        ));
+        let taken = grants.taken_back();
+        let ended = portal.end_captures(|app, workspace, device| {
+            crate::capture_grants::ended(grants, &taken, app, workspace, device)
         });
         if ended > 0 {
             tracing::debug!(ended, "captures ended: the session no longer allows them");
         }
+        portal.announce_device_answers();
     }
 }

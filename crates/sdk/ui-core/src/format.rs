@@ -483,6 +483,34 @@ pub fn day_range(start: Date, end: Date) -> String {
     Formats::current().day_range(start, end)
 }
 
+/// How long a permission lasts, as every list of them says it: `Once`, `Always`, and for one that
+/// ends at a time, when it ends in the **day fact** style (`Until Tomorrow 5:30 PM`).
+#[must_use]
+pub fn lifetime(lifetime: tilo_action_policy::Lifetime) -> String {
+    let tilo_action_policy::Lifetime::Until(at) = lifetime else {
+        return lifetime_kind(lifetime.key());
+    };
+    let at = i64::try_from(at)
+        .ok()
+        .and_then(|at| Timestamp::from_millisecond(at).ok())
+        .and_then(|at| at.local());
+    // Past the calendar's range there is no day to name, only the lifetime.
+    at.map_or_else(
+        || lifetime_kind("until"),
+        |at| {
+            let fact = day_fact(at.date(), Some(at.time()), crate::clock::today());
+            widget_format("format-lifetime-until-at", &[("when", fact.text.into())])
+        },
+    )
+}
+
+/// What a lifetime is called by its [`tilo_action_policy::Lifetime::key`], as a picker offers it:
+/// `Once`, `Until`, `Always`.
+#[must_use]
+pub fn lifetime_kind(key: &str) -> String {
+    crate::i18n::widget_text(&format!("format-lifetime-{key}"))
+}
+
 /// Any span between two formatted values: `Mon, Jun 29 – Sun, Jul 5`,
 /// `9:00 – 10:30`.
 #[must_use]

@@ -195,7 +195,7 @@ impl tilo_capture::broker::Answers for DeviceAnswers {
         use tilo_action_policy::Answer;
         match self
             .grants
-            .decide(&self.app, crate::apps::device_cap(device), Answer::Allow)
+            .decide(&self.app, None, crate::apps::device_cap(device))
         {
             Answer::Allow => Some(true),
             Answer::Deny => Some(false),

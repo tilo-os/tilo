@@ -379,8 +379,9 @@ impl AppTabs {
         // Where each app's own card stands this pass: the floating layer's place, which the shell
         // lays the app's window out by.
         self.follow_cards(desktop, compositor);
-        // The person may have answered a question about the device's own shell since the last pass.
-        self.host_shell.settle(services);
+        // The person may have changed their answer about the device's own shell, here or on
+        // another of their devices.
+        self.host_shell.follow(services);
     }
 
     /// Publish the pages someone shows, and tell the apps how their windows are watched: a window

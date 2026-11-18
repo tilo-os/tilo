@@ -19,6 +19,7 @@
               object, methods take their arguments by value and name some they ignore"
 )]
 
+use collab_types::caps::DeviceCap;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -442,6 +443,57 @@ impl Portal {
     #[must_use]
     pub const fn consents(&self) -> &Consents {
         &self.consents
+    }
+
+    /// End every capture whose device `ended` says the app may no longer use, asked of each by
+    /// its app, its workspace and the device: a stream it holds of the screen, the camera or the
+    /// microphone, its input capture and the remote control of the desktop. The app keeps
+    /// running. Returns how many ended.
+    pub fn end_captures(
+        &self,
+        ended: impl Fn(&str, Option<&str>, DeviceCap) -> bool + Copy,
+    ) -> usize {
+        use capture_broker::CaptureKind;
+        let streams = self.captures.keep_only(|app, workspace, kind| {
+            let device = match kind {
+                CaptureKind::Camera => DeviceCap::Camera,
+                CaptureKind::Microphone => DeviceCap::Microphone,
+                CaptureKind::Screen => DeviceCap::Screen,
+                CaptureKind::SystemAudio => DeviceCap::SystemAudio,
+            };
+            !ended(
+                app,
+                Some(workspace).filter(|named| !named.is_empty()),
+                device,
+            )
+        });
+        let sessions = [
+            session::SessionKind::InputCapture,
+            session::SessionKind::RemoteDesktop,
+        ]
+        .into_iter()
+        .flat_map(|kind| self.sessions.of_kind(kind))
+        .filter(|(path, live)| {
+            ended(
+                &live.caller.app_id,
+                live.caller.workspace.as_deref(),
+                DeviceCap::Input,
+            ) && self.sessions.end(path)
+        })
+        .count();
+        streams.saturating_add(sessions)
+    }
+
+    /// Tell the frontend which of its device entries changed since it last heard, however they
+    /// changed: the person's answers change on their other devices too.
+    pub fn announce_device_answers(&self) {
+        let Some(connection) = self.sessions.connection() else {
+            return;
+        };
+        let store = self.permissions.clone();
+        self.sessions.spawn(async move {
+            permission_store::announce_devices(&connection, &store).await;
+        });
     }
 
     /// The same, deciding device access with `consents`.

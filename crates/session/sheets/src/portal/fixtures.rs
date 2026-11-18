@@ -326,9 +326,9 @@ pub(super) fn dialog(scenario: Option<&str>) -> Dialog {
         Some("allowed") => Dialog {
             title: "Allowed for good".to_owned(),
             detail: "Meet may now use your screen without asking. \
-                     Revoke it to make Tilo ask again next time."
+                     Take it back to make Tilo ask again next time."
                 .to_owned(),
-            confirm_label: "Revoke".to_owned(),
+            confirm_label: "Take back".to_owned(),
             cancel_label: "Keep".to_owned(),
             ..Dialog::default()
         },

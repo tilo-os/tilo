@@ -618,7 +618,7 @@ fn secrets_card(cx: &ViewCx<Settings>, apps: &Result<Vec<SecretApp>, String>) ->
                 );
                 body.push(row(Box::new(thing_row(
                     &format!("secrets:{}", app.id),
-                    &app.name,
+                    &app_name(&app.name),
                     &[detail],
                     Some(Box::new(
                         Row::new()
@@ -642,17 +642,12 @@ fn device_answers_card(cx: &ViewCx<Settings>, answers: &[DeviceAnswer]) -> Setti
         body.push(note(&t("perm-device-answers-none")));
     }
     for answer in answers {
-        let kind = match answer.cap.as_str() {
-            "camera" => "Camera",
-            "microphone" => "Microphone",
-            "screen" => "Screen sharing",
-            "input" => "Remote control",
-            _ => "",
-        };
-        let what = if kind.is_empty() {
-            answer.cap.clone()
-        } else {
-            kind_shown(kind)
+        let what = match answer.cap.as_str() {
+            "camera" => t("perm-kind-camera"),
+            "microphone" => t("perm-kind-mic"),
+            "screen" => t("perm-kind-screen"),
+            "input" => t("perm-kind-remote"),
+            other => other.to_owned(),
         };
         let mut details = vec![if answer.this_device {
             t("perm-device-answer-here")
@@ -665,7 +660,7 @@ fn device_answers_card(cx: &ViewCx<Settings>, answers: &[DeviceAnswer]) -> Setti
         if answer.answer != tilo_action_policy::Answer::Allow {
             details.push(t("perm-device-answer-refused"));
         }
-        details.push(lifetime_shown(answer.lifetime));
+        details.push(ui::format::lifetime(answer.lifetime));
         let revoke = cx.actions().bind_effect_invocation(
             Button::new(
                 &format!("device-answer-revoke:{}", answer.resource),
@@ -677,7 +672,7 @@ fn device_answers_card(cx: &ViewCx<Settings>, answers: &[DeviceAnswer]) -> Setti
         );
         body.push(row(Box::new(thing_row(
             &format!("device-answer:{}", answer.resource),
-            &format!("{} · {what}", answer.app),
+            &format!("{} · {what}", app_name(&answer.app)),
             &details,
             Some(Box::new(revoke)),
         ))));
@@ -902,17 +897,14 @@ struct WsGrants {
     apps: Vec<AppGrants>,
 }
 
-fn lifetime_shown(lifetime: Lifetime) -> String {
-    t(&format!("perm-expiry-{}", lifetime.key()))
+/// What the app `id` is called: never its id.
+fn app_name(id: &str) -> String {
+    package_store::display_name_for_package_id(id)
 }
 
 fn kind_shown(english: &str) -> String {
     t(match english {
         "Files" => "perm-kind-files",
-        "Camera" => "perm-kind-camera",
-        "Microphone" => "perm-kind-mic",
-        "Screen sharing" => "perm-kind-screen",
-        "Remote control" => "perm-kind-remote",
         "Desktop control" => "perm-kind-desktop-control",
         "Network" => "perm-kind-network",
         _ => "perm-kind-action",
@@ -1050,13 +1042,13 @@ fn app_block(grants: &AppGrants) -> Vec<Item> {
                         kind.as_str(),
                         ui::widget::ChipStyle::Tinted(view.tint.tone()),
                     )])
-                    .value(lifetime_shown(view.lifetime)),
+                    .value(ui::format::lifetime(view.lifetime)),
             ) as El
         })
         .collect();
-    vec![block(Box::new(
-        ui::widget::Section::new(rows).with_header(ui::widget::SectionHeader::group(&grants.app)),
-    ))]
+    vec![block(Box::new(ui::widget::Section::new(rows).with_header(
+        ui::widget::SectionHeader::group(app_name(&grants.app)),
+    )))]
 }
 
 pub(crate) fn view(cx: &ViewCx<Settings>, app: &std::rc::Rc<SettingsApp>) -> Option<Element> {

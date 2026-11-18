@@ -45,10 +45,13 @@ fn device_of(table: &str, id: &str) -> Option<DeviceCap> {
     if table != DEVICES_TABLE {
         return None;
     }
-    [DeviceCap::Camera, DeviceCap::Microphone]
+    DEVICE_ENTRIES
         .into_iter()
         .find(|device| device.name() == id)
 }
+
+/// The devices the frontend's table has an entry for.
+const DEVICE_ENTRIES: [DeviceCap; 2] = [DeviceCap::Camera, DeviceCap::Microphone];
 
 const MAX_TABLE: usize = 96;
 const MAX_ID: usize = 512;
@@ -102,6 +105,9 @@ struct StoreFile {
     entries: BTreeMap<String, BTreeMap<String, StoredEntry>>,
 }
 
+/// An entry's permissions: what each app was answered.
+type Permissions = BTreeMap<String, Vec<String>>;
+
 /// What `Changed` carries for an entry: its permissions and its value.
 type ChangedEntry = (HashMap<String, Vec<String>>, OwnedValue);
 
@@ -112,6 +118,8 @@ pub struct PermissionStore {
     state: Arc<Mutex<StoreFile>>,
     path: Option<Arc<PathBuf>>,
     devices: DeviceGrants,
+    /// The device entries as the frontend last heard of them.
+    announced: Arc<Mutex<BTreeMap<DeviceCap, Permissions>>>,
 }
 
 impl PermissionStore {
@@ -126,6 +134,7 @@ impl PermissionStore {
             state: Arc::new(Mutex::new(state)),
             path: path.map(Arc::new),
             devices: DeviceGrants::unkept(),
+            announced: Arc::default(),
         }
     }
 
@@ -149,6 +158,23 @@ impl PermissionStore {
                     NO
                 };
                 (kept.answer.app, vec![word.to_owned()])
+            })
+            .collect()
+    }
+
+    /// The device entries whose permissions changed since the frontend last heard of them, however
+    /// they changed: here, or by the person on another of their devices.
+    pub fn changed_devices(&self) -> Vec<(String, ChangedEntry)> {
+        let mut announced = self.announced.lock_recover();
+        DEVICE_ENTRIES
+            .into_iter()
+            .filter_map(|device| {
+                let now = self.device_permissions(device);
+                (announced.get(&device) != Some(&now)).then(|| {
+                    announced.insert(device, now);
+                    let entry = self.viewed(DEVICES_TABLE, device.name(), StoredEntry::default());
+                    (device.name().to_owned(), changed_of(&entry))
+                })
             })
             .collect()
     }
@@ -489,6 +515,17 @@ impl PermissionStoreBackend {
     #[must_use]
     pub const fn new(portal: Portal) -> Self {
         Self { portal }
+    }
+}
+
+/// Tell the frontend about every device entry that changed since it last heard: the person's
+/// answers change on their other devices too, and the frontend keeps what it read.
+pub(crate) async fn announce_devices(connection: &zbus::Connection, store: &PermissionStore) {
+    for (id, changed) in store.changed_devices() {
+        if let Err(error) = announce(connection, DEVICES_TABLE.to_owned(), id, false, changed).await
+        {
+            tracing::warn!(%error, "the frontend did not hear of a device answer");
+        }
     }
 }
 
@@ -863,7 +900,7 @@ mod tests {
             )
             .expect("the frontend's answer is taken");
         assert_eq!(
-            grants.decide("org.example.App", DeviceCap::Camera, Answer::Allow),
+            grants.decide("org.example.App", None, DeviceCap::Camera),
             Answer::Allow,
             "the camera answer decides as every other device answer does"
         );
@@ -875,8 +912,25 @@ mod tests {
             .delete_permission("devices", "camera", "org.example.App")
             .expect("the frontend takes it back");
         assert_eq!(
-            grants.decide("org.example.App", DeviceCap::Camera, Answer::Allow),
+            grants.decide("org.example.App", None, DeviceCap::Camera),
             Answer::Ask
         );
+    }
+
+    /// Each device entry is told to the frontend once until it changes.
+    #[test]
+    fn a_device_entry_is_announced_once_until_it_changes() {
+        let store = PermissionStore::load(None);
+        let first: Vec<String> = store
+            .changed_devices()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(
+            first,
+            ["camera", "microphone"],
+            "the frontend hears each entry once"
+        );
+        assert!(store.changed_devices().is_empty());
     }
 }

@@ -516,11 +516,11 @@ async fn a_device_answer_kept_on_one_device_answers_there_and_is_revoked_from_an
     )
     .unwrap();
     assert_eq!(
-        on_a.decide(RECORDER, DeviceCap::Microphone, Answer::Allow),
+        on_a.decide(RECORDER, None, DeviceCap::Microphone),
         Answer::Ask
     );
     assert_eq!(
-        on_a.decide(RECORDER, DeviceCap::Screen, Answer::Allow),
+        on_a.decide(RECORDER, None, DeviceCap::Screen),
         Answer::Allow
     );
     assert!(
@@ -535,18 +535,10 @@ async fn a_device_answer_kept_on_one_device_answers_there_and_is_revoked_from_an
         Lifetime::UntilRevoked,
     )
     .unwrap();
+    assert!(on_a.taken_back().is_empty());
     assert_eq!(
-        on_a.decide(RECORDER, DeviceCap::Camera, Answer::Allow),
+        on_a.decide(RECORDER, None, DeviceCap::Camera),
         Answer::Allow
-    );
-    // A workspace puts a ceiling on it, and never more.
-    assert_eq!(
-        on_a.decide(RECORDER, DeviceCap::Camera, Answer::Deny),
-        Answer::Deny
-    );
-    assert_eq!(
-        on_a.decide(RECORDER, DeviceCap::Camera, Answer::Ask),
-        Answer::Ask
     );
 
     let linked = Linked::up(&a, &a_key, &b, &b_key).await;
@@ -562,14 +554,11 @@ async fn a_device_answer_kept_on_one_device_answers_there_and_is_revoked_from_an
     assert_eq!(seen[0].device_label, "device-2");
     assert_eq!(seen[0].answer.cap, DeviceCap::Camera);
     assert_eq!(
-        on_b.decide(RECORDER, DeviceCap::Camera, Answer::Allow),
+        on_b.decide(RECORDER, None, DeviceCap::Camera),
         Answer::Ask,
         "an answer about A's camera never opens B's"
     );
-    assert_eq!(
-        on_b.decide(RECORDER, DeviceCap::Screen, Answer::Allow),
-        Answer::Ask
-    );
+    assert_eq!(on_b.decide(RECORDER, None, DeviceCap::Screen), Answer::Ask);
 
     assert!(
         on_b.revoke(&seen[0].answer.device, RECORDER, DeviceCap::Camera)
@@ -582,10 +571,13 @@ async fn a_device_answer_kept_on_one_device_answers_there_and_is_revoked_from_an
     })
     .await;
     assert!(on_a.kept().is_empty());
+    assert_eq!(on_a.decide(RECORDER, None, DeviceCap::Camera), Answer::Ask);
     assert_eq!(
-        on_a.decide(RECORDER, DeviceCap::Camera, Answer::Allow),
-        Answer::Ask
+        on_a.taken_back(),
+        [(RECORDER.to_owned(), DeviceCap::Camera)].into(),
+        "A sees the camera it allowed was taken back on B, so what uses it there ends"
     );
+    assert!(on_a.taken_back().is_empty(), "and only once");
 
     linked.down().await;
 }

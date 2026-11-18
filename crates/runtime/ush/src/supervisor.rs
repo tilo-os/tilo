@@ -476,11 +476,11 @@ pub enum ServeRequest {
         end_report: bool,
     },
     ListEnvironments,
-    /// The person allowed Terminal's Host target, for `expiry` (the shell's
-    /// permission prompt answers with this). Only a caller outside every app
-    /// sandbox — the shell — may record it.
+    /// How long the person allows Terminal's Host target, `None` once they
+    /// took it back: the session hands their answer whenever it changes. Only
+    /// a caller outside every app sandbox — the session — may hand it.
     AllowHost {
-        expiry: tilo_action_policy::Lifetime,
+        expiry: Option<tilo_action_policy::Lifetime>,
     },
     CreateEnvironment {
         name: String,
@@ -820,7 +820,7 @@ fn serve_request(
             ..
         } => return serve_host(transport, writer, store, caller, &req),
         ServeRequest::AllowHost { expiry } => {
-            reply(writer, &allow_host(caller, store, *expiry), None)?;
+            reply(writer, &allow_host(caller, *expiry), None)?;
             return Ok(Served::Done);
         }
         ServeRequest::BranchWorkspace { into } => {
@@ -1127,24 +1127,19 @@ pub fn unbuildable(
     }
 }
 
-/// Record the person's allow for Terminal's Host target. Only a caller
-/// outside every app sandbox — the shell, which put the prompt up — may.
+/// Take the person's answer for Terminal's Host target. Only a caller outside every app sandbox —
+/// the session, which keeps the answer — may hand it.
 fn allow_host(
     caller: &crate::host::Caller,
-    store: &Store,
-    expiry: tilo_action_policy::Lifetime,
+    expiry: Option<tilo_action_policy::Lifetime>,
 ) -> ServeResponse {
     if *caller != crate::host::Caller::Session {
         return ServeResponse::Denied {
-            reason: "only the session's own shell records this allow".into(),
+            reason: "only the session hands this answer".into(),
         };
     }
-    match crate::host::HostPolicy::record_allow(store, crate::host::TERMINAL_APP_ID, expiry) {
-        Ok(()) => ServeResponse::Allowed,
-        Err(e) => ServeResponse::Denied {
-            reason: format!("the allow could not be recorded: {e}"),
-        },
-    }
+    crate::host::hand_allow(expiry);
+    ServeResponse::Allowed
 }
 
 fn branch_workspace(caller: &crate::host::Caller, store: &Store, into: &str) -> ServeResponse {
@@ -1262,11 +1257,9 @@ fn serve_host(
     else {
         return Ok(Served::Done);
     };
-    let policy = crate::host::HostPolicy::in_force(store);
     let ownership = crate::host::SessionOwnership::discover();
-    if let Err(denied) =
-        crate::host::decide_host(caller, *requested_by, &ownership, &policy, Some(unix_now()))
-    {
+    let allowed = crate::host::host_allowed(tilo_clock::unix_now_ms());
+    if let Err(denied) = crate::host::decide_host(caller, *requested_by, &ownership, allowed) {
         let reason = denied.reason();
         AuditLog::at(store.audit_dir()).append(
             &crate::audit::AuditEntry::new("serve", "host", "open-session", false).because(&reason),
@@ -1279,7 +1272,7 @@ fn serve_host(
         reply(writer, &response, None)?;
         return Ok(Served::Refused);
     }
-    crate::host::HostPolicy::spend_one_time(crate::host::TERMINAL_APP_ID);
+    crate::host::spend_one_time();
     let term = term.as_deref().unwrap_or("xterm-256color");
     let (cols, rows) = (*cols, *rows);
     let Some(account) = crate::host::login_account() else {
