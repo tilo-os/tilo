@@ -33,6 +33,8 @@ import WebKit
 ///                                                    line: the provider step stands in the main chat again, and
 ///                                                    "link" with that provider as its preset types the new key
 ///   {"do": "link-another"}   {"do": "not-now"}        as "Link another provider" there, and as Not now under the step
+///   {"do": "reply-way"}                               as the press under the newest reply whose model gave no answer
+///                                                    for the key's sake: the same step stands in the main chat
 ///   {"do": "event", "name": "…", "when": "…", "instruction": "…"}   something that comes at a time
 ///   {"do": "task", "title": "…"}                      as the plus of the Tasks panel gives the assistant a task
 ///   {"do": "stop"}                                    stop the answer that is being written
@@ -237,6 +239,12 @@ final class AssistantDrive {
             ["title": .string(task.title), "state": .string(String(describing: task.state)),
              "note": task.note.map(JSON.string) ?? .null]
         }))
+        // What the main chat offers under its newest reply, where that reply's model gave no answer.
+        if let offered = model.replyWay(in: .main) {
+            once("replyWay", ["item": .string(offered.item.value), "says": .string(offered.way.words)])
+        } else {
+            once("replyWay", .null)
+        }
         once("comes", .array(model.automations.map { coming in
             ["title": .string(coming.title), "when": .string(coming.summary), "on": .bool(coming.isOn),
              "next": coming.next.map { .number($0.timeIntervalSince1970) } ?? .null]
@@ -262,6 +270,12 @@ final class AssistantDrive {
                 line["files"] = .array(message.attachments.map { file in
                     ["id": .string(file.id.value), "name": .string(file.name), "bytes": file.bytes.map { .number(Double($0)) } ?? .null]
                 })
+            }
+            // The typed cause their server says with a reply that got no answer; never its words.
+            switch message.keyFault {
+            case .key(let provider, _)?: line["fault"] = ["is": "key", "provider": .string(provider.value)]
+            case .noProvider?: line["fault"] = ["is": "no-provider"]
+            case nil: break
             }
         case .question(let question):
             line["kind"] = "question"
@@ -413,6 +427,11 @@ final class AssistantDrive {
         case "not-now":
             model.putAwayKeyStep()
             AssistantDrive.say(["asked": "not-now"])
+        case "reply-way":
+            // As the one press under the newest reply whose model gave no answer for the key's sake.
+            guard let offered = model.replyWay(in: .main) else { AssistantDrive.say(["error": "nothing is offered under the newest reply"]); return }
+            model.take(offered)
+            AssistantDrive.say(["asked": "reply-way"])
         case "stop":
             model.stopAnswering(in: .main)
             AssistantDrive.say(["asked": "stop"])

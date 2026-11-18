@@ -27,6 +27,8 @@ public struct ConversationView: View {
         let since = chat == .main ? model.sinceLeft : nil
         let sinceFirst = since.flatMap { conversation.first(since: $0.left) }
         let sinceRow = sinceFirst.flatMap { first in rows.first { $0.item == first }?.id }
+        // Under the newest reply whose model gave no answer for the key's sake: the way back to the key.
+        let way = model.replyWay(in: chat)
         GeometryReader { space in
             ScrollViewReader { reader in
                 ScrollView {
@@ -39,7 +41,8 @@ public struct ConversationView: View {
                         if let agent = liveAgent, let thing = agent.live { LiveThingPlace(thing: thing) }
                         ForEach(rows) { row in
                             if let since, row.id == sinceRow { SinceLeftCard(since: since) }
-                            RowView(row: row, chat: chat, picturedSecret: picturedSecret).id(row.id)
+                            RowView(row: row, chat: chat, picturedSecret: picturedSecret, way: way?.item == row.item ? way : nil)
+                                .id(row.id)
                         }
                         if let since, sinceRow == nil, conversation.isLoaded { SinceLeftCard(since: since) }
                         // Her message stands and no turn has taken it up for a while: one quiet line
@@ -109,6 +112,8 @@ private struct RowView: View {
     let row: Conversation.Row
     let chat: Chat
     let picturedSecret: String
+    /// The way back to the key that stands under this piece, where one does.
+    var way: AssistantModel.ReplyWay?
     @Environment(AssistantModel.self) private var model
 
     var body: some View {
@@ -123,6 +128,7 @@ private struct RowView: View {
         case .piece(let item, let marked):
             if marked { ImportantMark() }
             PieceView(item: item, picturedSecret: picturedSecret)
+            if let way { ReplyWayButton(offered: way) }
         }
     }
 }
