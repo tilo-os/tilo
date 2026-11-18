@@ -59,8 +59,6 @@ pub fn replay_spec(recording: &ui::feedback::RecordingRef) -> tilo_actions::Acti
     )
 }
 
-/// The report item's action that replays its recording.
-
 /// Called by the authenticated host's receipt reader after its canonical
 /// resource reports `Saved`; the source is retained transport identity, not input.
 pub fn durable_receipt(

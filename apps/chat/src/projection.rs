@@ -203,10 +203,6 @@ impl ChatProjection for Chat {
         with_filed_and_sending(rows, &feedback_rows(self, channel), messages, channel)
     }
 
-    /// The feedback filed in `channel`, as the timeline shows it: a message
-    /// by whoever filed it, saying what they reported
-    /// ([`crate::feedback::message`]).
-
     /// Every filed report as the message its channel shows, under its
     /// message id ([`crate::feedback::message_id`]).
     fn feedback_messages(&self) -> std::vec::IntoIter<(Id, crate::chat::Message)> {
