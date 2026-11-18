@@ -797,6 +797,27 @@ fn a_machine_reads_its_plan_from_its_entry_reports_its_drives_and_finishes() {
     );
 }
 
+/// A plan open on its network or on the workspaces it holds is not asked
+/// about: the person's devices set those up on the machine's entry, so nothing
+/// waits for an answer.
+#[test]
+fn a_machine_asks_nothing_about_what_its_entry_sets_up() {
+    let servers = planned("largest", "network,hosting");
+    let mut drives = empty_drives();
+    drives[1].bytes = 2_000_000_000_000;
+    let report = machine::report(
+        servers
+            .state()
+            .unwrap()
+            .planned_by_nonce(NONCE)
+            .map(|(_, server)| server)
+            .unwrap(),
+        &drives,
+    )
+    .unwrap();
+    assert!(report.ask.is_empty(), "nothing is asked: {report:?}");
+}
+
 /// A rule that matches exactly one of the machine's drives is settled by the
 /// machine itself; the plan's other open choices are asked instead.
 #[test]

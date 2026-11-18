@@ -57,6 +57,13 @@ pub fn waiting<'a>(servers: &'a Servers, nonce: &str) -> Option<&'a Server> {
     servers.planned_by_nonce(nonce).map(|(_, server)| server)
 }
 
+/// The choices a machine asks about: each is one of the person's devices
+/// answering in its entry ([`super::Servers::answer_machine_choice`]). Its
+/// network and the workspaces it holds are set up on its entry instead, so a
+/// machine with those open installs with what its entry says and asks
+/// nothing.
+const ASKABLE: [&str; 5] = ["destination", "name", "disk", "unlock", "updates"];
+
 /// What the machine with `drives` reports when it enrolls: its real drives,
 /// and the choices `server`'s plan leaves it unable to settle.
 ///
@@ -69,8 +76,8 @@ pub fn report(server: &Server, drives: &[Drive]) -> Result<Report, String> {
     }
     for choice in server.plan.still_open() {
         // A disk rule that settled exactly one drive answers the disk here;
-        // every other open choice is the person's.
-        if choice == "disk" && !asked.contains_key("disk") {
+        // every other askable choice is the person's.
+        if !ASKABLE.contains(&choice) || (choice == "disk" && !asked.contains_key("disk")) {
             continue;
         }
         asked
@@ -120,12 +127,11 @@ pub fn step(server: &Server, drives: &[Drive]) -> Result<Step, String> {
 /// Why the plan leaves `choice` to the person, as its machine tells them.
 fn reason_left_open(choice: &str) -> &'static str {
     match choice {
+        "destination" => "the plan leaves the OS it installs open",
         "name" => "the plan leaves the machine's name open",
-        "network" => "the plan leaves the machine's network open",
         "disk" => "the plan leaves the machine's disk open",
         "unlock" => "the plan leaves how the machine unlocks open",
         "updates" => "the plan leaves the updates it follows open",
-        "hosting" => "the plan leaves the workspaces it holds open",
         _ => "the plan leaves this choice open",
     }
 }
