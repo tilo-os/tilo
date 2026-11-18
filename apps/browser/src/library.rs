@@ -1,31 +1,9 @@
 //! The browser document's bookmarks, apart from browsing history, which stays
 //! private.
 
-use ui::tilo_resource::{self, Collection, Id, Model, Refusal};
+use ui::tilo_resource::{Collection, Id};
 
-pub const MAX_BOOKMARKS: usize = 10_000;
-
-#[derive(Model, Clone, Debug, PartialEq, Eq)]
-#[model(check = Bookmark::valid)]
-pub struct Bookmark {
-    /// Absolute http(s), normalized: `https://example.org` keeps its slash.
-    #[model(readonly)]
-    pub url: String,
-    #[model(label)]
-    pub title: String,
-}
-
-impl Bookmark {
-    fn valid(&self) -> Result<(), Refusal> {
-        if crate::actions::normalized_bookmark_url(&self.url).as_deref() != Some(&self.url) {
-            return Err(Refusal::new("a bookmark is a normalized http(s) URL"));
-        }
-        if self.title.len() > crate::actions::MAX_BOOKMARK_TITLE_BYTES {
-            return Err(Refusal::new("a bookmark's title is at most 4 KiB"));
-        }
-        Ok(())
-    }
-}
+pub use browser_model::library::{Bookmark, MAX_BOOKMARKS};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BookmarkEntry {

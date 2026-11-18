@@ -1575,6 +1575,7 @@ dependencies = [
  "blake3",
  "bounded-zip",
  "browser-continuity",
+ "browser-model",
  "fnv",
  "hex",
  "host-info",
@@ -1640,6 +1641,18 @@ dependencies = [
  "tilo-sandbox-core",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "browser-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-resource",
+ "tilo-test-env",
+ "url",
+ "workspace-hack",
 ]
 
 [[package]]

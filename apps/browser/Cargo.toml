@@ -62,6 +62,8 @@ tilo-clock = { path = "../../crates/platform/tilo-clock" }
 # and content by address (`ContentStore`) are the toolkit's to hand an app:
 # `ui::tilo_actions` and `ui::content`, not the crates behind them.
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["webview-adblock"] }
+# The resource the app draws: its types, verbs and typed action arguments.
+browser-model = { path = "../browser-model" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-browser-import-engine = { path = "../../crates/runtime/engines/browser-import", optional = true }
 tilo-accounts-engine = { path = "../../crates/runtime/engines/accounts", optional = true }
