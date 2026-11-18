@@ -185,6 +185,7 @@ members = [
     "apps/photos",
     "apps/print-centre",
     "apps/publisher",
+    "apps/publisher-model",
     "apps/remote",
     "apps/scratchpad",
     "apps/scratchpad-model",

@@ -1120,3 +1120,9 @@ paths = [
 reason = "The machine a container runs on, and the web host names the tilo.sh stack serves and checks: origins, `Host` headers and ssh `Host` entries, all network names."
 words = ["host"]
 paths = ["os/containers/*"]
+
+[[allow]]
+reason = "A registry address's host, the network name a registry is reached at, which the glossary keeps as a network host name."
+words = ["host"]
+identifiers = ["host", "host_str"]
+paths = ["apps/publisher-model/src/lib.rs"]
