@@ -34,6 +34,10 @@ pub const STALLED_TICKS: u32 = 10;
 pub const GROWTH_WINDOW_TICKS: u64 = 20;
 /// Growth within the window that marks a unit as running away.
 pub const RUNAWAY_GROWTH: u64 = 256 * MIB;
+/// Growth within the window below which a unit is never ended, however long pressure stays
+/// critical: a stall no app grew into (a desktop starting again and paging its programs back in)
+/// is not freed by ending an app that allocated a few pages meanwhile.
+pub const STALLED_GROWTH: u64 = 32 * MIB;
 /// Samples after an end before the policy would end anything else.
 pub const COOLDOWN_TICKS: u64 = 10;
 /// Samples between two reclaims from the same unit.
@@ -231,11 +235,11 @@ impl Policy {
     }
 
     /// The unit growing out of control, with its growth: the most growth of at least
-    /// [`RUNAWAY_GROWTH`], or, once pressure stayed critical for [`STALLED_TICKS`], the most growth at
-    /// all.
+    /// [`RUNAWAY_GROWTH`], or, once pressure stayed critical for [`STALLED_TICKS`], the most growth of
+    /// at least [`STALLED_GROWTH`].
     fn runaway<'a>(&self, units: &'a [Unit]) -> Option<(&'a Unit, u64)> {
         let floor = if self.critical_for >= STALLED_TICKS {
-            1
+            STALLED_GROWTH
         } else {
             RUNAWAY_GROWTH
         };
@@ -458,7 +462,7 @@ mod tests {
             for at in 0..u64::from(STALLED_TICKS) {
                 let units = [
                     unit("browser", Tier::Background, 6 * GIB),
-                    unit("editor", Tier::Foreground, GIB + at * MIB),
+                    unit("editor", Tier::Foreground, GIB + at * 8 * MIB),
                 ];
                 for action in policy.tick(CRITICAL, &units) {
                     if let Action::End { unit, .. } = action {
@@ -467,6 +471,17 @@ mod tests {
                 }
             }
             assert_eq!(ends, [(u64::from(STALLED_TICKS) - 1, "editor".to_string())]);
+            // A stall nothing grew into (a desktop starting again, paging its programs back in)
+            // ends no app that only allocated a few pages meanwhile.
+            let mut policy = Policy::new();
+            for at in 0..(2 * u64::from(STALLED_TICKS)) {
+                let units = [unit("terminal", Tier::Background, 40 * MIB + at * 4096)];
+                let actions = policy.tick(CRITICAL, &units);
+                assert!(
+                    actions.iter().all(|a| !matches!(a, Action::End { .. })),
+                    "sample {at}: {actions:?}"
+                );
+            }
             // Nothing grows at all: nothing is ended by the policy.
             let mut policy = Policy::new();
             for _ in 0..(2 * STALLED_TICKS) {
