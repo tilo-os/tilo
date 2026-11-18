@@ -500,7 +500,8 @@ async fn works_on_its_issue(in_page: bool, public: bool) {
         );
     }
     // How an argument is written makes it nothing else: where an action declares a note, a
-    // text spelled as the reference of a secret names no resource and is refused as one.
+    // text spelled as the reference of a secret is read as a path of the workspace, names no
+    // app there and is refused as that.
     let links =
         |list: &tasks::issue_list::IssueList| list.issues.get(&issue).map(|now| now.links.len());
     let before = links(&tracker(workspaces, workspace, &part).await);
@@ -517,9 +518,9 @@ async fn works_on_its_issue(in_page: bool, public: bool) {
     )
     .await;
     assert!(
-        failed && refused.contains("is a resource of the workspace"),
-        "a secret's reference where a note is picked is refused as a path that names no \
-         resource: {refused}"
+        failed && refused.contains("no app vault.item:"),
+        "a secret's reference where a note is picked is read as a path, which names no app: \
+         {refused}"
     );
     assert_eq!(
         links(&tracker(workspaces, workspace, &part).await),

@@ -800,8 +800,21 @@ async fn another_persons_item_is_refused_by_the_use_and_stays_unused() {
         .server
         .downcast_ref::<tilo_server::daemon::Server>()
         .expect("the server the test started");
-    let mut his_page =
-        Browser::open_at(server, &his_device, &hosted.served_by, &hosted.workspace).await;
+    // A member the workspace let in joins it from a page of their own: only a device of the
+    // server's own person asks the server to govern a workspace first.
+    let peer = Browser::session(server, &his_device, &hosted.served_by);
+    let events = peer.events();
+    let joined =
+        tilo_server_protocol::WorkspaceId::parse(&hosted.workspace).expect("the workspace's id");
+    peer.send(tilo_session_client::Cmd::Join(joined))
+        .expect("his page asks to join");
+    crate::support::admitted_to(&peer, joined).await;
+    let mut his_page = Browser::joined(
+        (peer, events),
+        &his_device,
+        &hosted.served_by,
+        &hosted.workspace,
+    );
     let his = on_page(
         &mut his_page,
         vault(person_vault::ADD),
