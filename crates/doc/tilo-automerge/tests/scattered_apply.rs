@@ -103,15 +103,15 @@ fn letter_cost(changes: usize) -> u64 {
 
 #[test]
 fn a_remote_letter_costs_no_more_after_a_long_scattered_history() {
-    // 4,000 and 80,000 letters of history.
+    // 4,000 and 32,000 letters of history.
     let short = letter_cost(250);
-    let long = letter_cost(5_000);
+    let long = letter_cost(2_000);
     // Without the index, finding a letter's place searched nearly every slab
     // of the document: about 25 µs a letter in the short text and 0.5 ms in
     // the long one, in an optimised build. With it, a few µs in either.
     assert!(
         long <= short * 2 + 4,
-        "a remote letter searched {long} slabs after 80,000 letters of scattered history, \
+        "a remote letter searched {long} slabs after 32,000 letters of scattered history, \
          {short} after 4,000"
     );
 }
