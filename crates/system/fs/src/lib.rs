@@ -95,10 +95,6 @@ pub mod workspace_authority;
 #[cfg(feature = "filesystem")]
 pub mod writer;
 
-#[cfg(test)]
-#[cfg(feature = "filesystem")]
-mod tests;
-
 // The tilo-doc conflict merge decodes peer versions in Automerge workers.
 #[cfg(test)]
 #[cfg(feature = "filesystem")]

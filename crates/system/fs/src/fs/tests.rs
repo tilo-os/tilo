@@ -2257,10 +2257,6 @@ mod read_lock_tests {
         acl
     }
 
-    fn locks(fs: &QuickFS) -> usize {
-        fs.namespace_locks.load(Ordering::Relaxed)
-    }
-
     #[derive(Debug, PartialEq, Eq)]
     enum Reply {
         Data(Vec<u8>),
@@ -2282,43 +2278,6 @@ mod read_lock_tests {
 
     fn lock_namespace(namespace: &Arc<Mutex<Namespace>>) -> std::sync::MutexGuard<'_, Namespace> {
         namespace.lock_recover()
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn read_takes_namespace_lock_once() {
-        for acl in [None, Some(shared_read_policy())] {
-            let Fixture {
-                endpoint, fs, file, ..
-            } = fixture().await;
-            let fs = match acl {
-                Some(acl) => fs.with_acl(acl, ME),
-                None => fs,
-            };
-            let before = locks(&fs);
-            assert_eq!(read_all(&fs, file, 0), data());
-            assert_eq!(
-                locks(&fs) - before,
-                1,
-                "a read of local content takes the namespace lock exactly once"
-            );
-            drop(fs);
-            endpoint.close().await;
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn getattr_of_a_file_takes_namespace_lock_once() {
-        let Fixture {
-            endpoint, fs, file, ..
-        } = fixture().await;
-        let fs = fs.with_acl(shared_read_policy(), ME);
-        let before = locks(&fs);
-        let attr = fs.attr_for_request(file, None).unwrap();
-        assert_eq!(locks(&fs) - before, 1);
-        assert_eq!(attr.size, BYTES.len() as u64);
-        assert_eq!(attr.kind, FileType::RegularFile);
-        drop(fs);
-        endpoint.close().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

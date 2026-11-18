@@ -562,8 +562,6 @@ pub struct QuickFS {
     commit_fault: Mutex<Option<(u64, i32)>>,
     #[cfg(test)]
     commit_pause: Mutex<Option<CommitPause>>,
-    #[cfg(test)]
-    namespace_locks: std::sync::atomic::AtomicUsize,
 }
 
 impl QuickFS {
@@ -611,8 +609,6 @@ impl QuickFS {
             commit_fault: Mutex::new(None),
             #[cfg(test)]
             commit_pause: Mutex::new(None),
-            #[cfg(test)]
-            namespace_locks: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -673,8 +669,6 @@ impl QuickFS {
     }
 
     fn ns(&self) -> std::sync::MutexGuard<'_, Namespace> {
-        #[cfg(test)]
-        self.namespace_locks.fetch_add(1, Ordering::Relaxed);
         self.namespace.lock_recover()
     }
 
