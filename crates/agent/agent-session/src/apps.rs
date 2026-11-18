@@ -1784,6 +1784,9 @@ fn replica_access(
             device,
         } => {
             let person = access.person_id().unwrap_or_default().to_owned();
+            // The access was bounded as the caller's acting: whether the agent is one its
+            // person's own device handed its session to is read from it.
+            let handed = access.acting.handed;
             let permissions = member_permissions(access, sandbox, unix_time);
             if let Some(agent) = agent {
                 // Named as the host admitted it (`Caller::acting`), so
@@ -1791,6 +1794,13 @@ fn replica_access(
                 invoker = tilo_actions::ActionInvoker::agent(agent)
                     .acting_for(person)
                     .named(agent_name);
+                // A handed agent is named handed. Every receiver decides a change as the
+                // invoker it names and gives the delegation a device hands its agent only
+                // to an invoker that says so: named without it, what this agent was just
+                // allowed here is refused where the change arrives, and nobody keeps it.
+                if handed {
+                    invoker.acting = invoker.acting.handed();
+                }
                 if let Some(session) = agent_session {
                     invoker.acting = invoker.acting.in_session(session);
                 }
