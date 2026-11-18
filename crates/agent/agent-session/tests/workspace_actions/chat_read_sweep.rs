@@ -1,6 +1,8 @@
 //! Every other way an agent comes to what Chat keeps, each asked by a test of its own: a
 //! thread, a view, what a message carries, a read mark, a kept summary, a mention, the list of
-//! conversations with the rows of a listing, and the feed of the workspace's changes. Each is
+//! conversations with the rows of a listing, the feed of the workspace's changes, a question
+//! that waits, an action that takes a message's or a conversation's id as an argument, and a
+//! question about an action on a kept message. Each is
 //! asked by the agent of a viewer, of an editor and of the owner, on a turn and outside one, and
 //! held to the one rule: what is said in a direct conversation is given to an agent only where
 //! the person it acts for is one of the people it is between, and an agent whose person is one
@@ -806,6 +808,307 @@ async fn the_feed_of_changes_tells_an_agent_nothing_of_a_direct_conversation_its
         )
         .await;
         judged.answer(at, "the tool that watches", &watched, (&told, false));
+    }
+    judged.settle();
+    swept.page.peer.close();
+}
+
+/// What the service answers an action on nothing.
+const NOTHING: &str = "Err(\"no such action is offered\")";
+
+impl Judged {
+    /// What an action answered `who` for an id kept from it and for an id nothing has. Whoever
+    /// is not offered the action is answered the same for both. Whoever is offered it is
+    /// answered for the kept id as for an action on nothing: never by the action itself, which
+    /// would say whose the message is or do what was asked.
+    fn as_nothing(&mut self, who: &str, probe: &str, kept: &str, none: &str) {
+        if kept != none && kept != NOTHING {
+            self.alike(who, probe, kept, none);
+        }
+    }
+}
+
+/// What waits: a question Ada's agent put to her in their conversation is read by nobody
+/// else's agent, and nobody else's agent answers it: an answer to it by its id is taken as an
+/// action on nothing, and the question still waits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_question_that_waits_is_neither_read_nor_answered_by_an_agent_of_someone_else() {
+    let mut served = Served::start(1).await;
+    let swept = swept(&mut served).await;
+    let asking = serde_json::json!({
+        "text": "May I book the shrike table?",
+        "answers": [{"id": "yes", "label": "Yes"}, {"id": "no", "label": "No"}],
+    });
+    let asking = in_place(swept.places[0].as_str(), asking);
+    did(
+        &served,
+        &swept,
+        &swept.readers[4].1,
+        (&messages(), "ask", asking),
+    )
+    .await;
+    let question = held_message(&served, &swept.workspace, "shrike").await;
+    let reads = swept.all_read(&served).await;
+    let asked = [(0, "shrike")];
+    let fields = serde_json::json!({"fields": ["text", "question"], "pageSize": 200});
+    let nobody = "0".repeat(question.as_str().len());
+    let mut judged = Judged::default();
+    for (reader, (who, caller)) in swept.readers.iter().enumerate() {
+        let at = (reader, *who);
+        judged.answer(at, "the list of messages", &reads[reader], (&asked, true));
+        let listed = tried(
+            &served,
+            &swept,
+            caller,
+            (&messages(), "read", fields.clone()),
+        )
+        .await;
+        judged.answer(
+            at,
+            "the list, asked for its questions",
+            &listed,
+            (&asked, true),
+        );
+        if takes_part(reader, 0) {
+            continue;
+        }
+        let mut answers = Vec::new();
+        for message in [question.as_str(), nobody.as_str()] {
+            let answer = serde_json::json!({"message": message, "answer": "yes"});
+            let answered = tried(
+                &served,
+                &swept,
+                caller,
+                (&messages(), "answer-question", answer),
+            )
+            .await;
+            answers.push(answered.replace(message, "ID"));
+        }
+        judged.answer(
+            at,
+            "an answer to the question",
+            &answers[0],
+            (&asked, false),
+        );
+        judged.as_nothing(who, "an answer to the question", &answers[0], &answers[1]);
+    }
+    let part = conversation_part(&served.workspaces, &swept.workspace).await;
+    let held = part.messages.iter().find(|(id, _)| **id == question);
+    let waits = format!("{:?}", held.expect("the question is kept").1.question);
+    if !waits.contains("answered: None") {
+        judged.faults.push(format!(
+            "ACTED ON: her question was answered from outside: {waits}"
+        ));
+    }
+    judged.settle();
+    swept.page.peer.close();
+}
+
+/// Chat's actions that take a message by its id as an argument, each with what else it takes.
+fn by_message(
+    message: &str,
+    open: &str,
+    author: &str,
+) -> Vec<(String, &'static str, serde_json::Value)> {
+    use serde_json::json;
+    let on_messages = [
+        ("pin", json!({"message": message, "pinned": true})),
+        (
+            "edit-message",
+            json!({"message": message, "text": "Changed from outside."}),
+        ),
+        ("delete-message", json!({"message": message})),
+        ("remove-message", json!({"message": message})),
+        ("retry", json!({"message": message, "reply": "again"})),
+        ("stop-agent", json!({"message": message})),
+        (
+            "answer-question",
+            json!({"message": message, "answer": "allow"}),
+        ),
+        ("withdraw-question", json!({"message": message})),
+        (
+            "settle-question",
+            json!({"message": message, "outcome": "done"}),
+        ),
+        ("stop-sharing", json!({"message": message})),
+        ("share-open", json!({"message": message, "open": true})),
+        (
+            "post",
+            in_place(open, json!({"text": "About that.", "parent": message})),
+        ),
+    ];
+    let mut calls: Vec<_> = on_messages
+        .into_iter()
+        .map(|(action, arguments)| (messages(), action, arguments))
+        .collect();
+    let report =
+        json!({"message": message, "author": {"person": author}, "reason": "It looks odd."});
+    calls.push((String::new(), "report-message", report));
+    calls
+}
+
+/// Chat's actions that take a conversation by its id as an argument.
+fn by_conversation(
+    conversation: &str,
+    message: &str,
+) -> Vec<(String, &'static str, serde_json::Value)> {
+    use serde_json::json;
+    let cause = json!({"kind": "reminder", "label": "From outside", "key": "sweep-1"});
+    let summary = json!({"through": message, "through_ts": 1, "text": "From outside.", "conversation": conversation});
+    vec![
+        (
+            messages(),
+            "post",
+            in_place(conversation, json!({"text": "Written from outside."})),
+        ),
+        (
+            messages(),
+            "ask",
+            in_place(conversation, json!({"text": "Asked from outside?"})),
+        ),
+        (
+            messages(),
+            "ask-agent",
+            in_place(conversation, json!({"text": "Do this.", "cause": cause})),
+        ),
+        (
+            String::new(),
+            "mark-read",
+            in_place(conversation, json!({"part": 0, "seen": 1})),
+        ),
+        (
+            String::new(),
+            "export-content",
+            in_place(conversation, json!({})),
+        ),
+        (String::new(), "keep-summary", summary),
+    ]
+}
+
+/// An action that takes a message's or a conversation's id as an argument: asked with the id
+/// of Ada's sentence to her agent, or of their conversation, by an agent whose person takes no
+/// part in it, each is answered as an action on nothing or as it is for an id nothing has,
+/// says nothing of what is kept, and leaves the conversation as it was. Asked with a direct
+/// conversation of others that nothing was said in yet, each is answered the same. Her own
+/// agent's action on her message is done.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_action_that_takes_an_id_does_nothing_with_a_direct_conversation_of_others() {
+    let mut served = Served::start(1).await;
+    let swept = swept(&mut served).await;
+    swept.all_read(&served).await;
+    let (hers, place) = (swept.said[0].as_str(), swept.places[0].as_str());
+    let no_message = "0".repeat(hers.len());
+    let unsaid = conversation_with(&served.ada, "an-agent-nobody-keeps");
+    let (open, ada) = (swept.places[2].as_str(), person_of(&served.ada));
+    let words = [(0, WORDS[0])];
+    let hidden = |answer: &str| {
+        let mut answer = answer.to_owned();
+        for id in [place, unsaid.as_str()] {
+            answer = answer.replace(&escaped(id), "ID").replace(id, "ID");
+        }
+        answer.replace(hers, "ID").replace(&no_message, "ID")
+    };
+    let mut judged = Judged::default();
+    for (reader, (who, caller)) in swept.readers.iter().enumerate().take(4) {
+        let kept = by_message(hers, open, &ada)
+            .into_iter()
+            .chain(by_conversation(place, hers));
+        let none = by_message(&no_message, open, &ada)
+            .into_iter()
+            .chain(by_conversation(unsaid.as_str(), &no_message));
+        for ((resource, action, arguments), (_, _, nothing)) in kept.zip(none) {
+            let probe = format!("{action} with a kept id");
+            let kept = tried(&served, &swept, caller, (&resource, action, arguments)).await;
+            let none = tried(&served, &swept, caller, (&resource, action, nothing)).await;
+            judged.answer((reader, who), &probe, &kept, (&words, false));
+            judged.as_nothing(who, &probe, &hidden(&kept), &hidden(&none));
+        }
+    }
+    let part = conversation_part(&served.workspaces, &swept.workspace).await;
+    let there: Vec<String> = part
+        .messages
+        .iter()
+        .map(|(id, held)| format!("{id}: {held:?}"))
+        .filter(|held| names(held, place))
+        .collect();
+    let untouched =
+        there.len() == 1 && there[0].contains(HERS) && !there[0].contains("pinned: true");
+    if !untouched {
+        judged.faults.push(format!(
+            "ACTED ON: her conversation is not as she left it: {there:?}"
+        ));
+    }
+    if chat_held(&served, &swept.workspace)
+        .await
+        .summaries
+        .contains_key(place)
+    {
+        judged
+            .faults
+            .push("ACTED ON: a summary of her conversation was kept from outside".into());
+    }
+    let pin = serde_json::json!({"message": hers, "pinned": true});
+    let own = tried(
+        &served,
+        &swept,
+        &swept.readers[4].1,
+        (&messages(), "pin", pin),
+    )
+    .await;
+    if !own.starts_with("Ok(") {
+        judged.faults.push(format!(
+            "NOT GIVEN: the owner's agent pins her own message: {own}"
+        ));
+    }
+    judged.settle();
+    swept.page.peer.close();
+}
+
+/// A question about a kept message: an action that asks its person first, asked on Ada's
+/// sentence by an agent whose person takes no part in her conversation, is not answered by
+/// the action itself, and nothing the workspace then holds puts her words, or her message's
+/// id, before anybody else: no question about it waits in any conversation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn no_question_is_put_to_a_person_about_a_message_of_a_direct_conversation_of_others() {
+    let mut served = Served::start(1).await;
+    let swept = swept(&mut served).await;
+    swept.all_read(&served).await;
+    let hers = swept.said[0].as_str();
+    let nobody = "0".repeat(hers.len());
+    let words = [(0, WORDS[0])];
+    let probe = "an action that asks first, on the message";
+    let mut judged = Judged::default();
+    for (reader, (who, caller)) in swept.readers.iter().enumerate() {
+        let mut answers = Vec::new();
+        for message in [hers, nobody.as_str()] {
+            let call = serde_json::json!({"path": "chat/Messages#delete-message", "args": {"message": message}, "wait_ms": 500});
+            let answered = tool(&served, &swept, caller, ("tilo_do", call)).await;
+            answers.push(answered.replace(message, "ID"));
+        }
+        judged.answer((reader, who), probe, &answers[0], (&words, false));
+        // The action's own failure says whose the message is; an action on nothing says nothing.
+        if !takes_part(reader, 0)
+            && answers[0] != answers[1]
+            && answers[0].contains("action_failed")
+        {
+            judged.alike(who, probe, &answers[0], &answers[1]);
+        }
+    }
+    let part = conversation_part(&served.workspaces, &swept.workspace).await;
+    let all: Vec<_> = part.messages.iter().collect();
+    for (id, held) in all {
+        let shown = format!("{held:?}");
+        if id.as_str() == hers && held.text != HERS {
+            judged.faults.push(format!(
+                "ACTED ON: her message is not as she left it: {shown}"
+            ));
+        }
+        if id.as_str() != hers && (shown.contains(WORDS[0]) || shown.contains(hers)) {
+            judged.faults.push(format!(
+                "GIVEN: the message {id} holds something of hers: {}",
+                cut(&shown)
+            ));
+        }
     }
     judged.settle();
     swept.page.peer.close();

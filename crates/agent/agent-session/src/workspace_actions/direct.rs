@@ -18,6 +18,10 @@
 //! - listed no row of such an entry, nor of anything under it ([`Kept::keeps`]), with the pages
 //!   counted in the rows they are given;
 //! - answered for an action on one exactly as for one that does not exist;
+//! - answered for an action offered to them that takes one by an argument as for an action on
+//!   nothing ([`Kept::given`]): the action does nothing with it and asks nobody about it, and
+//!   one that takes the id of such a conversation is answered so whether or not anything was
+//!   said in it yet;
 //! - answered by a read with no row that names one ([`Kept::shown`]);
 //! - told no change of one by the feed of the workspace's changes ([`Worker::told`]): not what
 //!   was said, not where, and not that anything was.
@@ -182,6 +186,38 @@ impl Kept {
             Err(super::unknown_action())
         } else {
             Ok(())
+        }
+    }
+
+    /// The `arguments` of an action its caller is offered, as it is carried out with them; or,
+    /// where one of them is something not there for the person this is kept from
+    /// ([`Self::withholds`]), the answer of an action on nothing. Asked only once the action is
+    /// known to be offered to the caller, so that whoever is not offered it is answered as
+    /// they were before, the same for what is kept and for what does not exist.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome becomes the receipt the caller is answered with"
+    )]
+    pub(super) fn given(
+        &self,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, super::Outcome> {
+        if arguments.values().any(|value| self.argued(value)) {
+            Err(super::unknown_action())
+        } else {
+            Ok(arguments)
+        }
+    }
+
+    /// Whether an action's argument `value` is, or holds, something not there for them
+    /// ([`Self::withholds`]). What a map in it is keyed by is not asked: an action that counts
+    /// by conversation names every one of them so.
+    fn argued(&self, value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::String(text) => self.withholds(text),
+            serde_json::Value::Array(items) => items.iter().any(|item| self.argued(item)),
+            serde_json::Value::Object(fields) => fields.values().any(|field| self.argued(field)),
+            _ => false,
         }
     }
 
@@ -515,5 +551,37 @@ mod tests {
             !from_bo.tells_of(&open),
             "the open chat's change is told to Bo"
         );
+    }
+
+    #[test]
+    fn an_action_is_given_no_argument_that_names_what_is_kept() {
+        use serde_json::json;
+        let (ada, bo) = (person("ada"), person("bo"));
+        let hers = between(&[MemberId::person("ada"), MemberId::agent("scout")]);
+        let unsaid = between(&[MemberId::person("ada"), MemberId::agent("nobody")]);
+        let bytes = saved(&[("m-hers", hers.as_str()), ("m-open", "general")], &[]);
+        let (from_bo, from_ada) = (kept_of(&bytes, &bo), kept_of(&bytes, &ada));
+        let taking = |value: serde_json::Value| value.as_object().unwrap().clone();
+        // Her message, her conversation, one of hers nothing was said in, and one inside a list.
+        for kept in [
+            json!({"message": "m-hers", "pinned": true}),
+            json!({"said_in": hers, "text": "words"}),
+            json!({"said_in": unsaid, "text": "words"}),
+            json!({"about": [{"message": "m-hers"}]}),
+        ] {
+            let kept = taking(kept);
+            assert!(from_bo.given(kept.clone()).is_err(), "{kept:?} for Bo");
+            assert_eq!(from_ada.given(kept.clone()).ok(), Some(kept), "for Ada");
+        }
+        // Words that only hold a key, the open chat's message, and what a map is keyed by.
+        let mut counted = serde_json::Map::new();
+        counted.insert(hers, json!(2));
+        for given in [
+            json!({"message": "m-open", "text": "about m-hers and more"}),
+            json!({"earlier": {"0": counted}}),
+        ] {
+            let given = taking(given);
+            assert_eq!(from_bo.given(given.clone()).ok(), Some(given), "for Bo");
+        }
     }
 }

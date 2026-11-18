@@ -859,9 +859,10 @@ impl Worker {
         caller: &Caller,
         who: &Bounded,
         (request, route, state): (&InvokeRequest, &DocumentRoute, &WorkspaceState),
-        (target, arguments): (
+        (target, arguments, withheld): (
             &tilo_actions::remote::RemoteActionTarget,
             serde_json::Map<String, serde_json::Value>,
+            &super::direct::Kept,
         ),
     ) -> Result<
         (
@@ -896,7 +897,9 @@ impl Worker {
                 },
             ));
         };
-        let arguments = descriptor.bind_prompt_text(arguments);
+        // What is said in a direct conversation the caller's person takes no part in is not
+        // there for an action they are offered either ([`super::direct`]).
+        let arguments = withheld.given(descriptor.bind_prompt_text(arguments))?;
         let declared = descriptor.contract.need().field;
         let approval = self
             .log()
