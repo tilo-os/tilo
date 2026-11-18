@@ -23,7 +23,8 @@ enum Next {
     Waits,
     /// It lists the workspace through its tool, which ends the call.
     Looks,
-    /// Its connection is lost, which ends the call without an answer.
+    /// Its answer breaks off into what nobody can read, which ends the call without an
+    /// answer. Asking again does not cure it, so whatever carries the call asks no more.
     Breaks,
     /// Its connection is lost and whatever carries the call asks again: it says so, and what
     /// it writes from here on is the answer.
@@ -114,8 +115,8 @@ impl ModelProvider for Writing {
             call.ended = true;
             if broke {
                 return Err(ModelError {
-                    kind: ErrorKind::Unavailable,
-                    message: "the connection was lost".into(),
+                    kind: ErrorKind::InvalidResponse,
+                    message: "its answer could not be read to the end".into(),
                 });
             }
             if !said.is_empty() {
@@ -409,8 +410,8 @@ async fn a_stop_ends_the_models_call_and_the_reply_keeps_what_came() {
     page.peer.close();
 }
 
-/// A provider whose connection is lost in the middle of its answer: the reply keeps the words
-/// that came, and says below them that the model did not answer and why.
+/// A provider whose answer breaks off in the middle, in a way asking again does not cure: the
+/// reply keeps the words that came, and says below them that the model did not answer and why.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_answer_that_breaks_off_keeps_what_came_and_says_why() {
     team!(root, browser, actions, workspaces, workspace, page, person);
@@ -429,7 +430,7 @@ async fn an_answer_that_breaks_off_keeps_what_came_and_says_why() {
     let reply = ended(&workspaces, &workspace, &first).await;
     assert_eq!(
         reply.text,
-        "The launch is\n\nMy model did not answer: the connection was lost"
+        "The launch is\n\nMy model did not answer: its answer could not be read to the end"
     );
     assert_eq!(end_of(&reply), Some(AgentFinish::Failed));
     assert_eq!(written(&reply).1, Some(AgentFinish::Failed));
