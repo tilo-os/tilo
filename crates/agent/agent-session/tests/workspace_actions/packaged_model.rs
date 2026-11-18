@@ -182,6 +182,7 @@ fn settled(
 }
 
 #[test]
+#[ignore = "reads the model module the app-models check built (t test test-packaged-model)"]
 fn an_agent_applies_a_packaged_apps_action_on_a_server_that_never_built_it() {
     // The invocation's origin clock is the wall clock, which the replay has to
     // read again: this test moves its process's clock and takes it to itself.
