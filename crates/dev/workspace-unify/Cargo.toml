@@ -1152,7 +1152,7 @@ doc = false
 "tempfile-3_27_0" = { package = "tempfile", version = "^3.27.0", default-features = false, features = ["default", "getrandom"] }
 "tendril-0_5_1" = { package = "tendril", version = "^0.5.1", default-features = false, features = [] }
 "termcolor-1_4_1" = { package = "termcolor", version = "^1.4.1", default-features = false, features = [] }
-"terminal" = { path = "../../../apps/terminal", default-features = false, features = ["samples"] }
+"terminal" = { path = "../../../apps/terminal", default-features = false, features = ["default", "desktop", "samples"] }
 "test-http" = { path = "../../../crates/dev/test-http", default-features = false, features = [] }
 "test-server" = { path = "../../../crates/dev/test-server", default-features = false, features = [] }
 "themes" = { path = "../../../apps/themes", default-features = false, features = [] }
