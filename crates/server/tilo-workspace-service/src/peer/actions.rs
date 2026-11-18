@@ -67,10 +67,11 @@ pub(super) async fn handle_remote_action(
         return refuse(Refusal::NotReady);
     };
     if !current_session(&wr, peer, session.outbound) {
-        // A newer connection of the same device took over: this one is on its
-        // way out, and what it asks is asked again by the connection that
-        // carries the device now.
-        return refuse(Refusal::Superseded);
+        // The workspace dropped this connection's subscription (its device
+        // revoked or removed): its audit ends it.
+        return refuse(Refusal::NotAMember(
+            "sender may not act in the workspace".into(),
+        ));
     }
     if action_peer_admitted(&wr, peer, session).is_err() {
         return refuse(Refusal::NotAMember(
@@ -256,7 +257,7 @@ fn hand_over(
     };
     // Every production subscription registers its authenticated peer beside
     // its subscriber, so the addressee is re-authorised from it.
-    let Some(target) = wr.state_sessions.get(&to) else {
+    let Some(target) = wr.newest_state(&to) else {
         return refuse(unavailable_target(wr, &to));
     };
     if action_peer_admitted(wr, &target.peer, session).is_err() {

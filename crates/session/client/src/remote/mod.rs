@@ -112,11 +112,6 @@ pub trait RemoteSession: Send + Sync {
         0
     }
 
-    /// Connect again, for a connection the host no longer treats as this
-    /// device's: a newer connection of the same device took over, and this one
-    /// is on its way out.
-    fn connect_again(&self) {}
-
     /// Where `workspace_id` and this device's writes stand on the session; `None` for a session
     /// that does not say.
     fn session_state(
@@ -239,7 +234,7 @@ fn unavailable(reason: impl Into<String>) -> ActionCallError {
 /// ask for access), the host's words otherwise.
 fn refused(refusal: &Refusal) -> ActionCallError {
     match refusal {
-        Refusal::NotReady | Refusal::Superseded => ActionCallError::NotReady,
+        Refusal::NotReady => ActionCallError::NotReady,
         Refusal::NotAMember(_) | Refusal::NotAdmitted | Refusal::NotGranted(_) => {
             ActionCallError::NotPermitted
         }
@@ -825,15 +820,10 @@ impl Inner {
                     to,
                     refusal,
                 } if workspace_id == self.workspace_id && to == self.device => {
-                    // A connection that is not the device's any more, or none at
-                    // all, ran nothing: what waits is asked again on the
-                    // connection that is. Any other refusal is the answer.
-                    // The connection it was refused on counts first: the one it
-                    // is asked again on is a later one.
+                    // A host that was not ready ran nothing: what waits is
+                    // asked again on a later connection. Any other refusal is
+                    // the answer.
                     let kept = worth_asking_again(&refusal) && self.refused();
-                    if refusal == Refusal::Superseded {
-                        self.session.connect_again();
-                    }
                     if !kept {
                         self.waiting
                             .lock_recover()
@@ -1348,19 +1338,6 @@ mod tests {
                 wake();
             }
         }
-
-        /// Say the session could not carry a frame to this device, and why.
-        fn undeliverable(&self, refusal: Refusal) {
-            self.heard.lock_recover().push(Heard::Undeliverable {
-                workspace_id: WorkspaceId::from_u128(1),
-                to: DEVICE,
-                refusal,
-            });
-            let wake = self.wake.lock_recover().clone();
-            if let Some(wake) = wake {
-                wake();
-            }
-        }
     }
 
     impl RemoteSession for Device {
@@ -1461,87 +1438,6 @@ mod tests {
             .expect("the device answers")
             .expect("the device takes it");
         assert_eq!(receipt.status, ReceiptStatus::Accepted, "{receipt:?}");
-    }
-
-    /// A session whose connection the device no longer has: what it asks there
-    /// is refused as superseded, and it answers on the connection it dials
-    /// again.
-    struct SupersededOnce {
-        device: Arc<Device>,
-        /// The connection the session is on, whether the host takes frames on
-        /// it, and how many times the session dialled again.
-        connections: Mutex<(u64, bool, usize)>,
-    }
-
-    impl SupersededOnce {
-        fn new(device: Arc<Device>) -> Arc<Self> {
-            Arc::new(Self {
-                device,
-                connections: Mutex::new((1, false, 0)),
-            })
-        }
-    }
-
-    impl RemoteSession for SupersededOnce {
-        fn send_remote_action(
-            &self,
-            workspace_id: WorkspaceId,
-            to: [u8; 32],
-            frame: Vec<u8>,
-        ) -> Result<(), String> {
-            if self.connections.lock_recover().1 {
-                return self.device.send_remote_action(workspace_id, to, frame);
-            }
-            self.device.undeliverable(Refusal::Superseded);
-            Ok(())
-        }
-
-        fn take_heard(&self) -> Vec<Heard> {
-            self.device.take_heard()
-        }
-
-        fn on_change(&self, wake: Arc<dyn Fn() + Send + Sync>) {
-            self.device.on_change(wake);
-        }
-
-        fn connections(&self) -> u64 {
-            self.connections.lock_recover().0
-        }
-
-        fn connect_again(&self) {
-            let mut connections = self.connections.lock_recover();
-            connections.0 = connections.0.saturating_add(1);
-            connections.1 = true;
-            connections.2 = connections.2.saturating_add(1);
-        }
-    }
-
-    /// A request asked on a connection the device no longer has is the
-    /// session's to ask again, not the caller's to retry: the connection that
-    /// carries answers it, and the caller never hears the first refusal.
-    #[test]
-    fn a_request_refused_on_a_superseded_connection_is_asked_again_on_the_next() {
-        let invocation = InvocationId::new();
-        let device = Device::new(invocation, false);
-        let session = SupersededOnce::new(Arc::clone(&device));
-        let actions = SessionActions::new(
-            Arc::clone(&session) as Arc<dyn RemoteSession>,
-            WorkspaceId::from_u128(1),
-            DEVICE,
-        );
-        let receipt = actions
-            .invoke(&caller(), write(invocation))
-            .wait_timeout(Duration::from_secs(5))
-            .ok()
-            .flatten()
-            .expect("answered, not refused")
-            .expect("asked again on the connection that carries");
-        assert_eq!(receipt.status, ReceiptStatus::Accepted, "{receipt:?}");
-        assert_eq!(
-            session.connections.lock_recover().2,
-            1,
-            "the session dialled again rather than leaving the caller to retry"
-        );
     }
 
     /// A write the device answered accepted (still being saved) after its caller stopped

@@ -402,8 +402,7 @@ pub(super) fn finish_peer_outcome(
     device: &[u8; 32],
 ) -> Result<(), PeerError> {
     match outcome {
-        // A superseded session is a normal handover, not a failure.
-        Ok(()) | Err(PeerError::Superseded) => Ok(()),
+        Ok(()) => Ok(()),
         Err(error) => {
             metrics.inc_subscriber_dropped();
             tracing::warn!(

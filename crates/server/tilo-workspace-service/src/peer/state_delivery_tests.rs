@@ -39,8 +39,8 @@ async fn a_fanned_delivery_skips_the_workspaces_lock_until_authority_moves() {
         disconnect: disconnect.clone(),
         content_waiting: Arc::default(),
     });
-    runtime.state_sessions.insert(
-        recipient.device_public_key,
+    runtime.put_state(
+        &recipient.device_public_key,
         StateSession {
             peer: recipient.clone(),
             tx: state_tx.clone(),

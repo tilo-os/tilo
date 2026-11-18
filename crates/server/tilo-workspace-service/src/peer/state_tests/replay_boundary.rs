@@ -11,8 +11,7 @@ async fn at_replay_boundary(
 ) -> (Arc<std::sync::atomic::AtomicBool>, Option<Arc<Lag>>) {
     let mut runtime = fixture.workspace.lock().await;
     let session = runtime
-        .state_sessions
-        .get_mut(&fixture.recipient.device_public_key)
+        .newest_state_mut(&fixture.recipient.device_public_key)
         .unwrap();
     let catchup = Arc::new(ReplayCatchup::new(
         &fixture.store.root().join(crate::store::replay::WORK_DIR),
@@ -30,7 +29,9 @@ async fn at_replay_boundary(
 /// A delivery of another workspace taking the recipient's only queue slot.
 async fn fill_with_cross_workspace(fixture: &Fixture) {
     let runtime = fixture.workspace.lock().await;
-    let session = &runtime.state_sessions[&fixture.recipient.device_public_key];
+    let session = &runtime
+        .newest_state(&fixture.recipient.device_public_key)
+        .unwrap();
     let mut cross_workspace = fixture.envelope(3);
     if let Envelope::Delta { workspace_id, .. } = &mut cross_workspace {
         *workspace_id = WorkspaceId::from_u128(99);
@@ -175,7 +176,9 @@ async fn overflow_before_final_ready_lags_and_ready_still_follows() {
     let (release, task) = replay_held_before_ready(&fixture).await;
     let (state_tx, live, lag) = {
         let runtime = fixture.workspace.lock().await;
-        let session = &runtime.state_sessions[&fixture.recipient.device_public_key];
+        let session = &runtime
+            .newest_state(&fixture.recipient.device_public_key)
+            .unwrap();
         (
             session.tx.clone(),
             session.live.clone(),
@@ -219,7 +222,9 @@ async fn replay_fenced_before_final_ready_never_writes_ready() {
     // The device leaves the workspace while its replay waits to write `Ready`.
     let live = {
         let mut runtime = fixture.workspace.lock().await;
-        let live = runtime.state_sessions[&fixture.recipient.device_public_key]
+        let live = runtime
+            .newest_state(&fixture.recipient.device_public_key)
+            .unwrap()
             .live
             .clone();
         runtime.remove_subscriber(&fixture.recipient.device_public_key);

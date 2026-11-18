@@ -613,12 +613,6 @@ async fn prepare_admission(
     }
     // Include admitted cross-user live members; explicit device membership is
     // not the only signed-workspace authority supported by subscriptions.
-    // A device's own change is not sent back to it. What the host commits
-    // itself (the governor's decisions, a workspace bot's writes) no session
-    // sent, so it reaches the host device's own session too: the workspace
-    // actions the host runs for members read through that session, and
-    // would otherwise never see a bot complete what a member started.
-    let host_commit = source.is_none();
     // A browser environment's device reaches its own record and nothing else
     // of the workspace: a frame of another record is no change of its own.
     // A person's own record reaches their devices alone, and a host the
@@ -627,7 +621,7 @@ async fn prepare_admission(
     // host does not retain is queued for each of them, known by the identity
     // it retained.
     let person_of = |device: &[u8; 32]| {
-        if let Some(session) = runtime.state_sessions.get(device) {
+        if let Some(session) = runtime.newest_state(device) {
             return Some(session.peer.user_public_key);
         }
         if channel.is_some() {
@@ -650,20 +644,13 @@ async fn prepare_admission(
             || owner
                 .is_some_and(|owner| !runtime.attached(device) && person_of(device) != Some(owner))
     };
-    let sessions = runtime
-        .subscribers
-        .iter()
-        .filter(|(key, _)| {
-            (**key != author || host_commit)
-                && !(from_attached && runtime.attached(key))
-                && !outside(key)
-        })
-        .map(|(key, sub)| (*key, sub.tx.clone()))
-        .collect::<Vec<_>>();
+    let sessions = reached_sessions(&runtime, source.as_ref(), author, &|key| {
+        (!from_attached || !runtime.attached(key)) && !outside(key)
+    });
     let replay_targets = sessions
         .iter()
-        .filter_map(|(device, _)| {
-            let session = runtime.state_sessions.get(device)?;
+        .filter_map(|(device, tx)| {
+            let session = runtime.session(device, tx)?.state.as_ref()?;
             let catchup = session.replay.as_ref()?.clone();
             (session.live.load(std::sync::atomic::Ordering::SeqCst)
                 && catchup.phase.load(std::sync::atomic::Ordering::SeqCst) == ReplayCatchup::ACTIVE)
@@ -683,7 +670,7 @@ async fn prepare_admission(
     let logical_offline_bytes = (delta_len as u64).saturating_mul(
         recipients
             .iter()
-            .filter(|key| !runtime.subscribers.contains_key(*key))
+            .filter(|key| !runtime.has_subscriber(key))
             .count() as u64,
     );
 
@@ -698,6 +685,35 @@ async fn prepare_admission(
     })
 }
 
+/// The live connections an admitted change from `source` (none for one the
+/// host commits itself) by `author` reaches, among those `reaches` lets it.
+/// A connection's own change is not sent back to it; the device's other
+/// connections (a second tab, an agent's session beside its person's page) take
+/// it as any session does. An attached host carries its members' changes
+/// under their own keys, so the author's device has the change already, on
+/// whichever connection. What the host commits itself (the governor's
+/// decisions, a workspace bot's writes) no session sent, so it reaches the
+/// host device's own session too: the workspace actions the host does for
+/// members read through that session, and would otherwise never see a bot
+/// complete what a member started.
+fn reached_sessions(
+    runtime: &crate::workspace::WorkspaceRuntime,
+    source: Option<&StateSource>,
+    author: [u8; 32],
+    reaches: &dyn Fn(&[u8; 32]) -> bool,
+) -> Vec<([u8; 32], tokio::sync::mpsc::Sender<Envelope>)> {
+    let carried = source.is_some_and(|source| source.peer.device_public_key != author);
+    runtime
+        .all_sessions()
+        .filter(|(key, session)| {
+            let own =
+                source.is_some_and(|source| session.is(&source.tx)) || (carried && **key == author);
+            !own && reaches(key)
+        })
+        .map(|(key, session)| (*key, session.subscriber.tx.clone()))
+        .collect()
+}
+
 /// Tell every other attached host subscribed to `runtime`'s workspace that
 /// it is behind: a change one attached host sent is not forwarded to
 /// another (that would loop a mesh), so each asks for what it lacks
@@ -706,7 +722,8 @@ async fn prepare_admission(
 fn tell_withheld(runtime: &crate::workspace::WorkspaceRuntime, source: Option<&StateSource>) {
     let origin = source.map(|source| source.peer.device_public_key);
     let workspace_id = runtime.store.workspace_id();
-    for (key, subscriber) in &runtime.subscribers {
+    for (key, session) in runtime.all_sessions() {
+        let subscriber = &session.subscriber;
         if runtime.attached(key) && Some(*key) != origin {
             // A host too far behind to take the word reconnects, and asks
             // for everything it lacks then.
@@ -1117,9 +1134,8 @@ impl StatePublisher {
     async fn fence(&self, replay_targets: &[ReplayPendingTarget]) {
         let mut runtime = self.workspace.lock().await;
         for target in replay_targets {
-            if target.current(&runtime)
-                && let Some(sub) = runtime.subscribers.get(&target.device)
-            {
+            if let Some(session) = target.session(&runtime) {
+                let sub = &session.subscriber;
                 let outbound = sub.tx.clone();
                 let _ = sub.disconnect.try_send(());
                 runtime.remove_subscriber_session(&target.device, &outbound);

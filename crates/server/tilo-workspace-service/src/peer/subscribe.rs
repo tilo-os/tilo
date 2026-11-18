@@ -5,17 +5,11 @@ use super::{
     Arc, AuthenticatedPeer, Decision, Envelope, Lag, MAX_AUTOBOUND_WORKSPACES, PeerError,
     ReplayCatchup, ReplayHandle, ReplayTicket, ResumeLog, SessionCtx, SharedWorkspace,
     StateDelivery, StateSession, StateSource, Step, StoreError, Subscriber, WorkspaceAutobind,
-    WorkspaceOperation, WorkspaceRegistry, current_session, lost_session, mpsc,
-    session_peer_authorized, unix_now_ns,
+    WorkspaceOperation, WorkspaceRegistry, current_session, mpsc, session_peer_authorized,
+    unix_now_ns,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
-
-/// How a subscriber's replay capture finished.
-enum SubscribeReplayCompletion {
-    Ready(ReplayHandle),
-    Superseded,
-}
 
 /// How a subscription asks for its replay.
 pub(super) enum Subscription {
@@ -96,12 +90,6 @@ async fn open_resume(
 /// read showed.
 struct AdmittedSubscription {
     workspace: SharedWorkspace,
-    /// The subscriber channel the workspace held for this device when it admitted
-    /// the subscription; the replay completion checks it is still the same.
-    expected: Option<mpsc::Sender<Envelope>>,
-    /// The device's earlier connections still subscribing when this one was
-    /// let in: whichever of them registers first, this one replaces.
-    earlier: Vec<mpsc::WeakSender<Envelope>>,
     store: crate::store::WorkspaceStore,
 }
 
@@ -165,8 +153,6 @@ pub(super) async fn subscribe(
 ) -> Result<Subscribed, PeerError> {
     let AdmittedSubscription {
         workspace: ws,
-        expected,
-        earlier,
         store,
     } = {
         let admission = admit_subscription(peer, session, subscribed, workspace_id).await?;
@@ -211,8 +197,6 @@ pub(super) async fn subscribe(
     let registration = SubscriberRegistration {
         workspace: completion_workspace,
         source,
-        expected,
-        earlier,
         bind,
         presence: session.presence.cloned(),
         state_tx,
@@ -234,25 +218,15 @@ pub(super) async fn subscribe(
                 })?;
                 match step {
                     Step::More => Ok(Step::More),
-                    Step::Done(handle) => Ok(Step::Done(SubscribeReplayCompletion::Ready(handle))),
+                    Step::Done(handle) => Ok(Step::Done(handle)),
                 }
             },
-            move |result| async move {
-                let SubscribeReplayCompletion::Ready(handle) = result? else {
-                    return Err(crate::persistence::error(
-                        "only replay completion can classify a subscriber as superseded",
-                    ));
-                };
-                register_subscriber(registration, handle).await
-            },
+            move |result| async move { register_subscriber(registration, result?).await },
         )
         .await?;
     let completion = crate::persistence::receipt(rx).await?;
     crate::timing::event("join.capture", capturing, 0);
-    let handle = match completion {
-        SubscribeReplayCompletion::Ready(handle) => handle,
-        SubscribeReplayCompletion::Superseded => return Err(PeerError::Superseded),
-    };
+    let handle = completion;
     // Captured: whatever the replay waits on from here is its own page's
     // network, which no other page's replay may wait behind.
     ticket.authority.release_slot();
@@ -331,11 +305,8 @@ async fn admit_subscription(
         ));
     }
     if subscribed.contains(&workspace_id) && !current_session(&wr, peer, session.outbound) {
-        return Err(lost_session(
-            &wr,
-            peer,
-            session,
-            WorkspaceOperation::Subscribe,
+        return Err(PeerError::Protocol(
+            "subscriber authorization changed".into(),
         ));
     }
     // A host attached to this one holds its session under an active lease,
@@ -353,11 +324,8 @@ async fn admit_subscription(
                 ));
             }
             if subscribed.contains(&workspace_id) && !current_session(&wr, peer, session.outbound) {
-                return Err(lost_session(
-                    &wr,
-                    peer,
-                    session,
-                    WorkspaceOperation::Subscribe,
+                return Err(PeerError::Protocol(
+                    "subscriber authorization changed".into(),
                 ));
             }
         }
@@ -368,17 +336,10 @@ async fn admit_subscription(
             }));
         }
     }
-    let expected = wr
-        .subscribers
-        .get(&peer.device_public_key)
-        .map(|sub| sub.tx.clone());
-    let earlier = wr.subscription_admitted(peer.device_public_key, session.outbound);
     let store = wr.store.clone();
     drop(wr);
     Ok(SubscribeAdmission::Admitted(AdmittedSubscription {
         workspace: ws,
-        expected,
-        earlier,
         store,
     }))
 }
@@ -388,10 +349,6 @@ async fn admit_subscription(
 struct SubscriberRegistration {
     workspace: SharedWorkspace,
     source: StateSource,
-    /// The subscriber channel the workspace held at admission.
-    expected: Option<mpsc::Sender<Envelope>>,
-    /// The device's connections that were still subscribing at admission.
-    earlier: Vec<mpsc::WeakSender<Envelope>>,
     /// The replay ticket's authority, bound to the session's liveness.
     bind: Arc<crate::persistence::ReplayAuthority>,
     presence: Option<Arc<crate::presence_mailbox::PresenceMailbox>>,
@@ -411,12 +368,10 @@ struct SubscriberRegistration {
 async fn register_subscriber(
     registration: SubscriberRegistration,
     handle: ReplayHandle,
-) -> Result<SubscribeReplayCompletion, StoreError> {
+) -> Result<ReplayHandle, StoreError> {
     let SubscriberRegistration {
         workspace: completion_workspace,
         source,
-        expected,
-        earlier,
         bind,
         presence,
         state_tx,
@@ -426,72 +381,40 @@ async fn register_subscriber(
         channel_reader,
     } = registration;
     let mut wr = crate::workspace_io::fresh_membership(&completion_workspace).await?;
-    wr.subscription_completed(&source.peer.device_public_key, &source.tx);
-    let current = wr.subscribers.get(&source.peer.device_public_key);
-    // An earlier connection of the device, still subscribing when this one
-    // was let in, registered first: the stale session of a device that
-    // reconnected. This newer one replaces it.
-    let replaces_earlier = current.is_some_and(|current| {
-        earlier.iter().any(|earlier| {
-            earlier
-                .upgrade()
-                .is_some_and(|earlier| earlier.same_channel(&current.tx))
-        })
-    });
-    let unchanged = replaces_earlier
-        || match (expected.as_ref(), current) {
-            (Some(expected), Some(current)) => expected.same_channel(&current.tx),
-            (None, None) => true,
-            // The device's earlier connection held the slot when this
-            // one subscribed, and its teardown has since released it.
-            // This subscription would have displaced it anyway, so it
-            // takes the slot. Only this connection's own slot
-            // vanishing is a loss of authorization.
-            (Some(expected), None) => !expected.same_channel(&source.tx),
-            (None, Some(_)) => false,
-        };
     if !source.alive() || !source.admits(&wr, &source.peer) {
         return Err(crate::persistence::error(
             "replay subscriber authorization changed",
         ));
     }
-    let replaced =
-        current.is_some_and(|current| !current.tx.same_channel(&source.tx)) && !unchanged;
-    if replaced {
-        return Ok(SubscribeReplayCompletion::Superseded);
-    }
-    if !unchanged {
-        return Err(crate::persistence::error(
-            "replay subscriber authorization changed",
-        ));
-    }
+    let device = source.peer.device_public_key;
+    // The connection subscribing again keeps its state stream's liveness.
     let live = wr
-        .subscribers
-        .get(&source.peer.device_public_key)
-        .filter(|current| current.tx.same_channel(&source.tx))
-        .and_then(|_| wr.state_sessions.get(&source.peer.device_public_key))
+        .session(&device, &source.tx)
+        .and_then(|current| current.state.as_ref())
         .map_or_else(
             || Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            |session| session.live.clone(),
+            |state| state.live.clone(),
         );
     // Binding may fail when the waiting connection/receipt was dropped.
     // It must precede every registration side effect.
     bind.bind(live.clone())?;
+    let tx = source.tx.clone();
     wr.add_subscriber(Subscriber {
-        device_public_key: source.peer.device_public_key,
+        device_public_key: device,
         tx: source.tx,
         disconnect: source.disconnect,
         content_waiting: content,
     });
     if let Some(mailbox) = presence {
-        wr.route_presence(source.peer.device_public_key, mailbox);
+        wr.route_presence(device, &tx, mailbox);
     }
     // A device is its person's for good: what a write to that person's own
     // record is queued for while the device is away.
     wr.store
-        .remember_person(source.peer.device_public_key, source.peer.user_public_key);
-    wr.state_sessions.insert(
-        source.peer.device_public_key,
+        .remember_person(device, source.peer.user_public_key);
+    wr.set_state_session(
+        &device,
+        &tx,
         StateSession {
             live,
             peer: source.peer,
@@ -502,7 +425,7 @@ async fn register_subscriber(
         },
     );
     drop(wr);
-    Ok(SubscribeReplayCompletion::Ready(handle))
+    Ok(handle)
 }
 
 /// Handle `Unsubscribe`: drop the live subscriber (if the workspace

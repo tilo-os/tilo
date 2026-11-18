@@ -884,13 +884,6 @@ impl crate::remote::RemoteSession for Asking {
         );
         Some(changed)
     }
-
-    fn connect_again(&self) {
-        // The host no longer takes this connection as the device's: the session
-        // dials again, and what waited for it is asked on the connection that
-        // carries.
-        let _ = self.outbox.send(Cmd::Reconnect);
-    }
 }
 
 #[cfg(test)]

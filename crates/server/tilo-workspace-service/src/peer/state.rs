@@ -6,7 +6,7 @@
 use super::{
     AgentRegistry, Arc, AuthenticatedPeer, Envelope, HashMap, PeerError, ReplayCatchup,
     ReplayPendingTarget, ServerTrust, SessionCtx, SharedWorkspace, WorkspaceOperation,
-    current_session, enqueue_state, lost_session, mpsc, trace_native_publication, workspace_access,
+    current_session, enqueue_state, mpsc, trace_native_publication, workspace_access,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
@@ -370,10 +370,9 @@ impl StateDelivery {
         outbound: &mpsc::Sender<Envelope>,
     ) -> bool {
         self.live.load(std::sync::atomic::Ordering::SeqCst)
-            && current_session(runtime, peer, outbound)
             && runtime
-                .state_sessions
-                .get(&peer.device_public_key)
+                .session(&peer.device_public_key, outbound)
+                .and_then(|current| current.state.as_ref())
                 .is_some_and(|current| Arc::ptr_eq(&current.live, &self.live))
     }
 }
@@ -459,11 +458,8 @@ pub(super) async fn handle_delta(
         // subscriber; a follow-up write must close rather than refuse twice.
         let runtime = ws.lock().await;
         if !current_session(&runtime, peer, session.outbound) {
-            return Err(lost_session(
-                &runtime,
-                peer,
-                session,
-                WorkspaceOperation::State,
+            return Err(PeerError::Protocol(
+                "subscriber authorization changed".into(),
             ));
         }
         let asker = StateSource::new(peer, session);
@@ -808,11 +804,8 @@ pub(super) async fn handle_delta_prefix(
         trace_all(&envelopes, "server_source_refused");
         let runtime = workspace.lock().await;
         if !current_session(&runtime, peer, session.outbound) {
-            return Err(lost_session(
-                &runtime,
-                peer,
-                session,
-                WorkspaceOperation::State,
+            return Err(PeerError::Protocol(
+                "subscriber authorization changed".into(),
             ));
         }
         let asker = StateSource::new(peer, session);

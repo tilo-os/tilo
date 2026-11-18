@@ -257,7 +257,11 @@ async fn paused_state_roundtrip(plain_lag: Option<LagBoundary>, full_backlog: bo
     let (mut br, mut bw) = wires.remove(0);
 
     if let Some(boundary) = plain_lag {
-        let lag = workspace.lock().await.state_sessions[&b.device_public_key]
+        let lag = workspace
+            .lock()
+            .await
+            .newest_state(&b.device_public_key)
+            .unwrap()
             .lag
             .as_ref()
             .unwrap()
@@ -319,8 +323,8 @@ async fn paused_state_roundtrip(plain_lag: Option<LagBoundary>, full_backlog: bo
                 while workspace
                     .lock()
                     .await
-                    .state_sessions
-                    .contains_key(&b.device_public_key)
+                    .newest_state(&b.device_public_key)
+                    .is_some()
                 {
                     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
                 }
@@ -353,11 +357,11 @@ async fn paused_state_roundtrip(plain_lag: Option<LagBoundary>, full_backlog: bo
                 panic!("the server closed the session on explicit unsubscribe: {ended:?}");
             }
             assert!(
-                !workspace
+                workspace
                     .lock()
                     .await
-                    .state_sessions
-                    .contains_key(&b.device_public_key)
+                    .newest_state(&b.device_public_key)
+                    .is_none()
             );
             // A queued hint may outlive the subscription that produced it.
             // Its ordering is fixed here after the real unsubscribe reply.
@@ -398,7 +402,11 @@ async fn paused_state_roundtrip(plain_lag: Option<LagBoundary>, full_backlog: bo
         .await;
         if !unsubscribed {
             assert!(
-                workspace.lock().await.state_sessions[&b.device_public_key]
+                workspace
+                    .lock()
+                    .await
+                    .newest_state(&b.device_public_key)
+                    .unwrap()
                     .live
                     .load(std::sync::atomic::Ordering::SeqCst),
                 "ordinary byte backpressure must preserve the authorized subscription"
@@ -418,11 +426,11 @@ async fn paused_state_roundtrip(plain_lag: Option<LagBoundary>, full_backlog: bo
                 "an explicitly closed subscription cannot become ready again"
             );
             assert!(
-                !workspace
+                workspace
                     .lock()
                     .await
-                    .state_sessions
-                    .contains_key(&b.device_public_key)
+                    .newest_state(&b.device_public_key)
+                    .is_none()
             );
         } else {
             assert_eq!(
@@ -764,7 +772,8 @@ async fn retained_replay_failure_and_duplicate_retirement_are_recoverable() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn fresh_membership_read_releases_routing_lock_and_fences_replaced_session() {
+async fn fresh_membership_read_releases_routing_lock_and_a_sibling_connection_leaves_the_action_be()
+{
     let (root, user) = UserIdentity::generate("alice", 1);
     let (a, _) = certified_device(&root, user.public_key, "a");
     let (b, _) = certified_device(&root, user.public_key, "b");
@@ -792,6 +801,10 @@ async fn fresh_membership_read_releases_routing_lock_and_fences_replaced_session
             disconnect: session_disconnect.clone(),
             content_waiting: Arc::default(),
         });
+        wr.put_state(
+            &peer.device_public_key,
+            StateSession::for_test(peer.clone()),
+        );
     }
     let wr = Arc::new(AsyncMutex::new(wr));
     let registry = Arc::new(AsyncMutex::new(HashMap::from([(id, wr.clone())])));
@@ -842,11 +855,13 @@ async fn fresh_membership_read_releases_routing_lock_and_fences_replaced_session
         observer.join().unwrap(),
         "fresh membership read held routing lock"
     );
-    let Some(Envelope::RemoteActionUndeliverable { refusal, .. }) = refused else {
-        panic!("a replaced session's action is undeliverable, got {refused:?}");
-    };
-    assert_eq!(refusal, tilo_server_protocol::refusal::Refusal::Superseded);
-    assert!(brx.try_recv().is_err(), "nothing reached the target");
+    // Another connection of the same device entering takes nothing from
+    // this one: its action reaches the target.
+    assert!(refused.is_none(), "{refused:?}");
+    assert!(
+        matches!(brx.try_recv(), Ok(Envelope::RemoteAction { .. })),
+        "the action reached the target"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -878,8 +893,10 @@ async fn authorization_rechecks_certificates_after_blocking_membership_read() {
             disconnect: session_disconnect.clone(),
             content_waiting: Arc::default(),
         });
-        wr.state_sessions
-            .insert(peer.device_public_key, StateSession::for_test(peer.clone()));
+        wr.put_state(
+            &peer.device_public_key,
+            StateSession::for_test(peer.clone()),
+        );
     }
     let wr = Arc::new(AsyncMutex::new(wr));
     let registry = Arc::new(AsyncMutex::new(HashMap::from([(id, wr.clone())])));
@@ -1005,7 +1022,7 @@ async fn a_device_presence_frame_rearms_its_live_checkpoint() {
         content_waiting: Arc::default(),
     });
     // The subscribe-time need is served: one live checkpoint reached it.
-    wr.mark_checkpoint_served(&browser.device_public_key, [1; 32]);
+    wr.mark_checkpoint_served(&browser.device_public_key, &btx, [1; 32]);
     assert!(!wr.needs_checkpoint(&browser.device_public_key, &[1; 32]));
 
     let wr = Arc::new(AsyncMutex::new(wr));
@@ -1106,7 +1123,11 @@ async fn heartbeat_is_answered_while_the_writer_waits_on_the_workspace() {
         reader.read_next().await.unwrap(),
         Some(EnvelopeV2::State(Envelope::Ready { .. }))
     ));
-    let outbound = workspace.lock().await.subscribers[&b.device_public_key]
+    let outbound = workspace
+        .lock()
+        .await
+        .subscriber(&b.device_public_key)
+        .unwrap()
         .tx
         .clone();
     // Hold the workspace: the writer's authorization of the next live frame waits
@@ -1315,7 +1336,7 @@ async fn an_opened_records_answer_is_written_whole_before_live_frames() {
     // Live frames of the workspace, queued until the writer stalls.
     let state = {
         let runtime = workspace.lock().await;
-        let session = &runtime.state_sessions[&b.device_public_key];
+        let session = &runtime.newest_state(&b.device_public_key).unwrap();
         (session.tx.clone(), session.live.clone())
     };
     for seq in 100..1000 {

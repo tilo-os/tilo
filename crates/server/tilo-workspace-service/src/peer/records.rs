@@ -99,9 +99,9 @@ pub(super) async fn handle_open_document(
             runtime.store.learn_own(&own.app_id, &own.record);
         }
         let device = &peer.device_public_key;
-        runtime.hold_document(device, channel);
+        runtime.hold_document(device, session.outbound, channel);
         if let Some(head) = head {
-            runtime.hold_document(device, head);
+            runtime.hold_document(device, session.outbound, head);
         }
         (
             runtime.store.clone(),

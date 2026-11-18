@@ -131,17 +131,19 @@ impl LiveFanout<'_> {
 
     /// The captured session's current subscriber and state session, when it
     /// is still the same channel and may receive this frame.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the session is borrowed from the runtime the caller holds, and read to the end"
+    )]
     fn recipient<'r>(
         &self,
         runtime: &'r crate::workspace::WorkspaceRuntime,
         recipient: &[u8; 32],
         original: &mpsc::Sender<Envelope>,
     ) -> Option<(&'r Subscriber, &'r StateSession)> {
-        let sub = runtime.subscribers.get(recipient)?;
-        if !sub.tx.same_channel(original) {
-            return None;
-        }
-        let target = runtime.state_sessions.get(recipient)?;
+        let session = runtime.session(recipient, original)?;
+        let sub = &session.subscriber;
+        let target = session.state.as_ref()?;
         // A host-authored frame has no source trust to ask, and
         // checks the recipient's workspace listing only.
         let admitted = match self.source {
@@ -171,11 +173,8 @@ impl LiveFanout<'_> {
         // keeps all of the workspace.
         let held = match self.frame.reach {
             Reach::Everyone | Reach::Head(_) => true,
-            Reach::Opened(channel) => runtime.holds_resource(recipient, &channel),
-            Reach::ChainHead { head, chain } => {
-                runtime.holds_resource(recipient, &head)
-                    || runtime.holds_resource(recipient, &chain)
-            }
+            Reach::Opened(channel) => session.holds(&channel),
+            Reach::ChainHead { head, chain } => session.holds(&head) || session.holds(&chain),
         };
         if !held && !runtime.attached(recipient) {
             return None;
@@ -231,10 +230,11 @@ impl LiveFanout<'_> {
             return Ok(());
         }
         if !runtime.attached(recipient)
-            && self
-                .frame
-                .checkpoint_channel
-                .is_some_and(|channel| !runtime.needs_checkpoint(recipient, &channel))
+            && self.frame.checkpoint_channel.is_some_and(|channel| {
+                !runtime
+                    .session(recipient, original)
+                    .is_some_and(|session| session.needs_checkpoint(&channel))
+            })
         {
             return Ok(());
         }
@@ -269,14 +269,14 @@ impl LiveFanout<'_> {
                 if !runtime.attached(recipient)
                     && let Some(channel) = self.frame.checkpoint_channel
                 {
-                    runtime.mark_checkpoint_served(recipient, channel);
+                    runtime.mark_checkpoint_served(recipient, original, channel);
                 }
                 // It follows this chain part now, and keeps it once a later
                 // part is the head.
                 if let Reach::Head(channel) | Reach::ChainHead { head: channel, .. } =
                     self.frame.reach
                 {
-                    runtime.hold_document(recipient, channel);
+                    runtime.hold_document(recipient, original, channel);
                 }
             }
             // Ordinary live traffic retains replay coverage under
