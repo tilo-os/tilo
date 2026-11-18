@@ -429,6 +429,11 @@ public final class AssistantModel {
         Task { await self.call { try await self.source.stopAnswering(in: chat) } }
     }
 
+    /// End the showing of a live thing the person's own assistant shared for them.
+    public func stopSharing(_ thing: LiveThing.ID) {
+        Task { await self.call { try await self.source.stopSharing(thing) } }
+    }
+
     public func answer(_ question: Question.ID, with choice: Choice.ID) {
         Task { await self.call { try await self.source.answer(question, with: choice) } }
     }

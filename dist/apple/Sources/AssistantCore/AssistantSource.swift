@@ -73,6 +73,10 @@ public protocol AssistantSource: Sendable {
     func send(_ draft: Draft, to chat: Chat) async throws
     /// Stop the answer that is being written in a conversation. Nothing happens where none is.
     func stopAnswering(in chat: Chat) async throws
+    /// End the showing of a live thing that says it is the person's to end
+    /// (`LiveThing.theirsToEnd`): what their own assistant shared for them. Tilo decides whether
+    /// it is theirs to end, and its no is thrown.
+    func stopSharing(_ thing: LiveThing.ID) async throws
 
     /// Give one of a question's answers. An event's card is answered the same way.
     func answer(_ question: Question.ID, with choice: Choice.ID) async throws
@@ -176,6 +180,8 @@ extension AssistantSource {
     /// A source that keeps no replies apart from the conversation has none to show.
     public func replies(of task: AssistantTask.ID, in chat: Chat) async throws -> [Item] { [] }
     public func stopAnswering(in chat: Chat) async throws {}
+    /// A source that shows nothing live has nothing to end.
+    public func stopSharing(_ thing: LiveThing.ID) async throws {}
     public func seen(_ item: Item.ID, in chat: Chat) async {}
     public func sinceLeft() -> AsyncStream<SinceLeft?> { AsyncStream { $0.yield(nil) } }
     /// A source that answers no page for a sign-in has none to finish.

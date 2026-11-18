@@ -444,6 +444,7 @@ final class Recording: AssistantSource, @unchecked Sendable {
     func answer(_ question: Question.ID, with choice: Choice.ID) async throws {
         note("answer(\(question), \(choice))"); try await inner.answer(question, with: choice)
     }
+    func stopSharing(_ thing: LiveThing.ID) async throws { note("stopSharing(\(thing))"); try await inner.stopSharing(thing) }
     func keep(_ secret: Secret, for request: SecretRequest.ID) async throws {
         // The call is written down as anything that writes calls down would see it; what was
         // handed over is kept apart, as the vault keeps it.

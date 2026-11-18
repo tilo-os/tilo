@@ -303,6 +303,7 @@ final class AssistantDrive {
             }
             line["text"] = .string(message.text)
             line["live"] = .number(Double(message.live.count))
+            if message.live.contains(where: \.theirsToEnd) { line["endsShare"] = true }
             // The files a message carries, as their tags say them: by name and size.
             if !message.attachments.isEmpty {
                 line["files"] = .array(message.attachments.map { file in
@@ -544,6 +545,20 @@ final class AssistantDrive {
                 AssistantDrive.say(["liveText": ["held": true, "text": read["output"]?["value"]?["content"]?["markdown"] ?? .null]])
             } catch {
                 AssistantDrive.say(["liveText": ["held": true, "text": .null, "why": .string("\(error)")]])
+            }
+        case "stop-sharing":
+            // As the press on Stop sharing under a live thing the person's own assistant shared for them.
+            guard let item = step["item"]?.string else { AssistantDrive.say(["error": "stop-sharing takes item"]); return }
+            guard let piece = model.conversation(.main).items.first(where: { $0.id.value == item }),
+                  case .message(let message) = piece.content, let thing = message.live.first, thing.theirsToEnd
+            else { AssistantDrive.say(["stoppedSharing": ["offered": false]]); return }
+            do {
+                try await source.stopSharing(thing.id)
+                AssistantDrive.say(["stoppedSharing": ["offered": true, "taken": true]])
+            } catch SourceProblem.refused(let why) {
+                AssistantDrive.say(["stoppedSharing": ["offered": true, "taken": false, "why": .string(why)]])
+            } catch {
+                AssistantDrive.say(["stoppedSharing": ["offered": true, "taken": false, "why": "unreachable"]])
             }
         case "state":
             report(everything: true)

@@ -271,6 +271,22 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         feed(chat)?.setAnswering(false)
     }
 
+    public func stopSharing(_ thing: LiveThing.ID) async throws {
+        try signedIn()
+        for feed in allFeeds() {
+            let ended = feed.change(where: { item in
+                guard case .message(let message) = item.content else { return false }
+                return message.live.contains { $0.id == thing && $0.theirsToEnd }
+            }) { item in
+                guard case .message(var message) = item.content else { return }
+                message.live.removeAll { $0.id == thing }
+                item.content = .message(message)
+            }
+            if ended { return }
+        }
+        throw SourceProblem.refused("This is not yours to stop sharing.")
+    }
+
     public func answer(_ question: Question.ID, with choice: Choice.ID) async throws {
         try signedIn()
         var problem: SourceProblem? = .refused("This question is gone.")
