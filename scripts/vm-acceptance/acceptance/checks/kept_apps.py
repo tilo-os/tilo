@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import time
 
+from .. import core
 from ..core import CheckFailed, check, expect
 from ..vm import wait_until
 from .apps import AREA, _app_procs, _procs
