@@ -2797,47 +2797,6 @@ tilo_test_env::scenario! {
     }
 }
 
-/// [`Notes`] publishing everything it does, and no search of its own: a
-/// host that holds no records to search.
-#[derive(Clone)]
-struct NoSearch(Notes);
-
-impl NoSearch {
-    fn new(notes: &Notes) -> Self {
-        Self(notes.clone())
-    }
-}
-
-impl ActionProvider for NoSearch {
-    fn query(
-        &self,
-        caller: &Caller,
-        query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        self.0.query(caller, query)
-    }
-
-    fn invoke(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.0.invoke(caller, request)
-    }
-
-    fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
-        self.0.observe(caller, id)
-    }
-
-    fn cancel(
-        &self,
-        caller: &Caller,
-        id: &tilo_actions::InvocationId,
-    ) -> Pending<Result<(), ActionCallError>> {
-        self.0.cancel(caller, id)
-    }
-}
-
 /// What one call made the app's directory do: the queries it was asked and
 /// the rows it answered.
 fn work_of(host: &Notes, name: &str, arguments: &Value) -> (usize, usize, String) {
@@ -2933,6 +2892,7 @@ fn tilolang_kind(host: &Notes) -> Notes {
     live
 }
 
+use no_search::NoSearch;
 pub(super) use typed_calls::answer;
 use typed_calls::typed;
 
@@ -2946,6 +2906,8 @@ mod listed;
 mod naming;
 #[path = "mcp_agent_narrowed_tests.rs"]
 mod narrowed;
+#[path = "mcp_agent_no_search_tests.rs"]
+mod no_search;
 #[path = "mcp_agent_open_tests.rs"]
 mod opening;
 #[path = "mcp_agent_outside_tests.rs"]
