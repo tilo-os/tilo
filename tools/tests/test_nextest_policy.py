@@ -491,7 +491,12 @@ class WrapperHandedProgramTests(unittest.TestCase):
             (programs / "cargo").write_text(f'#!/bin/sh\npython3 -c \'{DUMP}\' >"{dumped}"\n')
             (programs / "cargo").chmod(0o755)
             excluded = ("TILO_TEST_NTFS_FIXTURES", "TILO_REQUIRE_SWTPM",
-                        "TILO_REQUIRE_PDF_SANDBOX", "TILO_PAM_TILO_MODULE", "TILO_VIDEO_RENDER")
+                        "TILO_REQUIRE_PDF_SANDBOX", "TILO_PAM_TILO_MODULE", "TILO_VIDEO_RENDER",
+                        # The capabilities every test is promised, and the deep family's count:
+                        # the ci profile's setup sets them for the tests, and no family's `env`
+                        # (t.toml) may carry one into a build.
+                        "TILO_REQUIRE_MEDIA", "TILO_REQUIRE_AUDIO", "TILO_REQUIRE_GPU",
+                        "PROPTEST_CASES")
             # Every package whose tests needed one of them.
             for package in ("tilo-ntfs-helper", "tilo-pdf", "pdf-viewer", "tilo-thumbnail",
                             "tilo-agent-session", "pam-tilo", "tilo-auth", "tilo-rollback"):

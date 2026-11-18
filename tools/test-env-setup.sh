@@ -85,15 +85,21 @@
 #          an archive of test binaries does not carry. Its tests load the module
 #          as libpam does. A job handed it (T_STARTED_CDYLIB_pam_tilo) names it;
 #          one handed none (a developer's) builds it.
+# property-cases
+#          PROPTEST_CASES=256: the count the property tests of t.toml's
+#          `test-deep` packages use, more than the default (tilo-doc-codecs
+#          uses 64 when it is unset). Only the `deep` profile takes this step
+#          (.config/nextest.toml); in a family's environment it would key
+#          every build script's and proc macro's cache entry by it.
 #
-# The last four are values only a package's tests need, so the ci profile takes
-# them for those packages' tests alone: given to the job's environment instead,
-# each would key every build script's and proc macro's cache entry, and jobs
-# testing different packages would share no build.
+# The four before `property-cases` are values only a package's tests need, so the ci profile takes
+# them for those packages' tests alone: given to the job's environment instead, each would key
+# every build script's and proc macro's cache entry, and jobs testing different packages would
+# share no build.
 set -euo pipefail
 
 if [[ $# -eq 0 ]]; then
-    echo "usage: $0 runtime|fonts|audio|ntfs|root|swtpm|pdf-sandbox|video-render|pam-module ..." >&2
+    echo "usage: $0 runtime|fonts|audio|ntfs|root|swtpm|pdf-sandbox|video-render|pam-module|property-cases ..." >&2
     exit 2
 fi
 env_file=${NEXTEST_ENV:?test-env-setup.sh writes the environment to the file NEXTEST_ENV names}
@@ -357,6 +363,10 @@ pam-module() {
     fi
 }
 
+property-cases() {
+    provide PROPTEST_CASES 256
+}
+
 # The limits tests give jobs cgroups of their own, under one that hands its
 # children the controllers. A cgroup holding processes cannot: a container's
 # own root, where every process of the run starts, is one. As root there, its
@@ -383,7 +393,7 @@ delegate_cgroups() {
 
 for step; do
     case $step in
-        runtime | fonts | audio | ntfs | root | swtpm | pdf-sandbox | video-render | pam-module)
+        runtime | fonts | audio | ntfs | root | swtpm | pdf-sandbox | video-render | pam-module | property-cases)
             "$step" ;;
         *) echo "unknown test environment step: $step" >&2; exit 2 ;;
     esac

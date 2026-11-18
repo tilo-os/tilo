@@ -63,6 +63,9 @@ fi
 
 steps=(runtime fonts audio)
 [[ ${TILO_TEST_NTFS_FIXTURES:-1} == 0 ]] || steps+=(ntfs)
+# The switch is this script's, not a build's or a test's: cargo's environment keys every build
+# script's and proc macro's cache entry by it, so the command started in it must not carry it.
+unset TILO_TEST_NTFS_FIXTURES
 env_file=$(mktemp)
 # The audio endpoint lives as long as this process, which becomes the command's (environment
 # below) or waits for it (handoff), so it ends with COMMAND.

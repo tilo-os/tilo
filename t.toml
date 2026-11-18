@@ -46,6 +46,11 @@ edition = 2
 # change what a check runs in without a commit saying so. Move it by changing this line.
 image = "registry.tilo.so/tilo/tilo-builder@sha256:a6f389d770ee5acb65b7a03d67c0d619c7acb147b64ce6511337ac5548e9dce5"
 
+# The environment every job gets. A value here, or in a family's `env`, is in the environment
+# cargo builds in, and cargo keys every build script's and proc macro's cache entry by it; so it
+# belongs here only when every check wants it or a build reads it. A value only a family's tests
+# read is that profile's setup step instead (.config/nextest.toml), which reaches the tests and no
+# build, so the units one family builds are the units every other family builds.
 [env]
 XDG_RUNTIME_DIR = "/tmp/tilo-xdg-runtime"
 # Debug info is what the test binaries' panics need, not the debugger: line tables only, which is
@@ -113,7 +118,6 @@ exclude = [
 # tools/ci/nested-sandboxes.toml's, an edit there moving this list with it
 # (tools/tests/test_nested_sandboxes.py fails while the two disagree).
 isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-vmd", "settings", "tilo-sandbox-core", "thumbnails", "runtime-bundle", "tilo-session"] }
-env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1" }
 # The apps the session's tests start (`tilo_test_env::sibling_binary`), as the session-siblings
 # setup in .config/nextest.toml names them for both packages, and for the session the four the
 # chat-siblings and tasks-siblings setups name (Chat, the launcher that starts it beside the
@@ -154,7 +158,6 @@ packages = [
     "tilolang-tilo", "ush", "windows-vm",
 ]
 isolation = { nested = ["launcher", "runtime-bundle", "tilo-sandbox-core", "tilo-vmd", "ush"] }
-env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1" }
 # The programs of other packages these tests find beside their own build: the installer the app
 # CLI's install tests run, the render helper an agent's host renders video in, and the tilolang
 # host a task's programs run in. Each shard is handed them as the test family's are; a job handed
@@ -176,7 +179,6 @@ wrapper = ["bash", "tools/ci/nextest.sh"]
 args = ["--locked", "--profile", "ci", "--tests"]
 unify = "workspace-unify"
 packages = ["canvas", "music", "pdf-viewer", "tilo-ui"]
-env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1" }
 heavy = true
 on = ["dispatch", "idle"]
 
@@ -193,21 +195,20 @@ wrapper = ["bash", "tools/ci/nextest.sh"]
 args = ["--locked", "--profile", "ci", "--tests", "-E", "binary(budgets) | test(/^bench::costs::/)"]
 unify = "workspace-unify"
 packages = ["tilolang-tilo"]
-env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1" }
 heavy = true
 on = ["dispatch", "idle"]
 
 # The property tests, with more cases: where a rarer failure is worth the time, when dispatched,
-# and by name.
+# and by name. The count is the `deep` profile's (.config/nextest.toml), which inherits `ci` and
+# hands it to these tests alone; a family's `env` would carry it into the build of every unit.
 [[cargo]]
 name = "test-deep"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "nextest"
 wrapper = ["bash", "tools/ci/nextest.sh"]
-args = ["--locked", "--profile", "ci", "--tests"]
+args = ["--locked", "--profile", "deep", "--tests"]
 unify = "workspace-unify"
 packages = ["tilo-doc-codecs", "tilo-reference", "tilo-render-protocol"]
-env = { PROPTEST_CASES = "256", TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1" }
 heavy = true
 on = ["dispatch"]
 
@@ -236,7 +237,10 @@ packages = [
     "tilo-web-search", "tilo-wet-media", "tilolang-app", "tilolang-process", "tilolang-tilo",
     "tube", "typst-editor", "ui-examples", "ush", "windows-vm", "word-processor",
 ]
-env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json", TILO_TEST_NTFS_FIXTURES = "0" }
+# tools/test-env.sh reads this to leave out the native NTFS images, which no example reads: the
+# harness's switch, not the tests', and it is unset before cargo runs, so no build carries it. The
+# runtime values (VK_DRIVER_FILES among them) come from the harness to the tests it starts.
+env = { TILO_TEST_NTFS_FIXTURES = "0" }
 heavy = true
 on = ["dispatch"]
 
@@ -362,7 +366,6 @@ requires = ["arch=x86_64"]
 image = "registry.tilo.so/tilo/tilo-builder@sha256:e4763a8c16005f544dde0206014c2cc088fff0d5d28f1857ea24961677c666f6"
 wrapper = ["bash", "-c", "export TILO_FONT_ASSET_CACHE=\"$CARGO_TARGET_DIR/font-artifacts\"; exec bash tools/test-env.sh \"$@\"", "goldens"]
 args = ["--locked", "--profile", "ci", "--tests", "--no-tests=pass", "-E", "(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline)))"]
-env = { TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }
 on = ["idle"]
 
 # The repository policy suite, one check per step of `tools/policy/steps.toml`: the step's own

@@ -314,7 +314,8 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                  "ntfs-fixtures": ["ntfs"], "as-root": ["root"],
                                  "swtpm": ["swtpm"], "pdf-sandbox": ["pdf-sandbox"],
                                  "video-render": ["video-render"],
-                                 "pam-module": ["pam-module"]})
+                                 "pam-module": ["pam-module"],
+                                 "property-cases": ["property-cases"]})
         for script in scripts.values():
             self.assertEqual(script["command"][:2], ["bash", "tools/test-env-setup.sh"])
         rules = {rule["filter"]: rule["setup"] for rule in config["profile"]["ci"]["scripts"]}
@@ -359,6 +360,31 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                  "package(tilo-thumbnail)": "pdf-sandbox",
                                  "package(tilo-agent-session)": "video-render",
                                  "package(pam-tilo)": "pam-module"})
+
+    def test_the_deep_profile_gives_its_tests_more_property_cases(self) -> None:
+        # t.toml's `test-deep` tests its packages with more proptest cases, through a profile of
+        # its own: in the family's environment the count would key every build script's and proc
+        # macro's cache entry by it, and no other family's build of the same packages would be
+        # shared. The profile inherits `ci`, so the tests keep its setup, its hang bound and the
+        # failure output their results are read by.
+        config = tomllib.loads((ROOT / ".config/nextest.toml").read_text())
+        self.assertEqual(config["profile"]["deep"]["inherits"], "ci")
+        rules = [(rule["filter"], rule["setup"]) for rule in config["profile"]["deep"]["scripts"]]
+        self.assertEqual(rules, [("all()", "property-cases")])
+        result, env = self.setup("property-cases")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(env, {"PROPTEST_CASES": "256"})
+        families = tomllib.loads((ROOT / "t.toml").read_text())["cargo"]
+        family = next(family for family in families if family["name"] == "test-deep")
+        self.assertIn(["--profile", "deep"], [family["args"][i:i + 2]
+                                              for i in range(len(family["args"]) - 1)])
+        # A nextest family's values are its profile's setup steps, never the job's environment:
+        # there, each keys every build script's and proc macro's cache entry, so jobs that test
+        # different packages share no build.
+        for family in families:
+            if family.get("tool") == "nextest":
+                with self.subTest(family=family["name"]):
+                    self.assertNotIn("env", family)
 
     def test_runtime_provides_the_renderer_and_the_promised_capabilities(self) -> None:
         driver = Path(f"/usr/share/vulkan/icd.d/lvp_icd.{os.uname().machine}.json")
