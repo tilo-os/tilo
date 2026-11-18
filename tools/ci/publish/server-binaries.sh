@@ -53,12 +53,11 @@ case $image in
               -p tilo-board-successor --bin tilo-board-successor
               -p tilo-rollback --bin tilo-rollback
               -p tilo-auth --bin tilo-auth
-              -p tilo-boot-signin --bin tilo-boot-signin
-              -p tilo-sibling-unlock --bin tilo-sibling-unlock)
+              -p tilo-boot-signin --bin tilo-boot-signin)
     bins=(tilo-server tilo-server-admin tilo-enroll fs tilo-legacy tilo-hosted-jail tilo-api
           tilolang-process
           tilo-esp-write tilo-image-policy-check tilo-image-trust tilo-board-successor
-          tilo-rollback tilo-auth tilo-boot-signin tilo-sibling-unlock) ;;
+          tilo-rollback tilo-auth tilo-boot-signin) ;;
   *)
     die "unknown server image $image: api, vm-host, server or host" ;;
 esac

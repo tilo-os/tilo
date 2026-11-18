@@ -75,13 +75,13 @@ fi
 # generated from the image's dracut modules and the programs they start, so the
 # server image ships the desktop's unlock chain rather than a copy of it.
 for bin in usr/libexec/tilo/tilo-auth usr/libexec/tilo/tilo-boot-signin \
-  usr/libexec/tilo/tilo-rollback usr/libexec/tilo/tilo-sibling-unlock \
+  usr/libexec/tilo/tilo-rollback \
   usr/libexec/tilo-disk-encrypt usr/libexec/tilo-store-volume \
   usr/libexec/tilo-rollback-initrd-unlock usr/libexec/tilo-root-discover \
   usr/share/tilo/tpm2-pcr-signing.public.pem; do
   [[ -e $root/$bin ]] || die "no /$bin, so an encrypted root cannot be opened"
 done
-for module in 91tilo-rollback 92tilo-sibling-unlock; do
+for module in 91tilo-rollback; do
   [[ -f $root/usr/lib/dracut/modules.d/$module/module-setup.sh ]] \
     || die "the image carries no $module, so its initramfs cannot unlock the root"
 done
