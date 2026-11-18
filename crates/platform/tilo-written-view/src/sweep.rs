@@ -559,7 +559,12 @@ impl Walk<'_> {
                     self.check(&inside, want, item);
                 }
             }
-            (Want::Entries(wanted), Value::Map(entries)) => {
+            (Want::Entries(wanted), Value::Map(_) | Value::List(_)) => {
+                let entries = entries_of(value);
+                if wanted.len() != entries.len() {
+                    let why = format!("wanted {} entries, read {}", wanted.len(), entries.len());
+                    self.stop(at, "LOST", why);
+                }
                 let inside = format!("{at}.*");
                 for (key, want) in wanted {
                     let held = entries
@@ -644,6 +649,22 @@ fn plain(value: &Value) -> Option<Json> {
     })
 }
 
+/// A map's entries as the runtime holds them: a map, or the list of key and value that a field
+/// of a map reads as.
+fn entries_of(value: &Value) -> Vec<(&Value, &Value)> {
+    match value {
+        Value::Map(entries) => entries.iter().map(|(key, held)| (key, held)).collect(),
+        Value::List(pairs) => pairs
+            .iter()
+            .filter_map(|pair| match pair {
+                Value::Tuple(both) => Some((both.first()?, both.get(1)?)),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn kind_of(value: &Value) -> &'static str {
     match value {
         Value::Unit => "nothing",
@@ -686,6 +707,8 @@ fn class_of(why: &str, holds: Holds) -> &'static str {
         }
     } else if why.contains("is not a Actor") || why.contains("is not an Actor") {
         "ACTOR"
+    } else if why.contains("is not read from another app's reading") {
+        "NAMED LIKE A BUILT-IN"
     } else if why.contains("is not a reference") || why.contains("is not a resource id") {
         "REFERENCE"
     } else if why.contains("is missing from the reading") {

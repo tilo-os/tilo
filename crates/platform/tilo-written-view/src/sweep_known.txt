@@ -4,10 +4,12 @@
 # The app so.tilo.sweep is the sweep's own kind of every shape a surface declares, a field each.
 
 # ACTOR: an actor traps the field that holds it: it is stored as one text of JSON and handed on as that text.
+ACTOR | so.tilo.browser | browser.page-record | actions
 ACTOR | so.tilo.chat | chat.messages | messages
 ACTOR | so.tilo.chat | chat.workspace | channels
 ACTOR | so.tilo.chat | chat.workspace | feedback
 ACTOR | so.tilo.chat | chat.workspace | moderation
+ACTOR | so.tilo.chat | tilo.workspace.emoji | emoji
 ACTOR | so.tilo.code-editor | code_editor.project | terminal_panel
 ACTOR | so.tilo.notes | notes.pages | pages
 ACTOR | so.tilo.pdf-viewer | pdf.document | annotations
@@ -25,76 +27,18 @@ ACTOR | so.tilo.terminal | terminal.session | commands
 ACTOR | so.tilo.terminal | terminal.session | holder
 ACTOR | so.tilo.word-processor | word-processor.document | comments
 
-# MAP: a map traps the field that holds it: a reading's map is read by nothing.
-MAP | so.tilo.browser | browser.application | site_forms
-MAP | so.tilo.browser | browser.browsing-history | import_receipts
-MAP | so.tilo.browser | browser.browsing-history | imported
-MAP | so.tilo.browser | browser.browsing-history | visits
-MAP | so.tilo.browser | browser.page-record | actions
-MAP | so.tilo.browser | browser.page-record | tabs
-MAP | so.tilo.browser | browser.personal-bookmarks | added
-MAP | so.tilo.browser | browser.personal-bookmarks | receipts
-MAP | so.tilo.calendar | calendar.calendar | remote
-MAP | so.tilo.calendar | calendar.calendar | sync_tokens
-MAP | so.tilo.calendar | tilo.accounts | active
-MAP | so.tilo.canvas | canvas.artwork | marks
-MAP | so.tilo.chat | chat.messages | earlier
-MAP | so.tilo.chat | chat.workspace | read
-MAP | so.tilo.chat | chat.workspace | summaries
-MAP | so.tilo.chat | tilo.workspace.emoji | emoji
-MAP | so.tilo.chip-design | chip_design.project | reports
-MAP | so.tilo.chip-design | chip_design.project | verifications
-MAP | so.tilo.diffmerge | diffmerge.session | resolutions
-MAP | so.tilo.diffmerge | diffmerge.session | written
-MAP | so.tilo.discord | discord.guild | avatars
-MAP | so.tilo.discord | discord.guild | emojis
-MAP | so.tilo.disks | disks.system | names
-MAP | so.tilo.ebook | ebook.library | progress
-MAP | so.tilo.feeds | feeds.articles | read_through
-MAP | so.tilo.firewall | firewall.applied | devices
-MAP | so.tilo.firewall | firewall.config | zones
-MAP | so.tilo.mail | tilo.accounts | active
-MAP | so.tilo.messages | messages.drafts | drafts
-MAP | so.tilo.messages | tilo.accounts | active
-MAP | so.tilo.music | music.library | albums
-MAP | so.tilo.music | music.library | artists
-MAP | so.tilo.music | music.library | tracks
-MAP | so.tilo.pdf-viewer | pdf.document | comments
-MAP | so.tilo.poker | so.tilo.poker.table | players
-MAP | so.tilo.settings | settings.default-apps | handlers
-MAP | so.tilo.settings | settings.input | paste_shortcuts
-MAP | so.tilo.settings | settings.input-device | keyboard_assignments
-MAP | so.tilo.settings | settings.network-usage | connections
-MAP | so.tilo.settings | settings.network-usage | counters
-MAP | so.tilo.settings | settings.notifications | per_app
-MAP | so.tilo.settings | shell-views | bindings
-MAP | so.tilo.settings | shell-views | on_device
-MAP | so.tilo.settings | tilo.accounts | active
-MAP | so.tilo.sheets | sheets.workbook | comments
-MAP | so.tilo.store | store.catalog | reports
-MAP | so.tilo.sweep | sweep.shapes | map_float
-MAP | so.tilo.sweep | sweep.shapes | map_int
-MAP | so.tilo.sweep | sweep.shapes | map_map
-MAP | so.tilo.sweep | sweep.shapes | map_part
-MAP | so.tilo.sweep | sweep.shapes | map_text
-MAP | so.tilo.sweep | sweep.shapes | option_map
-MAP | so.tilo.terminal | terminal.recent-environments | devices
-MAP | so.tilo.tube | tube.watch-history | positions
-MAP | so.tilo.tube | tube.watch-history | watched
-MAP | so.tilo.video-player | video-player.library | transports
-MAP | so.tilo.windows | windows.manager | routes
-MAP | so.tilo.word-processor | word-processor.document | comments
-
-# MAP OR RICH TEXT: a map that holds a rich text traps the field that holds it, as every map does.
-MAP OR RICH TEXT | so.tilo.calendar | calendar.calendar | notes
-MAP OR RICH TEXT | so.tilo.chat | chat.drafts | drafts
-MAP OR RICH TEXT | so.tilo.sweep | sweep.shapes | map_rich
+# NAMED LIKE A BUILT-IN: a named type the app calls by a name the app language has a type of its own for (`Bytes`): a reading's value is read as that type, which no reading gives.
+NAMED LIKE A BUILT-IN | so.tilo.settings | settings.network-usage | connections
+NAMED LIKE A BUILT-IN | so.tilo.settings | settings.network-usage | counters
 
 # UNTYPED: the surface declares the field as any value, as reactions or as an outbox: the app language has no type for it and the package leaves it out.
 UNTYPED | so.tilo.browser | browser.personal-bookmarks | trees
 UNTYPED | so.tilo.calendar | calendar.calendar | deletes
 UNTYPED | so.tilo.calendar | calendar.calendar | uploads
 UNTYPED | so.tilo.calendar | tilo.accounts | accounts.*.config
+UNTYPED | so.tilo.canvas | canvas.artwork | marks.*.style.gradient
+UNTYPED | so.tilo.canvas | canvas.artwork | marks.*.style.inner_shadow
+UNTYPED | so.tilo.canvas | canvas.artwork | marks.*.style.shadow
 UNTYPED | so.tilo.canvas | canvas.artwork | media
 UNTYPED | so.tilo.canvas | canvas.artwork | reference
 UNTYPED | so.tilo.canvas | canvas.artwork | selection
@@ -191,4 +135,5 @@ UNTYPED | so.tilo.terminal | terminal.session | requests
 UNTYPED | so.tilo.video-editor | video-editor.project | clips.*.anim
 UNTYPED | so.tilo.video-editor | video-editor.project | clips.*.curves
 UNTYPED | so.tilo.video-player | video-player.recent | devices
+UNTYPED | so.tilo.word-processor | word-processor.document | comments.*.anchor
 UNTYPED | so.tilo.word-processor | word-processor.document | reactions

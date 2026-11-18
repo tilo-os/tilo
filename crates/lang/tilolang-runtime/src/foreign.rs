@@ -178,7 +178,9 @@ impl Foreign {
                 steps: Vec::new(),
                 records: Vec::new(),
             };
-            let field_value = decoder.down(step, value, &f.ty);
+            let field_value = decoder
+                .down(step, value, &f.ty)
+                .map(|read| as_a_field(&f.ty, read));
             values.insert(f.id.clone(), field_value);
         }
         values
@@ -512,7 +514,24 @@ impl Foreign {
         for (record, steps) in records {
             self.place(&record, steps, parent.clone());
         }
-        Ok(value)
+        Ok(as_a_field(&field.ty, value))
+    }
+}
+
+/// `value`, read as `ty`, as a field of that type reads here. A field of a map reads as the
+/// list of its entries, each a key and its value: what the store holds of one, and what
+/// `keys()` and `get(key)` of a field are asked of. A map anywhere else in a reading (what an
+/// option, a list, another map or a case holds) stays the map it is, which the same two are
+/// asked of as of any map code holds.
+fn as_a_field(ty: &Ty, value: Value) -> Value {
+    match (ty, value) {
+        (Ty::Map(_), Value::Map(entries)) => Value::List(
+            entries
+                .into_iter()
+                .map(|(key, value)| Value::Tuple(vec![key, value]))
+                .collect(),
+        ),
+        (_, value) => value,
     }
 }
 
@@ -895,7 +914,8 @@ impl Decoder<'_> {
                 }
                 encoded => crate::value::from_json(encoded),
             },
-            Ty::Result(..) | Ty::RichText | Ty::Map(_) => crate::value::from_json(json),
+            Ty::Result(..) | Ty::RichText => crate::value::from_json(json),
+            Ty::Map(inner) => self.map(json, inner),
             Ty::Action
             | Ty::View
             | Ty::Choice(_)
@@ -1024,6 +1044,28 @@ impl Decoder<'_> {
             fields,
         }))
     }
+
+    /// A map, spelled as the object of its entries: each key once, in the order of the keys,
+    /// with its value read as the type the map declares, the way a declared type's field is,
+    /// so a resource a map holds is one a view reads the fields of. Entries the runtime
+    /// itself encoded ([`encoded_entries`]) read as they did.
+    fn map(&mut self, json: &Json, inner: &Ty) -> Result<Value, String> {
+        if encoded_entries(json) {
+            return crate::value::from_json(json);
+        }
+        let Json::Object(entries) = json else {
+            return Err(format!("{json} is not a map"));
+        };
+        let held: BTreeMap<&String, &Json> = entries.iter().collect();
+        let mut read = Vec::with_capacity(held.len());
+        for (key, value) in held {
+            let value = self
+                .down(key, value, inner)
+                .map_err(|why| format!("the entry `{key}`: {why}"))?;
+            read.push((Value::Text(key.clone()), value));
+        }
+        Ok(Value::Map(read))
+    }
 }
 
 /// A value of the scalar type `ty` as a reading writes it: a number, a flag, or the text it
@@ -1071,6 +1113,15 @@ fn tagged<'a>(json: &'a Json, tag: &str) -> Option<&'a Json> {
         Json::Object(fields) if fields.len() == 1 => fields.get(tag),
         _ => None,
     }
+}
+
+/// Whether `json` is a map's entries in the runtime's own encoding (`{"list": [{"tuple": [key,
+/// value]}, ..]}`): what [`crate::value::to_json`] writes of a field of a map, and the one form
+/// a reading could give a map in before it could spell one as an object.
+fn encoded_entries(json: &Json) -> bool {
+    tagged(json, "list")
+        .and_then(Json::as_array)
+        .is_some_and(|items| items.iter().all(|item| tagged(item, "tuple").is_some()))
 }
 
 /// A reference to a resource of one of the union's types: the type the reading names, since an
