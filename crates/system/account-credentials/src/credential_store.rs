@@ -706,7 +706,7 @@ impl CredentialStore {
             AccountId::new(uuid::Uuid::new_v4().to_string()),
             ICLOUD_DRIVE_TYPE,
         );
-        account.display_name = apple_id.to_owned();
+        apple_id.clone_into(&mut account.display_name);
         let mut config = serde_json::Map::new();
         config.insert("identity".into(), apple_id.into());
         let mount = self.icloud.storage_config();
