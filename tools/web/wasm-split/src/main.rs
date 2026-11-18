@@ -74,24 +74,17 @@ fn main() -> Result<()> {
             return unsplit(bindgened, &PathBuf::from(out));
         }
         if flag == "--models" {
-            let linked =
-                std::fs::read(bindgened).with_context(|| format!("reading {bindgened}"))?;
-            let split = models::split(&linked)?;
-            models::write(&split, &PathBuf::from(out))?;
-            eprintln!(
-                "wasm-split: model runtime {} of {} bytes in {} modules, {} apps, in {:.1} s",
-                split.hash,
-                split.runtime.iter().map(Vec::len).sum::<usize>(),
-                split.runtime.len(),
-                split.apps.len(),
-                started.elapsed().as_secs_f64()
-            );
-            return Ok(());
+            return split_models(bindgened, out, None, started);
+        }
+    }
+    if let [flag, linked, out, option, flags] = args.as_slice() {
+        if flag == "--models" && option == "--wasm-opt" {
+            return split_models(linked, out, Some(flags), started);
         }
     }
     let [original, bindgened, out, name] = args.as_slice() else {
         bail!(
-            "usage: wasm-split ORIGINAL BINDGENED PKG_DIR NAME | wasm-split --unsplit BINDGENED PKG_DIR | wasm-split --models LINKED OUT_DIR"
+            "usage: wasm-split ORIGINAL BINDGENED PKG_DIR NAME | wasm-split --unsplit BINDGENED PKG_DIR | wasm-split --models LINKED OUT_DIR [--wasm-opt FLAGS_FILE]"
         );
     };
     let original = std::fs::read(original).with_context(|| format!("reading {original}"))?;
@@ -182,6 +175,62 @@ fn main() -> Result<()> {
     eprintln!(
         "wasm-split: read {} of the module's bodies from the last split",
         outputs.bodies_reused
+    );
+    Ok(())
+}
+
+/// `--models`: the combined model build split into the model runtime and
+/// each app's module (src/models.rs), each optimized with `wasm-opt` and the
+/// arguments in `flags` first when it names a file of them.
+fn split_models(
+    linked: &str,
+    out: &str,
+    flags: Option<&String>,
+    started: std::time::Instant,
+) -> Result<()> {
+    let linked = std::fs::read(linked).with_context(|| format!("reading {linked}"))?;
+    let out = PathBuf::from(out);
+    let arguments: Option<Vec<String>> = match flags {
+        Some(file) => Some(
+            std::fs::read_to_string(file)
+                .with_context(|| format!("reading {file}"))?
+                .lines()
+                .filter(|line| !line.trim_start().starts_with('#'))
+                .flat_map(str::split_whitespace)
+                .map(str::to_owned)
+                .collect(),
+        ),
+        None => None,
+    };
+    // Beside the output, not in /tmp: /tmp may be memory.
+    let scratch = out.join(".wasm-opt");
+    let optimize = |module: &[u8]| -> Result<Vec<u8>> {
+        std::fs::create_dir_all(&scratch)?;
+        let (input, output) = (scratch.join("in.wasm"), scratch.join("out.wasm"));
+        std::fs::write(&input, module)?;
+        let status = std::process::Command::new("wasm-opt")
+            .args(arguments.as_deref().unwrap_or_default())
+            .arg(&input)
+            .arg("-o")
+            .arg(&output)
+            .status()
+            .context(
+                "running wasm-opt (binaryen), which optimizes every module this repository ships",
+            )?;
+        anyhow::ensure!(status.success(), "wasm-opt failed with {status}");
+        Ok(std::fs::read(&output)?)
+    };
+    let optimizer: Option<models::Optimize<'_>> = arguments.is_some().then_some(&optimize);
+    let split = models::split(&linked, optimizer)?;
+    std::fs::remove_dir_all(&scratch).ok();
+    models::write(&split, &out)?;
+    eprintln!(
+        "wasm-split: model runtime {} of {} bytes in {} modules, {} apps, in {:.1} s",
+        split.hash,
+        split.runtime.iter().map(Vec::len).sum::<usize>(),
+        split.runtime.len(),
+        split.apps.len(),
+        started.elapsed().as_secs_f64()
     );
     Ok(())
 }

@@ -1332,7 +1332,7 @@ mod models {
     #[test]
     fn each_app_links_against_the_runtime_it_names() -> Result<()> {
         let fixture = build_fixture_from("models", include_str!("../fixtures/model_split.rs"))?;
-        let split = models::split(&fixture.linked)?;
+        let split = models::split(&fixture.linked, None)?;
         assert_eq!(
             split.apps.keys().collect::<Vec<_>>(),
             ["alpha", "beta"],

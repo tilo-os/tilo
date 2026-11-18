@@ -10,9 +10,12 @@
 //! everything else (automerge, std, the resource layer, serde_json) in the
 //! start module and the shared chunks: the model runtime.
 //!
-//! `wasm-split --models LINKED OUT_DIR` writes:
+//! `wasm-split --models LINKED OUT_DIR [--wasm-opt FLAGS_FILE]` writes (each
+//! module optimized with `wasm-opt` and the arguments in `FLAGS_FILE` first,
+//! when one is named: tools/web/wasm-opt-flags, as every module the repository
+//! ships):
 //!
-//! - `OUT_DIR/model-runtime/main.wasm` and `shared<N>.wasm`, the runtime, and
+//! - `OUT_DIR/app-model-runtime/main.wasm` and `shared<N>.wasm`, the runtime, and
 //!   `runtime.json`, which lists them and names the runtime by [`hash`];
 //! - `OUT_DIR/<app>/model.wasm`, each app's module, with a
 //!   [`RUNTIME_SECTION`] custom section naming the runtime it was split
@@ -38,7 +41,7 @@ use crate::split::{OutputModules, Splitter};
 pub const RUNTIME_SECTION: &str = "tilo_model_runtime";
 
 /// The directory under the output the runtime is written to.
-pub const RUNTIME_DIR: &str = "model-runtime";
+pub const RUNTIME_DIR: &str = "app-model-runtime";
 
 /// The import module of the model ABI: the only one the start module may
 /// import from, since a device links nothing else.
@@ -67,15 +70,20 @@ pub fn hash(parts: &[Vec<u8>]) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
-/// Split `linked`, the combined model build.
-pub fn split(linked: &[u8]) -> Result<ModelSplit> {
+/// What each written module goes through after the split, before the
+/// runtime is named by its bytes: an optimizer, or nothing.
+pub type Optimize<'a> = &'a dyn Fn(&[u8]) -> Result<Vec<u8>>;
+
+/// Split `linked`, the combined model build, passing each module through
+/// `optimize` when there is one.
+pub fn split(linked: &[u8], optimize: Option<Optimize<'_>>) -> Result<ModelSplit> {
     let entries = entries(linked)?;
     ensure!(
         !entries.is_empty(),
         "the module names no app's entry in its tilo_split_exports section"
     );
     let outputs = Splitter::new(linked, linked)?.emit()?;
-    assemble(outputs, &entries)
+    assemble(outputs, &entries, optimize)
 }
 
 /// Each app's entry, from the lazy exports the guests declared: one export
@@ -94,10 +102,21 @@ fn entries(linked: &[u8]) -> Result<BTreeMap<String, String>> {
     Ok(entries)
 }
 
-fn assemble(outputs: OutputModules, entries: &BTreeMap<String, String>) -> Result<ModelSplit> {
-    let mut runtime = vec![bare(&outputs.main.bytes)?];
+fn assemble(
+    outputs: OutputModules,
+    entries: &BTreeMap<String, String>,
+    optimize: Option<Optimize<'_>>,
+) -> Result<ModelSplit> {
+    let finish = |module: &[u8]| -> Result<Vec<u8>> {
+        let module = bare(module)?;
+        match optimize {
+            Some(optimize) => optimize(&module),
+            None => Ok(module),
+        }
+    };
+    let mut runtime = vec![finish(&outputs.main.bytes)?];
     for chunk in &outputs.chunks {
-        runtime.push(bare(&chunk.bytes)?);
+        runtime.push(finish(&chunk.bytes)?);
     }
     for (module, name) in imports(&runtime[0])? {
         ensure!(
@@ -115,7 +134,7 @@ fn assemble(outputs: OutputModules, entries: &BTreeMap<String, String>) -> Resul
             )
         })?;
         let section = serde_json::json!({"runtime": hash, "entry": entry}).to_string();
-        let mut bytes = bare(&module.bytes)?;
+        let mut bytes = finish(&module.bytes)?;
         append_custom(&mut bytes, RUNTIME_SECTION, section.as_bytes());
         apps.insert(module.module_name, bytes);
     }
