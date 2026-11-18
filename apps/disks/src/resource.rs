@@ -1,5 +1,6 @@
-//! Disks as a resource. Mounting, formatting or ejecting changes one machine, never the
-//! document; the effects run where they are invoked, and only in a live window.
+//! Disks as a resource. `disks-model` keeps the names a person gives their drives;
+//! mounting, formatting or ejecting changes one machine, never the document; those
+//! effects happen where they are invoked, and only in a live window.
 
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -7,7 +8,7 @@ use std::rc::Rc;
 use ui::framework::{EffectStatus, Fixture, LiveRow, Publishes, ResourceApp, ViewCx};
 use ui::i18n::ArgValue;
 use ui::tilo_actions::ConfirmationPolicy;
-use ui::tilo_resource::{self, Atom, Effect, Invoke, Model, Refusal, resource};
+use ui::tilo_resource::{self, Effect, Invoke};
 use ui::widget::Element;
 
 use crate::app::{ActionKind, DisksApp, Store};
@@ -15,74 +16,7 @@ use crate::locales::CATALOG;
 use crate::model::{Drive, Partition, Topology};
 use crate::offer::{self, Offer};
 
-/// What the person authors about their storage devices.
-#[derive(Model, Default, Debug, Clone, PartialEq)]
-#[model(check = Disks::valid)]
-pub struct Disks {
-    /// Drive serial number to the name the person gave it. A name is written whole: two
-    /// people naming one drive at once keep one of the names.
-    pub names: BTreeMap<String, Atom>,
-}
-
-impl Disks {
-    /// A name is shown on one line: never blank, never padded.
-    fn valid(&self) -> Result<(), Refusal> {
-        if self
-            .names
-            .values()
-            .any(|name| name.0.trim().is_empty() || name.0.trim() != name.0)
-        {
-            return Err(Refusal::new("a drive's name is not blank and not padded"));
-        }
-        Ok(())
-    }
-
-    pub fn names(&self) -> BTreeMap<String, String> {
-        self.names
-            .iter()
-            .map(|(serial, name)| (serial.clone(), name.0.clone()))
-            .collect()
-    }
-}
-
-impl Disks {
-    /// What the resource holds: the names the person gives their drives.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
-#[resource(
-    kind = "disks.system",
-    read_content = Disks::read_document
-)]
-impl Disks {
-    /// Name a drive, or forget its name.
-    ///
-    /// The name follows the drive to every device it is plugged into.
-    #[action]
-    pub fn name_drive(
-        &mut self,
-        #[param("The drive's serial number")] serial: String,
-        #[param("The name to show; none or blank forgets it")] name: Option<String>,
-    ) {
-        match name
-            .as_deref()
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-        {
-            Some(name) => {
-                self.names.insert(serial, Atom(name.to_owned()));
-            }
-            None => {
-                self.names.remove(&serial);
-            }
-        }
-    }
-}
+pub use disks_model::Disks;
 
 /// What Disks does to this machine, and how it shows it.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
@@ -456,6 +390,7 @@ mod tests {
     use super::*;
     use ui::framework::testing::TestApp;
     use ui::tilo_actions::OperationKind;
+    use ui::tilo_resource::Atom;
     use ui::tilo_resource::Resource;
 
     /// A live window over the sample machine: effects run, devices are never touched.

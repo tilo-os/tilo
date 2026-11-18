@@ -4160,6 +4160,7 @@ name = "disks"
 version = "0.1.0"
 dependencies = [
  "block-devices",
+ "disks-model",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -4167,6 +4168,15 @@ dependencies = [
  "tilo-app",
  "tilo-history",
  "tilo-system-info",
+ "workspace-hack",
+]
+
+[[package]]
+name = "disks-model"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tilo-resource",
  "workspace-hack",
 ]
 
