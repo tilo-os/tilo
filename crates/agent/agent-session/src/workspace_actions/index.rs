@@ -83,7 +83,7 @@ impl Warm {
         let (read, reading) = mpsc::channel::<WarmRead>();
         let spawned = std::thread::Builder::new()
             .name("search-warm".into())
-            .spawn(move || warm(asked, read));
+            .spawn(move || warm(asked, &read));
         if let Err(error) = spawned {
             tracing::warn!(%error, "workspace actions: the search index has no thread to read on");
         }
@@ -97,7 +97,7 @@ impl Warm {
 
 /// Read the documents asked for, one at a time, and hand back what each publishes: the
 /// index's thread's own loop.
-fn warm(jobs: mpsc::Receiver<WarmJob>, read: mpsc::Sender<WarmRead>) {
+fn warm(jobs: mpsc::Receiver<WarmJob>, read: &mpsc::Sender<WarmRead>) {
     let mut worker: Option<crate::worker::Process> = None;
     for job in jobs {
         let entries = read_entries(&mut worker, &job);
