@@ -65,8 +65,12 @@ impl Reach {
         self.public_only
     }
 
-    /// The addresses to connect to for `named`, from one look-up.
+    /// The addresses to connect to for `named`, from one look-up: under
+    /// [`Self::public`] every one of them judged, and all of them or none.
     async fn addresses(&self, named: &str) -> std::io::Result<Vec<IpAddr>> {
+        if self.public_only {
+            return tilo_net::address::public_addresses(&self.lookup, named).await;
+        }
         (self.lookup)(named.to_owned()).await
     }
 }
