@@ -22,6 +22,13 @@
 # or live session, and cannot write into them. Cargo and rustup keep using
 # their existing homes, so the toolchain and download cache are unaffected.
 #
+# A command that builds the app it then starts (the app scenario runner's
+# Cargo build) builds in the environment this one was started in, not in the
+# test environment: a variable in a build's environment keys every build
+# script's and proc macro's cache entry by it, and the test environment's
+# differ per job. The caller's environment is written before this one is set
+# and kept beside the fresh HOME, where the build reads it.
+#
 # Cargo runs every test binary through here (tools/cargo-runner.sh), so a
 # plain `cargo test` gets the same environment as CI. A command that already
 # runs inside an intact test environment keeps it, with whatever an enclosing
@@ -125,7 +132,7 @@ tilo_test_environment_cleanup() {
 # Make a fresh environment the environment of this shell, and so of what it
 # starts next; the shell removes it when it exits.
 tilo_test_environment_enter() {
-    local root lavapipe test_audio
+    local root lavapipe test_audio build_environment
 
     # rustup and Cargo locate themselves relative to HOME unless told otherwise.
     # Resolve both before HOME moves; CI images already set them explicitly.
@@ -145,6 +152,19 @@ tilo_test_environment_enter() {
     chmod 700 "$root" "$root/runtime"
     # The tests run as the test user where the run started as root.
     tilo_test_user_own "$root" "$root"/{home,config,data,state,cache,runtime}
+
+    # The environment a command that builds the app it then starts builds in:
+    # the caller's, written before this one was set (tools/test-env.sh, or the
+    # entry below). It goes with the fresh HOME, and its reader is the test
+    # user where the job began as root.
+    if [ -n "${TILO_BUILD_ENVIRONMENT_FILE:-}" ]; then
+        build_environment=$TILO_BUILD_ENVIRONMENT_FILE
+        unset TILO_BUILD_ENVIRONMENT_FILE
+        if cp -- "$build_environment" "$root/build-environment"; then
+            rm -f -- "$build_environment"
+            tilo_test_user_own "$root/build-environment"
+        fi
+    fi
 
     export TILO_TEST_ENVIRONMENT="$root"
     export HOME="$root/home"
@@ -220,6 +240,15 @@ if [ "$1" = --check ]; then
 fi
 if tilo_test_environment_intact; then
     exec "$@"
+fi
+# The environment a command that builds the app it then starts builds in: the
+# caller's, as this shell was started with it. tools/test-env.sh writes the
+# one it was given instead, before its steps add theirs, because this shell
+# would see those too.
+if [ -z "${TILO_BUILD_ENVIRONMENT_FILE:-}" ]; then
+    TILO_BUILD_ENVIRONMENT_FILE=$(mktemp)
+    env -0 >"$TILO_BUILD_ENVIRONMENT_FILE"
+    export TILO_BUILD_ENVIRONMENT_FILE
 fi
 tilo_test_environment_enter
 if "$@"; then status=0; else status=$?; fi
