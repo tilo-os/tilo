@@ -3574,8 +3574,8 @@ impl App {
                 command: "tilo-deployment entries".into(),
                 status,
                 stderr: format!(
-                    "{detail}\nthe next boot would have no boot loader try counter, so a deployment that fails to boot would be chosen again instead of the previous one; fix this before rebooting VM {}",
-                    vm.name
+                    "{detail}\nthe next boot would have no boot loader try counter, so a deployment that fails to boot would be chosen again instead of the previous one. The deployment is staged: to boot it without that protection, `tilo-vm vm restart {name}` (if it does not come up, `tilo-vm vm serial {name}` shows the boot menu, where the previous entry boots the old image); the image it boots maintains its entries from then on",
+                    name = vm.name
                 ),
             })
         };

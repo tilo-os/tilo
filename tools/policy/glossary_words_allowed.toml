@@ -5,6 +5,17 @@
 # of. A use of Tilo's own concept never goes here: rename it.
 
 [[allow]]
+reason = "logind's seats a dev VM account's session sits on, and the running of commands in tilo-vm's command-line help."
+words = ["seat", "run"]
+paths = ["crates/dev/tilo-vm/src/cli.rs"]
+
+[[allow]]
+reason = "The dev app assembly's subprocess helper, `run`, and a test's stand-in for it."
+words = ["run"]
+identifiers = ["run", "fake_run"]
+paths = ["os/dev/assemble-app-runtime.py", "tools/tests/test_assemble_app_runtime_models.py"]
+
+[[allow]]
 reason = "A WAV recording's audio channels (left, right), not a Tilo channel."
 words = ["channel"]
 paths = ["crates/dev/tilo-vm/src/sound.rs"]
