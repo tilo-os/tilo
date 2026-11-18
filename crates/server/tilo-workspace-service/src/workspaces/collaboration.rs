@@ -511,6 +511,22 @@ impl Workspaces {
         Ok(())
     }
 
+    /// Every grant `workspace`'s governance holds, as the policy its holders
+    /// decide by keeps them.
+    ///
+    /// # Errors
+    ///
+    /// The workspace's policy is not here.
+    pub async fn workspace_grants(
+        &self,
+        workspace: &str,
+    ) -> Result<Vec<tilo_action_policy::Grant>, CollaborationError> {
+        self.policy_of(workspace)
+            .await
+            .map(|policy| policy.grants)
+            .ok_or_else(|| CollaborationError::new("the workspace's policy is not here"))
+    }
+
     /// The grants `workspace` records of `person`'s, as its governance keeps
     /// them: each key it admitted, when it admitted it, and whether its person
     /// revoked it.

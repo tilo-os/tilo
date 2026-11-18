@@ -278,6 +278,61 @@ fn reports_since(
     ))
 }
 
+/// The grant a person gives the workspace's moderation agent when they enable
+/// it: reading and undoable changes in Chat, where it moderates, and nothing
+/// outside it.
+#[must_use]
+pub fn moderation_grant(workspace: &str, person: &str) -> Grant {
+    Grant::new(
+        format!("bot:{MODERATION_INSTALLATION}"),
+        Grantee::bot(MODERATION_INSTALLATION),
+        TreePath::workspace(workspace).app(CHAT),
+        KindSet::READ_UNDOABLE,
+        Answer::Allow,
+        Grantee::person(person.to_owned()),
+    )
+}
+
+/// Enable `workspace`'s moderation agent as the workspace's own person, whose
+/// device this server holds: write the grant it moderates Chat by into the
+/// workspace's governance. Only a person's decision enables it; where nobody
+/// did, the bot holds nothing and its changes are refused.
+///
+/// # Errors
+/// The workspace is not governed here, or the grant could not be written.
+pub async fn enable(workspaces: &Workspaces, workspace: &str) -> Result<(), String> {
+    let cert = workspaces.governor();
+    let grant = moderation_grant(workspace, &hex::encode(cert.user_public_key));
+    // The request is the grant as this build writes it: settling the same
+    // enable again changes nothing.
+    let written = serde_json::to_vec(&grant)
+        .map_err(|error| format!("the moderation bot's grant as written: {error}"))?;
+    let request_id = *blake3::Hasher::new()
+        .update(b"enable-moderation\0")
+        .update(&written)
+        .finalize()
+        .as_bytes();
+    workspaces
+        .put_workspace_grants(workspace, cert, request_id, vec![grant])
+        .await
+        .map(drop)
+        .map_err(|error| error.to_string())
+}
+
+/// Whether a person enabled `workspace`'s moderation agent: whether its
+/// governance holds the grant the bot moderates Chat by.
+///
+/// # Errors
+/// The workspace is not governed here.
+pub async fn enabled(workspaces: &Workspaces, workspace: &str) -> Result<bool, String> {
+    let id = format!("bot:{MODERATION_INSTALLATION}");
+    let grants = workspaces
+        .workspace_grants(workspace)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(grants.iter().any(|grant| grant.id.as_str() == id))
+}
+
 /// The moderation agent's replica of the workspace's chat, holding the parts of
 /// its messages beside it: the root's installation, granted reading and
 /// undoable changes in the workspace.
@@ -287,15 +342,7 @@ fn bot_replica(
     bytes: Vec<u8>,
     parts: Vec<(collab_types::document::DocumentId, Vec<u8>)>,
 ) -> Result<Replica, String> {
-    let bot = Grantee::bot(MODERATION_INSTALLATION);
-    let grant = Grant::new(
-        format!("bot:{MODERATION_INSTALLATION}"),
-        bot,
-        TreePath::workspace(workspace),
-        KindSet::READ_UNDOABLE,
-        Answer::Allow,
-        Grantee::person(installer),
-    );
+    let grant = moderation_grant(workspace, installer);
     let access = MemberAccess::person(WorkspacePolicy::new(workspace, installer), installer)
         .acting_as(
             Actor::Member(MemberId::bot(MODERATION_INSTALLATION)),

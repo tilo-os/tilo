@@ -417,7 +417,7 @@ impl Workspaces {
     /// The authority `workspace` records, as this host's device reads it: the
     /// one policy lookup the entry, the directory and a member's role answer
     /// from.
-    pub(super) async fn policy_of(
+    pub(crate) async fn policy_of(
         &self,
         workspace: &str,
     ) -> Option<tilo_action_policy::WorkspacePolicy> {

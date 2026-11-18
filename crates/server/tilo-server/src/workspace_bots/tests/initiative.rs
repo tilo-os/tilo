@@ -22,7 +22,7 @@ use tilo_agent_session::bot::host_steps::{
     HostStepError as StepError, HostSteps as Steps, StepCause,
 };
 
-use super::bot_host as bot_server;
+use super::bot_server;
 use super::*;
 use crate::WorkspaceId;
 use crate::workspace_bots::events::PersonEvents;

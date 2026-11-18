@@ -166,7 +166,7 @@ fn said(call: &Asked, message: usize) -> String {
 async fn a_judgement_is_answered_by_its_persons_own_model_with_their_own_key() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = bot_host(scratch.path(), &key, &cert).await;
+    let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let at_ms = i64::try_from(FIRST_TICK_MS).unwrap();
@@ -237,7 +237,7 @@ async fn a_judgement_is_answered_by_its_persons_own_model_with_their_own_key() {
 async fn a_judgements_cost_is_on_its_persons_assistants_day_and_a_refusal_is_said_in_words() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = bot_host(scratch.path(), &key, &cert).await;
+    let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let at_ms = i64::try_from(FIRST_TICK_MS).unwrap();
