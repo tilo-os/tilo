@@ -1185,19 +1185,27 @@ impl HostAgents {
     /// turn that is still owed is told its conversation as it stands now, with the answer
     /// before it.
     ///
-    /// An issue's turn begins as it was read: whether it is owed depends on the time as well,
-    /// and whoever begins it says at what time ([`Self::turns_at`]).
+    /// An issue's turn is held to the same: where its agent answered the ask since, or the
+    /// issue waits or stopped since, nothing begins, so no second session is counted on it and
+    /// no model is asked again. Whether an issue is owed depends on the time as well, and
+    /// whoever read the turn may have read it at a later time than the clock's
+    /// ([`Self::turns_at`]). The one ask that hangs on the time is a wait that ended, which
+    /// names its moment and is owed from then on: so what the clock's time does not owe is
+    /// looked for once more with every wait ended, where only that same ask is found.
     ///
     /// # Errors
     /// What the workspace owes could not be read.
     async fn owed_now(&self, workspace: &str, turn: &Turn) -> Result<Option<Turn>, String> {
-        if !matches!(turn.ask, Ask::Message { .. }) {
-            return Ok(Some(turn.clone()));
-        }
+        let same = |now: &Turn| now.agent.id.0 == turn.agent.id.0 && now.ask == turn.ask;
         let owed = Box::pin(self.asks(workspace)).await?.turns;
-        Ok(owed
-            .into_iter()
-            .find(|now| now.agent.id.0 == turn.agent.id.0 && now.ask == turn.ask))
+        if let Some(owed) = owed.into_iter().find(same) {
+            return Ok(Some(owed));
+        }
+        if matches!(turn.ask, Ask::Message { .. }) {
+            return Ok(None);
+        }
+        let owed = Box::pin(self.asks_at(workspace, i64::MAX)).await?.turns;
+        Ok(owed.into_iter().find(same))
     }
 
     /// [`Self::answer`], for the turn that holds its place as `going`: the ask it ended on,
