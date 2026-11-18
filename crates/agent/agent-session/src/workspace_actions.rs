@@ -2101,6 +2101,9 @@ impl Worker {
     /// sent is asked for when a request names it.
     fn documents(&mut self, state: &WorkspaceState, cluster_id: &str) -> Vec<DocumentRoute> {
         let mut routes: Vec<DocumentRoute> = state.documents.to_vec();
+        // What this member's replica holds, before the serving device's list adds the
+        // documents it has not been sent.
+        let kept_here: HashSet<DocumentRoute> = routes.iter().cloned().collect();
         if let Some(held) = self
             .shared
             .link
@@ -2142,11 +2145,14 @@ impl Worker {
             })
             // What this service holds as a document: one another device made and this one
             // keeps only as retained changes (a window's own document, a sealed one it cannot
-            // open) is no data of the app here, and is neither listed nor offered. A part of a
-            // chain is always kept: a public workspace sends one to this device when its chain
-            // is asked for, and the listing is what asks.
+            // open) is no data of the app here, and is neither listed nor offered. A document
+            // the replica holds none of is not one it keeps that way: the workspace may still
+            // send it, so it is listed and asked for when a request names it. A part of a
+            // chain is always kept: a public workspace sends one to this device when its
+            // chain is asked for, and the listing is what asks.
             .filter(|route| {
                 is_part(&route.document)
+                    || !kept_here.contains(route)
                     || state
                         .engine
                         .record(cluster_id, &route.app_id, &route.document)
