@@ -846,6 +846,7 @@ browser-new-workspace-name = Workspace { $number }
 workspace-notice-joined = { $name } joined
 workspace-notice-agent-finished = { $agent } finished
 workspace-notice-agent-card = Open card
+workspace-notice-agent-open = Open in { $app }
 workspace-notice-agent-finished-changes = { $agent } finished: { $count ->
     [one] 1 change
    *[other] { $count } changes

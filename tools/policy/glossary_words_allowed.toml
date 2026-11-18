@@ -454,3 +454,12 @@ reason = "A replica test drives the platform's Host API: `migrate` is only on Ho
 words = ["host"]
 paths = ["crates/platform/tilolang-tilo/tests/migrations.rs"]
 identifiers = ["host"]
+
+[[allow]]
+reason = "The existing wire's name for the document a change or a place is in (SessionAction, notice::Place): these files read it and pass it on, and renaming it is a wire change of its own."
+words = ["record"]
+identifiers = ["record"]
+paths = [
+    "crates/session/desktop/src/here.rs",
+    "crates/browser/tilo-browser-runtime/src/browser/agent_notices.rs",
+]

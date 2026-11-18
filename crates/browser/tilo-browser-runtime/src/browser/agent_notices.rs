@@ -4,7 +4,7 @@
 
 use super::Desktop;
 
-use tilo_desktop::here::{AGENT_CARD_ACTION, finished_notice};
+use tilo_desktop::here::{AGENT_CARD_ACTION, finished_notice, worked_place};
 
 /// How long a finished agent's notice waits for the history to say what its run did.
 const FINISHED_READ_MS: u64 = 3_000;
@@ -130,6 +130,16 @@ impl Desktop {
                         client,
                         tilo_desktop::profile_card::AgentAsk::Card,
                     ));
+            }
+            // What the session worked, shown by its app in the document and on the resource it
+            // changed: the issue for an issue turn, the conversation for a chat turn.
+            if let Some((app, document, resource)) = worked_place(&action) {
+                self.open(&tilo_session::platform::notice::Place {
+                    app: app.to_owned(),
+                    record: document.to_owned(),
+                    resource: resource.to_owned(),
+                    anchor: String::new(),
+                });
             }
         }
     }

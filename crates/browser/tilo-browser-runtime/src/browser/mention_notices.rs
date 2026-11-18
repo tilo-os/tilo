@@ -146,7 +146,7 @@ impl Desktop {
     }
 
     /// Ask the session to open `place` as this person, as a search hit opens what it found.
-    fn open(&self, place: &Place) {
+    pub(super) fn open(&self, place: &Place) {
         self.invoke_as_person(&InvokeTarget::place(self.workspace.as_str(), place));
     }
 }
