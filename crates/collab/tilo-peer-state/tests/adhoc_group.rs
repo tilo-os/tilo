@@ -354,10 +354,9 @@ async fn held_by_five(directory: &Path) -> [Desktop; 5] {
     // theirs to configure and no second step.
     joins(&b1, invitation(&a1, [1; 32]).await, &a1).await;
     // B's second desktop is B's own device, so the workspace admits it as one:
-    // no second invitation. A further device enters through a device of the
-    // workspace's owner, so B's desktop asks A's first desktop, which holds
-    // the workspace.
-    enters_as_member(&b2, &a1).await;
+    // no second invitation. B's first desktop is a key holder, and any key
+    // holder lets a member's further device in.
+    enters_as_member(&b2, &b1).await;
 
     a1.serve();
     a2.serve();

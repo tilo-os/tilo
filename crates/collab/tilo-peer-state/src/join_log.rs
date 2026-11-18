@@ -161,7 +161,7 @@ impl<'a> From<PeerGuard<'a>> for PeerRef<'a> {
 pub struct Governed<'a> {
     /// The workspace's admitted state.
     pub peer: PeerRef<'a>,
-    /// The device answering the join: a device of the workspace's owner.
+    /// The device answering the join: a key holder of the workspace.
     pub host: &'a DeviceCert,
     /// The workspace the log answers for.
     pub workspace_id: WorkspaceId,
