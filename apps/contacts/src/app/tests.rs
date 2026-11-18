@@ -3862,7 +3862,8 @@ impl Live {
     fn book_after(&self, invoke: &Invoke<ContactCards>) -> Vec<Contact> {
         let (mut replicas, mut states) = self.part_replicas();
         let mut action = invoke.build(1_000).expect("the action builds");
-        crate::contact_cards::prepare(&mut action, &states).expect("the action reads the book");
+        crate::contact_cards::prepare(std::slice::from_mut(&mut action), &states)
+            .expect("the action reads the book");
         let index = ui::framework::placed::<ContactCards>(&action, &states);
         if let Some((_, replica)) = replicas.iter_mut().find(|(held, _)| *held == index) {
             replica

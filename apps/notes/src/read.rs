@@ -80,7 +80,12 @@ pub fn project_in(notebook: &AutoCommit, part: &AutoCommit) -> Result<Workspace,
 pub fn prepared(doc: &AutoCommit, notebook: &Notebook, action: &Action) -> Result<Action, String> {
     let held = NoteList::read(doc).map_err(|error| error.to_string())?;
     let mut action = action.clone();
-    crate::note_list::prepare(&mut action, notebook, &[(0, Rc::new(held))], None)?;
+    crate::note_list::prepare(
+        std::slice::from_mut(&mut action),
+        notebook,
+        &[(0, Rc::new(held))],
+        None,
+    )?;
     Ok(action)
 }
 

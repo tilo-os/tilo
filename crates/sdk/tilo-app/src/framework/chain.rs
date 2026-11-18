@@ -218,13 +218,19 @@ pub trait Chained: Resource {
     /// so the verb itself still reads only its own part. `invoker` is who
     /// it is invoked by: what an action naming "mine" resolves against (the
     /// one note they made).
+    ///
+    /// `actions` are invoked as one, in order: a single action, or every
+    /// member of a group. What they read across the parts is read once for
+    /// all of them, and each takes up where the one before it left off (a
+    /// new item placed after the one made before it), so a group costs what
+    /// its members do, not its members times every item held.
     fn prepare(
-        action: &mut Self::Action,
+        actions: &mut [Self::Action],
         base: &<Self::Base as Resource>::State,
         parts: &[(u64, Rc<Self::State>)],
         invoker: &ActionInvoker,
     ) -> Result<(), String> {
-        let _ = (action, base, parts, invoker);
+        let _ = (actions, base, parts, invoker);
         Ok(())
     }
 
@@ -1843,7 +1849,10 @@ impl ChainState {
         // As held, without a refresh: this is read while one runs.
         let parts = (part.typed)(&self.held());
         for entry in unsent {
-            let Ok(action) = (part.prepare)(&*entry.action, &*base, &*parts, &entry.invoker) else {
+            let Ok(Some(action)) =
+                (part.prepare)(&[&*entry.action], &*base, &*parts, &entry.invoker)
+                    .map(|mut prepared| prepared.pop())
+            else {
                 continue;
             };
             let Ok((action, encoded)) = (part.written)(&*action) else {
@@ -1889,8 +1898,10 @@ impl ChainState {
         let base = (self.base)();
         let kept = self.parts();
         let parts = (part.typed)(&kept);
-        let action =
-            (part.prepare)(action, &*base, &*parts, invoker).map_err(ActionError::Refused)?;
+        let action = (part.prepare)(&[action], &*base, &*parts, invoker)
+            .map_err(ActionError::Refused)?
+            .pop()
+            .ok_or_else(|| ActionError::Refused("the action was not prepared".into()))?;
         let (place, by_app) = (part.route)(&*action, &*base, &*parts);
         drop(base);
         if let Some(shares) = self
@@ -1979,21 +1990,20 @@ impl ChainState {
         let base = (self.base)();
         let kept = self.parts();
         let parts = (part.typed)(&kept);
-        let mut prepared = Vec::with_capacity(group.len());
+        let members: Vec<&dyn Any> = group.iter().map(|action| &**action).collect();
+        let prepared =
+            (part.prepare)(&members, &*base, &*parts, invoker).map_err(ActionError::Refused)?;
         let mut places = Vec::with_capacity(group.len());
         let mut indices = Vec::with_capacity(group.len());
-        for action in group {
-            let action = (part.prepare)(&**action, &*base, &*parts, invoker)
-                .map_err(ActionError::Refused)?;
-            let (place, by_app) = (part.route)(&*action, &*base, &*parts);
-            let by_app = by_app.or_else(|| self.listed_part(&*action, &kept).map(Ok));
+        for action in &prepared {
+            let (place, by_app) = (part.route)(&**action, &*base, &*parts);
+            let by_app = by_app.or_else(|| self.listed_part(&**action, &kept).map(Ok));
             places.push(place);
-            self.may(&*action)?;
+            self.may(&**action)?;
             indices.push(
-                self.place(&*action, by_app, &kept)
+                self.place(&**action, by_app, &kept)
                     .map_err(ActionError::Refused)?,
             );
-            prepared.push(action);
         }
         drop(base);
         drop(parts);

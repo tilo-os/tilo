@@ -426,7 +426,7 @@ fn not_in_trash() -> Refusal {
     Refusal::new("every message must still be present in Trash before permanent deletion")
 }
 
-/// Fill in, where an action is invoked, what it reads of the whole mailbox,
+/// Fill in, where actions are invoked, what each reads of the whole mailbox,
 /// and refuse what it does not allow: a permanent deletion of a message not
 /// in the Trash, a delivery of a message the mailbox holds already, mail
 /// arriving that is a retired copy of a draft.
@@ -434,36 +434,38 @@ fn not_in_trash() -> Refusal {
 /// # Errors
 /// Refuses as the verb would, had it every part.
 pub fn prepare(
-    action: &mut <MessageStates as tilo_resource::Resource>::Action,
+    actions: &mut [<MessageStates as tilo_resource::Resource>::Action],
     mail: &Mail,
     parts: &[(u64, Rc<MessageStates>)],
 ) -> Result<(), String> {
     use message_states as verb;
-    match &mut action.operation {
-        MessageStatesAction::Purge(verb::Purge { messages }) => {
-            let in_trash = |id: &String| {
-                message_key(id).is_none_or(|key| {
-                    parts
-                        .iter()
-                        .rev()
-                        .find_map(|(_, part)| part.message(key.as_str()))
-                        .is_none_or(|message| message.folder == Folder::Trash)
-                })
-            };
-            if !messages.iter().all(in_trash) {
-                return Err(not_in_trash().to_string());
+    for action in actions {
+        match &mut action.operation {
+            MessageStatesAction::Purge(verb::Purge { messages }) => {
+                let in_trash = |id: &String| {
+                    message_key(id).is_none_or(|key| {
+                        parts
+                            .iter()
+                            .rev()
+                            .find_map(|(_, part)| part.message(key.as_str()))
+                            .is_none_or(|message| message.folder == Folder::Trash)
+                    })
+                };
+                if !messages.iter().all(in_trash) {
+                    return Err(not_in_trash().to_string());
+                }
             }
+            MessageStatesAction::Ingest(verb::Ingest { messages }) => {
+                // A draft's copy its server was told to delete never comes back
+                // with a late fetch.
+                let retired = mail.retired_copy_ids();
+                messages.retain(|baseline| !retired.contains(baseline.id.trim()));
+            }
+            MessageStatesAction::DeliverMessage(verb::DeliverMessage { message }) => {
+                crate::held::prepare_delivery(message, parts)?;
+            }
+            _ => {}
         }
-        MessageStatesAction::Ingest(verb::Ingest { messages }) => {
-            // A draft's copy its server was told to delete never comes back
-            // with a late fetch.
-            let retired = mail.retired_copy_ids();
-            messages.retain(|baseline| !retired.contains(baseline.id.trim()));
-        }
-        MessageStatesAction::DeliverMessage(verb::DeliverMessage { message }) => {
-            crate::held::prepare_delivery(message, parts)?;
-        }
-        _ => {}
     }
     Ok(())
 }
@@ -650,12 +652,12 @@ impl ui::framework::Chained for MessageStates {
     }
 
     fn prepare(
-        action: &mut Self::Action,
+        actions: &mut [Self::Action],
         mail: &Mail,
         parts: &[(u64, Rc<Self>)],
         _invoker: &ui::tilo_actions::ActionInvoker,
     ) -> Result<(), String> {
-        prepare(action, mail, parts)
+        prepare(actions, mail, parts)
     }
 
     fn places(mail: &Mail, parts: &[(u64, Rc<Self>)]) -> Vec<Derived<Self>> {

@@ -1468,20 +1468,58 @@ fn goal_named(tracker: &Tracker, project: &Ref) -> Result<Area, String> {
     Ok(crate::model::area_goal(&area, &named.name))
 }
 
-/// Fill in, where `action` is invoked, what it reads of the tracker's
-/// projects and of every issue held there, and refuse what they do not
-/// allow: a parent that is not an issue, a project the tracker does not
-/// have, an issue placed under its own sub-issue.
+/// Fill in, where `actions` are invoked together, what each reads of the
+/// tracker's projects and of every issue held there, and refuse what they do
+/// not allow: a parent that is not an issue, a project the tracker does not
+/// have, an issue placed under its own sub-issue. The issues are read once for
+/// all of them.
 ///
 /// # Errors
 /// Refuses as the action's verb would, had it every part.
 pub fn prepare(
-    action: &mut <IssueList as tilo_resource::Resource>::Action,
+    actions: &mut [<IssueList as tilo_resource::Resource>::Action],
     tracker: &Tracker,
     parts: &[(u64, Rc<IssueList>)],
 ) -> Result<(), String> {
-    use issue_list::{Create, MoveUnder, Place, SetProject};
     let held = Held(parts);
+    let mut last = Last::after(&held);
+    for action in actions {
+        prepare_one(action, tracker, &held, &mut last)?;
+    }
+    Ok(())
+}
+
+/// The ranks after every issue held, one after the other: where the issues
+/// that actions invoked together make or move to the end go, each after the
+/// one before it. Every issue is scanned once, for the first.
+pub(super) struct Last<'h, 'a> {
+    held: &'h Held<'a>,
+    given: Option<String>,
+}
+
+impl<'h, 'a> Last<'h, 'a> {
+    const fn after(held: &'h Held<'a>) -> Self {
+        Self { held, given: None }
+    }
+
+    /// The rank after every issue's and every rank given before.
+    pub(super) fn next(&mut self) -> String {
+        let next = match &self.given {
+            Some(given) => tilo_resource::order::between(Some(given), None),
+            None => self.held.last_rank(),
+        };
+        self.given = Some(next.clone());
+        next
+    }
+}
+
+fn prepare_one(
+    action: &mut <IssueList as tilo_resource::Resource>::Action,
+    tracker: &Tracker,
+    held: &Held<'_>,
+    last: &mut Last<'_, '_>,
+) -> Result<(), String> {
+    use issue_list::{Create, MoveUnder, Place, SetProject};
     // The issue an action names in its own parameter may be written as its
     // title, its number or an address too: it is resolved here, where every
     // part is held, so the part keeping it can be found.
@@ -1513,7 +1551,7 @@ pub fn prepare(
                 *parent = Ref::from(id);
             }
             issue.goal = goal(issue.project.as_ref())?;
-            issue.rank = Some(held.last_rank());
+            issue.rank = Some(last.next());
         }
         IssueListAction::MoveUnder(MoveUnder { issue, parent }) => {
             let resolved = check_parent(parent.as_ref())?;
@@ -1539,13 +1577,13 @@ pub fn prepare(
             *rank = Some(
                 match named_before.as_ref().filter(|before| *before != issue) {
                     Some(before) => held.rank_before(before, issue),
-                    None => held.last_rank(),
+                    None => last.next(),
                 },
             );
             *before = named_before.map(Ref::from);
         }
         IssueListAction::CreateMany(listed) => {
-            many::prepare_create(&mut listed.issues, tracker, &held)?;
+            many::prepare_create(&mut listed.issues, tracker, held, last)?;
         }
         // What `assign` and `comment` refuse of their arguments is refused
         // here too, where every part is held, naming the issue: several of
@@ -1719,12 +1757,12 @@ impl ui::framework::Chained for IssueList {
     }
 
     fn prepare(
-        action: &mut Self::Action,
+        actions: &mut [Self::Action],
         tracker: &Tracker,
         parts: &[(u64, Rc<Self>)],
         _invoker: &ui::tilo_actions::ActionInvoker,
     ) -> Result<(), String> {
-        prepare(action, tracker, parts)
+        prepare(actions, tracker, parts)
     }
 
     fn carry(_previous: u64, part: &Self) -> Option<tilo_resource::Invoke<Self>> {

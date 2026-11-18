@@ -1311,64 +1311,68 @@ impl Chained for ChatMessages {
     }
 
     fn prepare(
-        action: &mut Self::Action,
+        actions: &mut [Self::Action],
         chat: &Chat,
         _parts: &[(u64, Rc<Self>)],
         invoker: &ui::tilo_actions::ActionInvoker,
     ) -> Result<(), String> {
-        match &mut action.operation {
-            ChatMessagesAction::Post(post) => {
-                let message = &mut post.message;
-                takes_posts(chat, &message.channel)?;
-                let body = message.body.clone().unwrap_or_default();
-                message.mentions = Some(Chat::mentions(&message.text, &body));
+        for action in actions {
+            match &mut action.operation {
+                ChatMessagesAction::Post(post) => {
+                    let message = &mut post.message;
+                    takes_posts(chat, &message.channel)?;
+                    let body = message.body.clone().unwrap_or_default();
+                    message.mentions = Some(Chat::mentions(&message.text, &body));
+                }
+                ChatMessagesAction::PostFile(post) => {
+                    takes_posts(chat, &post.channel)?;
+                    post.mentions = Some(Chat::mentions(
+                        post.text.as_deref().unwrap_or_default(),
+                        &[],
+                    ));
+                }
+                ChatMessagesAction::ShareResource(share) => {
+                    takes_posts(chat, &share.channel)?;
+                    let text = share
+                        .text
+                        .clone()
+                        .filter(|text| !text.trim().is_empty())
+                        .unwrap_or_else(|| share.attached.reference.label.clone());
+                    share.mentions = Some(Chat::mentions(&text, &[]));
+                }
+                ChatMessagesAction::ShareWindow(share) => {
+                    takes_posts(chat, &share.channel)?;
+                    share.mentions = Some(Chat::mentions(
+                        share.text.as_deref().unwrap_or_default(),
+                        &[],
+                    ));
+                }
+                ChatMessagesAction::Ask(ask) => takes_posts(chat, &ask.channel)?,
+                ChatMessagesAction::PostView(post) => takes_posts(chat, &post.channel)?,
+                ChatMessagesAction::AskAgent(ask) => {
+                    takes_posts(chat, &ask.channel)?;
+                    // Who the conversation is with, for the verb to check its
+                    // asker and the person asked for against.
+                    ask.members = Some(chat.conversation_members(&ask.channel));
+                    // The message an ask under this key is carried by, where it
+                    // was asked before: whoever it is asked for, and the key.
+                    ask.message = crate::cause::led_to(&invoker.acting).map(|person| {
+                        crate::cause::message_id(
+                            &ui::tilo_resource::MemberId::person(person),
+                            &ask.cause.key,
+                        )
+                    });
+                }
+                ChatMessagesAction::EditMessage(edit) => {
+                    let body = edit.body.clone().unwrap_or_default();
+                    edit.mentions = Some(Chat::mentions(&edit.text, &body));
+                }
+                ChatMessagesAction::StreamOutput(stream) => takes_posts(chat, &stream.channel)?,
+                ChatMessagesAction::DeliverMessage(delivery) => {
+                    takes_posts(chat, &delivery.channel)?;
+                }
+                _ => {}
             }
-            ChatMessagesAction::PostFile(post) => {
-                takes_posts(chat, &post.channel)?;
-                post.mentions = Some(Chat::mentions(
-                    post.text.as_deref().unwrap_or_default(),
-                    &[],
-                ));
-            }
-            ChatMessagesAction::ShareResource(share) => {
-                takes_posts(chat, &share.channel)?;
-                let text = share
-                    .text
-                    .clone()
-                    .filter(|text| !text.trim().is_empty())
-                    .unwrap_or_else(|| share.attached.reference.label.clone());
-                share.mentions = Some(Chat::mentions(&text, &[]));
-            }
-            ChatMessagesAction::ShareWindow(share) => {
-                takes_posts(chat, &share.channel)?;
-                share.mentions = Some(Chat::mentions(
-                    share.text.as_deref().unwrap_or_default(),
-                    &[],
-                ));
-            }
-            ChatMessagesAction::Ask(ask) => takes_posts(chat, &ask.channel)?,
-            ChatMessagesAction::PostView(post) => takes_posts(chat, &post.channel)?,
-            ChatMessagesAction::AskAgent(ask) => {
-                takes_posts(chat, &ask.channel)?;
-                // Who the conversation is with, for the verb to check its
-                // asker and the person asked for against.
-                ask.members = Some(chat.conversation_members(&ask.channel));
-                // The message an ask under this key is carried by, where it
-                // was asked before: whoever it is asked for, and the key.
-                ask.message = crate::cause::led_to(&invoker.acting).map(|person| {
-                    crate::cause::message_id(
-                        &ui::tilo_resource::MemberId::person(person),
-                        &ask.cause.key,
-                    )
-                });
-            }
-            ChatMessagesAction::EditMessage(edit) => {
-                let body = edit.body.clone().unwrap_or_default();
-                edit.mentions = Some(Chat::mentions(&edit.text, &body));
-            }
-            ChatMessagesAction::StreamOutput(stream) => takes_posts(chat, &stream.channel)?,
-            ChatMessagesAction::DeliverMessage(delivery) => takes_posts(chat, &delivery.channel)?,
-            _ => {}
         }
         Ok(())
     }

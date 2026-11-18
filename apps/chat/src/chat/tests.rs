@@ -83,7 +83,7 @@ impl Talk {
             .build(self.now_ms)
             .map_err(ApiError::InvalidArguments)?;
         ChatMessages::prepare(
-            &mut action,
+            std::slice::from_mut(&mut action),
             &self.chat.state().unwrap(),
             &[],
             &ui::tilo_actions::ActionInvoker::person("tester"),

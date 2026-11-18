@@ -112,7 +112,7 @@ impl Shelf {
     fn apply(&mut self, invoke: &Invoke<ArticleList>) -> Result<u64, String> {
         let mut action = invoke.build(1_000)?;
         let held = self.states();
-        crate::article_list::prepare(&mut action, &self.state, &held)?;
+        crate::article_list::prepare(std::slice::from_mut(&mut action), &self.state, &held)?;
         let index = ui::framework::placed::<ArticleList>(&action, &held);
         self.part(index)
             .apply_action(&action)

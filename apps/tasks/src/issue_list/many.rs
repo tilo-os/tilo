@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use ui::tilo_resource::items::Ref;
-use ui::tilo_resource::{self, Origin, Refusal};
+use ui::tilo_resource::{Origin, Refusal};
 
 use super::Held;
 use crate::model::{ListedIssue, MAX_MANY, MAX_TITLE_CHARS, Tracker, checked_assignee};
@@ -158,6 +158,7 @@ pub(super) fn prepare_create(
     issues: &mut [ListedIssue],
     tracker: &Tracker,
     held: &Held<'_>,
+    last: &mut super::Last<'_, '_>,
 ) -> Result<(), String> {
     check_count(issues.len()).map_err(|refusal| refusal.to_string())?;
     nesting(issues).map_err(|refusal| refusal.to_string())?;
@@ -166,7 +167,6 @@ pub(super) fn prepare_create(
             "This is more text than one step takes: give the issues in several calls".into(),
         );
     }
-    let mut rank = held.last_rank();
     for (at, issue) in issues.iter_mut().enumerate() {
         let title = issue.title.as_str().to_owned();
         let refuse = |why: String| entry(at, &title, why).to_string();
@@ -180,8 +180,7 @@ pub(super) fn prepare_create(
             .map(|project| super::goal_named(tracker, project))
             .transpose()
             .map_err(&refuse)?;
-        let next = tilo_resource::order::between(Some(&rank), None);
-        issue.rank = Some(std::mem::replace(&mut rank, next));
+        issue.rank = Some(last.next());
     }
     Ok(())
 }

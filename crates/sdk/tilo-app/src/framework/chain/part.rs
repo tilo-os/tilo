@@ -32,7 +32,7 @@ type Action = Box<dyn Any>;
 type Route = (Option<String>, Option<Result<u64, String>>);
 
 type ReadPart = fn(&ResourceStore, &DocumentId) -> Result<Box<dyn HeldPart>, String>;
-type Prepare = fn(&dyn Any, &dyn Any, &dyn Any, &ActionInvoker) -> Result<Action, String>;
+type Prepare = fn(&[&dyn Any], &dyn Any, &dyn Any, &ActionInvoker) -> Result<Vec<Action>, String>;
 type RouteOf = fn(&dyn Any, &dyn Any, &dyn Any) -> Route;
 type Written =
     for<'a> fn(&'a dyn Any) -> Result<(&'a dyn tilo_actions::Action, EncodedAction), ActionError>;
@@ -316,19 +316,25 @@ fn typed<P: Chained>(parts: &[(u64, Rc<dyn Any>)]) -> TypedParts {
 }
 
 fn prepare<P: Chained>(
-    action: &dyn Any,
+    actions: &[&dyn Any],
     base: &dyn Any,
     parts: &dyn Any,
     invoker: &ActionInvoker,
-) -> Result<Box<dyn Any>, String> {
-    let mut action = action_of::<P>(action)?.clone();
+) -> Result<Vec<Action>, String> {
+    let mut prepared = actions
+        .iter()
+        .map(|action| action_of::<P>(*action).cloned())
+        .collect::<Result<Vec<_>, _>>()?;
     P::prepare(
-        &mut action,
+        &mut prepared,
         base_of::<P>(base)?,
         parts_of::<P>(parts),
         invoker,
     )?;
-    Ok(Box::new(action))
+    Ok(prepared
+        .into_iter()
+        .map(|action| Box::new(action) as Action)
+        .collect())
 }
 
 fn route<P: Chained>(action: &dyn Any, base: &dyn Any, parts: &dyn Any) -> Route {

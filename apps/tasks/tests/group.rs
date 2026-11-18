@@ -535,3 +535,24 @@ fn a_group_creates_a_parent_and_a_child_under_it() {
         "the child stands under the issue the same group made"
     );
 }
+
+#[test]
+fn issues_made_in_one_group_stand_in_the_order_they_were_given() {
+    let mut app = open();
+    make(&mut app, 2);
+    let creates = (0..5)
+        .map(|at| member("create", json!({ "title": format!("New {at}") })))
+        .collect();
+    group(&mut app, creates).expect("the group is applied");
+
+    let mut made: Vec<(u64, String)> = held(&app)
+        .values()
+        .map(|issue| (issue.number, issue.rank))
+        .collect();
+    made.sort();
+    assert_eq!(made.len(), 7);
+    assert!(
+        made.windows(2).all(|pair| pair[0].1 < pair[1].1),
+        "each issue goes after the one made before it: {made:?}"
+    );
+}

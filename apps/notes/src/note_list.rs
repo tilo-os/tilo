@@ -1624,29 +1624,68 @@ fn copies_of(page: &Id, pages: &Pages<'_>) -> Result<Vec<PageCopy>, String> {
     Ok(made)
 }
 
-/// Fill in, where `action` is invoked, what it reads of the notebook's tags
-/// and of every note held there, and refuse what they do not allow: a
-/// parent that is not a note shown, a note moved under itself, a tag the
-/// notebook has none of.
+/// Fill in, where `actions` are invoked together, what each reads of the
+/// notebook's tags and of every note held there, and refuse what they do not
+/// allow: a parent that is not a note shown, a note moved under itself, a tag
+/// the notebook has none of. The notes are read once for all of them.
 ///
 /// # Errors
 /// Refuses as the action's verb would, had it every part.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one arm per verb that reads across parts"
-)]
 pub fn prepare(
-    action: &mut <NoteList as tilo_resource::Resource>::Action,
+    actions: &mut [<NoteList as tilo_resource::Resource>::Action],
     notebook: &Notebook,
     parts: &[(u64, Rc<NoteList>)],
     author: Option<&MemberId>,
 ) -> Result<(), String> {
-    use note_list as verb;
     // A field edit reads nothing across parts: typing costs its part.
-    if matches!(&action.operation, NoteListAction::FieldEdit(_)) {
+    if actions
+        .iter()
+        .all(|action| matches!(&action.operation, NoteListAction::FieldEdit(_)))
+    {
         return Ok(());
     }
     let pages = Pages::of(parts);
+    let mut ends = Ends::default();
+    for action in actions {
+        prepare_one(action, notebook, parts, (&pages, &mut ends), author)?;
+    }
+    Ok(())
+}
+
+/// The ranks after every note under each parent, one after the other: where
+/// the notes that actions invoked together add under a parent go, each after
+/// the one before it.
+#[derive(Default)]
+struct Ends(HashMap<Option<Id>, String>);
+
+impl Ends {
+    /// The rank after every note under `parent` and every rank given there
+    /// before.
+    fn next(&mut self, pages: &Pages<'_>, parent: Option<&Id>) -> String {
+        let next = match self.0.get(&parent.cloned()) {
+            Some(given) => tilo_resource::order::between(Some(given), None),
+            None => pages.last_rank(parent),
+        };
+        self.0.insert(parent.cloned(), next.clone());
+        next
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one arm per verb that reads across parts"
+)]
+fn prepare_one(
+    action: &mut <NoteList as tilo_resource::Resource>::Action,
+    notebook: &Notebook,
+    parts: &[(u64, Rc<NoteList>)],
+    (pages, ends): (&Pages<'_>, &mut Ends),
+    author: Option<&MemberId>,
+) -> Result<(), String> {
+    use note_list as verb;
+    if matches!(&action.operation, NoteListAction::FieldEdit(_)) {
+        return Ok(());
+    }
     let shown_parent = |parent: Option<&Id>| -> Result<Option<Id>, String> {
         match parent {
             None => Ok(None),
@@ -1670,12 +1709,12 @@ pub fn prepare(
     match &mut action.operation {
         NoteListAction::NewNote(verb::NewNote { parent, rank, .. }) => {
             let under = shown_parent(parent.as_ref())?;
-            *rank = Some(pages.last_rank(under.as_ref()));
+            *rank = Some(ends.next(pages, under.as_ref()));
             *parent = under;
         }
         NoteListAction::NewChild(verb::NewChild { page, rank, .. }) => {
             shown(page)?;
-            *rank = Some(pages.last_rank(Some(page)));
+            *rank = Some(ends.next(pages, Some(page)));
         }
         NoteListAction::CreatePage(verb::CreatePage {
             markdown,
@@ -1683,11 +1722,11 @@ pub fn prepare(
             links,
             ..
         }) => {
-            *rank = Some(pages.last_rank(None));
+            *rank = Some(ends.next(pages, None));
             *links = Some(links_of(
                 markdown.as_deref().unwrap_or_default(),
                 None,
-                &pages,
+                pages,
             ));
         }
         NoteListAction::ImportMarkdown(verb::ImportMarkdown {
@@ -1702,8 +1741,8 @@ pub fn prepare(
                 .map(crate::markdown::normal_path)
                 .filter(|path| !path.is_empty());
             *reads = Some(ImportReads {
-                rank: pages.last_rank(None),
-                links: links_of(markdown, path.as_deref(), &pages),
+                rank: ends.next(pages, None),
+                links: links_of(markdown, path.as_deref(), pages),
                 imported: note
                     .as_ref()
                     .is_some_and(|note| parts.iter().any(|(_, part)| part.pages.contains(note))),
@@ -1714,14 +1753,12 @@ pub fn prepare(
             ranks,
             links,
         }) => {
-            let mut last = pages.last_rank(None);
             let mut placed = Vec::with_capacity(files.len());
             let mut found = Links::default();
             for file in files.iter() {
-                placed.push(last.clone());
-                last = tilo_resource::order::between(Some(&last), None);
+                placed.push(ends.next(pages, None));
                 let path = crate::markdown::normal_path(&file.path);
-                let of = links_of(&file.markdown, Some(&path), &pages);
+                let of = links_of(&file.markdown, Some(&path), pages);
                 found.titles.extend(of.titles);
                 found.paths.extend(of.paths);
             }
@@ -1733,15 +1770,13 @@ pub fn prepare(
             ranks,
             links,
         }) => {
-            let mut last = pages.last_rank(None);
             let mut placed = Vec::with_capacity(notes.len());
             let mut found = Links::default();
             for note in notes.iter() {
-                placed.push(last.clone());
-                last = tilo_resource::order::between(Some(&last), None);
+                placed.push(ends.next(pages, None));
                 found
                     .titles
-                    .extend(links_of(&note.markdown, None, &pages).titles);
+                    .extend(links_of(&note.markdown, None, pages).titles);
             }
             *ranks = Some(placed);
             *links = Some(found);
@@ -1757,7 +1792,7 @@ pub fn prepare(
                 _ => pages.made_by(author)?,
             };
             let page = pages.get(id).ok_or("no such note")?;
-            *links = Some(links_of(markdown, page.path.as_deref(), &pages));
+            *links = Some(links_of(markdown, page.path.as_deref(), pages));
             *note = Some(id.clone());
         }
         NoteListAction::WriteNote(verb::WriteNote {
@@ -1766,7 +1801,7 @@ pub fn prepare(
             links,
         }) => {
             let path = pages.get(page).and_then(|page| page.path.clone());
-            *links = Some(links_of(markdown, path.as_deref(), &pages));
+            *links = Some(links_of(markdown, path.as_deref(), pages));
         }
         NoteListAction::MoveNote(verb::MoveNote {
             page,
@@ -1831,7 +1866,7 @@ pub fn prepare(
                 .and_then(|at| siblings.get(at))
                 .ok_or("no note above to go under")?;
             *place = Some(Placement {
-                rank: pages.last_rank(Some(above)),
+                rank: ends.next(pages, Some(above)),
                 parent: Some((*above).clone()),
             });
         }
@@ -1852,7 +1887,7 @@ pub fn prepare(
             });
         }
         NoteListAction::Duplicate(verb::Duplicate { page, copies }) => {
-            *copies = Some(copies_of(page, &pages)?);
+            *copies = Some(copies_of(page, pages)?);
         }
         NoteListAction::Tag(verb::Tag { page, name, tag }) => {
             shown(page)?;
@@ -1954,7 +1989,7 @@ impl ui::framework::Chained for NoteList {
     }
 
     fn prepare(
-        action: &mut Self::Action,
+        actions: &mut [Self::Action],
         notebook: &Notebook,
         parts: &[(u64, Rc<Self>)],
         invoker: &ui::tilo_actions::ActionInvoker,
@@ -1964,7 +1999,7 @@ impl ui::framework::Chained for NoteList {
             .members()
             .first()
             .map(|member| (*member).clone());
-        prepare(action, notebook, parts, author.as_ref())
+        prepare(actions, notebook, parts, author.as_ref())
     }
 
     fn spread(

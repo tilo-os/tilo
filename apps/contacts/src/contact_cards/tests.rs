@@ -41,7 +41,7 @@ fn apply(
 ) -> Result<u64, String> {
     let mut action = invoke.into().build(1_000)?;
     let held = parts(book);
-    crate::contact_cards::prepare(&mut action, &held)?;
+    crate::contact_cards::prepare(std::slice::from_mut(&mut action), &held)?;
     let index = ui::framework::placed::<ContactCards>(&action, &held);
     book.apply_action(&action)
         .map_err(|error| error.to_string())?;

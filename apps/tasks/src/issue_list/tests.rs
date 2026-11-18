@@ -91,7 +91,11 @@ impl Board {
     pub(crate) fn apply(&mut self, invoke: impl Into<Invoke<IssueList>>) -> Result<u64, String> {
         let mut action = invoke.into().build(self.now_ms)?;
         let parts = self.states();
-        crate::issue_list::prepare(&mut action, &self.tracker.state().unwrap(), &parts)?;
+        crate::issue_list::prepare(
+            std::slice::from_mut(&mut action),
+            &self.tracker.state().unwrap(),
+            &parts,
+        )?;
         let index = ui::framework::placed::<IssueList>(&action, &parts);
         self.part(index)
             .apply_action(&action)

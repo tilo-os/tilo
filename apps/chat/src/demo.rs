@@ -891,7 +891,8 @@ pub fn apply_part_doc_as(
         .invoker()
         .ok_or_else(|| ApiError::Failed("no one is named to act".to_owned()))
         .and_then(|invoker| {
-            ChatMessages::prepare(&mut action, chat, &[], &invoker).map_err(ApiError::Failed)
+            ChatMessages::prepare(std::slice::from_mut(&mut action), chat, &[], &invoker)
+                .map_err(ApiError::Failed)
         });
     if let Err(error) = prepared {
         *part = std::mem::take(replica.doc_mut());

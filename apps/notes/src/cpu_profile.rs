@@ -85,7 +85,13 @@ pub(super) fn invoke_page(app: &mut App, action: &crate::actions::Action) {
 pub(super) fn arrives(app: &mut App, action: &crate::actions::Action) {
     let parts = app.chain_parts::<crate::NoteList>();
     let mut action = action.clone();
-    crate::note_list::prepare(&mut action, &app.state(), &parts, None).unwrap();
+    crate::note_list::prepare(
+        std::slice::from_mut(&mut action),
+        &app.state(),
+        &parts,
+        None,
+    )
+    .unwrap();
     let index = ui::framework::placed::<crate::NoteList>(&action, &parts);
     app.replica_arrives(&crate::note_list::chain().part(index), |doc| {
         tilo_actions::apply_local_by(

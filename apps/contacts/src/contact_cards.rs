@@ -355,43 +355,48 @@ pub fn contact_resource_id(id: ContactId) -> String {
     )
 }
 
-/// Fill in, where `action` is invoked, what it reads of the whole book, and
-/// refuse what it does not allow: a contact id already in the book or taken
-/// out of it, a merge of a contact that is not one.
+/// Fill in, where `actions` are invoked together, what each reads of the
+/// whole book, and refuse what it does not allow: a contact id already in the
+/// book or taken out of it, a merge of a contact that is not one. The book is
+/// read once for all of them.
 ///
 /// # Errors
 /// Refuses as the action's verb would, had it every part.
 pub fn prepare(
-    action: &mut <ContactCards as tilo_resource::Resource>::Action,
+    actions: &mut [<ContactCards as tilo_resource::Resource>::Action],
     parts: &[(u64, Rc<ContactCards>)],
 ) -> Result<(), String> {
     use contact_cards::{AddContacts, MergeContacts};
     let book = Book::of(parts);
-    match &mut action.operation {
-        ContactCardsAction::AddContacts(AddContacts { contacts }) => {
-            for contact in contacts.iter() {
-                if book.removed.contains(&contact.id) || book.contact(contact.id).is_some() {
-                    return Err("a contact with this id is in the book or was deleted".to_owned());
+    for action in actions {
+        match &mut action.operation {
+            ContactCardsAction::AddContacts(AddContacts { contacts }) => {
+                for contact in contacts.iter() {
+                    if book.removed.contains(&contact.id) || book.contact(contact.id).is_some() {
+                        return Err(
+                            "a contact with this id is in the book or was deleted".to_owned()
+                        );
+                    }
                 }
             }
-        }
-        ContactCardsAction::MergeContacts(MergeContacts {
-            contact,
-            source,
-            take_from_source,
-            merged,
-        }) => {
-            let survivor = book.contacts.find(contact).ok_or_else(no_contact)?;
-            if survivor.id == *source {
-                return Err("a contact is not merged into itself".to_owned());
+            ContactCardsAction::MergeContacts(MergeContacts {
+                contact,
+                source,
+                take_from_source,
+                merged,
+            }) => {
+                let survivor = book.contacts.find(contact).ok_or_else(no_contact)?;
+                if survivor.id == *source {
+                    return Err("a contact is not merged into itself".to_owned());
+                }
+                let other = book
+                    .contact(*source)
+                    .ok_or_else(|| "no contact to merge".to_owned())?;
+                let choices: HashSet<MergeField> = take_from_source.iter().copied().collect();
+                *merged = Some(reviewed_merge_contact(survivor, other, &choices));
             }
-            let other = book
-                .contact(*source)
-                .ok_or_else(|| "no contact to merge".to_owned())?;
-            let choices: HashSet<MergeField> = take_from_source.iter().copied().collect();
-            *merged = Some(reviewed_merge_contact(survivor, other, &choices));
+            _ => {}
         }
-        _ => {}
     }
     Ok(())
 }
@@ -506,12 +511,12 @@ impl ui::framework::Chained for ContactCards {
     }
 
     fn prepare(
-        action: &mut Self::Action,
+        actions: &mut [Self::Action],
         _book: &crate::resource::Contacts,
         parts: &[(u64, Rc<Self>)],
         _invoker: &ui::tilo_actions::ActionInvoker,
     ) -> Result<(), String> {
-        prepare(action, parts)
+        prepare(actions, parts)
     }
 
     fn places(_book: &crate::resource::Contacts, parts: &[(u64, Rc<Self>)]) -> Vec<Derived<Self>> {

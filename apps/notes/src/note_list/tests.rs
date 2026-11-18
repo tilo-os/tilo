@@ -127,7 +127,12 @@ impl Book {
     fn apply_action(&mut self, action: &<NoteList as Resource>::Action) -> Result<u64, String> {
         let mut action = action.clone();
         let parts = self.states();
-        prepare(&mut action, &self.tags(), &parts, self.author.as_ref())?;
+        prepare(
+            std::slice::from_mut(&mut action),
+            &self.tags(),
+            &parts,
+            self.author.as_ref(),
+        )?;
         let index = match (self.placing, &action.operation) {
             (
                 Some(placing),
