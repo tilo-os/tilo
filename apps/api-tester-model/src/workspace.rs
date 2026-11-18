@@ -429,10 +429,7 @@ impl Workspace {
     /// The saved request `request`, and the collection holding it.
     pub fn saved(&self, request: &Id) -> Option<(&Id, &RequestResource)> {
         self.collections.iter().find_map(|(collection, saved)| {
-            saved
-                .requests
-                .get(request)
-                .map(|saved| (collection, saved))
+            saved.requests.get(request).map(|saved| (collection, saved))
         })
     }
 }
