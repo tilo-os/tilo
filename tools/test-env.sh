@@ -23,6 +23,10 @@
 #   else, for a command that builds and then runs what it built: tools/ci/layout-check.sh and
 #   tools/ci/example-scenarios.sh build that way and then run themselves under this script.
 #
+# A command started in the environment that builds the app it then starts finds the environment a
+# build gets (`--build`'s: the caller's and the build inputs) beside the fresh HOME, so what it
+# builds builds as a job's builds do, not in the test environment.
+#
 # It provides:
 # - tools/test-env-setup.sh's runtime, fonts and audio steps: lavapipe as the
 #   only Vulkan adapter, PDFium, the shared fixture cache (TILO_TEST_CACHE_DIR),
@@ -76,11 +80,23 @@ if [[ ${1:-} == --build ]]; then
     shift
     exec "$@"
 fi
+# A command started in the environment that builds the app it then starts (the app scenario
+# runner's Cargo build) must build as --build builds: a variable in a build's environment keys
+# every build script's and proc macro's cache entry by it, and the steps below differ per job.
+# Write the environment this script was given, before the steps add theirs, to a file
+# tools/with-test-environment.sh holds beside the fresh HOME, where it goes with the HOME.
+if [[ $mode == environment && -z ${TILO_TEST_ENVIRONMENT:-} ]]; then
+    build_environment=$(mktemp)
+    env -0 >"$build_environment"
+    TILO_BUILD_ENVIRONMENT_FILE=$build_environment
+    export TILO_BUILD_ENVIRONMENT_FILE
+fi
 env_file=$(mktemp)
 # The audio endpoint lives as long as this process, which becomes the command's (environment
 # below) or waits for it (handoff), so it ends with COMMAND.
 if ! NEXTEST_ENV=$env_file TILO_TEST_ENV_OWNER=$$ bash "$repo/tools/test-env-setup.sh" "${steps[@]}"; then
     rm -f -- "$env_file"
+    [[ -z ${TILO_BUILD_ENVIRONMENT_FILE:-} ]] || rm -f -- "$TILO_BUILD_ENVIRONMENT_FILE"
     exit 1
 fi
 

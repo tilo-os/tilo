@@ -32,9 +32,10 @@ fi
 # (tools/test-env.sh --build); the scenarios get the test environment (a fresh HOME, lavapipe, the
 # fonts, a private audio endpoint). A variable in a build's environment keys every build script's
 # and proc macro's cache entry by it, and the test environment's differ per job, so a build that
-# carried one would share no cache with any other job's. TILO_BUILT_FOR_TEST_ENV marks the pass
-# the builds made.
-if [[ -z ${TILO_BUILT_FOR_TEST_ENV:-} ]]; then
+# carried one would share no cache with any other job's. The second start names the pass the
+# builds made as an argument, so the environment holds no marker that would key the scenario
+# runner's own app builds apart from the builds.
+if [[ ${1:-} != --built ]]; then
   build=(bash "$repo/tools/test-env.sh" --build)
   "${build[@]}" cargo build --locked --quiet -p tilo-app-cli --bin tilo-app
   # Examples share the same dependency feature set. Link the selected binaries
@@ -44,9 +45,9 @@ if [[ -z ${TILO_BUILT_FOR_TEST_ENV:-} ]]; then
   if [[ ${#apps[@]} -gt 1 ]]; then
     "${build[@]}" cargo build --locked --bins "${packages[@]}"
   fi
-  TILO_BUILT_FOR_TEST_ENV=1 \
-    exec bash "$repo/tools/test-env.sh" bash "$repo/tools/ci/example-scenarios.sh" "$@"
+  exec bash "$repo/tools/test-env.sh" bash "$repo/tools/ci/example-scenarios.sh" --built "$@"
 fi
+shift
 
 tilo_app=${CARGO_TARGET_DIR:-$PWD/target}/debug/tilo-app
 failed=()
