@@ -2445,9 +2445,9 @@ fn the_gallerys_controls_show_what_their_fields_hold() {
             .0
             .iter()
             .find(|c| c.meta.app == "so.tilo.lang.gallery")
-            .and_then(|c| c.meta.types.iter().find(|t| t.name == "Controls"))
+            .and_then(|c| c.meta.types.iter().find(|t| t.name == "Gallery"))
             .map(|t| t.id.clone())
-            .expect("the gallery declares its controls");
+            .expect("the gallery declares its root");
         let size = (1280, 800);
         let mut staged = stage::Staged::over(
             "so.tilo.lang.gallery",
@@ -2462,8 +2462,20 @@ fn the_gallerys_controls_show_what_their_fields_hold() {
         staged
             .lay_out(size, ui::Theme::light(), input_at(size), 1.0)
             .expect("the app lays out");
-        let controls = super::listed_of(&mut staged, &ty).expect("the controls are listed");
-        staged.open(controls);
+        let controls = super::listed_of(&mut staged, &ty).expect("the gallery is listed");
+        staged.open(controls.clone());
+        staged
+            .lay_out(size, ui::Theme::light(), input_at(size), 1.0)
+            .expect("the gallery lays out");
+        // The window opens on its basics: the controls' page is a view of the same resource.
+        let page = packages
+            .0
+            .iter()
+            .find(|c| c.meta.app == "so.tilo.lang.gallery")
+            .and_then(|c| c.meta.views.iter().find(|v| v.name == "controls"))
+            .map(|v| v.id.clone())
+            .expect("the gallery declares the controls' page");
+        staged.open_with(&controls, &page);
         staged
             .lay_out(size, ui::Theme::light(), input_at(size), 1.0)
             .expect("the controls lay out");
