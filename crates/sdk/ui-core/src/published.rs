@@ -130,6 +130,7 @@ impl SharedResource {
     /// The same resource over `children`: its identity, actions and views,
     /// shared as they stand, and the children given — what nesting one item
     /// under another publishes.
+    #[must_use]
     pub fn over(&self, children: SharedChildren) -> Self {
         Self(Rc::new(Node {
             head: Rc::clone(&self.0.head),
