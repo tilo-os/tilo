@@ -592,13 +592,6 @@ mod tests {
     }
 
     #[test]
-    fn a_new_layout_is_the_tree_by_cpu() {
-        let app = TestApp::<MonitorShell>::new().unwrap();
-        assert_eq!(app.state(), Monitor::default());
-        assert_eq!(Monitor::default().sort, SortKey::Cpu);
-    }
-
-    #[test]
     fn history_entries_render_as_the_apps_sentences() {
         use ui::tilo_actions::ActionInvoker;
 
@@ -651,7 +644,7 @@ mod tests {
 // The scenarios show a sample table, which no signal reaches; the app someone
 // opens lists this machine's processes, and walking its Kill would signal every
 // one of them, the test's own among them.
-ui::reach_tests!(MonitorShell);
+ui::reach_tests!(MonitorShell, shares: [share_0, share_1]);
 
 /// German copy comes from `locales/de-DE.ftl`, not the English catalogue.
 #[cfg(test)]

@@ -29,11 +29,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use agent_provider_config::ProviderConfig;
 use agent_provider_config::management::AdminFuture;
-use agent_provider_config::protocol::ModelResponse;
+use agent_provider_config::protocol::{ModelResponse, StreamEvent};
 use tilo_actions::remote::person_models;
 use ui::models::{
-    CompletionFuture, CredentialStatus, ErrorKind, ModelBackend, ModelError, ModelRequest,
-    ProviderAdmin, ProviderSnapshot, StreamSink,
+    CompletionFuture, ErrorKind, ModelBackend, ModelError, ModelRequest, ProviderAdmin,
+    ProviderSnapshot, StreamSink,
 };
 
 /// Model access belongs to a mount, never to the page's ambient services.
@@ -131,9 +131,6 @@ pub(crate) fn server_models(
     }))
 }
 
-/// How long the server holds a turn's answer before it says the turn runs and
-/// the page follows it: within what one ask over the session may wait.
-const TURN_WAIT_MS: u32 = 10_000;
 /// The longest a turn of the person's model is followed.
 const TURN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(150);
 
@@ -146,9 +143,18 @@ struct ServerTurns {
 }
 
 impl ServerTurns {
-    async fn turn(&self, request: &ModelRequest) -> Result<ModelResponse, ModelError> {
+    /// One turn of the person's model, its answer told to `sink` as the
+    /// server keeps what it wrote: the ask's items each hold the answer so
+    /// far, and what this page has not shown yet of the newest one is its
+    /// next delta. Its output is the whole turn.
+    async fn turn(
+        &self,
+        request: &ModelRequest,
+        sink: &mut dyn FnMut(StreamEvent),
+    ) -> Result<ModelResponse, ModelError> {
         use tilo_actions::remote::{
-            ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, settle_with,
+            ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, UpdateMark,
+            settle_with,
         };
         let unreachable = || ModelError {
             kind: ErrorKind::Unavailable,
@@ -171,7 +177,7 @@ impl ServerTurns {
             confirmation: None,
             revision: None,
             on_behalf_of: None,
-            wait_ms: Some(TURN_WAIT_MS),
+            wait_ms: None,
             appearance: None,
         };
         let refused = |message: String| ModelError {
@@ -183,14 +189,23 @@ impl ServerTurns {
             .await
             .ok_or_else(unreachable)?
             .map_err(|error| refused(error.to_string()))?;
-        if matches!(receipt.status, ReceiptStatus::Accepted) {
-            let now = tilo_clock::now();
-            let until = now.checked_add(TURN_TIMEOUT).unwrap_or(now);
-            receipt = settle_with(&api, &caller, invocation, None, until)
+        let now = tilo_clock::now();
+        let until = now.checked_add(TURN_TIMEOUT).unwrap_or(now);
+        let mut seen = UpdateMark::Accepted;
+        let mut shown = Written::default();
+        while matches!(receipt.status, ReceiptStatus::Accepted) {
+            if tilo_clock::now() >= until {
+                return Err(ModelError::new(ErrorKind::TimedOut));
+            }
+            let state = settle_with(&api, &caller, invocation, Some(seen), until)
                 .await
                 .flatten()
-                .map(|state| state.receipt())
                 .ok_or_else(unreachable)?;
+            seen = UpdateMark::of(&state.update);
+            if let tilo_actions::InvocationUpdate::Item { value, .. } = &state.update {
+                shown.show(value, sink);
+            }
+            receipt = state.receipt();
         }
         let output = match receipt.status {
             ReceiptStatus::Completed { output } => output,
@@ -199,16 +214,71 @@ impl ServerTurns {
             ReceiptStatus::Failed { error } => return Err(refused(error.message)),
             ReceiptStatus::Rejected { error } => return Err(refused(error.to_string())),
         };
-        serde_json::from_value::<Result<ModelResponse, ModelError>>(
+        let answer = serde_json::from_value::<Result<ModelResponse, ModelError>>(
             output.value.unwrap_or_default(),
         )
-        .map_err(|_| ModelError::new(ErrorKind::InvalidResponse))?
+        .map_err(|_| ModelError::new(ErrorKind::InvalidResponse))??;
+        // The whole turn replaces the last item: what it wrote after the
+        // newest item read is shown now.
+        let (mut text, mut reasoning) = (String::new(), String::new());
+        for part in &answer.message.content {
+            match part {
+                agent_provider_config::protocol::Content::Text { text: said } => {
+                    text.push_str(said);
+                }
+                agent_provider_config::protocol::Content::Reasoning { text: said, .. } => {
+                    reasoning.push_str(said);
+                }
+                _ => {}
+            }
+        }
+        shown.show(
+            &serde_json::json!({"text": text, "reasoning": reasoning}),
+            sink,
+        );
+        Ok(answer)
+    }
+}
+
+/// How much of an ask's answer so far a page has shown.
+#[derive(Default)]
+struct Written {
+    text: usize,
+    reasoning: usize,
+}
+
+impl Written {
+    /// Tell `sink` what the answer so far `value` adds to what was shown.
+    fn show(&mut self, value: &serde_json::Value, sink: &mut dyn FnMut(StreamEvent)) {
+        let newer = |key: &str, shown: &mut usize| {
+            let text = value.get(key).and_then(serde_json::Value::as_str)?;
+            let more = text
+                .get(*shown..)
+                .filter(|more| !more.is_empty())?
+                .to_owned();
+            *shown = text.len();
+            Some(more)
+        };
+        if let Some(text) = newer("reasoning", &mut self.reasoning) {
+            sink(StreamEvent::ReasoningDelta { text });
+        }
+        if let Some(text) = newer("text", &mut self.text) {
+            sink(StreamEvent::TextDelta { text });
+        }
     }
 }
 
 impl ModelBackend for ServerTurns {
     fn complete<'a>(&'a self, request: &'a ModelRequest) -> CompletionFuture<'a> {
-        Box::pin(self.turn(request))
+        Box::pin(async move { self.turn(request, &mut |_| {}).await })
+    }
+
+    fn stream<'a>(
+        &'a self,
+        request: &'a ModelRequest,
+        mut sink: StreamSink<'a>,
+    ) -> CompletionFuture<'a> {
+        Box::pin(async move { self.turn(request, &mut sink).await })
     }
 }
 
@@ -360,23 +430,11 @@ impl ProviderAdmin for LazyAdministration {
         })
     }
 
-    fn credential_status(&self, profile_id: String) -> AdminFuture<'_, CredentialStatus> {
-        Box::pin(async move { self.client().await?.credential_status(profile_id).await })
-    }
-
     fn list_models(
         &self,
         profile_id: String,
     ) -> AdminFuture<'_, Vec<agent_provider_config::ModelDescriptor>> {
         Box::pin(async move { self.client().await?.list_models(profile_id).await })
-    }
-
-    fn set_api_key(&self, profile_id: String, api_key: String) -> AdminFuture<'_, ()> {
-        Box::pin(async move { self.client().await?.set_api_key(profile_id, api_key).await })
-    }
-
-    fn remove_api_key(&self, profile_id: String) -> AdminFuture<'_, ()> {
-        Box::pin(async move { self.client().await?.remove_api_key(profile_id).await })
     }
 }
 

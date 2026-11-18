@@ -735,20 +735,32 @@ mod tests {
                 kind: AppKind::Tilo,
                 size: None,
             }];
+            // What the loop waits for is the announcement: a wait past the last one it saw returns
+            // at once while the list moved, and never while it did not.
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .expect("the test's runtime");
+            let announced = |after: u64| {
+                runtime.block_on(async {
+                    let changed = ApplicationServices::changed(&handle, after)
+                        .expect("the app list is waited on");
+                    tokio::time::timeout(Duration::from_millis(50), changed)
+                        .await
+                        .ok()
+                })
+            };
             handle.saw_apps(&first);
-            assert_eq!(
-                *handle.inner.apps_changed.borrow(),
-                2,
-                "the first list is a change from none"
-            );
-            handle.saw_apps(&first);
-            assert_eq!(
-                *handle.inner.apps_changed.borrow(),
-                2,
+            let after_first = announced(0).expect("the first list is a change from none");
+            assert!(
+                announced(after_first).is_none(),
                 "the same list wakes nobody"
             );
             handle.saw_apps(&[]);
-            assert_eq!(*handle.inner.apps_changed.borrow(), 3);
+            assert!(
+                announced(after_first).is_some(),
+                "a changed list wakes the wait"
+            );
         }
     }
 }

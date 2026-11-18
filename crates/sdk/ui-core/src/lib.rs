@@ -114,7 +114,6 @@ mod action_locus;
 #[doc(hidden)]
 pub mod local_dispatch;
 pub mod local_document_action;
-pub mod table_model;
 pub use action_locus::{ActionUiRoute, PaintedActionMarker};
 pub mod action_palette;
 pub mod agent_identity;

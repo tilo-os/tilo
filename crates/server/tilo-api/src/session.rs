@@ -39,6 +39,7 @@ pub mod hosts;
 pub mod invocations;
 pub mod keys;
 pub mod members;
+pub mod models;
 pub mod unattended;
 
 pub use crate::server::Workspace;

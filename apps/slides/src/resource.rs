@@ -363,4 +363,7 @@ mod tests {
     }
 }
 
-ui::reach_tests!(SlidesShell);
+ui::reach_tests!(
+    SlidesShell,
+    shares: [share_0, share_1, share_2, share_3],
+);

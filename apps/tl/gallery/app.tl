@@ -227,10 +227,6 @@ view gallery(g: Gallery) {
     ui.NavShell(content_kind: .page, title: page_title(showing), sidebar_title: "Gallery") {
         actions: {
             ui.SearchButton()
-            ui.MenuButton("More", icon: .more_horizontal, icon_only: true) {
-                ui.MenuItem("Copy link", icon: .link)
-                ui.MenuItem("Settings", icon: .settings)
-            }
         }
         sidebar: {
             ui.NavList(selected: showing) {
@@ -376,6 +372,12 @@ view parts(g: Gallery, last: State<Text>) {
                 ui.Property("Due", "Friday")
                 ui.Property("Stage", "Review")
             }
+        }
+    }
+    part("Menu button", "The \"…\" a bar keeps what does not fit behind, open to its items.") {
+        ui.MenuButton("More", icon: .more_horizontal, icon_only: true) {
+            ui.MenuItem("Copy link", icon: .link)
+            ui.MenuItem("Settings", icon: .settings)
         }
     }
     part("Empty state", "What a place says while it holds nothing, and how to fill it.") {

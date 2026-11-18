@@ -258,6 +258,7 @@ async fn named_by_workspace(
             revocations: RevocationList::new(),
         },
         endpoint,
+        tilo_server::Reaching::OnItsOwn,
         Vec::new(),
     )
     .await

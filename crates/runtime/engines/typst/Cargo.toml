@@ -41,6 +41,8 @@ thin = [
     "dep:comemo",
     "dep:tilo-highlight-engine",
     "tilo-highlight-engine/thin",
+    "dep:tilo-wasm-engine",
+    "tilo-wasm-engine/thin",
     "dep:workspace-hack",
 ]
 
@@ -57,6 +59,9 @@ comemo = { version = "0.5", optional = true }
 # which this library chains on, so Typst Editor maps one copy and the
 # toolkit's own highlighter opens the same library.
 tilo-highlight-engine = { path = "../highlight", optional = true }
+# Typst's plugins are wasm, which the shared runtime does not interpret: the interpreter
+# comes from the wasm engine, which this library chains on with the theme painter engine.
+tilo-wasm-engine = { path = "../wasm", optional = true }
 # Optional like everything else: an empty build must not link the hack's whole
 # dependency set into a shared object.
 workspace-hack = { version = "0.1", optional = true }

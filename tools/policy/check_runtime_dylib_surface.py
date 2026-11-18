@@ -130,14 +130,15 @@ ENGINES = {
                                "libtilo_highlight_engine.so the first time code is highlighted",
     "syntect": "the syntax highlighter, in libtilo_highlight_engine.so",
     "two-face": "the packed syntax grammars, in libtilo_highlight_engine.so",
-    "tilo-theme-painter-engine": "the wasm painter interpreter's engine library "
+    "tilo-theme-painter-engine": "the wasm painter sets' engine library "
                                  "(libtilo_theme_painter_engine.so)",
     "tilo-theme-painter-wasm": "the interpreter inside theme painter sets, which the toolkit opens from "
                                "libtilo_theme_painter_engine.so the first time a theme names one",
-    "wasmi": "the wasm interpreter, in libtilo_theme_painter_engine.so",
-    "wasmi_ir": "the interpreter's instruction representation, in libtilo_theme_painter_engine.so",
-    "wasmi_collections": "the interpreter's collections, in libtilo_theme_painter_engine.so",
-    "wasmi_core": "the interpreter's core, in libtilo_theme_painter_engine.so",
+    "tilo-wasm-engine": "the wasm interpreter's engine library (libtilo_wasm_engine.so)",
+    "wasmi": "the wasm interpreter, in libtilo_wasm_engine.so",
+    "wasmi_ir": "the interpreter's instruction representation, in libtilo_wasm_engine.so",
+    "wasmi_collections": "the interpreter's collections, in libtilo_wasm_engine.so",
+    "wasmi_core": "the interpreter's core, in libtilo_wasm_engine.so",
     "tilo-adblock-engine": "the ad-block compiler's engine library (libtilo_adblock_engine.so)",
     "tilo-content-blocker": "the ad-block compiler, which the toolkit opens from "
                             "libtilo_adblock_engine.so the first time an app compiles lists",

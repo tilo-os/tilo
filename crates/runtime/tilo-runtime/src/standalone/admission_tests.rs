@@ -55,9 +55,9 @@ impl LauncherServices for RecordingLauncher {
     fn applications(&self) -> Vec<LaunchableApplication> {
         vec![LaunchableApplication {
             capabilities: Vec::new(),
-            package_id: "host:fixture".into(),
+            package_id: "dev.tilo.fixture".into(),
             display_name: "Fixture application".into(),
-            unconfined: true,
+            unconfined: false,
             offers: Vec::new(),
             surface: None,
         }]
@@ -137,21 +137,27 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
         caller.is_foreign_device(),
         "standalone keeps its preexisting restriction even for a nonforeign certificate"
     );
-    let query = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tilo_query","arguments":{"workspace":true,"detail":"full"}}});
+    let query = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tilo_ls","arguments":{}}});
     let offered = server.handle(query.clone()).await.unwrap();
     assert_eq!(offered["result"]["isError"], false, "{offered}");
     assert!(
         offered.to_string().contains("Fixture application"),
         "{offered}"
     );
-    let invoke = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tilo_invoke","arguments":{"workspace":true,"resource":"app.host:fixture","action":"open"}}});
+    let invoke = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tilo_do","arguments":{"path":"fixture#open"}}});
     let worker = std::thread::spawn(turn);
     let opened = server.handle(invoke.clone()).await.unwrap();
     worker.join().unwrap();
     assert_eq!(opened["result"]["isError"], false, "{opened}");
-    assert_eq!(
-        launcher.0.lock().unwrap().as_slice(),
-        &[("host:fixture".into(), workspace_id.clone())]
+    // The open reaches the launcher, in this workspace; an instance that never connects is
+    // started again as the open goes on to show its window.
+    let reached = launcher.0.lock().unwrap().clone();
+    assert!(!reached.is_empty(), "the open reached no launcher");
+    assert!(
+        reached
+            .iter()
+            .all(|launch| *launch == ("dev.tilo.fixture".to_owned(), workspace_id.clone())),
+        "{reached:?}"
     );
     caller.retire_execution();
     for request in [query, invoke] {
@@ -164,12 +170,12 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
     drop(server);
     assert_eq!(
         launcher.0.lock().unwrap().len(),
-        1,
+        reached.len(),
         "a retained retired server cannot launch again"
     );
     let surviving_server = factory().unwrap();
     origin.invalidate();
-    let refused = surviving_server.handle(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tilo_query","arguments":{"workspace":true}}})).await.unwrap();
+    let refused = surviving_server.handle(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tilo_ls","arguments":{}}})).await.unwrap();
     drop(surviving_server);
     assert!(
         refused.get("error").is_some() || refused["result"]["isError"] == true,

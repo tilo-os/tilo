@@ -705,9 +705,9 @@ fn observe_classifies_like_full_decode() {
     .collect();
     let other_bodies = [
         postcard::to_stdvec(&NeighbourMsg::Heartbeat { peer: 3, ts: 4 }).unwrap(),
-        postcard::to_stdvec(&NeighbourMsg::RetiredPresenceCleared {
+        postcard::to_stdvec(&NeighbourMsg::LivePresence {
             peer: 3,
-            key: "cursor".into(),
+            frame: vec![1, 2],
         })
         .unwrap(),
         postcard::to_stdvec(&NeighbourMsg::SyncResp {

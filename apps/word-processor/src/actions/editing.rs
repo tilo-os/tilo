@@ -1362,7 +1362,6 @@ mod tests {
     use super::*;
     use crate::actions::{published_for, view_ops::ViewOperation};
     use crate::effects::WordProcessorEffect;
-    use crate::word_processor::{Caret, WordProcessor};
     use tilo_actions::{
         ActionSpec, ConfirmationPolicy, ContextRequirement, EncodedAction, LocalTransport,
         OperationKind, ResourceSpec,
@@ -1439,22 +1438,6 @@ mod tests {
         }
     }
 
-    fn place(wp: &mut crate::widget::Editor, view: &PresenceView) {
-        let model = wp.model_mut();
-        model.clear_anchor();
-        if let Some(anchor) = &view.anchor {
-            model.set_caret(Caret {
-                block: anchor.block.clone(),
-                offset: anchor.offset,
-            });
-            model.set_anchor();
-        }
-        model.set_caret(Caret {
-            block: view.caret.block.clone(),
-            offset: view.caret.offset,
-        });
-    }
-
     fn at(block: &str, offset: usize) -> PresenceView {
         PresenceView::at(ViewPoint::new(block, offset), RegionKind::Body)
     }
@@ -1464,13 +1447,6 @@ mod tests {
             anchor: Some(ViewPoint::new(anchor.0, anchor.1)),
             ..at(caret.0, caret.1)
         }
-    }
-
-    fn bytes(actions: &[RichTextAction]) -> Vec<Vec<u8>> {
-        actions
-            .iter()
-            .map(|action| encode(action).payload)
-            .collect()
     }
 
     fn root(view: &PresenceView, doc: &AutoCommit) -> ResourceSpec {
@@ -1523,274 +1499,6 @@ mod tests {
         }
     }
 
-    fn body_block(doc: &AutoCommit, id: &str) -> Option<tilo_doc::snapshot::BlockView> {
-        let c = crate::model::open(doc).unwrap();
-        tilo_doc::model::materialize(doc, &c)
-            .blocks
-            .into_iter()
-            .find(|block| block.id == id)
-    }
-
-    fn old_insert_text(m: &WordProcessor, doc: &AutoCommit, text: &str) -> Vec<RichTextAction> {
-        if let Some((start, end)) = m.selection_span(doc) {
-            return vec![replace_selection_action(
-                m.region_kind(),
-                &start.block,
-                start.offset,
-                &end.block,
-                end.offset,
-                text,
-            )];
-        }
-        let caret = m.caret().clone();
-        vec![splice_text_action(
-            m.region_kind(),
-            &caret.block,
-            caret.offset,
-            caret.offset,
-            text,
-        )]
-    }
-
-    fn old_enter(m: &WordProcessor, doc: &AutoCommit) -> Vec<RichTextAction> {
-        let mut out = Vec::new();
-        let caret = if let Some((start, _)) = m.selection_span(doc) {
-            out.extend(old_insert_text(m, doc, ""));
-            start
-        } else {
-            m.caret().clone()
-        };
-        let region = m.region_kind();
-        let block = body_block(doc, &caret.block);
-        let kind = block
-            .as_ref()
-            .map_or("paragraph", |entry| entry.kind.as_str());
-        if kind == "list_item" && block.as_ref().is_some_and(|entry| entry.text.is_empty()) {
-            out.push(set_paragraph_style_action(
-                region,
-                vec![caret.block],
-                "paragraph",
-                None,
-                None,
-            ));
-            return out;
-        }
-        let ordered = block
-            .as_ref()
-            .filter(|_| kind == "list_item")
-            .and_then(|entry| entry.bool_attr("ordered"));
-        let new_kind = if kind == "list_item" {
-            "list_item"
-        } else {
-            "paragraph"
-        };
-        out.push(split_block_action(
-            region,
-            &caret.block,
-            caret.offset,
-            new_kind,
-            ordered,
-        ));
-        out
-    }
-
-    fn old_delete(m: &WordProcessor, doc: &AutoCommit, backward: bool) -> Vec<RichTextAction> {
-        if m.has_selection() {
-            return old_insert_text(m, doc, "");
-        }
-        let caret = m.caret().clone();
-        let region = m.region_kind();
-        let blocks = m.ordered_blocks(doc);
-        let Some(index) = blocks.iter().position(|id| id == &caret.block) else {
-            return vec![];
-        };
-        let entry = body_block(doc, &caret.block);
-        let len = entry.as_ref().map_or(0, |entry| entry.text.chars().count());
-        if backward && caret.offset == 0 && entry.is_some_and(|entry| entry.kind == "list_item") {
-            return vec![set_paragraph_style_action(
-                region,
-                vec![caret.block],
-                "paragraph",
-                None,
-                None,
-            )];
-        }
-        if backward && caret.offset > 0 {
-            vec![splice_text_action(
-                region,
-                &caret.block,
-                caret.offset - 1,
-                caret.offset,
-                "",
-            )]
-        } else if !backward && caret.offset < len {
-            vec![splice_text_action(
-                region,
-                &caret.block,
-                caret.offset,
-                caret.offset + 1,
-                "",
-            )]
-        } else if backward && index > 0 {
-            let previous = blocks[index - 1].clone();
-            let previous_len = body_block(doc, &previous).map_or(0, |b| b.text.chars().count());
-            vec![replace_selection_action(
-                region,
-                &previous,
-                previous_len,
-                &caret.block,
-                0,
-                "",
-            )]
-        } else if !backward && index + 1 < blocks.len() {
-            vec![replace_selection_action(
-                region,
-                &caret.block,
-                len,
-                &blocks[index + 1],
-                0,
-                "",
-            )]
-        } else {
-            vec![]
-        }
-    }
-
-    fn spans(ranges: Vec<(String, usize, usize)>) -> Vec<Span> {
-        ranges
-            .into_iter()
-            .map(|(block, start, end)| Span { block, start, end })
-            .collect()
-    }
-
-    fn old_toggle(m: &WordProcessor, doc: &AutoCommit, name: &str) -> Vec<RichTextAction> {
-        let Some((ranges, active)) = m.plan_toggle_mark(doc, name) else {
-            return vec![];
-        };
-        let value = (!active).then_some(MarkVal::Bool(true));
-        vec![set_mark_action(
-            m.region_kind(),
-            spans(ranges),
-            name,
-            value,
-            vec![],
-        )]
-    }
-
-    fn old_exclusive(
-        m: &WordProcessor,
-        doc: &AutoCommit,
-        name: &str,
-        sibling: &str,
-    ) -> Vec<RichTextAction> {
-        let (ranges, active) = m.plan_exclusive_mark(doc, name);
-        if ranges.iter().all(|(_, s, e)| s >= e) {
-            return vec![];
-        }
-        let value = (!active).then_some(MarkVal::Bool(true));
-        let also = if active {
-            vec![]
-        } else {
-            vec![sibling.to_string()]
-        };
-        vec![set_mark_action(
-            m.region_kind(),
-            spans(ranges),
-            name,
-            value,
-            also,
-        )]
-    }
-
-    fn old_set_value(
-        m: &WordProcessor,
-        doc: &AutoCommit,
-        name: &str,
-        value: Option<MarkVal>,
-    ) -> Vec<RichTextAction> {
-        let ranges = m.format_spans(doc);
-        if ranges.iter().all(|(_, s, e)| s >= e) {
-            return vec![];
-        }
-        vec![set_mark_action(
-            m.region_kind(),
-            spans(ranges),
-            name,
-            value,
-            vec![],
-        )]
-    }
-
-    fn old_paragraph_style(
-        m: &WordProcessor,
-        doc: &AutoCommit,
-        style: &ParagraphStyle,
-    ) -> Vec<RichTextAction> {
-        let blocks = m.paragraph_style_targets(doc);
-        if blocks.is_empty() {
-            return vec![];
-        }
-        vec![set_paragraph_style_action(
-            m.region_kind(),
-            blocks,
-            &style.kind,
-            style.level,
-            style.ordered,
-        )]
-    }
-
-    fn old_named_style(m: &WordProcessor, doc: &AutoCommit, id: &str) -> Vec<RichTextAction> {
-        let blocks = m.paragraph_style_targets(doc);
-        if blocks.is_empty() {
-            return vec![];
-        }
-        let (kind, level, ordered) = match crate::styles::structural_kind_for(id) {
-            Some((k, l, o)) => (Some(k), l, o),
-            None => (None, None, None),
-        };
-        vec![apply_named_style_action(
-            m.region_kind(),
-            blocks,
-            id,
-            kind,
-            level,
-            ordered,
-        )]
-    }
-
-    fn old_paste_plain(m: &WordProcessor, doc: &AutoCommit, text: &str) -> Vec<RichTextAction> {
-        let blocks: Vec<ClipBlock> = text
-            .replace('\r', "")
-            .split('\n')
-            .map(|line| ClipBlock {
-                kind: "paragraph".to_string(),
-                text: line.to_string(),
-                marks: Vec::new(),
-                level: None,
-                ordered: None,
-                align: None,
-                attrs: std::collections::BTreeMap::default(),
-            })
-            .collect();
-        let caret = m.caret().clone();
-        let (start, end) = m
-            .selection_span(doc)
-            .unwrap_or_else(|| (caret.clone(), caret));
-        let end_len = body_block(doc, &end.block).map_or(end.offset, |b| b.text.chars().count());
-        let adopt = start.offset == 0 && end.offset == end_len;
-        vec![paste_fragment_action(
-            m.region_kind(),
-            SelectionTarget {
-                start_block: start.block.clone(),
-                start: start.offset,
-                end_block: end.block.clone(),
-                end: end.offset,
-            },
-            blocks,
-            adopt,
-        )]
-    }
-
     fn views(ids: &[String]) -> Vec<PresenceView> {
         vec![
             at(&ids[0], 0),
@@ -1808,45 +1516,6 @@ mod tests {
     tilo_test_env::scenario! {
         /// Typing, Enter and erasing through the published operations.
         fn typing_enter_and_erase_build_the_keystrokes_actions;
-
-        phase typing_enter_and_erase_match_the_widget_envelopes_byte_for_byte;
-        {
-            let (mut state, mut wp, ids) = writer(&["alpha", "beta", "gamma"]);
-            apply(
-                &mut state.doc,
-                &set_paragraph_style_action(
-                    RegionKind::Body,
-                    vec![ids[1].clone()],
-                    "list_item",
-                    None,
-                    Some(true),
-                ),
-            );
-            let doc = &state.doc;
-            for view in views(&ids) {
-                place(&mut wp, &view);
-                let m = wp.model();
-                let (typed, _) = type_text(&view, doc, "Xy").unwrap();
-                assert_eq!(
-                    bytes(&typed),
-                    bytes(&old_insert_text(m, doc, "Xy")),
-                    "type {view:?}"
-                );
-                let (enter, _) = new_paragraph(&view, doc).unwrap();
-                assert_eq!(bytes(&enter), bytes(&old_enter(m, doc)), "enter {view:?}");
-                for (direction, backward) in [
-                    (DeleteDirection::Backward, true),
-                    (DeleteDirection::Forward, false),
-                ] {
-                    let (erased, _) = delete(&view, doc, direction, 1).unwrap();
-                    assert_eq!(
-                        bytes(&erased),
-                        bytes(&old_delete(m, doc, backward)),
-                        "erase {backward} {view:?}"
-                    );
-                }
-            }
-        }
 
         phase enter_lands_in_the_new_block_once_applied_and_typing_follows;
         {
@@ -2026,118 +1695,6 @@ mod tests {
                 scans,
                 "a keystroke inside a block listed the document's paragraphs"
             );
-        }
-    }
-
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one table-driven parity proof over every published editing operation"
-    )]
-    fn formatting_and_styles_match_the_widget_envelopes_byte_for_byte() {
-        let (mut state, mut wp, ids) = writer(&["alpha", "beta", "gamma"]);
-        apply(
-            &mut state.doc,
-            &set_mark_action(
-                RegionKind::Body,
-                vec![Span {
-                    block: ids[0].clone(),
-                    start: 0,
-                    end: 5,
-                }],
-                "strong",
-                Some(MarkVal::Bool(true)),
-                vec![],
-            ),
-        );
-        let doc = &state.doc;
-        for view in views(&ids) {
-            place(&mut wp, &view);
-            let m = wp.model();
-            // The widget sends a selection ending at a block start; the primitive drops it.
-            let clean = |actions: Vec<RichTextAction>| -> Vec<RichTextAction> {
-                actions
-                    .into_iter()
-                    .map(|action| match action {
-                        RichTextAction::SetMark {
-                            region,
-                            spans,
-                            name,
-                            value,
-                            also_clear,
-                        } => RichTextAction::SetMark {
-                            region,
-                            spans: spans.into_iter().filter(|s| s.start < s.end).collect(),
-                            name,
-                            value,
-                            also_clear,
-                        },
-                        other => other,
-                    })
-                    .collect()
-            };
-            for mark in [
-                InlineMark::Strong,
-                InlineMark::Em,
-                InlineMark::Underline,
-                InlineMark::Strike,
-            ] {
-                let (ours, _) = toggle_mark(&view, doc, mark).unwrap();
-                assert_eq!(
-                    bytes(&ours),
-                    bytes(&clean(old_toggle(m, doc, mark.name()))),
-                    "{mark:?} {view:?}"
-                );
-            }
-            for (mark, sibling) in [
-                (InlineMark::Superscript, "sub"),
-                (InlineMark::Subscript, "super"),
-            ] {
-                let (ours, _) = toggle_mark(&view, doc, mark).unwrap();
-                assert_eq!(
-                    bytes(&ours),
-                    bytes(&clean(old_exclusive(m, doc, mark.name(), sibling))),
-                    "{mark:?} {view:?}"
-                );
-            }
-            let red = MarkVal::Str("#ff0000".into());
-            let (ours, _) = set_mark(&view, doc, "color", red.clone()).unwrap();
-            assert_eq!(
-                bytes(&ours),
-                bytes(&clean(old_set_value(m, doc, "color", Some(red))))
-            );
-            let (ours, _) = clear_mark(&view, doc, "highlight").unwrap();
-            assert_eq!(
-                bytes(&ours),
-                bytes(&clean(old_set_value(m, doc, "highlight", None)))
-            );
-            for style in [
-                ParagraphStyle {
-                    kind: "heading".into(),
-                    level: Some(2),
-                    ordered: None,
-                },
-                ParagraphStyle {
-                    kind: "list_item".into(),
-                    level: None,
-                    ordered: Some(false),
-                },
-            ] {
-                let (ours, _) = set_paragraph_style(&view, doc, &style).unwrap();
-                assert_eq!(bytes(&ours), bytes(&old_paragraph_style(m, doc, &style)));
-            }
-            for id in ["heading1", "quote", "custom-style"] {
-                let (ours, _) = apply_named_style(&view, doc, id).unwrap();
-                assert_eq!(bytes(&ours), bytes(&old_named_style(m, doc, id)));
-            }
-            for text in ["one", "one\r\ntwo\nthree", ""] {
-                let (ours, _) = paste(&view, doc, &PasteContent::Text(text.into())).unwrap();
-                assert_eq!(
-                    bytes(&ours),
-                    bytes(&old_paste_plain(m, doc, text)),
-                    "paste {text:?} {view:?}"
-                );
-            }
         }
     }
 
@@ -2761,6 +2318,50 @@ mod tests {
                     vec!["sub".into()]
                 )]
             );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        /// A named style applied through the published operation: a name the app structures
+        /// shapes the caret block, and any other name is recorded on it without reshaping it.
+        fn a_named_style_reaches_the_document;
+
+        phase a_known_name_shapes_the_caret_block_and_an_unknown_one_names_it;
+        {
+            let (mut state, _, ids) = writer(&["Title", "Body"]);
+            let view = at(&ids[0], 2);
+            let (actions, _) = apply_named_style(&view, &state.doc, "heading1").unwrap();
+            apply_all(&mut state.doc, &actions);
+            let blocks = |doc: &AutoCommit| {
+                tilo_doc::model::materialize(doc, &crate::model::open(doc).unwrap()).blocks
+            };
+            let title = blocks(&state.doc)
+                .into_iter()
+                .find(|block| block.id == ids[0]);
+            let title = title.expect("the caret block is still there");
+            assert_eq!(title.kind, "heading");
+            assert_eq!(title.int_attr("level"), Some(1));
+            assert_eq!(title.str_attr("style"), Some("heading1"));
+            let below = blocks(&state.doc)
+                .into_iter()
+                .find(|block| block.id == ids[1]);
+            assert_eq!(
+                below.as_ref().map(|block| block.kind.as_str()),
+                Some("paragraph"),
+                "the paragraph below the caret keeps its kind"
+            );
+
+            // A style the app does not know by name is still recorded on the
+            // block, so the document can carry styles it does not structure.
+            let (actions, _) = apply_named_style(&view, &state.doc, "callout").unwrap();
+            apply_all(&mut state.doc, &actions);
+            let title = blocks(&state.doc)
+                .into_iter()
+                .find(|block| block.id == ids[0])
+                .expect("the caret block is still there");
+            assert_eq!(title.str_attr("style"), Some("callout"));
+            assert_eq!(title.kind, "heading", "an unnamed style keeps the kind");
+            assert_eq!(title.int_attr("level"), Some(1));
         }
     }
 }

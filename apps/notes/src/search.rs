@@ -81,9 +81,9 @@ mod tests {
     use super::*;
     use crate::model::PageId;
     use crate::note_list::NoteList;
+    use ui::rich_edit::BlockContent;
     use ui::search::SearchProvider;
     use ui::tilo_resource::{Invoke, Replica};
-    use ui::widget::BlockContent;
 
     /// A notebook with three titled notes.
     fn populated() -> (Replica<NoteList>, Vec<PageId>) {

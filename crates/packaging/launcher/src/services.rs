@@ -68,6 +68,26 @@ const CHOOSER_CHILD_FD: i32 = 32;
 const SHELL_UI_CHILD_FD: i32 = 35;
 /// Slot of the automatic render broker connection (`tilo_render_protocol::broker`).
 const RENDER_CHILD_FD: i32 = 34;
+
+/// The services an app of this login reaches by name: every name the launcher hands it a socket
+/// for, and the two the protocol crates name beside it. A client that dials a service dials one of
+/// these, so the session that serves them has a row for each — a name here that nothing serves is a
+/// launch that fails.
+pub const HANDED_SERVICES: &[&str] = &[
+    COLLAB_SERVICE,
+    IDENTITY_SERVICE,
+    SHELL_UI_SERVICE,
+    CHOOSER_SERVICE,
+    COMPAT_SERVICE,
+    SYSTEM_SERVICE,
+    MODEL_GATEWAY_SERVICE,
+    PACKAGE_SERVICE,
+    MESSAGING_SERVICE,
+    USH_SERVICE,
+    BLOB_SERVICE,
+    tilo_render_protocol::broker::SERVICE,
+    tilo_system_stats::SERVICE,
+];
 /// Slots bwrap reads its two seccomp programs from (`--add-seccomp-fd`).
 pub(crate) const CLONE3_COMPAT_SECCOMP_CHILD_FD: i32 = 40;
 pub(crate) const BASELINE_SECCOMP_CHILD_FD: i32 = 41;

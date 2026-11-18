@@ -2694,6 +2694,24 @@ impl ResourceStore {
         id: &DocumentId,
         read: impl FnOnce(&AutoCommit) -> R,
     ) -> Result<R, ResourceOpenError> {
+        let mut read = Some(read);
+        let mut out = None;
+        self.read_checked_with(id, &mut |document| {
+            if let Some(read) = read.take() {
+                out = Some(read(document));
+            }
+        })?;
+        out.ok_or(ResourceOpenError::MissingResource)
+    }
+
+    /// [`Self::read_checked`] with the reading erased: one body for every
+    /// reader.
+    #[inline(never)]
+    fn read_checked_with(
+        &self,
+        id: &DocumentId,
+        read: &mut dyn FnMut(&AutoCommit),
+    ) -> Result<(), ResourceOpenError> {
         let set = self.0.try_borrow().map_err(|_| ResourceOpenError::Busy)?;
         set.not_lent(id)?;
         let document = set
@@ -2703,7 +2721,8 @@ impl ResourceStore {
             .ok_or(ResourceOpenError::MissingResource)?;
         // A component's pass that reads it reads it again once it moved.
         crate::component_inputs::read_resource(self, id, document);
-        Ok(read(document))
+        read(document);
+        Ok(())
     }
 
     /// What tells this store from another holding the same records.
@@ -3389,58 +3408,6 @@ impl ResourceStore {
     }
 }
 
-/// Whether the document carries its record metadata map.
-fn record_metadata_present(doc: &AutoCommit) -> Result<bool, String> {
-    match object_at(doc, &ROOT, META, ObjType::Map) {
-        ObjectAt::Missing => Ok(false),
-        ObjectAt::Object(_) => Ok(true),
-        ObjectAt::Invalid => Err("conflicting record metadata".into()),
-    }
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ReplicaIdentityStamp {
-    checkout: DocumentCheckout,
-    workspace: String,
-    metadata: bool,
-    home: Option<String>,
-    /// The workspace the document names, as [`workspace_scope`] reads it.
-    scope: Option<String>,
-}
-
-impl ReplicaIdentityStamp {
-    fn capture(
-        doc: &AutoCommit,
-        checkout: &DocumentCheckout,
-        workspace: &str,
-    ) -> Result<Self, String> {
-        validate_identity(doc, checkout, workspace).map_err(|error| error.to_string())?;
-        let metadata = record_metadata_present(doc)?;
-        if !checkout.id.is_package_primary() && !metadata {
-            return Err("record metadata is missing".into());
-        }
-        Ok(Self {
-            checkout: checkout.clone(),
-            workspace: workspace.to_string(),
-            metadata,
-            home: home(doc),
-            scope: workspace_scope(doc),
-        })
-    }
-
-    pub(crate) fn validate(&self, doc: &AutoCommit) -> Result<(), String> {
-        validate_identity(doc, &self.checkout, &self.workspace)
-            .map_err(|error| error.to_string())?;
-        if record_metadata_present(doc)? != self.metadata
-            || home(doc) != self.home
-            || workspace_scope(doc) != self.scope
-        {
-            return Err("conflicting record identity".into());
-        }
-        Ok(())
-    }
-}
-
 impl std::fmt::Debug for ResourceStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResourceStore")
@@ -3465,6 +3432,8 @@ pub fn tick(
     set.checkout(state, workspace, &want).then_some(want)
 }
 
+mod identity_stamp;
+pub(crate) use identity_stamp::ReplicaIdentityStamp;
 #[cfg(test)]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod identity_tests;

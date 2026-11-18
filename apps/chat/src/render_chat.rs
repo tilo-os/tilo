@@ -241,7 +241,7 @@ impl ChatApp {
                 let mut remaining = offset;
                 for (block, content) in blocks.iter().enumerate() {
                     if remaining <= content.text.len() {
-                        return Some(ui::widget::DocumentPosition {
+                        return Some(ui::rich_edit::DocumentPosition {
                             block,
                             byte: remaining,
                         });
@@ -272,7 +272,7 @@ impl ChatApp {
                 .editor_mut()
                 .blocks()
                 .iter()
-                .find(|block| matches!(block.kind, ui::widget::BlockKind::Paragraph))
+                .find(|block| matches!(block.kind, ui::rich_edit::BlockKind::Paragraph))
                 .map_or(inset, |block| block.line.caret_rect(theme, 0).x0 - rect.x0);
             if (measured - inset).abs() < 0.25 {
                 break;
@@ -284,7 +284,7 @@ impl ChatApp {
 
     /// Presentation is projected from received facts, never a simulated timer.
     /// Provider reasoning is separate from the agent's explanation of a decision.
-    pub(crate) fn agent_display_blocks(&self, m: &Message) -> Vec<ui::widget::BlockContent> {
+    pub(crate) fn agent_display_blocks(&self, m: &Message) -> Vec<ui::rich_edit::BlockContent> {
         let mut blocks = m.blocks();
         let Some(work) = &m.work else {
             return blocks;
@@ -306,7 +306,7 @@ impl ChatApp {
                 lines.push(stream.reasoning.clone());
             }
         }
-        blocks.push(ui::widget::BlockContent::paragraph(
+        blocks.push(ui::rich_edit::BlockContent::paragraph(
             format!("{}/agent-status", m.id),
             lines.join("\n"),
         ));

@@ -14,9 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use fs_protocol::{
-    FileDocumentId, FileVersionId, NO_PEER_DELIVERED_ERROR, Residency, TransferPhase,
-};
+use fs_protocol::{ContentHash, FileDocumentId, NO_PEER_DELIVERED_ERROR, Residency, TransferPhase};
 use iroh_blobs::Hash;
 use tilo_lock::MutexRecover as _;
 
@@ -31,13 +29,12 @@ pub(super) struct UnavailableNote {
     pub(super) content: Option<NotedContent>,
 }
 
-/// The committed content a read fetches: the version the file had when the read began, and where its
-/// bytes are.
+/// The committed content a read fetches: the content the file had when the read began, by its hash,
+/// and where its bytes are.
 #[derive(Clone)]
 pub(super) struct NotedContent {
     pub(super) hydrator: Arc<Hydrator>,
     pub(super) hash: Hash,
-    pub(super) version: FileVersionId,
     pub(super) stored: Arc<StoredWrites>,
 }
 
@@ -72,7 +69,6 @@ struct StoredState {
 
 struct FoundWhole {
     document_id: FileDocumentId,
-    version: FileVersionId,
     hash: Hash,
 }
 
@@ -139,8 +135,8 @@ impl StoredWrites {
 }
 
 /// Writes `Resident` on the record of each file in `found` that is still whole here, in one batch. A
-/// file whose record moved on to another version, or already says so, is left alone. A file with no
-/// record gets one naming the version read, never a `Resident` record without one.
+/// file whose record moved on to other content, or already says so, is left alone. A file with no
+/// record gets one naming the content read, never a `Resident` record without one.
 async fn write_stored(
     found: Vec<FoundWhole>,
     registry: Arc<Mutex<AvailabilityRegistry>>,
@@ -161,12 +157,13 @@ async fn write_stored(
         registry.lock_recover().batch(|registry| {
             for (file, bytes) in whole {
                 let resident = Residency::Resident { bytes };
+                let content = Some(ContentHash(*file.hash.as_bytes()));
                 let mut record = registry.get(file.document_id).cloned().unwrap_or_else(|| {
                     let mut record = DocumentAvailability::new(file.document_id, EntryKind::File);
-                    record.current_version = Some(file.version);
+                    record.current_hash = content;
                     record
                 });
-                if record.current_version != Some(file.version) || record.residency == resident {
+                if record.current_hash != content || record.residency == resident {
                     continue;
                 }
                 record.residency = resident;
@@ -212,7 +209,7 @@ impl UnavailableNote {
     /// reports its own outcome, and any other failure stays.
     ///
     /// When they were the last bytes the file was missing, the record will say it is stored here
-    /// ([`StoredWrites`]), unless the file has moved on to another version meanwhile.
+    /// ([`StoredWrites`]), unless the file has moved on to other content meanwhile.
     pub(super) async fn arrived(&self) {
         let whole = match &self.content {
             Some(content) => content.hydrator.local_len(content.hash).await,
@@ -222,7 +219,7 @@ impl UnavailableNote {
         let current = registry.get(self.document_id);
         let queue = match (&self.content, whole) {
             (Some(content), Some(bytes)) => current.is_none_or(|record| {
-                record.current_version == Some(content.version)
+                record.current_hash == Some(ContentHash(*content.hash.as_bytes()))
                     && record.residency != (Residency::Resident { bytes })
             }),
             _ => false,
@@ -251,7 +248,6 @@ impl UnavailableNote {
             content.stored.add(
                 FoundWhole {
                     document_id: self.document_id,
-                    version: content.version,
                     hash: content.hash,
                 },
                 &self.registry,
@@ -425,13 +421,11 @@ mod tests {
             Endpoint::bind(presets::Minimal).await.unwrap(),
             store,
         ));
-        let version = FileVersionId::new();
         let stored = Arc::new(StoredWrites::default());
         let content = |hash| {
             Some(NotedContent {
                 hydrator: Arc::clone(&hydrator),
                 hash,
-                version,
                 stored: Arc::clone(&stored),
             })
         };
@@ -465,7 +459,7 @@ mod tests {
                 bytes: data.len() as u64
             }
         );
-        assert_eq!(record.current_version, Some(version));
+        assert_eq!(record.current_hash, Some(ContentHash(*whole.as_bytes())));
         assert!(record.freshness.local_verified_at_ms.is_some());
         assert_eq!(
             projection(&note).residency,
@@ -485,7 +479,7 @@ mod tests {
         );
 
         let mut moved = record;
-        moved.current_version = Some(FileVersionId::new());
+        moved.current_hash = Some(crate::availability::test_hash());
         moved.residency = Residency::NotResident;
         note.registry.lock_recover().put(moved.clone()).unwrap();
         noted_bounded_read(bound, async { Ok(()) }, Some(note.clone()))
@@ -495,7 +489,7 @@ mod tests {
         assert_eq!(
             note.registry.lock_recover().get(note.document_id),
             Some(&moved),
-            "bytes of an older version say nothing of the current one"
+            "bytes of older content say nothing of the current one"
         );
     }
 
@@ -516,7 +510,6 @@ mod tests {
             store,
         ));
         let stored = Arc::new(StoredWrites::settling_for(Duration::from_secs(3600)));
-        let version = FileVersionId::new();
         let (writes, wakes) = {
             let registry = note.registry.lock_recover();
             (registry.persist_count(), registry.hydration_generation())
@@ -529,7 +522,6 @@ mod tests {
                 content: Some(NotedContent {
                     hydrator: Arc::clone(&hydrator),
                     hash: *hash,
-                    version,
                     stored: Arc::clone(&stored),
                 }),
             };
@@ -557,10 +549,10 @@ mod tests {
                 registry.hydration_generation().wrapping_sub(wakes),
             )
         };
-        for ((_, _, bytes), record) in files.iter().zip(records) {
+        for ((_, hash, bytes), record) in files.iter().zip(records) {
             let record = record.expect("each file read whole is recorded");
             assert_eq!(record.residency, Residency::Resident { bytes: *bytes });
-            assert_eq!(record.current_version, Some(version));
+            assert_eq!(record.current_hash, Some(ContentHash(*hash.as_bytes())));
         }
         assert_eq!(written, 1, "the files are written together");
         assert_eq!(woken, 1, "the pinned-hydration pass is woken once");

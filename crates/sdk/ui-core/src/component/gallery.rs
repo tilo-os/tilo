@@ -3,7 +3,7 @@
 //! component described in this crate is shown there the day it is written: a described component no
 //! view of the gallery names is a gap.
 
-use super::catalogue;
+use super::Catalogue;
 
 /// Whether `source` names the component `name` as `ui.<name>`, not as the start of a longer name
 /// (`ui.Card` is not `ui.CardGrid`).
@@ -53,10 +53,9 @@ impl Coverage {
     }
 }
 
-/// What the gallery's tilolang sources, together, show of the toolkit's described components.
+/// What the gallery's tilolang sources, together, show of `catalogue`'s described components.
 #[must_use]
-pub fn coverage(source: &str) -> Coverage {
-    let catalogue = catalogue();
+pub fn coverage(catalogue: &Catalogue, source: &str) -> Coverage {
     let mut missing = Vec::new();
     let mut shown_but_exempt = Vec::new();
     for name in catalogue.names() {

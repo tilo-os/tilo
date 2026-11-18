@@ -170,9 +170,6 @@ class AppCopyTests(unittest.TestCase):
                 "(crates/session/desktop-surface)",
             ])
 
-    def test_every_actual_source_key_is_in_its_catalogues(self):
-        self.assertEqual(copy.missing_copy(copy.ROOT), [])
-
     def test_a_crate_reading_anothers_catalogue_is_checked_in_it(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

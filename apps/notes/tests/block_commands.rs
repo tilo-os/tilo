@@ -1,6 +1,6 @@
 use crate::component_support::*;
 use notes::read;
-use ui::widget::BlockContent;
+use ui::rich_edit::BlockContent;
 
 fn duplicate(source: &str, target: usize, group: std::ops::Range<usize>, keyboard: bool) {
     let fixture = NotebookFixture::rich();
@@ -22,9 +22,9 @@ fn duplicate(source: &str, target: usize, group: std::ops::Range<usize>, keyboar
     let mut expected_focus = before_focus;
     if matches!(
         expected_focus[target].kind,
-        ui::widget::BlockKind::Table { .. }
+        ui::rich_edit::BlockKind::Table { .. }
     ) {
-        expected_focus[target].kind = ui::widget::BlockKind::Table { visual: false };
+        expected_focus[target].kind = ui::rich_edit::BlockKind::Table { visual: false };
     }
     assert_eq!(
         before, expected_focus,
@@ -77,7 +77,7 @@ fn duplicate(source: &str, target: usize, group: std::ops::Range<usize>, keyboar
 }
 
 fn assert_markdown_roundtrip(blocks: &[BlockContent], copied_fence: bool) {
-    let mut editor = ui::widget::BlockEditor::new();
+    let mut editor = ui::rich_edit::BlockEditor::new();
     editor.present_blocks(blocks);
     let specs = notes::markdown::blocks_to_specs(editor.blocks());
     if copied_fence {

@@ -716,10 +716,6 @@ fn morning_refresh_draft_requires_schedule_choice_and_keyboard_save_review() {
         library_calls(&provider, "create").is_empty(),
         "schedule choice edits only the draft"
     );
-    let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/morning-refresh-renders");
-    std::fs::create_dir_all(&output).unwrap();
-    render_morning_matrix(&mut app, &output, "draft");
     app.harness().set_theme(ui::Theme::light());
     app.harness().resize((1600, 1000)).unwrap();
     press_bar(&mut app, "Review and save…");
@@ -736,7 +732,7 @@ fn morning_refresh_draft_requires_schedule_choice_and_keyboard_save_review() {
                 .within(tilo_test_env::hang_bound()),
         )
         .expect("the actual save review must disclose the chosen schedule");
-    render_morning_matrix(&mut app, &output, "review");
+    check_morning_matrix(&mut app);
     app.harness().set_theme(ui::Theme::light());
     app.harness().resize((1600, 1000)).unwrap();
     act(&mut app, "shortcuts-save-sheet.primary", &Action::Focus);
@@ -761,7 +757,9 @@ fn morning_refresh_draft_requires_schedule_choice_and_keyboard_save_review() {
     );
 }
 
-fn render_morning_matrix(app: &mut TestApp<App>, output: &std::path::Path, page: &str) {
+/// Lay the page out at every theme and width a schedule's draft is read at. On the save
+/// review, the explanation is fully painted and its whole accessible sentence is kept.
+fn check_morning_matrix(app: &mut TestApp<App>) {
     for (name, theme) in [
         ("light", ui::Theme::light()),
         ("dark", ui::Theme::dark()),
@@ -770,31 +768,27 @@ fn render_morning_matrix(app: &mut TestApp<App>, output: &std::path::Path, page:
         for (size, width, height) in [("normal", 1600, 1000), ("compact", 640, 900)] {
             app.harness().set_theme(theme.clone());
             app.harness().resize((width, height)).unwrap();
-            app.harness()
-                .render_png(&output.join(format!("{name}-{size}-{page}.png")));
-            if page == "review" {
-                let snapshot = app.harness().inspection();
-                let paragraph = inspection_node(&snapshot.root, "shortcuts-grant-explain")
-                    .expect("the painted save review must expose its full explanation");
-                let body_width = ui::widget::modal_dialog::body_width(
-                    ui::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
-                    560.0,
-                    &theme,
-                );
-                assert!(
-                    paragraph.rect[2] <= body_width + 1.0,
-                    "{name}/{size}: explanation paints beyond the review body: {:?}, body width {body_width}",
-                    paragraph.rect,
-                );
-                assert_eq!(
-                    paragraph
-                        .semantics
-                        .as_ref()
-                        .and_then(|node| node.name.as_deref()),
-                    Some(CATALOG.t("shortcuts-grant-explain").as_str()),
-                    "wrapping must retain the complete accessible explanation",
-                );
-            }
+            let snapshot = app.harness().inspection();
+            let paragraph = inspection_node(&snapshot.root, "shortcuts-grant-explain")
+                .expect("the painted save review must expose its full explanation");
+            let body_width = ui::widget::modal_dialog::body_width(
+                ui::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+                560.0,
+                &theme,
+            );
+            assert!(
+                paragraph.rect[2] <= body_width + 1.0,
+                "{name}/{size}: explanation paints beyond the review body: {:?}, body width {body_width}",
+                paragraph.rect,
+            );
+            assert_eq!(
+                paragraph
+                    .semantics
+                    .as_ref()
+                    .and_then(|node| node.name.as_deref()),
+                Some(CATALOG.t("shortcuts-grant-explain").as_str()),
+                "wrapping must retain the complete accessible explanation",
+            );
         }
     }
 }

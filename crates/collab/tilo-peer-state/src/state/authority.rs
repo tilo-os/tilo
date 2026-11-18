@@ -9,6 +9,36 @@ use super::{
 };
 use collab_types::signer::DeviceSigner;
 
+/// What a refused change made by a key adds: the workspace holds no grant
+/// its person approved for the key (or its grant was revoked), and the one
+/// command that approves one.
+const KEY_NOT_APPROVED: &str = ". This key is not approved for this workspace, or its grant \
+     was revoked: the person types `tilo keys create \"<name>\"` and approves the new key in \
+     their Tilo tab (on their own computer, `tilo login` again)";
+
+/// How much work deriving access did on this thread, for the tests that hold
+/// it to one walk of the workspace's certificates and grants however many
+/// devices it covers: a count that cannot pass by waiting longer.
+#[cfg(any(test, feature = "test-support"))]
+pub(super) mod walks {
+    use std::cell::Cell;
+
+    thread_local! {
+        static GRANT_WALKS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(super) fn count() {
+        GRANT_WALKS.with(|walks| walks.set(walks.get().saturating_add(1)));
+    }
+
+    /// What `derive` did, and how many walks it took.
+    pub(in crate::state) fn taken<T>(derive: impl FnOnce() -> T) -> (T, u64) {
+        GRANT_WALKS.with(|walks| walks.set(0));
+        let value = derive();
+        (value, GRANT_WALKS.with(Cell::get))
+    }
+}
+
 /// `person`'s access under `policy`, held to the foreign-device bound on a
 /// `foreign` device and to `delegate`'s bound on a delegate's.
 fn access_of(
@@ -43,15 +73,16 @@ pub(super) enum AuthorizeRefusal {
     /// words the workspace keeps.
     Denied(String),
     /// The workspace's rules refuse it: what its author's session is told, typed as a server's
-    /// refusal of a change is.
-    Rules(collab_types::ReceiptRefusal),
+    /// refusal of a change is, and in words that name who made the change and which device
+    /// signed it.
+    Rules(collab_types::ReceiptRefusal, String),
 }
 
 impl std::fmt::Display for AuthorizeRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Denied(reason) => f.write_str(reason),
-            Self::Rules(refusal) => write!(f, "document change forbidden: {refusal}"),
+            Self::Rules(_, said) => f.write_str(said),
         }
     }
 }
@@ -405,10 +436,11 @@ impl StatePeer {
         &self,
         source: [u8; 32],
         policy: std::sync::Arc<WorkspacePolicy>,
+        approved: &[tilo_action_policy::Grant],
         now: SystemTime,
     ) -> Result<MemberAccess, MembershipError> {
         let (person, foreign, delegate) = self.member_of(&source, now)?;
-        Ok(access_of(policy, person, foreign, delegate).granted(self.approved_keys(now)))
+        Ok(access_of(policy, person, foreign, delegate).granted(approved.iter().cloned()))
     }
     /// Who the device `source` is at `now`, apart from the workspace's policy:
     /// its person, whether its device is foreign, and the delegation it holds.
@@ -896,7 +928,8 @@ impl StatePeer {
             .then(|| collab_types::MemberId::bot(installation.id))
     }
 
-    /// What the keys their people approved for this workspace may do at
+    /// What the keys their people approved for this workspace, and the agent
+    /// devices they delegated, may do at
     /// `now`, as grants naming each key's agent
     /// ([`collab_types::workspace_grant::key_agent_id`]): what an agent of its
     /// person may ([`tilo_action_policy::Acting::handed_preset`]). A key is
@@ -908,6 +941,8 @@ impl StatePeer {
     /// nothing about it: every device that holds the workspace reads the
     /// same grants, and the person and the signer still bound the agent.
     pub(crate) fn approved_keys(&self, now: SystemTime) -> Vec<tilo_action_policy::Grant> {
+        #[cfg(any(test, feature = "test-support"))]
+        walks::count();
         let workspace = &self.core.workspace;
         let grants = self.governance().workspace_grants();
         let now_ms = now_ns(now) / 1_000_000;
@@ -921,6 +956,22 @@ impl StatePeer {
                         || grant.expires_ms.is_some_and(|expiry| now_ms >= expiry))
             })
         };
+        // An agent device its person delegated, with the delegation their
+        // root signed, which the workspace holds the same way.
+        let delegated = self.core.certificates.keys().filter_map(|device| {
+            match backend::member::legacy(&self.core, device, now) {
+                Ok((_, Some(delegate)))
+                    if delegate
+                        .actor
+                        .member_id()
+                        .is_some_and(|member| member.agent_id().is_some()) =>
+                {
+                    Some(delegate.grants)
+                }
+                _ => None,
+            }
+        });
+        let delegated: Vec<tilo_action_policy::Grant> = delegated.flatten().collect();
         self.core
             .certificates
             .keys()
@@ -939,7 +990,22 @@ impl StatePeer {
                 )
             })
             .flatten()
+            .chain(delegated)
             .collect()
+    }
+
+    /// The heads of the workspace's governance as this peer holds it.
+    pub(super) fn governance_heads(&self) -> Vec<[u8; 32]> {
+        self.core
+            .workspace_doc
+            .as_ref()
+            .map(|doc| {
+                automerge::transaction::Transactable::base_heads(&**doc)
+                    .into_iter()
+                    .map(|head| head.0)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// The authority of `source` for the change `envelope` makes on `record`
@@ -1039,7 +1105,54 @@ impl StatePeer {
             Ok(collab_types::Receipt::Hold) => {
                 Ok(Authorized::Hold(crate::MissingPrerequisite::AppSurface))
             }
-            Err(refusal) => Err(AuthorizeRefusal::Rules(refusal)),
+            Err(refusal) => {
+                let said = refused_change(&refusal, &route, source, envelope);
+                Err(AuthorizeRefusal::Rules(refusal, said))
+            }
         }
     }
+}
+
+/// What a change the workspace's rules refuse by `refusal` is told, logged
+/// with who the change names as having made it and which device signed it:
+/// what a refusal report needs to say whose change it was. A key the
+/// workspace holds no grant for is told how to get one.
+fn refused_change(
+    refusal: &collab_types::ReceiptRefusal,
+    route: &impl std::fmt::Debug,
+    source: &[u8; 32],
+    envelope: &SignedOp,
+) -> String {
+    let claimed = collab_types::claimed_invokers(envelope);
+    let invokers: Vec<String> = claimed
+        .iter()
+        .map(|invoker| serde_json::to_string(invoker).unwrap_or_default())
+        .collect();
+    let by_key = claimed.iter().any(|invoker| {
+        invoker.nodes().into_iter().any(|node| {
+            node.agent_id()
+                .and_then(tilo_action_policy::key_of_agent)
+                .is_some()
+        })
+    });
+    tracing::warn!(
+        route = ?route,
+        signer = %hex::encode(source),
+        invokers = ?invokers,
+        %refusal,
+        "a change was refused"
+    );
+    let mut said = format!(
+        "document change forbidden: {refusal} (made by {}, signed by device {})",
+        if invokers.is_empty() {
+            "its signer".to_owned()
+        } else {
+            invokers.join(", ")
+        },
+        hex::encode(source)
+    );
+    if by_key {
+        said.push_str(KEY_NOT_APPROVED);
+    }
+    said
 }

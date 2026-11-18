@@ -2475,7 +2475,7 @@ impl PdfApp {
         self.dirty = true;
     }
 
-    fn comment_field(&self, blocks: &[ui::widget::BlockContent], reply: bool) -> CommentField {
+    fn comment_field(&self, blocks: &[ui::rich_edit::BlockContent], reply: bool) -> CommentField {
         let hint = if reply {
             crate::t("pdf-comment-reply-placeholder")
         } else {
@@ -2483,7 +2483,7 @@ impl PdfApp {
         };
         let mut surface = RichTextSurface::over(Draft::with_blocks(blocks))
             .with_editor(
-                ui::widget::BlockEditor::new()
+                ui::rich_edit::BlockEditor::new()
                     .with_wrap_lines(true)
                     .with_compact_paragraph_spacing(true)
                     .with_block_handles(false)
@@ -2495,7 +2495,7 @@ impl PdfApp {
         surface.set_focus(true);
         surface
             .editor_mut()
-            .focus_block(usize::MAX, ui::widget::CursorPlacement::End);
+            .focus_block(usize::MAX, ui::rich_edit::CursorPlacement::End);
         ui::widget::Embedded::new(surface)
     }
 

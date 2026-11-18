@@ -477,12 +477,28 @@ impl StoredResource {
         undoable: bool,
         edit: impl FnOnce(&mut AutoCommit) -> Result<T, String>,
     ) -> Result<Result<T, String>, HistoryUnavailable> {
+        let mut edit = Some(edit);
+        let mut out = None;
+        let result = self.try_edit_with(undoable, &mut |doc| match edit.take() {
+            Some(edit) => edit(doc).map(|value| out = Some(value)),
+            None => Ok(()),
+        })?;
+        Ok(result.and_then(|()| out.ok_or_else(|| "the edit was not made".to_owned())))
+    }
+
+    /// [`Self::try_edit`] with the edit erased: one body for every edit.
+    #[inline(never)]
+    fn try_edit_with(
+        &self,
+        undoable: bool,
+        edit: &mut dyn FnMut(&mut AutoCommit) -> Result<(), String>,
+    ) -> Result<Result<(), String>, HistoryUnavailable> {
         let author = self.author.clone();
         let result = self
             .store
             .with_history_or_why(&self.checkout.id, |doc, history| {
                 let before = doc.get_heads();
-                let value = edit(doc)?;
+                edit(doc)?;
                 // The closure writes the record directly, naming no finer
                 // action than an edit of the whole record.
                 doc.commit_with(
@@ -494,7 +510,7 @@ impl StoredResource {
                 } else {
                     history.rebase(doc);
                 }
-                Ok(value)
+                Ok(())
             })?;
         if let Err(error) = self.store.schedule_committed_history(&self.checkout.id) {
             tracing::error!(%error, "an edited record could not be saved");

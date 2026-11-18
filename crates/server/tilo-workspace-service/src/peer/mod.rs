@@ -68,8 +68,8 @@ pub(crate) use state::{StateDelivery, StateSession, tell_governor};
 use test_hooks::test_point;
 
 use access::{
-    action_peer_admitted, audit_subscriber_access, current_session, lost_session,
-    session_peer_authorized, unavailable_target,
+    action_peer_admitted, audit_subscriber_access, current_session, session_peer_authorized,
+    unavailable_target,
 };
 use actions::{RemoteActionRoute, handle_host_action, handle_remote_action};
 use admin::handle_workspaces;
@@ -133,10 +133,6 @@ pub enum PeerError {
     /// for a workspace it never Subscribed to).
     #[error("peer protocol violation: {0}")]
     Protocol(String),
-    /// A newer connection for the same device replaced this connection's
-    /// subscriber slot while its replay capture was queued.
-    #[error("superseded by a newer connection for this device")]
-    Superseded,
     /// The server does not admit this device, which holds no workspace here:
     /// its refusal went out and the session ended with it. A refusal, not a
     /// protocol violation.

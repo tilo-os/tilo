@@ -9,6 +9,9 @@ use std::time::Duration;
 
 use tilo_app_keeper::wire::Description;
 
+/// A keeper directory a service makes, as the Linux VM's supervisor does.
+pub use tilo_app_keeper::registry::new_dir;
+
 /// What makes a test binary a keeper: its arguments, one per line.
 const KEEPER_ARGS: &str = "TILO_TEST_KEEPER_ARGS";
 

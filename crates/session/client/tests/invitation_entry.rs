@@ -520,3 +520,153 @@ async fn an_invitation_that_names_no_workspace_is_refused_before_a_certificate_i
         }
     }
 }
+
+/// An invitation carries its server's own address, signed: a device that reaches the server only
+/// through its packet relay (one that followed a link someone pasted into a message, from a
+/// computer whose own site nobody else opens) dials the server from the invitation alone, and
+/// enters the workspace.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_invitation_opens_from_a_device_that_reaches_its_server_only_through_its_relay() {
+    use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
+    let (alice, _) = UserIdentity::generate("Alice", 1);
+    let server_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let running = crate::support::start_workspace_host_relaying(
+        &alice,
+        &server_device,
+        state.path(),
+        false,
+        true,
+    )
+    .await;
+    let acme = running
+        .server
+        .workspaces()
+        .unwrap()
+        .create("Acme")
+        .await
+        .unwrap();
+    let bob = new_key();
+    let (invitation, token) = entry_grant(
+        &running,
+        &alice,
+        &server_device,
+        &acme.workspace,
+        bob.verifying_key().to_bytes(),
+    )
+    .await;
+
+    // What `tilo login <link>` and the page read of it: the server it names, nothing else.
+    let verified = tilo_workspace_join::decode_and_verify_invitation(
+        &invitation,
+        None,
+        &RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .unwrap();
+    let grant = verified.grant();
+    let server = grant
+        .transport
+        .iter()
+        .filter_map(|hint| WorkspaceDeviceHintV1::from_transport_hint(hint).ok())
+        .find(|server| server.workspace_id == grant.workspace_id && server.holds_keys)
+        .expect("the invitation names the server that lets its guest in");
+    let relay = server
+        .packet_relay_url
+        .parse::<iroh_base::RelayUrl>()
+        .expect("the invitation names the server's packet relay");
+    let through_relay =
+        tilo_server_client::Host::published(&tilo_server_protocol::web::HostAddress {
+            endpoint_addr: server.endpoint_addr.clone(),
+            relay_url: Some(relay.to_string()),
+            web: None,
+        })
+        .over(tilo_server_client::Carrier::Relay);
+
+    let page = new_key();
+    let (cert, entry) = invitation_entry(
+        &server.device_certificate,
+        &invitation,
+        &page,
+        entering(None, Some(&bob), &token),
+    )
+    .await
+    .unwrap();
+    let peer = enter_page(
+        through_relay,
+        cert,
+        server.device_certificate.clone(),
+        page,
+        Arc::new(MemoryPeerStore::default()),
+        entry,
+    );
+    peer.send(Cmd::Join(acme.workspace_id)).unwrap();
+    let admission = entered(&peer).await.unwrap();
+    assert_eq!(admission.workspace, acme.workspace);
+    in_workspace(&peer, acme.workspace_id).await;
+    peer.close();
+    drop(running.web);
+    running.server.shutdown().await;
+}
+
+/// A person a server does not know yet (its operator never made them an owner, and no invitation
+/// brought them) is told exactly that when they ask it for their workspaces, with their key and
+/// what makes them known: not that some action is not theirs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_person_the_server_does_not_know_is_told_so_and_what_to_do() {
+    let (alice, _) = UserIdentity::generate("Alice", 1);
+    let server_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let running = start_workspace_host(&alice, &server_device, state.path(), false).await;
+    // It keeps workspaces for the people its site lets in, as tilo.sh's servers and a local stack
+    // do: anyone's device connects, and what they may do is decided per request.
+    let workspaces = running.server.workspaces().unwrap();
+    let lounge = workspaces.create("Lounge").await.unwrap();
+    assert!(
+        workspaces
+            .offer_own_workspaces(tilo_server::workspaces::OwnWorkspaceOffer::free(
+                "tilo.test"
+            ))
+            .unwrap()
+    );
+    assert!(workspaces.admit_own_through(&lounge.workspace));
+    let (bob, _) = UserIdentity::generate("Bob", 1);
+    let laptop = enrol(&bob, "laptop", DeviceCapabilities::primary());
+    let session = crate::support::start_peer(
+        running.iroh(),
+        laptop.cert.clone(),
+        server_device.cert.clone(),
+        laptop.key.clone(),
+    );
+    let device = Device::of(
+        session.clone(),
+        laptop.cert.clone(),
+        server_device.cert.clone(),
+        "laptop",
+    );
+    device
+        .connected()
+        .await
+        .expect("a server that keeps workspaces for people lets anyone's device connect");
+    let refused = device
+        .personal_list(
+            &tilo_server_session::workspaces::WorkspaceLabels::new(),
+            None,
+        )
+        .await
+        .expect_err("a person nobody here let in holds no list here");
+    assert_eq!(
+        refused.code,
+        DeviceRefusal::NOT_ON_THIS_SERVER,
+        "{refused:?}"
+    );
+    let key = hex::encode(bob.verifying_key().to_bytes());
+    assert!(
+        refused.message.contains(&key) && refused.message.contains("owner"),
+        "the refusal names the person's key and what makes them known: {}",
+        refused.message
+    );
+    session.close();
+    drop(running.web);
+    running.server.shutdown().await;
+}

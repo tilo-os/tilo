@@ -108,23 +108,6 @@ pub(super) fn shaped_row(ti: &TextInput, byte: usize) -> usize {
         .visual_line_index(ti.text_to_layout_byte(byte))
 }
 
-pub(super) fn draw_rich_line_for_test(
-    line: &mut crate::widget::RichTextLine,
-    theme: &Theme,
-) -> Scene {
-    let mut renderer = TextRenderer::new();
-    renderer.set_text_scale(theme.text_scale);
-    let mut scene = Scene::new();
-    line.draw(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut renderer,
-        theme,
-        &crate::presence::PresenceCtx::empty(),
-    );
-    scene
-}
-
 pub(super) fn typing_frame(input: &mut TextInput, tr: &mut TextRenderer, theme: &Theme) {
     let mut height = 0.0f32;
     for (known, available) in [

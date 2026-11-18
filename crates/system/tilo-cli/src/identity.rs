@@ -61,6 +61,12 @@ pub fn dir() -> Result<PathBuf> {
         .join("tilo/identity"))
 }
 
+/// Whether this computer keeps a person's root, without reading it: a process
+/// that reads it makes itself undumpable ([`held`]).
+pub fn holds_root() -> bool {
+    dir().is_ok_and(|dir| IdentityPaths::under(&dir).user_privkey.exists())
+}
+
 /// The person kept here, if this computer holds one.
 pub fn held() -> Result<Option<Person>> {
     let dir = dir()?;
@@ -127,6 +133,21 @@ pub fn ensure(name: Option<&str>) -> Result<(Person, bool)> {
         },
         true,
     ))
+}
+
+/// Name the person kept here `name`, when they go by none yet: how a person who joins a
+/// workspace from a computer that holds their identity already names themselves there.
+///
+/// # Errors
+/// The name could not be written.
+pub fn keep_name(person: &mut Person, name: &str) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() || !person.name.is_empty() {
+        return Ok(());
+    }
+    std::fs::write(dir()?.join("name"), format!("{name}\n"))?;
+    name.clone_into(&mut person.name);
+    Ok(())
 }
 
 /// `tilo login --new-identity`: make the person, or say there is one, and

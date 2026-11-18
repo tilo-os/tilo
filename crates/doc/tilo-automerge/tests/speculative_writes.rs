@@ -12,8 +12,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::time::{Duration, Instant};
-
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ObjId, ObjType, ROOT, ReadDoc};
 use tilo_automerge::ApplyIncoming;
@@ -23,11 +21,6 @@ use tilo_automerge::ApplyIncoming;
     reason = "this file uses the shared random source only; it replays nothing against upstream"
 )]
 use crate::upstream::Rng;
-
-fn median(mut samples: Vec<Duration>) -> Duration {
-    samples.sort_unstable();
-    samples[samples.len() / 2]
-}
 
 fn type_at_random(doc: &mut AutoCommit, text: &ObjId, rng: &mut Rng, letters: usize) {
     let at = rng.below(doc.length(text) as u64 + 1) as usize;
@@ -58,101 +51,116 @@ fn scattered(changes: usize, rng: &mut Rng) -> (AutoCommit, ObjId) {
     (ada, text)
 }
 
-/// What taking back a speculative letter adds, by the median, to a
-/// replica's taking in a remote letter, in a text written in `changes`
-/// scattered changes; and that the replica ends as the remote writer's
-/// document. Remote letters are taken in alternately with and without a
-/// letter of the replica's own to take back first, so what every apply
-/// costs (such as the re-check of the whole document that debug assertions
-/// add) drops out. The replica writes as an actor the document holds, as
+/// The slabs of the op id column that taking in the remote letter after
+/// each of 24 of the replica's own letters searched, in a text written in
+/// `changes` scattered changes; and that the replica ends as the remote
+/// writer's document. The replica writes as an actor the document holds, as
 /// `tilolang-tilo`'s store does: a transaction of an actor that has not
 /// written adds it to the document and its rollback removes it, which
 /// renumbers every op either way.
-fn speculation_cost(changes: usize) -> Duration {
+///
+/// A lookup the index answers searches nothing; one it cannot answer
+/// searches every slab of the column, so a rolled back letter that dropped
+/// the index shows up here as searches at every letter after it, however
+/// the machine is loaded.
+fn searched_by_rollback_applies(changes: usize) -> Vec<u64> {
     let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
     let (mut base, text) = scattered(changes, &mut rng);
     let mut replica = AutoCommit::load(&base.save())
         .unwrap()
         .with_actor(ActorId::from(vec![0xa1; 16]));
     let mut remote = base.fork().with_actor(ActorId::from(vec![0xc3; 16]));
-    let probes: Vec<Vec<u8>> = (0..80)
-        .map(|_| {
-            let heads = remote.get_heads();
-            type_at_random(&mut remote, &text, &mut rng, 1);
-            remote.commit();
-            remote.save_after(&heads)
-        })
-        .collect();
-    let (mut plain, mut speculated) = (Vec::new(), Vec::new());
-    for (i, change) in probes.iter().enumerate() {
-        let speculate = i % 2 == 1;
-        if speculate {
-            type_at_random(&mut replica, &text, &mut rng, 1);
-        }
-        let started = Instant::now();
+    let mut searched = Vec::new();
+    for _ in 0..24 {
+        let heads = remote.get_heads();
+        type_at_random(&mut remote, &text, &mut rng, 1);
+        remote.commit();
+        let change = remote.save_after(&heads);
+        type_at_random(&mut replica, &text, &mut rng, 1);
         replica.rollback();
-        replica.load_incoming(change).unwrap();
-        let took = started.elapsed();
-        if speculate {
-            speculated.push(took);
-        } else {
-            plain.push(took);
-        }
+        let before = automerge::work().searched_slabs;
+        replica.load_incoming(&change).unwrap();
+        searched.push(automerge::work().searched_slabs - before);
     }
     assert_eq!(replica.save(), remote.save());
-    median(speculated).saturating_sub(median(plain))
+    searched
 }
 
 #[test]
 fn a_rolled_back_letter_does_not_make_the_next_remote_letter_search() {
-    // 4,000 and 80,000 letters of history.
-    let short = speculation_cost(250);
-    let long = speculation_cost(5_000);
-    // Dropping the index at every rollback had the next apply build it
-    // again: about 2.5 ms at 80,000 ops in an optimised build.
+    // A short history is not indexed, so its letters are answered by
+    // searching: the count below rises there, and is what a dropped index
+    // would cost.
+    let short = searched_by_rollback_applies(100);
     assert!(
-        long <= short * 2 + Duration::from_micros(100),
-        "taking back a letter added {long:?} to a remote letter after 80,000 letters of \
-         scattered history, {short:?} after 4,000"
+        short.iter().any(|slabs| *slabs > 0),
+        "a replica that indexed nothing searched nothing: {short:?}"
+    );
+    // 32,000 letters of history: a document whose op id column spans slabs
+    // enough to be indexed when it is loaded, so the index is what answers
+    // each letter after the rollback.
+    let searched = searched_by_rollback_applies(2_000);
+    assert!(
+        searched.iter().all(|slabs| *slabs == 0),
+        "the letter taken back before a remote one made it search the op id \
+         column: {searched:?} slabs"
     );
 }
 
-/// The fastest of several empty commits, by an actor that has not written,
-/// into a text two members wrote in `changes` scattered changes (so
-/// that the ops' actor column changes every few ops).
-fn empty_commit(changes: usize) -> Duration {
+/// What empty commits by an actor that has not written renumbered, whether
+/// they left the document and the actor as they were, and what the count
+/// makes of a write by that actor taken back (which does open a
+/// transaction), into a text two members wrote in `changes` scattered
+/// changes (so that the ops' actor column changes every few ops).
+fn empty_commits(changes: usize) -> (u64, bool, bool, u64) {
     let mut rng = Rng(0x2545_f491_4f6c_dd1d);
     let (mut doc, _) = scattered(changes, &mut rng);
+    let actor = ActorId::from(vec![0x01; 16]);
     let mut reader = AutoCommit::load(&doc.save())
         .unwrap()
-        .with_actor(ActorId::from(vec![0x01; 16]));
+        .with_actor(actor.clone());
     let saved = reader.save();
-    let mut fastest = Duration::MAX;
+    let before = automerge::work().renumbered_objects;
     for _ in 0..20 {
-        let started = Instant::now();
         assert_eq!(reader.commit(), None);
-        fastest = fastest.min(started.elapsed());
     }
-    assert_eq!(
-        reader.save(),
-        saved,
-        "an empty commit leaves the document as it was"
-    );
-    assert_eq!(reader.get_actor(), &ActorId::from(vec![0x01; 16]));
-    fastest
+    let renumbered = automerge::work().renumbered_objects - before;
+    // A write by an actor that has not written opens a transaction, which
+    // adds it and renumbers: what an empty commit used to do, and what the
+    // count above would see.
+    let before = automerge::work().renumbered_objects;
+    reader.put(ROOT, "probe", 1).unwrap();
+    reader.rollback();
+    let opened = automerge::work().renumbered_objects - before;
+    (
+        renumbered,
+        reader.save() == saved,
+        reader.get_actor() == &actor,
+        opened,
+    )
 }
 
 #[test]
 fn an_empty_commit_does_not_renumber_the_document() {
-    // 4,000 and 80,000 letters of history.
-    let short = empty_commit(250);
-    let long = empty_commit(5_000);
-    // Opening a transaction added the actor (rewriting every op's actor)
-    // and the empty commit removed it again.
-    assert!(
-        long <= short * 10 + Duration::from_micros(50),
-        "an empty commit cost {long:?} after 80,000 letters, {short:?} after 4,000"
-    );
+    // Renumbering is the document's objects, not its ops, so two sizes
+    // prove it costs a document nothing.
+    for changes in [250, 1_000] {
+        let (renumbered, unchanged, same_actor, opened) = empty_commits(changes);
+        assert_eq!(
+            renumbered, 0,
+            "an empty commit opened a transaction, which adds its actor and \
+             renumbers the document, after {changes} changes"
+        );
+        assert!(
+            unchanged,
+            "an empty commit leaves the document as it was, after {changes} changes"
+        );
+        assert!(same_actor, "an empty commit takes on no actor");
+        assert!(
+            opened > 0,
+            "a write by an actor that has not written renumbers, and the count must see it"
+        );
+    }
 }
 
 #[test]
@@ -191,13 +199,14 @@ fn loaded_replica_searches(changes: usize) -> Vec<u64> {
 
 #[test]
 fn a_loaded_replica_pays_for_no_index_build_on_a_later_change() {
-    // 80,000 letters of scattered history: the index is worth building. A
-    // replica that did not build it at load searched the op id column on its
-    // first changes until those searches would have paid for the index, then
-    // built it on the change that crossed the line: 3.4 ms more than the
-    // median here, 2.5 ms in a release build, 10 ms at 10,000 notes. Indexed
-    // at load, it finds every op its peer's changes name without searching.
-    let searched = loaded_replica_searches(5_000);
+    // 32,000 letters of scattered history: enough for the index to be worth
+    // building. A replica that did not build it at load searched the op id
+    // column on its first changes until those searches would have paid for
+    // the index, then built it on the change that crossed the line: 3.4 ms
+    // more than the median here, 2.5 ms in a release build, 10 ms at 10,000
+    // notes. Indexed at load, it finds every op its peer's changes name
+    // without searching.
+    let searched = loaded_replica_searches(2_000);
     assert!(
         searched.iter().all(|slabs| *slabs == 0),
         "a loaded replica's applies searched the op id column: {searched:?} slabs"

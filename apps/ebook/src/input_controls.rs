@@ -18,11 +18,12 @@ use tilo_rich_text::{FieldOutcome, RichTextField, RichTextSource, RichTextSurfac
 use ui::TextRole;
 use ui::framework::Dispatcher;
 use ui::paint::PaintCtx;
+use ui::rich_edit::{BlockEditor, CursorPlacement};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    BlockEditor, Button, ButtonFace, ButtonRole, ChipFace, ChipLead, ColorPicker,
-    ColorPickerOutcome, ColorSwatch, ControlSize, CursorPlacement, NumberInput, Widget,
+    Button, ButtonFace, ButtonRole, ChipFace, ChipLead, ColorPicker, ColorPickerOutcome,
+    ColorSwatch, ControlSize, NumberInput, Widget,
 };
 
 use crate::model::{Annotation, FontEntry, Settings};

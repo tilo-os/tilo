@@ -4,9 +4,9 @@
 use tilo_document::RichTextState;
 use tilo_document::action::{AttrVal, MarkVal};
 use ui::automerge::{ObjId, ScalarValue};
+use ui::rich_edit::BlockContent;
 use ui::tilo_actions::ActionError;
 use ui::tilo_resource::{Doc, ModelError};
-use ui::widget::BlockContent;
 
 use crate::convert::{KindSpec, char_of_byte, content_of, document_mark};
 use crate::source::FieldState;
@@ -289,7 +289,7 @@ mod tests {
     use tilo_document::RichText;
     use ui::automerge::transaction::Transactable;
     use ui::automerge::{AutoCommit, ObjType, ROOT};
-    use ui::widget::BlockKind;
+    use ui::rich_edit::BlockKind;
     use ui::widget::marks::{Mark, MarkSpan};
 
     fn field(doc: &mut AutoCommit) -> ObjId {

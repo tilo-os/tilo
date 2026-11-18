@@ -32,6 +32,7 @@ use vello::peniko::Color;
 use winit::event::{ElementState, KeyEvent, Modifiers, RawKeyEvent, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
 
+use tilo_rich_edit::slash_menu::SlashMenu;
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
@@ -40,7 +41,6 @@ use tilo_ui::widget::Dropdown;
 use tilo_ui::widget::Widget;
 use tilo_ui::widget::autocomplete::{Autocomplete, Suggestion};
 use tilo_ui::widget::context_menu::{ContextMenu, MenuItem};
-use tilo_ui::widget::slash_menu::SlashMenu;
 
 const CANVAS_W: u32 = 480;
 const CANVAS_H: u32 = 360;

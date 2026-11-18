@@ -197,7 +197,7 @@ impl StatePeer {
                 authorization_time,
             )
             .map_err(|refusal| match refusal {
-                super::authority::AuthorizeRefusal::Rules(refusal) => {
+                super::authority::AuthorizeRefusal::Rules(refusal, said) => {
                     AdmissionError::ChangeRefused(Box::new(crate::ChangeRefused::of(
                         self.core.workspace.clone(),
                         cluster_id.clone(),
@@ -205,6 +205,7 @@ impl StatePeer {
                         &document_id,
                         &envelope,
                         &refusal,
+                        said,
                     )))
                 }
                 other @ super::authority::AuthorizeRefusal::Denied(_) => {

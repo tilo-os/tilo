@@ -803,6 +803,13 @@ impl Runtime {
         self.core.default_argument(action, at, before)
     }
 
+    /// Treat what commits from now on as part of making a resource, not a change someone made
+    /// (a root made first): the change reads as the resource's creation, under the platform's
+    /// own action, and nobody is caught up on it.
+    pub fn set_creating(&self, creating: bool) {
+        self.core.creating.set(creating);
+    }
+
     /// The workspace's members as the host last gave them ([`Self::set_members`]).
     #[must_use]
     pub fn members(&self) -> Vec<crate::members::Member> {

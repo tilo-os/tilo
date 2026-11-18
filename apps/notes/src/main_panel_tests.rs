@@ -2,7 +2,7 @@
 
 use super::*;
 use automerge::ObjId;
-use ui::widget::BlockKind;
+use ui::rich_edit::BlockKind;
 use uuid::Uuid;
 
 include!("local_capture_tests.rs");
@@ -236,7 +236,7 @@ fn the_word_count_reads_the_bodies_not_the_markdown_around_them() {
         .editor()
         .blocks()
         .iter()
-        .map(ui::widget::Block::text)
+        .map(ui::rich_edit::Block::text)
         .collect();
     assert_eq!(
         p.word_count(),

@@ -33,10 +33,7 @@ pub(super) async fn handle_sync_request(
             ),
         }));
     }
-    let expected = wr
-        .subscribers
-        .get(&peer.device_public_key)
-        .map(|sub| sub.tx.clone());
+    let expected = wr.current_session(&peer.device_public_key, session.outbound);
     let source = StateSource::new(peer, session);
     drop(wr);
     let owner = crate::persistence::handle(&ws).await;
@@ -48,14 +45,10 @@ pub(super) async fn handle_sync_request(
             move |result| async move {
                 let changes = result?;
                 let wr = crate::workspace_io::fresh_membership(&ws).await?;
-                let same = match (
-                    expected.as_ref(),
-                    wr.subscribers.get(&source.peer.device_public_key),
-                ) {
-                    (None, None) => true,
-                    (Some(expected), Some(current)) => expected.same_channel(&current.tx),
-                    _ => false,
-                };
+                // The connection holds the subscription it held when it
+                // asked, or held none then and holds none now.
+                let same =
+                    expected == wr.current_session(&source.peer.device_public_key, &source.tx);
                 if source.alive()
                     && source.admits(&wr, &source.peer)
                     && same

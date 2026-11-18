@@ -112,8 +112,9 @@ relies on:
   (workspace checks and tests, `tilo-app dev`) see an empty library;
 - a `[[bin]] tilo-<name>-engine-check` with `required-features = ["thin"]`:
   `os/scripts/build-thin-apps.sh` builds and runs it in every runtime build,
-  whichever apps are selected, and writes the libraries it built to
-  `target/thin-app/runtime-engines`, which packaging signs into the bundle;
+  whichever apps are selected, and writes the libraries it built, and the
+  engine libraries those chain on, to `target/thin-app/runtime-engines`, which
+  packaging signs into the bundle;
 - `tools/ci/rustc-thin-app-wrapper.sh` gives `tilo_*_engine` crates the
   runtime's link flags (`-C prefer-dynamic` is what lets one Rust dylib link
   another) and its linker, `tools/ci/runtime-dylib-lazy-link.py`, which drops
@@ -303,6 +304,14 @@ before. The 1.3 MB above is what the unstripped build names, which keeps the
 code the release's link drops. What remains over the budget is the toolkit's
 own widget and SDK code measured above, and the budget rises by that
 remainder (`raises/painter-interpreter-in-its-engine.toml`).
+
+The runtime still linked the interpreter: a doc link to its crate in `part_paint/wasm.rs`
+loaded the crate, and a Rust dylib links every crate its build loads. Without the link the
+runtime is 160,471,104 bytes in t's app-sizes-x86_64 (r12dbaf39e5) against 162,919,248
+(`wasmi`, `wasmi_ir`, `wasmi_core` and `wasmparser` left, 1.3 MB of named code). Typst's
+plugins are wasm too, so the interpreter is an engine of its own,
+`libtilo_wasm_engine.so`, which `libtilo_typst_engine.so` and
+`libtilo_theme_painter_engine.so` chain on: the bundle holds one copy.
 
 `libtilo_settings_engine.so` grew 4.8 MB of named code over the same period
 (9.6 -> 14.4 MB; 13.6 MB shipped, 3.4 MB over its budget of 10.2): the SDK the

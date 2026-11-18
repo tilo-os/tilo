@@ -512,8 +512,14 @@ mod tests {
         use ui::tilo_resource::Resource as _;
         assert_eq!(Totp::LABEL, "Authenticator");
         let manifest = include_str!("../tilo-app.toml");
-        assert!(
-            manifest.contains("name     = \"Authenticator\""),
+        let named = manifest
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .find(|(key, _)| key.trim() == "name")
+            .map(|(_, value)| value.trim().trim_matches('"'));
+        assert_eq!(
+            named,
+            Some("Authenticator"),
             "the manifest names it Authenticator"
         );
     }

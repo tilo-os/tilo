@@ -3,7 +3,7 @@
 //! then samples pixels around the apex to assert that *something*
 //! non-background was painted there — the lightest possible proof the
 //! helper emits geometry (data-side population and wire integration are
-//! covered by `presence_remote_cursors_test` and `cross_process_presence_pump`).
+//! covered by `remote_cursor_presence` and `cross_process_presence_pump`).
 
 use vello::Scene;
 use vello::peniko::Color;

@@ -1,7 +1,9 @@
 //! What a chain offers the toolkit: its id, the actions it hands out and the
 //! ones it carries out, and the parts a step wrote into.
 
-use tilo_actions::ActionInvoker;
+use std::any::Any;
+
+use tilo_actions::{ActionError, ActionInvoker};
 
 use super::super::history::PART_EDIT_TYPE;
 use super::super::made::answering;
@@ -75,24 +77,91 @@ impl ResourceApi for ChainState {
         match (self.part().decode)(action)? {
             part::Decoded::Group(group) => {
                 let created = match self
-                    .try_apply_group(&group, invoker)
+                    .apply_group_now(&group, invoker)
                     .map_err(|error| error.to_string())?
                 {
                     Write::Done(_, created) => created,
-                    Write::Arriving => Vec::new(),
+                    Write::Arriving => return Err(arriving(self)),
                 };
                 Ok(answering(None, &created))
             }
             part::Decoded::One(action) => {
                 self.answered.borrow_mut().take();
-                // One that waits for its part creates its items once it is written.
-                let created = self
-                    .apply_as(&*action, invoker, &mut None)
+                let created = match self
+                    .apply_now(&*action, invoker)
                     .map_err(|error| error.to_string())?
-                    .map(|(_, created)| created)
-                    .unwrap_or_default();
+                {
+                    Write::Done(_, created) => created,
+                    Write::Arriving => return Err(arriving(self)),
+                };
                 Ok(answering(self.answered.borrow_mut().take(), &created))
             }
         }
     }
+}
+
+/// Why an API's write made nothing: what it changes has not arrived from the
+/// workspace, so its caller asks again once it has ([`tilo_actions::api::NOT_READY`]).
+/// The newest part is asked for as it is refused, so the next ask finds it.
+fn arriving(chain: &ChainState) -> String {
+    chain.want_head();
+    tilo_actions::api::NOT_READY_REASON.to_owned()
+}
+
+impl ChainState {
+    /// Write `action` into its part now, as [`Self::apply_as`] does, or say
+    /// its part is on its way (`Ok(Write::Arriving)`) with nothing kept to be
+    /// written later: a write asked through the API answers its caller, never
+    /// whoever holds the chain when the part arrives.
+    fn apply_now(&self, action: &dyn Any, invoker: &ActionInvoker) -> Result<Write, ActionError> {
+        // Which part is newest is on its way: the write waits for it, and
+        // asks for nothing else first (reading the list of waiting writes
+        // here would ask the workspace about that instead).
+        if self.head_arriving() {
+            return Ok(Write::Arriving);
+        }
+        // Behind the writes already waiting: they are applied in the order
+        // they were asked, and this one is not written ahead of them.
+        if !self.unsent().is_empty() {
+            return Ok(Write::Arriving);
+        }
+        self.try_apply(action, invoker)
+    }
+
+    /// [`Self::apply_now`] for a group: its members written as one, or
+    /// nothing while a part they change is on its way.
+    fn apply_group_now(
+        &self,
+        group: &[Box<dyn Any>],
+        invoker: &ActionInvoker,
+    ) -> Result<Write, ActionError> {
+        if self.head_arriving() || !self.unsent().is_empty() {
+            return Ok(Write::Arriving);
+        }
+        self.try_apply_group(group, invoker)
+    }
+
+    /// Ask the store's workspace for the chain's newest part, by the name
+    /// that stands for it ([`ui_core::resource::DocumentId::chain_head`]): the
+    /// devices serving the workspace answer with the part, which the chain
+    /// holds once it arrives.
+    fn want_head(&self) {
+        self.core.workspace.store.want(self.core.chain.chain_head());
+        self.core.looked.set(None);
+    }
+}
+
+/// What a write whose verb declares no answer still tells its caller: the ids
+/// it minted and the items it made
+/// ([`tilo_actions::contract::MADE_FIELDS`]), never the words of an answer its
+/// verb does not declare. `None` when it made nothing.
+pub(super) fn only_made(value: Option<serde_json::Value>) -> Option<serde_json::Value> {
+    let Some(serde_json::Value::Object(fields)) = value else {
+        return None;
+    };
+    let made: serde_json::Map<String, serde_json::Value> = fields
+        .into_iter()
+        .filter(|(field, _)| tilo_actions::contract::MADE_FIELDS.contains(&field.as_str()))
+        .collect();
+    (!made.is_empty()).then_some(serde_json::Value::Object(made))
 }

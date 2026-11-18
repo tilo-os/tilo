@@ -1,6 +1,5 @@
 //! Agent Models: local models on this device and the person's model providers.
 
-use agent_provider_config::management::CredentialStatus;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -441,24 +440,9 @@ pub enum AgentModelsEffect {
         #[param("The model's id, one the provider offers")]
         model: Option<String>,
     },
-    /// Remove a provider and its stored API key.
+    /// Remove a provider.
     #[effect(job, row, destructive)]
     RemoveProvider {
-        #[param("The provider's id")]
-        provider: String,
-    },
-    /// Store a provider's API key in this device's vault: a hosted
-    /// provider that roamed here from another device needs its own.
-    #[effect(job, row)]
-    SaveProviderKey {
-        #[param("The provider's id")]
-        provider: String,
-        #[param(secret, "The API key; what the key field holds when omitted")]
-        key: Option<String>,
-    },
-    /// Remove a provider's stored API key.
-    #[effect(job, row, destructive)]
-    RemoveProviderKey {
         #[param("The provider's id")]
         provider: String,
     },
@@ -694,9 +678,7 @@ pub(crate) fn answer(
             } else {
                 if matches!(
                     provider,
-                    AgentModelsEffect::SaveProviderKey { .. }
-                        | AgentModelsEffect::RemoveProviderKey { .. }
-                        | AgentModelsEffect::ListProviderModels { .. }
+                    AgentModelsEffect::ListProviderModels { .. }
                         | AgentModelsEffect::RefreshProviders
                 ) {
                     let error = t("agent-provider-offline");
@@ -863,30 +845,16 @@ pub struct AgentModelsArea {
 
 pub(crate) struct AgentModelsRead {
     snapshot: Result<LocalModelSnapshot, String>,
-    keys: HashMap<String, Result<CredentialStatus, String>>,
     hub_token: Result<HubTokenState, String>,
 }
 
 impl AgentModelsRead {
-    fn of(control: &dyn LocalModelControl, hosted: Vec<String>) -> Self {
+    fn of(control: &dyn LocalModelControl) -> Self {
         Self {
             snapshot: control.snapshot(),
             hub_token: control.hub_token(),
-            keys: hosted
-                .into_iter()
-                .map(|id| (id, Err(t("agent-provider-offline"))))
-                .collect(),
         }
     }
-}
-
-fn hosted_profiles(config: &ProviderConfig) -> Vec<String> {
-    config
-        .profiles
-        .iter()
-        .filter(|profile| profile.credential.is_some())
-        .map(|profile| profile.id.clone())
-        .collect()
 }
 
 impl AgentModelsArea {
@@ -963,9 +931,8 @@ impl AgentModelsArea {
             return false;
         }
         let control = self.control();
-        let hosted = hosted_profiles(&Providers::new(&self.storage).config());
         self.read
-            .start(move || AgentModelsRead::of(control.as_ref(), hosted))
+            .start(move || AgentModelsRead::of(control.as_ref()))
     }
 
     pub(crate) fn is_open(&self) -> bool {
@@ -1097,8 +1064,7 @@ impl AgentModelsModel {
         provider_admin: ui::models::ProviderAdministration,
         control: Arc<dyn LocalModelControl>,
     ) -> Self {
-        let hosted = hosted_profiles(&Providers::new(storage).config());
-        let read = AgentModelsRead::of(control.as_ref(), hosted);
+        let read = AgentModelsRead::of(control.as_ref());
         Self::from_read(storage, sections, provider_admin, control, read)
     }
 
@@ -1153,8 +1119,7 @@ impl AgentModelsModel {
         };
         model.notice = notice;
         model.sync_local_profile();
-        model.keys = read.keys;
-        model.read_keys();
+        model.refresh_admin();
         model.read_vertex_keys();
         model
     }
@@ -1554,7 +1519,7 @@ impl AgentModelsModel {
             self.sign_in = None;
         }
         self.vertex_fields.lock_recover().remove(id);
-        self.read_keys();
+        self.refresh_admin();
         self.read_vertex_keys();
     }
 
@@ -2509,7 +2474,7 @@ impl AgentModelsModel {
         }
         if !self.provider_admin.is_available() && self.providers.refresh() {
             self.panel.offline_config = self.providers.config();
-            self.read_keys();
+            self.refresh_admin();
             self.read_vertex_keys();
         }
         self.poll_sign_in();
@@ -2524,7 +2489,7 @@ impl AgentModelsModel {
             Some(Polled::Changed) => self.changed = true,
             Some(Polled::SignedInAgain) => {
                 self.vertex = None;
-                self.read_keys();
+                self.refresh_admin();
                 self.read_vertex_keys();
                 self.notice = Some(t("agent-vertex-signed-in"));
             }

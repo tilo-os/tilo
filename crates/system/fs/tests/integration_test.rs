@@ -1918,24 +1918,13 @@ async fn a_file_read_whole_is_stored_and_its_folder_hears_of_it() {
         .accept(iroh_blobs::ALPN, keeper_store.blobs_protocol(None))
         .spawn();
     mount.hydrator.add_peer(keeper.addr());
-    let (record, version) = {
+    let record = {
         let mut ns = mount.namespace.lock().unwrap();
         let docs_ino = ns.resolve_path_ino("/docs").unwrap();
         let ino = ns
             .create_file(docs_ino, "film.mkv", Some(&hash), len, 1)
             .unwrap();
-        let record = ns.document_id_for(ino).unwrap();
-        let revision = fs_protocol::ContentRevisionV1 {
-            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-            document_id: record,
-            version_id: fs_protocol::FileVersionId::new(),
-            content_hash: Some(fs_protocol::ContentHash(*hash.as_bytes())),
-            byte_len: len,
-            metadata_hash: fs_protocol::ContentHash([7; 32]),
-        };
-        assert!(ns.set_content_revision(ino, &revision, 1));
-        drop(ns);
-        (record, revision.version_id)
+        ns.document_id_for(ino).unwrap()
     };
     let task = start_signal(&mount).await;
 
@@ -1976,7 +1965,10 @@ async fn a_file_read_whole_is_stored_and_its_folder_hears_of_it() {
         .cloned()
         .expect("the read that completed the file wrote its record");
     assert_eq!(stored.residency, Residency::Resident { bytes: len });
-    assert_eq!(stored.current_version, Some(version));
+    assert_eq!(
+        stored.current_hash,
+        Some(fs_protocol::ContentHash(*hash.as_bytes()))
+    );
     assert_eq!(
         availability(&film).residency,
         Residency::Resident { bytes: len },
@@ -2166,8 +2158,7 @@ async fn a_write_through_the_mount_is_named_for_the_agent_that_made_it() {
         device: collab_types::Ed25519PublicKey([0x52; 32]),
     };
     let quick = QuickFS::new(namespace.clone(), hydrator, heuristics)
-        .with_history(actor)
-        .unwrap()
+        .with_actor(actor)
         .with_writers(writers);
     let mount_dir = tempdir().unwrap();
     let mut config = Config::default();

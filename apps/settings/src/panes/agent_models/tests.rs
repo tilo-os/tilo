@@ -304,34 +304,6 @@ fn collect_accessibility(widget: &dyn Widget, nodes: &mut Vec<ui::a11y::AccessNo
 }
 
 #[test]
-fn a_hosted_provider_without_a_key_here_asks_for_one() {
-    let (_app, mut pane) = hosted_model(mock(snapshot(None)));
-    pane.change_providers(AgentModelsEffect::AddProvider {
-        preset: "anthropic".into(),
-    })
-    .unwrap();
-    let profile = pane.providers.config().profiles[0].clone();
-    pane.keys
-        .insert(profile.id.clone(), Ok(CredentialStatus::Missing));
-    assert!(pane.needs_key(&profile));
-    let text = announced(&mut pane);
-    assert!(
-        text.iter().any(|line| line == "Needs a key on this device"),
-        "{text:#?}"
-    );
-
-    pane.keys
-        .insert(profile.id.clone(), Ok(CredentialStatus::Configured));
-    assert!(!pane.needs_key(&profile));
-    let save = SettingsEffect::from(AgentModelsEffect::SaveProviderKey {
-        provider: profile.id,
-        key: None,
-    })
-    .bound_asking(&["key"]);
-    assert!(save.params().iter().any(|param| param.name == "key"));
-}
-
-#[test]
 fn a_vertex_provider_signs_in_and_forgets_only_its_own_grant() {
     use account_credentials::TokenSet;
     use account_credentials::cloud_projects::CloudProject;
@@ -639,7 +611,7 @@ tilo_test_env::scenario! {
         let profile = tempfile::tempdir().unwrap();
         let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
         let control = mock(snapshot(None));
-        let read = AgentModelsRead::of(control.as_ref(), Vec::new());
+        let read = AgentModelsRead::of(control.as_ref());
         let model = AgentModelsModel::from_read(
             &cx.storage,
             cx.sections.clone(),
@@ -658,7 +630,6 @@ tilo_test_env::scenario! {
         );
         let down = AgentModelsRead {
             snapshot: Err("the manager is not running".into()),
-            keys: HashMap::new(),
             hub_token: Ok(HubTokenState::None),
         };
         let model =

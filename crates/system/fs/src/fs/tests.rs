@@ -94,7 +94,6 @@ mod availability_control_tests {
             document_id,
             parent,
             kind: EntryKind::File,
-            version: None,
             hash: Some(hash),
             size: 1,
             path: "/pinned.bin".into(),
@@ -325,6 +324,150 @@ mod availability_control_tests {
         }
     }
 
+    /// Records in `registry` for files under the folder `root`, each with its content's hash and
+    /// the bytes of it kept here (none: not kept).
+    fn keep_files_at(
+        registry: &Arc<Mutex<AvailabilityRegistry>>,
+        root: fs_protocol::FileDocumentId,
+        files: &[(fs_protocol::FileDocumentId, Hash, u64)],
+    ) {
+        let mut registry = registry.lock_recover();
+        registry
+            .put(DocumentAvailability::new(root, EntryKind::Directory))
+            .unwrap();
+        for &(id, hash, bytes) in files {
+            let mut record = DocumentAvailability::new(id, EntryKind::File);
+            record.parent = Some(root);
+            record.current_hash = Some(fs_protocol::ContentHash(*hash.as_bytes()));
+            record.residency = if bytes == 0 {
+                Residency::NotResident
+            } else {
+                Residency::Resident { bytes }
+            };
+            registry.put(record).unwrap();
+        }
+    }
+
+    /// A file is freed here and fetched again by its content's hash: the availability record,
+    /// the eviction and the fetch all name the hash the tree's node holds.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::too_many_lines, reason = "one scenario, read top to bottom")]
+    async fn a_file_freed_by_its_content_hash_is_fetched_again_by_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (source_endpoint, source_router, first, second) = pinned_content_source().await;
+        let client_endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let client_store = Arc::new(ContentStore::memory());
+        let bytes = b"first remote version";
+        let written = client_store.write_content(bytes).await.unwrap().unwrap();
+        assert_eq!(written, first, "the same bytes are the same content");
+        let hydrator = Arc::new(Hydrator::new(
+            client_endpoint.clone(),
+            Arc::clone(&client_store),
+        ));
+        hydrator.add_peer(source_endpoint.addr());
+        let namespace = Arc::new(Mutex::new(Namespace::new("evicting").unwrap()));
+        let (ino, other_ino) = {
+            let mut namespace = namespace.lock_recover();
+            (
+                namespace
+                    .create_file(ROOT_INO, "kept.txt", Some(&first), bytes.len() as u64, 1)
+                    .unwrap(),
+                namespace
+                    .create_file(ROOT_INO, "other.txt", Some(&second), 21, 1)
+                    .unwrap(),
+            )
+        };
+        let (root, document_id, other_id) = {
+            let namespace = namespace.lock_recover();
+            (
+                namespace.document_id_for(ROOT_INO).unwrap(),
+                namespace.document_id_for(ino).unwrap(),
+                namespace.document_id_for(other_ino).unwrap(),
+            )
+        };
+        let registry = Arc::new(Mutex::new(
+            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
+        ));
+        let content = |hash: Hash| Some(fs_protocol::ContentHash(*hash.as_bytes()));
+        keep_files_at(
+            &registry,
+            root,
+            &[
+                (document_id, first, bytes.len() as u64),
+                (other_id, second, 0),
+            ],
+        );
+        let queue = Arc::new(tokio::sync::Mutex::new(
+            EvictionQueue::open(dir.path().join("evictions.json")).unwrap(),
+        ));
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
+            .with_availability(Arc::clone(&registry))
+            .with_eviction_queue(queue);
+        let projected = |id| {
+            registry
+                .lock_recover()
+                .get(id)
+                .map(|record| record.projection().current_hash)
+        };
+        assert_eq!(
+            projected(document_id),
+            Some(content(first)),
+            "Files reads each file's availability by its own content's hash"
+        );
+        assert_eq!(projected(other_id), Some(content(second)));
+
+        let coordinator = fs.eviction_coordinator().unwrap();
+        let (request, plan) = coordinator
+            .prepare(
+                document_id,
+                crate::eviction::EvictionMode::DestructiveOverride,
+                None,
+                Some(first),
+            )
+            .await
+            .unwrap();
+        assert_eq!(plan.content_hash, first);
+        tokio::time::timeout(tilo_test_env::hang_bound(), async {
+            while !coordinator
+                .observe_once(document_id, request)
+                .await
+                .unwrap()
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the freed content is gone from the store");
+        assert_eq!(
+            registry.lock_recover().get(document_id).unwrap().residency,
+            Residency::NotResident
+        );
+        assert_eq!(
+            hydrator.local_len(first).await,
+            None,
+            "the bytes are freed here"
+        );
+
+        let read = hydrator
+            .read(first, 0, bytes.len() as u64)
+            .await
+            .expect("the device that keeps the content serves it by its hash");
+        assert_eq!(read, bytes);
+        assert_eq!(hydrator.local_len(first).await, Some(bytes.len() as u64));
+        assert_eq!(
+            registry
+                .lock_recover()
+                .get(document_id)
+                .unwrap()
+                .current_hash,
+            content(first)
+        );
+
+        drop(fs);
+        close_pinned_test_source(source_router, source_endpoint, client_endpoint).await;
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn pinned_folder_hydrates_future_child_retries_after_restart_and_tracks_new_version() {
         let dir = tempfile::tempdir().unwrap();
@@ -355,21 +498,6 @@ mod availability_control_tests {
             .create_file(folder, "later.txt", Some(&first), 20, 2)
             .unwrap();
         let document_id = namespace.lock().unwrap().document_id_for(child).unwrap();
-        let first_version = fs_protocol::FileVersionId::new();
-        let first_revision = fs_protocol::ContentRevisionV1 {
-            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-            document_id,
-            version_id: first_version,
-            content_hash: Some(fs_protocol::ContentHash(*first.as_bytes())),
-            byte_len: 20,
-            metadata_hash: fs_protocol::ContentHash([1; 32]),
-        };
-        assert!(
-            namespace
-                .lock()
-                .unwrap()
-                .set_content_revision(child, &first_revision, 2)
-        );
         fs.wake_pinned_hydration();
         wait_for_availability(&registry, document_id, |record| {
             record.transfer.last_error.is_some()
@@ -389,28 +517,20 @@ mod availability_control_tests {
             .with_availability(Arc::clone(&registry))
             .with_pinned_hydration();
         wait_for_availability(&registry, document_id, |record| {
-            record.current_version == Some(first_version)
+            record.current_hash == Some(fs_protocol::ContentHash(*first.as_bytes()))
                 && record.residency == Residency::Resident { bytes: 20 }
                 && record.transfer.last_error.is_none()
         })
         .await;
-        let second_version = fs_protocol::FileVersionId::new();
-        let second_revision = fs_protocol::ContentRevisionV1 {
-            version_id: second_version,
-            content_hash: Some(fs_protocol::ContentHash(*second.as_bytes())),
-            byte_len: 21,
-            metadata_hash: fs_protocol::ContentHash([2; 32]),
-            ..first_revision
-        };
         assert!(
             namespace
                 .lock()
                 .unwrap()
-                .set_content_revision(child, &second_revision, 3)
+                .set_content(child, Some(&second), 21, 3)
         );
         fs.wake_pinned_hydration();
         wait_for_availability(&registry, document_id, |record| {
-            record.current_version == Some(second_version)
+            record.current_hash == Some(fs_protocol::ContentHash(*second.as_bytes()))
                 && record.residency == Residency::Resident { bytes: 21 }
                 && record.transfer.last_error.is_none()
         })
@@ -963,18 +1083,18 @@ mod availability_control_tests {
             .create_file(ROOT_INO, "empty.txt", None, 0, 1)
             .unwrap();
         let document_id = namespace.lock_recover().document_id_for(ino).unwrap();
-        let version_id = fs_protocol::FileVersionId::new();
+        let content_hash = iroh_blobs::Hash::from([5; 32]);
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
         ));
         let mut availability = DocumentAvailability::new(document_id, EntryKind::File);
-        availability.current_version = Some(version_id);
+        availability.current_hash = Some(fs_protocol::ContentHash(*content_hash.as_bytes()));
         availability.residency = Residency::Resident { bytes: 0 };
         registry.lock_recover().put(availability).unwrap();
         let mut queue = EvictionQueue::open(dir.path().join("evictions.json")).unwrap();
         let plan = crate::eviction::EvictionPlan {
             document_id,
-            version_id,
+            content_hash,
             mode: crate::eviction::EvictionMode::Safe,
             reclaimable: Vec::new(),
             shared_and_protected: Vec::new(),
@@ -994,9 +1114,8 @@ mod availability_control_tests {
             EvictionRequestState::Completed { .. }
         ));
         let queue = Arc::new(tokio::sync::Mutex::new(queue));
-        let newer_version = fs_protocol::FileVersionId::new();
         let mut current = registry.lock_recover().get(document_id).cloned().unwrap();
-        current.current_version = Some(newer_version);
+        current.current_hash = Some(fs_protocol::ContentHash([6; 32]));
         current.residency = Residency::Resident { bytes: 0 };
         registry.lock_recover().put(current).unwrap();
         let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
@@ -1705,80 +1824,6 @@ mod predictive_tests {
     }
 }
 
-#[cfg(test)]
-mod history_integration_tests {
-    use super::*;
-    use collab_types::Ed25519PublicKey;
-    use fs_protocol::{FileActor, FileProvenance};
-    use iroh::endpoint::{Endpoint, presets};
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn existing_record_edit_and_rename_append_durable_versions() {
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-        let store = Arc::new(crate::store::ContentStore::memory());
-        let hydrator = Arc::new(Hydrator::new(endpoint, store));
-        let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let ino = namespace
-            .lock_recover()
-            .create_file(crate::namespace::ROOT_INO, "before.txt", None, 0, 1)
-            .unwrap();
-        let document_id = namespace.lock_recover().document_id_for(ino).unwrap();
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-        let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
-        let actor = FileActor {
-            person: Ed25519PublicKey([1; 32]),
-            device: Ed25519PublicKey([2; 32]),
-        };
-        let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
-            .with_history(actor)
-            .unwrap();
-
-        let baseline = history.snapshot(document_id).unwrap();
-        assert_eq!(baseline.versions.len(), 1);
-        assert_eq!(baseline.versions[0].provenance, FileProvenance::Create);
-
-        fs.commit_content(ino, b"durable bytes").unwrap();
-        let after_edit = history.snapshot(document_id).unwrap();
-        assert_eq!(after_edit.versions.len(), 2);
-        assert_eq!(after_edit.versions[1].provenance, FileProvenance::Edit);
-        assert_eq!(after_edit.versions[1].parents, baseline.heads);
-        assert_eq!(
-            after_edit.versions[1].content_hash,
-            namespace
-                .lock_recover()
-                .hash_for(ino)
-                .map(|hash| fs_protocol::ContentHash(*hash.as_bytes()))
-        );
-        fs.commit_content(ino, b"durable bytes").unwrap();
-        assert_eq!(
-            history.snapshot(document_id).unwrap().versions.len(),
-            2,
-            "flush/fsync/release of unchanged bytes must not invent versions"
-        );
-
-        fs.rename_named(
-            crate::namespace::ROOT_INO,
-            "before.txt",
-            crate::namespace::ROOT_INO,
-            "after.txt",
-        )
-        .unwrap();
-        let after_rename = history.snapshot(document_id).unwrap();
-        assert_eq!(after_rename.versions.len(), 3);
-        assert_eq!(after_rename.versions[2].provenance, FileProvenance::Rename);
-        assert_eq!(
-            namespace.lock_recover().document_id_for(ino),
-            Some(document_id)
-        );
-
-        drop(fs);
-        drop(history);
-        let reopened =
-            Namespace::from_bytes("reopened-history", &namespace.lock_recover().save()).unwrap();
-        assert_eq!(reopened.document_versions(document_id).len(), 3);
-    }
-}
-
 mod write_stage_tests {
     use super::*;
 
@@ -2213,10 +2258,6 @@ mod read_lock_tests {
         acl
     }
 
-    fn locks(fs: &QuickFS) -> usize {
-        fs.namespace_locks.load(Ordering::Relaxed)
-    }
-
     #[derive(Debug, PartialEq, Eq)]
     enum Reply {
         Data(Vec<u8>),
@@ -2238,43 +2279,6 @@ mod read_lock_tests {
 
     fn lock_namespace(namespace: &Arc<Mutex<Namespace>>) -> std::sync::MutexGuard<'_, Namespace> {
         namespace.lock_recover()
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn read_takes_namespace_lock_once() {
-        for acl in [None, Some(shared_read_policy())] {
-            let Fixture {
-                endpoint, fs, file, ..
-            } = fixture().await;
-            let fs = match acl {
-                Some(acl) => fs.with_acl(acl, ME),
-                None => fs,
-            };
-            let before = locks(&fs);
-            assert_eq!(read_all(&fs, file, 0), data());
-            assert_eq!(
-                locks(&fs) - before,
-                1,
-                "a read of local content takes the namespace lock exactly once"
-            );
-            drop(fs);
-            endpoint.close().await;
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn getattr_of_a_file_takes_namespace_lock_once() {
-        let Fixture {
-            endpoint, fs, file, ..
-        } = fixture().await;
-        let fs = fs.with_acl(shared_read_policy(), ME);
-        let before = locks(&fs);
-        let attr = fs.attr_for_request(file, None).unwrap();
-        assert_eq!(locks(&fs) - before, 1);
-        assert_eq!(attr.size, BYTES.len() as u64);
-        assert_eq!(attr.kind, FileType::RegularFile);
-        drop(fs);
-        endpoint.close().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

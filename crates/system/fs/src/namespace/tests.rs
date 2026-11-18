@@ -242,71 +242,28 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase content_revisions_are_never_torn_and_legacy_writes_supersede_explicitly;
+    phase concurrent_writes_merge_to_one_writers_content;
     {
-        {
-            let mut a = Namespace::new("a").unwrap();
-            let ino = a
-                .create_file(ROOT_INO, "atomic.bin", Some(&h(1)), 1, 1)
-                .unwrap();
-            let document_id = a.document_id_for(ino).unwrap();
-            let bytes = a.save();
-            let mut b = Namespace::from_bytes("b", &bytes).unwrap();
-            let bino = b.lookup(ROOT_INO, "atomic.bin").unwrap().ino.0;
-            let revision_a = ContentRevisionV1 {
-                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-                document_id,
-                version_id: fs_protocol::FileVersionId::new(),
-                content_hash: Some(fs_protocol::ContentHash([10; 32])),
-                byte_len: 10,
-                metadata_hash: fs_protocol::ContentHash([11; 32]),
-            };
-            let revision_b = ContentRevisionV1 {
-                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-                document_id,
-                version_id: fs_protocol::FileVersionId::new(),
-                content_hash: Some(fs_protocol::ContentHash([20; 32])),
-                byte_len: 20,
-                metadata_hash: fs_protocol::ContentHash([21; 32]),
-            };
-            assert!(a.set_content_revision(ino, &revision_a, 2));
-            assert!(b.set_content_revision(bino, &revision_b, 2));
-            a.merge_doc(&mut b).unwrap();
+        let mut a = Namespace::new("a").unwrap();
+        let ino = a
+            .create_file(ROOT_INO, "atomic.bin", Some(&h(1)), 1, 1)
+            .unwrap();
+        let bytes = a.save();
+        let mut b = Namespace::from_bytes("b", &bytes).unwrap();
+        let bino = b.lookup(ROOT_INO, "atomic.bin").unwrap().ino.0;
+        assert!(a.set_content(ino, Some(&h(10)), 10, 2));
+        assert!(b.set_content(bino, Some(&h(20)), 20, 2));
+        a.merge_doc(&mut b).unwrap();
 
-            let winner = a.content_revision_for(ino).unwrap();
-            assert!(winner == revision_a || winner == revision_b);
-            let entry = a.entry_at("atomic.bin").unwrap();
-            assert_eq!(
-                entry.hash,
-                winner.content_hash.map(|hash| Hash::from(hash.0))
-            );
-            assert_eq!(entry.size, winner.byte_len);
-            let id = a.id_for_ino(ino).unwrap();
-            let conflicts = a.content_revision_conflicts(id);
-            assert_eq!(conflicts.len(), 2);
-            assert!(conflicts.iter().any(|(_, value)| value == &revision_a));
-            assert!(conflicts.iter().any(|(_, value)| value == &revision_b));
-        }
-        {
-            let mut ns = Namespace::new("a").unwrap();
-            let ino = ns
-                .create_file(ROOT_INO, "compat.bin", Some(&h(1)), 1, 1)
-                .unwrap();
-            let revision = ContentRevisionV1 {
-                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-                document_id: ns.document_id_for(ino).unwrap(),
-                version_id: fs_protocol::FileVersionId::new(),
-                content_hash: None,
-                byte_len: 0,
-                metadata_hash: fs_protocol::ContentHash([7; 32]),
-            };
-            assert!(ns.set_content_revision(ino, &revision, 2));
-            assert_eq!(ns.hash_for(ino), None, "None must not resurrect the mirror");
-            assert!(ns.set_content(ino, Some(&h(3)), 3, 3));
-            assert_eq!(ns.content_revision_for(ino), None);
-            assert_eq!(ns.hash_for(ino), Some(h(3)));
-            assert_eq!(ns.getattr(ino).unwrap().size, 3);
-        }
+        let entry = a.entry_at("atomic.bin").unwrap();
+        assert!(
+            (entry.hash, entry.size) == (Some(h(10)), 10)
+                || (entry.hash, entry.size) == (Some(h(20)), 20),
+            "the hash and the size come from the same write: {entry:?}"
+        );
+        assert!(a.set_content(ino, None, 0, 3));
+        assert_eq!(a.hash_for(ino), None, "an empty file names no content");
+        assert_eq!(a.getattr(ino).unwrap().size, 0);
     }
 
     phase changes_since_cover_what_a_full_save_came_between;

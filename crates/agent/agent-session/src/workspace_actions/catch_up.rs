@@ -1,6 +1,6 @@
 //! A mounted document kept current: what the workspace holds of it merged in,
 //! only the changes after the heads it merged last.
-use super::{DocumentRoute, Mounted, Worker, WorkspaceId, WorkspaceState, reads};
+use super::{DocumentRoute, Mounted, Worker, WorkspaceId, WorkspaceState, is_part, reads};
 use std::collections::HashSet;
 
 /// Merge into `mounted` what `state` holds of its record and its parts that
@@ -248,7 +248,70 @@ pub(super) fn tell_kept(
     }
 }
 
+/// `mounted`, the record at `holder`, holds what it wrote at `wrote`: the
+/// next merge into it starts from the heads it stands at, so its own change
+/// is never read back from the workspace and merged into it again.
+pub(super) fn caught_up_with_own(
+    holder: &DocumentRoute,
+    mounted: &mut Mounted,
+    wrote: &[DocumentRoute],
+) {
+    for route in wrote {
+        if route == holder {
+            mounted.merged = mounted.app.heads_of(mounted.app.document_id());
+        } else if let Ok(record) = reads::document_id(&route.document)
+            && let Some(heads) = mounted.app.heads_of(&record)
+        {
+            mounted.parts.insert(route.clone(), Some(heads));
+        }
+    }
+}
+
 impl Worker {
+    /// The record at `route`, mounted from what the workspace retains: a part of
+    /// a chain held beside its app's own record, in that record's mount.
+    pub(super) fn mount(
+        &mut self,
+        route: &DocumentRoute,
+        state: &WorkspaceState,
+    ) -> Result<&mut Mounted, String> {
+        let holder = self.mount_held(route, state)?;
+        self.brought_up_to_date(&holder, state);
+        self.mounted
+            .get_mut(&holder)
+            .ok_or_else(|| "the record did not mount".to_string())
+    }
+
+    /// [`Self::mount`] as it stands, what was written since it was last used
+    /// not taken up: the route of the record holding `route`.
+    pub(super) fn mount_held(
+        &mut self,
+        route: &DocumentRoute,
+        state: &WorkspaceState,
+    ) -> Result<DocumentRoute, String> {
+        if is_part(&route.document) {
+            self.mount_part(route, state)
+        } else {
+            self.mount_own(route, state)?;
+            Ok(route.clone())
+        }
+    }
+
+    /// The record mounted at `holder` brought up to what the workspace holds:
+    /// what was written since it was last used merged in, and the parts of
+    /// its chains and what its app keeps for the workspace handed to it.
+    pub(super) fn brought_up_to_date(&mut self, holder: &DocumentRoute, state: &WorkspaceState) {
+        let kept = self.kept_held(kept_untold(holder, self.mounted.get(holder)));
+        let Some(mounted) = self.mounted.get_mut(holder) else {
+            return;
+        };
+        if let Some(behind) = mounted.behind.take() {
+            catch_up(holder, mounted, state, Some(&behind));
+        }
+        hold_parts(holder, mounted, state);
+        tell_kept(mounted, state, kept);
+    }
+
     /// Whether the workspace holds each of `routes`, as far as it answered. One still on
     /// its way, or in a workspace this service has not joined, is left out: its holder is
     /// told of it the next time it is used.

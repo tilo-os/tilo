@@ -483,7 +483,7 @@ impl Editor {
         if focused {
             surface
                 .editor_mut()
-                .focus_block(usize::MAX, ui::widget::CursorPlacement::End);
+                .focus_block(usize::MAX, ui::rich_edit::CursorPlacement::End);
         }
     }
 

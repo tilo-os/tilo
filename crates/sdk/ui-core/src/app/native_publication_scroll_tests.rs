@@ -122,7 +122,7 @@ fn connected_native_long_document_wheel_publication_probe() {
     let offset = Rc::new(Cell::new((0.0, 0.0)));
     let inner = crate::widget::Scrollable::new_vertical()
         .with_persisted_offset(Rc::clone(&offset))
-        .with_child(Box::new(crate::widget::BlockEditor::from_markdown(&body)));
+        .with_child(Box::new(long_document(&body)));
     let root = PublicationProbeRoot {
         inner,
         view_only: false,
@@ -179,13 +179,22 @@ fn connected_native_long_document_wheel_publication_probe() {
     }
 }
 
-// Like the rich-text surface, this editor declares a durable semantic root.
-// Publication must retain its real block controls instead of pruning them.
+/// A long document of wrapped paragraphs, one text each, as a document surface lays them out.
+fn long_document(body: &str) -> crate::widget::Column {
+    body.split("\n\n")
+        .filter(|paragraph| !paragraph.is_empty())
+        .fold(crate::widget::Column::new(), |column, paragraph| {
+            column.push(Box::new(crate::widget::Text::new(paragraph)))
+        })
+}
+
+// Like the rich-text surface, this document declares a durable semantic root.
+// Publication must retain its real controls instead of pruning them.
 struct PublicationProbeEditor {
-    inner: crate::widget::BlockEditor,
+    inner: crate::widget::Column,
 }
 impl crate::widget::Decorator for PublicationProbeEditor {
-    type Inner = crate::widget::BlockEditor;
+    type Inner = crate::widget::Column;
     fn inner(&self) -> &Self::Inner {
         &self.inner
     }
@@ -335,7 +344,7 @@ impl ViewScrollFixture {
             inner: crate::widget::Scrollable::new_vertical()
                 .with_persisted_offset(Rc::clone(&offset))
                 .with_child(Box::new(PublicationProbeEditor {
-                    inner: crate::widget::BlockEditor::from_markdown(&body),
+                    inner: long_document(&body),
                 })),
             view_only,
             syncs: Rc::clone(&syncs),

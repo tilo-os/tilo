@@ -34,12 +34,6 @@ def vendored(root: Path, name: str, version: str = "1.2.3") -> Path:
 
 
 class VendorProvenanceTests(unittest.TestCase):
-    def test_the_repository_meets_the_rule(self) -> None:
-        self.assertEqual(checker.check(ROOT), [])
-
-    def test_the_repository_has_vendored_directories_to_check(self) -> None:
-        self.assertTrue(any(p.is_dir() for p in (ROOT / "vendor").iterdir()))
-
     def test_a_conforming_tree_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

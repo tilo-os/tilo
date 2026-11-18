@@ -442,78 +442,6 @@ fn written(shot: &image::RgbaImage, rect: (f64, f64, f64, f64)) -> usize {
     light
 }
 
-/// Text typed through the socket at the canvas's caret reaches it: a click on the canvas's free
-/// ground puts the caret there, and what is typed stands at it as the person's own typing does.
-#[test]
-fn text_typed_through_the_socket_reaches_the_canvas_caret() {
-    let _settled = ui::motion::testing::settled();
-    let root = private_home();
-    let socket = root.path().join("test-control.sock");
-    let mut session = crate::common::headless(Options {
-        person: PERSON.to_owned(),
-        shell: true,
-        collab: false,
-        test_control: Some(socket.clone()),
-        ..Options::default()
-    });
-    let menu = preset_menu(&mut session);
-    click(&mut session, &socket, &menu);
-    assert!(
-        reached(&mut session, |session| session
-            .shell_control("Frames")
-            .is_some()),
-        "the preset menu offers Frames: {:?}",
-        session.accessible_labels()
-    );
-    click(&mut session, &socket, "Frames");
-    assert!(
-        reached(&mut session, |session| session
-            .shell_control(CANVAS)
-            .is_some()),
-        "the canvas: {:?}",
-        session.accessible_labels()
-    );
-
-    // The press a person's pointer makes on the canvas's free ground, waited out as a hand's is
-    // (the frame it lands on is the one that shows it, and the caret it puts there the frame
-    // after), then text as the socket writes it.
-    let (x, y, w, h) = session.shell_control(CANVAS).expect("the canvas");
-    let (cx, cy) = (x + w / 2.0, y + h / 2.0);
-    assert_eq!(
-        ask(
-            &mut session,
-            &socket,
-            &json!({"op": "click_at", "x": cx, "y": cy})
-        ),
-        json!({"ok": {}}),
-        "the click on the canvas is taken"
-    );
-    assert!(
-        reached(&mut session, |session| {
-            session.shell_control(crate::common::CANVAS_CARET).is_some()
-        }),
-        "the press put the caret on the canvas: {:?}",
-        session.accessible_labels()
-    );
-    assert!(
-        session.compositor().surface_takes_keys(),
-        "the caret holds the keyboard: {:?}",
-        session.accessible_labels()
-    );
-    let typed = ask(
-        &mut session,
-        &socket,
-        &json!({"op": "type", "text": "groceries"}),
-    );
-    assert_eq!(typed, json!({"ok": {}}), "the text is typed");
-    assert!(
-        reached(&mut session, |session| session.shell_says("groceries")),
-        "the caret shows what was typed: {:?}; the shell refused {:?}",
-        session.accessible_labels(),
-        session.shell_refusals()
-    );
-}
-
 /// A sentence typed through the socket at the canvas's caret stands there in the order it was
 /// typed: every key of one `type` reaches the caret after the one before it, a letter that recurs
 /// ("summarise") included.
@@ -556,12 +484,18 @@ fn a_sentence_typed_through_the_socket_reaches_the_canvas_caret_in_order() {
         json!({"ok": {}}),
         "the click on the canvas is taken"
     );
-    // The caret the press puts there stands the frame after, and the keys go to it.
+    // The caret the press puts there stands the frame after, holds the keyboard, and the keys go
+    // to it.
     assert!(
         reached(&mut session, |session| {
             session.shell_control(crate::common::CANVAS_CARET).is_some()
         }),
         "the press put the caret on the canvas: {:?}",
+        session.accessible_labels()
+    );
+    assert!(
+        session.compositor().surface_takes_keys(),
+        "the caret holds the keyboard: {:?}",
         session.accessible_labels()
     );
     let sentence = "summarise what changed in my notes this week";

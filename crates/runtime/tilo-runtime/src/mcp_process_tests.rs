@@ -163,7 +163,7 @@ tilo_test_env::scenario! {
 
     phase parallel_requests_complete_out_of_order;
     // The stdio host answers one session's requests as they finish, not in
-    // the order asked: a `tilo_status` and a `tilo_cancel` answer while two
+    // the order asked: a `tilo_status` and one that cancels answer while two
     // invokes wait, and every reply is one whole line.
     {
         use tilo_mcp::test_hosts::{HeldHost, overlapping_lines};

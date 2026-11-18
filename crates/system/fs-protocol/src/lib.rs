@@ -17,7 +17,6 @@
 pub mod file_action;
 pub mod file_invite;
 pub mod files;
-pub mod history;
 pub mod projection;
 pub mod tree;
 
@@ -34,11 +33,9 @@ pub use file_invite::{
     mint_bearer_file_invite, mint_file_invite,
 };
 pub use files::{
-    AttributedWriter, CONTENT_REVISION_VERSION, ContentHash, ContentRevisionV1,
-    FILE_BINDING_VERSION, FIRST_TREE_CHUNK, FileActor, FileBindingV1, FileDocumentError,
-    FileDocumentId, FileMetadataV1, FileNameV1, FileNodeKind, FilePropertiesV1, FileProvenance,
-    FileVersionId, FileVersionV1, IndexStatus, MAX_FILE_NAME_BYTES, PreviewStatus, PreviewVariant,
-    TreeChunk,
+    AttributedWriter, ContentHash, FILE_BINDING_VERSION, FIRST_TREE_CHUNK, FileActor,
+    FileBindingV1, FileDocumentError, FileDocumentId, FileMetadataV1, FileNameV1, FileNodeKind,
+    FilePropertiesV1, IndexStatus, MAX_FILE_NAME_BYTES, PreviewStatus, PreviewVariant, TreeChunk,
 };
 pub use projection::{
     AVAILABILITY_CONTROL_XATTR, AVAILABILITY_XATTR, AvailabilityPolicy, AvailabilityProjectionV1,

@@ -216,7 +216,7 @@ impl<S: RichTextSource + 'static> DerefMut for RichTextComposer<S> {
 mod tests {
     use super::*;
     use crate::{Draft, SubmitKey};
-    use ui::widget::{BlockContent, CursorPlacement};
+    use ui::rich_edit::{BlockContent, CursorPlacement};
 
     fn composer(text: &str) -> RichTextComposer<Draft> {
         let mut surface = RichTextSurface::over(Draft::with_blocks(&[BlockContent::paragraph(

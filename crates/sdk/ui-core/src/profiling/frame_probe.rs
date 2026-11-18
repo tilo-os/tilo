@@ -11,17 +11,17 @@ type Rows = BTreeMap<&'static str, (u128, usize)>;
 thread_local! {
     static ROWS: RefCell<Option<Rows>> = const { RefCell::new(None) };
 }
-pub(crate) fn enable() {
+pub fn enable() {
     ROWS.with_borrow_mut(|rows| *rows = Some(BTreeMap::new()));
 }
-pub(crate) fn take() -> BTreeMap<&'static str, (u128, usize)> {
+pub fn take() -> BTreeMap<&'static str, (u128, usize)> {
     ROWS.with_borrow_mut(|rows| rows.take().unwrap_or_default())
 }
-pub(crate) fn enabled() -> bool {
+pub fn enabled() -> bool {
     ROWS.with_borrow(Option::is_some)
 }
 /// Attributes `nanos` measured elsewhere to `label`.
-pub(crate) fn record(label: &'static str, nanos: u128) {
+pub fn record(label: &'static str, nanos: u128) {
     ROWS.with_borrow_mut(|rows| {
         if let Some(rows) = rows.as_mut() {
             let row = rows.entry(label).or_default();
@@ -30,11 +30,11 @@ pub(crate) fn record(label: &'static str, nanos: u128) {
         }
     });
 }
-pub(crate) struct Span {
+pub struct Span {
     label: &'static str,
     start: Instant,
 }
-pub(crate) fn span(label: &'static str) -> Option<Span> {
+pub fn span(label: &'static str) -> Option<Span> {
     ROWS.with_borrow(|rows| rows.is_some()).then(|| Span {
         label,
         start: now(),

@@ -1007,7 +1007,15 @@ impl Task {
                 };
                 status.next_attempt_at_ms = None;
             });
-            let failed = match self.connect().await {
+            // A session closed while it dials stops dialing then: its device may enter again
+            // under the same key, and a server keeps one connection per key, so a dial left
+            // running would cut the new session off when it lands.
+            let closing = self.reports.closed();
+            let connected = tokio::select! {
+                connected = self.connect() => connected,
+                () = closing => return self.closed().await,
+            };
+            let failed = match connected {
                 Ok(client) => {
                     // Waiting for admission is timed from when this page
                     // subscribes, not from the moment the host answers, so a
@@ -2037,9 +2045,7 @@ impl Task {
         let Some(frame) = tilo_server_protocol::live::LiveFrame::decode(frame).ok() else {
             return Sealing::Dropped;
         };
-        let Some((_, _, record)) = frame.seal_tags() else {
-            return Sealing::Dropped;
-        };
+        let (_, _, record) = frame.seal_tags();
         let keys = self.keyed_routes().find_map(|route| {
             let names = tilo_server_protocol::live::LiveResource {
                 app: route.app_id.clone(),

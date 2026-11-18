@@ -67,10 +67,11 @@ pub(super) async fn handle_remote_action(
         return refuse(Refusal::NotReady);
     };
     if !current_session(&wr, peer, session.outbound) {
-        // A newer connection of the same device took over: this one is on its
-        // way out, and what it asks is asked again by the connection that
-        // carries the device now.
-        return refuse(Refusal::Superseded);
+        // The workspace dropped this connection's subscription (its device
+        // revoked or removed): its audit ends it.
+        return refuse(Refusal::NotAMember(
+            "sender may not act in the workspace".into(),
+        ));
     }
     if action_peer_admitted(&wr, peer, session).is_err() {
         return refuse(Refusal::NotAMember(
@@ -256,7 +257,7 @@ fn hand_over(
     };
     // Every production subscription registers its authenticated peer beside
     // its subscriber, so the addressee is re-authorised from it.
-    let Some(target) = wr.state_sessions.get(&to) else {
+    let Some(target) = wr.newest_state(&to) else {
         return refuse(unavailable_target(wr, &to));
     };
     if action_peer_admitted(wr, &target.peer, session).is_err() {
@@ -343,6 +344,13 @@ pub(super) fn handle_host_action(
     match session.trust().cert(peer, tilo_clock::unix_now_ns()) {
         Ok(()) => {}
         Err(crate::workspace_access::DenyReason::NotTrusted) if asks_to_hold(&request.message) => {}
+        // A person nobody here let in yet is told so, and what makes them known: not that some
+        // action is not theirs.
+        Err(crate::workspace_access::DenyReason::NotTrusted) => {
+            return refused(tilo_actions::remote::not_on_this_server(
+                &peer.user_public_key,
+            ));
+        }
         Err(_) => return refused(ActionCallError::NotPermitted),
     }
     let Some(server) = session.app_serving else {
@@ -531,8 +539,11 @@ pub(super) fn session_caller(
         .cloned();
     let caller = match agent {
         Some(Some(delegation)) => match delegation.delegate {
+            // An agent goes by the name its person approved it under: what History and the
+            // questions put to its person name it by.
             tilo_server_protocol::delegation::Delegate::Agent { agent_id } => {
                 Caller::delegated_agent(agent_id, peer.user_public_key, peer.device_public_key)
+                    .named(&delegation.label)
             }
             tilo_server_protocol::delegation::Delegate::Bot { installation } => {
                 Caller::bot(installation, peer.user_public_key, peer.device_public_key)

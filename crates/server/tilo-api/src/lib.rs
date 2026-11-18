@@ -94,7 +94,8 @@ pub struct Config {
     /// is reached only over iroh (`https://tilo.sh`): the link then carries
     /// the signed invitation, the server's own address in it, after its `#`,
     /// so whoever follows it dials the server with nothing asked of the
-    /// server's site. Without it, an invitation is kept on the site's shelf.
+    /// server's site. Without it, an invitation is kept on the site's shelf, unless no other
+    /// computer reaches that site: its link then carries the invitation under tilo.sh's page.
     pub invite_entry: Option<String>,
 }
 
@@ -433,7 +434,24 @@ impl Server {
     }
 
     /// Routing, separated from hyper's body type for tests.
+    ///
+    /// A request's work, from its route down through the action API, is a
+    /// future of many kilobytes. It is boxed here, so whoever awaits a request
+    /// holds a pointer: a caller that sends dozens of requests from one
+    /// function, as a client's script does, would otherwise carry every one of
+    /// them in its own state, and in a debug build in its stack frame.
     pub async fn dispatch(
+        self: &Arc<Self>,
+        method: &Method,
+        path: &str,
+        query: &str,
+        headers: &hyper::HeaderMap,
+        body: &[u8],
+    ) -> Reply {
+        Box::pin(self.route(method, path, query, headers, body)).await
+    }
+
+    async fn route(
         self: &Arc<Self>,
         method: &Method,
         path: &str,
@@ -1452,7 +1470,7 @@ impl Server {
             if why.contains("key_revoked") {
                 return Err(
                     v1::errors::ApiError::new("key_revoked", "this key was revoked")
-                        .next("ask the person for a new key"),
+                        .next(crate::APPROVE_AGAIN),
                 );
             }
             return Err(unavailable(why.to_owned()));
@@ -1647,6 +1665,11 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+/// What a key that no longer acts (revoked, expired, or no longer granted in
+/// its workspace) is told to do: the one command that approves a key again.
+pub(crate) const APPROVE_AGAIN: &str = "approve a new key: the person types `tilo keys create \"<name>\"` \
+     and approves it in their Tilo tab (on their own computer, `tilo login` again)";
+
 /// Why a token the server was sent reaches nothing, as every refusal of the server is
 /// typed: `{"error": {code, message, next_steps}}`, with when it was revoked
 /// (`revoked_at_ms`) or expired (`expired_at_ms`) when the server knows. A
@@ -1664,7 +1687,7 @@ pub(crate) fn denial(denied: store::Denied) -> Value {
                 || "this key was revoked".to_owned(),
                 |at| format!("this key was revoked on {}", pages::date(at)),
             ),
-            "ask the person for a new key",
+            crate::APPROVE_AGAIN,
             at_ms.map(|at| ("revoked_at_ms", at)),
         ),
         store::Denied::Expired { at_ms } => (

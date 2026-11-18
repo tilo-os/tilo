@@ -17,6 +17,7 @@
 //! it sends that same key: Tilo never runs one invocation twice.
 
 pub mod device;
+mod model_asks;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use http_body_util::BodyExt as _;
@@ -228,9 +229,10 @@ enum Transport {
 
 impl Client {
     /// The client `reach` names: this desktop's own API at its socket when
-    /// one serves it, else its key file, else `TILO_API_KEY` at an API
-    /// server, else this computer's own device as `tilo login` made it, at the
-    /// socket of the process holding its session ([`device::held_api`]).
+    /// one serves it; this computer's own device as `tilo login` made it, at
+    /// the socket of the process holding its session, when `reach` names no
+    /// key or names that device's own ([`held_api_for`]); else its key file;
+    /// else `TILO_API_KEY` at an API server.
     pub fn open(reach: Reach<'_>) -> Result<Self> {
         // A desktop of this login serves its person at its own socket, and a
         // program of this login answers as the person there with no key of its
@@ -242,6 +244,9 @@ impl Client {
             && api_key().is_none()
             && let Some(socket) = desktop_socket()
         {
+            return Ok(Self::session(&socket));
+        }
+        if let Some(socket) = held_api_for(reach)? {
             return Ok(Self::session(&socket));
         }
         if let Some(path) = reach.key_file {
@@ -256,9 +261,6 @@ impl Client {
                     http: tilo_net::Client::new(),
                 },
             });
-        }
-        if let Some(socket) = device::held_api()? {
-            return Ok(Self::session(&socket));
         }
         bail!(
             "no key: set {KEY_ENV} (`tilo keys create \"<what will use it>\"` asks you for one), \
@@ -810,6 +812,28 @@ impl Client {
         headers: &[(&'static str, String)],
         body: &[u8],
     ) -> Result<Answer> {
+        let mut opened = self.opening(method, path, headers, body).await?;
+        let mut whole = Vec::new();
+        while let Some(piece) = opened.piece().await? {
+            if whole.len().saturating_add(piece.len()) > MAX_ANSWER {
+                bail!("the answer is larger than {MAX_ANSWER} bytes");
+            }
+            whole.extend_from_slice(&piece);
+        }
+        Ok(Answer {
+            status: opened.status,
+            body: whole,
+        })
+    }
+
+    /// `method` on `path`: its status, and its body to read as it comes.
+    async fn opening(
+        &self,
+        method: Method,
+        path: &str,
+        headers: &[(&'static str, String)],
+        body: &[u8],
+    ) -> Result<Opened> {
         match &self.transport {
             Transport::Http { origin, key, http } => {
                 let url = format!("{origin}{path}");
@@ -829,10 +853,9 @@ impl Client {
                     .send()
                     .await
                     .with_context(|| format!("reaching {origin}"))?;
-                let status = response.status().as_u16();
-                Ok(Answer {
-                    status,
-                    body: response.bytes_limited(MAX_ANSWER).await?.to_vec(),
+                Ok(Opened {
+                    status: response.status().as_u16(),
+                    body: Pieces::Net(Box::new(response)),
                 })
             }
             Transport::Direct(direct) => {
@@ -846,15 +869,10 @@ impl Client {
                     Box<dyn std::future::Future<Output = crate::Reply> + Send + '_>,
                 > = Box::pin(direct.request(method.as_str(), path, &pairs, body));
                 let reply = request.await;
-                let status = reply.status().as_u16();
-                let body = reply
-                    .into_body()
-                    .collect()
-                    .await
-                    .context("reading the answer")?
-                    .to_bytes()
-                    .to_vec();
-                Ok(Answer { status, body })
+                Ok(Opened {
+                    status: reply.status().as_u16(),
+                    body: Pieces::Direct(reply.into_body()),
+                })
             }
             Transport::Session(socket) => {
                 let reached = || format!("reaching Tilo on this computer at {}", socket.display());
@@ -879,14 +897,50 @@ impl Client {
                     .await
                     .with_context(reached)?
                     .with_context(reached)?;
-                let status = response.status().as_u16();
-                let body = http_body_util::Limited::new(response.into_body(), MAX_ANSWER)
-                    .collect()
-                    .await
-                    .map_err(|error| anyhow!("reading the answer: {error}"))?
-                    .to_bytes()
-                    .to_vec();
-                Ok(Answer { status, body })
+                Ok(Opened {
+                    status: response.status().as_u16(),
+                    body: Pieces::Socket(response.into_body()),
+                })
+            }
+        }
+    }
+}
+
+/// An answer whose body is read as it comes.
+struct Opened {
+    status: u16,
+    body: Pieces,
+}
+
+/// A body of an answer, by the transport that carries it.
+enum Pieces {
+    Net(Box<tilo_net::Response>),
+    Direct(crate::Body),
+    Socket(hyper::body::Incoming),
+}
+
+impl Opened {
+    /// The body's next piece; `None` once it ended.
+    async fn piece(&mut self) -> Result<Option<hyper::body::Bytes>> {
+        loop {
+            let frame = match &mut self.body {
+                Pieces::Net(response) => {
+                    return response
+                        .chunk()
+                        .await
+                        .map_err(|error| anyhow!("reading the answer: {error}"));
+                }
+                Pieces::Direct(body) => match body.frame().await {
+                    None => return Ok(None),
+                    Some(frame) => frame.map_err(|never| match never {})?,
+                },
+                Pieces::Socket(body) => match body.frame().await {
+                    None => return Ok(None),
+                    Some(frame) => frame.map_err(|error| anyhow!("reading the answer: {error}"))?,
+                },
+            };
+            if let Ok(data) = frame.into_data() {
+                return Ok(Some(data));
             }
         }
     }
@@ -1027,6 +1081,56 @@ pub fn login_key(name: Option<&str>) -> Result<Option<crate::direct::KeyFile>> {
             None => None,
         },
     }))
+}
+
+/// Where calls with `reach` go to this computer's held session
+/// ([`device::held_api`]): when it names no key and this computer logged in,
+/// or when its key file or `TILO_API_KEY` is this computer's own device key.
+/// A key has one holder: a program acting with the device's key on a session
+/// of its own would cut the computer's off. `None` for any other key.
+///
+/// # Errors
+/// The key file cannot be read, or the login is damaged.
+pub fn held_api_for(reach: Reach<'_>) -> Result<Option<std::path::PathBuf>> {
+    let named = match (reach.key_file, api_key()) {
+        (Some(path), _) => Some(
+            crate::direct::KeyFile::read(path)
+                .map_err(anyhow::Error::msg)?
+                .key,
+        ),
+        (None, Some(token)) => Some(
+            crate::store::carried_key(&token)
+                .map(|(_, key)| hex::encode(key.secret()))
+                .unwrap_or_default(),
+        ),
+        (None, None) => None,
+    };
+    if let Some(secret) = named {
+        let Some((key, _)) = device::load(&device::device_dir()?)? else {
+            return Ok(None);
+        };
+        if !crate::constant_time_eq(
+            secret.to_ascii_lowercase().as_bytes(),
+            hex::encode(key.to_bytes()).as_bytes(),
+        ) {
+            return Ok(None);
+        }
+    }
+    device::held_api()
+}
+
+/// The key a script was approved (`token`, as `tilo keys create` answers it),
+/// as a key file reaching where this computer's login reaches: a key of its
+/// own, never the device's, so the script's session and the computer's each
+/// have one holder. `None` when this computer did not log in.
+///
+/// # Errors
+/// The token is not a key's, or the login is damaged.
+pub fn script_key(token: &str) -> Result<Option<crate::direct::KeyFile>> {
+    let Some(file) = login_key(None)? else {
+        return Ok(None);
+    };
+    Ok(Some(file.with_token(token).map_err(anyhow::Error::msg)?))
 }
 
 /// What a path segment leaves as it is: letters, digits and `-._~`.

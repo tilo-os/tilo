@@ -11,7 +11,5 @@ mod google_settings;
 mod host_mail_session;
 #[path = "oauth_credentials.rs"]
 mod oauth_credentials;
-#[path = "perf_interaction.rs"]
-mod perf_interaction;
 #[path = "recipient_headers.rs"]
 mod recipient_headers;

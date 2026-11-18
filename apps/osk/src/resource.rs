@@ -567,4 +567,4 @@ mod tests {
     }
 }
 
-ui::reach_tests!(OskShell);
+ui::reach_tests!(OskShell, shares: [share_0, share_1, share_2]);

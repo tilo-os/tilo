@@ -658,22 +658,12 @@ impl Invoker for ApiInvoker {
                 steps.done = steps.done.saturating_add(1);
                 if !steps.apps.iter().any(|known| known == app) {
                     steps.apps.push(app.to_owned());
-                    // The resource the step is taken back on: the one the session published a
-                    // loose action on, the app's own document, or the document the task's change of
-                    // a tilolang app applied to.
-                    let resource = if published {
-                        call.get("resource")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or_default()
-                            .to_owned()
-                    } else if let Some(record) = record {
-                        record.to_owned()
-                    } else {
-                        package_resource_id(app)
-                    };
-                    steps
-                        .history
-                        .push(json!({"app": app, "resource": resource, "published": published}));
+                }
+                let at = self.history_at(app, &call, published, record, &output);
+                // One app's change may have gone to more than one of its documents: each is a
+                // place its step is taken back on.
+                if !steps.history.iter().any(|held| held == &at) {
+                    steps.history.push(at);
                 }
                 drop(steps);
                 match result_of(meta, invocation, &output) {
@@ -687,6 +677,54 @@ impl Invoker for ApiInvoker {
             Answered::Refused(why) => Invoked::Refused(why),
             Answered::Asks(why) => Invoked::Asks(why),
         }
+    }
+}
+
+impl ApiInvoker {
+    /// Where a step of the task takes a change of `app` back: the resource the action was
+    /// invoked on — the one the session published a loose action on, the resource a native
+    /// app's directory lists it by, or the document the task's change of a tilolang app applied
+    /// to — and the call the workspace lists as an invocation. A native app's item is kept in
+    /// the part of its collection, so an action on one is taken back on that collection's
+    /// resource.
+    fn history_at(
+        &self,
+        app: &str,
+        call: &Json,
+        published: bool,
+        record: Option<&str>,
+        output: &Json,
+    ) -> Json {
+        let resource = if published {
+            call.get("resource")
+                .and_then(Json::as_str)
+                .map_or_else(|| package_resource_id(app), str::to_owned)
+        } else if self.native.is(app) {
+            let named = call
+                .get("resource")
+                .and_then(Json::as_str)
+                .unwrap_or_default();
+            match collection_of(named) {
+                Some(collection) => self.api.resource_id(app, &collection).unwrap_or(collection),
+                None => named.to_owned(),
+            }
+        } else if let Some(record) = record {
+            record.to_owned()
+        } else {
+            package_resource_id(app)
+        };
+        // What the API took the change for: an invocation the workspace lists, whose changed
+        // documents tell the part of a chain its step is kept in.
+        let invocation = output
+            .get("invocation")
+            .and_then(Json::as_str)
+            .map(str::to_owned);
+        json!({
+            "app": app,
+            "resource": resource,
+            "published": published,
+            "invocation": invocation,
+        })
     }
 }
 
@@ -837,6 +875,20 @@ fn arguments_of(
         arguments.insert(name.clone(), argument_json(&owner, meta, value, &ty)?);
     }
     Ok(Json::Object(arguments))
+}
+
+/// The collection whose part keeps the item `resource` names (`notes.pages/pages/<id>` is
+/// `notes.pages`, and so is what that item holds), or `None` for a resource that is no item:
+/// the part a step on it is taken back on.
+fn collection_of(resource: &str) -> Option<String> {
+    let mut at = resource;
+    loop {
+        if let Some(kind) = tilo_resource::items::item_kind(at) {
+            return Some(kind);
+        }
+        let (head, _) = at.rsplit_once('/')?;
+        at = head;
+    }
 }
 
 /// The API's call for `invocation` of the native app `meta`: its declared verb, as the app's

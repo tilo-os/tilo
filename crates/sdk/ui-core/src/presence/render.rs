@@ -3298,7 +3298,7 @@ mod tests {
     /// window's workspace lacks floats its `:name:`.
     #[test]
     fn a_workspace_emoji_reaction_floats_its_picture() {
-        use crate::richtext::inline_emoji::tests::{Fixed, workspace};
+        use crate::richtext::inline_emoji::testing::{Fixed, workspace};
         let float = |emoji: &str| {
             let mut scene = Scene::new();
             let mut text = TextRenderer::new();

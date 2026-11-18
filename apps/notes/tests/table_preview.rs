@@ -1,9 +1,9 @@
 use std::fmt::Write as _;
 use ui::a11y::Role;
 use ui::headless::Framed;
+use ui::rich_edit::block_editor::{Block, BlockEditor};
 use ui::theme::Theme;
 use ui::widget::Widget;
-use ui::widget::block_editor::{Block, BlockEditor};
 use vello::Scene;
 
 fn render_table(

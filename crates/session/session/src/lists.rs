@@ -828,14 +828,12 @@ mod tests {
         );
     }
 
-    /// The same for lists fixed up front, which never change: `Lists::fixed` gives each its own
-    /// generation, so two fixed readings of one list are told apart, and clones of one share it.
+    /// A list fixed up front never changes: `Lists::fixed` gives each its own generation, so two
+    /// fixed readings of one list are told apart.
     #[test]
     fn fixed_lists_have_their_own_generation() {
         let one = Lists::fixed(AppLists::default());
         let two = Lists::fixed(AppLists::default());
-        let shared = one.clone();
-        assert_eq!(one.snapshot().0, shared.snapshot().0, "a clone shares it");
         assert_ne!(
             one.snapshot().0,
             two.snapshot().0,

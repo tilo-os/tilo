@@ -2438,7 +2438,7 @@ fn text_that_cannot_break_a_word_wider_than_its_column_is_caught() {
 #[test]
 fn a_line_with_less_room_than_its_text_needs_is_caught() {
     let cut = |height: f32| {
-        let mut line = ui::widget::RichTextLine::new();
+        let mut line = tilo_rich_edit::RichTextLine::new();
         line.set_wrap(true);
         line.set_text("The new onboarding build is on the test machines.");
         let mut h = ui::headless::FrameHarness::for_root(

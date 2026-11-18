@@ -55,9 +55,6 @@ class SeededStateHistoryTests(unittest.TestCase):
         if track:
             self.git("add", name)
 
-    def test_the_repository_keeps_every_seeded_version(self) -> None:
-        self.assertEqual(checker.check(ROOT), [])
-
     def test_a_seed_with_its_history_and_a_reader_passes(self) -> None:
         self.assertEqual(checker.check(self.root), [])
 

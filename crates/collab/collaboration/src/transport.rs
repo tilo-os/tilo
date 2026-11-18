@@ -321,12 +321,6 @@ pub trait CollabTransport: Send {
         false
     }
 
-    /// The last publication outcome this transport reported, for telling a
-    /// refusal of one change apart from a lost connection.
-    fn publication_outcome(&self) -> Option<DocumentPublicationError> {
-        None
-    }
-
     /// The last change the peer answered but would not accept, while nothing
     /// later has gone through. A refusal fails that change alone: the
     /// transport stays open and the owner reconciles its local copy. `None`

@@ -51,6 +51,34 @@ pub async fn await_relay(endpoint: &Endpoint) -> EndpointAddr {
     relay_addr(endpoint, RELAY_WAIT).await
 }
 
+/// Whether an endpoint can name where it is reached, as whoever bound it knows.
+///
+/// A server waits for that name before it serves, so no workspace it opens
+/// learns an address it would have to rename. An endpoint reached on its own
+/// network only never names one, and waiting for it holds the server back for
+/// the whole wait before it serves a workspace that would have named the
+/// address it has all along.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Reaching {
+    /// The endpoint is expected to name where it is reached through another
+    /// machine, which may not have answered yet.
+    #[default]
+    ByRelay,
+    /// Nothing will name it: its network is its own, and nobody reaches it
+    /// from outside.
+    OnItsOwn,
+}
+
+impl Reaching {
+    /// Wait for `endpoint` to name where it is reached when it is expected to,
+    /// and answer at once when nothing will.
+    pub async fn awaited(self, endpoint: &Endpoint) {
+        if self == Self::ByRelay {
+            await_relay(endpoint).await;
+        }
+    }
+}
+
 fn relays_of(addr: &EndpointAddr) -> BTreeSet<RelayUrl> {
     addr.relay_urls().cloned().collect()
 }

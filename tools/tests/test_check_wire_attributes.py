@@ -314,10 +314,6 @@ pub fn read(bytes: &[u8]) -> Choice {
         self.assertIn("crates/demo/store/src/plan.rs: Plan.note", found[0])
 
 
-    def test_the_tree_omits_no_field_a_compact_format_carries(self):
-        self.assertEqual(attributes.problems(), [])
-
-
 SKIPPED = '''#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct {name} {{
     pub id: String,

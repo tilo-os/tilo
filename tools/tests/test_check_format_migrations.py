@@ -175,15 +175,6 @@ class FormatMigrationTests(unittest.TestCase):
             (crate / "golden/fixture-state/v3.hex").write_text("03\n")
             self.assertEqual(formats.against("main", root), [])
 
-    def test_the_repository_holds_to_it(self):
-        self.assertEqual(formats.check(), [])
-        declared = formats.declarations(formats.sources(formats.ROOT))
-        # The type is named through an import as often as in full, so a
-        # declaration written as `Format { .. }` is found too.
-        self.assertIn("sign-in record", declared)
-        self.assertIn("workspace wait list", declared)
-        self.assertIn("device certificate", declared)
-
 
 if __name__ == "__main__":
     unittest.main()

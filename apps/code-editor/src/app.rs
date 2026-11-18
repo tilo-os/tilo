@@ -183,8 +183,6 @@ pub struct CodeApp {
     lsp_sent_text: String,
     diagnostics_cache: Option<DiagnosticsCache>,
     inactive_diagnostics: Vec<DiagnosticsCache>,
-    #[cfg(test)]
-    diagnostics_buffer_reads: usize,
     lsp_status: LspStatus,
     lsp_failed: std::collections::HashSet<crate::model::Language>,
     lsp_tools: Option<tilo_process::tools::ToolDirs>,
@@ -457,8 +455,6 @@ impl CodeApp {
             lsp_sent_text: String::new(),
             diagnostics_cache: None,
             inactive_diagnostics: Vec::new(),
-            #[cfg(test)]
-            diagnostics_buffer_reads: 0,
             lsp_status: LspStatus::None,
             lsp_failed: std::collections::HashSet::new(),
             lsp_tools: None,
@@ -974,10 +970,6 @@ impl CodeApp {
             let started = std::time::Instant::now();
             let local = match active {
                 Some((key, language)) => {
-                    #[cfg(test)]
-                    {
-                        self.diagnostics_buffer_reads += 1;
-                    }
                     let text = EditorDoc::read_buffer_key(doc, &key).unwrap_or_default();
                     lint::lint(&text, language, scope)
                 }

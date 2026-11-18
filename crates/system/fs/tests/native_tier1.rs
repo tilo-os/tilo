@@ -633,16 +633,16 @@ fn assert_records_follow_writer_order(pair: &mut Pair, m1: &Path, m2: &Path) {
         },
     );
     pair.host.terminate();
-    let versions = first_versions(&pair.dir.join("host-cache"), &["seq/a", "seq/b", "seq/c"]);
+    let times = write_times(&pair.dir.join("host-cache"), &["seq/a", "seq/b", "seq/c"]);
     assert!(
-        versions.windows(2).all(|w| w[0] <= w[1]),
-        "record versions follow the writer's order: {versions:?}"
+        times.windows(2).all(|w| w[0] <= w[1]),
+        "files' contents follow the writer's order: {times:?}"
     );
-    let history = provenance(&pair.dir.join("host-cache"), "objects/3");
     assert!(
-        history.first() == Some(&fs_protocol::FileProvenance::Create)
-            && history.contains(&fs_protocol::FileProvenance::Rename),
-        "history follows the renamed record: {history:?}"
+        persisted_namespace(&pair.dir.join("host-cache"))
+            .entry_at("objects/3")
+            .is_some(),
+        "the renamed file is kept under its new name"
     );
     assert!(pair.host.log_count("epoch ") >= 1);
     assert!(
@@ -660,33 +660,15 @@ fn persisted_namespace(cache: &Path) -> fs::Namespace {
     fs::Namespace::from_bytes("reader", &outcome.bytes).unwrap()
 }
 
-fn provenance(cache: &Path, path: &str) -> Vec<fs_protocol::FileProvenance> {
-    let ns = persisted_namespace(cache);
-    let entry = ns
-        .entry_at(path)
-        .unwrap_or_else(|| panic!("{path} is not a record"));
-    let mut versions: Vec<_> = ns
-        .document_versions(entry.document_id)
-        .into_values()
-        .collect();
-    versions.sort_by_key(|v| v.timestamp_ms);
-    versions.into_iter().map(|v| v.provenance).collect()
-}
-
-fn first_versions(cache: &Path, paths: &[&str]) -> Vec<u64> {
+/// When each file at `paths` last had its content written.
+fn write_times(cache: &Path, paths: &[&str]) -> Vec<u64> {
     let ns = persisted_namespace(cache);
     paths
         .iter()
         .map(|p| {
-            let entry = ns
-                .entry_at(p)
-                .unwrap_or_else(|| panic!("{p} is not a record"));
-            ns.document_versions(entry.document_id)
-                .values()
-                .filter(|v| v.content_hash.is_some())
-                .map(|v| v.timestamp_ms)
-                .min()
-                .unwrap_or_else(|| panic!("{p} has no content version"))
+            ns.entry_at(p)
+                .unwrap_or_else(|| panic!("{p} is not a file"))
+                .mtime
         })
         .collect()
 }

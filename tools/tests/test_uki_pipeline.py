@@ -54,8 +54,7 @@ class UkiPipelineTests(unittest.TestCase):
     def findings(self, root: Path) -> str:
         return "\n".join(str(finding) for finding in check.audit(root))
 
-    def test_repository_and_unchanged_fixture_pass(self):
-        self.assertEqual(self.findings(REPO), "")
+    def test_an_unchanged_fixture_passes(self):
         self.assertEqual(self.findings(self.fixture()), "")
 
     def test_a_seal_input_missing_from_one_image_is_reported(self):

@@ -47,6 +47,9 @@ mod api_layout;
 #[path = "workspace_actions/api_links.rs"]
 mod api_links;
 #[cfg(test)]
+#[path = "workspace_actions/api_model_asks.rs"]
+mod api_model_asks;
+#[cfg(test)]
 #[path = "workspace_actions/api_notebook.rs"]
 mod api_notebook;
 #[path = "workspace_actions/api_on_server.rs"]
@@ -88,6 +91,9 @@ mod chat_restart;
 #[cfg(test)]
 #[path = "workspace_actions/delete_workspace.rs"]
 mod delete_workspace;
+#[cfg(test)]
+#[path = "workspace_actions/device_issue_create.rs"]
+mod device_issue_create;
 #[cfg(test)]
 #[path = "workspace_actions/device_writes.rs"]
 mod device_writes;

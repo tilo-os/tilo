@@ -109,10 +109,6 @@ const fn state_frame_workspace(frame: &Envelope) -> Option<(WorkspaceId, bool)> 
 /// [`authorize_state_frame`] for a frame to workspace `id`; `subscribed` frames
 /// (deltas, presence, `Ready`) also need this connection to be the workspace's
 /// current subscriber.
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the membership guard spans the whole authorization so it observes one roster generation"
-)]
 pub(super) async fn authorize_state_recipient(
     id: WorkspaceId,
     subscribed: bool,
@@ -128,8 +124,7 @@ pub(super) async fn authorize_state_recipient(
         .ok_or_else(|| PeerError::Protocol("workspace disappeared".into()))?;
     let wr = crate::workspace_io::fresh_membership(&ws).await?;
     if !session.admits(&wr, peer, WorkspaceOperation::State)
-        || ((subscribed || wr.subscribers.contains_key(&peer.device_public_key))
-            && !current_session(&wr, peer, session.outbound))
+        || (subscribed && !current_session(&wr, peer, session.outbound))
     {
         return Err(PeerError::Protocol(
             "state recipient authorization changed".into(),
@@ -683,8 +678,7 @@ pub(super) async fn authorize_replay(
     let runtime = crate::workspace_io::fresh_membership(workspace).await?;
     if !source.authorized(&runtime)
         || !runtime
-            .state_sessions
-            .get(&source.peer.device_public_key)
+            .state_of(&source.peer.device_public_key, &source.tx)
             .is_some_and(|session| authority.matches(&session.live))
     {
         return Err(crate::persistence::error(
@@ -694,6 +688,10 @@ pub(super) async fn authorize_replay(
     Ok(())
 }
 
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the session is read from the guard held until its phase is stored"
+)]
 async fn finish_replay_boundary(
     workspace: &SharedWorkspace,
     source: &StateSource,
@@ -703,8 +701,7 @@ async fn finish_replay_boundary(
     authorize_replay(workspace, source, authority).await?;
     let runtime = workspace.lock().await;
     let current = runtime
-        .state_sessions
-        .get(&source.peer.device_public_key)
+        .state_of(&source.peer.device_public_key, &source.tx)
         .and_then(|session| session.replay.as_ref())
         .filter(|current| Arc::ptr_eq(current, catchup))
         .ok_or_else(|| crate::persistence::error("replay session boundary changed"))?;
@@ -727,8 +724,7 @@ async fn authorize_replay_boundary(
     authorize_replay(workspace, source, authority).await?;
     let runtime = workspace.lock().await;
     let session = runtime
-        .state_sessions
-        .get(&source.peer.device_public_key)
+        .state_of(&source.peer.device_public_key, &source.tx)
         .filter(|session| authority.matches(&session.live))
         .filter(|session| {
             session
@@ -764,8 +760,7 @@ async fn complete_replay_ready(
 ) -> Result<(), StoreError> {
     let runtime = workspace.lock().await;
     let session = runtime
-        .state_sessions
-        .get(&source.peer.device_public_key)
+        .state_of(&source.peer.device_public_key, &source.tx)
         .filter(|session| authority.matches(&session.live))
         .filter(|session| {
             session
@@ -834,8 +829,7 @@ fn authorize_replay_now(
     if !member
         || !source.authorized(&runtime)
         || !runtime
-            .state_sessions
-            .get(&source.peer.device_public_key)
+            .state_of(&source.peer.device_public_key, &source.tx)
             .is_some_and(|session| authority.matches(&session.live))
     {
         return Err(crate::persistence::error(

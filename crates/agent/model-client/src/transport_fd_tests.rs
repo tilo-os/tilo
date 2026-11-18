@@ -62,13 +62,17 @@ async fn received(peer: &mut tokio::net::UnixStream) -> u64 {
 
 #[tokio::test(flavor = "current_thread")]
 async fn abandoned_administration_drains_committed_response_and_cancel_barrier() {
-    use agent_provider_config::management::{CredentialStatus, ProviderAdmin};
+    use agent_provider_config::management::{ProviderAdmin, ProviderSnapshot};
+    let snapshot = ProviderSnapshot {
+        config: agent_provider_config::ProviderConfig::default(),
+        revision: "after".into(),
+    };
     let (_original, transport, mut peer) = pair();
     let admin = crate::transport::AdministrationClient::new(transport);
     let (started, received) = tokio::sync::oneshot::channel();
     let server = async {
         let (_, request) = received_request(&mut peer).await;
-        assert!(matches!(request, Request::SetApiKey { .. }));
+        assert!(matches!(request, Request::SetProviderConfig { .. }));
         started.send(()).unwrap();
         let body = crate::FRAMING.read_async(&mut peer).await.unwrap().unwrap();
         let frame: crate::Frame<Request> = serde_json::from_slice(&body).unwrap();
@@ -76,7 +80,7 @@ async fn abandoned_administration_drains_committed_response_and_cancel_barrier()
             panic!("missing Stop")
         };
         // A durable write finishes before the barrier; its abandoned success
-        // must not become the next credential status response.
+        // must not become the next configuration read's response.
         for output in ["committed".to_string(), format!("cancelled:{id}")] {
             crate::FRAMING
                 .write_async(
@@ -87,26 +91,27 @@ async fn abandoned_administration_drains_committed_response_and_cancel_barrier()
                 .unwrap();
         }
         let (_, request) = received_request(&mut peer).await;
-        assert!(matches!(request, Request::CredentialStatus { .. }));
+        assert!(matches!(request, Request::GetProviderConfig));
+        let read = serde_json::to_string(&snapshot).unwrap();
         crate::FRAMING
             .write_async(
                 &mut peer,
-                &serde_json::to_vec(&response("\"configured\"", None)).unwrap(),
+                &serde_json::to_vec(&response(&read, None)).unwrap(),
             )
             .await
             .unwrap();
     };
     let client = async {
-        let mut operation = admin.set_api_key("profile".into(), "write-only-key".into());
+        let mut operation = admin.set_config(
+            "before".into(),
+            agent_provider_config::ProviderConfig::default(),
+        );
         tokio::select! {
             result = &mut operation => panic!("completed before Stop: {result:?}"),
             result = received => result.unwrap(),
         }
         drop(operation);
-        assert_eq!(
-            admin.credential_status("profile".into()).await.unwrap(),
-            CredentialStatus::Configured
-        );
+        assert_eq!(admin.get_config().await.unwrap(), snapshot);
     };
     tokio::time::timeout(tilo_test_env::hang_bound(), async {
         tokio::join!(server, client);

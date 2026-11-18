@@ -77,6 +77,7 @@ mod member;
 mod opened;
 mod opened_file;
 mod outcome;
+mod part_wait;
 mod placed;
 mod publish;
 mod reads;
@@ -109,7 +110,7 @@ use crate::host::CatalogueFactory;
 use crate::member::actions::{Outcome, api_outcome, record_provider, resource_of};
 use crate::worker::{ConfinedReplica, ConfinedViews};
 use crate::workspace_documents::WorkspaceDocuments;
-use catch_up::{catch_up, hold_parts, kept_untold, tell_kept};
+use catch_up::caught_up_with_own;
 use collab_types::DocumentMutation;
 use invocation_log::InvocationLog;
 use jobs::Jobs;
@@ -117,6 +118,7 @@ use keys::{Keys, catalogue_keys};
 use outcome::{
     confirms, exact_view_query, log_outcome, opens_as_its_own, rejected, speaks_for_a_member,
 };
+use part_wait::Invoked;
 use publish::Unsaved;
 use run_context::{caller_context, said_invocation_title};
 use tilo_actions::InteractionPhase;
@@ -164,6 +166,8 @@ struct Shared {
     joins: Mutex<HashMap<WorkspaceId, Option<Workspace>>>,
     /// Each workspace's content store, once found.
     stores: content::Stores,
+    /// The content steps served beside the service's own ([`content::ContentSteps`]).
+    steps: Arc<content::ContentSteps>,
     /// The uploads callers have open.
     puts: tilo_actions::remote::HostedContentPuts,
     /// The answers people gave to invocations run for them.
@@ -222,6 +226,7 @@ impl WorkspaceActions {
                 member: OnceLock::new(),
                 joins: Mutex::default(),
                 stores: Mutex::default(),
+                steps: Arc::new(content::ContentSteps::default()),
                 puts: tilo_actions::remote::HostedContentPuts::default(),
                 approvals: bounded::Approvals::default(),
                 in_conversation: std::sync::RwLock::default(),
@@ -743,6 +748,10 @@ struct Mounted {
     /// What it and its parts had merged when it was last asked which parts
     /// it wants ([`catch_up::hold_parts`]): asked again only once that moved.
     wanted_at: Option<u64>,
+    /// What was written in the workspace since it last caught up, when
+    /// anything was: it takes that up when it is next used
+    /// ([`Worker::brought_up_to_date`]), never for a write it plays no part in.
+    behind: Option<HashSet<DocumentRoute>>,
     used: u64,
 }
 
@@ -1924,15 +1933,17 @@ impl Worker {
         // Only what a write landed in since the last refresh is merged: what
         // is held mounted is kept current by its changes, never by reading
         // every part the app keeps again.
+        // What is held mounted takes it up when it is next used: a write by
+        // one caller is merged into no one else's replica on its way in. A
+        // caller's own replica catches up as it is taken
+        // ([`Self::bounded_replica`]).
         let changed = workspace.take_changed();
-        let catching = timing_start();
-        for (route, mounted) in &mut self.mounted {
-            catch_up(route, mounted, &state, Some(&changed));
+        for mounted in self.mounted.values_mut() {
+            mounted
+                .behind
+                .get_or_insert_with(HashSet::new)
+                .extend(changed.iter().cloned());
         }
-        for ((route, _, _), held) in &mut self.bounded {
-            catch_up(route, &mut held.held, &state, Some(&changed));
-        }
-        timing_done("refresh.catch", catching);
         // A write that landed since the last pass is read for the index as soon as this
         // request is answered, so the next find answers from it.
         let indexing = timing_start();
@@ -1942,24 +1953,6 @@ impl Worker {
         }
         timing_done("refresh.index", indexing);
         Ok(state)
-    }
-
-    /// The record at `route`, mounted from what the workspace retains: a part of
-    /// a chain held beside its app's own record, in that record's mount.
-    fn mount(
-        &mut self,
-        route: &DocumentRoute,
-        state: &WorkspaceState,
-    ) -> Result<&mut Mounted, String> {
-        let holder = if is_part(&route.document) {
-            self.mount_part(route, state)?
-        } else {
-            self.mount_own(route, state)?;
-            route.clone()
-        };
-        self.mounted
-            .get_mut(&holder)
-            .ok_or_else(|| "the record did not mount".to_string())
     }
 
     /// The route of the mounted record `route`'s record is held in: its own,
@@ -2061,18 +2054,16 @@ impl Worker {
                     parts: HashMap::new(),
                     foreign: std::collections::HashSet::new(),
                     wanted_at: None,
+                    behind: None,
                     used: clock,
                 },
             );
         }
-        let kept = self.kept_held(kept_untold(route, self.mounted.get(route)));
         let mounted = self
             .mounted
             .get_mut(route)
             .ok_or_else(|| "the record did not mount".to_string())?;
         mounted.used = clock;
-        hold_parts(route, mounted, state);
-        tell_kept(mounted, state, kept);
         Ok(())
     }
 
@@ -2502,6 +2493,9 @@ impl Worker {
         // that source, which reads the record and opens a worker for it: an
         // action the record publishes never pays for that.
         let holder = self.holder_of(&route);
+        // What the record publishes now, with what was written since it was
+        // last used taken up: an item made since is one of its resources.
+        self.brought_up_to_date(&holder, &state);
         let published_here = self.publishes(&holder, &target.address);
         if let Some(output) = self.source_read(workspace_id, caller, request, published_here)? {
             self.note_reads(request);
@@ -2558,20 +2552,24 @@ impl Worker {
         let arguments = withheld.given(descriptor.bind_prompt_text(arguments))?;
         let confirmed = self.confirmed_here(workspace_id, caller, request, &descriptor);
         let holder = self.holder_of(&route);
-        let mounted = self.mounted.get_mut(&holder).ok_or_else(unknown_action)?;
         let context = caller_context(caller, request);
         let running = timing_start();
-        let output = mounted
-            .app
-            .invoke_in(
-                Some(&context),
-                appearance.as_ref(),
-                &target.address,
-                &arguments,
-                confirmed,
+        let output = self
+            .invoke_on(
+                workspace_id,
+                &holder,
+                keys.needs(),
+                &Invoked {
+                    address: &target.address,
+                    arguments: &arguments,
+                    context: Some(&context),
+                    appearance: appearance.as_ref(),
+                    confirmed,
+                },
             )
             .map_err(|error| api_outcome(&error))?;
         timing_done("action.call", running);
+        let mounted = self.mounted.get_mut(&holder).ok_or_else(unknown_action)?;
         // Where the action left its actor, for the API that shows it
         // working: the text it wrote, the item it acted on.
         let left_at = mounted.app.presence().map(bounded::placed);
@@ -2681,6 +2679,7 @@ impl Worker {
         taken: Vec<(DocumentRoute, DocumentMutation)>,
     ) -> Result<(), String> {
         let holder = self.holder_of(route);
+        let wrote: Vec<DocumentRoute> = taken.iter().map(|(route, _)| route.clone()).collect();
         for (changed, mutation) in taken {
             if changed != holder {
                 self.beside.insert(changed.clone(), holder.clone());
@@ -2694,6 +2693,9 @@ impl Worker {
                 self.beside.retain(|_, kept| *kept != holder);
                 return Err(reason);
             }
+        }
+        if let Some(mounted) = self.mounted.get_mut(&holder) {
+            caught_up_with_own(&holder, mounted, &wrote);
         }
         Ok(())
     }

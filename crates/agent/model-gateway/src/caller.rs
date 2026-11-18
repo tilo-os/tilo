@@ -43,11 +43,7 @@ pub(crate) fn permitted(session: &dyn Session, request: &crate::Request) -> bool
         }
         crate::Request::GetProviderConfig
         | crate::Request::SetProviderConfig { .. }
-        | crate::Request::SecretStatus { .. }
-        | crate::Request::CredentialStatus { .. }
-        | crate::Request::ListModels { .. }
-        | crate::Request::SetApiKey { .. }
-        | crate::Request::RemoveApiKey { .. } => {
+        | crate::Request::ListModels { .. } => {
             matches!(session.caller(), Caller::Settings) && session.may_manage_credentials()
         }
         _ => true, // The shared service additionally enforces app-specific verbs.
@@ -108,20 +104,13 @@ mod tests {
             &request
         ));
         let mut forbidden = vec![
-            serde_json::json!({"verb":"selection_configured", "profile_id":"p", "model_id":"m", "protocol":"open_ai_compat"}),
             serde_json::json!({"verb":"transform", "profile_id":"p", "model_id":"m", "instructions":"x", "input":"x", "max_output_tokens":1, "timeout_ms":1}),
             serde_json::json!({"verb":"analyze_image", "profile_id":"p", "model_id":"m", "image":{"media_type":"image/png", "data_base64":"AA==", "source_content_hash":"hash"}}),
             serde_json::json!({"verb":"trace", "trace":{"id":1,"turn":0}, "event":"plan_ready"}),
             serde_json::json!({"verb":"cluster_faces", "profile_id":"p", "model_id":"m", "images":[]}),
-            serde_json::json!({"verb":"secret_status", "profile_id":"p"}),
-            serde_json::json!({"verb":"credential_status", "profile_id":"p"}),
-            serde_json::json!({"verb":"set_api_key", "profile_id":"p", "api_key":"x"}),
-            serde_json::json!({"verb":"remove_api_key", "profile_id":"p"}),
+            serde_json::json!({"verb":"list_models", "profile_id":"p"}),
+            serde_json::json!({"verb":"get_provider_config"}),
         ];
-        // Use the typed protocol enum rather than guessing its serialized name.
-        forbidden[0]["protocol"] =
-            serde_json::to_value(agent_provider_config::ProviderProtocol::OpenAiCompatible)
-                .unwrap();
         for choice in ["auto", "required"] {
             let mut value = completion();
             value["request"]["tool_choice"] = choice.into();
@@ -223,7 +212,7 @@ mod tests {
                     expected_revision: "stale".into(),
                     config: agent_provider_config::ProviderConfig::default(),
                 },
-                crate::Request::CredentialStatus {
+                crate::Request::ListModels {
                     profile_id: "profile".into(),
                 },
             ] {

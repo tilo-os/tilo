@@ -343,8 +343,8 @@ fn sdk_apps_join_a_standalone_session_and_publish_to_mcp() {
                 .handle(json!({
                     "jsonrpc": "2.0",
                     "id": 1,
-                    "method": "tools/call",
-                    "params": {"name": "tilo_list_apps", "arguments": {}}
+                    "method": "resources/list",
+                    "params": {}
                 }))
                 .await
                 .unwrap()
@@ -362,12 +362,16 @@ fn sdk_apps_join_a_standalone_session_and_publish_to_mcp() {
     assert_eq!(roots.len(), 2, "both apps publish: {logs}");
     assert!(roots.iter().all(|root| root.app_id == "dev.tilo.same"));
     assert_ne!(roots[0].peer_id, roots[1].peer_id);
-    let apps = listed["result"]["structuredContent"]["apps"]
+    // MCP lists each instance as a resource of its own, named by its app.
+    let apps = listed["result"]["resources"]
         .as_array()
         .unwrap_or_else(|| panic!("{listed}"));
     assert_eq!(apps.len(), 2, "{listed}");
+    assert_ne!(apps[0]["uri"], apps[1]["uri"], "{listed}");
     assert!(
-        apps.iter().all(|app| app["app_id"] == "dev.tilo.same"),
+        apps.iter().all(|app| app["name"]
+            .as_str()
+            .is_some_and(|name| name.starts_with("dev.tilo.same ("))),
         "{listed}"
     );
     drop(session);

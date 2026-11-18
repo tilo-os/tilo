@@ -180,6 +180,9 @@ pub enum Grantee {
     /// Everyone holding `role` or a higher one: a grant to `Role::Viewer` is
     /// everyone in the workspace.
     Role(Role),
+    /// An app, by its id: what it may take of other apps' actions, and of the
+    /// desktop's, on its own account.
+    App(String),
 }
 
 impl Grantee {
@@ -209,41 +212,49 @@ impl Grantee {
         Self::Role(role)
     }
 
+    #[must_use]
+    pub fn app(id: impl Into<String>) -> Self {
+        Self::App(id.into())
+    }
+
     /// The member, when a grant names one.
     #[must_use]
     pub fn as_member(&self) -> Option<&crate::MemberId> {
         match self {
             Self::Member(member) => Some(member),
-            Self::Role(_) => None,
+            Self::Role(_) | Self::App(_) => None,
         }
     }
 
     #[must_use]
     pub fn person_id(&self) -> Option<&str> {
-        match self {
-            Self::Member(crate::MemberId::Person(person)) => Some(person.as_str()),
-            Self::Member(crate::MemberId::Agent(_) | crate::MemberId::Bot(_)) | Self::Role(_) => {
-                None
-            }
+        match self.as_member()? {
+            crate::MemberId::Person(person) => Some(person.as_str()),
+            crate::MemberId::Agent(_) | crate::MemberId::Bot(_) => None,
         }
     }
 
     #[must_use]
     pub fn agent_id(&self) -> Option<&str> {
-        match self {
-            Self::Member(crate::MemberId::Agent(agent)) => Some(agent),
-            Self::Member(crate::MemberId::Person(_) | crate::MemberId::Bot(_)) | Self::Role(_) => {
-                None
-            }
+        match self.as_member()? {
+            crate::MemberId::Agent(agent) => Some(agent),
+            crate::MemberId::Person(_) | crate::MemberId::Bot(_) => None,
         }
     }
 
     #[must_use]
     pub fn bot_id(&self) -> Option<&str> {
+        match self.as_member()? {
+            crate::MemberId::Bot(bot) => Some(bot),
+            crate::MemberId::Person(_) | crate::MemberId::Agent(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn app_id(&self) -> Option<&str> {
         match self {
-            Self::Member(crate::MemberId::Bot(bot)) => Some(bot),
-            Self::Member(crate::MemberId::Person(_) | crate::MemberId::Agent(_))
-            | Self::Role(_) => None,
+            Self::App(app) => Some(app),
+            Self::Member(_) | Self::Role(_) => None,
         }
     }
 
@@ -251,7 +262,7 @@ impl Grantee {
     pub fn role_of(&self) -> Option<Role> {
         match self {
             Self::Role(role) => Some(*role),
-            Self::Member(_) => None,
+            Self::Member(_) | Self::App(_) => None,
         }
     }
 }
@@ -261,6 +272,7 @@ impl fmt::Display for Grantee {
         match self {
             Self::Member(member) => member.fmt(f),
             Self::Role(role) => write!(f, "every {role}"),
+            Self::App(app) => write!(f, "app {app}"),
         }
     }
 }

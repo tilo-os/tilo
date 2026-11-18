@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use vello::Scene;
 use vello::kurbo::Affine;
 
+use tilo_rich_edit::RichTextLine;
 use tilo_ui::font_catalog::FontCatalog;
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::offscreen::OffscreenRenderer;
@@ -18,7 +19,7 @@ use tilo_ui::theme::Theme;
 use tilo_ui::tokens::{TextRole, UiFace};
 use tilo_ui::widget::marks::{Mark, MarkSpan};
 use tilo_ui::widget::{
-    Column, Container, Element, PermissionPrompt, RichTextLine, Row, Text, TextInput, TextInputKind,
+    Column, Container, Element, PermissionPrompt, Row, Text, TextInput, TextInputKind,
 };
 use tilo_ui::{State, TextKind};
 

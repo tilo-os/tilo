@@ -3,7 +3,7 @@
 //! Everything a member publishes takes the production path and the
 //! production encoding: edits are Automerge changes signed and admitted by a
 //! `StatePeer`, classified by the host retention rule and published as
-//! retained deltas; presence is the shell's own `NeighbourMsg`, wrapped by
+//! retained deltas; presence is a shell-shaped payload, wrapped by
 //! `ServerCoeditSession::publish_presence`. The input is deterministic: the
 //! same text, the same backspaces, the same pointer path, every run.
 
@@ -21,7 +21,6 @@ use iroh::EndpointAddr;
 use iroh::endpoint::{Endpoint, presets};
 use tokio::task::JoinHandle;
 
-use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_workspace};
 use tilo_server::{Inbound, ServerClient, ServerCoeditSession};
 use tilo_user_identity::{
@@ -65,6 +64,27 @@ const PRESENCE_FORGET: Duration = Duration::from_secs(2);
 /// Unreceived presence samples kept before the forgotten ones are swept.
 const PRESENCE_SWEEP: usize = 4_096;
 const COLOUR: &str = "teal";
+
+/// An app's typing and caret report, as the shell publishes it.
+#[derive(serde::Serialize)]
+struct AppPresence<'a> {
+    peer: u64,
+    app_id: &'a str,
+    cluster_id: &'a str,
+    presence: PeerPresence,
+    colour: Option<&'a str>,
+}
+
+/// One pointer move, as the shell publishes it.
+#[derive(serde::Serialize)]
+struct PointerMove<'a> {
+    peer: u64,
+    user: &'a str,
+    key: &'a str,
+    point: (f64, f64),
+    ts: u64,
+    colour: Option<&'a str>,
+}
 
 struct Device {
     sk: SigningKey,
@@ -554,15 +574,15 @@ impl Member {
     fn app_presence(&self, payload: PeerPresencePayload) -> anyhow::Result<()> {
         let timed = matches!(payload, PeerPresencePayload::Caret { .. }).then_some(Timed::Caret);
         self.presence(
-            &NeighbourMsg::RetiredAppPresenceV2 {
+            &AppPresence {
                 peer: self.handle,
-                app_id: APP.into(),
-                cluster_id: self.workspace.clone(),
+                app_id: APP,
+                cluster_id: &self.workspace,
                 presence: PeerPresence {
                     key: self.caret_key.clone(),
                     payload,
                 },
-                colour: Some(COLOUR.into()),
+                colour: Some(COLOUR),
             },
             timed,
         )
@@ -571,22 +591,26 @@ impl Member {
     /// One pointer move along a fixed path.
     fn point(&self, step: u32) -> anyhow::Result<()> {
         self.presence(
-            &NeighbourMsg::RetiredPresenceMoved {
+            &PointerMove {
                 peer: self.handle,
-                user: self.user.clone(),
-                key: self.pointer_key.clone(),
+                user: &self.user,
+                key: &self.pointer_key,
                 point: (
                     f64::from(step).mul_add(3.0, 200.0),
                     f64::from(step.checked_rem(20).unwrap_or(0)).mul_add(2.0, 300.0),
                 ),
                 ts: tilo_clock::unix_now_ms(),
-                colour: Some(COLOUR.into()),
+                colour: Some(COLOUR),
             },
             Some(Timed::Pointer),
         )
     }
 
-    fn presence(&self, message: &NeighbourMsg, timed: Option<Timed>) -> anyhow::Result<()> {
+    fn presence(
+        &self,
+        message: &impl serde::Serialize,
+        timed: Option<Timed>,
+    ) -> anyhow::Result<()> {
         let body = postcard::to_allocvec(message)?;
         if let Some(timed) = timed {
             self.fleet.presence_sent(&body, timed, self.recipients);

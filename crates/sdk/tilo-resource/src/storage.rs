@@ -357,6 +357,17 @@ fn staged_element(
 
 /// The functions of every [`Set`]: each element a key of a map.
 pub static SET_OPS: ModelOps = ModelOps {
+    // Its elements, each a key holding `true`.
+    fresh: |table, value, _| {
+        let Some(elements) = table.set().and_then(|set| (set.elements)(value)) else {
+            return crate::model::Fresh::Store;
+        };
+        let mut made = std::collections::HashMap::with_capacity(elements.count());
+        elements.each(&mut |key, _| {
+            made.insert(key.to_owned(), automerge::hydrate::Value::scalar(true));
+        });
+        crate::model::Fresh::Value(automerge::hydrate::Value::Map(made.into()))
+    },
     without_absent: crate::shape::kept_whole,
     to_json: |table, value| {
         let mut out = Vec::new();

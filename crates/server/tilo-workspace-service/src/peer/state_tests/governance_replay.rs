@@ -136,8 +136,7 @@ async fn a_reader_is_sent_no_request_live() {
         .workspace
         .lock()
         .await
-        .state_sessions
-        .get_mut(&fixture.recipient.device_public_key)
+        .newest_state_mut(&fixture.recipient.device_public_key)
         .unwrap()
         .channel_reader = true;
     enqueue_state(

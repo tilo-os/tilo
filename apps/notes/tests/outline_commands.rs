@@ -140,7 +140,7 @@ fn nesting_survives_concurrent_text_and_markdown_roundtrip_and_refuses_viewers()
     );
     crate::framework_support::notes_doc(&app, |doc| {
         assert_eq!(read::page_blocks(doc, page), read::page_blocks(&peer, page));
-        let mut editor = ui::widget::BlockEditor::new();
+        let mut editor = ui::rich_edit::BlockEditor::new();
         editor.present_blocks(&read::page_blocks(doc, page));
         let specs = notes::markdown::blocks_to_specs(editor.blocks());
         let source = notes::markdown::serialize(&specs);

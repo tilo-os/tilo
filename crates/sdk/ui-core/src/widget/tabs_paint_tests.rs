@@ -160,82 +160,63 @@ tilo_test_env::scenario! {
         assert_eq!(bar.fresh_draws, drawn, "a still ring is shown again");
     }
 
-    phase every_mutable_method_of_the_bar_touches_its_drawing;
-    // Every method that can change what the bar draws says so ([`TabBar::touch`]) before anything
-    // else, so a frame never shows a drawing of the bar from before the change.
+    phase every_change_to_the_bar_asks_for_a_frame;
+    // Every change of the bar's own state marks what it drew as stale, so a
+    // frame never shows a drawing of the bar from before the change.
     {
-        const JUDGE_THEMSELVES: &[&str] = &[
-            "draw",
-            "draw_fresh",
-            "draw_overlay",
-            "touch",
-            "update",
-            "settle_hover_intent",
-            "cancel_close",
-            "set_history_control",
-            "set_resize",
-            "set_carriable",
-            "set_group_focused",
-            "set_popup_area",
-            "set_opened_by",
-            "set_opened_by_focused",
-            "draw_opened_by_chip",
+        use crate::presence::frame;
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let clean = |bar: &TabBar| frame::lend(&presence, || !Widget::needs_redraw(bar));
+        let draw = |bar: &mut TabBar, tr: &mut TextRenderer| {
+            frame::lend(&presence, || {
+                let mut scene = Scene::new();
+                bar.draw(&mut scene, Affine::IDENTITY, tr, &theme, &presence);
+            });
+        };
+        #[allow(clippy::type_complexity, reason = "one table of one-line changes")]
+        let changes: Vec<(&str, Box<dyn Fn(&mut TabBar)>)> = vec![
+            (
+                "a tab marked edited",
+                Box::new(|bar: &mut TabBar| bar.set_modified(2, true)),
+            ),
+            (
+                "a tab marked busy",
+                Box::new(|bar: &mut TabBar| bar.set_mark(2, Some(TabMark::Busy))),
+            ),
+            (
+                "a tab given its history",
+                Box::new(|bar: &mut TabBar| {
+                    bar.set_history_control(2, Some(crate::widget::HistoryControl::Open));
+                }),
+            ),
+            (
+                "the window control's meaning",
+                Box::new(|bar: &mut TabBar| {
+                    bar.set_resize(crate::widget::window_controls::Resize::Restore);
+                }),
+            ),
+            (
+                "a bar made carriable",
+                Box::new(|bar: &mut TabBar| bar.set_carriable(true)),
+            ),
+            (
+                "the group focused",
+                Box::new(|bar: &mut TabBar| bar.set_group_focused(true)),
+            ),
+            (
+                "the opened-by mark focused",
+                Box::new(|bar: &mut TabBar| bar.set_opened_by_focused(true)),
+            ),
         ];
-        let files = [
-            ("tabs.rs", include_str!("tabs.rs")),
-            ("tabs_rename.rs", include_str!("tabs_rename.rs")),
-            ("tabs_status_chips.rs", include_str!("tabs_status_chips.rs")),
-            ("tabs_title_menu.rs", include_str!("tabs_title_menu.rs")),
-        ];
-        let mut missing = Vec::new();
-        let mut checked = 0;
-        for (file, source) in files {
-            let lines: Vec<&str> = source.lines().collect();
-            let mut bar_impl = false;
-            let mut index = 0;
-            while index < lines.len() {
-                let line = lines[index];
-                if line.starts_with("impl") {
-                    bar_impl = line.contains("TabBar {") || line.ends_with("for TabBar {");
-                } else if line.starts_with('}') {
-                    bar_impl = false;
-                }
-                let signature = line.trim_start();
-                let method = line.starts_with("    fn ")
-                    || line.starts_with("    pub fn ")
-                    || line.starts_with("    pub(crate) fn ")
-                    || line.starts_with("    pub(super) fn ");
-                if bar_impl && method {
-                    let name = signature
-                        .split("fn ")
-                        .nth(1)
-                        .and_then(|rest| rest.split(['(', '<']).next())
-                        .unwrap_or_default();
-                    let mut end = index;
-                    let mut whole = String::from(line);
-                    while !lines[end].ends_with('{') && !lines[end].ends_with(';') {
-                        end += 1;
-                        whole.push_str(lines[end]);
-                    }
-                    let exempt = JUDGE_THEMSELVES.contains(&name)
-                        || name.starts_with("take_")
-                        || name.ends_with("_for_tests");
-                    if whole.contains("&mut self") && lines[end].ends_with('{') && !exempt {
-                        checked += 1;
-                        if lines.get(end + 1).map(|line| line.trim()) != Some("self.touch();") {
-                            missing.push(format!("{file}:{} {name}", index + 1));
-                        }
-                    }
-                    index = end;
-                }
-                index += 1;
-            }
+        for (change, mutate) in changes {
+            let mut bar = bar();
+            draw(&mut bar, &mut tr);
+            assert!(clean(&bar), "{change}: the bar is clean once drawn");
+            mutate(&mut bar);
+            assert!(!clean(&bar), "{change}: a change asks for a frame");
         }
-        assert!(checked > 50, "the scan found the methods: {checked}");
-        assert!(
-            missing.is_empty(),
-            "methods that change the bar unseen: {missing:?}"
-        );
     }
 
     phase a_slot_change_repaints_only_the_bar;

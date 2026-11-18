@@ -96,12 +96,12 @@ tilo_test_env::scenario! {
                 .map(|block| (block.kind, block.text))
                 .collect::<Vec<_>>(),
             [
-                (ui::widget::BlockKind::Paragraph, "Hi Ada,".to_owned()),
+                (ui::rich_edit::BlockKind::Paragraph, "Hi Ada,".to_owned()),
                 (
-                    ui::widget::BlockKind::Paragraph,
+                    ui::rich_edit::BlockKind::Paragraph,
                     "Thanks for the notes.".to_owned()
                 ),
-                (ui::widget::BlockKind::Quote, "the notes".to_owned()),
+                (ui::rich_edit::BlockKind::Quote, "the notes".to_owned()),
             ]
         );
     }
@@ -705,8 +705,8 @@ fn the_draft_body_is_rich_text_started_and_edited_at_its_path() {
             .map(|(kind, text, _)| (kind.clone(), text.as_str()))
             .collect::<Vec<_>>(),
         [
-            (ui::widget::BlockKind::Paragraph, "Thanks!"),
-            (ui::widget::BlockKind::Quote, "original *as is*"),
+            (ui::rich_edit::BlockKind::Paragraph, "Thanks!"),
+            (ui::rich_edit::BlockKind::Quote, "original *as is*"),
         ]
     );
     edit(
@@ -739,8 +739,8 @@ fn the_draft_body_is_rich_text_started_and_edited_at_its_path() {
             .map(|(kind, text, _)| (kind, text))
             .collect::<Vec<_>>(),
         [
-            (ui::widget::BlockKind::Heading(2), "Plan".to_owned()),
-            (ui::widget::BlockKind::Paragraph, "ship it".to_owned()),
+            (ui::rich_edit::BlockKind::Heading(2), "Plan".to_owned()),
+            (ui::rich_edit::BlockKind::Paragraph, "ship it".to_owned()),
         ]
     );
     mail.apply_confirmed(Mail::DISCARD_DRAFT.with(mailbox::DiscardDraft { draft: None }))

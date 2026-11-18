@@ -432,6 +432,10 @@ pub enum ErrorKind {
     Truncated,
     Refused,
     Transport,
+    /// This computer can't reach the server that keeps the person's
+    /// workspace, where their model is asked: there is no model while it is
+    /// offline, and nothing on this computer answers instead.
+    Offline,
 }
 
 /// Safe frontend diagnostic. Backends must not place credentials or raw
@@ -448,6 +452,10 @@ impl ModelError {
     pub fn new(kind: ErrorKind) -> Self {
         let message = match kind {
             ErrorKind::Unavailable => "Model service unavailable",
+            ErrorKind::Offline => {
+                "No model while offline: your model is asked on your workspace's server, which \
+                 this computer can't reach right now"
+            }
             ErrorKind::NoProvider => "No model provider is set up yet",
             ErrorKind::Authentication => {
                 "Provider authentication failed; check the credential in Settings"
@@ -532,6 +540,7 @@ impl ModelError {
             ErrorKind::ContextLimit => Recovery::ReduceContext,
             ErrorKind::Truncated => Recovery::ContinueText,
             ErrorKind::Unavailable
+            | ErrorKind::Offline
             | ErrorKind::TimedOut
             | ErrorKind::Transport
             | ErrorKind::Provider => Recovery::RetryInference,

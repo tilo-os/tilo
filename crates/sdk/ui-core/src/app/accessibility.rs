@@ -1459,6 +1459,13 @@ impl App {
         self.dispatch_semantic_press(x, y, winit::event::MouseButton::Left)
     }
 
+    /// Activate the control at `(x, y)` as assistive technology does: the pointer moves there,
+    /// presses and releases. Whether a control took it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn semantic_click_for_test(&mut self, x: f64, y: f64) -> bool {
+        self.dispatch_semantic_click(x, y)
+    }
+
     /// [`Self::dispatch_semantic_click`] with `button`: a secondary click opens a menu.
     fn dispatch_semantic_press(
         &mut self,

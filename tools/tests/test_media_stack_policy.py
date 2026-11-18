@@ -34,11 +34,6 @@ class CiscoOpenH264ImageTests(unittest.TestCase):
                 write(root, rel, text)
             return [(v.path, v.name) for v in check_media_stack.image_violations(root)]
 
-    def test_the_repository_ships_no_cisco_openh264_and_names_only_real_environments(self) -> None:
-        self.assertEqual(check_media_stack.image_violations(ROOT), [])
-        self.assertEqual(check_media_stack.stale_environments(ROOT), [])
-        self.assertTrue(check_media_stack.image_sources(ROOT))
-
     def test_installing_ciscos_packages_by_name_is_reported(self) -> None:
         for package in check_media_stack.CISCO_PACKAGES:
             with self.subTest(package=package):

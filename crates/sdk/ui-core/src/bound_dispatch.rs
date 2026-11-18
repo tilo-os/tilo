@@ -126,6 +126,21 @@ impl std::fmt::Display for BoundActionError {
     }
 }
 impl std::error::Error for BoundActionError {}
+
+/// Why a resource's operation failed, as the API answers it: a resource that
+/// says what an action changes has not arrived yet
+/// ([`tilo_actions::api::NOT_READY_REASON`]) answers a refusal whose caller
+/// asks again, rather than a failure that says nothing was made.
+fn operation_failure(reason: String) -> tilo_actions::ApiError {
+    if reason == tilo_actions::api::NOT_READY_REASON {
+        return tilo_actions::ApiError::Unavailable {
+            code: tilo_actions::api::NOT_READY.to_owned(),
+            reason,
+        };
+    }
+    tilo_actions::ApiError::Failed(reason)
+}
+
 /// The unchanged domain enum groups Unavailable failures.
 pub(crate) fn api_error_code(error: &tilo_actions::ApiError) -> &str {
     if let tilo_actions::ApiError::Unavailable { code, .. } = error
@@ -1352,8 +1367,8 @@ pub(crate) struct BoundOwnerMark {
 }
 
 /// What an owner's published controls and synced root read besides its record and its widgets: what its
-/// permissions mean now (a grant expires with time) and its record's durability, which its root shows
-/// once synced.
+/// permissions mean now (a grant expires with time) and the durability it shows (its record's and its
+/// chain parts', [`CallbackBinding::shown_save_status`]), which its root shows once synced.
 #[derive(PartialEq)]
 pub(crate) struct OwnerInputs {
     pub(crate) permissions: Result<crate::permissions::DirectoryPermissionObservation, String>,
@@ -1402,8 +1417,7 @@ fn owner_marks(root: &dyn Widget, outer: &AutoCommit, inputs: bool) -> Vec<Bound
             let inputs = inputs.then(|| OwnerInputs {
                 permissions: binding.permissions.borrow().directory_observation(),
                 save: binding
-                    .records
-                    .save_status(&binding.checkout.id)
+                    .shown_save_status(&binding.chain_parts())
                     .map_err(|error| error.to_string()),
             });
             drop(entry);
@@ -2983,7 +2997,7 @@ pub(crate) fn execute_resource_operation(
                     path,
                 )
             })
-            .map_err(tilo_actions::ApiError::Failed)?
+            .map_err(operation_failure)?
             .ok_or_else(|| tilo_actions::ApiError::Unknown(address.clone()))?
         };
         match &started {
@@ -4537,7 +4551,53 @@ impl CallbackBinding {
 
     /// The durability the window shows: its own document's and `parts`', the
     /// worse of them, since a window whose part is not stored has unsaved
-    /// work whoever writes it. Arms `wake` for each one still being written.
+    /// work whoever writes it.
+    ///
+    /// # Errors
+    /// The window's own document cannot be sampled now.
+    pub(crate) fn shown_save_status(
+        &self,
+        parts: &[DocumentCheckout],
+    ) -> Result<ResourceSaveStatus, ResourceOpenError> {
+        let held = &self.records;
+        let mut status = held.save_status(&self.checkout.id)?;
+        for part in parts {
+            if matches!(status, ResourceSaveStatus::Failed(_)) {
+                break;
+            }
+            match held.save_status(&part.id) {
+                Ok(failed @ ResourceSaveStatus::Failed(_)) => status = failed,
+                Ok(ResourceSaveStatus::Saving) if status == ResourceSaveStatus::Saved => {
+                    status = ResourceSaveStatus::Saving;
+                }
+                _ => {}
+            }
+        }
+        Ok(status)
+    }
+
+    /// Arm `wake` for every write the window shows still being written, its
+    /// own and `parts`': some stores move a save on only once asked to watch
+    /// it.
+    pub(crate) fn arm_save_progress(
+        &self,
+        parts: &[DocumentCheckout],
+        wake: &durable_store::ReadyWake,
+    ) {
+        let arm = |id| {
+            if self.records.save_status(id).ok() == Some(ResourceSaveStatus::Saving) {
+                self.records
+                    .wake_on_save_progress(id, std::sync::Arc::clone(wake));
+            }
+        };
+        arm(&self.checkout.id);
+        for part in parts {
+            arm(&part.id);
+        }
+    }
+
+    /// [`Self::shown_save_status`], arming `wake` for each write still in
+    /// flight first, so a save that landed before the arming is heard of.
     ///
     /// # Errors
     /// The window's own document cannot be sampled now.
@@ -4546,33 +4606,8 @@ impl CallbackBinding {
         parts: &[DocumentCheckout],
         wake: &durable_store::ReadyWake,
     ) -> Result<ResourceSaveStatus, ResourceOpenError> {
-        let held = &self.records;
-        let arm = |id| {
-            held.wake_on_save_progress(id, std::sync::Arc::clone(wake));
-        };
-        let mut status = held.save_status(&self.checkout.id)?;
-        if status == ResourceSaveStatus::Saving {
-            arm(&self.checkout.id);
-            status = held.save_status(&self.checkout.id)?;
-        }
-        for part in parts {
-            if matches!(status, ResourceSaveStatus::Failed(_)) {
-                break;
-            }
-            match held.save_status(&part.id) {
-                Ok(failed @ ResourceSaveStatus::Failed(_)) => status = failed,
-                Ok(ResourceSaveStatus::Saving) => {
-                    arm(&part.id);
-                    if held.save_status(&part.id).ok() == Some(ResourceSaveStatus::Saving)
-                        && status == ResourceSaveStatus::Saved
-                    {
-                        status = ResourceSaveStatus::Saving;
-                    }
-                }
-                _ => {}
-            }
-        }
-        Ok(status)
+        self.arm_save_progress(parts, wake);
+        self.shown_save_status(parts)
     }
 
     pub(crate) fn broker_route(&self) -> Option<crate::collaboration::RouteSpec> {

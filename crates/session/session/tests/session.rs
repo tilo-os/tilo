@@ -2325,18 +2325,8 @@ fn the_display_action_steps_through_the_ways_of_using_two_displays() {
 }
 
 // =====================================================================
-// Side-by-side capture harness against the old shell's `shots`
+// Stepping a session, for the tests that read what it draws
 // =====================================================================
-//
-// Every frame here has an old-shell counterpart rendered by
-// `shots --mode offscreen` at the same 1280x800; the two are paired and
-// diffed outside the tree. The set is the states a person meets first: the
-// empty shell, a window, two windows, the overview over them, quick settings,
-// search, a notification banner, a dialog over a window and the lock screen,
-// in the dark theme the captures are taken in (and the empty shell in light).
-//
-// Frames are written to `$PIXEL_PARITY_OUT` (default
-// `~/.cache/pixel-parity/new`) and named after the old shell's scenes.
 
 /// Step `frames` frames of a millisecond each, so what a state's arrival animates has arrived
 /// (motion reads settled, the panels still lay out).

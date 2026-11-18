@@ -114,6 +114,7 @@ impl TextAnchor {
 
 impl Model for TextAnchor {
     tilo_resource::leaf_paths!();
+    tilo_resource::__own_table!(TextAnchor);
 
     fn to_json(&self) -> serde_json::Value {
         self.placed

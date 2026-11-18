@@ -13,7 +13,6 @@ mod geom;
 mod interaction;
 mod written;
 pub use written::written_by;
-pub(crate) use written::written_in;
 mod key;
 mod labels;
 mod layer;

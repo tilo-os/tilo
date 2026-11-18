@@ -114,6 +114,9 @@ impl Model for Id {
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         slot.put_scalar(doc, ScalarValue::Str(self.0.as_str().into()))
     }
+    fn fresh(&self, _: automerge::TextEncoding) -> crate::model::Fresh {
+        crate::model::Fresh::scalar(ScalarValue::Str(self.0.as_str().into()))
+    }
 }
 
 pub(crate) const ORDER: &str = "k";
@@ -728,8 +731,19 @@ pub(crate) fn put_entry(
     if order_only {
         return Slot::Key(map, id.as_str()).put_scalar(doc, ScalarValue::Str(key.into()));
     }
-    let entry = Slot::Key(map, id.as_str()).object(doc, ObjType::Map)?;
-    Slot::Key(&entry, ORDER).put_scalar(doc, ScalarValue::Str(key.into()))?;
+    let at = Slot::Key(map, id.as_str());
+    let entry = if let Some((Value::Object(ObjType::Map), entry)) = at.current(doc)? {
+        Slot::Key(&entry, ORDER).put_scalar(doc, ScalarValue::Str(key.into()))?;
+        entry
+    } else {
+        // A new entry is made with its order key at once.
+        let mut made = std::collections::HashMap::with_capacity(1);
+        made.insert(
+            ORDER.to_owned(),
+            automerge::hydrate::Value::Scalar(ScalarValue::Str(key.into())),
+        );
+        at.make(doc, &automerge::hydrate::Value::Map(made.into()))?
+    };
     store(doc, Slot::Key(&entry, VALUE)).located(id.as_str())
 }
 
@@ -1922,6 +1936,14 @@ fn load_into(
 /// The functions of every [`Collection`], over its item type's table.
 pub static COLLECTION_OPS: ModelOps = ModelOps {
     without_absent: crate::shape::kept_whole,
+    // An empty collection is an empty map; one holding items mints their
+    // order keys as its `store` writes them.
+    fresh: |table, value, _| match table.collection().and_then(|desc| (desc.entries)(value)) {
+        Some(entries) if entries.count() == 0 => {
+            crate::model::Fresh::Value(automerge::hydrate::Value::map())
+        }
+        _ => crate::model::Fresh::Store,
+    },
     to_json: |table, value| {
         let (Ok(desc), Some(entries)) = (
             listed(table),

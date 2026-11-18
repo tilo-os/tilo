@@ -1,6 +1,8 @@
-//! What a person has told one of their agents, or the work on an issue, it
-//! may do: allowed, asks first, or not allowed, for each kind of action, scoped to an application, one kind
-//! of resource in it, or one action.
+//! What a person has told one of their agents, the work on an issue, or an
+//! app, it may do: allowed, asks first, or not allowed, for each kind of
+//! action, scoped to an application, one kind of resource in it, or one
+//! action. An app's answer is what it may take of another app's actions:
+//! "Recorder may post to Chat" is asked and kept like an agent's.
 //!
 //! These are ordinary grants on the workspace, named so that setting an answer
 //! again replaces it instead of adding a second one. Without one, a run a
@@ -146,11 +148,16 @@ pub fn grant_id(agent: &str, scope: &AnswerScope, kind: ActionKind) -> GrantId {
     GrantId(format!("{PREFIX}{agent}:{}:{kind}", scope.key()))
 }
 
-/// Whether `grant` is an answer: given to an agent, or for one issue's runs.
+/// Whether `grant` is an answer: given to an agent or an app, or for one
+/// issue's runs.
 #[must_use]
 pub fn is_answer(grant: &Grant) -> bool {
     let id = grant.id.as_str();
-    (id.starts_with(PREFIX) && matches!(grant.grantee, Grantee::Member(crate::MemberId::Agent(_))))
+    (id.starts_with(PREFIX)
+        && matches!(
+            grant.grantee,
+            Grantee::Member(crate::MemberId::Agent(_)) | Grantee::App(_)
+        ))
         || crate::is_session_answer(grant)
 }
 
@@ -173,8 +180,8 @@ pub fn grant(
     )
 }
 
-/// The grant giving `delegate` (an agent) `answer` for actions of `kind` at
-/// `scope` in `workspace`, set by `granted_by`.
+/// The grant giving `delegate` (an agent or an app) `answer` for actions of
+/// `kind` at `scope` in `workspace`, set by `granted_by`.
 #[must_use]
 pub fn answer_grant(
     workspace: &str,
@@ -185,6 +192,7 @@ pub fn answer_grant(
 ) -> Grant {
     let key = match &delegate {
         Grantee::Member(crate::MemberId::Agent(agent)) => agent.clone(),
+        Grantee::App(app) => format!("app:{app}"),
         other => other.to_string(),
     };
     Grant::new(

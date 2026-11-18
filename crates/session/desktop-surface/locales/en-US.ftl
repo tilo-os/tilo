@@ -465,6 +465,7 @@ workspace-settings-allows-use = Use { $what }
 workspace-settings-allows-reach = Reach { $what }
 workspace-settings-allows-edit = Edit { $what }
 workspace-settings-allows-view = View { $what }
+workspace-settings-allows-action = Use “{ $action }” in { $app }
 workspace-settings-subject-foreign-device = devices that are not their own
 workspace-settings-granted-by-person = granted by { $id }
 workspace-settings-granted-by-you = granted by you
@@ -546,12 +547,18 @@ workspace-settings-agents-unavailable = The workspace's agents cannot be read on
 workspace-settings-agent-name-needed = Name the agent first
 workspace-settings-review-access = Review access
 workspace-settings-agent-access-back = All agents
-workspace-settings-agent-access-note = Choose what this agent may do in each app. Sending, publishing and deleting for good still ask you first, unless you chose Always allow for that action.
+workspace-settings-agent-access-note = In apps, outside effects ask you first or are denied; in your own account you may allow them.
 workspace-settings-agent-access-read = Reading
 workspace-settings-agent-access-change = Changes
 workspace-settings-agent-access-outside = Outside effects
 workspace-settings-agent-access-workspaces = Your workspaces
+# The account's workspace actions of kind outside: workspace.create, workspace.create-own,
+# workspace.branch-own, workspace.enter and workspace.delete.
+workspace-settings-agent-access-workspaces-effects = Creating, branching, entering and deleting your workspaces.
 workspace-settings-agent-access-members = Members and settings
+# The governance actions of kind outside (tilo_action_policy::roles::governance::ALL) and the
+# verbs the workspace's server publishes beside them.
+workspace-settings-agent-access-members-effects = Inviting and removing people, their roles and bans, and the workspace's settings and bots.
 workspace-settings-agent-access-set-here = Set here
 workspace-settings-agent-access-reset = Use defaults
 workspace-settings-agent-access-always = { $count } always allowed
@@ -577,7 +584,6 @@ workspace-settings-agent-limit-keeper = Only { $name } sets what it may spend a 
 workspace-settings-agent-limit-placeholder = Dollars a day
 workspace-settings-agent-limit-set = Set
 workspace-settings-agent-limit-not-amount = A limit is an amount of dollars, like 5 or 0.50
-workspace-settings-agent-access-empty = No apps in this workspace yet.
 workspace-settings-answer-allow = Allow
 workspace-settings-answer-ask = Ask first
 workspace-settings-answer-deny = Deny

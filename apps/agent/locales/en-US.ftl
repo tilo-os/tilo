@@ -28,6 +28,7 @@ agent-fail-spend-limit = { $agent } has used today's { $spent }; ask its keeper 
 # exposed reasoning and the recovery instruction the agent follows are the
 # run's working resource, never this copy.
 agent-failure-unavailable = The model's service is unavailable right now.
+agent-failure-offline = No model while offline: your model is asked on your workspace's server, which this computer can't reach right now.
 agent-failure-no-provider = No model is set up. Choose one in Settings, under Agent models.
 agent-failure-authentication = The model's provider did not accept its credential. Check it in Settings.
 agent-failure-permission-denied = The model's provider refused this request.

@@ -72,7 +72,7 @@ paths = ["apps/poker/*"]
 [[allow]]
 reason = "iroh's NAT and packet relay, and the live session's relaying device: iroh's own infrastructure, and the one Tilo role that keeps the word relay."
 words = ["relay"]
-identifiers = ["RelayMode", "RelayUrl", "RelayMap", "RelayNode", "RelayUrlParseError"]
+identifiers = ["RelayMode", "RelayUrl", "RelayMap", "RelayNode", "RelayUrlParseError", "relay_mode", "ByRelay"]
 
 [[allow]]
 reason = "iroh's NAT and packet relay, and the live session's relaying device: iroh's own infrastructure, and the one Tilo role that keeps the word relay."
@@ -92,6 +92,7 @@ paths = [
     "crates/server/tilo-server-protocol/src/config.rs",
     "crates/server/tilo-server-protocol/tests/formats.rs",
     "crates/runtime/tilo-identity/src/enrollment/mod.rs",
+    "crates/server/tilo-server-client/src/host.rs",
     "crates/server/tilo-server/src/agents.rs",
     "crates/server/tilo-server/src/daemon.rs",
     "crates/server/tilo-server/src/web_cli.rs",
@@ -100,12 +101,16 @@ paths = [
     "crates/server/tilo-workspace-service/Cargo.toml",
     "crates/platform/tilo-net-p2p/src/lib.rs",
     "crates/session/client/src/session.rs",
+    "crates/session/client/src/session/connect.rs",
+    "crates/session/client/tests/invitation_entry.rs",
+    "crates/session/client/tests/server_restart.rs",
     "crates/session/session/src/sync/client/mod.rs",
     "crates/session/session/src/enrollment.rs",
     "crates/session/session/src/window_share.rs",
     "crates/system/fs/src/full_replica.rs",
     "crates/system/tilo-auth/Cargo.toml",
     "crates/system/tilo-cli/src/login.rs",
+    "crates/system/tilo-cli/src/mcp.rs",
     "docs/architecture/web-page-actors.md",
     "docs/architecture/workspace.md",
     "docs/device-reach.md",
@@ -130,6 +135,11 @@ paths = ["crates/collab/tilo-peer-state/src/owner/publication.rs"]
 reason = "Taffy's layout constraint, an external API's type name."
 words = ["space"]
 identifiers = ["AvailableSpace"]
+
+[[allow]]
+reason = "The constant the launcher names the app-process socket by: the service an app is handed, not Tilo's word for a machine."
+words = ["host"]
+identifiers = ["APP_HOST_SERVICE"]
 
 [[allow]]
 reason = "An email's subject line."
@@ -686,10 +696,13 @@ identifiers = ["Record"]
 paths = ["sdk/typescript/**"]
 
 [[allow]]
-reason = "The server fixture's own device, as the shared API fixture names its field (`OnServer::host`)."
+reason = "The server fixture's own device and its certificate, as the shared fixtures name them (`OnServer::host`, `HostEndpoint::host_cert`)."
 words = ["host"]
-identifiers = ["host"]
-paths = ["crates/agent/agent-session/tests/workspace_actions/key_writes.rs"]
+identifiers = ["host", "host_cert"]
+paths = [
+    "crates/agent/agent-session/tests/workspace_actions/key_writes.rs",
+    "crates/agent/agent-session/tests/workspace_actions/member_roles.rs",
+]
 
 [[allow]]
 reason = "t's name for this check and the image it tests, the console of the VM it boots the image in, and the boot-assessment runner's own variable naming the unit it breaks: names those tools give them, not Tilo concepts."
@@ -800,3 +813,50 @@ reason = "Chat's own name for the conversation a question is put in, as its ask 
 words = ["channel"]
 identifiers = ["channel"]
 paths = ["crates/agent/agent-session/tests/workspace_actions/hosted_consent_notification.rs"]
+
+[[allow]]
+reason = "The frame's own API for the row of an app's window parts, whose name the toolkit keeps."
+words = ["host"]
+paths = ["crates/sdk/ui-core/src/headless/part_row.rs"]
+identifiers = ["host_window_parts", "hosts_window_parts"]
+
+[[allow]]
+reason = "The session tests' support helpers that start and restart a test server, by the names the other session tests import them under."
+words = ["host"]
+identifiers = ["HostSettings", "start_host_serving", "restart_host_relayed"]
+paths = ["crates/session/client/tests/server_restart.rs"]
+
+[[allow]]
+reason = "Tokio's mpsc hand-off: the pipe a streamed answer's events go through from the task that follows the model to the body that sends them."
+words = ["channel"]
+identifiers = ["channel", "unbounded_channel"]
+paths = [
+    "crates/agent/model-gateway/src/server_ask_tests.rs",
+    "crates/server/tilo-api/src/v1/model_asks.rs",
+]
+
+[[allow]]
+reason = "The session tests' support helpers that start a test server for workspaces, by the names the other session tests import them under, and the server client's types for the address it dials."
+words = ["host"]
+identifiers = ["start_workspace_host", "start_workspace_host_relaying", "Host", "HostAddress"]
+paths = ["crates/session/client/tests/invitation_entry.rs"]
+
+[[allow]]
+reason = "The url crate's name for a URL's host part: which computers can open a site is read from it."
+words = ["host"]
+identifiers = ["host", "Host"]
+paths = ["crates/server/tilo-api/src/session/members.rs"]
+
+[[allow]]
+reason = "The workspace's invocation listing names the document a change was made in as its `record`: this file reads it to name the part of a chain an undo changes."
+words = ["record"]
+identifiers = ["record", "records"]
+paths = [
+    "crates/runtime/tilo-mcp/src/mcp_tilo.rs",
+    "crates/platform/tilolang-tilo/src/task.rs",
+]
+
+[[allow]]
+reason = "The argument names of Chat's post (its channel) and the library's shelve (a book's subject), which the agent tests call by name."
+words = ["channel", "subject"]
+paths = ["crates/agent/agent-session/tests/host_agents.rs"]

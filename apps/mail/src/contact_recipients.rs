@@ -3,6 +3,7 @@
 //! Email hints are deliberately independent of confirmed messaging identities.
 
 use tilo_contact_directory::{ContactDirectory, EmailHint, canonical_email_hint};
+use tilo_sort::CompactSort as _;
 use ui::framework::LiveRow;
 use ui::tilo_resource::{Effect, SearchEntry};
 
@@ -76,7 +77,7 @@ fn choices(directory: &ContactDirectory, accounts: &[crate::account::Account]) -
             }
         }
     }
-    choices.sort_by_key(Choice::id);
+    choices.compact_sort_by_key(Choice::id);
     choices
 }
 

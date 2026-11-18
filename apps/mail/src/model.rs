@@ -12,6 +12,7 @@ use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tilo_sort::CompactSort as _;
 
 use serde::{Deserialize, Serialize};
 use ui::icons::Icon;
@@ -565,7 +566,7 @@ impl Mailbox {
                 f => m.folder == f,
             })
             .collect();
-        v.sort_by_key(|m| Reverse(m.timestamp_min));
+        v.compact_sort_by_key(|m| Reverse(m.timestamp_min));
         v
     }
 
@@ -631,7 +632,7 @@ impl Mailbox {
         let mut threads: Vec<Thread> = by_anchor
             .into_iter()
             .filter_map(|(id, mut ids)| {
-                ids.sort_by(|left, right| {
+                ids.compact_sort_by(|left, right| {
                     let left_time = self.messages.get(left).map_or(0, |m| m.timestamp_min);
                     let right_time = self.messages.get(right).map_or(0, |m| m.timestamp_min);
                     left_time.cmp(&right_time).then_with(|| left.cmp(right))
@@ -645,7 +646,7 @@ impl Mailbox {
                     })
             })
             .collect();
-        threads.sort_by(|a, b| {
+        threads.compact_sort_by(|a, b| {
             let an = a
                 .message_ids
                 .iter()
@@ -705,7 +706,7 @@ impl Mailbox {
                 v.push(m);
             }
         }
-        v.sort_by_key(|m| Reverse(m.timestamp_min));
+        v.compact_sort_by_key(|m| Reverse(m.timestamp_min));
         MailboxSearchPage {
             messages: v,
             inspected,

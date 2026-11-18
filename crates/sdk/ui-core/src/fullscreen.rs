@@ -651,10 +651,4 @@ mod tests {
             }
         }
     }
-
-    #[test]
-    fn request_constructors_carry_view() {
-        assert!(!FullscreenRequest::mirror(FullscreenTarget::Largest).is_distinct());
-        assert!(FullscreenRequest::distinct(FullscreenTarget::Largest).is_distinct());
-    }
 }

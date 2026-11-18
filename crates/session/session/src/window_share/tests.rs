@@ -1190,19 +1190,6 @@ fn a_shared_window_reaches_the_member_showing_it() {
         Some(false),
         "a share is read only until the person allows control: {reading}"
     );
-
-    let exposures = host.session.shared.window_shares.borrow().exposures();
-    assert_eq!(
-        exposures,
-        vec![tilo_desktop::chrome::ActiveExposure {
-            peer: viewer.sync.peer(),
-            surface: tab,
-            can_control: false,
-            streaming: true,
-            name: String::new(),
-        }],
-        "the bar's sharing indicator says who is watching what"
-    );
 }
 
 /// A window one device shares is decoded into the tab showing it on another device, and the

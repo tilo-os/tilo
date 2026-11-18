@@ -486,7 +486,10 @@ fn package_findings(
     let mut findings = cargo.findings.clone();
     let scanner = Scanner::new(table, &cargo.native_idents);
     let mut files: usize = 0;
-    for (file, tokens) in shipped_modules(&cargo.roots(dir))? {
+    // Both passes below walk the same files; the second one reads a copy of the
+    // parsed module rather than the file again.
+    let mut parsed = BTreeMap::new();
+    for (file, tokens) in modules_without(&cargo.roots(dir), &[], &mut parsed)? {
         files = files.saturating_add(1);
         let relative = file.strip_prefix(dir).unwrap_or(&file).to_path_buf();
         let mut hits = Vec::new();
@@ -505,28 +508,36 @@ fn package_findings(
     }
     // A web-only rule counts only the code a web build compiles: code under a
     // feature that build leaves off (`#[cfg(feature = "desktop")]`) is that
-    // build's alone.
-    let absent: Vec<&str> = NOT_WEB_FEATURES
-        .iter()
-        .copied()
-        .chain(cargo.web_absent.iter().map(String::as_str))
-        .collect();
-    let mut on_web = BTreeSet::new();
-    for (file, tokens) in modules_without(&cargo.roots(dir), &absent)? {
-        let relative = file.strip_prefix(dir).unwrap_or(&file).to_path_buf();
-        let mut hits = Vec::new();
-        scanner.scan(tokens, &mut hits);
-        on_web.extend(
-            hits.into_iter()
-                .map(|(line, kind, _)| (relative.clone(), line, kind.rule())),
-        );
-    }
-    findings.retain(|finding| {
+    // build's alone. Reading the web build's module set means parsing every
+    // file again, which only a finding of such a rule can be changed by.
+    let web_only = findings.iter().any(|finding| {
         table
             .rule(finding.kind.rule())
-            .is_none_or(|rule| rule.applies != Applies::Web)
-            || on_web.contains(&(finding.path.clone(), finding.line, finding.kind.rule()))
+            .is_some_and(|rule| rule.applies == Applies::Web)
     });
+    if web_only {
+        let absent: Vec<&str> = NOT_WEB_FEATURES
+            .iter()
+            .copied()
+            .chain(cargo.web_absent.iter().map(String::as_str))
+            .collect();
+        let mut on_web = BTreeSet::new();
+        for (file, tokens) in modules_without(&cargo.roots(dir), &absent, &mut parsed)? {
+            let relative = file.strip_prefix(dir).unwrap_or(&file).to_path_buf();
+            let mut hits = Vec::new();
+            scanner.scan(tokens, &mut hits);
+            on_web.extend(
+                hits.into_iter()
+                    .map(|(line, kind, _)| (relative.clone(), line, kind.rule())),
+            );
+        }
+        findings.retain(|finding| {
+            table
+                .rule(finding.kind.rule())
+                .is_none_or(|rule| rule.applies != Applies::Web)
+                || on_web.contains(&(finding.path.clone(), finding.line, finding.kind.rule()))
+        });
+    }
     findings.sort_by(|a, b| {
         (&a.path, a.line, a.kind.rule(), a.kind).cmp(&(&b.path, b.line, b.kind.rule(), b.kind))
     });
@@ -889,15 +900,96 @@ impl PortabilityCheck {
     }
 }
 
+/// One package the workspace check reads.
+enum Job {
+    /// An app: its manifest decides which rules apply to it.
+    App { dir: PathBuf, name: String },
+    /// An app model crate: only the model scope's rules count.
+    Model { dir: PathBuf, name: String },
+    /// An SDK crate: only the SDK scope's rules count.
+    Sdk { dir: PathBuf, name: String },
+}
+
+/// What reading one job found, counted in job order once every job is done.
+enum JobOut {
+    App {
+        name: String,
+        report: PortabilityReport,
+    },
+    Model {
+        name: String,
+        findings: Vec<PortabilityFinding>,
+    },
+    Sdk {
+        name: String,
+        findings: Vec<PortabilityFinding>,
+    },
+}
+
+/// Read every job, spreading them over a few threads: each is a syn parse of
+/// every source file its package ships, which is the slowest part of the check.
+fn read_jobs(jobs: &[Job], table: &RulesTable, model_packages: &[String]) -> Result<Vec<JobOut>> {
+    let read = |job: &Job| -> Result<JobOut> {
+        Ok(match job {
+            Job::App { dir, name } => {
+                let manifest = app_manifest(dir)?;
+                let (findings, files) = package_findings(dir, table, &[])?;
+                JobOut::App {
+                    name: name.clone(),
+                    report: report_for(dir, &manifest.package, table, findings, files),
+                }
+            }
+            Job::Model { dir, name } => JobOut::Model {
+                name: name.clone(),
+                findings: package_findings(dir, table, model_packages)?.0,
+            },
+            Job::Sdk { dir, name } => JobOut::Sdk {
+                name: name.clone(),
+                findings: package_findings(dir, table, &[])?.0,
+            },
+        })
+    };
+    let workers = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .min(8)
+        .min(jobs.len().max(1));
+    if workers < 2 {
+        return jobs.iter().map(read).collect();
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut finished = Vec::with_capacity(jobs.len());
+    std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(workers);
+        for _ in 0..workers {
+            handles.push(scope.spawn(|| {
+                let mut local = Vec::new();
+                loop {
+                    let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(job) = jobs.get(index) else {
+                        break;
+                    };
+                    local.push((index, read(job)));
+                }
+                local
+            }));
+        }
+        for handle in handles {
+            match handle.join() {
+                Ok(local) => finished.extend(local),
+                // A worker's panic is the check's: carry it to this thread.
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        }
+    });
+    finished.sort_by_key(|(index, _)| *index);
+    finished.into_iter().map(|(_, job)| job).collect()
+}
+
 /// The platform code of every app, app model crate and portable SDK crate in
 /// the workspace containing `start`, counted against its baseline.
 pub fn check(start: &Path) -> Result<PortabilityCheck> {
     let table = rules()?;
     let (root, _workspace) = workspace_dir(start)?;
-    let mut counts = Counts::new();
-    let mut sites = Vec::new();
-    let mut apps = Vec::new();
-    let mut strict = false;
 
     let mut directories: Vec<PathBuf> = std::fs::read_dir(root.join("apps"))
         .map(|entries| {
@@ -927,41 +1019,6 @@ pub fn check(start: &Path) -> Result<PortabilityCheck> {
                 .is_some_and(|spec| spec.applies_to_platforms(tilo_app_package::DEFAULT_PLATFORMS))
         })
         .collect();
-    for directory in directories {
-        let name = directory
-            .file_name()
-            .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
-        if directory.join("tilo-app.toml").is_file() {
-            let manifest = app_manifest(&directory)?;
-            let (findings, files) = package_findings(&directory, table, &[])?;
-            let report = report_for(&directory, &manifest.package, table, findings, files);
-            for finding in &report.findings {
-                counted(&mut counts, "apps", &name, finding.kind.rule());
-                sites.push(PackageFinding {
-                    section: "apps".into(),
-                    package: name.clone(),
-                    finding: finding.clone(),
-                });
-            }
-            strict |= !report.passed();
-            apps.push(report);
-        } else if wildcard(model_crates, &format!("apps/{name}")) {
-            let (findings, _) =
-                package_findings(&directory, table, &table.scope.model.allowed_packages)?;
-            for finding in findings
-                .into_iter()
-                .filter(|finding| model_rules.contains(finding.kind.rule()))
-            {
-                counted(&mut counts, "apps", &name, finding.kind.rule());
-                sites.push(PackageFinding {
-                    section: "apps".into(),
-                    package: name.clone(),
-                    finding,
-                });
-            }
-        }
-    }
-
     let sdk_rules: BTreeSet<&str> = table
         .sdk
         .rules
@@ -969,6 +1026,24 @@ pub fn check(start: &Path) -> Result<PortabilityCheck> {
         .map(String::as_str)
         .filter(|rule| table.rule(rule).is_some())
         .collect();
+
+    let mut jobs = Vec::new();
+    for directory in directories {
+        let name = directory
+            .file_name()
+            .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+        if directory.join("tilo-app.toml").is_file() {
+            jobs.push(Job::App {
+                dir: directory,
+                name,
+            });
+        } else if wildcard(model_crates, &format!("apps/{name}")) {
+            jobs.push(Job::Model {
+                dir: directory,
+                name,
+            });
+        }
+    }
     for crate_path in &table.sdk.crates {
         let directory = root.join(crate_path);
         if !directory.join("Cargo.toml").is_file() {
@@ -985,17 +1060,56 @@ pub fn check(start: &Path) -> Result<PortabilityCheck> {
                     .map(str::to_owned)
             })
             .unwrap_or_else(|| crate_path.clone());
-        let (findings, _) = package_findings(&directory, table, &[])?;
-        for finding in findings
-            .into_iter()
-            .filter(|finding| sdk_rules.contains(finding.kind.rule()))
-        {
-            counted(&mut counts, "sdk", &name, finding.kind.rule());
-            sites.push(PackageFinding {
-                section: "sdk".into(),
-                package: name.clone(),
-                finding,
-            });
+        jobs.push(Job::Sdk {
+            dir: directory,
+            name,
+        });
+    }
+
+    let mut counts = Counts::new();
+    let mut sites = Vec::new();
+    let mut apps = Vec::new();
+    let mut strict = false;
+    for job in read_jobs(&jobs, table, &table.scope.model.allowed_packages)? {
+        match job {
+            JobOut::App { name, report } => {
+                for finding in &report.findings {
+                    counted(&mut counts, "apps", &name, finding.kind.rule());
+                    sites.push(PackageFinding {
+                        section: "apps".into(),
+                        package: name.clone(),
+                        finding: finding.clone(),
+                    });
+                }
+                strict |= !report.passed();
+                apps.push(report);
+            }
+            JobOut::Model { name, findings } => {
+                for finding in findings
+                    .into_iter()
+                    .filter(|finding| model_rules.contains(finding.kind.rule()))
+                {
+                    counted(&mut counts, "apps", &name, finding.kind.rule());
+                    sites.push(PackageFinding {
+                        section: "apps".into(),
+                        package: name.clone(),
+                        finding,
+                    });
+                }
+            }
+            JobOut::Sdk { name, findings } => {
+                for finding in findings
+                    .into_iter()
+                    .filter(|finding| sdk_rules.contains(finding.kind.rule()))
+                {
+                    counted(&mut counts, "sdk", &name, finding.kind.rule());
+                    sites.push(PackageFinding {
+                        section: "sdk".into(),
+                        package: name.clone(),
+                        finding,
+                    });
+                }
+            }
         }
     }
 
@@ -1505,12 +1619,19 @@ fn web_absent(manifest: &toml::Table) -> Vec<String> {
 /// Every file of the module trees rooted at `roots` with its test-only items
 /// removed, skipping modules that only exist under `cfg(test)`.
 pub(crate) fn shipped_modules(roots: &[PathBuf]) -> Result<Vec<(PathBuf, TokenStream)>> {
-    modules_without(roots, &[])
+    modules_without(roots, &[], &mut BTreeMap::new())
 }
 
 /// [`shipped_modules`], also without the items that only exist when one of
 /// `absent` (features a build leaves off) is on.
-fn modules_without(roots: &[PathBuf], absent: &[&str]) -> Result<Vec<(PathBuf, TokenStream)>> {
+///
+/// `parsed` holds the files read so far: a second pass over the same package
+/// prunes a copy of what was parsed rather than reading and parsing it again.
+fn modules_without(
+    roots: &[PathBuf],
+    absent: &[&str],
+    parsed: &mut BTreeMap<PathBuf, syn::File>,
+) -> Result<Vec<(PathBuf, TokenStream)>> {
     let mut seen = BTreeSet::new();
     let mut modules = Vec::new();
     let mut queue: VecDeque<(PathBuf, bool)> =
@@ -1519,15 +1640,22 @@ fn modules_without(roots: &[PathBuf], absent: &[&str]) -> Result<Vec<(PathBuf, T
         if !seen.insert(file.clone()) {
             continue;
         }
-        let source =
-            std::fs::read_to_string(&file).with_context(|| format!("read {}", file.display()))?;
-        let mut syntax =
-            syn::parse_file(&source).with_context(|| format!("parse {}", file.display()))?;
+        let syntax = match parsed.entry(file.clone()) {
+            std::collections::btree_map::Entry::Occupied(held) => held.into_mut(),
+            std::collections::btree_map::Entry::Vacant(vacant) => {
+                let source = std::fs::read_to_string(&file)
+                    .with_context(|| format!("read {}", file.display()))?;
+                let syntax = syn::parse_file(&source)
+                    .with_context(|| format!("parse {}", file.display()))?;
+                vacant.insert(syntax)
+            }
+        };
         // A file whose own `#![cfg(test)]` only holds in a test build is test
         // code, however it was declared.
         if test_only(&syntax.attrs, absent) {
             continue;
         }
+        let mut syntax = syntax.clone();
         Pruner { absent }.visit_file_mut(&mut syntax);
         let parent = file.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
         let mod_rs = is_root || file.file_name().is_some_and(|name| name == "mod.rs");

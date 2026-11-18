@@ -507,8 +507,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn every_actual_installed_xkb_source_compiles_for_each_offered_physical_model() {
+    /// Every source the machine offers compiles for `model`, the physical keyboard a person
+    /// holds: a source that fails here is one whose preview comes up blank.
+    fn every_installed_source_compiles_for(model: &str) {
         assert!(
             crate::input_sources::layout_catalog_error().is_none(),
             "missing installed catalogue must not become fallback success"
@@ -519,16 +520,36 @@ mod tests {
             if settings_store::hardware::KeyboardInputSource::parse(&entry.id).is_none() {
                 continue;
             }
-            for model in ["pc104", "pc105", "jp106", "kr106"] {
-                map_with_options(&entry.id, model, String::new(), Some(""))
-                    .unwrap_or_else(|error| panic!("{}/{model}: {error}", entry.id));
-            }
+            map_with_options(&entry.id, model, String::new(), Some(""))
+                .unwrap_or_else(|error| panic!("{}/{model}: {error}", entry.id));
             observed += 1;
         }
         assert!(
             observed > 100,
             "the proof must observe the installed full catalogue"
         );
+    }
+
+    // One test per physical model, so the models compile beside each other.
+
+    #[test]
+    fn every_actual_installed_xkb_source_compiles_for_the_pc104() {
+        every_installed_source_compiles_for("pc104");
+    }
+
+    #[test]
+    fn every_actual_installed_xkb_source_compiles_for_the_pc105() {
+        every_installed_source_compiles_for("pc105");
+    }
+
+    #[test]
+    fn every_actual_installed_xkb_source_compiles_for_the_jp106() {
+        every_installed_source_compiles_for("jp106");
+    }
+
+    #[test]
+    fn every_actual_installed_xkb_source_compiles_for_the_kr106() {
+        every_installed_source_compiles_for("kr106");
     }
 }
 

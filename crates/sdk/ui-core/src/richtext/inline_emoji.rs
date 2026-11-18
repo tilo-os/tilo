@@ -250,6 +250,9 @@ impl crate::text_render::TextRenderer {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
+#[path = "inline_emoji_testing.rs"]
+pub mod testing;
 #[cfg(test)]
 #[path = "inline_emoji_tests.rs"]
-pub(crate) mod tests;
+mod tests;

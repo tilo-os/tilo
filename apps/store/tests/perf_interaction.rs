@@ -11,6 +11,7 @@
 )]
 
 #[test]
+#[ignore = "measurement; measured with --ignored --nocapture"]
 fn interaction_costs() {
     ui::framework::testing::perf::profile::<store::StoreShell>(None)
         .expect("store opens its capture");
@@ -19,6 +20,7 @@ fn interaction_costs() {
 /// What opening store costs on the UI thread, warm (its resource already on the
 /// profile): from the host preparing the launch to the first frame drawn.
 #[test]
+#[ignore = "measurement; measured with --ignored --nocapture"]
 fn start_cost() {
     ui::framework::testing::perf::start::<store::StoreShell>(8)
         .expect("store opens")

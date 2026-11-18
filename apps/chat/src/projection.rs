@@ -475,7 +475,7 @@ pub fn draft(doc: &AutoCommit, key: &str) -> Option<ObjId> {
 }
 
 #[must_use]
-pub fn draft_blocks(doc: &AutoCommit, key: &str) -> Vec<ui::widget::BlockContent> {
+pub fn draft_blocks(doc: &AutoCommit, key: &str) -> Vec<ui::rich_edit::BlockContent> {
     draft(doc, key)
         .and_then(|root| tilo_rich_text::blocks_under(doc, &root).ok())
         .unwrap_or_default()

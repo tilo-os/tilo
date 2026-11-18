@@ -672,12 +672,19 @@ impl ContentBackend for DirBackend {
         });
         let received_ms = started.elapsed().as_millis();
         let admitted = self.admit_received(&mut outcomes, &received, flush);
-        // Nothing is answered for until the store's filesystem has written the batch: its
-        // items, their renames and their directories.
-        #[cfg(target_os = "linux")]
-        let admitted = match admitted {
-            Ok(admitted) if flush == BatchFlush::Whole => self.sync_store().map(|()| admitted),
-            other => other,
+        let admitted = if admitted.is_ok() && flush == BatchFlush::Whole {
+            // Nothing is answered for until the store's filesystem has written the batch: its
+            // items, their renames and their directories.
+            #[cfg(target_os = "linux")]
+            {
+                self.sync_store()
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                Ok(())
+            }
+        } else {
+            admitted
         };
         tracing::debug!(
             items = items.len(),

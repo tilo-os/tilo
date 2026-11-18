@@ -21,29 +21,6 @@ x86_64 = 65536
 [apps."so.tilo.contacts"]
 x86_64 = 65536
 
-# Discord: the bridge reads a chat's newest part, a bot's program reads records
-# through the record API, a moved message shows as its author's at its time
-# there, and its surface grew 15,382 bytes. Its own crate fell 1,867 bytes;
-# named code +52,537 (tilo_resource +16,030, serde_json +4,625, core and alloc
-# +28,047); 108,032 over its old budget.
-[apps."so.tilo.discord"]
-x86_64 = 131072
-
-# Maps: it draws through the toolkit's keyed children, every context menu ends
-# in Send to…, its actions are labelled from its catalogue, and its surface
-# grew 4,832 bytes. Its own crate fell 1,796 bytes; named code +10,506
-# (tilo_resource +1,460, serde_json +189, core and alloc +3,974); 10,240 over
-# its old budget.
-[apps."so.tilo.maps"]
-x86_64 = 65536
-
-# Pdf Viewer: renders pages on demand, actions carry sealed content references,
-# and its surface grew 12,231 bytes. Its own code grew 13,266 bytes; named code
-# +21,898 (tilo_resource +1,752, serde_json +3,521, core and alloc +13,058);
-# 3,072 over its old budget.
-[apps."so.tilo.pdf-viewer"]
-x86_64 = 65536
-
 # Remote: its SSH client (russh, with the curve crate its key type needs) is
 # 9 KB of its growth, its records answer a read, and its surface grew 939
 # bytes. Named code +19,036 (own +616, tilo_resource +1,171, serde_json +1,
@@ -56,14 +33,6 @@ x86_64 = 65536
 # code grew 5,498 bytes; named code +26,946 (tilo_resource +1,045, serde_json
 # -37, core and alloc +10,268); 34,816 over its old budget.
 [apps."so.tilo.shortcuts"]
-x86_64 = 65536
-
-# Terminal: actions carry sealed content references, an agent editing its files
-# or running a command is shown there, its actions are labelled from its
-# catalogue, and its surface grew 3,871 bytes. Named code +19,118 (own +2,632,
-# tilo_resource +2,621, serde_json +264, core and alloc +3,800); 24,064 over
-# its old budget.
-[apps."so.tilo.terminal"]
 x86_64 = 65536
 
 # Totp: its records answer a read, it draws through the toolkit's keyed

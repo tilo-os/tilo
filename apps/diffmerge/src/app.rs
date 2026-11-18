@@ -2644,22 +2644,4 @@ mod tests {
             Some(t("error-title").as_str())
         );
     }
-
-    /// Both views get a layout node in either mode, the hidden one off-band,
-    /// so the retained layout's check must be able to walk to both: a view
-    /// it cannot reach stops a debug build (and the web desktop) on the
-    /// first frame.
-    #[test]
-    fn the_layout_walk_reaches_both_views_in_either_mode() {
-        let mut app = DiffMergeApp::new();
-        for mode in [Mode::Diff, Mode::Merge] {
-            app.mode = mode;
-            let mut walked = Vec::new();
-            let listed = Widget::for_each_layout_child(&app, &mut |child| {
-                walked.push(child.name().to_owned());
-            });
-            assert!(listed, "the app lists its layout children");
-            assert_eq!(walked, ["DiffView", "MergeView"]);
-        }
-    }
 }

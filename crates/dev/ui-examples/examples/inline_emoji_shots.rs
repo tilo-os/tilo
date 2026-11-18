@@ -1,5 +1,5 @@
 //! A workspace's own emoji inside text: chat-like message bodies and a
-//! composer ([`tilo_ui::widget::RichTextLine`], wrapped, with marks), a
+//! composer ([`tilo_rich_edit::RichTextLine`], wrapped, with marks), a
 //! label drawn through [`TextRenderer::draw_style`] and a cursor reaction,
 //! each writing `:name:` of emoji a registered workspace has, in dark and
 //! light, at one and two device pixels per point. A `:name:` the workspace
@@ -13,6 +13,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use tilo_rich_edit::RichTextLine;
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::{PresenceCtx, ReactionFloat, paint_reaction};
 use tilo_ui::scale::composite_transform;
@@ -22,7 +23,7 @@ use tilo_ui::tokens::TextRole;
 use tilo_ui::wake::WakeScope;
 use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::solve_built_layout;
-use tilo_ui::widget::{Mark, MarkSpan, RichTextLine, Widget};
+use tilo_ui::widget::{Mark, MarkSpan, Widget};
 use tilo_ui::workspace_emoji::{CustomEmoji, EmojiSource, WorkspaceEmoji};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};

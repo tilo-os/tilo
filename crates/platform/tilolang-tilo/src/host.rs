@@ -1520,9 +1520,12 @@ impl Host {
         };
         let root = self.inner.store.create_with_id(&record, &id)?;
         // A root made now has its package's migrations behind it: what a package fills its first
-        // start with is there before the window that asked for the root is drawn.
+        // start with is there before the window that asked for the root is drawn, and it is part
+        // of the root's making — no one's change, and nothing to catch anyone up on.
         if let Some(package) = self.package(app) {
+            self.inner.runtime.set_creating(true);
             self.migrate_doc(&package, ty, &id);
+            self.inner.runtime.set_creating(false);
         }
         Ok(root)
     }

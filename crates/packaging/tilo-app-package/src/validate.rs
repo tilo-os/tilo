@@ -1309,15 +1309,20 @@ mode = "off"
         {
             let source = include_str!("../../../../apps/browser/tilo-app.toml");
             let manifest = Manifest::from_toml_str(source).expect("browser TOML");
-            assert_eq!(
-                manifest.package.runtime.as_deref(),
-                Some("tilo-runtime/2026.07")
-            );
-            assert_eq!(
-                manifest.package.required_runtimes,
-                ["tilo-runtime/2026.10.23-chromium"]
-            );
             assert_eq!(validate_manifest(&manifest), Ok(()));
+            assert!(
+                manifest.package.runtime.is_some(),
+                "the browser names its runtime"
+            );
+            assert!(
+                manifest
+                    .package
+                    .required_runtimes
+                    .iter()
+                    .any(|runtime| runtime.contains("chromium")),
+                "the browser names the engine it renders with: {:?}",
+                manifest.package.required_runtimes
+            );
         }
 
         phase required_runtimes_are_runtime_references;

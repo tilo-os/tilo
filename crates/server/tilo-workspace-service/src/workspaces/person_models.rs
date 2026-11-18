@@ -83,15 +83,18 @@ impl Workspaces {
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
+        if request.target.address.action == person_models::ASK {
+            let person = Self::asking_for_model(caller, certificate, workspace_id)?;
+            let asked: ModelRequest = argument(request, "a model request")?;
+            return self
+                .ask_person_model(person, workspace_id, &asked, &mut |_| {})
+                .await;
+        }
         let person = Self::asking_person(caller, certificate, workspace_id)?;
         let root = self.person_settings_root(&person);
         let reach = self.model_reach();
         let changed = match request.target.address.action.as_str() {
             person_models::LIST => return answer(&Ok(providers(&root))),
-            person_models::ASK => {
-                let asked: ModelRequest = argument(request, "a model request")?;
-                return self.ask_person_model(person, workspace_id, &asked).await;
-            }
             person_models::ADD_PROVIDER => {
                 let adding: person_models::AddProvider = argument(request, "a provider to add")?;
                 answer(&add_provider(&root, &adding, reach.destinations))
@@ -151,11 +154,28 @@ impl Workspaces {
     /// asked with the key their vault keeps for its provider, as every
     /// model call this host makes for them is. The answer is the turn or
     /// the reason there is none, as a model failure the window shows.
+    /// One [`person_models::ASK`] of `caller`, its answer's stream events
+    /// told to `events` as the model writes them.
+    pub(super) async fn ask_streamed(
+        &self,
+        workspace_id: Option<collab_types::WorkspaceId>,
+        caller: &Caller,
+        certificate: Option<&DeviceCert>,
+        request: &InvokeRequest,
+        events: super::person_model::Events<'_>,
+    ) -> Result<Value, ActionCallError> {
+        let person = Self::asking_for_model(caller, certificate, workspace_id)?;
+        let asked: ModelRequest = argument(request, "a model request")?;
+        self.ask_person_model(person, workspace_id, &asked, events)
+            .await
+    }
+
     async fn ask_person_model(
         &self,
         person: [u8; 32],
         workspace_id: Option<collab_types::WorkspaceId>,
         asked: &ModelRequest,
+        events: super::person_model::Events<'_>,
     ) -> Result<Value, ActionCallError> {
         let mut model = self.person_model(person, Interaction::Request);
         if let Some(workspace) = workspace_id {
@@ -164,7 +184,7 @@ impl Workspaces {
         let now = tilo_clock::now();
         let deadline = now.checked_add(TURN_TIMEOUT).unwrap_or(now);
         let answered: Result<ModelResponse, ModelError> = model
-            .answer(asked, deadline, &mut |_| {})
+            .answer(asked, deadline, events)
             .await
             .map(|answer| answer.response)
             .map_err(|refusal| refusal.model_error());

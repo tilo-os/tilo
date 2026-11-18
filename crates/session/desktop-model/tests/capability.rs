@@ -4,7 +4,7 @@
 /// The clock these fixtures run at, Unix seconds.
 const NOW: u64 = 1_800_000_000;
 
-use collab_types::caps::{Access, CapDecision, CapOverride, DeviceCap, Effect, ResourceRef, Scope};
+use collab_types::caps::{Access, CapDecision, CapOverride, DeviceCap, ResourceRef, Scope};
 use tilo_action_policy::{Grantee, Lifetime};
 use tilo_desktop_model::*;
 
@@ -180,51 +180,28 @@ tilo_test_env::scenario! {
     }
 
     phase a_windows_desktop_control_ends_when_it_is_taken_back;
-    // Desktop control is read and taken back by the app that holds it, and an
-    // app's other grants are none of its business.
+    // Desktop control is an action grant naming the app that holds it, read
+    // and taken back for that app alone; its other grants stay.
     {
         const TERMINAL: &str = "org.example.terminal";
-        let control = ResourceRef::Device(DeviceCap::DesktopControl);
-        let holds = |ws: &Workspace, app: &str| {
-            ws.sandbox_decide_at(app, &control, DeviceCap::DesktopControl.access(), NOW)
-                == CapDecision::Allow
-        };
         let mut ws = Workspace::new(WorkspaceId::from_u128(1), "Work");
-        assert!(!holds(&ws, TERMINAL));
+        assert!(!ws.holds_desktop_control_at(TERMINAL, NOW));
         assert!(!ws.stop_desktop_control(TERMINAL), "nothing to take back");
-        ws.grant_sandbox(grant(
-            TERMINAL,
-            Scope::Device(DeviceCap::DesktopControl),
-            Access::Write,
-            Lifetime::UntilRevoked,
-        ));
+        let control = ws.desktop_control_grant(TERMINAL, Grantee::person("ada"));
+        ws.grant(control);
         ws.grant_sandbox(grant(
             TERMINAL,
             Scope::NetHost("*".into()),
             Access::Write,
             Lifetime::UntilRevoked,
         ));
-        assert!(holds(&ws, TERMINAL));
+        assert!(ws.holds_desktop_control_at(TERMINAL, NOW));
         assert!(
-            !holds(&ws, "org.example.other"),
+            !ws.holds_desktop_control_at("org.example.other", NOW),
             "one app's grant is not another's"
         );
-
-        // A restriction to reading takes desktop control away while the grant stays.
-        let mut restricted = ws.clone();
-        restricted.grant_sandbox(
-            CapOverride::new(
-                Grantee::person("ada"),
-                Scope::Device(DeviceCap::DesktopControl),
-                Effect::Restrict,
-                Access::Read,
-            )
-            .through(TERMINAL),
-        );
-        assert!(!holds(&restricted, TERMINAL), "a restriction counts");
-
         assert!(ws.stop_desktop_control(TERMINAL));
-        assert!(!holds(&ws, TERMINAL));
+        assert!(!ws.holds_desktop_control_at(TERMINAL, NOW));
         assert_eq!(
             ws.app_capabilities_at(TERMINAL, NOW).len(),
             1,

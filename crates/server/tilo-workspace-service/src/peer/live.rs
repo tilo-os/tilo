@@ -307,7 +307,7 @@ pub(super) async fn handle_presence(
         // next live checkpoint (the per-device checkpoint check of the live
         // fan-out).
         if !attached {
-            wr.request_checkpoint(&peer.device_public_key);
+            wr.request_checkpoint(&peer.device_public_key, session.outbound);
         }
         wr.fanout_presence(&peer.device_public_key, &env);
         let authority = wr.workspace_authority.clone();
@@ -322,7 +322,7 @@ pub(super) async fn handle_presence(
                 peer.user_public_key,
                 body,
                 move |runtime, envelope| {
-                    runtime.route_content(&host, &member, envelope);
+                    runtime.route_content(&host, &member, &envelope);
                 },
             );
         }
@@ -420,7 +420,7 @@ pub(super) async fn handle_content_want(
         peer.user_public_key,
         frame,
         move |runtime, envelope| {
-            runtime.route_content(&host, &member, envelope);
+            runtime.route_content(&host, &member, &envelope);
         },
     );
     Ok(None)
@@ -552,5 +552,5 @@ pub(super) async fn route_document_content(
         from_device_public_key: peer.device_public_key,
         frame,
     };
-    runtime.route_content(&peer.device_public_key, &to, stamped);
+    runtime.route_content(&peer.device_public_key, &to, &stamped);
 }

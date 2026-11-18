@@ -285,7 +285,7 @@ pub fn clipboard_copy(text: &str) {
 /// the in-process fallback (which pastes inside this process). Cut uses it so a failed
 /// copy never deletes the selection.
 #[must_use]
-pub(crate) fn clipboard_copy_accepted(text: &str) -> bool {
+pub fn clipboard_copy_accepted(text: &str) -> bool {
     clipboard().copy(CopyContent::Text(text)).outcome() != Some(false)
 }
 

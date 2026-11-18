@@ -8,12 +8,14 @@
 )]
 
 #[test]
+#[ignore = "measurement; measured with --ignored --nocapture"]
 fn interaction_costs() {
     ui::framework::testing::perf::profile::<settings::SettingsShell>(None)
         .expect("settings opens its capture");
 }
 
 #[test]
+#[ignore = "measurement; measured with --ignored --nocapture"]
 fn start_cost() {
     ui::framework::testing::perf::start::<settings::SettingsShell>(8)
         .expect("settings opens")

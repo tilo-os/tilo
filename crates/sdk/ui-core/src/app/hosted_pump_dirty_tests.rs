@@ -235,22 +235,6 @@ impl HostedPumpFixture {
     }
 }
 
-/// `cargo test -p tilo-ui --lib hosted_pump_cost -- --ignored --nocapture`
-#[test]
-#[ignore = "timing measurement"]
-fn hosted_pump_cost_idle_before_after() {
-    const PUMPS: u32 = 200;
-    let mut fixture = HostedPumpFixture::with_three_roots(40);
-    for (name, always) in [("baseline", true), ("dirty-tracked", false)] {
-        let started = std::time::Instant::now();
-        for _ in 0..PUMPS {
-            fixture.app.pump_hosted_model_as(always);
-        }
-        let per = started.elapsed() / PUMPS;
-        eprintln!("hosted pump {name}: {per:?} per idle pump ({PUMPS} pumps, 3x40 actions)");
-    }
-}
-
 tilo_test_env::scenario! {
     fn the_hosted_pump_refreshes_only_what_a_wake_changed;
 

@@ -18,6 +18,7 @@ pub mod answers;
 pub mod errors;
 pub mod events;
 pub mod idempotency;
+mod model_asks;
 pub mod names;
 pub mod openapi;
 pub mod operations;
@@ -44,6 +45,9 @@ pub const API_VERSION: &str = "1";
 /// The header every answer names the API's version in.
 pub const VERSION_HEADER: &str = "tilo-api-version";
 /// The header naming the invocation a call is a step of, and its title.
+/// The code of a call that waits for its person to approve it on a device that
+/// holds their identity: it is done once they allow it there.
+pub const AWAITING_APPROVAL: &str = tilo_actions::remote::AWAITING_APPROVAL;
 pub const INVOCATION_HEADER: &str = "tilo-invocation";
 pub const INVOCATION_TITLE_HEADER: &str = "tilo-invocation-title";
 /// The header a call made through generated types names their surface in.
@@ -441,6 +445,7 @@ impl<'a> Caller<'a> {
             "listWebhooks" | "createWebhook" | "deleteWebhook" => {
                 self.webhook_operation(operation.id)
             }
+            "askModel" => model_asks::ask(&self.session, &self.workspace(), self.body).await,
             other => self.workspace_operation(other).await,
         }
     }
@@ -723,6 +728,14 @@ impl<'a> Caller<'a> {
                     "args": {"person": person, "role": new.role},
                 });
                 let listed = self.call("tilo_do", moved).await?;
+                shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
+                    .map(Answer::ok)
+            }
+            "revokeInvitation" => {
+                let invite = self.params.get("invite").to_owned();
+                let revoked =
+                    json!({"path": "workspace/members#revoke", "args": {"invite": invite}});
+                let listed = self.call("tilo_do", revoked).await?;
                 shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
                     .map(Answer::ok)
             }

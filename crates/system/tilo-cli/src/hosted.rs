@@ -70,21 +70,27 @@ pub enum KeysCmd {
         /// The grant, as `tilo keys ls` names it.
         grant: String,
     },
-    /// Write this computer's own key as a key file, for a program here.
-    #[command(after_help = "Example:\n  tilo keys export --out visa.json\n\n\
-                      It writes the key `tilo login` gave this computer, with its certificate and the \
-                      host it reaches: a key file `tilo --key-file visa.json …` acts with, and the API \
-                      in process reads, with no server between.\n\n\
-                      One key serves one program at a time: a host keeps one session per key, so two \
-                      programs sharing it cut each other off. A separate program wants its own key.")]
+    /// Make a key of its own for a program here, and write it as a key file.
+    #[command(
+        after_help = "Example:\n  tilo keys export \"Visa backend\" --out visa.json\n\n\
+                      It asks for a new key, as `tilo keys create` does: this computer approves it \
+                      when it holds your identity, and otherwise you approve it in your Tilo. The \
+                      file holds that key, its certificate and the server this computer reaches: \
+                      `tilo --key-file visa.json …` acts with it in process, with no API server \
+                      between. It is never this computer's own key, so the program and this \
+                      computer each keep their own session."
+    )]
     Export {
+        /// What will use it, as your grants page will name it. With -w
+        /// (an id), it reaches only that workspace.
+        name: String,
         /// Where to write it, readable by this account only.
         #[arg(long)]
         out: PathBuf,
-        /// What the host's people see it as; this computer's own name
-        /// without it.
+        /// Seconds until it expires; without it, a key reaching all your
+        /// workspaces lasts until revoked.
         #[arg(long)]
-        name: Option<String>,
+        expires_in: Option<u64>,
     },
 }
 
@@ -275,6 +281,15 @@ pub enum PeopleCmd {
         key: String,
         /// viewer, commenter, editor, moderator, administrator or owner.
         role: String,
+    },
+    /// Revoke an open invitation: its link lets nobody in from then on.
+    #[command(
+        after_help = "Example:\n  tilo workspace people revoke 7a41…c9 -w Acme\n\n\
+                      INVITE is the invitation's id, as `tilo workspace people ls` lists it."
+    )]
+    Revoke {
+        /// The invitation's id, as `tilo workspace people ls` names it.
+        invite: String,
     },
     /// Remove someone from the workspace, with every device of theirs.
     #[command(
@@ -1518,6 +1533,10 @@ async fn get_content(
 
 /// `tilo workspace people … -w <workspace>`: the workspace's people, and inviting one
 /// more.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match over the people commands, each a few lines"
+)]
 fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
     run(async {
         let client = Client::open(reach)?;
@@ -1566,6 +1585,15 @@ fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
                     )
                     .await?;
                 Ok(show(reach.json, &moved, &members_text(&moved)))
+            }
+            PeopleCmd::Revoke { invite } => {
+                let left = client
+                    .delete(&format!(
+                        "/v1/workspaces/{workspace}/members/invitations/{}",
+                        api::encode_path(&invite)
+                    ))
+                    .await?;
+                Ok(show(reach.json, &left, &members_text(&left)))
             }
             PeopleCmd::Rm { key } => {
                 let left = client
@@ -1714,17 +1742,10 @@ fn members_text(listed: &Value) -> String {
         .unwrap_or_default();
     let mut said = String::from("members:");
     for member in &members {
-        let mut what = text(member, "role").to_owned();
-        for (field, word) in [("owner", "owner"), ("administrator", "administrator")] {
-            if member.get(field).and_then(Value::as_bool) != Some(true) || what.contains(word) {
-                continue;
-            }
-            if what.is_empty() {
-                what.push_str(word);
-            } else {
-                let _ = write!(what, ", {word}");
-            }
-        }
+        // One place each: an owner is an administrator with a role beneath, named by the first.
+        let what = Some(text(member, "place"))
+            .filter(|place| !place.is_empty())
+            .unwrap_or_else(|| text(member, "role"));
         let _ = write!(said, "\n  {} — {what}", text(member, "name"));
         // A person is named by their key, which `role` and `rm` take.
         if let Some(key) = member.pointer("/member/person").and_then(Value::as_str) {
@@ -1745,13 +1766,11 @@ fn members_text(listed: &Value) -> String {
     }
     said.push_str("\ninvitations:");
     for invitation in &invitations {
-        // An administrator's invitation joins someone as an Editor and makes
-        // them one, so it is named by what redeeming it makes them.
-        let what = if invitation.get("administrator").and_then(Value::as_bool) == Some(true) {
-            "administrator"
-        } else {
-            text(invitation, "role")
-        };
+        // Named by what redeeming it makes them: an owner's or an administrator's invitation
+        // joins someone as an Editor and makes them more.
+        let what = Some(text(invitation, "place"))
+            .filter(|place| !place.is_empty())
+            .unwrap_or_else(|| text(invitation, "role"));
         // Who it is for, when the inviter named them, and its id, which
         // cancelling it takes.
         let named = text(invitation, "invitee_name");
@@ -1773,17 +1792,36 @@ pub fn keys(reach: Reach<'_>, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode
                 expires_in,
                 no_browser_pages,
             } => {
-                create_key(
-                    reach.api,
-                    reach.json,
-                    &name,
+                let asked = KeyAsk {
+                    api: reach.api,
+                    name: &name,
                     workspace,
                     expires_in,
-                    !no_browser_pages,
-                )
-                .await
+                    browser_pages: !no_browser_pages,
+                };
+                let answer = ask_key(&asked).await?;
+                if reach.json {
+                    println!("{answer}");
+                } else {
+                    eprintln!("Approved. Your key (shown once):");
+                    println!("export {}={}", api::KEY_ENV, text(&answer, "key"));
+                }
+                Ok(ExitCode::SUCCESS)
             }
-            KeysCmd::Export { out, name } => export(&out, name.as_deref(), reach.json),
+            KeysCmd::Export {
+                name,
+                out,
+                expires_in,
+            } => {
+                let asked = KeyAsk {
+                    api: reach.api,
+                    name: &name,
+                    workspace,
+                    expires_in,
+                    browser_pages: true,
+                };
+                export(&asked, &out, reach.json).await
+            }
             KeysCmd::Ls => {
                 let listed = Client::open(reach)?.get("/v1/keys").await?;
                 let rows = listed
@@ -1848,21 +1886,29 @@ pub fn keys(reach: Reach<'_>, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode
     })
 }
 
-/// `tilo keys export --out <path>`: this computer's own key, as the key file
-/// a program here hands to the in-process API, readable by this account only.
-fn export(path: &Path, name: Option<&str>, json: bool) -> Result<ExitCode> {
-    let Some(file) = api::login_key(name)? else {
+/// `tilo keys export NAME --out <path>`: a new key for a program here, asked
+/// for and approved as `tilo keys create`'s is, written as the key file the
+/// in-process API reads, readable by this account only. It reaches the server
+/// this computer's login reaches, and is never the device's own key: one key
+/// has one holder, and a program sharing the device's would cut the
+/// computer's session off.
+async fn export(asked: &KeyAsk<'_>, path: &Path, json: bool) -> Result<ExitCode> {
+    if api::login_key(None)?.is_none() {
         bail!(
-            "this computer is not logged in: `tilo login` makes it one of your devices, and its \
-             key is what this writes"
+            "this computer is not logged in: `tilo login` makes it one of your devices, and the \
+             key this writes reaches the server its login reaches"
         );
-    };
+    }
+    let answer = ask_key(asked).await?;
+    let file = api::script_key(text(&answer, "key"))?
+        .ok_or_else(|| anyhow!("this computer's login went away while the key was approved"))?;
     write_key_file(path, &file)?;
     let said = format!("{}: {}, reaching {}", path.display(), file.name, file.host);
     let typed = serde_json::json!({"file": path, "name": file.name, "host": file.host});
     Ok(show(json, &typed, &said))
 }
 
+/// Write `file` at `path`, readable by this account only, in place of what was
 /// there.
 fn write_key_file(path: &Path, file: &tilo_api::direct::KeyFile) -> Result<()> {
     use std::os::unix::fs::OpenOptionsExt as _;
@@ -1886,15 +1932,30 @@ fn write_key_file(path: &Path, file: &tilo_api::direct::KeyFile) -> Result<()> {
     Ok(())
 }
 
-/// Ask the person for a key and wait until they answer.
-async fn create_key(
-    api: Option<&str>,
-    json: bool,
-    name: &str,
-    workspace: Option<&str>,
+/// A key asked of the person: what `tilo keys create` and `tilo keys export` ask for.
+struct KeyAsk<'a> {
+    /// The API server, like `--api`.
+    api: Option<&'a str>,
+    /// What will use it, as the grants page names it.
+    name: &'a str,
+    /// The one workspace it reaches, when not all of them.
+    workspace: Option<&'a str>,
     expires_in: Option<u64>,
     browser_pages: bool,
-) -> Result<ExitCode> {
+}
+
+/// Ask the person for a key and wait until they answer: the approved key's
+/// answer (`key`, the token, and its grant). This computer approves it itself
+/// when it holds the person's root; otherwise the person approves at the link
+/// it prints.
+async fn ask_key(asked: &KeyAsk<'_>) -> Result<Value> {
+    let KeyAsk {
+        api,
+        name,
+        workspace,
+        expires_in,
+        browser_pages,
+    } = *asked;
     let api = api::api_url(api);
     let http = tilo_net::Client::new();
     let asked = http
@@ -1957,15 +2018,7 @@ async fn create_key(
             serde_json::from_slice(&answer.bytes_limited(MAX_ANSWER).await?).unwrap_or_default();
         match status {
             202 => {}
-            200 => {
-                if json {
-                    println!("{answer}");
-                } else {
-                    eprintln!("Approved. Your key (shown once):");
-                    println!("export {}={}", api::KEY_ENV, text(&answer, "key"));
-                }
-                return Ok(ExitCode::SUCCESS);
-            }
+            200 => return Ok(answer),
             _ => bail!(
                 "{}",
                 answer
@@ -2001,10 +2054,9 @@ mod tests {
     /// This computer's own key, as `tilo login` kept it, is a key file the API
     /// in process reads: its certificate in the canonical bytes `Direct`
     /// decodes, which is not the postcard the login itself keeps it as.
-    /// `tilo keys export` writes the same file, for this account only.
+    /// `tilo keys export` writes a key of its own for a script, never this one.
     #[test]
     fn the_login_key_is_a_key_file_the_in_process_api_reads() {
-        use std::os::unix::fs::PermissionsExt as _;
         let dir = tempfile::tempdir().unwrap();
         let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
         let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
@@ -2083,19 +2135,75 @@ mod tests {
             None
         );
 
-        // And `tilo keys export` writes it, named, readable by this account.
-        let out = dir.path().join("visa.json");
-        crate::hosted::keys(
-            Reach {
-                api: None,
-                key_file: None,
-                json: false,
-            },
+        exports_a_key_of_its_own(dir.path(), &root, &cert, &file, &mut env);
+    }
+
+    /// `tilo keys export` asks for a new key, as `tilo keys create` does, and writes that one,
+    /// never the device's own (`file`, as the login under `dir` keeps it): the script it is for
+    /// and this computer each hold a key alone.
+    fn exports_a_key_of_its_own(
+        dir: &Path,
+        root: &ed25519_dalek::SigningKey,
+        cert: &tilo_user_identity::DeviceCert,
+        file: &tilo_api::direct::KeyFile,
+        env: &mut tilo_test_env::ScopedEnv,
+    ) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let now = tilo_clock::unix_now_ns();
+        let script = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+        let mut script_cert = cert.clone();
+        script_cert.device_public_key = script.verifying_key().to_bytes();
+        script_cert.device_label = "Visa backend".into();
+        tilo_user_identity::sign_device_cert(&mut script_cert, root).unwrap();
+        let token = tilo_api::store::key_token(
+            "Visa backend",
+            &tilo_api::grant_key::GrantKey::held(script.clone(), script_cert, now).unwrap(),
+        )
+        .unwrap();
+        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let api_server = test_http::Responder::handle({
+            let asked = Arc::clone(&asked);
+            move |request| {
+                asked.lock().unwrap().push(request.target.clone());
+                let body = match request.target.as_str() {
+                    "/keys/new" => (
+                        201,
+                        serde_json::json!({"poll": "p", "interval": 1,
+                            "approve_url": "https://mcp.tilo.test/keys/approve/a"}),
+                    ),
+                    "/keys/poll" => (200, serde_json::json!({"key": token, "grant": "g"})),
+                    _ => (404, serde_json::json!({})),
+                };
+                Some(
+                    test_http::Reply::status(body.0)
+                        .header("content-type", "application/json")
+                        .body(body.1.to_string()),
+                )
+            }
+        });
+        let nobody = tempfile::tempdir().unwrap();
+        env.set(crate::identity::DIR_ENV, nobody.path());
+        let out = dir.join("visa.json");
+        let api_url = api_server.url();
+        let reach = Reach {
+            api: Some(&api_url),
+            key_file: None,
+            json: false,
+        };
+        let exported = crate::hosted::keys(
+            reach,
             None,
             crate::hosted::KeysCmd::Export {
+                name: "Visa backend".into(),
                 out: out.clone(),
-                name: Some("Visa backend".into()),
+                expires_in: None,
             },
+        );
+        assert_eq!(exported, ExitCode::SUCCESS);
+        assert_eq!(
+            *asked.lock().unwrap(),
+            ["/keys/new", "/keys/poll"],
+            "the key was asked for and approved, as `tilo keys create` asks"
         );
         assert_eq!(
             std::fs::metadata(&out).unwrap().permissions().mode() & 0o777,
@@ -2103,10 +2211,25 @@ mod tests {
             "only this account may read a key"
         );
         let written = tilo_api::direct::KeyFile::read(&out).unwrap();
+        assert_ne!(written.key, file.key, "never the device's own key");
+        assert_eq!(written.key, hex::encode(script.to_bytes()));
         assert_eq!(written.name, "Visa backend");
-        assert_eq!(written.cert, file.cert);
+        assert_eq!(written.host, file.host, "it reaches the login's server");
         assert_eq!(written.site, file.site, "an exported key keeps its site");
         tilo_api::direct::Direct::new(&written).unwrap();
+        // It acts as itself; a key file naming the device's own key goes to the held session.
+        let as_file = |path: &Path| {
+            api::held_api_for(Reach {
+                api: None,
+                key_file: Some(path),
+                json: false,
+            })
+            .unwrap()
+        };
+        assert_eq!(as_file(&out), None);
+        let own = dir.join("own.json");
+        std::fs::write(&own, serde_json::to_vec(file).unwrap()).unwrap();
+        assert!(as_file(&own).is_some());
     }
 
     /// A folder goes up whole, each file named by its path from the folder's
@@ -2768,15 +2891,21 @@ mod tests {
 
         phase the_people_of_a_workspace_are_a_line_each;
         {
+            // One place each, as the workspace names it: an owner is an administrator and an
+            // editor beneath, and reads as an owner alone.
             let listed = serde_json::json!({
-                "members": [{"name": "Ada", "role": "owner", "owner": true, "administrator": true},
-                            {"name": "Rosa Ortiz", "role": "editor"}],
-                "invitations": [{"invite": "inv-1", "role": "viewer", "invitee_name": "Bo"}],
+                "members": [{"name": "Ada", "role": "editor", "owner": true, "administrator": true,
+                             "place": "owner"},
+                            {"name": "Rosa Ortiz", "role": "editor", "place": "editor"}],
+                "invitations": [{"invite": "inv-1", "role": "viewer", "invitee_name": "Bo",
+                                 "place": "viewer"},
+                                {"invite": "inv-2", "role": "editor", "administrator": true,
+                                 "owner": true, "place": "owner"}],
             });
             assert_eq!(
                 members_text(&listed),
-                "members:\n  Ada — owner, administrator\n  Rosa Ortiz — editor\n\
-             invitations:\n  viewer invitation for Bo, inv-1"
+                "members:\n  Ada — owner\n  Rosa Ortiz — editor\n\
+             invitations:\n  viewer invitation for Bo, inv-1\n  owner invitation, inv-2"
             );
             let alone = serde_json::json!({"members": [], "invitations": []});
             assert_eq!(

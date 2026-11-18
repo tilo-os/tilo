@@ -9,11 +9,12 @@ use tilo_doc::snapshot::BlockView;
 use tilo_document::{ChangeCursor, RichText, RichTextAction, RichTextState};
 use ui::automerge::{AutoCommit, ChangeHash};
 use ui::framework::ViewCx;
+use ui::rich_edit::block_editor::{FindReplace, FindReplaceBatch, FindReplaceTarget};
+use ui::rich_edit::{Block, BlockContent, BlockEditor, EditScope};
 use ui::tilo_actions::ActionError;
 use ui::tilo_resource::Doc;
 use ui::widget::Edits;
-use ui::widget::block_editor::{FindReplace, FindReplaceBatch, FindReplaceTarget};
-use ui::widget::{Block, BlockContent, BlockEditor, Decorator, EditScope, EventCtx, Widget};
+use ui::widget::{Decorator, EventCtx, Widget};
 use ui::winit::event::WindowEvent;
 
 use crate::convert::content_of;
@@ -259,7 +260,7 @@ impl<S: RichTextSource + 'static> RichTextSurface<S> {
     pub fn image_paste_action(
         &mut self,
         doc: &AutoCommit,
-        target: &ui::widget::block_editor::ImagePasteTarget,
+        target: &ui::rich_edit::block_editor::ImagePasteTarget,
         text: String,
     ) -> Result<RichTextAction, ActionError> {
         self.erased().image_paste_action_dyn(doc, target, text)
@@ -350,7 +351,7 @@ impl RichTextSurface<dyn ErasedSource> {
     fn image_paste_action_dyn(
         &mut self,
         doc: &AutoCommit,
-        target: &ui::widget::block_editor::ImagePasteTarget,
+        target: &ui::rich_edit::block_editor::ImagePasteTarget,
         text: String,
     ) -> Result<RichTextAction, ActionError> {
         if self.source.read_only() || self.is_composing() {
@@ -360,7 +361,7 @@ impl RichTextSurface<dyn ErasedSource> {
             && self.editor.blocks().len() == 1
             && self.editor.blocks().first().is_some_and(|block| {
                 block.text().is_empty()
-                    && matches!(target, ui::widget::block_editor::ImagePasteTarget::After(id) if *id == block.id)
+                    && matches!(target, ui::rich_edit::block_editor::ImagePasteTarget::After(id) if *id == block.id)
             });
         self.source.sync(doc);
         self.source
@@ -759,7 +760,7 @@ impl RichTextSurface<dyn ErasedSource> {
         self.editor.clear_document_selection();
         self.present_state(None);
         self.editor
-            .focus_block(copied_focus, ui::widget::CursorPlacement::End);
+            .focus_block(copied_focus, ui::rich_edit::CursorPlacement::End);
         true
     }
 
@@ -916,12 +917,12 @@ impl RichTextSurface<dyn ErasedSource> {
                 .with_state(AccessState::new().focusable(!disabled).disabled(disabled))
                 .with_bounds(bounds)
         };
-        let mut tree =
-            self.editor
-                .accessibility_shared_with(Some(&ui::widget::block_editor::RowControl {
-                    key: u64::from(disabled),
-                    build: &duplicate,
-                }))?;
+        let mut tree = self.editor.accessibility_shared_with(Some(
+            &ui::rich_edit::block_editor::RowControl {
+                key: u64::from(disabled),
+                build: &duplicate,
+            },
+        ))?;
         let selection_disabled = disabled || self.editor.selected_block_range().is_none();
         let mut duplicate = AccessNode::new(Role::Button)
             .with_name(ui::i18n::widget_text("widget-block-duplicate-selection"))

@@ -99,16 +99,50 @@ impl FrameHarness {
         // row to its own window.
         self.host_bar_window();
         let _running = self.running();
-        self.part_row = Some(Box::new(HostedParts {
-            row: PartRow::new(),
-            inset: 0.0,
-            revision: crate::window_toolbar::revision().wrapping_sub(1),
-        }));
         if let Some(history) = &mut self.history {
             history.remove_fallback_bar();
             history.set_open_button(false);
             history.set_window_presents(true);
         }
+        // A window shows one bar: the app's own header row is offered the window's bar, and a row
+        // that draws it is the window's top, with no row of the frame's over it. A page draws no
+        // window furniture, so the bar it offers has none: the row keeps its actions rather than
+        // hiding one behind an overflow nothing else reaches.
+        let bar = crate::widget::WindowBar {
+            controls_width: 0.0,
+            lists_actions: false,
+        };
+        crate::widget::window_header::offer_root_header_bar(self.root.as_mut(), Some(bar));
+        let frame = self.content_viewport(self.viewport);
+        if let Err(error) = self.resize(frame) {
+            tracing::warn!(%error, "window parts: the frame under the bar did not lay out");
+        }
+        self.refresh_row_holds();
+        // A window shows one bar: an app whose own header row draws it — its shell's — is the
+        // window's top. So the app keeps its parts in that row, and the window's notice stands on
+        // a card over the frame.
+        if self.row_holds_bar()
+            || crate::widget::window_header::draws_a_header_row(self.root.as_ref())
+        {
+            if let Some(window) = self.window.as_ref() {
+                window.set_app_draws_bar(true);
+            }
+            crate::widget::window_header::offer_window_search(self.root.as_mut(), false);
+            self.part_row = Some(Box::new(HostedParts {
+                row: PartRow::notice_card(),
+                inset: 0.0,
+                revision: crate::window_toolbar::revision().wrapping_sub(1),
+            }));
+            self.invalidate_layout_tree();
+            self.relayout();
+            return;
+        }
+        // A frame whose row does not draw the bar keeps the app's parts in a row of its own.
+        self.part_row = Some(Box::new(HostedParts {
+            row: PartRow::new(),
+            inset: 0.0,
+            revision: crate::window_toolbar::revision().wrapping_sub(1),
+        }));
         self.invalidate_layout_tree();
         self.relayout();
     }
@@ -117,7 +151,9 @@ impl FrameHarness {
     /// ([`Self::host_window_parts`]).
     #[must_use]
     pub fn hosts_window_parts(&self) -> bool {
-        self.part_row.is_some()
+        self.part_row
+            .as_ref()
+            .is_some_and(|hosted| !hosted.row.is_notice_card())
     }
 
     /// The frame is a window of its own on a shell that leaves the frame to the app
@@ -279,11 +315,14 @@ impl FrameHarness {
     }
 
     /// The row as the frame's inspection shows it: one toolbar of the app's parts and the window's
-    /// search.
+    /// search, or the notice's card alone where the app's own row is the bar.
     pub(super) fn part_row_inspection(&self) -> Option<InspectionNode> {
         let hosted = self.part_row.as_ref()?;
         if !hosted.row.is_shown() {
             return None;
+        }
+        if hosted.row.is_notice_card() {
+            return self.notice_card_inspection(hosted);
         }
         let window = Rect::new(0.0, 0.0, f64::from(self.viewport.0), hosted.inset);
         Some(InspectionNode {
@@ -307,13 +346,17 @@ impl FrameHarness {
     }
 
     /// The row as HTML: a toolbar across the top of the window, each part a real button showing its
-    /// face, named as a reader hears it, and the location as its words.
+    /// face, named as a reader hears it, and the location as its words — or the notice's card
+    /// alone where the app's own row is the bar.
     pub(super) fn part_row_composition(&self) -> Option<crate::composition::Composed> {
         use crate::composition::{Composed, Own};
         use std::hash::{Hash, Hasher};
         let hosted = self.part_row.as_ref()?;
         if !hosted.row.is_shown() {
             return None;
+        }
+        if hosted.row.is_notice_card() {
+            return self.notice_card_composition(hosted);
         }
         let window = Rect::new(0.0, 0.0, f64::from(self.viewport.0), hosted.inset);
         let nodes = hosted.row.accessibility();
@@ -428,6 +471,84 @@ impl FrameHarness {
             row.children.push(card);
         }
         Some(row)
+    }
+
+    /// The notice's card as the frame's inspection shows it, with the notice and its buttons.
+    fn notice_card_inspection(&self, hosted: &HostedParts) -> Option<InspectionNode> {
+        let card = hosted.row.strip_card(&self.theme)?;
+        let nodes = hosted.row.accessibility();
+        let buttons = nodes
+            .iter()
+            .filter(|node| node.action_target.is_some() && node.role == crate::a11y::Role::Button)
+            .map(|node| {
+                let rect = node.bounds.map_or(Rect::ZERO, |bounds| bounds.to_rect());
+                InspectionNode {
+                    path: format!(
+                        "{WINDOW_PARTS}#{}",
+                        node.action_target.as_deref().unwrap_or_default()
+                    ),
+                    widget: "WindowPart".into(),
+                    test_id: None,
+                    focusable: node.state.focusable,
+                    rect: [rect.x0, rect.y0, rect.width(), rect.height()],
+                    child_clip: None,
+                    page_title: None,
+                    layout: None,
+                    paint_key: None,
+                    semantics: Some(node.clone()),
+                    children: Vec::new(),
+                }
+            })
+            .collect();
+        Some(InspectionNode {
+            path: WINDOW_PARTS.into(),
+            widget: "WindowNoticeStrip".into(),
+            test_id: None,
+            focusable: false,
+            rect: [card.x0, card.y0, card.width(), card.height()],
+            child_clip: None,
+            page_title: None,
+            layout: None,
+            paint_key: None,
+            semantics: nodes.into_iter().find(|node| node.live.is_some()),
+            children: buttons,
+        })
+    }
+
+    /// The notice's card alone, over the app at the window's foot: what the frame composes
+    /// where the app's own row is the bar.
+    fn notice_card_composition(
+        &self,
+        hosted: &HostedParts,
+    ) -> Option<crate::composition::Composed> {
+        use crate::composition::Composed;
+        let card = hosted.row.strip_card(&self.theme)?;
+        let mut strip = Composed::new(
+            format!("{WINDOW_PARTS}#strip"),
+            "WindowNoticeStrip",
+            [card.x0, card.y0, card.width(), card.height()],
+        );
+        strip
+            .surfaces
+            .push(([card.x0, card.y0, card.width(), card.height()], "raised"));
+        let nodes = hosted.row.accessibility();
+        for (key, rect, own) in hosted.row.composed_parts(&self.theme) {
+            if key != crate::widget::window_toolbar_row::STRIP_KEY {
+                continue;
+            }
+            let mut notice = Composed::new(
+                format!("{WINDOW_PARTS}#{key}"),
+                "WindowNotice",
+                [rect.x0, rect.y0, rect.width(), rect.height()],
+            );
+            notice.own = Some(own);
+            notice.semantics = nodes
+                .iter()
+                .find(|node| node.live.is_some() && node.role == crate::a11y::Role::StaticText)
+                .cloned();
+            strip.children.push(notice);
+        }
+        Some(strip)
     }
 
     /// The row's band alone, at `scale`, for its picture.
@@ -548,6 +669,105 @@ mod tests {
         harness.host_window_parts();
         harness.relayout();
         (harness, heard)
+    }
+
+    /// The app whose own header row draws the window's top takes no row of parts above it, so
+    /// the window shows one bar.
+    #[test]
+    fn a_header_row_that_holds_the_bar_takes_the_row_of_parts_with_it() {
+        use crate::widget::NavShell;
+        let shell = NavShell::new()
+            .content_kind(crate::widget::ContentKind::Page)
+            .sidebar(Box::new(crate::widget::Button::new("one", "One")))
+            .content(Box::new(crate::widget::Button::new("two", "Two")))
+            .sidebar_header("Places", Vec::new())
+            .content_header("A page", Vec::new());
+        let mut harness = FrameHarness::for_root(
+            crate::State::new(),
+            shell,
+            (900, 600),
+            crate::theme::Theme::dark().with_reduce_motion(true),
+        );
+        harness.host_window_parts();
+        harness.relayout();
+        assert!(
+            !harness.hosts_window_parts(),
+            "no row of parts stands over the header row the shell draws"
+        );
+    }
+
+    /// The app's own row is the window's bar: the app keeps its parts in it, and the window's
+    /// notice comes on a card over the frame instead of a bar of the frame's.
+    #[test]
+    fn an_apps_own_bar_keeps_its_parts_and_its_notice_comes_on_a_card() {
+        use crate::widget::NavShell;
+        use crate::widget::toast::ToastKind;
+        let shell = NavShell::new()
+            .content_kind(crate::widget::ContentKind::Page)
+            .sidebar(Box::new(crate::widget::Button::new("one", "One")))
+            .content(Box::new(crate::widget::Button::new("two", "Two")))
+            .sidebar_header("Places", Vec::new())
+            .content_header("A page", Vec::new());
+        let mut harness = FrameHarness::for_root(
+            crate::State::new(),
+            shell,
+            (1280, 800),
+            crate::theme::Theme::dark().with_reduce_motion(true),
+        );
+        harness.host_window_parts();
+        harness.relayout();
+        assert!(
+            !crate::window_toolbar::is_hosted(),
+            "the app draws its own parts in its row"
+        );
+
+        crate::window_toolbar::notify(Some(crate::window_toolbar::ToolbarNotice::new(
+            "Saved",
+            ToastKind::Success,
+        )));
+        harness.relayout();
+        harness.relayout();
+        let composition = harness.composition();
+        fn named<'a>(
+            node: &'a crate::composition::Composed,
+            widget: &str,
+        ) -> Vec<&'a crate::composition::Composed> {
+            let mut found: Vec<&crate::composition::Composed> = node
+                .children
+                .iter()
+                .flat_map(|child| named(child, widget))
+                .collect();
+            if node.widget == widget {
+                found.insert(0, node);
+            }
+            found
+        }
+        assert!(
+            named(&composition.root, "WindowParts").is_empty(),
+            "no bar of the frame's stands over the app's own"
+        );
+        let card = composition
+            .layers
+            .iter()
+            .flat_map(|layer| named(layer, "WindowNoticeStrip"))
+            .next()
+            .expect("the notice's card");
+        assert!(card.rect[2] <= 520.0, "a card, not a band: {:?}", card.rect);
+        assert!(
+            card.rect[1] > 600.0,
+            "at the window's foot: {:?}",
+            card.rect
+        );
+        let notice = named(card, "WindowNotice");
+        let Some(crate::composition::Own::Face(face)) =
+            notice.first().and_then(|notice| notice.own.as_ref())
+        else {
+            panic!("the notice says itself: {card:#?}");
+        };
+        assert_eq!(
+            face.label.as_ref().map(|label| label.text.as_str()),
+            Some("Saved")
+        );
     }
 
     fn part(harness: &FrameHarness, target: &str) -> Option<crate::a11y::AccessNode> {

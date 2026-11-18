@@ -129,7 +129,7 @@ impl FrameHarness {
     /// The frame's size in device pixels: the viewport at the capture's device scale. # Panics Panics
     /// when a capture's device scale makes the frame larger than Vello renders in one pass (256 bins of
     /// 256 x 256 px): it would drop the bins past that and write a frame with holes.
-    pub(super) fn device_size(&self) -> (u32, u32) {
+    pub fn device_size(&self) -> (u32, u32) {
         let scale = crate::offscreen::capture_device_scale();
         let size = (
             self.viewport.0.saturating_mul(scale),

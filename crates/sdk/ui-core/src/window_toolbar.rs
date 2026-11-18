@@ -1343,10 +1343,10 @@ pub fn take_events() -> Vec<ToolbarEvent> {
 /// its own.
 #[must_use]
 pub fn is_hosted() -> bool {
-    if window().is_some() {
-        return true;
+    match window() {
+        Some(window) => !window.app_draws_bar(),
+        None => HOSTED.with(Cell::get),
     }
-    HOSTED.with(Cell::get)
 }
 
 /// Why a control of the app's own stays where it is although the bar has a part for it:

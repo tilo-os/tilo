@@ -826,6 +826,18 @@ async fn a_key_operates_web_pages_in_browser_unless_its_person_says_no() {
     assert!(!grant.browser_pages);
 }
 
+/// Awaiting a request costs its caller a pointer, not the request's whole
+/// work: a script of dozens of requests in one function otherwise holds every
+/// one of them, and in a debug build overflows its thread's stack.
+#[test]
+fn a_request_is_a_small_future_for_whoever_awaits_it() {
+    let server = server();
+    let headers = headers(&[]);
+    let request = server.dispatch(&Method::GET, "/health", "", &headers, b"");
+    let size = std::mem::size_of_val(&request);
+    assert!(size <= 256, "a request's future is {size} bytes");
+}
+
 /// The grants page says, beside the keys, which of them ask before each
 /// command in a workspace's machine: it keeps no workspace's setting itself.
 #[test]
@@ -1178,11 +1190,32 @@ fn a_workspace_refusal_is_read_by_its_case() {
     );
 }
 
+/// A person the server does not know yet (no owner its operator declared, no invitation that
+/// brought them) reads that from the API, typed, with their key and what makes them known: not
+/// that the action is not theirs.
+#[test]
+fn a_person_the_server_does_not_know_reads_why_and_what_to_do() {
+    let person = [7_u8; 32];
+    let refusal = tilo_session_client::device::DeviceRefusal::of(
+        &tilo_actions::remote::not_on_this_server(&person),
+    );
+    let error = server::ServerError::from(refusal);
+    let answered = account::answer(true, "account/workspaces#list", account::refused(&error));
+    let error = &answered["structuredContent"]["error"];
+    assert_eq!(error["code"], "not_on_this_server", "{answered}");
+    let message = error["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains(&hex::encode(person)) && message.contains("owner"),
+        "{answered}"
+    );
+}
+
 /// Where the site keeps no invitation, the link carries the invitation's
 /// text after a route that names the server, as the site's own workspace
 /// links do, so following it reaches the workspace's server.
 #[tokio::test]
 async fn an_invitation_the_site_keeps_not_names_the_relay_in_its_link() {
+    crate::session::members::tests::local_site_stands_for_public();
     let (site, _) = site_answering("404 Not Found").await;
     let server = server_in_front_of(&site);
     let workspace = "3ee4a797-1ec0-474b-a3d0-62895d5e15af";
@@ -1215,6 +1248,28 @@ async fn an_invitation_to_a_server_reached_over_iroh_carries_itself() {
         link,
         format!("https://tilo.test/#/w/{workspace}?invite=c2lnbmVk"),
         "the link carries the invitation, with no server to ask"
+    );
+}
+
+/// An invitation made where the person's site is their own computer's page (the local stack's
+/// `http://tilo.localhost`) is never shelved there, where nobody else could fetch it: its link
+/// carries the invitation under tilo.sh's page, so it opens wherever it is sent, and nothing is
+/// asked of the site.
+#[tokio::test]
+async fn an_invitation_made_on_a_local_site_carries_itself_to_a_public_page() {
+    let (site, asked) = site_answering("204 No Content").await;
+    let server = server_in_front_of(&site);
+    let workspace = "3ee4a797-1ec0-474b-a3d0-62895d5e15af";
+    let link = server.invitation_link(workspace, b"signed", u64::MAX).await;
+    assert_eq!(
+        link,
+        format!("https://tilo.sh/#/w/{workspace}?invite=c2lnbmVk"),
+        "the link opens anywhere"
+    );
+    assert_eq!(
+        asked.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "nothing was shelved on the local site"
     );
 }
 

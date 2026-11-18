@@ -23,6 +23,7 @@ pub mod own_address;
 pub mod relays;
 pub use directory::{PublishSwitch, Watchonly, collaborating};
 pub use lan::Nearby;
+pub use own_address::Reaching;
 pub use own_address::{RELAY_WAIT, await_relay, follow, relay_addr};
 pub use relays::{EndpointRelays, relays};
 

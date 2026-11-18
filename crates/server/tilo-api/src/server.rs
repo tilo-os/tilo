@@ -77,16 +77,24 @@ pub enum ServerError {
     /// No server answered with a session, so nothing that can read the
     /// workspace is online.
     NoHolder,
+    /// It waits for the person to approve it on a device that holds their
+    /// identity, and goes on once they allow it there: what the person is
+    /// told.
+    AwaitingApproval(String),
     /// The server is part of a Tilo desktop, which answers its own
     /// workspaces and keeps no account: nothing makes, branches or deletes
     /// workspaces or keys there.
     NoAccountHere,
+    /// The server does not know the person yet, and says what makes them known there: its
+    /// operator declares them an owner, or an invitation brings them in.
+    NotOnThisServer(String),
 }
 
 impl std::fmt::Display for ServerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotFound => f.write_str("no such workspace of yours"),
+            Self::AwaitingApproval(said) | Self::NotOnThisServer(said) => f.write_str(said),
             Self::NoAccountHere => f.write_str(
                 "This Tilo desktop answers its own workspaces only: do this in Tilo itself.",
             ),
@@ -134,6 +142,12 @@ impl From<CertifyError> for ServerError {
 
 impl From<DeviceRefusal> for ServerError {
     fn from(refusal: DeviceRefusal) -> Self {
+        if refusal.code == DeviceRefusal::AWAITING_APPROVAL {
+            return Self::AwaitingApproval(refusal.message);
+        }
+        if refusal.code == DeviceRefusal::NOT_ON_THIS_SERVER {
+            return Self::NotOnThisServer(refusal.message);
+        }
         // A workspace operation of the server's own answers a typed refusal;
         // the server's other refusals are read as they were.
         if let Some(refused) = WorkspaceRefusal::from_reason(&refusal.message) {

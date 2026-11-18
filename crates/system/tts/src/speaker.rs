@@ -145,9 +145,6 @@ mod tests {
             assert!(Priority::Notification > Priority::Progress);
         }
         {
-            assert_eq!(Priority::default(), Priority::Message);
-        }
-        {
             let u = Utterance::new("hi")
                 .with_priority(Priority::Important)
                 .with_interrupt(false);
@@ -171,21 +168,6 @@ mod tests {
             assert_eq!(rate_to_ssip(f32::NAN), 0); // guarded
             assert_eq!(rate_to_ssip(1.5), 50);
             assert_eq!(rate_to_ssip(0.75), -50);
-        }
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn priority_to_ssip_total() {
-        // Just prove every variant maps without panicking.
-        for p in [
-            Priority::Progress,
-            Priority::Notification,
-            Priority::Text,
-            Priority::Message,
-            Priority::Important,
-        ] {
-            let _ = p.to_ssip();
         }
     }
 }

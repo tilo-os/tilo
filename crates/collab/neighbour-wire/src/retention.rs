@@ -406,16 +406,6 @@ mod tests {
             NeighbourMsg::RemoteAction {
                 frame: b"{}".to_vec(),
             },
-            NeighbourMsg::RetiredAppPresenceV2 {
-                peer: 1,
-                app_id: "app".into(),
-                cluster_id: "workspace".into(),
-                presence: collab_types::PeerPresence {
-                    key: vec![4],
-                    payload: collab_types::PeerPresencePayload::Arrived,
-                },
-                colour: None,
-            },
         ] {
             assert!(retention(&live, false).is_none());
         }

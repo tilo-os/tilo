@@ -1,9 +1,9 @@
 use ui::a11y::{AccessNode, Action};
 use ui::headless::Framed;
+use ui::rich_edit::block_editor::{Block, BlockEditor};
 use ui::theme::Theme;
 use ui::widget::Edits;
 use ui::widget::Widget;
-use ui::widget::block_editor::{Block, BlockEditor};
 use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
@@ -82,7 +82,7 @@ impl Fixture {
         &mut self,
         event: WindowEvent,
         modifiers: ModifiersState,
-    ) -> Vec<ui::widget::BlockEditOp> {
+    ) -> Vec<ui::rich_edit::BlockEditOp> {
         Framed::harness_mut(&mut self.editor)
             .dispatch_to_root_with(&event, &Modifiers::from(modifiers));
         let ops = self.editor.take_edit_ops();
@@ -90,7 +90,7 @@ impl Fixture {
         ops
     }
 
-    fn key(&mut self, key: Key, modifiers: ModifiersState) -> Vec<ui::widget::BlockEditOp> {
+    fn key(&mut self, key: Key, modifiers: ModifiersState) -> Vec<ui::rich_edit::BlockEditOp> {
         let event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
         self.event(ui::synthetic_input::keyboard_input(event), modifiers)
     }
@@ -151,9 +151,9 @@ fn table_cell_editing_survives_echo_undo_and_reload() {
             &mut state.doc,
             &notes::actions::write_body_action(
                 page,
-                &[ui::widget::BlockContent {
-                    kind: ui::widget::BlockKind::Table { visual: true },
-                    ..ui::widget::BlockContent::paragraph("", source)
+                &[ui::rich_edit::BlockContent {
+                    kind: ui::rich_edit::BlockKind::Table { visual: true },
+                    ..ui::rich_edit::BlockContent::paragraph("", source)
                 }],
             ),
         )

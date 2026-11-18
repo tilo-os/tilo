@@ -42,6 +42,8 @@ async fn extra_protocol_and_server_share_one_endpoint() {
     let state = tempfile::tempdir().unwrap();
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_two = Arc::new(AtomicBool::new(false));
+    // Reached on its own network only, as the test dials it: the server is told
+    // so, and does not wait for an address that nothing will name.
     let endpoint = iroh::Endpoint::builder(presets::Minimal)
         .relay_mode(iroh::RelayMode::Disabled)
         .bind()
@@ -60,6 +62,7 @@ async fn extra_protocol_and_server_share_one_endpoint() {
             revocations: RevocationList::new(),
         },
         endpoint,
+        tilo_server::Reaching::OnItsOwn,
         vec![
             (
                 TEST_ALPN.to_vec(),

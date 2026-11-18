@@ -17,10 +17,10 @@ use std::rc::Rc;
 
 use tilo_document::RichTextAction;
 use tilo_document::action::RegionKind;
+use ui::rich_edit::BlockContent;
 use ui::tilo_resource::{
     Bytes, Edit, Fields as _, Id, Invoke, NonBlank, Origin, Replica, Resource,
 };
-use ui::widget::BlockContent;
 use ui::widget::marks::{Mark, MarkSpan};
 
 use super::*;

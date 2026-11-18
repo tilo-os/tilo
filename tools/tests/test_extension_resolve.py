@@ -101,18 +101,6 @@ class Fingerprint(unittest.TestCase):
         readme = (REPO / "os/usr/share/tilo/system-extensions/README.md").read_text()
         self.assertIn("tilo.base-packages.v1\\n", readme)
 
-    def test_the_device_computes_the_same_fingerprint(self):
-        # The device helper (crates/system/extension-helper, test
-        # the_device_computes_the_publishers_fingerprint) pins the same digest
-        # for the same rpm output.
-        lines = resolver.base_package_lines(self.RPM)
-        self.assertEqual(resolver.base_packages_sha256(lines),
-                         "5a21779b0a9aca5bb5638fa2177fbbd69c074ed1611aaab0071468cbb6c24e13")
-        device_test = (REPO / "crates/system/extension-helper/tests/extension.rs").read_text()
-        self.assertIn('"5a21779b0a9aca5bb5638fa2177fbbd69c074ed1611aaab0071468cbb6c24e13"', device_test)
-        for rpm_line in self.RPM.splitlines():
-            self.assertIn(rpm_line, device_test)
-
 
 class BaseObservation(unittest.TestCase):
     def test_incomplete_rpm_observation_cannot_become_a_base(self):

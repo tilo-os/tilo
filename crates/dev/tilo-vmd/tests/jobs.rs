@@ -20,9 +20,14 @@ case "$1" in
   build)
     echo "   Compiling tilo-session v0.1.0 ($*)" >&2
     mkdir -p target/release
-    for bin in tilo-session tilo-window-menu tilo-lock-screen tilo-quick-settings osk; do
-      printf '#!/bin/sh\necho built\n' > "target/release/$bin"
-      chmod 755 "target/release/$bin"
+    # Every `--bin` the component asks for, as a real build would leave them.
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = --bin ]; then
+        shift
+        printf '#!/bin/sh\necho built\n' > "target/release/$1"
+        chmod 755 "target/release/$1"
+      fi
+      shift
     done ;;
 esac
 "#;

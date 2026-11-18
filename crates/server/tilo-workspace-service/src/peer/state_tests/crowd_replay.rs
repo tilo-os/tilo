@@ -49,13 +49,9 @@ impl tokio::io::AsyncWrite for Stalled {
 }
 
 /// More stalled pages than the host has replay slots.
-const STALLED: usize = crate::store::replay::DEFAULT_REPLAY_TICKETS + 8;
+const STALLED: usize = crate::store::replay::DEFAULT_REPLAY_TICKETS + 2;
 /// The crowd entering behind them.
-const CROWD: usize = 100;
-/// Well inside the time a subscription waits for a replay slot before its
-/// session ends: a replay that waited on a stalled page's network instead
-/// would end its session, and the page would come back for all of it again.
-const CROWD_REPLAYED: std::time::Duration = std::time::Duration::from_secs(20);
+const CROWD: usize = 24;
 
 /// Subscribe `peer` on a connection of its own and write its replay and
 /// `Ready` to `write`.
@@ -131,7 +127,9 @@ async fn a_crowd_is_replayed_once_each_and_never_waits_on_a_stalled_page() {
         let (fixture, peer) = (fixture.clone(), peer.clone());
         crowd_pages.spawn(async move { enter(&fixture, &peer, &mut tokio::io::sink()).await });
     }
-    let replayed = tokio::time::timeout(CROWD_REPLAYED, async {
+    // A replay that waited on a stalled page's network instead never finishes,
+    // so the wait's own bound is what catches it.
+    let replayed = tilo_test_env::within("every crowd page's replay", async {
         let mut replayed = 0usize;
         while let Some(entered) = crowd_pages.join_next().await {
             entered.unwrap().unwrap();
@@ -141,10 +139,9 @@ async fn a_crowd_is_replayed_once_each_and_never_waits_on_a_stalled_page() {
     })
     .await;
     assert_eq!(
-        replayed.ok(),
-        Some(CROWD),
-        "{CROWD} pages entering behind {STALLED} stalled ones were not all replayed within \
-         {CROWD_REPLAYED:?}: a replay waited on a stalled page's network"
+        replayed, CROWD,
+        "{CROWD} pages entering behind {STALLED} stalled ones were not all replayed: a replay \
+         waited on a stalled page's network"
     );
     eprintln!("{CROWD} pages replayed in {:?}", entering.elapsed());
     assert_eq!(

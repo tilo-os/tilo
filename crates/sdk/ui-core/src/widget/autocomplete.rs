@@ -516,10 +516,8 @@ fn paint_notice(
 }
 
 impl FloatingList<Suggestion> {
-    pub(crate) fn access_rows(
-        &self,
-        key: impl Fn(&Suggestion) -> u64,
-    ) -> Vec<crate::a11y::AccessNode> {
+    /// The open list as assistive technology reads it: its panel and each row, keyed by `key`.
+    pub fn access_rows(&self, key: impl Fn(&Suggestion) -> u64) -> Vec<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Politeness, Role};
         let Some(panel) = self.rect() else {
             return Vec::new();

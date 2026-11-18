@@ -70,7 +70,7 @@ fn editing(words: &str, align: TextAlign) -> (Bench, Id) {
     (bench, id)
 }
 
-fn text_box(app: &SlidesApp) -> &ui::widget::BlockEditor {
+fn text_box(app: &SlidesApp) -> &ui::rich_edit::BlockEditor {
     app.text_editor
         .as_ref()
         .expect("the text box is being edited")

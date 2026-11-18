@@ -118,6 +118,8 @@ mod resume;
 mod revoked_device_history;
 #[path = "routed_actions.rs"]
 mod routed_actions;
+#[path = "server_restart.rs"]
+mod server_restart;
 #[path = "session_store.rs"]
 mod session_store;
 #[path = "stand_in_revocation.rs"]

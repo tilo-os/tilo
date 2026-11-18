@@ -580,35 +580,45 @@ impl ConfinedReplica {
         }
     }
 
-    /// The keys `mutation` writes in `record`, as the worker holds that record
-    /// now, or `None` when it holds none of it.
-    pub fn changed_keys(
+    /// The keys `mutation`, changes this replica took from its worker and
+    /// admitted into `record`, writes there: read from the changes' own
+    /// operations where the record holds them, so the admission that checked
+    /// them names what they touched and no worker is asked. `None` for changes
+    /// the record does not hold.
+    pub fn written_keys(
         &self,
-        record: &ui::resource::DocumentId,
+        record: &DocumentId,
         mutation: &DocumentMutation,
-    ) -> Option<Result<Vec<Vec<String>>, String>> {
-        let (snapshot, bytes) = match mutation {
-            DocumentMutation::Snapshot(bytes) => (true, bytes.clone()),
-            DocumentMutation::Incremental(bytes) => (false, bytes.clone()),
+    ) -> Option<Vec<Vec<String>>> {
+        let mut inner = self.lock();
+        let doc = if record == &self.record {
+            &mut inner.mirror
+        } else {
+            inner.beside.get_mut(record)?
         };
-        let answered = self.call(
-            &mut self.lock(),
-            &Request::ChangedKeys {
-                record: record.as_str().to_owned(),
-                snapshot,
-                bytes,
-            },
-        );
-        match answered {
-            Ok(Reply::Keys(text)) => {
-                match serde_json::from_str::<Option<Vec<Vec<String>>>>(&text) {
-                    Ok(keys) => keys.map(Ok),
-                    Err(error) => Some(Err(error.to_string())),
-                }
-            }
-            Ok(Reply::Failed(reason)) => Some(Err(reason)),
-            _ => None,
-        }
+        let changes: Vec<automerge::Change> = match mutation {
+            DocumentMutation::Incremental(bytes) => tilo_automerge_isolate::change_hashes(bytes)?
+                .iter()
+                .map(|hash| doc.get_change_by_hash(hash))
+                .collect::<Option<_>>()?,
+            // A record it started whole is every change it holds.
+            DocumentMutation::Snapshot(_) => doc.get_changes(&[]),
+        };
+        ui::framework::keys_written(doc, &changes)
+    }
+
+    /// The heads `record` stands at here, sorted: this one, or one held
+    /// beside it. What a merge that follows it takes only the changes after.
+    pub fn heads_of(&self, record: &DocumentId) -> Option<Vec<[u8; 32]>> {
+        let mut inner = self.lock();
+        let doc = if record == &self.record {
+            &mut inner.mirror
+        } else {
+            inner.beside.get_mut(record)?
+        };
+        let mut heads: Vec<[u8; 32]> = doc.get_heads().into_iter().map(|head| head.0).collect();
+        heads.sort_unstable();
+        Some(heads)
     }
 
     /// The one operation `address` names, as [`Self::survey`] lists it, or

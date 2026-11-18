@@ -235,9 +235,14 @@ impl SearchEntry {
 
     /// An entry titled `title` whose body text is `text`.
     pub fn new(title: impl Into<String>, text: impl Into<String>) -> Self {
+        Self::titled(title.into(), text.into())
+    }
+
+    #[inline(never)]
+    fn titled(title: String, text: String) -> Self {
         Self {
-            title: title.into(),
-            text: text.into(),
+            title,
+            text,
             ..Self::default()
         }
     }

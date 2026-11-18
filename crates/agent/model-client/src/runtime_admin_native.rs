@@ -2,7 +2,7 @@
 use crate::transport::{AdministrationClient, FdTransport};
 use agent_provider_config::{
     ModelDescriptor, ProviderConfig,
-    management::{AdminFuture, CredentialStatus, ProviderAdmin, ProviderSnapshot},
+    management::{AdminFuture, ProviderAdmin, ProviderSnapshot},
     protocol::{ErrorKind, ModelError},
 };
 use std::sync::Arc;
@@ -30,17 +30,8 @@ impl ProviderAdmin for NativeAdministration {
     ) -> AdminFuture<'_, ProviderSnapshot> {
         self.drive(self.client.set_config(expected_revision, config))
     }
-    fn credential_status(&self, profile_id: String) -> AdminFuture<'_, CredentialStatus> {
-        self.drive(self.client.credential_status(profile_id))
-    }
     fn list_models(&self, profile_id: String) -> AdminFuture<'_, Vec<ModelDescriptor>> {
         self.drive(self.client.list_models(profile_id))
-    }
-    fn set_api_key(&self, profile_id: String, api_key: String) -> AdminFuture<'_, ()> {
-        self.drive(self.client.set_api_key(profile_id, api_key))
-    }
-    fn remove_api_key(&self, profile_id: String) -> AdminFuture<'_, ()> {
-        self.drive(self.client.remove_api_key(profile_id))
     }
 }
 pub(crate) fn from_transport(transport: FdTransport) -> Result<Arc<dyn ProviderAdmin>, ModelError> {

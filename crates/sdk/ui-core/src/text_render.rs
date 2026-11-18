@@ -2185,7 +2185,10 @@ impl TextRenderer {
         }
     }
 
-    pub(crate) fn layout_epoch(&self) -> &Arc<()> {
+    /// What every text layout this renderer made was measured against: it changes when what
+    /// measures text changes (the fonts, the text scale, distinct letters), so a widget that keeps
+    /// a measurement compares it to know the measurement still holds.
+    pub fn layout_epoch(&self) -> &Arc<()> {
         self.sync_distinct_letters();
         &self.layout_epoch
     }

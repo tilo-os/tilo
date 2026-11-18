@@ -8,7 +8,7 @@ function storage() {
   return {getItem: key => kept.get(key) ?? null, setItem: (key, value) => kept.set(key, String(value))};
 }
 
-const info = {hostCert: {device_public_key: [1, 2, 3]}, address: {endpointAddr: {id: 'f978', addrs: []}, relayUrl: 'https://live.eu1.tilo.sh/', web: null}};
+const info = {hostCert: {device_public_key: [1, 2, 3]}, address: {endpointAddr: {id: 'f978', addrs: []}, relayUrl: 'https://live-eu1.tilo.sh/', web: null}};
 
 test('a server an invitation names is named under an origin that never resolves, and kept for the next visit', () => {
   const origin = invitedOrigin('F97887D9895250EF7D60F7929CC947CCC4E4C668B606D2933867E7189778563F');

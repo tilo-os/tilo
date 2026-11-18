@@ -254,62 +254,6 @@ fn report(label: &str, samples: &[FrameSample]) {
     }
 }
 
-/// Every knob `measure_sustained_scroll` reads: the five of its own body,
-/// the device scale `drive_scroll` draws at and the frame-by-frame trace
-/// `report` prints. With any of them set it is asked for a measurement and
-/// runs; with none it would be `sustained_scroll_never_waits_on_rendering`
-/// again.
-const SUSTAINED_SCROLL_KNOBS: [&str; 7] = [
-    "PDF_SCROLL_FILE",
-    "PDF_SCROLL_GPU",
-    "PDF_SCROLL_SIZE",
-    "PDF_SCROLL_SPEED",
-    "PDF_SCROLL_FRAMES",
-    "PDF_SCROLL_SCALE",
-    "PDF_SCROLL_TRACE",
-];
-
-#[test]
-fn measure_sustained_scroll() {
-    // With no knob set this is `sustained_scroll_never_waits_on_rendering`
-    // again, frame for frame: the same 24 heavy pages, window, 300 frames
-    // and speed, reported by the same line. That test runs and checks it.
-    if SUSTAINED_SCROLL_KNOBS
-        .iter()
-        .all(|knob| std::env::var_os(knob).is_none())
-    {
-        eprintln!(
-            "SCROLL nothing to measure beyond sustained_scroll_never_waits_on_rendering, \
-             which reports this scroll: set one of {SUSTAINED_SCROLL_KNOBS:?}"
-        );
-        return;
-    }
-    let dir = tempfile::tempdir().expect("temp dir");
-    let path = std::env::var_os("PDF_SCROLL_FILE")
-        .map_or_else(|| heavy_pdf(dir.path(), 24), std::path::PathBuf::from);
-    let Some(app) = open_settled(&path) else {
-        return;
-    };
-    let gpu = std::env::var("PDF_SCROLL_GPU").as_deref() == Ok("1");
-    let (w, h) = std::env::var("PDF_SCROLL_SIZE")
-        .ok()
-        .and_then(|v| {
-            let (w, h) = v.split_once('x')?;
-            Some((w.parse().ok()?, h.parse().ok()?))
-        })
-        .unwrap_or((1280, 800));
-    let speed: f64 = std::env::var("PDF_SCROLL_SPEED")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(24.0);
-    let frames: usize = std::env::var("PDF_SCROLL_FRAMES")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(300);
-    let samples = drive_scroll(app, (w, h), frames, speed, gpu);
-    report(&path.display().to_string(), &samples);
-}
-
 const SCROLL_MAX_TEXT_SHAPED: u64 = 4;
 
 const SCROLL_MAX_DRAWS: usize = 256;
@@ -398,19 +342,6 @@ fn covered(rects: &[vello::kurbo::Rect], (w, h): (u32, u32)) -> f64 {
         }
     }
     count as f64
-}
-
-#[test]
-fn measure_scroll_repaint() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let path = std::env::var_os("PDF_SCROLL_FILE")
-        .map_or_else(|| heavy_pdf(dir.path(), 24), std::path::PathBuf::from);
-    let painter = if std::env::var("PDF_SCROLL_GPU").as_deref() == Ok("1") {
-        Painter::Gpu
-    } else {
-        Painter::None
-    };
-    let _ = scroll_repaint(&path, 240, painter);
 }
 
 #[test]
@@ -1008,20 +939,6 @@ const MAX_TEXT_SHAPED: u64 = 2;
 
 const MAX_DRAWS: usize = 512;
 
-#[test]
-fn measure_zoom() {
-    if std::env::var_os("PDF_SCROLL_ZOOM").is_none() {
-        return;
-    }
-    let dir = tempfile::tempdir().expect("temp dir");
-    let path = std::env::var_os("PDF_SCROLL_FILE")
-        .map_or_else(|| heavy_pdf(dir.path(), 6), std::path::PathBuf::from);
-    let top = crate::tiles::TILE_MIN_PAGE_PX / 612.0 * 1.6;
-    if let Some(samples) = drive_zoom(&path, (1280, 800), top) {
-        eprintln!("{}", zoom_report(&samples));
-    }
-}
-
 fn zoom_report(samples: &[ZoomSample]) -> String {
     let mut cpu: Vec<f64> = samples.iter().map(|s| s.cpu_ms).collect();
     let blank = samples.iter().filter(|s| s.paper_px > 0).count();
@@ -1054,7 +971,6 @@ fn zoom_report(samples: &[ZoomSample]) -> String {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ScrollInput {
-    Wheel,
     Fling,
     TouchDrag,
 }
@@ -1078,14 +994,6 @@ fn send_scroll_input(
     };
     let pixel = |dy| MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, dy));
     match input {
-        ScrollInput::Wheel => {
-            if frame.is_multiple_of(4) {
-                send(wheel(
-                    MouseScrollDelta::LineDelta(0.0, -1.0),
-                    TouchPhase::Moved,
-                ));
-            }
-        }
         ScrollInput::Fling => match frame % 60 {
             0 => send(wheel(pixel(-36.0), TouchPhase::Started)),
             1..=9 => send(wheel(pixel(-36.0), TouchPhase::Moved)),
@@ -1130,8 +1038,6 @@ fn finger(
 }
 
 struct InputFrame {
-    ui_ms: f64,
-    gpu_ms: f64,
     moved_px: f64,
     drew: bool,
     whole: bool,
@@ -1161,19 +1067,16 @@ fn drive_input(
     let period = Duration::from_micros(16_667);
     let mut out = Vec::with_capacity(frames);
     let mut fingers = ui::interaction::TouchPointerEmulator::default();
-    let mut next = ui::time::now();
-    let mut frame_clock = next;
+    // The app sees a device's steady frame clock; the frames themselves run back
+    // to back, so the test measures the work and not wall time.
+    let mut frame_clock = ui::time::now();
     for frame in 0..frames {
-        next += period;
         frame_clock += period;
-        let t = ui::time::now();
         ui::time::testing::with_monotonic_time(frame_clock, || {
             send_scroll_input(&mut app, &surface, &mut fingers, input, frame, at);
             scene.reset();
             app.surface_frame_with_damage(&surface, &mut scene, &mut damage);
         });
-        let ui_ms = t.elapsed().as_secs_f64() * 1000.0;
-        let t = ui::time::now();
         let frame = damage.take_copying();
         if let Some(presented) = presented.as_mut() {
             match &frame {
@@ -1202,90 +1105,14 @@ fn drive_input(
             rects.iter().map(vello::kurbo::Rect::area).sum::<f64>()
         });
         let whole = damage_px >= 0.6 * window;
-        let gpu_ms = t.elapsed().as_secs_f64() * 1000.0;
         out.push(InputFrame {
-            ui_ms,
-            gpu_ms,
             moved_px,
             drew,
             whole,
             damage_px,
         });
-        let now = ui::time::now();
-        if next > now {
-            std::thread::sleep(next - now);
-        } else {
-            next = now;
-        }
     }
     Some(out)
-}
-
-fn quantiles(mut values: Vec<f64>) -> String {
-    let p50 = percentile(&mut values, 0.5);
-    let p95 = percentile(&mut values, 0.95);
-    let max = values.last().copied().unwrap_or(0.0);
-    format!("p50 {p50:5.2} p95 {p95:5.2} max {max:5.2}")
-}
-
-#[test]
-#[serial_test::serial(pdfium)]
-fn measure_scroll_inputs() {
-    const FRAMES: usize = 600;
-    const EARLY: usize = 18;
-    if std::env::var_os("PDF_SCROLL_INPUTS").is_none() {
-        return;
-    }
-    let dir = tempfile::tempdir().expect("temp dir");
-    let path = heavy_pdf(dir.path(), 40);
-    for input in [
-        ScrollInput::Wheel,
-        ScrollInput::Fling,
-        ScrollInput::TouchDrag,
-    ] {
-        let painter = if std::env::var("PDF_SCROLL_PAINTER").as_deref() == Ok("cpu") {
-            Painter::Cpu
-        } else {
-            Painter::Gpu
-        };
-        let Some(frames) = drive_input(&path, input, FRAMES, painter) else {
-            return;
-        };
-        let total = |f: &&InputFrame| f.ui_ms + f.gpu_ms;
-        let drawn = |frames: &[InputFrame]| -> Vec<f64> {
-            frames
-                .iter()
-                .filter(|f| f.drew)
-                .map(|f| total(&f))
-                .collect()
-        };
-        let (early, late) = frames.split_at(EARLY);
-        let moving_late = late.iter().filter(|f| f.moved_px > 0.0).count();
-        let per_second: Vec<String> = frames
-            .chunks(60)
-            .map(|second| {
-                let mut ms = drawn(second);
-                format!("{:.1}", percentile(&mut ms, 0.95))
-            })
-            .collect();
-        eprintln!(
-            "INPUT {input:?}: scrolled {:.0}px, drew {} frames, moved on {moving_late} of the {} frames after 0.3 s\n  first 0.3 s  {}\n  after 0.3 s  {}\n  p95 per second: {}",
-            frames.iter().map(|f| f.moved_px).sum::<f64>(),
-            frames.iter().filter(|f| f.drew).count(),
-            late.len(),
-            quantiles(drawn(early)),
-            quantiles(drawn(late)),
-            per_second.join(" "),
-        );
-        if std::env::var_os("PDF_SCROLL_TRACE").is_some() {
-            for (i, f) in frames.iter().enumerate().take(120) {
-                eprintln!(
-                    "  {i:3} ui {:6.2} gpu {:6.2} moved {:5.1}",
-                    f.ui_ms, f.gpu_ms, f.moved_px
-                );
-            }
-        }
-    }
 }
 
 #[test]

@@ -16,11 +16,30 @@ pub use page::PageAgents;
 pub(crate) use shell::*;
 
 /// This machine's applications, as the workspace settings name them.
-pub(crate) struct Directory;
+#[derive(Default)]
+pub(crate) struct Directory {
+    /// What the apps publish, where this device opens any: the catalogue that names their actions
+    /// as the sheet asking to allow one does.
+    actions: Option<std::rc::Rc<dyn crate::search::AppActions>>,
+    /// The workspace whose published actions name what its grants are for.
+    workspace: String,
+}
 
 impl domain::AppDirectory for Directory {
     fn app_display_name(&self, app_id: &str) -> Option<String> {
         crate::app_names::listed_name(app_id)
+    }
+
+    fn action_display_name(&self, app_id: &str, action: &str) -> Option<String> {
+        self.actions
+            .as_ref()?
+            .published(&self.workspace)
+            .into_iter()
+            .filter(|published| published.app == app_id)
+            .flat_map(|published| published.actions)
+            .find(|descriptor| descriptor.address.action == action)
+            .map(|descriptor| descriptor.action_label)
+            .filter(|label| !label.trim().is_empty())
     }
 
     /// The packages installed on this computer; else, and on a page, which keeps none of its own,

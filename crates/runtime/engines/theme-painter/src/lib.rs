@@ -1,5 +1,5 @@
-//! The interpreter a theme's painter sets loaded from wasm run on, as its own
-//! library in the runtime bundle (`libtilo_theme_painter_engine.so`).
+//! A theme's painter sets loaded from wasm, as their own library in the runtime
+//! bundle (`libtilo_theme_painter_engine.so`), on the wasm engine's interpreter.
 //!
 //! Like `runtime-dylib` it re-exports what it provides, which records it as
 //! provided by this library for the apps' `-C prefer-dynamic` link. Outside
@@ -10,6 +10,9 @@
 // its own copy of every crate the runtime already provides.
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
+// The interpreter comes from the wasm engine, which the Typst engine loads too.
+#[cfg(feature = "thin")]
+extern crate tilo_wasm_engine;
 
 #[cfg(feature = "thin")]
 pub use tilo_theme_painter_wasm;

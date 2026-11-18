@@ -1493,7 +1493,7 @@ impl AppComponent {
         changed
     }
 
-    /// Whether the record's durability is still being written.
+    /// Whether the durability the window shows is still being written.
     pub(crate) fn record_saving(&self) -> bool {
         if !matches!(
             &self.record_save,
@@ -1503,8 +1503,7 @@ impl AppComponent {
         }
         let binding = self.callback_binding();
         binding
-            .records
-            .save_status(&binding.checkout.id)
+            .shown_save_status(&binding.chain_parts())
             .map_or(true, |status| {
                 status == crate::resource::ResourceSaveStatus::Saving
             })

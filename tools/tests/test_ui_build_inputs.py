@@ -10,6 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "crates/sdk/ui-core"
+SCAN = ROOT / "crates/sdk/tilo-component-scan"
 FIXTURES = {
     "tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex":
         "TiloSansFeaturesFixture-Regular.ttf",
@@ -27,9 +28,19 @@ class UiBuildInputs(unittest.TestCase):
         (self.package / "Cargo.toml").write_text(
             '[package]\nname = "ui-build-inputs"\nversion = "0.0.0"\n'
             'edition = "2024"\nautotests = false\n[workspace]\n'
+            '[build-dependencies]\n'
+            'tilo-component-scan = { path = "scan" }\n'
         )
-        for name in ("build.rs", "component_scan.rs"):
-            shutil.copyfile(SOURCE / name, self.package / name)
+        shutil.copyfile(SOURCE / "build.rs", self.package / "build.rs")
+        # The registry's reader, without the workspace's shared dependency set: the fixture
+        # builds offline on its own.
+        scan = self.package / "scan"
+        (scan / "src").mkdir(parents=True)
+        (scan / "Cargo.toml").write_text(
+            '[package]\nname = "tilo-component-scan"\nversion = "0.1.0"\n'
+            'edition = "2024"\n'
+        )
+        shutil.copyfile(SCAN / "src/lib.rs", scan / "src/lib.rs")
         self.original = {}
         for source, filename in FIXTURES.items():
             destination = self.package / source
@@ -57,7 +68,8 @@ class UiBuildInputs(unittest.TestCase):
         messages = [json.loads(line) for line in result.stdout.splitlines()]
         artifact = next(message for message in messages
                         if message["reason"] == "compiler-artifact"
-                        and message["target"]["kind"] == ["lib"])
+                        and message["target"]["kind"] == ["lib"]
+                        and message["target"]["name"] == "ui_build_inputs")
         output = next(message for message in messages
                       if message["reason"] == "build-script-executed")
         return artifact["fresh"], Path(output["out_dir"])

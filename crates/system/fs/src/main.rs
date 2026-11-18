@@ -1262,11 +1262,11 @@ async fn serve(
     let transport_identity =
         FsTransportIdentity::new(credentials.clone(), Arc::clone(&revocations))
             .with_transport_switch(transport_switch);
-    let history_actor = fs_protocol::FileActor {
+    let actor = fs_protocol::FileActor {
         person: collab_types::Ed25519PublicKey(credentials.user_public_key()),
         device: collab_types::Ed25519PublicKey(credentials.device_public_key()),
     };
-    let history = cache_dir.as_deref().map(|_| history_actor);
+    let mount_actor = cache_dir.as_deref().map(|_| actor);
     let net = network(&device.secret, session_link.as_deref()).await?;
     // Files act as the certified person by default; transport authorship and
     // device-specific grants continue to use the endpoint/device key.
@@ -1349,7 +1349,6 @@ async fn serve(
         }
         None => None,
     };
-    let allow_history_baseline = remote_ticket.is_none();
     let authority_reload = workspace_authority
         .as_ref()
         .zip(share_issuer.as_ref())
@@ -1457,10 +1456,9 @@ async fn serve(
             namespace_path: np.clone(),
             predictive_cache_root: cache_dir.clone(),
             thumb_dir,
-            allow_history_baseline,
             storage_sock,
             read_only: false,
-            backend: Some((backend, *history_actor.device.as_bytes())),
+            backend: Some((backend, *actor.device.as_bytes())),
         },
         MountServices {
             namespace: namespace.clone(),
@@ -1468,7 +1466,7 @@ async fn serve(
             acl,
             availability,
             eviction_queue,
-            history,
+            actor: mount_actor,
             rebind: managed_service.then_some(rebind_rx),
         },
     )
@@ -1524,11 +1522,11 @@ async fn mount(
     let (device, credentials) = certified.into_parts();
     let transport_identity = FsTransportIdentity::new(credentials.clone(), revocations)
         .with_transport_switch(transport_switch);
-    let history_actor = fs_protocol::FileActor {
+    let actor = fs_protocol::FileActor {
         person: collab_types::Ed25519PublicKey(credentials.user_public_key()),
         device: collab_types::Ed25519PublicKey(credentials.device_public_key()),
     };
-    let history = cache_dir.as_deref().map(|_| history_actor);
+    let mount_actor = cache_dir.as_deref().map(|_| actor);
     let net = network(&device.secret, session_link.as_deref()).await?;
     let caps = resolve_acl(&acl_args, credentials.user_public_key())?;
     let acl = caps.as_ref().map(|c| (c.handle(), c.identity()));
@@ -1588,10 +1586,9 @@ async fn mount(
             namespace_path: np.clone(),
             predictive_cache_root: cache_dir,
             thumb_dir,
-            allow_history_baseline: false,
             storage_sock,
             read_only: false,
-            backend: Some((backend, *history_actor.device.as_bytes())),
+            backend: Some((backend, *actor.device.as_bytes())),
         },
         MountServices {
             namespace: namespace.clone(),
@@ -1599,7 +1596,7 @@ async fn mount(
             acl,
             availability,
             eviction_queue,
-            history,
+            actor: mount_actor,
             rebind: None,
         },
     )
@@ -1791,7 +1788,6 @@ struct MountConfig {
     namespace_path: Option<PathBuf>,
     predictive_cache_root: Option<PathBuf>,
     thumb_dir: Option<PathBuf>,
-    allow_history_baseline: bool,
     storage_sock: Option<PathBuf>,
     read_only: bool,
     backend: Option<(BackendArgs, [u8; 32])>,
@@ -1803,7 +1799,7 @@ struct MountServices {
     acl: Option<(AclHandle, IdentityKey)>,
     availability: Option<Arc<Mutex<fs::AvailabilityRegistry>>>,
     eviction_queue: Option<Arc<tokio::sync::Mutex<fs::eviction::EvictionQueue>>>,
-    history: Option<fs_protocol::FileActor>,
+    actor: Option<fs_protocol::FileActor>,
     rebind: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
 }
 
@@ -1818,7 +1814,6 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         namespace_path: durable_namespace_path,
         predictive_cache_root,
         thumb_dir,
-        allow_history_baseline,
         storage_sock,
         read_only,
         backend,
@@ -1829,7 +1824,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         acl,
         availability,
         eviction_queue,
-        history,
+        actor,
         mut rebind,
     } = services;
     // Before anything is served: from here on a stop signal ends the mount through the final save
@@ -1864,11 +1859,6 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     #[cfg(target_os = "linux")]
     let signalled_availability = availability.clone();
     let fs = QuickFS::new(namespace, hydrator, heuristics);
-    let fs = if allow_history_baseline {
-        fs
-    } else {
-        fs.without_history_baseline()
-    };
     let fs = match availability {
         Some(registry) => fs.with_availability(registry),
         None => fs,
@@ -1877,8 +1867,8 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         Some(queue) => fs.with_eviction_queue(queue),
         None => fs,
     };
-    let fs = match history {
-        Some(actor) => fs.with_history(actor)?,
+    let fs = match actor {
+        Some(actor) => fs.with_actor(actor),
         None => fs,
     };
     // Who writes, from the process each request comes from: an agent session, an app, another

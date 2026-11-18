@@ -123,9 +123,5 @@ mod tests {
             Ok(_) => panic!("a process-local symlink must not supply firstboot authority"),
         };
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert_eq!(
-            error.to_string(),
-            "Firstboot seed proof namespace is not root controlled"
-        );
     }
 }

@@ -252,7 +252,7 @@ type LocateText = Box<dyn Fn(&AutoCommit) -> Option<ObjId>>;
 /// Complete committed-text runs for an unmasked single line. Decorations use
 /// byte ranges in that same text; IME insertion remaps them only for display.
 #[derive(Clone, Debug, Default)]
-pub(super) struct SingleLineAttributes {
+pub struct SingleLineAttributes {
     pub spans: Vec<RichSpan>,
     pub underlines: Vec<(usize, usize)>,
     pub strikes: Vec<(usize, usize)>,
@@ -547,7 +547,8 @@ fn link_target(what: crate::text_detect::Detected, text: &str) -> Option<String>
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct TextAccessibilityState {
+/// What assistive technology reads of a text field: opaque, for the toolkit's accessibility tree.
+pub struct TextAccessibilityState {
     secret: bool,
     multiline: bool,
     disabled: bool,
@@ -615,8 +616,6 @@ struct LineWrap {
     y: f64,
     lines: Vec<VisualLine>,
 }
-
-pub(crate) use tilo_resource::text::AUTHOR_MARK;
 
 /// Which logical line each multiline-body visual row belongs to, which rows
 /// start one, and the logical line holding the caret.
@@ -1598,8 +1597,37 @@ impl TextInput {
         self.code_gutter_w()
     }
 
-    #[cfg(test)]
-    pub(crate) fn shaped_font_size_for_test(&self) -> Option<f32> {
+    /// Where the single line's chips sit in the text it shows, for the tests of a widget built on it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn chip_display_ranges_for_test(&self) -> Vec<(usize, usize)> {
+        self.single_attributes
+            .as_ref()
+            .map_or_else(Vec::new, |attributes| {
+                self.display_ranges(&attributes.chips)
+            })
+    }
+
+    /// Paint the single line's decorations alone, for the tests of a widget built on it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn draw_single_line_decorations_for_test(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        backgrounds: bool,
+    ) {
+        self.draw_single_line_decorations(scene, transform, theme, backgrounds);
+    }
+
+    /// The paragraph the field last shaped, for the tests of a widget built on it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn shaped_layout_for_test(&self) -> Option<&RichTextLayout> {
+        self.single_layout.as_ref()
+    }
+
+    /// The font size the shaped single line was laid out at.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn shaped_font_size_for_test(&self) -> Option<f32> {
         self.single_layout
             .as_ref()
             .map(|layout| layout.buffer.metrics().font_size)

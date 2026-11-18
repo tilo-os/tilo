@@ -129,8 +129,8 @@ TEST_MODEL = "e2e-fixed-reply"
 # Notes and makes a note, through the tools every agent works with (crates/runtime/tilo-mcp).
 TOOL_TURNS = [
     ("tilo_ls", {}),
-    ("tilo_read", {"path": "notes"}),
-    ("tilo", {"program": "notes.new_note(notes.notebook)", "confirm": True}),
+    ("tilo_ls", {"path": "notes"}),
+    ("tilo_do", {"path": "notes#new_note", "args": {"title": "Release checklist"}}),
 ]
 # Chat's messages as the workspace's record holds them: what was said and in which
 # conversation (apps/chat/src/record.rs, `derived:messages`).
@@ -392,7 +392,7 @@ def said(session: Session, wait_ms: int = 0) -> list[dict]:
     conversation it is in: what a person reads in Chat, read through the record API as they
     read it. Held until the record moves or `wait_ms` passed when one is given."""
     answer = session.control_json("raw", json.dumps({
-        "op": "record_read", "app": "so.tilo.chat", "records": [CHAT_MESSAGES],
+        "op": "resource_read", "app": "so.tilo.chat", "records": [CHAT_MESSAGES],
         "wait_ms": wait_ms}))
     messages: list[dict] = []
 
@@ -719,6 +719,8 @@ def check_ask(session: Session, model: TestOnlyFixedReplyModel) -> dict:
         raise Failed(f"the model read {len(answers)} tool answers, not {len(TOOL_TURNS)}: {answers}")
     if "notes" not in answers[0]:
         raise Failed(f"tilo_ls did not list Notes: {answers[0][:400]}")
+    if not answers[2].startswith("ok"):
+        raise Failed(f"tilo_do did not make the note: {answers[2][:400]}; Notes lists: {answers[1][:1500]}")
     return {"send": row["id"], "turns": len(model.task_turns),
             "tools": [answer[:160] for answer in answers],
             "answer": answer["text"][:120]}

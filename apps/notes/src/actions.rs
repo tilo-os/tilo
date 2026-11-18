@@ -14,9 +14,9 @@ use serde::{Deserialize, Serialize};
 
 use tilo_actions::EncodedAction;
 use tilo_document::RichTextAction;
+use ui::rich_edit::{BlockContent, BlockKind};
 use ui::tilo_resource::{Atom, Bytes, Resource, Stamped, items};
 use ui::widget::marks::{Mark, MarkSpan};
-use ui::widget::{BlockContent, BlockKind};
 
 use crate::model::{PageId, PageMeta, TagId};
 use crate::note_list::{NoteList, NoteListAction, note_list};
@@ -574,7 +574,7 @@ pub fn page_markdown(workspace: &crate::Workspace, page: PageId) -> String {
         .unwrap_or_default()
         .iter()
         .map(|block| {
-            ui::widget::Block::from_content(BlockContent {
+            ui::rich_edit::Block::from_content(BlockContent {
                 id: block.id.clone(),
                 kind: block.kind.clone(),
                 text: block.text.clone(),

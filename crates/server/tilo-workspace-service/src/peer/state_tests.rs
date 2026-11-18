@@ -19,11 +19,11 @@ use tilo_user_identity::{RevocationList, UserIdentity};
 /// The workspace the fixtures here hold.
 const WS: WorkspaceId = WorkspaceId::from_u128(7);
 
+mod connections;
 mod crowd_replay;
 mod governance_replay;
 mod replay_boundary;
 mod sealed;
-mod supersede;
 
 struct Fixture {
     _tmp: tempfile::TempDir,
@@ -180,8 +180,8 @@ impl Fixture {
                 content_waiting: Arc::default(),
             });
         }
-        runtime.state_sessions.insert(
-            recipient.device_public_key,
+        runtime.put_state(
+            &recipient.device_public_key,
             StateSession {
                 peer: recipient.clone(),
                 tx: delivery,
@@ -432,7 +432,7 @@ async fn ordered_checkpoints_reach_a_device_once_per_channel_until_rearmed() {
         .workspace
         .lock()
         .await
-        .request_checkpoint(&fixture.recipient.device_public_key);
+        .request_checkpoint(&fixture.recipient.device_public_key, &fixture.recipient_tx);
     fixture.enqueue_checkpoint(3, vec![3; 64]).await;
     fixture.drained().await;
     assert!(
@@ -557,8 +557,7 @@ async fn ordered_checkpoints_remain_live_for_attached_hosts() {
         let mut runtime = fixture.workspace.lock().await;
         runtime.note_attached_host(fixture.recipient.device_public_key);
         runtime
-            .state_sessions
-            .get_mut(&fixture.recipient.device_public_key)
+            .newest_state_mut(&fixture.recipient.device_public_key)
             .unwrap()
             .peer = fixture.recipient.clone();
     }
@@ -575,7 +574,7 @@ async fn ordered_checkpoints_remain_live_for_attached_hosts() {
 }
 
 #[tokio::test]
-async fn cleanup_queued_before_recipient_replacement_retains_exact_pending() {
+async fn a_written_delivery_clears_its_pending_entry_beside_a_sibling_connection() {
     let mut fixture = Fixture::new();
     fixture.enqueue(0).await;
     fixture.drained().await;
@@ -595,9 +594,11 @@ async fn cleanup_queued_before_recipient_replacement_retains_exact_pending() {
     });
     drop(release);
     fixture.drained().await;
+    // The connection it was written on still holds its subscription: the
+    // device has the change, whichever of its connections entered since.
     assert!(
-        path.exists(),
-        "old session cleanup removed a pending entry after replacement"
+        !path.exists(),
+        "a delivery written on a live connection kept its pending entry"
     );
 }
 
@@ -698,8 +699,7 @@ async fn full_state_delivery_queue_preserves_live_session_and_durable_pending() 
         .workspace
         .lock()
         .await
-        .state_sessions
-        .get_mut(&fixture.recipient.device_public_key)
+        .newest_state_mut(&fixture.recipient.device_public_key)
         .unwrap()
         .tx = state_tx;
 
@@ -714,15 +714,13 @@ async fn full_state_delivery_queue_preserves_live_session_and_durable_pending() 
         "a full durable state queue must not disconnect its live recipient"
     );
     assert!(
-        runtime
-            .subscribers
-            .contains_key(&fixture.recipient.device_public_key),
+        runtime.has_subscriber(&fixture.recipient.device_public_key),
         "a backpressured recipient must remain subscribed"
     );
     assert!(
         runtime
-            .state_sessions
-            .contains_key(&fixture.recipient.device_public_key),
+            .newest_state(&fixture.recipient.device_public_key)
+            .is_some(),
         "a backpressured recipient must retain its ordered state session"
     );
     assert_eq!(
@@ -749,15 +747,13 @@ async fn closed_state_delivery_queue_disconnects_and_prunes_exact_session() {
         "a closed state queue must disconnect its recipient"
     );
     assert!(
-        !runtime
-            .subscribers
-            .contains_key(&fixture.recipient.device_public_key),
+        !runtime.has_subscriber(&fixture.recipient.device_public_key),
         "a closed recipient must be pruned"
     );
     assert!(
-        !runtime
-            .state_sessions
-            .contains_key(&fixture.recipient.device_public_key),
+        runtime
+            .newest_state(&fixture.recipient.device_public_key)
+            .is_none(),
         "a closed recipient's ordered state session must be pruned"
     );
     assert_eq!(
@@ -811,9 +807,13 @@ async fn state_completion_rechecks_source_and_recipient_membership_and_generatio
         }
         drop(release);
         fixture.drained().await;
-        assert!(
-            fixture.recipient_rx.try_recv().is_err(),
-            "stale state publication after mutation {mutation}"
+        // Another connection of the source or the recipient device entering
+        // changes nobody's access: the publication goes on.
+        let sibling = (2..4).contains(&mutation);
+        assert_eq!(
+            fixture.recipient_rx.try_recv().is_ok(),
+            sibling,
+            "state publication after mutation {mutation}"
         );
         assert_eq!(
             fixture.store.load_retained().unwrap().len(),
@@ -1205,7 +1205,9 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
             crate::persistence::receipt(receipt).await.unwrap();
         }
         fixture.drained().await;
-        if matches!(change, "unchanged" | "unsubscribed") {
+        // A sibling connection of the device entering leaves this one's
+        // answer be.
+        if matches!(change, "unchanged" | "unsubscribed" | "replaced") {
             let Envelope::SyncResponse {
                 workspace_id,
                 delta_since,
@@ -1228,7 +1230,7 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
 }
 
 #[tokio::test]
-async fn unsubscribed_sync_request_cannot_publish_after_a_replacement_subscribes() {
+async fn a_sync_request_is_answered_on_its_connection_after_a_sibling_subscribes() {
     let mut fixture = Fixture::new();
     let (release, reached) =
         crate::store::test_barrier::install(fixture.store.root(), "state-persist");
@@ -1258,8 +1260,11 @@ async fn unsubscribed_sync_request_cannot_publish_after_a_replacement_subscribes
     drop(release);
     fixture.drained().await;
     assert!(
-        fixture.receivers[0].try_recv().is_err(),
-        "unsubscribed old source published a sync response after replacement"
+        matches!(
+            fixture.receivers[0].try_recv(),
+            Ok(Envelope::SyncResponse { .. })
+        ),
+        "the connection that asked was not answered once a sibling subscribed"
     );
 }
 
@@ -1456,8 +1461,7 @@ async fn replay_capture_waits_for_owner_capacity_and_can_be_cancelled() {
                 .workspace
                 .lock()
                 .await
-                .subscribers
-                .contains_key(&fixture.recipient.device_public_key),
+                .has_subscriber(&fixture.recipient.device_public_key),
             !cancel
         );
     }
@@ -1737,7 +1741,7 @@ async fn cancelled_capture_cannot_register_and_idle_owner_reclaims_it() {
         .await
         .unwrap();
     assert!(
-        !workspace.lock().await.subscribers.contains_key(&device),
+        !workspace.lock().await.has_subscriber(&device),
         "cancelled capture registered a subscriber"
     );
     tilo_test_env::within("idle owner did not reclaim cancelled capture", async {
@@ -1825,7 +1829,14 @@ async fn replay_cleanup_rechecks_authority_after_waiting_for_worker() {
             }
         }
         drop(release);
-        assert!(task.await.unwrap().is_err());
+        let replayed = task.await.unwrap();
+        if change == 2 {
+            // A sibling connection of the device is no authority change: the
+            // replay completes.
+            assert!(replayed.is_ok(), "{:?}", replayed.err());
+            continue;
+        }
+        assert!(replayed.is_err());
         assert_eq!(
             fixture.store.count_pending(&device).unwrap(),
             1,

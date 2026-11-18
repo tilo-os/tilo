@@ -14,3 +14,5 @@ agent-confirm-question = Darf dein Agent „{ $action }“ in { $app } verwenden
 agent-confirm-detail = Das erlaubt nur diese eine Aktion; dein Agent fragt beim nächsten Mal erneut.
 agent-confirm-allow = Erlauben
 agent-confirm-deny = Nicht erlauben
+app-grant-question = Darf { $asker } „{ $action }“ in { $app } verwenden?
+app-grant-detail = Das gilt ab jetzt in diesem Arbeitsbereich. Du kannst es unter Apps in Datenschutz & Sicherheit widerrufen.

@@ -571,9 +571,9 @@ fn place(flags: &Flags) -> Result<ExitCode, String> {
 
 /// Wake a workspace's VM and run one program in it, as ush would.
 fn run(args: &[String]) -> Result<ExitCode, String> {
+    use linux_vm::hosted::control::VmRequest;
     use linux_vm_protocol::client::{self, LaunchIo};
     use linux_vm_protocol::{AGENT_PORT, Display, Launch, Stdio};
-    use linux_vm::hosted::control::VmRequest;
 
     let mut parts = args.splitn(2, |arg| arg == "--");
     let options = parts.next().unwrap_or_default();

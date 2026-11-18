@@ -29,6 +29,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 mod agent;
 mod aliases;
+mod approving;
 use tilo_api::client as api;
 mod cleanup;
 mod desktop;
@@ -347,6 +348,10 @@ enum Cmd {
     /// Every command as a page of documentation, for tilo.sh/docs.
     #[command(hide = true)]
     HelpMarkdown,
+    /// Answer what this computer's agent asks the person whose root it holds,
+    /// beside a command acting as it.
+    #[command(hide = true)]
+    ApproveHere,
     /// Log this computer in as one of your devices, with the code your Tilo
     /// tab shows.
     #[command(after_help = "Example:\n  tilo login K7Q-MX2P\n\n\
@@ -1062,15 +1067,17 @@ fn run_hosted(
         key_file,
         json,
     };
-    // Acting as this computer's own login, each command is a call to the process holding its
-    // device's session, started now when none is up.
-    if api_key_absent(api, key_file)
-        && api::desktop_socket().is_none()
-        && acts_as_the_login(&cmd, workspace.is_some())
-        && let Err(error) = mcp::ensure_held()
-    {
+    // Acting as this computer's own device (no key, or the device's own key named), each command
+    // is a call to the process holding its device's session, started now when none is up.
+    let as_device = !(api_key_absent(api, key_file) && api::desktop_socket().is_some())
+        && api::held_api_for(reach).ok().flatten().is_some()
+        && acts_as_the_login(&cmd, workspace.is_some());
+    if as_device && let Err(error) = mcp::ensure_held() {
         return Ok(Err(error));
     }
+    // What the command, as the computer's agent, asks its person is answered here until it
+    // ends, when this computer holds their root.
+    let _approving = as_device.then(approving::start).flatten();
     Ok(match cmd {
         Cmd::Do { action, args } => Ok(run_do(reach, workspace, action, args, spelling)),
         Cmd::Ls { what, cursor } => workspace
@@ -1122,13 +1129,14 @@ fn run_hosted(
 
 /// Whether `cmd` calls Tilo's API, which without a key is as this computer's login: a `do`
 /// in a named workspace (else it acts on this desktop), an `sdk` or `migrate` into one, and
-/// every other workspace command but `keys export`, which only writes the login's key out.
+/// every other workspace command but `keys create` and `keys export`, which ask the API server.
 fn acts_as_the_login(cmd: &Cmd, named: bool) -> bool {
     match cmd {
         Cmd::Do { args, .. } => named || args.iter().any(|arg| arg == "-w" || arg == "--workspace"),
         Cmd::Sdk { .. } | Cmd::Migrate { .. } => named,
+        // A new key is asked of the API server, never of this computer's session.
         Cmd::Keys {
-            cmd: hosted::KeysCmd::Export { .. },
+            cmd: hosted::KeysCmd::Export { .. } | hosted::KeysCmd::Create { .. },
         } => false,
         Cmd::Keys { .. } | Cmd::Workspace { .. } | Cmd::View { .. } => true,
         other => acts_in_a_workspace(other),
@@ -1297,6 +1305,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Completions { shell } => completions(shell),
         Cmd::Device { cmd } => run_system_command(cmd),
         Cmd::HelpMarkdown => help_markdown(),
+        Cmd::ApproveHere => approving::serve(),
         Cmd::Agent { cmd } => agent::run(cmd),
         Cmd::Migrate { json, cmd } => migrate::run(cmd, json),
         Cmd::Login {

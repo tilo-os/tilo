@@ -11,7 +11,61 @@ use crate::join::WorkspaceId;
 use collab_types::signer::DeviceSigner;
 use tilo_action_policy::Change;
 
+/// A state of a workspace's governance, kept to ask which heads it holds
+/// ([`PeerGovernance::held_heads`]). Cheap to keep: it shares the state.
+#[derive(Clone, Default)]
+pub struct GovernanceHeads(Option<crate::cached_document::CachedDocument>);
+
+impl GovernanceHeads {
+    /// Whether this state holds every head of `heads`: a hash lookup each.
+    #[must_use]
+    pub fn holds(&self, heads: &[[u8; 32]]) -> bool {
+        heads.iter().all(|head| {
+            self.0.as_ref().is_some_and(|doc| {
+                doc.get_change_by_hash(&automerge::ChangeHash(*head))
+                    .is_some()
+            })
+        })
+    }
+}
+
 impl PeerGovernance<'_> {
+    /// The governance as it stands now, to ask which heads it holds: what a
+    /// server that decides changes against an access read from this state
+    /// keeps beside it, so a change refused while the governance is past it
+    /// waits for the next.
+    #[must_use]
+    pub fn held_heads(self) -> GovernanceHeads {
+        GovernanceHeads(self.peer.core.workspace_doc.clone())
+    }
+    /// [`Self::access_of`] `devices` at `now`, with the governance it was read
+    /// from ([`Self::held_heads`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::access_of`].
+    #[allow(
+        clippy::type_complexity,
+        reason = "the access and the governance state it was read from, as one projection"
+    )]
+    pub fn projection(
+        self,
+        devices: &[[u8; 32]],
+        now: SystemTime,
+    ) -> Result<
+        (
+            std::collections::BTreeMap<[u8; 32], tilo_action_policy::MemberAccess>,
+            GovernanceHeads,
+        ),
+        String,
+    > {
+        Ok((self.access_of(devices, now)?, self.held_heads()))
+    }
+    /// The governance's heads now.
+    #[must_use]
+    pub fn heads(self) -> Vec<[u8; 32]> {
+        self.peer.governance_heads()
+    }
     /// Whether the governance carries a device's removal without its cut
     /// ([`crate::removals`]): one recorded before cuts were kept. Until the
     /// device that governs the workspace completes it
@@ -71,14 +125,18 @@ impl PeerGovernance<'_> {
             .workspace_doc
             .as_ref()
             .ok_or("workspace governance missing")?;
-        // One policy, shared by every device's access.
+        // One policy, shared by every device's access, and the grants its
+        // person approved, walked once for all of them: walking the
+        // workspace's certificates per device made admitting one cost more
+        // the more devices the workspace had.
         let policy = std::sync::Arc::new(doc.workspace_policy(&self.peer.core.workspace).clone());
+        let approved = self.peer.approved_keys(now);
         Ok(devices
             .iter()
             .copied()
             .filter_map(|device| {
                 self.peer
-                    .member_with(device, std::sync::Arc::clone(&policy), now)
+                    .member_with(device, std::sync::Arc::clone(&policy), &approved, now)
                     .ok()
                     .map(|member| (device, member))
             })
@@ -87,6 +145,30 @@ impl PeerGovernance<'_> {
     /// Current governed access, derived from the workspace's member set: its
     /// members by their roots, and the devices of theirs it lists now.
     ///
+    /// [`Self::access_of`], and how many times deriving it walked the
+    /// workspace's certificates and grants: the tests hold that to one walk
+    /// however many devices the workspace names, a count that does not pass by
+    /// waiting longer.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::access_of`].
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn access_of_with_walks(
+        self,
+        devices: &[[u8; 32]],
+        now: SystemTime,
+    ) -> Result<
+        (
+            std::collections::BTreeMap<[u8; 32], tilo_action_policy::MemberAccess>,
+            u64,
+        ),
+        String,
+    > {
+        let (access, walks) = super::authority::walks::taken(|| self.access_of(devices, now));
+        Ok((access?, walks))
+    }
+
     /// A person is a member by their root, whatever devices of theirs the
     /// workspace lists now: a page's certificate lasts an hour and its row
     /// goes with it, and a person whose last page expired, or whose browser

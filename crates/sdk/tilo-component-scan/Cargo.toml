@@ -1,0 +1,15 @@
+[package]
+name = "tilo-component-scan"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license = "MIT"
+repository.workspace = true
+homepage.workspace = true
+description = "Reads a crate of Tilo widgets' sources for its described components, for its build script."
+
+[lints]
+workspace = true
+
+[dependencies]
+workspace-hack = { version = "0.1" }

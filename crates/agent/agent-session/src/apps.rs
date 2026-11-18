@@ -1009,18 +1009,6 @@ impl Replica {
         (total, page)
     }
 
-    /// The keys `mutation` writes in `record`, as this replica holds that
-    /// record now, or `None` when it holds none of it: what a host checks a
-    /// caller's change against, without reading the record whole.
-    #[must_use]
-    pub fn changed_keys(
-        &self,
-        record: &ui::resource::DocumentId,
-        mutation: &DocumentMutation,
-    ) -> Option<Result<Vec<Vec<String>>, String>> {
-        self.view.changed_keys(record, mutation)
-    }
-
     /// [`Self::survey`] for the one action `address` names: what a host that
     /// already knows the action asks for, built from the one resource it
     /// names and never from the whole tree the view publishes, however many

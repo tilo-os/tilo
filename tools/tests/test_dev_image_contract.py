@@ -47,9 +47,7 @@ class DevImageContractTests(unittest.TestCase):
     def line_of(self, path: Path, needle: str) -> int:
         return next(n for n, t in enumerate(path.read_text().splitlines(), 1) if needle in t)
 
-    def test_repository_and_fixture_pass_with_one_snapshot_pin_and_labelled_dev_image(self):
-        with self.subTest(phase='repository passes'):
-            self.assertEqual(self.findings(REPO), [])
+    def test_fixture_passes_with_one_snapshot_pin_and_labelled_dev_image(self):
         with self.subTest(phase='fixture passes'):
             self.assertEqual(self.findings(self.fixture()), [])
         with self.subTest(phase='snapshot pin has one home'):

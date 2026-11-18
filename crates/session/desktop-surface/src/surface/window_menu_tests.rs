@@ -1503,15 +1503,9 @@ fn stopping_desktop_control_takes_the_grant_back() {
     let route = first_route(&handle);
     assert!(row(&handle.window_menu(route.tab), STOP_DESKTOP_CONTROL).is_none());
     let mut tree = handle.read(Clone::clone);
-    let control = collab_types::caps::DeviceCap::DesktopControl;
-    tree.workspaces[0].grant_sandbox(
-        collab_types::caps::CapOverride::grant(
-            tilo_action_policy::Grantee::person("ada"),
-            collab_types::caps::Scope::Device(control),
-            control.access(),
-        )
-        .through("so.tilo.app0"),
-    );
+    let control = tree.workspaces[0]
+        .desktop_control_grant("so.tilo.app0", tilo_action_policy::Grantee::person("ada"));
+    tree.workspaces[0].grant(control);
     handle.replace_tree(tree);
     let rows = handle.window_menu(route.tab);
     let stop = row(&rows, STOP_DESKTOP_CONTROL).expect("the app controls the desktop");
@@ -1527,9 +1521,8 @@ fn stopping_desktop_control_takes_the_grant_back() {
         .unwrap();
     settle(&mut frame);
     assert!(
-        handle.read(|tree| tree.workspaces[0]
-            .app_capabilities_at("so.tilo.app0", tilo_clock::unix_now())
-            .is_empty()),
+        !handle.read(|tree| tree.workspaces[0]
+            .holds_desktop_control_at("so.tilo.app0", tilo_clock::unix_now())),
         "the grant is taken back"
     );
     assert!(row(&handle.window_menu(route.tab), STOP_DESKTOP_CONTROL).is_none());

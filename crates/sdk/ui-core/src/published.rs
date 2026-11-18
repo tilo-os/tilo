@@ -34,7 +34,9 @@ impl<T: Clone> Clone for Filtered<T> {
 pub struct SharedResource(Rc<Node>);
 
 struct Node {
-    head: ResourceSpec,
+    /// Its own part, shared with every node it is published over
+    /// ([`SharedResource::over`]): nesting an item changes only its children.
+    head: Rc<ResourceSpec>,
     children: SharedChildren,
     filtered: RefCell<Option<(u64, Filtered<SharedResource>)>>,
 }
@@ -119,7 +121,19 @@ impl SharedResource {
         );
         head.children = Vec::new();
         Self(Rc::new(Node {
-            head,
+            head: Rc::new(head),
+            children,
+            filtered: RefCell::new(None),
+        }))
+    }
+
+    /// The same resource over `children`: its identity, actions and views,
+    /// shared as they stand, and the children given — what nesting one item
+    /// under another publishes.
+    #[must_use]
+    pub fn over(&self, children: SharedChildren) -> Self {
+        Self(Rc::new(Node {
+            head: Rc::clone(&self.0.head),
             children,
             filtered: RefCell::new(None),
         }))
@@ -136,7 +150,7 @@ impl SharedResource {
 
     /// The ordinary tree, exactly as published.
     pub fn to_resource(&self) -> ResourceSpec {
-        let mut resource = self.0.head.clone();
+        let mut resource = (*self.0.head).clone();
         resource.children = self.0.children.iter().map(Self::to_resource).collect();
         resource
     }

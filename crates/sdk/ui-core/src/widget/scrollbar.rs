@@ -6,7 +6,7 @@ use vello::kurbo::{Point, Rect};
 use vello::peniko::Color;
 
 use crate::theme::Theme;
-use crate::widget::data_table::tier_on;
+use crate::tokens::colors::tier_on;
 
 /// Minimum thumb length (logical px) so a near-infinite content still
 /// leaves a grabbable target.

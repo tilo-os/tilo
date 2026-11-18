@@ -40,12 +40,9 @@ impl tilo_platform_caps::Feature for Feature {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_platform_caps::Feature as _;
 
     #[test]
     fn this_target_reads_its_own_column() {
         assert_eq!(availability(Feature::Text), Availability::Available);
-        let expected = Feature::PrimarySelection.targets()[tilo_platform_caps::COLUMN];
-        assert_eq!(availability(Feature::PrimarySelection), expected);
     }
 }

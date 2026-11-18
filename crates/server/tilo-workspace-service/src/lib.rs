@@ -57,6 +57,9 @@ pub mod workspace_documents;
 #[doc(hidden)]
 pub mod workspace_io;
 pub mod workspaces;
+/// Whether the endpoint a server serves its workspaces on names where it is
+/// reached, which says whether opening it waits for that name.
+pub use tilo_endpoint_reachability::Reaching;
 
 #[cfg(test)]
 tilo_automerge_isolate::test_worker!();

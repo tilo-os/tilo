@@ -1331,7 +1331,7 @@ impl PdfApp {
         &self,
         tr: &mut TextRenderer,
         key: String,
-        blocks: &[ui::widget::BlockContent],
+        blocks: &[ui::rich_edit::BlockContent],
         width: f64,
     ) -> f64 {
         let theme = self.layout_theme.clone();
@@ -1360,7 +1360,7 @@ impl PdfApp {
         let mut view = RichTextView::new();
         view.editor_mut()
             .set_body_size(Self::comment_body_size(theme));
-        view.show(&[ui::widget::BlockContent::paragraph("inset", "Inset")]);
+        view.show(&[ui::rich_edit::BlockContent::paragraph("inset", "Inset")]);
         view.layout(Rect::new(0.0, 0.0, 240.0, 0.0), theme, tr);
         let origin = view.rect().x0;
         let inset = view

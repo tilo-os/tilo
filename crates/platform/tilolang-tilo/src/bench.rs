@@ -687,6 +687,9 @@ struct Workspace {
     planner: std::sync::Arc<dyn Planner>,
     /// Changes the frames committed to the record so far.
     commits: u64,
+    /// What opening the store and its index cost, before any view showed anything (see
+    /// [`Work::counters`]).
+    opening: Work,
     /// The index the workspace reads, removed with it.
     _index: Option<IndexDir>,
 }
@@ -783,7 +786,7 @@ struct Phases {
     search: Vec<f64>,
     /// Publication republishing what changed.
     publish: Vec<f64>,
-    /// Time inside wasm, the host's imports excluded, and in the imports.
+    /// Time inside wasm, the runtime's imports excluded, and in the imports.
     wasm: Vec<f64>,
     imports: Vec<f64>,
     /// Time compiling wasm modules.
@@ -904,10 +907,14 @@ impl Workspace {
         if index.is_some() {
             host.wait_index();
         }
+        // What opening the store and its kept index cost, taken before any view showed anything:
+        // the opening the bench counts is what the window reads, not the index deriving itself
+        // when a kept file could not be opened (the `index_build` measurement holds that).
+        let opening = Work::counters(&host);
         let loaded = Instant::now();
         let mut list = host.open_main(app).map_err(|e| e.to_string())?;
         let viewed = Instant::now();
-        // The window's list frame is a virtual list: it shows what fits, as the host does
+        // The window's list frame is a virtual list: it shows what fits, as the window does
         // before its first frame. A list inside content (a card's) is drawn whole.
         if let Some(key) = frame_list(list.tree()) {
             for i in 0..PAGE {
@@ -941,6 +948,7 @@ impl Workspace {
             published,
             planner,
             commits: 0,
+            opening,
             _index: index,
         })
     }
@@ -1019,6 +1027,30 @@ pub struct Work {
 }
 
 impl Work {
+    /// The work the store and the runtime have counted, with no view shown yet: what opening the
+    /// store and deriving an index costs, which the window's opening is counted apart from
+    /// ([`Self::since`]). A kept index that had to be built again is the `index_build`
+    /// measurement's, not part of what the window shows.
+    fn counters(app: &Host) -> Self {
+        let reads = app.store().read_stats();
+        Self {
+            renders: 0,
+            items: app.runtime().items_built(),
+            located: reads.doc.located,
+            fields: reads.doc.fields,
+            listings: reads.doc.listings,
+            entries: reads.doc.entries,
+            dirs: reads.index.dirs,
+            pages: reads.index.pages,
+            index_fields: reads.index.fields,
+            evaluated: reads.evaluated,
+            published: 0,
+            patches: 0,
+            commits: 0,
+            allocations: allocations(),
+        }
+    }
+
     fn of(workspace: &Workspace, others: &[&ViewInstance]) -> Self {
         let reads = workspace.host.store().read_stats();
         let renders = others
@@ -1327,7 +1359,9 @@ fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1000.0
 }
 
-fn size_name(n: usize) -> String {
+/// The name a measurement gives the size `n`: `1k`, `10k`, or the count itself.
+#[must_use]
+pub fn size_name(n: usize) -> String {
     if n >= 1000 && n.is_multiple_of(1000) {
         format!("{}k", n / 1000)
     } else {
@@ -1723,13 +1757,13 @@ fn open(sized: &Sized<'_>) -> Result<Vec<Record>, String> {
         let copied = Instant::now();
         let fixture = sized.fixture()?;
         let copy = ms(copied.elapsed());
-        let allocated = allocations();
         let start = Instant::now();
         let mut workspace = sized.opened(fixture)?;
         samples.push(ms(start.elapsed()));
         live = workspace.list.stats();
-        let mut opened = Work::of(&workspace, &[]);
-        opened.allocations = opened.allocations.saturating_sub(allocated);
+        // What the window read and allocated, not what opening the store and deriving a kept
+        // index cost (the workspace's opening is the baseline, taken before the window ran).
+        let opened = Work::of(&workspace, &[]).since(workspace.opening);
         work.get_or_insert(opened);
         workspace.settle();
         ready.push(ms(start.elapsed()));

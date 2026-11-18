@@ -10,6 +10,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use tilo_sort::CompactSort as _;
 
 #[cfg(test)]
 use automerge::AutoCommit;
@@ -755,7 +756,7 @@ impl MailState {
                     .iter()
                     .filter_map(|id| self.mailbox.get(*id)),
             );
-            messages.sort_by_key(|message| message.timestamp_min);
+            messages.compact_sort_by_key(|message| message.timestamp_min);
         }
         messages
     }

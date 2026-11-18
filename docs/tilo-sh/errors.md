@@ -31,8 +31,8 @@ naming a path.
 | `invalid_arguments` | A parameter is missing or the wrong type; `next_steps` names the action's parameters |
 | `unknown_action` | The path names no action of that resource |
 | `not_found` | No such workspace, resource or key, or one that is not yours |
-| `beyond_scope` | The key reaches one workspace and this is another one, or an account call |
-| `not_permitted` | The key reaches this workspace but may not do this in it |
+| `beyond_scope` | The key reaches one workspace and this is another one |
+| `not_permitted` | The key reaches this workspace but may not do this in it, or asks the account for more than the keys its workspace holds |
 | `no_payment_method` | The account's plan does not include it yet; `next_steps` says what adds it |
 | `unknown_app` | The path names an app the workspace does not have; `message` lists the ones it has |
 | `action_failed` | The action ran and refused: `message` is what the app tells a person, and nothing else ran |

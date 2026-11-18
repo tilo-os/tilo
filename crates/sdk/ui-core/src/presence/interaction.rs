@@ -205,7 +205,8 @@ impl PresenceCtx {
         self.apply_interaction_at(interaction, crate::time::now())
     }
 
-    pub(crate) fn apply_interaction_at(
+    /// [`Self::apply_interaction`] as of `now`.
+    pub fn apply_interaction_at(
         &mut self,
         interaction: SemanticInteraction,
         now: Instant,

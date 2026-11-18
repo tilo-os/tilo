@@ -65,8 +65,8 @@ pub use view::RichTextView;
 /// A block editor for short rich text: a composer, a reply, a message row.
 /// Lines wrap, paragraphs sit close, and blocks have no drag handles.
 #[must_use]
-pub fn compact_editor() -> ui::widget::BlockEditor {
-    ui::widget::BlockEditor::new()
+pub fn compact_editor() -> ui::rich_edit::BlockEditor {
+    ui::rich_edit::BlockEditor::new()
         .with_wrap_lines(true)
         .with_compact_paragraph_spacing(true)
         .with_block_handles(false)

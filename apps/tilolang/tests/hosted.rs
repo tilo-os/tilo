@@ -1773,7 +1773,7 @@ fn a_document_typed_after_a_list_stays_on_the_page_level_and_fills_its_editor() 
     let (editor, rects) = session
         .window
         .harness()
-        .widget_mut::<ui::widget::BlockEditor>()
+        .widget_mut::<ui::rich_edit::BlockEditor>()
         .map(|editor| {
             let rects: Vec<ui::kurbo::Rect> = editor
                 .blocks()

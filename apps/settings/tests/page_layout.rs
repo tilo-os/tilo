@@ -92,24 +92,46 @@ fn walk(widget: &dyn Widget, width: f64, problems: &mut Vec<String>) {
     }
 }
 
-#[test]
-fn every_page_keeps_its_controls_inside_their_rows_at_the_laptop_size_and_in_small_windows() {
+/// Every page, staged as its capture is, in a window of `size`: what it draws stays inside
+/// the window and inside the rows, sections and columns that hold it.
+fn check_every_page_at((width, height): (u32, u32)) {
     let mut failures = Vec::new();
-    for &(width, height) in &SIZES {
-        for &category in Category::ALL {
-            let slug = category.slug();
-            let mut app = TestApp::<SettingsShell>::capture_at(Some(slug), (width, height))
-                .unwrap_or_else(|error| panic!("{slug} at {width}x{height} opens: {error:?}"));
-            app.settle();
-            let mut problems = Vec::new();
-            walk(app.harness().root_widget(), f64::from(width), &mut problems);
-            if !problems.is_empty() {
-                failures.push(format!(
-                    "{slug} at {width}x{height}:\n  {}",
-                    problems.join("\n  ")
-                ));
-            }
+    for &category in Category::ALL {
+        let slug = category.slug();
+        let mut app = TestApp::<SettingsShell>::capture_at(Some(slug), (width, height))
+            .unwrap_or_else(|error| panic!("{slug} at {width}x{height} opens: {error:?}"));
+        app.settle();
+        let mut problems = Vec::new();
+        walk(app.harness().root_widget(), f64::from(width), &mut problems);
+        if !problems.is_empty() {
+            failures.push(format!(
+                "{slug} at {width}x{height}:\n  {}",
+                problems.join("\n  ")
+            ));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+// One test per window size, so the four sweeps go beside each other: the pages a person reads
+// at the laptop, at a short window, at a tall narrow one and at the smallest a strip gives.
+
+#[test]
+fn every_page_keeps_its_controls_inside_their_rows_at_the_laptops_window() {
+    check_every_page_at(SIZES[0]);
+}
+
+#[test]
+fn every_page_keeps_its_controls_inside_their_rows_at_a_short_window() {
+    check_every_page_at(SIZES[1]);
+}
+
+#[test]
+fn every_page_keeps_its_controls_inside_their_rows_at_a_tall_narrow_window() {
+    check_every_page_at(SIZES[2]);
+}
+
+#[test]
+fn every_page_keeps_its_controls_inside_their_rows_at_the_smallest_window() {
+    check_every_page_at(SIZES[3]);
 }

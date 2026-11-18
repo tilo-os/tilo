@@ -387,7 +387,7 @@ mod tests {
     /// workspace has it; anywhere else it is words.
     #[test]
     fn a_workspace_emoji_alone_is_a_reaction_where_the_workspace_has_it() {
-        use crate::richtext::inline_emoji::tests::{Fixed, workspace};
+        use crate::richtext::inline_emoji::testing::{Fixed, workspace};
         assert_eq!(single_emoji(":tilo:"), None, "no window, no emoji");
         let scope = crate::wake::WakeScope::new();
         let _entry = scope.enter();

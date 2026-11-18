@@ -59,12 +59,13 @@ pub(super) async fn audit_subscriber_access(
         };
         let workspace = crate::workspace_io::fresh_membership(&workspace).await?;
         watched &= workspace.membership_is_current();
-        let lost = (!current_session(&workspace, peer, session.outbound))
-            .then(|| lost_session(&workspace, peer, session, WorkspaceOperation::Subscribe));
+        let lost = !current_session(&workspace, peer, session.outbound);
         let decision = session.decide(&workspace, peer, WorkspaceOperation::Subscribe);
         drop(workspace);
-        if let Some(lost) = lost {
-            return Err(lost);
+        if lost {
+            return Err(PeerError::Protocol(
+                "subscriber authorization changed".into(),
+            ));
         }
         // A live subscription was enrolled when it subscribed: a device the
         // workspace would only enrol now is no longer a member.
@@ -121,33 +122,15 @@ pub(super) fn unavailable_target(
     }
 }
 
-/// Why this connection no longer holds `peer`'s subscriber slot. A newer
-/// connection of the same device took it over while the device is still
-/// let in for `op`: a normal handover (a page that reconnected, a second
-/// tab). Anything else, a slot the workspace dropped or a device it no longer
-/// admits, is the authorization change it is, replaced or not.
-pub(super) fn lost_session(
-    wr: &crate::workspace::WorkspaceRuntime,
-    peer: &AuthenticatedPeer,
-    session: &SessionCtx<'_>,
-    op: WorkspaceOperation,
-) -> PeerError {
-    if wr.subscribers.contains_key(&peer.device_public_key)
-        && session_peer_authorized(peer, session)
-        && matches!(session.decide(wr, peer, op), Decision::Admit)
-    {
-        PeerError::Superseded
-    } else {
-        PeerError::Protocol("subscriber authorization changed".into())
-    }
-}
-
+/// Whether this connection of `peer` still holds its subscription in the
+/// workspace: what its writes and requests are taken on. Each connection of a
+/// device holds its own, so a sibling connection entering leaves it be; only
+/// the workspace dropping it (the device revoked or removed, the connection
+/// ending) takes it away.
 pub(super) fn current_session(
     wr: &crate::workspace::WorkspaceRuntime,
     peer: &AuthenticatedPeer,
     tx: &mpsc::Sender<Envelope>,
 ) -> bool {
-    wr.subscribers
-        .get(&peer.device_public_key)
-        .is_some_and(|sub| sub.tx.same_channel(tx))
+    wr.current_session(&peer.device_public_key, tx)
 }

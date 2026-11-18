@@ -60,7 +60,7 @@ async fn readable(workspaces: &Workspaces, workspace: &str) -> Option<String> {
 async fn follows(workspaces: &Workspaces, workspace: &str, wanted: &str) {
     tilo_test_env::within("the node follows the record's writes", async {
         while readable(workspaces, workspace).await.as_deref() != Some(wanted) {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     })
     .await;
@@ -86,7 +86,7 @@ async fn follows_field(workspaces: &Workspaces, workspace: &str, field: &str, wa
             if holds.as_deref() == Some(wanted) {
                 return;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     })
     .await;
@@ -259,7 +259,7 @@ async fn a_node_compacts_a_sealed_history_before_it_fills() {
     server.shutdown().await;
 }
 
-/// Every write of `record` the server retains for `workspace_id`, in replay
+/// Every retained write of the workspace's resource, for `workspace_id`, in replay
 /// order: what a newcomer is sent.
 ///
 /// Read once the workspace's store settled every write its owner took before
@@ -394,6 +394,27 @@ fn newcomer_reads(member: &SealingMember, held: &[SignedOp]) -> Option<String> {
     title(&newcomer_opens(member, held).save())
 }
 
+/// The workspace's retained writes, once what a newcomer opens from them is
+/// `wanted`: a write the node follows is retained a moment after it, so a
+/// read made in between is short of it.
+async fn retained_until(
+    server: &crate::workspaces::fixtures::TestHost,
+    workspace_id: WorkspaceId,
+    member: &SealingMember,
+    wanted: impl Fn(&mut automerge::AutoCommit) -> bool + Sync,
+) -> Vec<SignedOp> {
+    tilo_test_env::within("the retained writes to follow the node", async {
+        loop {
+            let held = retained_writes(server, workspace_id, RECORD).await;
+            if wanted(&mut newcomer_opens(member, &held)) {
+                return held;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+}
+
 /// A record its members wrote sealed for a long time is folded by its
 /// member device: a newcomer is sent the member's checkpoint and the writes
 /// since, not every write ever made, and they open to the record as its
@@ -470,7 +491,7 @@ async fn a_members_checkpoint_folds_what_a_newcomer_replays() {
             {
                 break held;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     })
     .await;
@@ -943,12 +964,7 @@ async fn a_newcomer_is_replayed_a_note_written_before_they_were_admitted() {
             .await
             .unwrap();
     }
-    assert!(
-        !retained_writes(&server, workspace_id, NOTE)
-            .await
-            .is_empty(),
-        "the server retains Ada's note before Grace is admitted"
-    );
+    retained_once(&server, workspace_id, NOTE, |_| true).await;
 
     let (grace_key, grace) = guest_device();
     entry_join(&workspaces, &ada, &workspace, (&grace_key, &grace), 21).await;
@@ -1167,13 +1183,19 @@ async fn members_write_over_time(lounge: &Lounge, client: &crate::ServerClient) 
     }
     let newest = "second 4";
     follows(&lounge.workspaces, &lounge.workspace, newest).await;
-    let held = retained_writes(&lounge.server, lounge.workspace_id, RECORD).await;
-    assert!(!held.is_empty(), "the record is retained");
-    assert_eq!(
-        title(&newcomer_opens(&lounge.member, &held).save()).as_deref(),
-        Some(newest),
-        "a newcomer reads the record whole before the damage"
-    );
+    // The node's store follows what the node holds: a write the node followed
+    // is retained a moment after it.
+    tilo_test_env::within("the resource to be retained whole", async {
+        loop {
+            let held = retained_writes(&lounge.server, lounge.workspace_id, RECORD).await;
+            if title(&newcomer_opens(&lounge.member, &held).save()).as_deref() == Some(newest) {
+                assert!(!held.is_empty(), "the record is retained");
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
     newest.to_owned()
 }
 
@@ -1259,7 +1281,13 @@ async fn a_record_whose_base_its_history_lost_is_founded_again() {
     assert_the_repair_kept_everything(&root, &kept_before, damaged);
 
     // A device joining now reads the whole record the governor reads.
-    let whole = retained_writes(&lounge.server, lounge.workspace_id, RECORD).await;
+    let whole = retained_until(
+        &lounge.server,
+        lounge.workspace_id,
+        &lounge.member,
+        |read| title(&read.save()).as_deref() == Some(newest.as_str()),
+    )
+    .await;
     assert_eq!(
         title(&newcomer_opens(&lounge.member, &whole).save()).as_deref(),
         Some(newest.as_str()),
@@ -1284,7 +1312,13 @@ async fn a_record_whose_base_its_history_lost_is_founded_again() {
         );
     }
     follows(&lounge.workspaces, &lounge.workspace, "after, second").await;
-    let wrote = retained_writes(&lounge.server, lounge.workspace_id, RECORD).await;
+    let wrote = retained_until(
+        &lounge.server,
+        lounge.workspace_id,
+        &lounge.member,
+        |read| read.get_heads() == lounge.member.document().get_heads(),
+    )
+    .await;
     assert_eq!(
         newcomer_opens(&lounge.member, &wrote).get_heads(),
         lounge.member.document().get_heads(),
@@ -1306,7 +1340,13 @@ async fn a_record_whose_base_its_history_lost_is_founded_again() {
         "written before the repair, sent after it",
     )
     .await;
-    let late = retained_writes(&lounge.server, lounge.workspace_id, RECORD).await;
+    let late = retained_until(
+        &lounge.server,
+        lounge.workspace_id,
+        &lounge.member,
+        |read| title(&read.save()).as_deref() == Some("written before the repair, sent after it"),
+    )
+    .await;
     assert_eq!(
         title(&newcomer_opens(&lounge.member, &late).save()).as_deref(),
         Some("written before the repair, sent after it"),
@@ -2645,7 +2685,7 @@ async fn newcomer_reads_whole_without(lounge: &Lounge, stuck: &SignedOp, wanted:
                 assert!(read.get(ROOT, "early").unwrap().is_none());
                 return;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     })
     .await;

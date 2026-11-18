@@ -390,7 +390,7 @@ pub use app::{
 };
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use app::{definition_launch_spec, run};
-pub use attached::{AttachedView, OpenView};
+pub use attached::{AttachedView, OpenView, keys_written};
 pub use bar_actions::{BarActions, BarCommands};
 pub use chain::{Chain, Chained, PartArrival, PartRecord, Parts};
 pub use chain::{PART_BYTES, PART_ITEMS, PartLimits, placed};

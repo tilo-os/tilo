@@ -78,6 +78,22 @@ impl KeyFile {
         }
     }
 
+    /// The key `token` carries (`tilo_sk_…`, as an approved key is answered),
+    /// reaching where this file's key reaches.
+    ///
+    /// # Errors
+    /// The token carries no key.
+    pub fn with_token(self, token: &str) -> Result<Self, String> {
+        let (name, key) =
+            crate::store::carried_key(token).ok_or_else(|| "the answer is not a key".to_owned())?;
+        Ok(Self {
+            name,
+            key: hex::encode(key.secret()),
+            cert: hex::encode(key.cert_bytes()),
+            ..self
+        })
+    }
+
     /// The key file at `path`.
     ///
     /// # Errors
@@ -489,6 +505,7 @@ mod tests {
     /// key reaches.
     #[tokio::test]
     async fn a_link_a_key_asks_for_is_built_on_its_site() {
+        crate::session::members::tests::local_site_stands_for_public();
         let site = shelf_site().await;
         let (person, _) = UserIdentity::generate("Ada", 1);
         let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);

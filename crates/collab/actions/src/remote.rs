@@ -631,6 +631,33 @@ impl InvocationState {
 /// [`ApiError::ConfirmationRequired`]: crate::api::ApiError::ConfirmationRequired
 pub const CONFIRMATION_REQUIRED_CODE: &str = "action_confirmation_required";
 
+/// The phase of an invocation's [`InvocationUpdate::Progress`] while it waits for its person to
+/// approve it on a device that holds their identity: it goes on once they allow it.
+pub const AWAITING_APPROVAL: &str = "awaiting_approval";
+
+/// The code a server refuses a person it does not know yet with: its operator has not declared
+/// them an owner, and no invitation of a workspace there brought them in.
+pub const NOT_ON_THIS_SERVER: &str = "not_on_this_server";
+
+/// The refusal of a server that does not know `person` (their root key) yet, saying what to do:
+/// its operator declares them an owner, or they join with an invitation link.
+#[must_use]
+pub fn not_on_this_server(person: &[u8; 32]) -> ActionCallError {
+    let key = hex::encode(person);
+    ActionCallError::Refused {
+        reason: format!(
+            "{NOT_ON_THIS_SERVER}: This server doesn't know you yet: its operator hasn't made you \
+             an owner, and no invitation brought you into a workspace here. Ask the operator to \
+             declare your key {key} an owner (on a local stack: `stack.sh owner {key}`), or join \
+             with an invitation link someone here sends you."
+        ),
+    }
+}
+
+/// The reason a provider refuses its caller for now with, when what it asked was put to its
+/// person and they have not answered: the invocation goes on, and is done once they allow it.
+pub const AWAITING_APPROVAL_REASON: &str = "awaiting_approval: it waits for its person to approve it on a device that holds their identity";
+
 /// Why a provider would not do what was asked. Every variant but [`Self::Unanswered`] means
 /// nothing ran.
 ///

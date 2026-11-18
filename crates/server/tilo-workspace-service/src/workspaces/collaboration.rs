@@ -172,6 +172,15 @@ fn random<const N: usize>() -> Result<[u8; N], CollaborationError> {
 }
 
 impl Workspaces {
+    /// The heads of `workspace`'s governance as this server holds it now: what
+    /// a change refused against an access read from an earlier state waits
+    /// for ([`crate::workspace::access_deciding`]).
+    pub(crate) async fn governance_heads(&self, workspace: &str) -> Option<Vec<[u8; 32]>> {
+        let governed = self.workspace(workspace).await.ok()?;
+        let heads = governed.lock().await.peer().governance().heads();
+        Some(heads)
+    }
+
     /// Issue an invitation to `workspace` for `administrator`: a device of this
     /// server's own user, or of a member the workspace lets invite with the
     /// invitation's role.
@@ -439,7 +448,7 @@ impl Workspaces {
         // holder and every API server reads the same grant from the workspace
         // itself, whichever way the key came in.
         if let Some(scope) = device.capabilities.agent {
-            self.keep_grant(&mut workspace, device, scope, now).await?;
+            self.list_grant(&mut workspace, device, scope, now).await?;
         }
         Ok(admitted)
     }
@@ -447,7 +456,7 @@ impl Workspaces {
     /// Keep the grant `cert` was admitted under in `workspace`'s governance,
     /// reaching `scope`, authored by this host: the workspace's holders and
     /// the API servers that read them see it from then on.
-    async fn keep_grant(
+    pub(super) async fn list_grant(
         &self,
         workspace: &mut GovernedWorkspace,
         cert: &DeviceCert,
@@ -1539,7 +1548,7 @@ impl Workspaces {
                     if answer.is_ok()
                         && let Some(scope) = certificate.capabilities.agent
                     {
-                        self.keep_grant(workspace, certificate, scope, now).await?;
+                        self.list_grant(workspace, certificate, scope, now).await?;
                     }
                 }
             }

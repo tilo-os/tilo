@@ -36,6 +36,10 @@
       "description": "What changes in a workspace, as it changes"
     },
     {
+      "name": "Models",
+      "description": "The person's own model, asked one turn at a time"
+    },
+    {
       "name": "Webhooks",
       "description": "A workspace's events posted to a URL"
     },
@@ -1321,6 +1325,67 @@
         }
       }
     },
+    "/v1/workspaces/{workspace}/model/ask": {
+      "post": {
+        "operationId": "askModel",
+        "summary": "Ask the person's own model one turn, its answer streamed as the model writes it",
+        "tags": [
+          "Models"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "$ref": "#/components/parameters/Invocation"
+          },
+          {
+            "$ref": "#/components/parameters/InvocationTitle"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Server-sent events, each an `Event`'s `type` and `data`",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelAsk"
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/workspaces/{workspace}/search": {
       "get": {
         "operationId": "search",
@@ -1969,6 +2034,66 @@
         }
       }
     },
+    "/v1/workspaces/{workspace}/members/invitations/{invite}": {
+      "delete": {
+        "operationId": "revokeInvitation",
+        "summary": "Revoke an open invitation, by its id: its link lets nobody in from then on",
+        "tags": [
+          "Members"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "name": "invite",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "$ref": "#/components/parameters/Invocation"
+          },
+          {
+            "$ref": "#/components/parameters/InvocationTitle"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Revoke an open invitation, by its id: its link lets nobody in from then on",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Members"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/workspaces/{workspace}/members/name": {
       "post": {
         "operationId": "namePerson",
@@ -2054,7 +2179,7 @@
             "schema": {
               "type": "string"
             },
-            "description": ""
+            "description": "The person's user public key, as `GET members` lists it"
           },
           {
             "$ref": "#/components/parameters/Invocation"
@@ -2124,7 +2249,7 @@
             "schema": {
               "type": "string"
             },
-            "description": ""
+            "description": "The person's user public key, as `GET members` lists it"
           },
           {
             "$ref": "#/components/parameters/Invocation"
@@ -4522,6 +4647,38 @@
           "data"
         ],
         "description": "One event of a workspace's stream, or of a webhook's delivery."
+      },
+      "ModelAsk": {
+        "type": "object",
+        "properties": {
+          "messages": {
+            "type": "array",
+            "items": true,
+            "description": "The conversation: each `{\"role\", \"content\"}`, the role `system`,\n`user`, `assistant` or `tool`."
+          },
+          "tools": {
+            "type": "array",
+            "items": true,
+            "description": "The tools the model may call, each `{\"name\", \"description\",\n\"input_schema\"}`.",
+            "default": []
+          },
+          "tool_choice": {
+            "type": "string",
+            "description": "`auto`, `required` or `none`."
+          },
+          "max_output_tokens": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0,
+            "description": "The most tokens the answer may take."
+          }
+        },
+        "required": [
+          "messages",
+          "tool_choice",
+          "max_output_tokens"
+        ],
+        "description": "One turn asked of the person's own model, which the server that keeps\ntheir workspace asks with the key their vault keeps there: the\nconversation as the model service takes it. The answer streams as\nserver-sent events: `text` and `reasoning` each carry `{\"text\": …}`, what\nthe model wrote since the event before; `answer` ends the stream with the\nwhole turn, `{\"Ok\": {\"message\", \"stop_reason\", \"usage\"}}` or\n`{\"Err\": {\"kind\", \"message\"}}`, the kind telling a caller what to do\n(`no_provider`: none set up yet; `authentication`: no key kept); `error`\nends it with a refusal of the API's own shape."
       },
       "NewWebhook": {
         "type": "object",

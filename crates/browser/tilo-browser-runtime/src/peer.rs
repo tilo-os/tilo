@@ -1096,8 +1096,9 @@ enum PairingReach {
     /// Over the session the page already holds with the host.
     Session(tilo_session_client::SessionMemberHost),
     /// From an endpoint bound for pairing alone: the page holds no session
-    /// with this host yet.
-    Own(tilo_server_client::MemberApprover),
+    /// with this host yet. Boxed: it carries its endpoint's state, where the
+    /// session is a handle.
+    Own(Box<tilo_server_client::MemberApprover>),
 }
 
 impl tilo_server_client::MemberHost for PairingReach {
@@ -1122,9 +1123,9 @@ impl PairingHost {
     /// `address` is not a host's address.
     #[wasm_bindgen(constructor)]
     pub fn new(address: &str) -> Result<Self, JsError> {
-        Ok(Self(PairingReach::Own(
+        Ok(Self(PairingReach::Own(Box::new(
             tilo_server_client::MemberApprover::new(host_at(address)?),
-        )))
+        ))))
     }
 
     /// The new devices waiting here for the member root the page holds
@@ -2734,8 +2735,6 @@ impl WasmPeer {
                             crate::peer_sync::narrated(self.id, workspace_id, from, &event);
                             return None;
                         }
-                        // Presence no longer comes this way.
-                        LiveFrame::RetiredPresence => return None,
                     };
                     serde_json::to_value(event).ok()
                 }

@@ -198,6 +198,23 @@ struct WidthKey {
     text_scale: f32,
 }
 
+impl WidthKey {
+    /// Whether the width measured for this key still holds for `style` and
+    /// `metrics` in `text`.
+    #[inline(never)]
+    fn holds(
+        &self,
+        style: &crate::text_render::TextStyle,
+        metrics: &FloatingMetrics,
+        text: &TextRenderer,
+    ) -> bool {
+        self.style == *style
+            && self.metrics == *metrics
+            && self.text_scale.to_bits() == text.text_scale().to_bits()
+            && std::sync::Arc::ptr_eq(&self.epoch, text.layout_epoch())
+    }
+}
+
 /// A floating list of rows under (or, without height, above) an anchor: the
 /// one menu list behind [`crate::widget::Autocomplete`], a code editor's
 /// caret completion, the filter and slash menus, a dropdown's open list and
@@ -243,6 +260,15 @@ pub struct FloatingList<R: FloatingRow> {
     placed: Option<Rect>,
     height: Extent,
     spinner: Spinner,
+}
+
+/// Take `theme` for `own` where its tokens differ: one comparison and copy
+/// for every kind of row.
+#[inline(never)]
+fn keep_theme(own: &mut Theme, theme: &Theme) {
+    if own.tokens != theme.tokens {
+        *own = theme.clone();
+    }
 }
 
 impl<R: FloatingRow> Default for FloatingList<R> {
@@ -439,9 +465,7 @@ impl<R: FloatingRow> FloatingList<R> {
             self.metrics.row = pinned;
         }
         self.metrics.row = self.metrics.row.max(self.min_row);
-        if self.theme.tokens != theme.tokens {
-            self.theme = theme.clone();
-        }
+        keep_theme(&mut self.theme, theme);
         self.resolve_heights();
     }
 
@@ -1071,13 +1095,11 @@ impl<R: FloatingRow> FloatingList<R> {
             return;
         }
         let style = theme.text(self.role);
-        let measured = self.measured.as_ref().is_some_and(|key| {
-            key.style == style
-                && key.metrics == self.metrics
-                && key.text_scale.to_bits() == text.text_scale().to_bits()
-                && std::sync::Arc::ptr_eq(&key.epoch, text.layout_epoch())
-        });
-        if measured {
+        if self
+            .measured
+            .as_ref()
+            .is_some_and(|key| key.holds(&style, &self.metrics, text))
+        {
             return;
         }
         let widest = self

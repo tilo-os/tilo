@@ -2,18 +2,15 @@
 use std::{future::Future, pin::Pin};
 
 use super::{
-    CredentialStatus, ErrorKind, HashMap, LimitFieldBuffers, ModelDescriptor, ModelError,
-    PanelBindings, ProviderAdmin, ProviderConfig, ProviderEffect, ProviderPanel, ProviderSnapshot,
-    t,
+    ErrorKind, LimitFieldBuffers, ModelDescriptor, ModelError, PanelBindings, ProviderAdmin,
+    ProviderConfig, ProviderEffect, ProviderPanel, ProviderSnapshot, t,
 };
 use ui::lock::MutexRecover as _;
-use zeroize::Zeroize;
 
 pub type PendingAdmin = Pin<Box<dyn Future<Output = AdminRead> + Send>>;
 
 pub struct AdminRead {
     pub snapshot: Option<ProviderSnapshot>,
-    pub keys: HashMap<String, Result<CredentialStatus, String>>,
     pub outcome: Result<(), ModelError>,
     pub acknowledged: bool,
     /// A provider's model list, when that was what was asked.
@@ -24,29 +21,13 @@ pub struct AdminRead {
 }
 
 impl AdminRead {
-    async fn of_snapshot(
-        admin: &dyn ProviderAdmin,
+    fn of_snapshot(
         snapshot: ProviderSnapshot,
         outcome: Result<(), ModelError>,
         acknowledged: bool,
     ) -> Self {
-        let mut keys = HashMap::new();
-        for profile in &snapshot.config.profiles {
-            // Every provider with a key in this device's vault: a hosted
-            // one, or a server the person gave a key.
-            if profile.credential.is_some() {
-                keys.insert(
-                    profile.id.clone(),
-                    admin
-                        .credential_status(profile.id.clone())
-                        .await
-                        .map_err(|error| error.to_string()),
-                );
-            }
-        }
         Self {
             snapshot: Some(snapshot),
-            keys,
             outcome,
             acknowledged,
             listed: None,
@@ -59,7 +40,7 @@ impl AdminRead {
         result: Result<Option<ProviderSnapshot>, ModelError>,
     ) -> Self {
         match result {
-            Ok(Some(snapshot)) => Self::of_snapshot(admin, snapshot, Ok(()), true).await,
+            Ok(Some(snapshot)) => Self::of_snapshot(snapshot, Ok(()), true),
             Ok(None) => Self::load(admin, Ok(())).await,
             Err(error) => Self::load(admin, Err(error)).await,
         }
@@ -68,10 +49,9 @@ impl AdminRead {
     pub async fn load(admin: &dyn ProviderAdmin, outcome: Result<(), ModelError>) -> Self {
         let acknowledged = outcome.is_ok();
         match admin.get_config().await {
-            Ok(snapshot) => Self::of_snapshot(admin, snapshot, outcome, acknowledged).await,
+            Ok(snapshot) => Self::of_snapshot(snapshot, outcome, acknowledged),
             Err(error) => Self {
                 snapshot: None,
-                keys: HashMap::new(),
                 outcome: outcome.and(Err(error)),
                 acknowledged,
                 listed: None,
@@ -147,48 +127,6 @@ impl<H: PanelBindings> ProviderPanel<H> {
         Ok(())
     }
 
-    /// Store `key` for `profile_id`, first saving `config` (the provider it
-    /// belongs to) when given: a provider whose sign-in handed back a key.
-    ///
-    /// # Errors
-    /// As [`Self::submit_config`].
-    pub fn submit_config_with_key(
-        &mut self,
-        config: Option<ProviderConfig>,
-        profile_id: &str,
-        key: zeroize::Zeroizing<String>,
-        reply: ui::framework::EffectReply,
-    ) -> Result<(), String> {
-        if self.admin_pending.is_some() {
-            return Err(t("agent-provider-busy"));
-        }
-        let admin = self
-            .provider_admin
-            .get()
-            .map_err(|error| error.to_string())?;
-        let revision = self
-            .admin_snapshot
-            .as_ref()
-            .ok_or_else(|| t("agent-provider-refresh-required"))?
-            .revision
-            .clone();
-        let profile_id = profile_id.to_owned();
-        self.admin_pending = Some(Box::pin(async move {
-            let outcome = async {
-                if let Some(config) = config {
-                    admin.set_config(revision, config.sanitised()).await?;
-                }
-                admin.set_api_key(profile_id, key.to_string()).await
-            }
-            .await
-            .map(|()| None);
-            AdminRead::after(admin.as_ref(), outcome).await
-        }));
-        self.admin_reply = Some(reply);
-        self.changed = true;
-        Ok(())
-    }
-
     /// Queue an administration effect against the current authoritative snapshot.
     pub fn submit_provider(
         &mut self,
@@ -219,48 +157,15 @@ impl<H: PanelBindings> ProviderPanel<H> {
                 .as_ref()
                 .ok_or_else(|| t("agent-provider-refresh-required"))?;
             let revision = snapshot.revision.clone();
-            validate_key_ownership(snapshot, &effect)?;
             self.limits_ack = self.remember_limits(&effect);
             let work: PendingMutation = match effect {
-                ProviderEffect::SaveProviderKey { provider, key } => {
-                    let buffer = self.key_buffer(&provider);
-                    if let Some(key) = key {
-                        let mut draft = buffer.lock_recover();
-                        draft.zeroize();
-                        *draft = key;
-                    }
-                    let value = zeroize::Zeroizing::new(buffer.lock_recover().clone());
-                    if value.trim().is_empty() {
-                        return Err(t("agent-key-empty"));
-                    }
-                    self.saved_key = Some((buffer, value.clone()));
-                    Box::pin(async move {
-                        admin
-                            .set_api_key(provider, value.to_string())
-                            .await
-                            .map(|()| None)
-                    })
-                }
-                ProviderEffect::RemoveProviderKey { provider } => {
-                    Box::pin(async move { admin.remove_api_key(provider).await.map(|()| None) })
-                }
                 ProviderEffect::RemoveProvider { provider } => {
-                    let config = self.proposed_config(ProviderEffect::RemoveProvider {
-                        provider: provider.clone(),
-                    })?;
-                    let uses_api_key = snapshot
-                        .config
-                        .profiles
-                        .iter()
-                        .any(|profile| profile.id == provider && profile.sign_in.is_none());
+                    let config =
+                        self.proposed_config(ProviderEffect::RemoveProvider { provider })?;
                     Box::pin(async move {
-                        // Revalidate before destructive cleanup. The backend forbids
-                        // deletion while bound credentials remain.
+                        // Revalidate before destructive cleanup.
                         if admin.get_config().await?.revision != revision {
                             return Err(ModelError::new(ErrorKind::Conflict));
-                        }
-                        if uses_api_key {
-                            admin.remove_api_key(provider.clone()).await?;
                         }
                         admin.set_config(revision, config).await.map(Some)
                     })
@@ -329,8 +234,7 @@ impl<H: PanelBindings> ProviderPanel<H> {
         }))
     }
 
-    /// Ask `provider` for its models. A read: the configuration and key
-    /// statuses stay as they are.
+    /// Ask `provider` for its models. A read: the configuration stays as it is.
     fn list_models(
         &self,
         admin: std::sync::Arc<dyn ProviderAdmin>,
@@ -348,12 +252,10 @@ impl<H: PanelBindings> ProviderPanel<H> {
         {
             return Err(t("agent-provider-gone"));
         }
-        let keys = self.keys.clone();
         Ok(Box::pin(async move {
             let listed = admin.list_models(provider.clone()).await;
             AdminRead {
                 snapshot: Some(snapshot),
-                keys,
                 outcome: listed.as_ref().map(|_| ()).map_err(Clone::clone),
                 acknowledged: false,
                 listed: Some((provider, listed)),
@@ -361,27 +263,6 @@ impl<H: PanelBindings> ProviderPanel<H> {
             }
         }))
     }
-}
-
-/// Sign-in credentials remain exclusively under account credentials.
-fn validate_key_ownership(
-    snapshot: &ProviderSnapshot,
-    effect: &ProviderEffect,
-) -> Result<(), String> {
-    let (ProviderEffect::SaveProviderKey { provider, .. }
-    | ProviderEffect::RemoveProviderKey { provider }) = effect
-    else {
-        return Ok(());
-    };
-    if snapshot
-        .config
-        .profiles
-        .iter()
-        .any(|profile| &profile.id == provider && profile.sign_in.is_some())
-    {
-        return Err(t("agent-sign-in-credentials"));
-    }
-    Ok(())
 }
 
 type PendingMutation =

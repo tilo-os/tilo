@@ -2,47 +2,6 @@ use super::*;
 use ui::tilo_resource::Effect as _;
 use ui::widget::{Collaborative as _, SidebarPlacement};
 
-#[test]
-fn shared_menu_layout_matches_the_former_taffy_pass() {
-    for initial_scale in [0.5, 1.0, 2.0, 4.0] {
-        for viewport in [None, Some(vello::kurbo::Rect::new(0.0, 0.0, 320.0, 240.0))] {
-            let make_menu = || {
-                let mut menu = ContextMenu::with_items(vec![
-                    MenuItem::action("Open", || {}),
-                    MenuItem::separator(),
-                    MenuItem::action("Rename", || {}),
-                ]);
-                if let Some(viewport) = viewport {
-                    menu.open_at_clamped([290.0, 210.0], viewport);
-                } else {
-                    menu.open_at([290.0, 210.0]);
-                }
-                menu.set_text_scale(initial_scale);
-                menu
-            };
-            let mut expected = make_menu();
-            let mut tree = taffy::TaffyTree::new();
-            let mut nodes = std::collections::HashMap::new();
-            let node = expected.build_layout(&mut tree, &ui::Theme::dark(), &mut nodes);
-            tree.compute_layout(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(400.0),
-                    height: taffy::AvailableSpace::Definite(800.0),
-                },
-            )
-            .unwrap();
-            expected.apply_layout(&tree, node, Point::ZERO);
-            let mut actual = make_menu();
-            layout_menu_widget(&mut actual);
-            assert_eq!(actual.get_rect(), expected.get_rect());
-            for index in 0..3 {
-                assert_eq!(actual.item_rect(index), expected.item_rect(index));
-            }
-        }
-    }
-}
-
 /// A stand-in for the session's api: what Files asked for, and what it answers.
 pub(super) mod session_api {
     use runtime_portal::tools::DocumentApp;
@@ -2168,9 +2127,9 @@ mod command_path_tests {
         let mut entry = ent("shared.txt", false, "text/plain");
         entry.path = path;
         entry.availability = Some(fs_protocol::AvailabilityProjectionV1 {
-            schema_version: 1,
+            schema_version: fs_protocol::projection::AVAILABILITY_PROJECTION_VERSION,
             document_id: fs_protocol::FileDocumentId(uuid::Uuid::from_u128(1)),
-            current_version: Some(fs_protocol::FileVersionId(uuid::Uuid::from_u128(2))),
+            current_hash: Some(fs_protocol::ContentHash([2; 32])),
             residency: fs_protocol::Residency::Partial { resident_bytes: 1 },
             transfer: fs_protocol::ProjectedTransfer {
                 phase: fs_protocol::TransferPhase::Idle,
@@ -3538,9 +3497,9 @@ mod command_path_tests {
         let file = dir.path().join("shared.txt");
         std::fs::write(&file, b"shared").unwrap();
         let availability = serde_json::to_vec(&serde_json::json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-            "current_version": null,
+            "current_hash": null,
             "residency": {"state": "not_resident"},
             "transfer": {"phase": "idle", "progress": null, "last_error": null,
                 "last_error_at_ms": null, "error_truncated": false},
@@ -3581,9 +3540,9 @@ mod command_path_tests {
         std::fs::write(&remote, b"remote").unwrap();
         let availability = |state: serde_json::Value| {
             serde_json::to_vec(&serde_json::json!({
-                "schema_version": 1,
+                "schema_version": 2,
                 "document_id": uuid::Uuid::new_v4(),
-                "current_version": null,
+                "current_hash": null,
                 "residency": state,
                 "transfer": {"phase": "idle", "progress": null, "last_error": null,
                     "last_error_at_ms": null, "error_truncated": false},
@@ -3688,9 +3647,9 @@ mod command_path_tests {
         }
         let availability = |policy: &str, inherited: bool| {
             serde_json::to_vec(&serde_json::json!({
-                "schema_version": 1,
+                "schema_version": 2,
                 "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                "current_version": null,
+                "current_hash": null,
                 "residency": {"state": "resident", "bytes": 4},
                 "transfer": {"phase": "idle", "progress": null, "last_error": null,
                     "last_error_at_ms": null, "error_truncated": false},
@@ -3781,9 +3740,9 @@ mod command_path_tests {
         let file = dir.path().join("inherited.txt");
         std::fs::write(&file, b"data").unwrap();
         let availability = serde_json::to_vec(&serde_json::json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-            "current_version": null,
+            "current_hash": null,
             "residency": {"state": "resident", "bytes": 4},
             "transfer": {"phase": "idle", "progress": null, "last_error": null,
                 "last_error_at_ms": null, "error_truncated": false},
@@ -3823,9 +3782,9 @@ mod command_path_tests {
         let mut entry = ent("offline.txt", false, "text/plain");
         entry.availability = fs_protocol::AvailabilityProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
-                "schema_version": 1,
+                "schema_version": 2,
                 "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                "current_version": "a0d4e23f-c7cb-4ded-a427-b32cf9da9342",
+                "current_hash": "4242424242424242424242424242424242424242424242424242424242424242",
                 "residency": {"state": "not_resident"},
                 "transfer": {"phase": "idle", "progress": null,
                     "last_error": "No available replica could provide this file",

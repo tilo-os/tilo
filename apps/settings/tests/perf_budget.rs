@@ -116,6 +116,7 @@ fn switch(app: &mut crate::support::Window, category: Category) {
 }
 
 #[test]
+#[ignore = "measurement; measured with --ignored --nocapture"]
 fn cold_start_to_first_frame() {
     let mut samples = Samples::default();
     for _ in 0..5 {
@@ -196,6 +197,7 @@ fn drawn_pages_switch() {
 }
 
 #[test]
+#[ignore = "measurement; measured with --ignored --nocapture"]
 fn globe_drag_frame() {
     // Time & Date is view code over its sections, built only in the app's
     // view; a capture's clock is the sample one, whose zones the globe
@@ -225,6 +227,7 @@ fn globe_drag_frame() {
 }
 
 #[test]
+#[ignore = "measurement; measured with --ignored --nocapture"]
 fn scroll_frame() {
     let mut app = mount_on(Category::Displays);
     let h = app.harness();
@@ -243,6 +246,7 @@ fn scroll_frame() {
 }
 
 #[test]
+#[ignore = "measurement; measured with --ignored --nocapture"]
 fn keystroke_in_window_search() {
     let mut app = mount();
     let mut search = ui::widget::SearchDriver::default();
@@ -259,6 +263,7 @@ fn keystroke_in_window_search() {
 }
 
 #[test]
+#[ignore = "measurement; measured with --ignored --nocapture"]
 fn page_switch_attribution() {
     let mut app = mount();
     for c in [Category::Sound, Category::Displays, Category::Network] {
@@ -287,6 +292,7 @@ fn page_switch_attribution() {
 }
 
 #[test]
+#[ignore = "measurement; measured with --ignored --nocapture"]
 fn resize_step() {
     let mut app = mount_on(Category::Displays);
     let h = app.harness();
@@ -399,6 +405,7 @@ mod hosted {
     }
 
     #[test]
+    #[ignore = "measurement; measured with --ignored --nocapture"]
     fn hosted_scroll_and_keystroke() {
         let mut app = hosted();
         let rows = tree_item_centres(&mut app);
@@ -432,6 +439,7 @@ mod hosted {
     }
 
     #[test]
+    #[ignore = "measurement; measured with --ignored --nocapture"]
     fn hosted_action_surface_cost() {
         let mut app = hosted();
         let rows = tree_item_centres(&mut app);

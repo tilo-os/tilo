@@ -330,7 +330,7 @@ impl Agents {
         };
         rows.iter()
             .map(|row| sheet::AccessApp {
-                app: row.app.clone(),
+                icon: Self::access_icon(&row.app),
                 scope: row.scope.key(),
                 label: row.label.clone(),
                 customised: row.customised(),
@@ -342,10 +342,24 @@ impl Agents {
                         label: agent_access::kind_label(cell.kind),
                         answer: answer_index(cell.answer),
                         choices: row.choices(cell),
+                        // Only the person's own account rows say what reaching outside means.
+                        caption: (cell.kind == ActionKind::Outside)
+                            .then(|| row.effects.clone())
+                            .flatten(),
                     })
                     .collect(),
             })
             .collect()
+    }
+
+    /// The mark a row wears: an app's own glyph, and the people's mark where the row governs
+    /// the workspace's members and settings.
+    fn access_icon(app: &str) -> ui::icons::Icon {
+        if app == tilo_action_policy::agent_answers::WORKSPACE_GOVERNANCE_APP {
+            ui::icons::Icon::Users
+        } else {
+            ui::icons::app_glyph(app, None)
+        }
     }
 
     /// One agent's review: what it may do in each app, the model it plans with and the actions it
@@ -429,7 +443,6 @@ impl Agents {
             reset: t("workspace-settings-agent-access-reset"),
             custom: t("workspace-settings-agent-access-set-here"),
             apps: Self::access_apps(&rows),
-            empty: t("workspace-settings-agent-access-empty"),
             // The keeper chooses the model on their own devices, which run it: a page runs none.
             models: (!RUNS_ON_HOST).then_some(models),
             limit: Some(limit),

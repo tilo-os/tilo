@@ -12,8 +12,27 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools/policy"))
 import steps  # noqa: E402
 
+# Check scripts no step names, and what enforces each instead. A check nothing executes is a
+# rule nothing keeps; one listed here has to say where it is enforced.
+ENFORCED_ELSEWHERE = {
+    "check_commit_message.py": "the lint workflow, from check_commit_policy.py",
+    "check_commit_policy.py": "t.toml's lint-head check and the lint workflow",
+    "check_session_copy_contract.py": "this suite's test_session_copy_contract.py",
+    "check_wire_enums.py": "t.toml's lint-head check, from check_commit_policy.py",
+    "check_workflow_actions.py": "the workflow-dependencies step's workflow_dependency_invariants.sh",
+    "check_workspace_members.py": "scripts/check-workspace-complete.sh",
+}
+
 
 class StepsTests(unittest.TestCase):
+    def test_every_check_script_is_enforced(self):
+        commands = "\n".join(command for _, _, command in steps.listed(steps.load(ROOT), None))
+        scripts = sorted(path.name for path in (ROOT / "tools/policy").glob("check_*.py"))
+        self.assertEqual([name for name in scripts if name not in commands and name not in ENFORCED_ELSEWHERE],
+                         [], "a check no step executes and that names no other enforcer it has")
+        self.assertEqual([name for name in ENFORCED_ELSEWHERE if name not in scripts],
+                         [], "an enforcer is named for a check script the tree no longer has")
+
     def test_every_step_runs_a_command_of_the_tree(self):
         loaded = steps.load(ROOT)
         self.assertGreater(len(loaded), 40)

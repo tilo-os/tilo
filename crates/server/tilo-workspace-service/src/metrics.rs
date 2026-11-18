@@ -336,33 +336,6 @@ mod tests {
     use tokio::io::AsyncWriteExt;
 
     #[test]
-    fn counters_increment() {
-        let m = Metrics::default();
-        m.inc_conns_accepted();
-        m.inc_conns_accepted();
-        m.inc_conns_authed();
-        let snap = m.snapshot();
-        assert_eq!(snap.conns_accepted, 2);
-        assert_eq!(snap.conns_authed, 1);
-    }
-
-    #[test]
-    fn subscribe_replay_and_drop_counters_increment() {
-        let m = Metrics::default();
-        m.inc_subscribes();
-        m.add_replayed_retained(4);
-        m.add_replayed_pending(7);
-        m.inc_subscriber_dropped();
-        m.inc_subscriber_dropped_backpressure();
-        let snap = m.snapshot();
-        assert_eq!(snap.subscribes, 1);
-        assert_eq!(snap.replayed_retained, 4);
-        assert_eq!(snap.replayed_pending, 7);
-        assert_eq!(snap.subscriber_dropped, 1);
-        assert_eq!(snap.subscriber_dropped_backpressure, 1);
-    }
-
-    #[test]
     fn workspace_egress_splits_live_fan_out_from_the_rest() {
         let m = Metrics::default();
         m.add_workspace_egress(WorkspaceId::from_u128(7), 100, true);

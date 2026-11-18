@@ -34,10 +34,22 @@ pub const KIND_PREFIX: &str = "ui.";
 
 pub const PART: &str = "part";
 
+/// The described widgets a window builds by name: the toolkit's, and those of each crate of widgets
+/// above it.
+#[must_use]
+pub fn components() -> &'static ui::component::Registry {
+    static COMPONENTS: OnceLock<ui::component::Registry> = OnceLock::new();
+    COMPONENTS.get_or_init(|| {
+        ui::component::Registry::of(&[&ui::component::TOOLKIT, &tilo_rich_edit::COMPONENTS])
+    })
+}
+
+/// What every component a window builds is: the catalogue tilolang and the tools read as the
+/// package `ui` (`crates/dev/ui-graph/components.json`).
 #[must_use]
 pub fn catalogue() -> &'static Catalogue {
     static CATALOGUE: OnceLock<Catalogue> = OnceLock::new();
-    CATALOGUE.get_or_init(ui::component::catalogue)
+    CATALOGUE.get_or_init(|| components().catalogue())
 }
 
 #[must_use]
@@ -320,7 +332,7 @@ impl Adapter {
                     return Some(UiEvent::Fire(fired.key, fired.event, value));
                 }
                 // A reference in rich text the view gave nothing of its own to do: open it.
-                if fired.event == ui::widget::OPEN_REFERENCE {
+                if fired.event == tilo_rich_edit::OPEN_REFERENCE {
                     return match fired.value {
                         Some(Prop::Text(reference)) => Some(UiEvent::OpenReference(reference)),
                         _ => None,
@@ -784,7 +796,7 @@ impl Source for NodeSource<'_> {
     fn event(&mut self, name: &str) -> Event {
         let given = self.node.events.contains_key(name);
         let opens = (name == "activate" && presented(self.node, self.description).is_some())
-            || name == ui::widget::OPEN_REFERENCE;
+            || name == tilo_rich_edit::OPEN_REFERENCE;
         if given || opens {
             // An event that runs an action the app publishes runs it the one way every action runs:
             // the control is bound to it, and the window that owns the tree hands the invocation to
@@ -1015,6 +1027,20 @@ mod tests {
 
     use super::*;
     use ui::component::Component as _;
+
+    #[test]
+    fn the_shipped_catalogue_is_the_one_a_window_builds_from() {
+        let shipped = tilo_ui_graph::component::SHIPPED;
+        let generated = catalogue().to_json();
+        eprintln!("CATALOGUE-BEGIN\n{generated}CATALOGUE-END");
+        assert!(
+            shipped == generated,
+            "crates/dev/ui-graph/components.json is stale: a widget's description changed after \
+             it was last written, and tilolang and the tools read that file as the package `ui`. \
+             Write it again and commit it:\n\
+             \x20   cargo run -p tilo-app-window --example component-catalogue > crates/dev/ui-graph/components.json"
+        );
+    }
 
     fn node(name: &str, key: &str, props: &[(&str, Value)]) -> UiNode {
         let mut node = UiNode::empty(&kind(name), key);
@@ -1331,8 +1357,8 @@ mod tests {
             "rich text is the block editor's"
         );
         let description = description_of(&body).expect("described");
-        let event =
-            NodeSource::new(&body, description, &mut reconciler).event(ui::widget::OPEN_REFERENCE);
+        let event = NodeSource::new(&body, description, &mut reconciler)
+            .event(tilo_rich_edit::OPEN_REFERENCE);
         event.fire(Some(ui::component::Value::Text(
             "{\"app\":\"a.b\"}".to_owned(),
         )));

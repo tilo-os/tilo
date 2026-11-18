@@ -68,9 +68,6 @@ mod holding;
 pub(crate) use holding::{HostWorkspaceRequest, decode_hex, owners, work_takes};
 mod host_invitations;
 mod hosts;
-/// Wait until this host is reached through a relay, before it names its own
-/// address anywhere ([`tilo_endpoint_reachability::await_relay`]).
-pub use tilo_endpoint_reachability::await_relay;
 mod link_follow;
 mod session_carry;
 pub(crate) use link_follow::carry_admitted;
@@ -1257,11 +1254,6 @@ impl Workspaces {
             .values()
             .cloned()
             .collect::<Vec<_>>();
-        // An address that names no server reaches nobody from outside this
-        // network, and a host that kept nothing names its first workspace's
-        // address as soon as its embedder makes one: wait for the relay, so no
-        // workspace learns an address this host must rename.
-        await_relay(&this.inner.host.endpoint).await;
         this.serve_kept(workspaces).await?;
         this.adopt_listings_file().await?;
         this.start_following();
@@ -2871,7 +2863,7 @@ impl Workspaces {
             }
         }
         let settling = crate::timing::start();
-        let device_access = workspace.peer().governance().access_of(&members, now)?;
+        let device_access = workspace.peer().governance().projection(&members, now)?;
         host.access
             .replace_access(workspace.workspace_id(), device_access)
             .await

@@ -994,3 +994,82 @@ fn connect_to_kept_display(dir: &Path) -> x11rb::rust_connection::RustConnection
     )
     .expect("the cookie admits the client")
 }
+
+/// A keeper a service started (the Linux VM's window forwarder), with the app in it: the session
+/// finds it in the registry by itself.
+fn start_service_keeper(rig: &Rig) -> std::process::Child {
+    use std::os::unix::process::CommandExt as _;
+    let launch = tilo_app_launch::kept::KeptLaunch {
+        version: tilo_app_launch::kept::LAUNCH_VERSION,
+        app: "vm.linux".into(),
+        title: "Linux".into(),
+        workspace: String::new(),
+        asked: None,
+        window_identities: Vec::new(),
+        service: true,
+    };
+    let dir = testing::new_dir(&rig.root, &launch).expect("the keeper's directory");
+    let exe = std::env::current_exe().unwrap();
+    std::process::Command::new(&rig.keeper)
+        .arg("--dir")
+        .arg(&dir)
+        .arg("--launch")
+        .arg(launch.encode())
+        .arg("--app-id-prefix")
+        .arg("vm.linux.")
+        .arg("--")
+        .arg("/usr/bin/env")
+        .arg(format!("{APP_DIR}={}", rig.app.display()))
+        .arg(exe)
+        .args(["--exact", "kept_apps::kept_app", "--nocapture"])
+        .process_group(0)
+        .spawn()
+        .expect("the service's keeper starts")
+}
+
+#[test]
+fn a_services_window_takes_the_keyboard_on_a_click_and_hears_the_keys() {
+    let _settled = ui::motion::testing::settled();
+    let rig = Rig::new(&["Guest"]);
+    let mut desktop = rig.desktop(false);
+    let mut keeper = start_service_keeper(&rig);
+    let window = crate::common::wait_for(
+        &mut desktop.session,
+        "the guest's window shows",
+        |session| {
+            let (info, _) = session
+                .compositor()
+                .windows()
+                .into_iter()
+                .find(|(info, _)| info.title.as_deref() == Some("Guest"))?;
+            session
+                .compositor()
+                .window_rect(info.id)
+                .map(|rect| (info.id, rect))
+        },
+    );
+    let (_, (x, y, width, height)) = window;
+    crate::common::window::click(
+        &mut desktop.session,
+        f64::from(x + width / 2),
+        f64::from(y + height / 2),
+    );
+    crate::common::wait_for(
+        &mut desktop.session,
+        "the window has the keyboard",
+        |session| {
+            session
+                .compositor()
+                .focused_window()
+                .is_some_and(|window| window.title.as_deref() == Some("Guest"))
+                .then_some(())
+        },
+    );
+    crate::common::window::tap_key(&mut desktop.session, KEY_A);
+    until(&mut desktop.session, "the app hears the key", |_| {
+        rig.keys() == 1
+    });
+    let _ = keeper.kill();
+    let _ = keeper.wait();
+    desktop.end(Teardown::Logout);
+}

@@ -2,14 +2,9 @@
 //! the day it is written, or says where it is declared why it is not (`#[not_a_component(kind,
 //! "why")]`).
 
-#[path = "../../component_scan.rs"]
-#[allow(
-    dead_code,
-    reason = "the build script reads the parts of the scan this check does not"
-)]
-mod component_scan;
-
 use std::path::Path;
+
+use tilo_component_scan as component_scan;
 
 fn scan() -> component_scan::Scan {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -110,7 +105,7 @@ tilo_test_env::scenario! {
             );
         }
         assert!(scan.is_described("Button"));
-        let catalogue = super::catalogue();
+        let catalogue = super::Registry::of(&[&super::TOOLKIT]).catalogue();
         let mut generated: Vec<&str> = catalogue.names();
         generated.sort_unstable();
         let mut declared: Vec<String> = scan
@@ -135,7 +130,8 @@ tilo_test_env::scenario! {
     phase the_gallery_shows_every_described_component;
     {
         let sources = gallery_sources();
-        let coverage = super::gallery::coverage(&sources);
+        let catalogue = super::Registry::of(&[&super::TOOLKIT]).catalogue();
+        let coverage = super::gallery::coverage(&catalogue, &sources);
         let problems = coverage.problems();
         assert!(problems.is_empty(), "{}", problems.join("\n"));
         for name in ["Button", "Section", "Text"] {

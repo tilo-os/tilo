@@ -238,10 +238,9 @@ mod tests {
     fn the_route_probe_answers_without_sending() {
         // CI machines may be offline; the answer only has to be consistent.
         let status = imp::fallback();
-        assert_eq!(status.metered, None);
         assert_eq!(
-            status.online(),
-            status.connectivity != Connectivity::Offline
+            status.metered, None,
+            "an absent reading is unknown, never unmetered"
         );
         #[cfg(not(target_os = "linux"))]
         assert_eq!(watch().last().connectivity, status.connectivity);

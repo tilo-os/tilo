@@ -87,7 +87,7 @@ x86_64 = 720896
 aarch64 = 720896
 
 [apps."so.tilo.calendar"]
-x86_64 = 2752512
+x86_64 = 2686976
 aarch64 = 2031616
 
 [apps."so.tilo.camera"]
@@ -135,7 +135,7 @@ x86_64 = 983040
 aarch64 = 917504
 
 [apps."so.tilo.discord"]
-x86_64 = 1638400
+x86_64 = 2228224
 aarch64 = 1507328
 
 [apps."so.tilo.disk-usage"]
@@ -155,7 +155,7 @@ x86_64 = 1835008
 aarch64 = 1441792
 
 [apps."so.tilo.file-explorer"]
-x86_64 = 3145728
+x86_64 = 3014656
 aarch64 = 2883584
 
 [apps."so.tilo.firewall"]
@@ -187,7 +187,7 @@ x86_64 = 4063232
 aarch64 = 2555904
 
 [apps."so.tilo.maps"]
-x86_64 = 1376256
+x86_64 = 1572864
 aarch64 = 1310720
 
 [apps."so.tilo.messages"]
@@ -219,7 +219,7 @@ x86_64 = 1638400
 aarch64 = 1179648
 
 [apps."so.tilo.pdf-viewer"]
-x86_64 = 2228224
+x86_64 = 2359296
 aarch64 = 2031616
 
 [apps."so.tilo.photos"]
@@ -279,7 +279,7 @@ x86_64 = 2490368
 aarch64 = 1572864
 
 [apps."so.tilo.terminal"]
-x86_64 = 1572864
+x86_64 = 1900544
 aarch64 = 1310720
 
 [apps."so.tilo.themes"]
@@ -307,7 +307,7 @@ x86_64 = 2293760
 aarch64 = 2097152
 
 [apps."so.tilo.video-player"]
-x86_64 = 917504
+x86_64 = 1114112
 aarch64 = 917504
 
 [apps."so.tilo.weather"]
@@ -319,5 +319,5 @@ x86_64 = 1310720
 aarch64 = 1245184
 
 [apps."so.tilo.word-processor"]
-x86_64 = 2031616
+x86_64 = 2097152
 aarch64 = 1900544

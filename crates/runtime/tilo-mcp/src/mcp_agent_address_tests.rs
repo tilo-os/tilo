@@ -37,6 +37,33 @@ tilo_test_env::scenario! {
         assert!(close_matches("explode", &ids, CLOSE_MATCHES).is_empty());
     }
 
+    phase a_repeated_title_is_named_by_its_place_and_the_path_takes_it;
+    // Two pages titled alike are named by their places, and that name is a
+    // path back to each: the first keeps the title, the second its place.
+    {
+        let node = |id: &str, ordinal: usize| Node {
+            id: format!("notes.page:{id}"),
+            kind: "notes.page".into(),
+            label: "TODO".into(),
+            key: format!("notes.page:{id}"),
+            parent: "notes.pages".into(),
+            ordinal,
+            container: false,
+            actions: Vec::new(),
+        };
+        let nodes = vec![node("aaaaaaaa", 1), node("bbbbbbbb", 2)];
+        assert_eq!(nodes[0].name(&nodes), "TODO");
+        assert_eq!(nodes[1].name(&nodes), "TODO 2");
+        let id = |name: &str| {
+            pick(name, &nodes, None)
+                .unwrap()
+                .map(|found| found.id.clone())
+        };
+        assert_eq!(id("TODO"), Some("notes.page:aaaaaaaa".into()));
+        assert_eq!(id("TODO 2"), Some("notes.page:bbbbbbbb".into()));
+        assert_eq!(id("TODO 3"), None);
+    }
+
     phase a_title_that_names_several_offers_the_keys_that_tell_them_apart;
     // A title several resources share is refused with the key each one goes by:
     // the key is a name the next path can use.
@@ -47,6 +74,7 @@ tilo_test_env::scenario! {
             label: "README".into(),
             key: format!("notes.page:{key}"),
             parent: "notes.notebook".into(),
+            ordinal: 1,
             container: false,
             actions: Vec::new(),
         };
@@ -190,4 +218,42 @@ tilo_test_env::scenario! {
             assert!(host.invoked().is_empty(), "nothing ran: {text}");
         });
     }
+}
+
+/// A listing says each item by its title; where two titles read the same, each
+/// is named by its place among them (`Todo`, `Todo 2`), a name a path takes,
+/// and never by its id.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_pages_of_one_title_are_told_apart_by_their_places() {
+    let notes = Notes::new(true);
+    let pages = [notes.id(TODO), notes.id(SHOP)];
+    let rows: Vec<CatalogueRow> = notes
+        .rows("1")
+        .into_iter()
+        .map(|mut row| {
+            if pages.contains(&row.resource.id) {
+                row.resource.label = "Todo".into();
+                if let Some(action) = row.action.as_mut() {
+                    action.resource_label = "Todo".into();
+                }
+            }
+            row
+        })
+        .collect();
+    *notes.published_kinds.lock().unwrap() = Some(rows);
+    let (text, failed) = tool(&agent(&notes), "tilo_ls", json!({"path": "notes"})).await;
+    assert!(!failed, "{text}");
+    for line in ["Todo/  notes.page", "Todo 2/  notes.page"] {
+        assert!(text.lines().any(|found| found == line), "{line} in\n{text}");
+    }
+    for page in &pages {
+        assert!(
+            !text.contains(page.as_str()),
+            "a page is named by its id in\n{text}"
+        );
+    }
+    // The name the listing printed is a path.
+    let (page, failed) = tool(&agent(&notes), "tilo_ls", json!({"path": "notes/Todo 2"})).await;
+    assert!(!failed, "{page}");
+    assert!(page.contains("notes/Todo 2"), "{page}");
 }

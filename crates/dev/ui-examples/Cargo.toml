@@ -38,6 +38,7 @@ tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-desktop-surface = { path = "../../session/desktop-surface" }
 tilo-desktop-model = { path = "../../session/desktop-model" }
 tilo-ui = { path = "../../sdk/ui-core", default-features = false }
+tilo-rich-edit = { path = "../../sdk/tilo-rich-edit" }
 vello.workspace = true
 winit.workspace = true
 

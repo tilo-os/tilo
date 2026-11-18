@@ -411,8 +411,7 @@ pub(super) fn finish_peer_outcome(
     device: &[u8; 32],
 ) -> Result<(), PeerError> {
     match outcome {
-        // A superseded session is a normal handover, not a failure.
-        Ok(()) | Err(PeerError::Superseded) => Ok(()),
+        Ok(()) => Ok(()),
         // The server does not admit the device: its refusal went out and the
         // session ended with it, so nothing here lapsed and nothing is counted.
         Err(PeerError::NotAdmitted) => {

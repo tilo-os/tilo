@@ -9,7 +9,7 @@
 #                                       disk, boot it until the agent serves, and wrap the disk
 #                                       into OUT/image.oci.tar (as root in an x86_64 micro-VM
 #                                       step); linux-guest-e2e.sh, beside this script, tests it
-#   linux-guest.sh binaries OUT        the session under test (debug) and tilo-linux-vm
+#   linux-guest.sh binaries OUT        the session under test (debug), tilo-linux-vm and its app keeper
 #                                       (CI builder)
 #   linux-guest.sh pins OUT            after publish-linux-guest published OUT, write
 #                                       OUT/pins.env: its reference and the inputs it was built from
@@ -75,10 +75,13 @@ case ${1:-} in
     out=${2:?usage: linux-guest.sh binaries OUT}
     target=${CARGO_TARGET_DIR:-target}
     # Debug: the session's test-control socket exists only in development builds.
+    # The VM's windows reach the desktop through an app keeper, which
+    # tilo-linux-vm finds beside itself.
     CARGO_PROFILE_DEV_DEBUG=0 cargo build --locked -p tilo-session --bin tilo-session \
-      -p linux-vm --bin tilo-linux-vm
+      -p linux-vm --bin tilo-linux-vm -p tilo-app-keeper --bin tilo-app-keeper
     install -D -m 0755 "$target/debug/tilo-session" "$out/tilo-session"
     install -D -m 0755 "$target/debug/tilo-linux-vm" "$out/tilo-linux-vm"
+    install -D -m 0755 "$target/debug/tilo-app-keeper" "$out/tilo-app-keeper"
     ;;
   pins)
     out=${2:?usage: linux-guest.sh pins OUT}

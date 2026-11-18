@@ -7,9 +7,9 @@
 
 use tilo_document::{ClipBlock, RichText, RichTextAction, RichTextState};
 use ui::automerge::{AutoCommit, ROOT};
+use ui::rich_edit::BlockContent;
 use ui::tilo_actions::{Action, ActionError};
 use ui::tilo_resource::Doc;
-use ui::widget::BlockContent;
 
 use crate::convert::clip_block;
 use crate::source::{FieldState, RichTextSource};
@@ -145,8 +145,9 @@ mod tests {
     use super::*;
     use crate::{FieldOutcome, RichTextSurface, SubmitKey};
     use ui::kurbo::Rect;
+    use ui::rich_edit::BlockKind;
     use ui::widget::marks::{Mark, MarkSpan};
-    use ui::widget::{BlockKind, Embedded, Widget};
+    use ui::widget::{Embedded, Widget};
     use ui::winit::event::{DeviceId, ElementState, KeyEvent, Modifiers, RawKeyEvent, WindowEvent};
     use ui::winit::keyboard::{
         Key, KeyLocation, ModifiersState, NamedKey, NativeKeyCode, PhysicalKey,
@@ -190,7 +191,7 @@ mod tests {
             host.widget_mut().set_focus(true);
             host.widget_mut()
                 .editor_mut()
-                .focus_block(0, ui::widget::CursorPlacement::Start);
+                .focus_block(0, ui::rich_edit::CursorPlacement::Start);
             Self { host, doc }
         }
 
@@ -224,11 +225,11 @@ mod tests {
         let surface = field.host.widget_mut();
         surface
             .source_mut()
-            .reset(&[ui::widget::BlockContent::paragraph("", "Hi")]);
+            .reset(&[ui::rich_edit::BlockContent::paragraph("", "Hi")]);
         surface.present_now();
         surface
             .editor_mut()
-            .focus_block(0, ui::widget::CursorPlacement::End);
+            .focus_block(0, ui::rich_edit::CursorPlacement::End);
         let mut text = ui::TextRenderer::new();
         field.host.layout(
             Rect::new(0.0, 0.0, 400.0, 40.0),

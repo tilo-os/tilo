@@ -3116,6 +3116,7 @@ fn describe_grantee(grantee: &Grantee, app: Option<&tilo_app_id::AppId>) -> Stri
             t_args("activity-capability-bot", &[("bot", bot.into())])
         }
         Grantee::Role(_) => t("activity-capability-this-workspace"),
+        Grantee::App(app) => app.clone(),
     };
     match app {
         Some(app) => t_args(

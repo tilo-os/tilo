@@ -24,7 +24,10 @@
 //! Inside a transaction still open (a host applying several actions before it commits), the
 //! record an action wrote is kept as it wrote it: every slot it holds is as `store` writes it,
 //! so the next action of its type in the same transaction starts from it with nothing to
-//! refresh, as long as nothing else wrote into the transaction in between.
+//! refresh, as long as nothing else wrote into the transaction in between. Once that
+//! transaction commits as one change of what was written into it (a group's members, written
+//! once), what was kept is the document as the change left it: the next action reads only what
+//! others wrote beside it, not the group's own change back.
 //!
 //! Keyed by the record's type and by content-addressed change hashes, so a
 //! record kept for one document is never mistaken for another's: a document
@@ -73,17 +76,27 @@ pub(crate) fn take_any(
     refresh: &dyn Fn(&mut dyn Any, &Doc, &Delta) -> bool,
 ) -> Option<(Box<dyn Any>, Delta)> {
     let Kept {
-        mut record,
+        record: mut state,
         base,
-        wrote,
+        mut wrote,
         open,
     } = KEPT.with(|kept| kept.borrow_mut().remove(&kind))?;
+    // What was kept as written into a transaction holds its own change.
+    let holds_own = open.is_some();
     if let Some((actor, pending)) = open {
         let mut started = doc.base_heads();
         started.compact_sort();
         // The same transaction, with nothing written into it since.
-        return (started == base && doc.get_actor() == &actor && doc.pending_ops() == pending)
-            .then(|| (record, Delta::nothing()));
+        if doc.pending_ops() > 0 {
+            return (started == base && doc.get_actor() == &actor && doc.pending_ops() == pending)
+                .then(|| (state, Delta::nothing()));
+        }
+        // The transaction committed since, as one change of exactly what was
+        // written into it when it was kept: it is the document as that change
+        // left it, and only what others wrote beside it is read.
+        wrote = (pending > 0)
+            .then(|| u64::try_from(pending).ok().map(|count| (actor, count)))
+            .flatten();
     }
     if doc.pending_ops() > 0 {
         return None;
@@ -96,7 +109,7 @@ pub(crate) fn take_any(
     }
     heads.compact_sort();
     if heads == base && wrote.is_none() {
-        return Some((record, Delta::nothing()));
+        return Some((state, Delta::nothing()));
     }
     if base
         .iter()
@@ -105,50 +118,60 @@ pub(crate) fn take_any(
         return None;
     }
     let metas = committed.get_changes_meta(&base);
-    let mut ops = 0_u64;
-    for meta in &metas {
-        ops = ops.checked_add(meta.max_op.saturating_add(1).saturating_sub(meta.start_op))?;
-    }
-    if metas.len() > MAX_CHANGES || ops > MAX_OPS {
+    if metas.len() > MAX_CHANGES {
         return None;
     }
+    let mut ops = 0_u64;
     let mut own = None;
+    let mut found_own = false;
     let mut changes = Vec::with_capacity(metas.len());
     for meta in &metas {
-        let change = committed.get_change_by_hash(&meta.hash)?;
-        let ours = own.is_none()
-            && wrote.as_ref().is_some_and(|(actor, count)| {
+        let count = meta.max_op.saturating_add(1).saturating_sub(meta.start_op);
+        let ours = !found_own
+            && wrote.as_ref().is_some_and(|(actor, wrote)| {
                 let mut deps = meta.deps.clone();
                 deps.compact_sort();
-                meta.actor.as_ref() == actor
-                    && deps == base
-                    && meta.max_op.saturating_add(1).saturating_sub(meta.start_op) == *count
+                meta.actor.as_ref() == actor && deps == base && count == *wrote
             });
+        // Only what is read is counted: a copy holding its own change
+        // reads none of it.
+        if !(ours && holds_own) {
+            ops = ops.checked_add(count)?;
+            if ops > MAX_OPS {
+                return None;
+            }
+        }
         if ours {
-            own = Some(change);
+            found_own = true;
+            if !holds_own {
+                own = Some(committed.get_change_by_hash(&meta.hash)?);
+            }
         } else {
-            changes.push(change);
+            changes.push(committed.get_change_by_hash(&meta.hash)?);
         }
     }
     // The change the last action wrote is not here: it was rolled back, or
     // this is another document.
-    if wrote.is_some() && own.is_none() {
+    if wrote.is_some() && !found_own {
         return None;
     }
     let foreign = changes.len();
     changes.extend(own);
+    if changes.is_empty() {
+        return Some((state, Delta::nothing()));
+    }
     let delta = Delta::from_changes(doc, &changes, &|_| None);
     if delta.is_everything() {
         return None;
     }
-    if !refresh(record.as_mut(), doc, &delta) {
+    if !refresh(state.as_mut(), doc, &delta) {
         return None;
     }
     let dirty = match changes.get(..foreign) {
         Some([]) | None => Delta::nothing(),
         Some(foreign) => Delta::from_changes(doc, foreign, &|_| None),
     };
-    Some((record, dirty))
+    Some((state, dirty))
 }
 
 /// Keep `record`, of the record type `kind`, read at `started`, the version

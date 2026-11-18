@@ -69,20 +69,6 @@ fn mounted_rendered_provider_controls_save_private_fields_and_follow_permissions
     assert_eq!(profile.default_model.as_deref(), Some("rendered-model"));
     assert_eq!(backend.state.lock_recover().config.profiles[0], profile);
 
-    let key = format!("agent-models-set-api-key-{id}");
-    app.harness()
-        .click_named(&format!("agent-models-api-key-{id}"))
-        .unwrap();
-    app.harness().type_text("private-key-draft");
-    app.harness().click_named(&key).unwrap();
-    app.settle();
-    assert!(key_buffer(&mut app, &id).lock_recover().is_empty());
-    assert_eq!(
-        backend.state.lock_recover().keys.get(&id),
-        Some(&CredentialStatus::Configured)
-    );
-    assert_private(&mut app);
-
     let toggle = format!("agent-models-enabled-{id}");
     let remove = format!("agent-models-remove-provider-{id}");
     let original = config(&mut app);
@@ -92,7 +78,6 @@ fn mounted_rendered_provider_controls_save_private_fields_and_follow_permissions
         for control in [
             "agent-models-preset-openai-compatible",
             &save,
-            &key,
             &toggle,
             &remove,
         ] {
@@ -125,7 +110,6 @@ fn mounted_rendered_provider_controls_save_private_fields_and_follow_permissions
     assert!(app.confirm_asked().is_some(), "the host asks");
     assert!(config(&mut app).profiles.is_empty());
     assert!(backend.state.lock_recover().config.profiles.is_empty());
-    assert!(backend.state.lock_recover().keys.is_empty());
 }
 
 #[test]
@@ -224,28 +208,15 @@ fn mounted_rendered_model_limits_save_and_clear_on_the_model_row() {
 }
 
 #[test]
-fn mounted_google_sign_in_never_offers_api_key_ownership() {
+fn mounted_google_sign_in_says_its_credentials_are_the_accounts() {
     let backend = Arc::new(FakeAdminBackend::default());
     let profile = ProviderProfile::google_vertex("project-a", "global", "gemini-2.5-pro");
-    let id = profile.id.clone();
     backend.state.lock_recover().config.upsert(profile);
-    let mut app = mount(backend.clone());
-    for effect in [
-        ProviderEffect::SaveProviderKey {
-            provider: id.clone(),
-            key: Some("private-key-draft".into()),
-        },
-        ProviderEffect::RemoveProviderKey { provider: id },
-    ] {
-        assert!(invoke(&mut app, effect).is_err());
-    }
+    let mut app = mount(backend);
     with_panel(&mut app, |panel| {
         let profile = &panel.provider_config().profiles[0];
-        assert!(!panel.needs_key(profile));
         let all = widgets::announced_text(widgets::page(panel.sections()).as_ref()).join(" ");
         assert!(all.contains(&crate::i18n::t("agent-sign-in-credentials")));
-        assert!(!all.contains(&crate::i18n::t("agent-key-needed")));
-        assert!(!all.contains(&crate::i18n::t("agent-key-none")));
         let native =
             widgets::announced_text(widgets::page(panel.sections_without_sign_in()).as_ref())
                 .join(" ");
@@ -253,8 +224,9 @@ fn mounted_google_sign_in_never_offers_api_key_ownership() {
         assert!(native.contains(profile.models[0].display_label()));
         assert!(native.contains(&crate::i18n::t("agent-request-limits-title")));
     });
-    assert!(backend.state.lock_recover().keys.is_empty());
-    assert_private(&mut app);
+    with_panel(&mut app, |panel| {
+        assert!(panel.listed_models.is_empty());
+    });
 }
 
 #[test]
@@ -269,7 +241,6 @@ fn mounted_metadata_waits_for_durable_ack_and_failed_create_can_retry() {
     .unwrap();
     assert!(config(&mut app).profiles.is_empty());
     assert!(backend.state.lock_recover().config.profiles.is_empty());
-    assert_private(&mut app);
     backend.delay.store(false, Ordering::SeqCst);
     app.settle();
     assert!(config(&mut app).profiles.is_empty());
@@ -280,15 +251,13 @@ fn mounted_metadata_waits_for_durable_ack_and_failed_create_can_retry() {
         },
     );
     assert_eq!(config(&mut app).profiles.len(), 1);
-    assert_private(&mut app);
 }
 
 #[test]
 fn mounted_administration_is_scoped_to_each_host_not_an_ambient_default() {
     let first_backend = Arc::new(FakeAdminBackend::default());
-    let second_backend = Arc::new(FakeAdminBackend::default());
     let mut first = mount(first_backend);
-    let mut second = mount(second_backend.clone());
+    let mut second = mount(Arc::new(FakeAdminBackend::default()));
     run(
         &mut first,
         ProviderEffect::AddProvider {
@@ -306,25 +275,14 @@ fn mounted_administration_is_scoped_to_each_host_not_an_ambient_default() {
         config(&mut first).profiles[0].protocol,
         config(&mut second).profiles[0].protocol
     );
-    let id = config(&mut first).profiles[0].id.clone();
-    // Explicit key arguments use the same secret-marked action API as masked input.
-    invoke(
-        &mut first,
-        ProviderEffect::SaveProviderKey {
-            provider: id,
-            key: Some("private-key-draft".into()),
-        },
-    )
-    .unwrap();
-    assert!(second_backend.state.lock_recover().keys.is_empty());
-    assert_private(&mut first);
-    assert_private(&mut second);
+    assert_eq!(config(&mut first).profiles.len(), 1);
+    assert_eq!(config(&mut second).profiles.len(), 1);
 }
 
 #[test]
-fn mounted_provider_administration_create_edit_key_status_default_remove() {
+fn mounted_provider_administration_create_edit_default_remove() {
     let backend = Arc::new(FakeAdminBackend::default());
-    let mut app = mount(backend.clone());
+    let mut app = mount(backend);
     run(
         &mut app,
         ProviderEffect::AddProvider {
@@ -341,19 +299,6 @@ fn mounted_provider_administration_create_edit_key_status_default_remove() {
             model: Some("model-a".into()),
         },
     );
-    let draft = key_buffer(&mut app, &id);
-    *draft.lock_recover() = "private-key-draft".into();
-    run(
-        &mut app,
-        ProviderEffect::SaveProviderKey {
-            provider: id.clone(),
-            key: None,
-        },
-    );
-    assert!(draft.lock_recover().is_empty());
-    with_panel(&mut app, |panel| {
-        assert_eq!(panel.keys.get(&id), Some(&Ok(CredentialStatus::Configured)));
-    });
     run(
         &mut app,
         ProviderEffect::SetDefaultProvider {
@@ -364,59 +309,8 @@ fn mounted_provider_administration_create_edit_key_status_default_remove() {
         config(&mut app).default_profile.as_deref(),
         Some(id.as_str())
     );
-    assert_private(&mut app);
     run(&mut app, ProviderEffect::RemoveProvider { provider: id });
     assert!(config(&mut app).profiles.is_empty());
-    assert!(backend.state.lock_recover().keys.is_empty());
-}
-
-#[test]
-fn mounted_delayed_failure_retains_private_key_and_retries_without_racing_metadata() {
-    let backend = Arc::new(FakeAdminBackend::default());
-    let mut app = mount(backend.clone());
-    run(
-        &mut app,
-        ProviderEffect::AddProvider {
-            preset: "anthropic".into(),
-        },
-    );
-    let id = config(&mut app).profiles[0].id.clone();
-    let draft = key_buffer(&mut app, &id);
-    *draft.lock_recover() = "private-key-draft".into();
-    backend.delay.store(true, Ordering::SeqCst);
-    backend.state.lock_recover().fail_next = true;
-    app.start_effect_on(
-        &format!("settings.agent-provider:{id}"),
-        &host_effect(ProviderEffect::SaveProviderKey {
-            provider: id.clone(),
-            key: None,
-        }),
-    )
-    .unwrap();
-    assert!(
-        invoke(
-            &mut app,
-            ProviderEffect::SetProviderEnabled {
-                provider: id.clone(),
-                on: false
-            }
-        )
-        .is_err()
-    );
-    assert_eq!(*draft.lock_recover(), "private-key-draft");
-    assert_private(&mut app);
-    backend.delay.store(false, Ordering::SeqCst);
-    app.settle();
-    assert_eq!(*draft.lock_recover(), "private-key-draft");
-    run(
-        &mut app,
-        ProviderEffect::SaveProviderKey {
-            provider: id,
-            key: None,
-        },
-    );
-    assert!(draft.lock_recover().is_empty());
-    assert_private(&mut app);
 }
 
 #[test]
@@ -453,37 +347,6 @@ fn mounted_conflict_reloads_authority_and_keeps_details_draft_for_explicit_retry
     });
     run(&mut app, edit);
     assert_eq!(config(&mut app).profiles[0].label, "My unsaved draft");
-    assert_private(&mut app);
-}
-
-#[test]
-fn mounted_ack_preserves_a_newer_private_key_draft() {
-    let backend = Arc::new(FakeAdminBackend::default());
-    let mut app = mount(backend.clone());
-    run(
-        &mut app,
-        ProviderEffect::AddProvider {
-            preset: "anthropic".into(),
-        },
-    );
-    let id = config(&mut app).profiles[0].id.clone();
-    let draft = key_buffer(&mut app, &id);
-    *draft.lock_recover() = "private-key-draft".into();
-    backend.delay.store(true, Ordering::SeqCst);
-    app.start_effect_on(
-        &format!("settings.agent-provider:{id}"),
-        &host_effect(ProviderEffect::SaveProviderKey {
-            provider: id,
-            key: None,
-        }),
-    )
-    .unwrap();
-    *draft.lock_recover() = "new-private-key-draft".into();
-    backend.delay.store(false, Ordering::SeqCst);
-    app.settle();
-    assert_eq!(*draft.lock_recover(), "new-private-key-draft");
-    assert_private(&mut app);
-    assert!(!format!("{:?}", app.history()).contains("new-private-key-draft"));
 }
 
 #[test]
@@ -608,7 +471,7 @@ fn mounted_each_kind_of_interaction_runs_on_its_own_model_or_the_default() {
 #[test]
 fn mounted_test_connection_lists_models_to_choose_from_and_says_why_it_failed() {
     let backend = Arc::new(FakeAdminBackend::default());
-    let mut app = mount(backend.clone());
+    let mut app = mount(backend);
     app.harness().resize((1800, 6000)).unwrap();
     app.settle();
     app.start_effect(&host_effect(ProviderEffect::AddProvider {
@@ -621,22 +484,6 @@ fn mounted_test_connection_lists_models_to_choose_from_and_says_why_it_failed() 
     let id = profile.id;
     let test = format!("agent-models-test-{id}");
 
-    // Without a key the provider refuses, and the panel says what to do.
-    app.harness().click_named(&test).unwrap();
-    app.settle();
-    let refused = with_panel(&mut app, |panel| panel.listed_models.get(&id).cloned())
-        .unwrap()
-        .unwrap_err();
-    assert_eq!(refused, crate::i18n::t("agent-test-key-refused"));
-    // The refusal is said once, on the provider's own card, not again in one
-    // notice line that speaks for every provider.
-    assert_eq!(with_panel(&mut app, |panel| panel.notice.clone()), None);
-
-    backend
-        .state
-        .lock_recover()
-        .keys
-        .insert(id.clone(), CredentialStatus::Configured);
     app.harness().click_named(&test).unwrap();
     app.settle();
     let listed = with_panel(&mut app, |panel| panel.listed_models.get(&id).cloned())

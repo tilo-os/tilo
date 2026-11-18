@@ -1296,15 +1296,6 @@ mod tests {
             state.preferences.search_engine.as_str()
         );
     }
-
-    #[test]
-    fn a_new_browser_starts_with_the_default_preferences() {
-        let state = ui::tilo_resource::Replica::<Browser>::new()
-            .state()
-            .unwrap();
-        assert_eq!(state.preferences, Settings::default());
-        assert!(state.bookmarks.is_empty());
-    }
 }
 
 #[cfg(test)]

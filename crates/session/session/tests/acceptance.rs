@@ -1,6 +1,6 @@
-//! The shell's acceptance path (`~/work/shell-goal-acceptance.md`), one test per step, from the
-//! headless session that starts with the tilolang shell as its whole screen to a theme switch
-//! that changes how it looks and nothing of where it stands.
+//! The shell's acceptance path, one test per step, from the headless session that starts with the
+//! tilolang shell as its whole screen to a theme switch that changes how it looks and nothing of
+//! where it stands.
 //!
 //! Every step drives the production services only: the session's own loop, its MCP server, the
 //! layout and session it publishes, and the tree the shell lays out for assistive technology

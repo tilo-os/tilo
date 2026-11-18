@@ -95,13 +95,6 @@ pub mod workspace_authority;
 #[cfg(feature = "filesystem")]
 pub mod writer;
 
-#[cfg(test)]
-#[cfg(feature = "filesystem")]
-mod history_fixture;
-#[cfg(test)]
-#[cfg(feature = "filesystem")]
-mod tests;
-
 // The tilo-doc conflict merge decodes peer versions in Automerge workers.
 #[cfg(test)]
 #[cfg(feature = "filesystem")]
@@ -130,7 +123,6 @@ pub use identity::{
     load_workspace_share_issuer, revocation_list_path,
 };
 #[cfg(feature = "filesystem")]
-pub use namespace::history::HistoryError;
 #[cfg(feature = "filesystem")]
 pub use namespace::{Namespace, ROOT_INO};
 #[cfg(feature = "filesystem")]

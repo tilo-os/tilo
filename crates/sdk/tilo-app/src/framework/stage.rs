@@ -231,7 +231,7 @@ fn stage_with(
         .flush_component_resources()
         .map_err(LaunchError::Operation)?;
     harness
-        .wait_for_visuals(SETTLE)
+        .wait_for_visuals(settle_bound())
         .map_err(|error| match scenario {
             Some(name) => {
                 LaunchError::Operation(format!("{title} scenario {name:?} did not settle: {error}"))
@@ -256,8 +256,24 @@ fn stage_with(
 
 /// How long a capture waits for its surfaces' asynchronous work (a page
 /// render, a decode, a fixture read) before refusing to capture a
-/// placeholder.
+/// placeholder. `TILO_CAPTURE_SETTLE_MS` shortens it, so a check that
+/// provokes work it knows cannot finish (a file that cannot be decoded)
+/// observes the refusal without waiting the bound out; a live `--shots`
+/// capture reads the same setting.
 const SETTLE: ui_core::time::Duration = ui_core::time::Duration::from_secs(30);
+
+fn settle_bound() -> ui_core::time::Duration {
+    std::env::var("TILO_CAPTURE_SETTLE_MS")
+        .ok()
+        .and_then(|value| {
+            tilo_failure::ignored!(
+                "a settle bound that is not a number leaves the capture its own bound",
+                value.trim().parse::<u64>().ok()
+            )
+        })
+        .filter(|millis| *millis > 0)
+        .map_or(SETTLE, ui_core::time::Duration::from_millis)
+}
 
 /// How long each of `frames` frames of `A`'s capture of `scenario` takes to
 /// sync, lay out and draw, after one frame that warms the text caches: what

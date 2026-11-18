@@ -421,7 +421,9 @@ mod tests {
     }
 
     #[test]
-    fn a_click_on_a_control_rebuilt_under_a_still_pointer_runs_it() {
+    fn a_rebuild_between_press_and_release_still_completes_the_click() {
+        // A control rebuilt under a pointer that has not moved is pressed
+        // where it now stands.
         let (mut harness, staged, clicks) = hovered();
         let before = harness.targets()["copy_link"];
         rebuild(&mut harness, &staged, &clicks, 0.0);
@@ -429,10 +431,7 @@ mod tests {
         harness.send(&button(ElementState::Pressed));
         harness.send(&button(ElementState::Released));
         assert_eq!(*clicks.borrow(), vec!["rebuilt"]);
-    }
 
-    #[test]
-    fn a_rebuild_between_press_and_release_still_completes_the_click() {
         let (mut harness, staged, clicks) = hovered();
         harness.send(&button(ElementState::Pressed));
         rebuild(&mut harness, &staged, &clicks, 0.0);

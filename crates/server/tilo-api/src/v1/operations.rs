@@ -277,6 +277,14 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         )
         .answers(Answer::Events),
         op(
+            "askModel",
+            Method::POST,
+            "/v1/workspaces/{workspace}/model/ask",
+            "Ask the person's own model one turn, its answer streamed as the model writes it",
+        )
+        .body(Body::Json("ModelAsk"))
+        .answers(Answer::Events),
+        op(
             "search",
             Method::GET,
             "/v1/workspaces/{workspace}/search",
@@ -367,6 +375,14 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         )
         .body(Body::Json("NewInvitation"))
         .json(201, "Invitation"),
+        op(
+            "revokeInvitation",
+            Method::DELETE,
+            "/v1/workspaces/{workspace}/members/invitations/{invite}",
+            "Revoke an open invitation, by its id: its link lets nobody in from then on",
+        )
+        .mutating()
+        .json(200, "Members"),
         op(
             "namePerson",
             Method::POST,

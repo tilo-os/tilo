@@ -347,6 +347,9 @@ pub struct ToggleGroup {
     last_hovered: Option<usize>,
     drawn_palette: Option<[Color; 4]>,
     fill: bool,
+    /// The places the strip keeps for its choices, so strips of different lengths line up under
+    /// each other: `0` keeps one per choice.
+    columns: usize,
     style: SegmentedStyle,
     control_size: ControlSize,
     metrics: StripMetrics,
@@ -416,6 +419,7 @@ impl ToggleGroup {
             last_hovered: None,
             drawn_palette: None,
             fill: false,
+            columns: 0,
             style: SegmentedStyle::Segmented,
             control_size: ControlSize::Regular,
             metrics: StripMetrics::stock(ControlSize::Regular),
@@ -521,6 +525,17 @@ impl ToggleGroup {
     #[must_use]
     pub fn fill(mut self) -> Self {
         self.fill = true;
+        self.layout_dirty = true;
+        self
+    }
+
+    /// Keep `columns` places for the choices, each choice in the place it has among them from
+    /// the end, and the strip as wide as that many choices: a row offering fewer choices than
+    /// the rows beside it keeps its choices in the same places, so they line up under each
+    /// other.
+    #[must_use]
+    pub fn with_columns(mut self, columns: usize) -> Self {
+        self.columns = columns;
         self.layout_dirty = true;
         self
     }
@@ -861,12 +876,9 @@ impl ToggleGroup {
             } else {
                 None
             };
-            sharing.unwrap_or_else(|| partition_sized(rect, &self.naturals))
+            sharing.unwrap_or_else(|| self.places(rect))
         } else {
-            (
-                partition(rect, self.segments.len()),
-                vec![false; self.segments.len()],
-            )
+            self.places(rect)
         };
         if rects != self.segment_rects || use_short != self.use_short {
             self.cache_dirty = true;
@@ -877,6 +889,23 @@ impl ToggleGroup {
         if self.painted.resized(self.rect) {
             self.cache_dirty = true;
         }
+    }
+
+    /// Where each choice stands: as wide as its words where the strip holds its own choices, or
+    /// one equal place per column where it keeps places for more, its own in the last of them.
+    fn places(&self, rect: Rect) -> (Vec<Rect>, Vec<bool>) {
+        let columns = self.columns.max(self.segments.len());
+        if self.naturals.len() == self.segments.len() && columns == self.segments.len() {
+            return partition_sized(rect, &self.naturals);
+        }
+        let places = partition(rect, columns);
+        (
+            places
+                .into_iter()
+                .skip(columns - self.segments.len())
+                .collect(),
+            vec![false; self.segments.len()],
+        )
     }
 
     fn reveal(&mut self, index: usize) {
@@ -1085,6 +1114,7 @@ impl StripMetrics {
         &self,
         segments: &[Segment],
         style: SegmentedStyle,
+        columns: usize,
         text: &mut TextRenderer,
     ) -> f64 {
         let naturals = self.naturals(segments, style, text);
@@ -1092,7 +1122,7 @@ impl StripMetrics {
             return naturals.iter().map(|(full, _)| full).sum::<f64>().ceil();
         }
         let widest = naturals.iter().map(|(full, _)| *full).fold(0.0, f64::max);
-        (widest * f64_of_usize(segments.len()) + 2.0 * self.inset).ceil()
+        (widest * f64_of_usize(columns.max(segments.len())) + 2.0 * self.inset).ceil()
     }
 }
 
@@ -1325,7 +1355,12 @@ impl<'a> SegmentedFace<'a> {
         theme: &Theme,
     ) -> f64 {
         let segments: Vec<Segment> = labels.iter().map(|label| Segment::new(*label)).collect();
-        StripMetrics::of(size, theme).intrinsic_width(&segments, SegmentedStyle::Segmented, text)
+        StripMetrics::of(size, theme).intrinsic_width(
+            &segments,
+            SegmentedStyle::Segmented,
+            labels.len(),
+            text,
+        )
     }
 
     pub(crate) fn tab_widths(
@@ -2149,10 +2184,12 @@ impl Widget for ToggleGroup {
                     .unwrap_or(f32_of_f64(side * n + gap * (n - 1.0))),
             };
         }
-        let intrinsic = f32_of_f64(
-            self.metrics
-                .intrinsic_width(&self.segments, self.style, text),
-        );
+        let intrinsic = f32_of_f64(self.metrics.intrinsic_width(
+            &self.segments,
+            self.style,
+            self.columns,
+            text,
+        ));
         self.measure_naturals(text);
         if self.chosen.is_some() {
             let width = known.width.unwrap_or(match available.width {
@@ -2203,6 +2240,7 @@ impl Widget for ToggleGroup {
             self.measured_width = Some(f32_of_f64(self.metrics.intrinsic_width(
                 &self.segments,
                 self.style,
+                self.columns,
                 text,
             )));
         }

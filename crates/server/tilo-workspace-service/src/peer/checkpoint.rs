@@ -180,17 +180,21 @@ impl ReplayPendingTarget {
         self.live.load(std::sync::atomic::Ordering::SeqCst)
             && self.catchup.phase.load(std::sync::atomic::Ordering::SeqCst) == ReplayCatchup::ACTIVE
     }
-    pub(super) fn current(&self, runtime: &crate::workspace::WorkspaceRuntime) -> bool {
-        runtime
-            .state_sessions
-            .get(&self.device)
-            .is_some_and(|session| {
-                Arc::ptr_eq(&session.live, &self.live)
-                    && session
+    /// The device's connection this target is the replay of, while that
+    /// connection still holds it.
+    pub(super) fn session<'r>(
+        &self,
+        runtime: &'r crate::workspace::WorkspaceRuntime,
+    ) -> Option<&'r crate::workspace::Session> {
+        runtime.sessions_of(&self.device).iter().find(|session| {
+            session.state.as_ref().is_some_and(|state| {
+                Arc::ptr_eq(&state.live, &self.live)
+                    && state
                         .replay
                         .as_ref()
                         .is_some_and(|catchup| Arc::ptr_eq(catchup, &self.catchup))
             })
+        })
     }
 }
 

@@ -211,6 +211,39 @@ pub(super) async fn tracker(
     tasks::issue_list::IssueList::read(&automerge::AutoCommit::load(&bytes).unwrap()).unwrap()
 }
 
+/// What the agent said in the tracker's issue threads, as the workspace keeps them now.
+fn scout_said(answered: &tasks::issue_list::IssueList) -> Vec<String> {
+    answered
+        .issues
+        .values()
+        .flat_map(|issue| issue.comments.values().cloned())
+        .filter(|message| message.author == Some(ui::tilo_resource::MemberId::agent(SCOUT)))
+        .map(|message| message.text)
+        .collect()
+}
+
+/// Wait until the agent's comment holding `text` is in the issue's thread: a turn's answer is
+/// applied and saved after the turn answers, so it is read when it arrives rather than once.
+pub(super) async fn told_by_scout(
+    workspaces: &tilo_server::workspaces::Workspaces,
+    workspace: &str,
+    list: &str,
+    text: &str,
+) {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let told = scout_said(&tracker(workspaces, workspace, list).await);
+        if told.iter().any(|said| said.contains(text)) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the agent never said {text:?}: {told:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 /// A server's own model that must never be asked: a turn that reaches it failed the test.
 fn never_asked(asked: Arc<Mutex<Vec<ModelRequest>>>) -> Model {
     looks_then_answers(1, asked)
@@ -249,8 +282,7 @@ async fn an_agent_on_the_host_works_with_its_keepers_own_model() {
     let person = hex::encode(keeper);
     let agents_record = collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND);
     make_agent(&page, &workspaces, &workspace, &person, None).await;
-    let tasks_record =
-        file_issue(&actions, &workspaces, &workspace, &root, (&host, &browser)).await;
+    let tracker_id = file_issue(&actions, &workspaces, &workspace, &root, (&host, &browser)).await;
 
     // The keeper's own provider, as their settings and their vault keep it on this server.
     let theirs = ScriptedProvider::answering([
@@ -306,7 +338,7 @@ async fn an_agent_on_the_host_works_with_its_keepers_own_model() {
             .any(|tool| tool.name == "tilo_ls"),
         "it acts through the agent tools"
     );
-    let answered = tracker(&workspaces, &workspace, &tasks_record).await;
+    let answered = tracker(&workspaces, &workspace, &tracker_id).await;
     let said: Vec<String> = answered
         .issues
         .values()
@@ -374,29 +406,20 @@ async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked(
     let keeper = root.verifying_key().to_bytes();
     let person = hex::encode(keeper);
     make_agent(&page, &workspaces, &workspace, &person, None).await;
-    let tasks_record =
-        file_issue(&actions, &workspaces, &workspace, &root, (&host, &browser)).await;
-    let said = |answered: tasks::issue_list::IssueList| -> Vec<String> {
-        answered
-            .issues
-            .values()
-            .flat_map(|issue| issue.comments.values().cloned())
-            .filter(|message| message.author == Some(ui::tilo_resource::MemberId::agent(SCOUT)))
-            .map(|message| message.text)
-            .collect()
-    };
+    let tracker_id = file_issue(&actions, &workspaces, &workspace, &root, (&host, &browser)).await;
 
     // Nothing linked, and a server that runs no model: the person is told what to link.
     let agents = HostAgents::new(workspaces.clone(), actions.clone(), None);
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
     agents.answer(&workspace, &turns[0]).await.unwrap();
-    let told = said(tracker(&workspaces, &workspace, &tasks_record).await);
-    assert!(
-        told.iter()
-            .any(|text| text.contains("No model is linked for this kind of work")),
-        "{told:?}"
-    );
+    told_by_scout(
+        &workspaces,
+        &workspace,
+        &tracker_id,
+        "No model is linked for this kind of work",
+    )
+    .await;
 
     // A provider linked without its key: its keeper is told which key is missing, and the server's
     // own model does not answer in its place.
@@ -424,7 +447,7 @@ async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked(
     agents.answer(&workspace, &turns[0]).await.unwrap();
     let kept_in = tasks::issue_list::chain().part(0).as_str().to_owned();
     assert_eq!(
-        said(tracker(&workspaces, &workspace, &kept_in).await).len(),
+        scout_said(&tracker(&workspaces, &workspace, &kept_in).await).len(),
         1,
         "what was read before the work stopped is not begun a second time"
     );
@@ -471,12 +494,13 @@ async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked(
         unasked.lock().unwrap().is_empty(),
         "no other model is asked"
     );
-    let told = said(tracker(&workspaces, &workspace, &tasks_record).await);
-    assert!(
-        told.iter()
-            .any(|text| text.contains("Anthropic has no API key here yet")),
-        "{told:?}"
-    );
+    told_by_scout(
+        &workspaces,
+        &workspace,
+        &tracker_id,
+        "Anthropic has no API key here yet",
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -503,9 +527,8 @@ async fn an_agent_on_the_host_works_on_the_issue_a_person_gives_it() {
     make_agent(&page, &workspaces, &workspace, &person, None).await;
 
     // They write an issue and give it to the agent.
-    let tasks_record =
-        file_issue(&actions, &workspaces, &workspace, &root, (&host, &browser)).await;
-    let written = tracker(&workspaces, &workspace, &tasks_record).await;
+    let tracker_id = file_issue(&actions, &workspaces, &workspace, &root, (&host, &browser)).await;
+    let written = tracker(&workspaces, &workspace, &tracker_id).await;
     let (issue, _) = written.issues.iter().next().unwrap();
     let issue: Id = issue.clone();
 
@@ -564,7 +587,7 @@ async fn an_agent_on_the_host_works_on_the_issue_a_person_gives_it() {
     );
 
     // Its answer is its own comment in the issue's thread, and the issue asks nothing more.
-    let answered = tracker(&workspaces, &workspace, &tasks_record).await;
+    let answered = tracker(&workspaces, &workspace, &tracker_id).await;
     let thread: Vec<_> = answered
         .issues
         .get(&issue)
@@ -632,8 +655,7 @@ async fn an_agent_on_the_host_stops_at_its_keepers_daily_limit() {
     let page = Browser::open_at(&server, &browser, &host, &workspace).await;
     let person = hex::encode(root.verifying_key().to_bytes());
     make_agent(&page, &workspaces, &workspace, &person, Some(10_000)).await;
-    let tasks_record =
-        file_issue(&actions, &workspaces, &workspace, &root, (&host, &browser)).await;
+    let tracker_id = file_issue(&actions, &workspaces, &workspace, &root, (&host, &browser)).await;
 
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = HostAgents::new(
@@ -649,7 +671,7 @@ async fn an_agent_on_the_host_stops_at_its_keepers_daily_limit() {
         1,
         "once a turn spent the day's limit, no more is asked of the model"
     );
-    let answered = tracker(&workspaces, &workspace, &tasks_record).await;
+    let answered = tracker(&workspaces, &workspace, &tracker_id).await;
     let said: Vec<String> = answered
         .issues
         .values()

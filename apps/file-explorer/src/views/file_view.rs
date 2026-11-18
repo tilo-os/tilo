@@ -2204,9 +2204,9 @@ mod tests {
         error: bool,
     ) -> AvailabilityProjectionV1 {
         let value = serde_json::json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-            "current_version": "a0d4e23f-c7cb-4ded-a427-b32cf9da9342",
+            "current_hash": "4242424242424242424242424242424242424242424242424242424242424242",
             "residency": residency,
             "transfer": {
                 "phase": phase,

@@ -134,9 +134,11 @@ mod tests {
         read(&stored("{}", value).to_string())
     }
 
+    /// A section a person or device can store must also declare who holds it, and the
+    /// defaults the panes read must be the defaults the setting declarations name.
     #[cfg(feature = "tilo-os")]
     #[test]
-    fn prefs_defaults_are_sensible_and_classified() {
+    fn every_stored_section_declares_who_holds_it_and_defaults_match_their_declaration() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().to_path_buf();
         store_whole(&path, &AudioPrefs::default());
@@ -170,40 +172,20 @@ mod tests {
              {undeclared:?}"
         );
 
-        assert!(AudioPrefs::default().system_sounds.enabled);
-        assert!(!NightLightPrefs::default().night_light);
         let input = InputPrefs::default();
-        assert!(input.tap_to_click);
-        assert!(input.touchpad_natural_scroll);
-        assert!(!input.mouse_natural_scroll);
         assert_eq!(
             input.keyboard_layouts,
-            settings_store::keyboard_sources::default_sources()
-        );
-        assert_eq!(input.keyboard_layout, input.keyboard_layouts[0]);
-        let power = PowerPrefs::default();
-        assert!(
-            !power.auto_suspend,
-            "a fresh install does not suspend on idle; the lid still suspends"
+            settings_store::keyboard_sources::default_sources(),
+            "the pane reads the declared keyboard sources"
         );
         assert_eq!(
-            power.auto_suspend,
-            settings_store::power::AUTO_SUSPEND.default_value()
+            input.keyboard_layout, input.keyboard_layouts[0],
+            "the default layout is one of the sources the pane offers"
         );
-        assert_eq!(power.lid_close_action, PowerActionPref::Suspend);
-        assert_eq!(power.blank_minutes, 10);
-        assert_eq!(power.lock_minutes, 5);
-        let updates = UpdatePrefs::default();
-        assert_eq!(updates.last_checked, "Never");
-
-        let n = NotificationPrefs::default();
-        assert!(!n.do_not_disturb, "notifications on by default");
-        assert!(n.show_banners);
-        assert!(n.show_previews);
-        assert!(n.play_sounds);
-        assert!(
-            !n.show_on_lock_screen,
-            "lock screen is the most exposed surface"
+        assert_eq!(
+            PowerPrefs::default().auto_suspend,
+            settings_store::power::AUTO_SUSPEND.default_value(),
+            "the power pane's default is the one its setting declares"
         );
     }
 

@@ -551,7 +551,7 @@ fn status_reports_live_word_counts() {
         app.refresh_status();
         app.main
             .editor_mut()
-            .set_blocks(vec![ui::widget::Block::paragraph("One two three")]);
+            .set_blocks(vec![ui::rich_edit::Block::paragraph("One two three")]);
         app.refresh_status();
         assert_eq!(app.status.state().word_count, Some(3));
     }
@@ -574,7 +574,7 @@ fn status_reports_live_word_counts() {
         // An edit of the note is recounted.
         app.main
             .editor_mut()
-            .set_blocks(vec![ui::widget::Block::paragraph("One two three")]);
+            .set_blocks(vec![ui::rich_edit::Block::paragraph("One two three")]);
         app.refresh_status();
         assert_eq!(app.status.state().word_count, Some(3));
         let edited = app.word_count.expect("the edited count was taken");
@@ -864,7 +864,7 @@ fn collaborative_rebinds_keep_marks_targets_and_reveal_focus() {
         notes(&mut app)
             .main
             .editor_mut()
-            .focus_block(index, ui::widget::CursorPlacement::End);
+            .focus_block(index, ui::rich_edit::CursorPlacement::End);
         notes(&mut app).bound_page = None;
         app.settle();
         let editor = notes(&mut app).main.editor();

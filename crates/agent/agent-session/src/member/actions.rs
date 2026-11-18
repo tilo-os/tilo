@@ -114,6 +114,11 @@ pub(crate) fn api_outcome(error: &ApiError) -> Outcome {
         ApiError::Unavailable { code, .. } if code == PERMISSION_DENIED => {
             Outcome::Rejected(ActionCallError::NotPermitted)
         }
+        // What an action changes has not arrived from the workspace yet:
+        // nothing was made, and the same call is asked again once it has.
+        ApiError::Unavailable { code, .. } if code == tilo_actions::api::NOT_READY => {
+            Outcome::Rejected(ActionCallError::NotReady)
+        }
         ApiError::Unavailable { reason, .. } => Outcome::Rejected(ActionCallError::Unavailable {
             reason: reason.clone(),
         }),

@@ -12,6 +12,7 @@ on:
     paths:
       - "apps/**"
       - "crates/**"
+      - "crates/sdk/tilo-rich-edit/**"
       - "crates/sdk/ui-core/**"
       - ".cargo/**"
       - "vendor/**"

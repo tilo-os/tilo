@@ -21,11 +21,11 @@ use std::rc::Rc;
 
 use tilo_document::action::RegionKind;
 use tilo_document::{ClipBlock, RichText, RichTextAction};
+use ui::rich_edit::BlockContent;
 use ui::tilo_resource::{
     self, ActionCx, Bytes, Collection, Id, Map, MemberId, Model, NonBlank, Origin, Reactions,
     Refusal, resource,
 };
-use ui::widget::BlockContent;
 use ui::widget::marks::Mark;
 
 use crate::metadata::CATALOG;
@@ -343,7 +343,7 @@ fn seed(
     });
     crate::markdown::specs_to_blocks(&specs)
         .iter()
-        .map(ui::widget::Block::content)
+        .map(ui::rich_edit::Block::content)
         .collect()
 }
 
@@ -1986,6 +1986,17 @@ impl ui::framework::Chained for NoteList {
             NoteListAction::AppendToNote(note_list::AppendToNote { note, .. }) => note.clone(),
             _ => None,
         }
+    }
+
+    /// The pages as the tree they make: each under the note it sits under,
+    /// by the resource each is published as.
+    fn tree(parts: &[(u64, Rc<Self>)]) -> Vec<(Id, Option<Id>)> {
+        let resource =
+            |id: &Id| Id::from(tilo_resource::items::item_resource_id::<Self>("pages", id));
+        Pages::of(parts)
+            .iter()
+            .map(|(id, page)| (resource(id), page.parent.as_ref().map(resource)))
+            .collect()
     }
 
     fn prepare(

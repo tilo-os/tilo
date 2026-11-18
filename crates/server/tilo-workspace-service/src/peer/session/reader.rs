@@ -452,7 +452,10 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
             let answer = &mut answer;
             let operation = Box::pin(async move {
                 if prefix.is_empty() {
-                    handle_envelope(cx.peer, env, cx.session, subscribed, ticket, answer).await
+                    Box::pin(handle_envelope(
+                        cx.peer, env, cx.session, subscribed, ticket, answer,
+                    ))
+                    .await
                 } else {
                     let mut envelopes = Vec::with_capacity(prefix.len().saturating_add(1));
                     envelopes.push(env);

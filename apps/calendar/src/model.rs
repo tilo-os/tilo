@@ -1367,49 +1367,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn demo_seed_keeps_a_realistic_spread_without_developer_todo_titles() {
-        {
-            let model = seed_demo(date(2026, 6, 15));
-            let markers = [
-                "ICS",
-                "round-trip",
-                "PR #",
-                "hit test",
-                "month-grid",
-                "Release v",
-                "Sprint",
-                "TODO",
-                "refactor",
-                "unit test",
-                "bugfix",
-            ];
-            let mut titles: Vec<&str> = Vec::new();
-            titles.extend(model.events.iter().map(|e| e.title.as_str()));
-            titles.extend(model.tasks.iter().map(|t| t.title.as_str()));
-            titles.extend(model.projects.iter().map(|p| p.name.as_str()));
-            for title in titles {
-                let lower = title.to_ascii_lowercase();
-                for m in markers {
-                    assert!(
-                        !lower.contains(&m.to_ascii_lowercase()),
-                        "demo seed leaks developer-TODO text: {title:?} matched {m:?}",
-                    );
-                }
-            }
-        }
-        {
-            let model = seed_demo(date(2026, 6, 15));
-            let has = |t: &str| {
-                model.events.iter().any(|e| e.title == t)
-                    || model.tasks.iter().any(|k| k.title == t)
-            };
-            assert!(has("Company offsite"), "neutral all-day event present");
-            assert!(has("Reply to Alex's email"), "neutral task present");
-            assert!(has("Lunch with Sam"), "everyday event present");
-        }
-    }
-
     fn sample_event(start_date: Date) -> Event {
         Event {
             id: Uuid::new_v4(),

@@ -37,9 +37,6 @@ pub enum Refusal {
     /// The device an action was addressed to is not connected to the
     /// workspace.
     Offline,
-    /// A newer connection of the same device took over: what this one asked
-    /// is asked again on that one.
-    Superseded,
     /// The request is malformed: what is wrong with it.
     Invalid(String),
     /// The operation's id was already used for different content.
@@ -66,11 +63,10 @@ pub const PLAIN_REFUSED: &str = "The workspace didn't accept this change.";
 
 impl Refusal {
     /// Whether the same thing goes through once the workspace is ready on
-    /// the host ([`Self::NotReady`]) or once another connection carries it
-    /// ([`Self::Superseded`]): nothing is wrong with it.
+    /// the host ([`Self::NotReady`]): nothing is wrong with it.
     #[must_use]
     pub const fn passes_once_ready(&self) -> bool {
-        matches!(self, Self::NotReady | Self::Superseded)
+        matches!(self, Self::NotReady)
     }
 
     /// The refusal's stable machine-readable code, as a CLI, MCP or SDK
@@ -86,7 +82,6 @@ impl Refusal {
             Self::NotAdmitted => "not_admitted",
             Self::WorkspaceDeleted => "workspace_deleted",
             Self::Offline => "offline",
-            Self::Superseded => "superseded",
             Self::Invalid(_) => "invalid_request",
             Self::Conflict => "conflict",
             Self::Other(_) => "refused",
@@ -102,12 +97,9 @@ impl Refusal {
             Self::NotAllowed(_) => PLAIN_NOT_ALLOWED.into(),
             Self::NotAMember(_) | Self::NotAdmitted => PLAIN_NOT_A_MEMBER.into(),
             Self::WorkspaceDeleted => PLAIN_DELETED.into(),
-            Self::NotReady
-            | Self::Offline
-            | Self::Superseded
-            | Self::Invalid(_)
-            | Self::Conflict
-            | Self::Other(_) => PLAIN_REFUSED.into(),
+            Self::NotReady | Self::Offline | Self::Invalid(_) | Self::Conflict | Self::Other(_) => {
+                PLAIN_REFUSED.into()
+            }
         }
     }
 }
@@ -123,7 +115,6 @@ impl std::fmt::Display for Refusal {
             Self::NotAdmitted => f.write_str("not a member here"),
             Self::WorkspaceDeleted => f.write_str("workspace deleted"),
             Self::Offline => f.write_str("the device is not connected to the workspace"),
-            Self::Superseded => f.write_str("a newer connection of this device took over"),
             Self::Invalid(detail) => write!(f, "invalid request: {detail}"),
             Self::Conflict => f.write_str("operation id already committed with different content"),
             Self::Other(detail) => f.write_str(detail),
@@ -141,7 +132,6 @@ mod tests {
         phase only_a_host_that_was_not_ready_passes_later;
         {
             assert!(Refusal::NotReady.passes_once_ready());
-            assert!(Refusal::Superseded.passes_once_ready());
             assert!(!Refusal::Conflict.passes_once_ready());
         }
 

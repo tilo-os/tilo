@@ -1,4 +1,4 @@
-//! The compact directory page `tilo_query` answers by default.
+//! The compact directory page an app's listing is answered as.
 //!
 //! A model pays for every byte of every page it reads, and again on every
 //! later turn that still carries it. A full row repeats its resource id three
@@ -420,7 +420,7 @@ pub fn not_running(app_id: &str, running: &[&str]) -> String {
         )
     };
     format!(
-        "{app_id} is not running ({listed}); name a running app by its id, or start an app with tilo_invoke {{workspace: true, resource: \"app.<app_id>\", action: \"open\"}}"
+        "{app_id} is not running ({listed}); name a running app by its id, or start one with tilo_do <app>#open"
     )
 }
 

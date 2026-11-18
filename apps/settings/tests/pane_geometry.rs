@@ -39,54 +39,63 @@ fn collect(
     }
 }
 
-#[test]
-fn every_pane_keeps_one_label_column_and_fits_at_wide_and_narrow_widths() {
-    for (width, height) in [WIDE, NARROW] {
-        for &category in Category::ALL {
-            let mut app = crate::support::window_on(category, (width, height));
-            let mut fields = Vec::new();
-            let mut overflow = Vec::new();
-            collect(
-                app.harness().root_widget(),
-                &mut fields,
-                &mut overflow,
-                f64::from(width),
-            );
-            let at = format!("{category:?} at {width}x{height}");
-            assert!(
-                overflow.is_empty(),
-                "{at}: content overflows the window horizontally: {overflow:?}"
-            );
-            let beside: Vec<_> = fields
-                .iter()
-                .filter(|field| field.placement == LabelPlacement::Beside)
-                .collect();
-            if let Some(first) = beside.first() {
-                for field in &beside {
-                    assert!(
-                        (field.label_width - first.label_width).abs() < 0.5,
-                        "{at}: label columns differ ({} vs {})",
-                        field.label_width,
-                        first.label_width
-                    );
-                    assert!(
-                        (field.rect.x0 - first.rect.x0).abs() < 0.5
-                            && (field.rect.x1 - first.rect.x1).abs() < 0.5,
-                        "{at}: rows are not aligned ({:?} vs {:?})",
-                        field.rect,
-                        first.rect
-                    );
-                }
+fn every_pane_keeps_one_label_column_and_fits_at((width, height): (f32, f32)) {
+    for &category in Category::ALL {
+        let mut app = crate::support::window_on(category, (width, height));
+        let mut fields = Vec::new();
+        let mut overflow = Vec::new();
+        collect(
+            app.harness().root_widget(),
+            &mut fields,
+            &mut overflow,
+            f64::from(width),
+        );
+        let at = format!("{category:?} at {width}x{height}");
+        assert!(
+            overflow.is_empty(),
+            "{at}: content overflows the window horizontally: {overflow:?}"
+        );
+        let beside: Vec<_> = fields
+            .iter()
+            .filter(|field| field.placement == LabelPlacement::Beside)
+            .collect();
+        if let Some(first) = beside.first() {
+            for field in &beside {
+                assert!(
+                    (field.label_width - first.label_width).abs() < 0.5,
+                    "{at}: label columns differ ({} vs {})",
+                    field.label_width,
+                    first.label_width
+                );
+                assert!(
+                    (field.rect.x0 - first.rect.x0).abs() < 0.5
+                        && (field.rect.x1 - first.rect.x1).abs() < 0.5,
+                    "{at}: rows are not aligned ({:?} vs {:?})",
+                    field.rect,
+                    first.rect
+                );
             }
-            if width > 900.0 {
-                for field in &fields {
-                    assert!(
-                        field.rect.width() <= READABLE + 1.0,
-                        "{at}: a row is {} wide, wider than the readable column",
-                        field.rect.width()
-                    );
-                }
+        }
+        if width > 900.0 {
+            for field in &fields {
+                assert!(
+                    field.rect.width() <= READABLE + 1.0,
+                    "{at}: a row is {} wide, wider than the readable column",
+                    field.rect.width()
+                );
             }
         }
     }
+}
+
+// One test per window shape, so the two sweeps go beside each other.
+
+#[test]
+fn every_pane_keeps_one_label_column_and_fits_at_a_wide_window() {
+    every_pane_keeps_one_label_column_and_fits_at(WIDE);
+}
+
+#[test]
+fn every_pane_keeps_one_label_column_and_fits_at_a_narrow_window() {
+    every_pane_keeps_one_label_column_and_fits_at(NARROW);
 }

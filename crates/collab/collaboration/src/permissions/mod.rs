@@ -882,6 +882,19 @@ impl PermissionContext {
         self.action_answer(app_id, resource_kind, resource_id, action) != Answer::Deny
     }
 
+    /// [`Self::permits_action`] for one invocation of `action_id` that is what `need` is: an
+    /// edit a carrier carries, rather than the least the carrier declares.
+    fn permits_need(
+        &self,
+        app_id: &str,
+        resource_kind: &str,
+        resource_id: &str,
+        action_id: &str,
+        need: &tilo_actions::ActionNeed,
+    ) -> bool {
+        self.need_answer(app_id, resource_kind, resource_id, action_id, need) != Answer::Deny
+    }
+
     /// [`Self::permitted_resource`] for a resource a window on the record
     /// `record` publishes: on a member's own record every action of it is
     /// decided on that record ([`Self::action_decider_on`]).
@@ -897,7 +910,7 @@ impl PermissionContext {
         let decider = self.action_decider_on(app_id, record);
         keep_permitted(
             resource,
-            &|kind, id, action| decider.permits(kind, id, action),
+            &|kind, id, action, need| decider.permits_need(kind, id, &action.id, need),
             self.lists_refused(),
         )
     }
@@ -925,7 +938,7 @@ impl PermissionContext {
         if self.action_authority.is_some() {
             return keep_permitted(
                 resource,
-                &|kind, id, action| self.permits_action(app_id, kind, id, action),
+                &|kind, id, action, need| self.permits_need(app_id, kind, id, &action.id, need),
                 self.lists_refused(),
             );
         }
@@ -1027,13 +1040,31 @@ impl ActionDecider<'_> {
         resource_id: &str,
         action: &tilo_actions::ActionSpec,
     ) -> bool {
+        self.permits_need(
+            resource_kind,
+            resource_id,
+            &action.id,
+            &action.contract.need(),
+        )
+    }
+
+    /// [`Self::permits`] for one invocation of `action_id` that is what `need` is: an edit a
+    /// carrier carries, rather than the least the carrier declares.
+    pub fn permits_need(
+        &self,
+        resource_kind: &str,
+        resource_id: &str,
+        action_id: &str,
+        need: &tilo_actions::ActionNeed,
+    ) -> bool {
         let resource_id = self.own_resource.unwrap_or(resource_id);
         let Some(answers) = &self.answers else {
-            return self.permissions.permits_action(
+            return self.permissions.permits_need(
                 self.app_id,
                 resource_kind,
                 resource_id,
-                action,
+                action_id,
+                need,
             );
         };
         let mut held = self.resource.borrow_mut();
@@ -1046,8 +1077,7 @@ impl ActionDecider<'_> {
                     .2
             }
         };
-        let need = action.contract.need();
-        answers.action(node, need.field.as_deref(), &action.id, &need) != Answer::Deny
+        answers.action(node, need.field.as_deref(), action_id, need) != Answer::Deny
     }
 }
 
@@ -1125,9 +1155,8 @@ impl PublishedAnswers<'_> {
         refused: bool,
     ) -> Option<tilo_actions::ResourceSpec> {
         let mut node = self.resource(app_id, &resource.kind, resource.id.as_str());
-        sift_actions(&mut resource, refused, |action| {
-            let need = action.contract.need();
-            self.permitted(&mut node, need.field.as_deref(), &action.id, &need)
+        sift_actions(&mut resource, refused, |action, need| {
+            self.permitted(&mut node, need.field.as_deref(), &action.id, need)
         });
         resource.children = resource
             .children
@@ -1143,13 +1172,13 @@ impl PublishedAnswers<'_> {
 /// is left.
 fn keep_permitted(
     mut resource: tilo_actions::ResourceSpec,
-    permits: &dyn Fn(&str, &str, &tilo_actions::ActionSpec) -> bool,
+    permits: &dyn Fn(&str, &str, &tilo_actions::ActionSpec, &tilo_actions::ActionNeed) -> bool,
     refused: bool,
 ) -> Option<tilo_actions::ResourceSpec> {
     let id = resource.id.as_str().to_owned();
     let kind = resource.kind.clone();
-    sift_actions(&mut resource, refused, |action| {
-        permitted(permits(&kind, &id, action))
+    sift_actions(&mut resource, refused, |action, need| {
+        permitted(permits(&kind, &id, action, need))
     });
     resource.children = resource
         .children
@@ -1167,18 +1196,57 @@ fn keep_permitted(
 fn sift_actions(
     resource: &mut tilo_actions::ResourceSpec,
     refused: bool,
-    mut permits: impl FnMut(&tilo_actions::ActionSpec) -> Permitted,
+    mut permits: impl FnMut(&tilo_actions::ActionSpec, &tilo_actions::ActionNeed) -> Permitted,
 ) {
-    let allowed: Vec<Permitted> = resource.actions.iter().map(&mut permits).collect();
+    let mut allowed: Vec<Permitted> = resource
+        .actions
+        .iter()
+        .map(|action| permits(action, &action.contract.need()))
+        .collect();
+    offer_carriers(resource, &mut allowed, &mut permits);
     if refused && allowed.iter().any(Result::is_ok) {
         for (action, allowed) in resource.actions.iter_mut().zip(allowed) {
-            // A permitted action stays as it is; a refused one is shown not allowed, and why.
-            let Err(by) = allowed else { continue };
-            action.type_mut().contract.availability = tilo_actions::Availability::not_allowed(by);
+            if let Err(by) = allowed {
+                mark_refused(action, by);
+            }
         }
     } else {
         let mut allowed = allowed.into_iter();
         resource.retain_actions(|_| allowed.next().is_some_and(|allowed| allowed.is_ok()));
+    }
+}
+
+/// Mark `action` as one the actor may not take, saying what refused it.
+fn mark_refused(action: &mut tilo_actions::ActionSpec, by: Option<policy::Refuser>) {
+    action.type_mut().contract.availability = tilo_actions::Availability::not_allowed(by);
+}
+
+/// Offer a carrier the actor may take any of `resource`'s own actions with. A generic edit or a
+/// group is offered under the least of the edits it carries and decided per invocation, so its
+/// least need refusing it says nothing of the edits it can make. Only edits count: a read of the
+/// resource is no edit of it.
+fn offer_carriers(
+    resource: &tilo_actions::ResourceSpec,
+    allowed: &mut [Permitted],
+    permits: &mut impl FnMut(&tilo_actions::ActionSpec, &tilo_actions::ActionNeed) -> Permitted,
+) {
+    let carried: Vec<tilo_actions::ActionNeed> = resource
+        .actions
+        .iter()
+        .filter(|action| !action.carries_actions())
+        .map(|action| action.contract.need())
+        .collect();
+    for (action, allowed) in resource.actions.iter().zip(allowed.iter_mut()) {
+        if allowed.is_ok() || !action.carries_actions() {
+            continue;
+        }
+        let least = action.contract.need().kind;
+        if carried
+            .iter()
+            .any(|need| need.kind >= least && permits(action, need).is_ok())
+        {
+            *allowed = Ok(());
+        }
     }
 }
 

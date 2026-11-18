@@ -39,8 +39,8 @@ use moka::sync::Cache;
 use crate::availability::{AvailabilityRegistry, EvictionRequirements};
 #[cfg(feature = "filesystem")]
 use crate::eviction::{
-    BackendGcAuthorizationError, BlobExtent, EvictionCatalog, EvictionObservation, EvictionQueue,
-    EvictionRequestId, ObservedBlobState, VersionPayload,
+    BackendGcAuthorizationError, BlobExtent, ContentPayload, EvictionCatalog, EvictionObservation,
+    EvictionQueue, EvictionRequestId, ObservedBlobState,
 };
 #[cfg(feature = "filesystem")]
 use crate::namespace::{LiveDocumentBlobRoots, LiveDocumentBlobScanError, Namespace};
@@ -1002,16 +1002,11 @@ impl ContentStore {
         Ok(records.into_iter().collect())
     }
 
-    /// Inspect the exact locally resident graph for a version manifest. The manifest must itself be
+    /// Inspect the exact locally resident graph for a content manifest. The manifest must itself be
     /// complete and decodable; chunk accounting is read from the backend rather than inferred from
     /// namespace metadata.
     #[cfg(feature = "filesystem")]
-    pub async fn inspect_version_payload(
-        &self,
-        document_id: fs_protocol::FileDocumentId,
-        version_id: fs_protocol::FileVersionId,
-        manifest_hash: Hash,
-    ) -> Result<VersionPayload> {
+    pub async fn inspect_content_payload(&self, manifest_hash: Hash) -> Result<ContentPayload> {
         let manifest_bytes = self
             .local(manifest_hash)
             .await
@@ -1031,9 +1026,7 @@ impl ContentStore {
                 resident_bytes,
             });
         }
-        Ok(VersionPayload {
-            document_id,
-            version_id,
+        Ok(ContentPayload {
             manifest: BlobExtent {
                 hash: manifest_hash,
                 locally_present: true,
@@ -1043,22 +1036,11 @@ impl ContentStore {
         })
     }
 
-    /// Prove that an exact signed revision's manifest and every declared content chunk are complete in
-    /// the persistent backend. Hot cache entries and partial blobs never satisfy this boundary.
+    /// Prove that the content `manifest_hash` names, `byte_len` bytes long, is complete in the
+    /// persistent backend: its manifest and every chunk it declares. Hot cache entries and partial
+    /// blobs never satisfy this boundary.
     #[cfg(feature = "filesystem")]
-    pub async fn verify_durable_revision(
-        &self,
-        revision: &fs_protocol::ContentRevisionV1,
-    ) -> Result<()> {
-        revision.validate()?;
-        let Some(content_hash) = revision.content_hash else {
-            anyhow::ensure!(
-                revision.byte_len == 0,
-                "hashless revision declares content bytes"
-            );
-            return Ok(());
-        };
-        let manifest_hash = Hash::from(content_hash.0);
+    pub async fn verify_durable_content(&self, manifest_hash: Hash, byte_len: u64) -> Result<()> {
         let manifest_size = match self.store().blobs().status(manifest_hash).await? {
             BlobStatus::Complete { size } => size,
             BlobStatus::Partial { .. } | BlobStatus::NotFound => {
@@ -1077,8 +1059,8 @@ impl ContentStore {
         );
         let manifest = crate::content::Manifest::decode(&manifest_bytes)?;
         anyhow::ensure!(
-            manifest.total_len() == revision.byte_len,
-            "manifest length does not match signed revision"
+            manifest.total_len() == byte_len,
+            "manifest length does not match the content's length"
         );
         if crate::content::is_file_backed(&manifest) {
             anyhow::ensure!(
@@ -1482,14 +1464,7 @@ mod tests {
             let store = ContentStore::memory();
             let data = vec![7u8; 100_000];
             let manifest_hash = store.write_content(&data).await.unwrap().unwrap();
-            let payload = store
-                .inspect_version_payload(
-                    fs_protocol::FileDocumentId::new(),
-                    fs_protocol::FileVersionId::new(),
-                    manifest_hash,
-                )
-                .await
-                .unwrap();
+            let payload = store.inspect_content_payload(manifest_hash).await.unwrap();
             assert_eq!(payload.manifest.hash, manifest_hash);
             assert!(!payload.chunks.is_empty());
             assert!(
@@ -1518,15 +1493,12 @@ mod tests {
                 }],
             );
             let manifest_hash = store.ingest(Bytes::from(manifest.encode())).await.unwrap();
-            let revision = fs_protocol::ContentRevisionV1 {
-                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-                document_id: fs_protocol::FileDocumentId::new(),
-                version_id: fs_protocol::FileVersionId::new(),
-                content_hash: Some(fs_protocol::ContentHash(*manifest_hash.as_bytes())),
-                byte_len: 13,
-                metadata_hash: fs_protocol::ContentHash([1; 32]),
-            };
-            assert!(store.verify_durable_revision(&revision).await.is_err());
+            assert!(
+                store
+                    .verify_durable_content(manifest_hash, 13)
+                    .await
+                    .is_err()
+            );
         }
         {
             use crate::eviction::{
@@ -1541,7 +1513,7 @@ mod tests {
 
             let make_plan = |hash| EvictionPlan {
                 document_id: fs_protocol::FileDocumentId::new(),
-                version_id: fs_protocol::FileVersionId::new(),
+                content_hash: hash,
                 mode: EvictionMode::Safe,
                 reclaimable: vec![BlobExtent {
                     hash,
@@ -1589,7 +1561,7 @@ mod tests {
         {
             use crate::availability::{DocumentAvailability, EntryKind};
             use crate::eviction::{
-                EvictionCatalog, EvictionMode, EvictionQueue, EvictionRequestState, VersionPayload,
+                ContentPayload, EvictionCatalog, EvictionMode, EvictionQueue, EvictionRequestState,
                 plan_destructive_eviction,
             };
             use fs_protocol::Residency;
@@ -1615,19 +1587,17 @@ mod tests {
                 .unwrap();
 
             let target_id = fs_protocol::FileDocumentId::new();
-            let target_version = fs_protocol::FileVersionId::new();
             let other_id = fs_protocol::FileDocumentId::new();
-            let other_version = fs_protocol::FileVersionId::new();
             let mut registry =
                 AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
             let mut target = DocumentAvailability::new(target_id, EntryKind::File);
-            target.current_version = Some(target_version);
+            target.current_hash = Some(fs_protocol::ContentHash(*target_only.as_bytes()));
             target.residency = Residency::Resident {
                 bytes: target_bytes.len() as u64 + 6,
             };
             registry.put(target).unwrap();
             let mut other = DocumentAvailability::new(other_id, EntryKind::File);
-            other.current_version = Some(other_version);
+            other.current_hash = Some(fs_protocol::ContentHash(*other_only.as_bytes()));
             other.residency = Residency::Resident { bytes: 16 };
             registry.put(other).unwrap();
             let extent = |hash, bytes| BlobExtent {
@@ -1636,20 +1606,15 @@ mod tests {
                 resident_bytes: Some(bytes),
             };
             let catalog = EvictionCatalog::new([
-                VersionPayload {
-                    document_id: target_id,
-                    version_id: target_version,
+                ContentPayload {
                     manifest: extent(target_only, target_bytes.len() as u64),
                     chunks: vec![extent(shared, 6)],
                 },
-                VersionPayload {
-                    document_id: other_id,
-                    version_id: other_version,
+                ContentPayload {
                     manifest: extent(other_only, 10),
                     chunks: vec![extent(shared, 6)],
                 },
-            ])
-            .unwrap();
+            ]);
             let plan = plan_destructive_eviction(
                 &registry,
                 &catalog,
@@ -1740,7 +1705,7 @@ mod tests {
         {
             use crate::availability::{DocumentAvailability, EntryKind};
             use crate::eviction::{
-                EvictionCatalog, EvictionQueue, VersionPayload, plan_destructive_eviction,
+                ContentPayload, EvictionCatalog, EvictionQueue, plan_destructive_eviction,
             };
             use fs_protocol::Residency;
 
@@ -1755,17 +1720,15 @@ mod tests {
                 .await
                 .unwrap();
             let target_id = fs_protocol::FileDocumentId::new();
-            let target_version = fs_protocol::FileVersionId::new();
             let other_id = fs_protocol::FileDocumentId::new();
-            let other_version = fs_protocol::FileVersionId::new();
             let mut registry =
                 AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
             let mut target = DocumentAvailability::new(target_id, EntryKind::File);
-            target.current_version = Some(target_version);
+            target.current_hash = Some(fs_protocol::ContentHash(*hash.as_bytes()));
             target.residency = Residency::Resident { bytes: 14 };
             registry.put(target).unwrap();
             let mut other = DocumentAvailability::new(other_id, EntryKind::File);
-            other.current_version = Some(other_version);
+            other.current_hash = Some(fs_protocol::ContentHash(*other_hash.as_bytes()));
             other.residency = Residency::NotResident;
             registry.put(other.clone()).unwrap();
             let extent = |hash, bytes| BlobExtent {
@@ -1774,20 +1737,15 @@ mod tests {
                 resident_bytes: Some(bytes),
             };
             let catalog = EvictionCatalog::new([
-                VersionPayload {
-                    document_id: target_id,
-                    version_id: target_version,
+                ContentPayload {
                     manifest: extent(hash, 14),
                     chunks: Vec::new(),
                 },
-                VersionPayload {
-                    document_id: other_id,
-                    version_id: other_version,
+                ContentPayload {
                     manifest: extent(other_hash, 10),
                     chunks: vec![extent(hash, 14)],
                 },
-            ])
-            .unwrap();
+            ]);
             let plan = plan_destructive_eviction(
                 &registry,
                 &catalog,
@@ -1832,7 +1790,7 @@ mod tests {
         {
             use crate::availability::{DocumentAvailability, EntryKind};
             use crate::eviction::{
-                EvictionCatalog, EvictionQueue, EvictionRequestState, VersionPayload,
+                ContentPayload, EvictionCatalog, EvictionQueue, EvictionRequestState,
                 plan_destructive_eviction,
             };
             use fs_protocol::Residency;
@@ -1857,24 +1815,20 @@ mod tests {
                 .unwrap();
 
             let document_id = fs_protocol::FileDocumentId::new();
-            let version_id = fs_protocol::FileVersionId::new();
             let mut registry =
                 AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
             let mut record = DocumentAvailability::new(document_id, EntryKind::File);
-            record.current_version = Some(version_id);
+            record.current_hash = Some(fs_protocol::ContentHash(*hash.as_bytes()));
             record.residency = Residency::Resident { bytes: 20 };
             registry.put(record).unwrap();
-            let catalog = EvictionCatalog::new([VersionPayload {
-                document_id,
-                version_id,
+            let catalog = EvictionCatalog::new([ContentPayload {
                 manifest: BlobExtent {
                     hash,
                     locally_present: true,
                     resident_bytes: Some(20),
                 },
                 chunks: Vec::new(),
-            }])
-            .unwrap();
+            }]);
             let plan = plan_destructive_eviction(
                 &registry,
                 &catalog,

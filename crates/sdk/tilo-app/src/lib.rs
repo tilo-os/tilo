@@ -26,6 +26,10 @@
 
 pub use ui_core::*;
 
+/// The document editor and the rich text widgets it is made of: a block editor, a rich text
+/// line, a rich input, the slash menu and tables.
+pub use tilo_rich_edit as rich_edit;
+
 /// The host's raw operation protocol stays the toolkit's: this empty module
 /// takes the place of `ui_core::host_operation` in the glob above, so an app
 /// cannot name the protocol through the facade. Tests deliver operations with

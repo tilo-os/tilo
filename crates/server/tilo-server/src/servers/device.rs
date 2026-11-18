@@ -499,7 +499,7 @@ pub async fn confirm(paths: Paths, endpoint: iroh::Endpoint, revision: String) {
         tracing::info!(%revision, "the device configuration helper did not apply in time");
         return;
     }
-    let address = tilo_workspace_service::workspaces::await_relay(&endpoint).await;
+    let address = tilo_endpoint_reachability::await_relay(&endpoint).await;
     if address.relay_urls().next().is_none() {
         tracing::warn!(
             %revision,

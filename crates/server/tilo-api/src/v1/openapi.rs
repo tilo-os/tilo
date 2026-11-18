@@ -165,6 +165,7 @@ const TAGS: &[(&str, &str)] = &[
         "An action's invocation after it answered: awaiting, cancelling, undoing it",
     ),
     ("Events", "What changes in a workspace, as it changes"),
+    ("Models", "The person's own model, asked one turn at a time"),
     ("Webhooks", "A workspace's events posted to a URL"),
     ("Files", "Bytes going into a workspace and coming out of it"),
     ("Members", "The people in a workspace and their invitations"),
@@ -183,6 +184,7 @@ fn tag_of(path: &str) -> &'static str {
         Some("resources") if inside.contains("/actions/") => "Actions",
         Some("invocations") => "Invocations",
         Some("events") => "Events",
+        Some("model") => "Models",
         Some("webhooks") => "Webhooks",
         Some("uploads" | "content") => "Files",
         Some("members") => "Members",
@@ -205,6 +207,8 @@ fn path_parameter(name: &str) -> &'static str {
         "grant" => "The key's grant, as `GET /v1/keys` lists it",
         "webhook" => "The webhook's id, as its creation answered it",
         "upload" => "The upload's id, chosen by the caller when it opened the upload",
+        "person" => "The person's user public key, as `GET members` lists it",
+        "invite" => "The open invitation's id, as `GET members` lists it",
         "entry" => {
             "The address's entry, as `GET /v1/workspaces/{workspace}/members/wait-list` lists it"
         }

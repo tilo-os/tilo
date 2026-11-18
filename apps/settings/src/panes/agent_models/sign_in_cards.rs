@@ -91,9 +91,10 @@ impl AgentModelsModel {
                     .ok_or_else(|| t("agent-provider-gone"))?,
             ),
         };
-        // A key is stored through provider administration only.
-        if service.issuer().is_none() && !self.provider_admin.is_available() {
-            return Err(t("agent-provider-offline"));
+        // This computer keeps no provider keys: a service that hands back one
+        // is added from the person's workspace, which keeps them.
+        if service.issuer().is_none() {
+            return Err(t("agent-key-workspace"));
         }
         self.cancel_vertex();
         self.cancel_sign_in();
@@ -178,15 +179,13 @@ impl AgentModelsModel {
                     config.upsert(profile.clone());
                 }
                 match signed {
-                    SignedIn::Key(key) => self.panel.submit_config_with_key(
-                        profile.is_some().then_some(config),
-                        &id,
-                        key,
-                        reply,
-                    )?,
                     SignedIn::Grant => {
                         self.panel.submit_config(config.sanitised(), reply)?;
                         self.vertex_commit = Some((id, profile));
+                    }
+                    SignedIn::Key(key) => {
+                        drop(key);
+                        return Err(t("agent-key-workspace"));
                     }
                 }
                 self.notice = Some(t_args("agent-sign-in-done", &[("service", label.into())]));
@@ -371,6 +370,9 @@ impl AgentModelsModel {
         let mut services = Row::new();
         for (index, service) in agent_sign_in::Service::ALL
             .into_iter()
+            // A service that hands back a key is added where the key is kept:
+            // the person's workspace.
+            .filter(|service| service.issuer().is_some())
             .filter(|service| service.available(&self.credential_store))
             .enumerate()
         {
@@ -527,14 +529,14 @@ mod tests {
         assert_eq!(pane.providers.config().profiles.len(), 1);
     }
 
-    /// `OpenRouter` hands back a key, and a key is stored only through
-    /// provider administration: without it nothing starts.
+    /// `OpenRouter` hands back a key, and this computer keeps none: it is
+    /// added from the person's workspace, so its sign-in starts nothing here.
     #[test]
-    fn an_openrouter_sign_in_needs_provider_administration() {
+    fn an_openrouter_sign_in_is_not_offered_here() {
         let mut pane = model_over(mock(snapshot(None)));
         assert_eq!(
             pane.sign_in_to("openrouter", None, None),
-            Err(t("agent-provider-offline"))
+            Err(t("agent-key-workspace"))
         );
         assert!(pane.sign_in.is_none());
         assert_eq!(

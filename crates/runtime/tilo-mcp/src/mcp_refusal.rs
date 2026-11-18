@@ -13,10 +13,9 @@ pub(crate) fn said(error: BridgeError) -> String {
         // guessing whether to retry, and a caller that retries the same
         // stale revision fails the same way.
         BridgeError::Host(tilo_actions::remote::ActionCallError::StaleRevision) => {
-            "stale_revision: the resource changed since the revision this call named, \
-                 which you read: the action is offered at a newer revision now. Invoke it \
-                 again and omit revision, which runs it against the directory as it is now, \
-                 or re-run tilo_query and invoke it at the revision that page names"
+            "stale_revision: the resource changed since you read it. Call the action \
+                 again with tilo_do, which runs it against the resource as it is now, or \
+                 tilo_read the resource first to see what changed"
                 .to_owned()
         }
         BridgeError::Host(ref host) => {

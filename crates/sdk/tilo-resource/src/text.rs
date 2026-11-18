@@ -45,6 +45,48 @@ pub fn mark_authored(
     tilo_automerge::mark_text_author(doc, obj, at, inserted, &author_mark(&author))
 }
 
+/// Mark the texts in `made`, made just now at once as the object `obj`
+/// (`make` of a place to write), as [`mark_authored`] marks a text a store
+/// writes: each a `String` field's whole text. In key order, as the batch made
+/// them, so every replica writing the same value marks them alike.
+///
+/// # Errors
+/// The document's write error.
+pub fn mark_made(
+    doc: &mut Doc,
+    obj: &ObjId,
+    made: &automerge::hydrate::Value,
+) -> Result<(), ModelError> {
+    use automerge::hydrate::Value as Made;
+    if crate::action::writing_author().is_none() {
+        return Ok(());
+    }
+    let Made::Map(fields) = made else {
+        return Ok(());
+    };
+    let marked = |value: &Made| match value {
+        Made::Text(text) => !String::from(text).is_empty(),
+        Made::Map(_) => true,
+        _ => false,
+    };
+    if !fields.values().any(|field| marked(&field.value)) {
+        return Ok(());
+    }
+    let children: Vec<(String, ObjId)> = doc
+        .map_range(obj, ..)
+        .filter(|item| fields.get(item.key.as_ref()).is_some_and(marked))
+        .map(|item| (item.key.to_string(), item.id()))
+        .collect();
+    for (key, child) in children {
+        match fields.get(&key) {
+            Some(Made::Text(text)) => mark_authored(doc, &child, 0, &String::from(text))?,
+            Some(nested @ Made::Map(_)) => mark_made(doc, &child, nested)?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// The value a text's author mark holds for `author`: the actor bytes their
 /// changes carry, as the text they are (a person's key, `agent:<id>`).
 #[must_use]

@@ -718,7 +718,7 @@ pub(super) fn is_control_operation(spec: &tilo_actions::ActionSpec) -> bool {
 mod locus_tests {
     use super::*;
     use crate::state::State;
-    use crate::widget::{BlockContent, Button, Column, Container, ListRow, resource_actions};
+    use crate::widget::{Button, Column, Container, ListRow, resource_actions};
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -1331,110 +1331,6 @@ mod locus_tests {
         assert_eq!(opened.get(), 1, "the sheet's view opened");
         assert!(!frame.follow_view(&scribe, &mut followed));
         assert_eq!(opened.get(), 1, "opened once");
-    }
-
-    fn long_note() -> crate::widget::BlockEditor {
-        let mut blocks = vec![BlockContent::paragraph("p-0", "A note about the move.")];
-        for index in 1..40 {
-            blocks.push(BlockContent::paragraph(
-                format!("p-{index}"),
-                format!("Paragraph {index} of the note."),
-            ));
-        }
-        let mut editor = crate::widget::BlockEditor::new();
-        editor.present_blocks(&blocks);
-        editor
-    }
-
-    /// An agent editing text further down a long note is there for every viewer — its cursor rests on
-    /// the words it wrote, not on whatever control the action is bound to — and a follower's view
-    /// scrolls to them, once per action.
-    #[test]
-    fn following_an_agents_edit_in_text_scrolls_to_the_range_it_wrote() {
-        let root = crate::widget::Scrollable::new(crate::widget::ScrollAxis::Vertical)
-            .with_child(Box::new(long_note()));
-        let mut frame = FrameHarness::new(State::new(), Box::new(root), (400, 240));
-        frame.relayout();
-        let event = agent_acting(&mut frame, "notes.document:root");
-        let written = 13;
-        let block = crate::widget::block_editor::block_presence_key("p-33");
-        frame.update_presence(|presence| {
-            presence.set_caret(
-                &block.clone(),
-                crate::permissions::MemberId::agent("scribe"),
-                written,
-            );
-            true
-        });
-        let viewport = Rect::new(0.0, 0.0, 400.0, 240.0);
-        let edit = frame
-            .semantic_locus(&event)
-            .expect("the agent's place in the note");
-        assert!(
-            edit.y0 > viewport.y1,
-            "the edited paragraph starts out of view: {edit:?}"
-        );
-        assert!(
-            edit.height() < 40.0,
-            "the cursor is on the line, not the whole note: {edit:?}"
-        );
-        assert!(!frame.follow_view(
-            &crate::permissions::MemberId::person("someone-else"),
-            &mut FollowedView::default()
-        ));
-        assert_eq!(
-            frame.semantic_locus(&event),
-            Some(edit),
-            "not following moves nothing"
-        );
-        let mut followed = FollowedView::default();
-        let scribe = crate::permissions::MemberId::agent("scribe");
-        assert!(frame.follow_view(&scribe, &mut followed));
-        let shown = frame
-            .semantic_locus(&event)
-            .expect("the agent's place in view");
-        assert!(
-            viewport.contains(shown.origin()) && shown.y1 <= viewport.y1,
-            "the words it wrote are in view: {shown:?}"
-        );
-        assert!(
-            !frame.follow_view(&scribe, &mut followed),
-            "each action is gone to once"
-        );
-    }
-
-    /// A follower whose view shows an agent's caret in text settles: frame after frame of it goes to
-    /// the words once, and says nothing of the follower's own presence.
-    #[test]
-    fn following_an_agents_caret_in_text_settles() {
-        let root = crate::widget::Scrollable::new(crate::widget::ScrollAxis::Vertical)
-            .with_child(Box::new(long_note()));
-        let mut frame = FrameHarness::new(State::new(), Box::new(root), (400, 240));
-        frame.relayout();
-        let event = agent_acting(&mut frame, "notes.document:root");
-        frame.update_presence(|presence| {
-            let block = crate::widget::block_editor::block_presence_key("p-33");
-            presence.set_caret(&block, crate::permissions::MemberId::agent("scribe"), 13);
-            true
-        });
-        let said = crate::presence::capability::subtree_presence(frame.root.as_ref());
-        let mut followed = FollowedView::default();
-        let mut moved = 0;
-        for _ in 0..60 {
-            moved += usize::from(frame.follow_view(
-                &crate::permissions::MemberId::agent("scribe"),
-                &mut followed,
-            ));
-            frame.relayout();
-        }
-        assert_eq!(moved, 1, "the view goes to the words once");
-        assert!(frame.semantic_locus(&event).is_some());
-        assert_eq!(frame.focus_presence(), None, "the follower says nothing");
-        assert_eq!(
-            crate::presence::capability::subtree_presence(frame.root.as_ref()),
-            said,
-            "showing someone's caret says nothing of the follower's own"
-        );
     }
 
     #[test]

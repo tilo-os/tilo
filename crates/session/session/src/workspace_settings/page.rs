@@ -50,9 +50,13 @@ impl PageAgents {
             sheet::Agents {
                 // A bot is added from the Store on a computer: a page finds none.
                 offers_bots: false,
-                ..self
-                    .agents
-                    .pane(tree, &self.person, &names, &Directory, review.as_deref())
+                ..self.agents.pane(
+                    tree,
+                    &self.person,
+                    &names,
+                    &Directory::default(),
+                    review.as_deref(),
+                )
             }
         })
     }

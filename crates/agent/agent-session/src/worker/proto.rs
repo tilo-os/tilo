@@ -114,14 +114,6 @@ pub(crate) enum Request {
         offset: u64,
         take: u64,
     },
-    /// The keys `mutation` writes in `record`, as the worker holds that record
-    /// now: what a host checks a caller's change against without reading the
-    /// record whole for every action.
-    ChangedKeys {
-        record: String,
-        snapshot: bool,
-        bytes: Vec<u8>,
-    },
     /// The one operation `address` names, or none: an answer to a host that
     /// already knows what it runs, without listing the record's resources.
     Resolve {
@@ -237,11 +229,7 @@ impl Request {
     pub(crate) const fn moves_nothing(&self) -> bool {
         matches!(
             self,
-            Self::TakeMutation
-                | Self::TakeDocumentMutations
-                | Self::Presence
-                | Self::ChangedKeys { .. }
-                | Self::TakeContent
+            Self::TakeMutation | Self::TakeDocumentMutations | Self::Presence | Self::TakeContent
         )
     }
 
@@ -254,7 +242,6 @@ impl Request {
             Self::Survey => "survey",
             Self::SurveyRows => "survey-rows",
             Self::SurveyPage { .. } => "survey-page",
-            Self::ChangedKeys { .. } => "changed-keys",
             Self::Resolve { .. } => "resolve",
             Self::Invoke { .. } => "invoke",
             Self::TakeMutation => "take-mutation",
@@ -296,9 +283,6 @@ pub(crate) enum Reply {
     /// and the JSON `Vec<CatalogueRow>` of those on the page, each in the
     /// row of the resource holding it.
     Page { total: u64, rows: String },
-    /// JSON `Option<Vec<Vec<String>>>`: the keys a change writes, or none for
-    /// a record the worker holds nothing of.
-    Keys(String),
     /// JSON `ActionOutput`.
     Output(String),
     /// The resource's API refused or the action failed.

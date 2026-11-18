@@ -1,78 +1,11 @@
-use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::sync::Arc;
 
 use vello::peniko::Color;
 
+use super::testing::{Fixed, workspace};
 use super::*;
 use crate::richtext::TextAlign;
 use crate::text_render::{TextRenderer, TextStyle};
-use crate::workspace_emoji::{CustomEmoji, EmojiSource};
-
-/// A window's workspace emoji, as a test sets them.
-pub(crate) struct Fixed {
-    pub(crate) emoji: RefCell<Rc<WorkspaceEmoji>>,
-    pub(crate) revision: Cell<u64>,
-}
-
-impl Fixed {
-    pub(crate) fn new(emoji: WorkspaceEmoji) -> Self {
-        Self {
-            emoji: RefCell::new(Rc::new(emoji)),
-            revision: Cell::new(1),
-        }
-    }
-
-    /// The workspace's emoji are now `emoji`.
-    pub(crate) fn set(&self, emoji: WorkspaceEmoji) {
-        *self.emoji.borrow_mut() = Rc::new(emoji);
-        self.revision.set(self.revision.get() + 1);
-    }
-}
-
-impl EmojiSource for Fixed {
-    fn emoji(&self) -> Rc<WorkspaceEmoji> {
-        Rc::clone(&self.emoji.borrow())
-    }
-    fn revision(&self) -> u64 {
-        self.revision.get()
-    }
-    fn can_manage(&self) -> bool {
-        false
-    }
-    fn add(&self, _: &str, _: &[u8]) -> Result<(), String> {
-        Err("fixed".into())
-    }
-    fn remove(&self, _: &str) -> Result<(), String> {
-        Err("fixed".into())
-    }
-    fn choose_and_add(&self) {}
-}
-
-fn picture(rgb: [u8; 3]) -> Arc<[u8]> {
-    let side = 8;
-    let rgba: Vec<u8> = (0..side * side)
-        .flat_map(|_| [rgb[0], rgb[1], rgb[2], 255])
-        .collect();
-    Arc::from(crate::png::encode_rgba8(side, side, &rgba).unwrap())
-}
-
-pub(crate) fn workspace() -> WorkspaceEmoji {
-    WorkspaceEmoji::new(vec![
-        CustomEmoji {
-            name: "tilo".to_owned(),
-            image: picture([220, 40, 90]),
-        },
-        CustomEmoji {
-            name: "party_parrot".to_owned(),
-            image: picture([40, 200, 90]),
-        },
-        CustomEmoji {
-            name: "broken".to_owned(),
-            image: Arc::from(&b"not a picture"[..]),
-        },
-    ])
-}
 
 fn written<'t>(text: &'t str, ranges: &[Range<usize>]) -> Vec<&'t str> {
     ranges.iter().map(|range| &text[range.clone()]).collect()

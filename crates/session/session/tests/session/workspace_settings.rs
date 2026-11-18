@@ -393,6 +393,134 @@ fn workspace_settings_gives_and_revokes_a_permission() {
     );
 }
 
+/// What a grant's raw path starts with, which a row a person reads never shows.
+const WORKSPACE_WORD: &str = "workspace ";
+
+/// An action catalogue whose apps publish what it keeps: what the sheet reads an app's action's own
+/// name from, as the sheet asking to allow that action does.
+#[derive(Default)]
+struct Publishing(std::cell::RefCell<Vec<tilo_desktop_search::providers::PublishedActions>>);
+
+impl tilo_session::AppActions for Publishing {
+    fn published(&self, workspace: &str) -> Vec<tilo_desktop_search::providers::PublishedActions> {
+        self.0
+            .borrow()
+            .iter()
+            .filter(|published| workspace.is_empty() || published.workspace == workspace)
+            .cloned()
+            .collect()
+    }
+
+    fn invoke(
+        &self,
+        _target: tilo_actions::remote::RemoteActionTarget,
+        _arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), tilo_actions::ApiError> {
+        Ok(())
+    }
+}
+
+/// What Chat publishes for the action `post`, named as its own catalogue names it.
+fn chat_posts(workspace: &str) -> tilo_desktop_search::providers::PublishedActions {
+    use tilo_actions::{ActionParam, ActionSpec, EncodedAction, ExecutionLocus, ParamType};
+    let post = ActionSpec::prompted_param(
+        "post",
+        "Post a message",
+        ActionParam::required("text", ParamType::Text, "Message"),
+        "",
+        ExecutionLocus::ClientLocal,
+        |text| EncodedAction {
+            type_id: "so.tilo.chat.post".into(),
+            payload: text.as_bytes().to_vec(),
+        },
+    );
+    let chat = ResourceSpec::new("chat.workspace", "chat.workspace", "Chat").with_action(post);
+    tilo_desktop_search::providers::PublishedActions::of("so.tilo.chat", workspace, &[chat])
+}
+
+/// An app's grant to take another app's action, given on the sheet that asked: the Permissions tab
+/// lists it under Apps, named as the person knows the app and the action, and its Revoke takes it
+/// back.
+#[test]
+fn workspace_settings_lists_an_apps_grant_under_apps_and_revokes_it() {
+    use tilo_action_policy::agent_answers::{AnswerScope, answer_grant};
+    use tilo_action_policy::{ActionKind, Answer, Grantee};
+    let _settled = ui::motion::testing::settled();
+    let actions = Rc::new(Publishing::default());
+    let mut session = crate::common::headless(Options {
+        apps: Some(actions.clone()),
+        collab: false,
+        ..Options::default()
+    });
+    session.step(Duration::from_millis(1)).unwrap();
+    own_workspace(&session, &[]);
+    let notes = Grantee::app("so.tilo.notes");
+    let mut tree = session.handle().read(Clone::clone);
+    let workspace = tree.active_workspace_mut().expect("a workspace in front");
+    let grant = answer_grant(
+        &workspace.id().to_string(),
+        notes.clone(),
+        (
+            &AnswerScope::action("so.tilo.chat", "chat.conversation", "post"),
+            ActionKind::Undoable,
+        ),
+        Answer::Allow,
+        Grantee::person(PERSON),
+    );
+    workspace.grant(grant);
+    let published = workspace.id().to_string();
+    session.handle().replace_tree(tree);
+    actions.0.borrow_mut().push(chat_posts(&published));
+    invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
+    session.step(Duration::from_millis(1)).unwrap();
+    let mut app = sheet(&session);
+    show_tab(
+        &mut session,
+        &mut app,
+        &WorkspaceSettingsEffect::ShowTab {
+            tab: "permissions".to_owned(),
+        },
+    );
+    let apps = tilo_desktop_surface::i18n::t("workspace-settings-section-apps");
+    let section = session
+        .workspace_settings()
+        .expect("workspace settings")
+        .settings()
+        .permissions
+        .sections
+        .into_iter()
+        .find(|section| section.title == apps)
+        .expect("the tab lists apps' permissions");
+    let [given] = section.permissions.as_slice() else {
+        panic!("one app permission: {:?}", section.permissions);
+    };
+    assert!(
+        !given.holder.contains("so.tilo"),
+        "the app is named as the person knows it: {}",
+        given.holder
+    );
+    assert!(
+        given.detail.contains("Use “Post a message” in Chat")
+            && !given.detail.contains("“post”")
+            && !given.detail.contains(WORKSPACE_WORD),
+        "the row names the action as the app's catalogue does, not its id or the grant's path: {}",
+        given.detail
+    );
+    capture(&mut app, "workspace-settings-app-grant");
+
+    press(&mut app, &format!("ws-permission-revoke-{}", given.key));
+    press(&mut app, "ws-settings-decision.primary");
+    settle(&mut session, &mut app);
+    let left = session.handle().read(|tree| {
+        tree.active_workspace()
+            .expect("a workspace")
+            .policy
+            .grants_of(&notes)
+            .count()
+    });
+    assert_eq!(left, 0, "the workspace no longer lets Notes post to Chat");
+}
+
 /// The answer the review shows for changes in `app`, by its place among Allow, Ask first and Deny,
 /// and whether the agent's bound sets the app's answers.
 fn changes_answer(session: &Session, app: &str) -> (usize, bool) {
@@ -521,6 +649,36 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
     };
     assert_eq!(choices("change"), Some(vec![0, 1, 2]), "{notes:?}");
     assert_eq!(choices("outside"), Some(vec![1, 2]), "{notes:?}");
+    assert_eq!(
+        notes.kinds[2].caption, None,
+        "an app's own name says what reaching outside it means"
+    );
+    // The person's own account rows say what their outside effects are, which their names do
+    // not, and the review's line says what an app's outside effects may be given.
+    let workspaces = listed_app(
+        &session,
+        &format!("app:{}", tilo_action_policy::agent_answers::ACCOUNT_APP),
+    );
+    assert_eq!(workspaces.label, "Your workspaces");
+    assert_eq!(
+        workspaces.kinds[2].caption.as_deref(),
+        Some("Creating, branching, entering and deleting your workspaces.")
+    );
+    // The row that governs the workspace's people wears the people's mark, not another
+    // window.
+    let members = listed_app(
+        &session,
+        &format!(
+            "app:{}",
+            tilo_action_policy::agent_answers::WORKSPACE_GOVERNANCE_APP
+        ),
+    );
+    assert_eq!(members.label, "Members and settings");
+    assert_eq!(members.icon, ui::icons::Icon::Users);
+    assert_eq!(
+        review.note,
+        "In apps, outside effects ask you first or are denied; in your own account you may allow them."
+    );
     choose(&mut app, "Notes Changes", "Ask first");
     settle(&mut session, &mut app);
     assert_eq!(

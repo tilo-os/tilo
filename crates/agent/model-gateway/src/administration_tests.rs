@@ -1,12 +1,9 @@
 use super::*;
 use crate::{
     caller::{Caller, Session},
-    transport::{AdministrationClient, CallFuture, FdTransport, ModelClient, Transport},
+    transport::{AdministrationClient, CallFuture, FdTransport, Transport},
 };
-use agent_provider_config::{
-    management::{CredentialStatus, ProviderAdmin},
-    protocol::Conversation,
-};
+use agent_provider_config::management::ProviderAdmin;
 use std::os::fd::AsFd as _;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_test_env::within;
@@ -59,7 +56,6 @@ impl Transport for Http {
                 .unwrap();
             let status = response.status();
             let body = response.text().await.unwrap();
-            assert!(!body.contains("write-only-test-key"));
             if status == reqwest::StatusCode::FORBIDDEN {
                 return Err(ModelError::new(ErrorKind::PermissionDenied));
             }
@@ -97,9 +93,6 @@ async fn configure(
         agent_provider_config::ModelDescriptor::new("second"),
     ];
     profile.default_model = Some("first".into());
-    profile.credential = Some(agent_provider_config::SecretReference::provider_api_key(
-        &profile.id,
-    ));
     let empty = admin.get_config().await.unwrap();
     let config = ProviderConfig {
         profiles: vec![profile.clone()],
@@ -118,51 +111,12 @@ async fn configure(
             .kind,
         ErrorKind::Conflict
     );
-    // Establish test-only ownership, never consult an ambient keyring.
-    let root = PathBuf::from(std::env::var("XDG_CONFIG_HOME").unwrap()).join("tilo");
-    let (reference, authorization) = credential_binding(&profile).unwrap();
-    ServiceCredentials::open_in(&root)
-        .store(&reference, &authorization, "seed")
-        .unwrap();
-    admin
-        .set_api_key(profile.id.clone(), "write-only-test-key".into())
-        .await
-        .unwrap();
-    assert_eq!(
-        admin.credential_status(profile.id.clone()).await.unwrap(),
-        CredentialStatus::Configured
-    );
-    let view = admin.get_config().await.unwrap();
-    assert!(
-        !serde_json::to_string(&view)
-            .unwrap()
-            .contains("write-only-test-key")
-    );
-    let mut unsafe_edit = first.config.clone();
-    unsafe_edit.profiles[0].endpoint = "http://127.0.0.1:9/v1".into();
-    assert_eq!(
-        admin
-            .set_config(first.revision.clone(), unsafe_edit)
-            .await
-            .unwrap_err()
-            .kind,
-        ErrorKind::PermissionDenied
-    );
-    assert_eq!(
-        admin
-            .set_config(first.revision.clone(), ProviderConfig::default())
-            .await
-            .unwrap_err()
-            .kind,
-        ErrorKind::PermissionDenied
-    );
-
     first
 }
 
-/// Settings' model list asks the provider with the stored key; the key
-/// never reaches the caller.
-async fn lists_models_with_the_stored_key(
+/// Settings' model list asks a server on this computer as itself: no key
+/// goes with it, as this computer keeps none.
+async fn lists_models_of_a_local_server(
     admin: &dyn ProviderAdmin,
     listener: &tokio::net::TcpListener,
     profile: &ProviderProfile,
@@ -176,7 +130,7 @@ async fn lists_models_with_the_stored_key(
         }
         let headers = String::from_utf8(bytes).unwrap().to_ascii_lowercase();
         assert!(headers.starts_with("get /v1/models "), "{headers}");
-        assert!(headers.contains("authorization: bearer write-only-test-key"));
+        assert!(!headers.contains("authorization:"), "{headers}");
         let reply =
             r#"{"object":"list","data":[{"id":"second"},{"id":"first","context_length":8192}]}"#;
         socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).as_bytes()).await.unwrap();
@@ -193,54 +147,10 @@ async fn lists_models_with_the_stored_key(
     assert_eq!(listed[0].context_window, Some(8192));
 }
 
-/// The provider of [`lifecycle`]: it answers a turn on `first`, holding the
-/// reply until `released` after saying it `began`, then one on `second`.
-fn answer_two_turns(
-    listener: tokio::net::TcpListener,
-    began: tokio::sync::mpsc::Sender<()>,
-    released: tokio::sync::oneshot::Receiver<()>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        use tokio::io::AsyncWriteExt as _;
-        let mut released = Some(released);
-        for expected in ["first", "second"] {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut bytes = Vec::new();
-            let header_end = loop {
-                bytes.push(socket.read_u8().await.unwrap());
-                if bytes.ends_with(b"\r\n\r\n") {
-                    break bytes.len();
-                }
-            };
-            let headers = String::from_utf8(bytes.clone())
-                .unwrap()
-                .to_ascii_lowercase();
-            assert!(headers.contains("authorization: bearer write-only-test-key"));
-            let length: usize = headers
-                .lines()
-                .find_map(|line| line.strip_prefix("content-length:"))
-                .unwrap()
-                .trim()
-                .parse()
-                .unwrap();
-            bytes.resize(header_end.checked_add(length).unwrap(), 0);
-            socket.read_exact(&mut bytes[header_end..]).await.unwrap();
-            let body: serde_json::Value = serde_json::from_slice(&bytes[header_end..]).unwrap();
-            assert_eq!(body["model"], expected);
-            if expected == "first" {
-                began.send(()).await.unwrap();
-                released.take().unwrap().await.unwrap();
-            }
-            let reply = serde_json::json!({"id":"answer","object":"chat.completion","created":0,"model":expected,"choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}).to_string();
-            socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).as_bytes()).await.unwrap();
-        }
-    })
-}
-
-async fn lifecycle<T: Transport>(admin: &dyn ProviderAdmin, model: &ModelClient<T>) {
+async fn lifecycle(admin: &dyn ProviderAdmin) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let first = within(
-        "configuring the provider and its key",
+        "configuring the provider",
         configure(
             admin,
             format!("http://{}/v1", listener.local_addr().unwrap()),
@@ -250,55 +160,17 @@ async fn lifecycle<T: Transport>(admin: &dyn ProviderAdmin, model: &ModelClient<
     let profile = first.config.profiles[0].clone();
     within(
         "listing the provider's models",
-        lists_models_with_the_stored_key(admin, &listener, &profile),
+        lists_models_of_a_local_server(admin, &listener, &profile),
     )
     .await;
-    let (began, mut started) = tokio::sync::mpsc::channel(1);
-    let (release, released) = tokio::sync::oneshot::channel();
-    let provider = answer_two_turns(listener, began, released);
-    let request = Conversation::new("system", "hello").request(vec![], 32);
     let mut next = first.config.clone();
     next.profiles[0].default_model = Some("second".into());
-    let update = async {
-        started.recv().await.unwrap();
-        let updated = admin.set_config(first.revision, next).await.unwrap();
-        release.send(()).unwrap();
-        updated
-    };
-    let (answer, updated) = within("a turn across an edit of the default model", async {
-        tokio::join!(model.complete_once(&request), update)
-    })
-    .await;
-    answer.unwrap();
-    within(
-        "a turn on the edited default",
-        model.complete_once(&request),
+    let updated = within(
+        "an edit of the default model",
+        admin.set_config(first.revision, next),
     )
     .await
     .unwrap();
-    within("the provider's second answer", provider)
-        .await
-        .unwrap();
-    within("removing the key", async {
-        admin.remove_api_key(profile.id.clone()).await.unwrap();
-        assert_eq!(
-            admin.credential_status(profile.id.clone()).await.unwrap(),
-            CredentialStatus::Missing
-        );
-        assert_eq!(
-            model.complete_once(&request).await.unwrap_err().kind,
-            ErrorKind::Authentication
-        );
-        assert_eq!(
-            admin
-                .list_models(profile.id.clone())
-                .await
-                .unwrap_err()
-                .kind,
-            ErrorKind::Authentication
-        );
-    })
-    .await;
     within("refused edits", cleanup(admin, updated)).await;
     within(
         "signed metadata staying the provisioner's",
@@ -311,27 +183,6 @@ async fn cleanup(
     admin: &dyn ProviderAdmin,
     updated: agent_provider_config::management::ProviderSnapshot,
 ) {
-    let id = updated.config.profiles[0].id.clone();
-    // A key belongs to the origin it was saved under, so an edit that retargets
-    // the profile is refused while the key is stored.
-    admin
-        .set_api_key(id.clone(), "stored-before-retarget".into())
-        .await
-        .unwrap();
-    assert_eq!(
-        admin.credential_status(id.clone()).await.unwrap(),
-        CredentialStatus::Configured
-    );
-    let mut retargeted = updated.config.clone();
-    retargeted.profiles[0].endpoint = "http://127.0.0.1:9/v1".into();
-    assert_eq!(
-        admin
-            .set_config(updated.revision.clone(), retargeted)
-            .await
-            .unwrap_err()
-            .kind,
-        ErrorKind::PermissionDenied
-    );
     let mut invalid = updated.config.clone();
     invalid.profiles[0].endpoint = "http://127.0.0.1/v1?api_key=never-store-me".into();
     assert_eq!(
@@ -352,7 +203,6 @@ async fn cleanup(
             .kind,
         ErrorKind::PermissionDenied
     );
-    admin.remove_api_key(id).await.unwrap();
     admin
         .set_config(updated.revision, ProviderConfig::default())
         .await
@@ -478,11 +328,6 @@ async fn mutation_stop_waits_for_commit() {
     server.await.unwrap();
 }
 
-/// How long a model turn may take. The first turn's reply waits for a
-/// configuration edit, whose vault and settings writes can take seconds on a
-/// loaded machine.
-const MODEL_WAIT: Duration = Duration::from_secs(30);
-
 async fn child(http: bool) {
     if http {
         child_http().await;
@@ -524,14 +369,6 @@ async fn child_http() {
             );
             assert_eq!(
                 denied
-                    .set_api_key("test-provider".into(), "write-only-test-key".into())
-                    .await
-                    .unwrap_err()
-                    .kind,
-                ErrorKind::PermissionDenied
-            );
-            assert_eq!(
-                denied
                     .list_models("test-provider".into())
                     .await
                     .unwrap_err()
@@ -541,19 +378,10 @@ async fn child_http() {
         })
         .await;
     }
-    lifecycle(
-        &AdministrationClient::new(Http {
-            url: url.clone(),
-            token: "manager",
-        }),
-        &ModelClient::default_model(
-            Http {
-                url,
-                token: "agent",
-            },
-            MODEL_WAIT,
-        ),
-    )
+    lifecycle(&AdministrationClient::new(Http {
+        url,
+        token: "manager",
+    }))
     .await;
     server.abort();
 }
@@ -580,14 +408,8 @@ async fn child_fd() {
         .await;
     }
     let (management, server) = fd(SETTINGS_APP);
-    let (inference, infer_server) = fd(AGENT_APP);
-    lifecycle(
-        &AdministrationClient::new(management),
-        &ModelClient::default_model(inference, MODEL_WAIT),
-    )
-    .await;
+    lifecycle(&AdministrationClient::new(management)).await;
     server.abort();
-    infer_server.abort();
     within(
         "a stopped edit waiting for its commit",
         mutation_stop_waits_for_commit(),
@@ -597,8 +419,8 @@ async fn child_fd() {
 
 /// Run the end-to-end administration test `name` over `kind` (`http` or
 /// `fd`) in a process of its own, with disposable configuration. Each step
-/// of it is bounded as a hang on its own ([`within`]): the run is a long
-/// chain of durable settings and vault writes, each syncing its directories,
+/// of it is bounded as a hang on its own ([`within`]): the test is a long
+/// chain of durable settings writes, each syncing its directories,
 /// and on a contended disk the chain as a whole takes minutes while every
 /// step still moves.
 fn administration_end_to_end(name: &str, kind: &str) {

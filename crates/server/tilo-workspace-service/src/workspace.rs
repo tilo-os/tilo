@@ -55,9 +55,8 @@ fn leaves_out(previous: &[[u8; 32]], next: &[[u8; 32]]) -> bool {
 /// One live subscription — the outbound envelope channel a
 /// connection task registers.
 pub struct Subscriber {
-    /// Peer device pubkey — routing key. Uniquely identifies the
-    /// subscriber; if a peer opens a second connection its
-    /// pubkey collides and the older subscription is replaced.
+    /// Peer device pubkey. A device may hold several subscriptions at once,
+    /// one per connection, told apart by their channel (`tx`).
     pub device_public_key: [u8; 32],
     /// Bounded outbound envelope channel. Closed or full means the peer can
     /// no longer keep up and is pruned immediately.
@@ -70,6 +69,61 @@ pub struct Subscriber {
     /// one queue per sender, served in turn so one sender's burst cannot
     /// crowd another's out ([`crate::content_queue`]).
     pub content_waiting: Arc<crate::content_queue::ContentQueue>,
+}
+
+/// One connection's subscription to the workspace and what the host keeps
+/// for that connection alone. A device may hold several at once (a second
+/// tab, an agent's session beside its person's page, a page that re-dialled while
+/// its old connection is still closing): each is its own, and none displaces
+/// another, so one connection entering never ends a sibling's writes.
+pub(crate) struct Session {
+    pub(crate) subscriber: Subscriber,
+    /// The connection's state stream, registered beside its subscription.
+    pub(crate) state: Option<crate::peer::StateSession>,
+    /// Where presence for this connection goes when it takes it batched
+    /// ([`crate::presence_mailbox`]); without one, presence goes on its frame
+    /// queue.
+    presence: Option<Arc<crate::presence_mailbox::PresenceMailbox>>,
+    /// The retained-checkpoint channels a live checkpoint has already been
+    /// fanned to since the connection last asked for a baseline. A connection
+    /// asks on subscribe and whenever it sends a presence frame (the browser
+    /// sends presence only for its hello, a `SyncReq`, and a rejected
+    /// checkpoint), which resets its served set. The native publishes its
+    /// checkpoint as one set of messages, one per channel (the workspace plus
+    /// each resource), so the check is per channel: a full bootstrap set passes
+    /// once, and the next idle set, on the same channels, is withheld from a
+    /// connection that already holds every delta ([`crate::peer`]'s live
+    /// fan-out).
+    checkpoint_served: HashSet<[u8; 32]>,
+    /// The on-demand resources this connection holds, by channel: those it
+    /// opened, and the chain parts it was replayed or followed live while
+    /// they were their chain's head. Live changes to an on-demand record
+    /// reach only these ([`crate::store::document_sync`]).
+    held_documents: HashSet<[u8; 32]>,
+}
+
+impl Session {
+    /// Whether this is the connection whose outbound channel is `tx`.
+    pub(crate) fn is(&self, tx: &mpsc::Sender<Envelope>) -> bool {
+        self.subscriber.tx.same_channel(tx)
+    }
+
+    /// Whether this connection holds the on-demand resource on `channel`.
+    pub(crate) fn holds(&self, channel: &[u8; 32]) -> bool {
+        self.held_documents.contains(channel)
+    }
+
+    /// Whether a live checkpoint for `channel` would be fanned to this
+    /// connection now.
+    pub(crate) fn needs_checkpoint(&self, channel: &[u8; 32]) -> bool {
+        !self.checkpoint_served.contains(channel)
+    }
+
+    fn end(&self) {
+        if let Some(state) = &self.state {
+            state.live.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
 }
 
 /// The access of each member device of a workspace, by device key.
@@ -89,6 +143,16 @@ pub struct WorkspaceRuntime {
     /// `None` until a governor projects one; the server then decides changes
     /// against their app surface alone.
     pub(crate) device_access: Option<Arc<DeviceAccess>>,
+    /// The governance [`Self::device_access`] was read from, to ask whether
+    /// the workspace's governance is past it.
+    pub(crate) governance_heads: tilo_peer_state::GovernanceHeads,
+    /// How many changes of each writer wait now for governance past
+    /// [`Self::governance_heads`] ([`access_deciding`]).
+    governance_waits: Arc<std::sync::Mutex<HashMap<[u8; 32], usize>>>,
+    /// The heads a test holds the workspace's governance at, in place of a
+    /// governing server's.
+    #[cfg(test)]
+    pub(crate) test_governance: Option<Vec<[u8; 32]>>,
     /// Woken each time [`Self::device_access`] is replaced, for a change held
     /// until its author's access is projected ([`access_deciding`]).
     pub(crate) access_changed: Arc<tokio::sync::Notify>,
@@ -127,10 +191,10 @@ pub struct WorkspaceRuntime {
     /// `membership`, so an ungoverned sibling device under the same root
     /// does not join.
     pub governed_user_roots: HashSet<[u8; 32]>,
-    /// Current live subscribers keyed by device pubkey.
-    pub subscribers: HashMap<[u8; 32], Subscriber>,
+    /// The live subscribed connections of each device, oldest first
+    /// ([`Session`]).
+    sessions: HashMap<[u8; 32], Vec<Session>>,
     pub outbound_leases: HashMap<[u8; 32], Arc<std::sync::atomic::AtomicBool>>,
-    pub(crate) state_sessions: HashMap<[u8; 32], crate::peer::StateSession>,
     /// Device pubkeys of the hosts this workspace is attached to: the hosts
     /// of its person that serve it, recorded as each announces what it
     /// carries (its hello). A change one of them sent is not carried on to
@@ -144,36 +208,10 @@ pub struct WorkspaceRuntime {
     /// member's pieces cannot take the blocking pool from another's
     /// ([`crate::content_work`]).
     pub(crate) content_work: Arc<crate::content_work::ContentWork>,
-    /// Per live device subscriber: the retained-checkpoint channels a live
-    /// checkpoint has already been fanned to since the device last asked for a
-    /// baseline. A device asks on subscribe and whenever it sends a presence
-    /// frame (the browser sends presence only for its hello, a `SyncReq`, and a
-    /// rejected checkpoint), which resets its served set. The native publishes
-    /// its checkpoint as one set of messages — one per channel (the workspace plus
-    /// each record) — so the check is per channel: a full bootstrap set passes
-    /// once, and the next idle set, on the same channels, is withheld from a
-    /// device that already holds every delta ([`crate::peer`]'s live fan-out).
-    checkpoint_served: HashMap<[u8; 32], HashSet<[u8; 32]>>,
-    /// The on-demand records each subscriber holds, by channel: those it
-    /// opened, and the chain parts it was replayed or followed live while
-    /// they were their chain's head. Live changes to an on-demand record
-    /// reach only these ([`crate::store::document_sync`]).
-    held_documents: HashMap<[u8; 32], HashSet<[u8; 32]>>,
-    /// The connections of each device whose subscription was admitted and
-    /// has not registered yet, oldest first. A device that reconnects (its
-    /// network dropped, its shell re-dialled) subscribes again while the
-    /// host still holds its stale connection; the order here says which of
-    /// the two the device opened last, so the newer one takes the slot.
-    subscribing: HashMap<[u8; 32], Vec<mpsc::WeakSender<Envelope>>>,
     /// Devices admitted through the workspace's entry that have not
     /// subscribed yet, with what was committed for them alone meanwhile
     /// (their channel Welcome), which their replay writes first.
     pub(crate) arriving: crate::peer::Arriving,
-    /// The presence mailbox of each subscriber whose connection takes its
-    /// presence batched ([`crate::presence_mailbox`]). Set
-    /// right after the subscription it belongs to and dropped with it; a
-    /// subscriber without one gets each presence on its frame queue.
-    presence_mailboxes: HashMap<[u8; 32], Arc<crate::presence_mailbox::PresenceMailbox>>,
     /// The devices on this workspace's live session ([`Self::live_join`]):
     /// each is told of the others as they join and leave, so a device knows
     /// whom its host reaches for content and presence.
@@ -387,21 +425,20 @@ impl WorkspaceRuntime {
             loaded_generation: None,
             admission,
             governed_user_roots,
-            subscribers: HashMap::new(),
+            sessions: HashMap::new(),
             attached_hosts: HashSet::new(),
             extensions: Extensions::default(),
             content_work: Arc::default(),
-            state_sessions: HashMap::new(),
             outbound_leases: HashMap::new(),
-            checkpoint_served: HashMap::new(),
-            held_documents: HashMap::new(),
-            subscribing: HashMap::new(),
             arriving: crate::peer::Arriving::default(),
-            presence_mailboxes: HashMap::new(),
             live_members: HashSet::new(),
             governor_tap: None,
             workspace_authority: None,
             device_access: None,
+            governance_heads: tilo_peer_state::GovernanceHeads::default(),
+            governance_waits: Arc::default(),
+            #[cfg(test)]
+            test_governance: None,
             access_changed: Arc::default(),
             last_seq: 0,
             commits,
@@ -483,123 +520,154 @@ impl WorkspaceRuntime {
         self.attached_hosts.contains(device)
     }
 
-    /// Register a subscription. Replaces any prior subscription
-    /// from the same device.
+    /// Register the subscription of `sub`'s connection. Another connection
+    /// of the same device keeps its own; registering the same connection
+    /// again starts its checkpoints and held resources afresh.
     pub fn add_subscriber(&mut self, sub: Subscriber) {
-        if !self
-            .subscribers
-            .get(&sub.device_public_key)
-            .is_some_and(|current| current.tx.same_channel(&sub.tx))
-        {
-            self.presence_mailboxes.remove(&sub.device_public_key);
-            if let Some(session) = self.state_sessions.remove(&sub.device_public_key) {
-                session
-                    .live
-                    .store(false, std::sync::atomic::Ordering::SeqCst);
-            }
-            if self.subscribers.contains_key(&sub.device_public_key) {
-                // The displaced connection is no longer the device's current
-                // session; its next access audit ends it.
-                crate::authority_epoch::bump();
-            }
-        }
-        self.checkpoint_served
-            .insert(sub.device_public_key, HashSet::new());
         // Its replay holds every chain's head.
-        self.held_documents.insert(
-            sub.device_public_key,
-            self.store.chain_heads().into_iter().collect(),
-        );
-        self.subscribers.insert(sub.device_public_key, sub);
-    }
-
-    /// The connection `tx` of `device` was let subscribe here: answer the
-    /// device's earlier connections whose subscriptions are still under
-    /// way. This one is newer than each of them, so it replaces whichever
-    /// of them registers first.
-    pub(crate) fn subscription_admitted(
-        &mut self,
-        device: [u8; 32],
-        tx: &mpsc::Sender<Envelope>,
-    ) -> Vec<mpsc::WeakSender<Envelope>> {
-        let pending = self.subscribing.entry(device).or_default();
-        // A connection that ended is nobody's predecessor.
-        pending.retain(|earlier| {
-            earlier
-                .upgrade()
-                .is_some_and(|earlier| !earlier.is_closed() && !earlier.same_channel(tx))
+        let held_documents: HashSet<[u8; 32]> = self.store.chain_heads().into_iter().collect();
+        let sessions = self.sessions.entry(sub.device_public_key).or_default();
+        let same = sessions.iter().position(|session| session.is(&sub.tx));
+        if let Some(session) = same.and_then(|at| sessions.get_mut(at)) {
+            session.checkpoint_served.clear();
+            session.held_documents = held_documents;
+            session.subscriber = sub;
+            return;
+        }
+        sessions.push(Session {
+            subscriber: sub,
+            state: None,
+            presence: None,
+            checkpoint_served: HashSet::new(),
+            held_documents,
         });
-        let earlier = pending.clone();
-        pending.push(tx.downgrade());
-        earlier
     }
 
-    /// The subscription of `device`'s connection `tx` completed, registered
-    /// or not: it is no longer under way.
-    pub(crate) fn subscription_completed(
+    /// Register the state stream of `device`'s subscribed connection `tx`
+    /// beside its subscription.
+    pub(crate) fn set_state_session(
         &mut self,
         device: &[u8; 32],
         tx: &mpsc::Sender<Envelope>,
+        state: crate::peer::StateSession,
     ) {
-        if let Some(pending) = self.subscribing.get_mut(device) {
-            pending.retain(|other| other.upgrade().is_some_and(|other| !other.same_channel(tx)));
-            if pending.is_empty() {
-                self.subscribing.remove(device);
-            }
+        if let Some(session) = self.session_mut(device, tx) {
+            session.state = Some(state);
         }
     }
 
-    /// Whether subscriber `device` holds the on-demand record on `channel`.
-    pub(crate) fn holds_resource(&self, device: &[u8; 32], channel: &[u8; 32]) -> bool {
-        self.held_documents
-            .get(device)
-            .is_some_and(|held| held.contains(channel))
+    /// The subscription of `device`'s connection `tx`, while it holds one.
+    pub(crate) fn session(
+        &self,
+        device: &[u8; 32],
+        tx: &mpsc::Sender<Envelope>,
+    ) -> Option<&Session> {
+        self.sessions_of(device)
+            .iter()
+            .find(|session| session.is(tx))
     }
 
-    /// Subscriber `device` now holds the record on `channel`: it opened it,
-    /// or took a live change to it while it was its chain's head.
-    pub(crate) fn hold_document(&mut self, device: &[u8; 32], channel: [u8; 32]) {
-        if let Some(held) = self.held_documents.get_mut(device) {
-            held.insert(channel);
+    fn session_mut(
+        &mut self,
+        device: &[u8; 32],
+        tx: &mpsc::Sender<Envelope>,
+    ) -> Option<&mut Session> {
+        self.sessions
+            .get_mut(device)?
+            .iter_mut()
+            .find(|session| session.is(tx))
+    }
+
+    /// The subscribed connections of `device`, oldest first.
+    pub(crate) fn sessions_of(&self, device: &[u8; 32]) -> &[Session] {
+        self.sessions.get(device).map_or(&[], Vec::as_slice)
+    }
+
+    /// Every subscribed connection, with its device.
+    pub(crate) fn all_sessions(&self) -> impl Iterator<Item = (&[u8; 32], &Session)> {
+        self.sessions
+            .iter()
+            .flat_map(|(device, sessions)| sessions.iter().map(move |session| (device, session)))
+    }
+
+    /// The devices holding at least one subscription here.
+    pub(crate) fn subscribed_devices(&self) -> impl Iterator<Item = &[u8; 32]> {
+        self.sessions.keys()
+    }
+
+    /// The subscriber of `device`'s newest connection: where what is
+    /// addressed to the device alone goes.
+    pub fn subscriber(&self, device: &[u8; 32]) -> Option<&Subscriber> {
+        self.sessions_of(device)
+            .last()
+            .map(|session| &session.subscriber)
+    }
+
+    /// The state stream of `device`'s subscribed connection `tx`.
+    pub(crate) fn state_of(
+        &self,
+        device: &[u8; 32],
+        tx: &mpsc::Sender<Envelope>,
+    ) -> Option<&crate::peer::StateSession> {
+        self.session(device, tx)?.state.as_ref()
+    }
+
+    /// The state stream of `device`'s newest subscribed connection that has
+    /// one.
+    pub(crate) fn newest_state(&self, device: &[u8; 32]) -> Option<&crate::peer::StateSession> {
+        self.sessions_of(device)
+            .iter()
+            .rev()
+            .find_map(|session| session.state.as_ref())
+    }
+
+    /// `device`'s connection `tx` now holds the resource on `channel`: it
+    /// opened it, or took a live change to it while it was its chain's head.
+    pub(crate) fn hold_document(
+        &mut self,
+        device: &[u8; 32],
+        tx: &mpsc::Sender<Envelope>,
+        channel: [u8; 32],
+    ) {
+        if let Some(session) = self.session_mut(device, tx) {
+            session.held_documents.insert(channel);
         }
     }
 
-    /// Hand the presence fanned out to subscriber `device` to its
+    /// Hand the presence fanned out to `device`'s connection `tx` to that
     /// connection's `mailbox` rather than its frame queue. Call right after
-    /// [`Self::add_subscriber`] registered that connection; replacing or
-    /// removing the subscription drops the route.
+    /// [`Self::add_subscriber`] registered that connection; removing the
+    /// subscription drops the route.
     pub fn route_presence(
         &mut self,
         device: [u8; 32],
+        tx: &mpsc::Sender<Envelope>,
         mailbox: Arc<crate::presence_mailbox::PresenceMailbox>,
     ) {
-        if self.subscribers.contains_key(&device) {
-            self.presence_mailboxes.insert(device, mailbox);
+        if let Some(session) = self.session_mut(&device, tx) {
+            session.presence = Some(mailbox);
         }
     }
 
-    /// A device asked for a baseline (its hello, a `SyncReq`, or a rejected
-    /// checkpoint arrive as presence): the next live checkpoint on every
-    /// channel reaches it once more.
-    pub fn request_checkpoint(&mut self, device: &[u8; 32]) {
-        if self.subscribers.contains_key(device) {
-            self.checkpoint_served.insert(*device, HashSet::new());
+    /// `device`'s connection `tx` asked for a baseline (its hello, a
+    /// `SyncReq`, or a rejected checkpoint arrive as presence): the next live
+    /// checkpoint on every channel reaches it once more.
+    pub fn request_checkpoint(&mut self, device: &[u8; 32], tx: &mpsc::Sender<Envelope>) {
+        if let Some(session) = self.session_mut(device, tx) {
+            session.checkpoint_served.clear();
         }
     }
 
-    /// Whether a live checkpoint for `channel` would currently be fanned to
-    /// `device`.
-    pub fn needs_checkpoint(&self, device: &[u8; 32], channel: &[u8; 32]) -> bool {
-        self.checkpoint_served
-            .get(device)
-            .is_some_and(|served| !served.contains(channel))
-    }
-
-    /// Record that one live checkpoint reached the current device session.
+    /// Note that one live checkpoint reached `device`'s connection `tx`.
     /// Call only after the delivery queue accepted the checkpoint.
-    pub(crate) fn mark_checkpoint_served(&mut self, device: &[u8; 32], channel: [u8; 32]) {
-        if let Some(served) = self.checkpoint_served.get_mut(device) {
-            served.insert(channel);
+    pub(crate) fn mark_checkpoint_served(
+        &mut self,
+        device: &[u8; 32],
+        tx: &mpsc::Sender<Envelope>,
+        channel: [u8; 32],
+    ) {
+        if let Some(session) = self.session_mut(device, tx) {
+            session.checkpoint_served.insert(channel);
         }
     }
 
@@ -619,8 +687,13 @@ impl WorkspaceRuntime {
     /// sessions use the serialized async admission in `workspace_io`.
     /// Decide this workspace's changes against `device_access` from now on, and
     /// wake each change held until its author's access was projected.
-    pub(crate) fn project_access(&mut self, device_access: DeviceAccess) {
+    pub(crate) fn project_access(
+        &mut self,
+        device_access: DeviceAccess,
+        heads: tilo_peer_state::GovernanceHeads,
+    ) {
         self.device_access = Some(Arc::new(device_access));
+        self.governance_heads = heads;
         self.access_changed.notify_waiters();
     }
 
@@ -654,7 +727,7 @@ impl WorkspaceRuntime {
         device: [u8; 32],
         workspace_id: WorkspaceId,
     ) -> Option<Vec<[u8; 32]>> {
-        if !self.subscribers.contains_key(&device) {
+        if !self.has_subscriber(&device) {
             return None;
         }
         let existing: Vec<[u8; 32]> = self
@@ -689,50 +762,56 @@ impl WorkspaceRuntime {
             if *member == device {
                 continue;
             }
-            if let Some(sub) = self.subscribers.get(member) {
-                let _ = sub.tx.try_send(envelope.clone());
+            for session in self.sessions_of(member) {
+                let _ = session.subscriber.tx.try_send(envelope.clone());
             }
         }
     }
 
-    /// Drop a subscription for `device`, and its live membership. Idempotent.
+    /// Drop every subscription of `device`, and its live membership.
+    /// Idempotent.
     pub fn remove_subscriber(&mut self, device: &[u8; 32]) {
-        if self.subscribers.remove(device).is_some() {
+        if let Some(sessions) = self.sessions.remove(device) {
+            sessions.iter().for_each(Session::end);
             // A connection whose subscription went is ended by its next
             // access audit.
             crate::authority_epoch::bump();
         }
-        self.presence_mailboxes.remove(device);
-        if let Some(session) = self.state_sessions.remove(device) {
-            session
-                .live
-                .store(false, std::sync::atomic::Ordering::SeqCst);
-        }
-        self.checkpoint_served.remove(device);
-        self.held_documents.remove(device);
         let workspace_id = self.store.workspace_id();
         self.live_leave(device, workspace_id);
     }
 
-    /// Remove only the session that registered this queue. An old connection
-    /// must not unregister its replacement when its delayed teardown runs.
+    /// Remove only the subscription of `device`'s connection `tx`: the
+    /// device's other connections keep theirs, and a closing connection's
+    /// delayed teardown touches no other. The device leaves the live session
+    /// with its last connection.
     pub(crate) fn remove_subscriber_session(
         &mut self,
         device: &[u8; 32],
         tx: &mpsc::Sender<Envelope>,
     ) {
-        if self
-            .subscribers
-            .get(device)
-            .is_some_and(|sub| sub.tx.same_channel(tx))
-        {
+        let Some(sessions) = self.sessions.get_mut(device) else {
+            return;
+        };
+        let Some(at) = sessions.iter().position(|session| session.is(tx)) else {
+            return;
+        };
+        sessions.remove(at).end();
+        crate::authority_epoch::bump();
+        if sessions.is_empty() {
             self.remove_subscriber(device);
         }
     }
 
     /// Whether `device` currently holds a subscription here.
     pub fn has_subscriber(&self, device: &[u8; 32]) -> bool {
-        self.subscribers.contains_key(device)
+        !self.sessions_of(device).is_empty()
+    }
+
+    /// Whether `device`'s connection `tx` holds a subscription here: the
+    /// connection whose writes and requests the workspace takes.
+    pub(crate) fn current_session(&self, device: &[u8; 32], tx: &mpsc::Sender<Envelope>) -> bool {
+        self.session(device, tx).is_some()
     }
 
     /// Tell live devices that just lost membership they are no longer
@@ -755,7 +834,7 @@ impl WorkspaceRuntime {
         &mut self,
         refusal: &tilo_server_protocol::refusal::Refusal,
     ) {
-        let live: Vec<[u8; 32]> = self.subscribers.keys().copied().collect();
+        let live: Vec<[u8; 32]> = self.subscribed_devices().copied().collect();
         self.refuse_live_members(&live, refusal);
     }
 
@@ -769,16 +848,15 @@ impl WorkspaceRuntime {
         }
         let workspace_id = self.store.workspace_id();
         for device in removed {
-            let Some(sub) = self.subscribers.get(device) else {
-                continue;
-            };
-            let _ = sub.tx.try_send(Envelope::NotAuthorised {
-                workspace_id,
-                refusal: refusal.clone(),
-            });
+            for session in self.sessions_of(device) {
+                let _ = session.subscriber.tx.try_send(Envelope::NotAuthorised {
+                    workspace_id,
+                    refusal: refusal.clone(),
+                });
+            }
         }
         for device in removed {
-            if self.subscribers.contains_key(device) {
+            if self.has_subscriber(device) {
                 self.remove_subscriber(device);
             }
         }
@@ -790,11 +868,12 @@ impl WorkspaceRuntime {
     /// by every such subscriber, not copied.
     pub fn fanout_presence(&mut self, author: &[u8; 32], envelope: &Envelope) -> usize {
         let mut delivered = 0usize;
-        let mut dead: Vec<[u8; 32]> = Vec::new();
+        let mut dead: Vec<([u8; 32], mpsc::Sender<Envelope>)> = Vec::new();
         let mut shared: Option<Arc<[u8]>> = None;
         let from_attached = self.attached(author);
         let now = tokio::time::Instant::now();
-        for (peer, sub) in &self.subscribers {
+        for (peer, session) in self.all_sessions() {
+            let sub = &session.subscriber;
             if peer == author {
                 continue;
             }
@@ -807,7 +886,7 @@ impl WorkspaceRuntime {
                     workspace_id,
                     payload,
                 },
-            ) = (self.presence_mailboxes.get(peer), envelope)
+            ) = (session.presence.as_ref(), envelope)
             {
                 let payload = shared
                     .get_or_insert_with(|| Arc::from(payload.as_slice()))
@@ -822,28 +901,31 @@ impl WorkspaceRuntime {
                 // (backpressure), it never disconnects the subscriber. A closed
                 // channel means the task is gone, so prune it.
                 Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => dead.push(*peer),
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    dead.push((*peer, sub.tx.clone()));
+                }
             }
         }
-        for d in dead {
-            self.remove_subscriber(&d);
+        for (device, tx) in dead {
+            self.remove_subscriber_session(&device, &tx);
         }
         delivered
     }
 
-    /// Deliver a directed envelope to the live subscriber `target` only.
+    /// Deliver a directed envelope to the live subscriber `target` only, on
+    /// its newest connection: a request is carried out once, not once per connection.
     /// Never queued: a directed request is live traffic. Returns whether it
-    /// was handed to that subscriber's connection.
+    /// was handed to that connection.
     pub fn route_directed(&mut self, target: &[u8; 32], envelope: Envelope) -> bool {
-        let Some(sub) = self.subscribers.get(target) else {
+        let Some(sub) = self.subscriber(target) else {
             return false;
         };
         if sub.tx.try_send(envelope).is_ok() {
             return true;
         }
         let _ = sub.disconnect.try_send(());
-        self.subscribers.remove(target);
-        crate::authority_epoch::bump();
+        let tx = sub.tx.clone();
+        self.remove_subscriber_session(target, &tx);
         false
     }
 
@@ -851,13 +933,53 @@ impl WorkspaceRuntime {
     /// `target` only, through its fairness queue ([`crate::content_queue`]):
     /// a piece the connection's queue cannot take waits with its sender's
     /// own pieces, never ahead of another sender's. Returns whether `target`
-    /// is subscribed.
-    pub fn route_content(&self, from: &[u8; 32], target: &[u8; 32], envelope: Envelope) -> bool {
-        let Some(sub) = self.subscribers.get(target) else {
-            return false;
-        };
-        sub.content_waiting.deliver_piece(*from, envelope, &sub.tx);
-        true
+    /// is subscribed. Each of `target`'s connections gets it: whichever of
+    /// them asked for the resource takes it.
+    pub fn route_content(&self, from: &[u8; 32], target: &[u8; 32], envelope: &Envelope) -> bool {
+        let sessions = self.sessions_of(target);
+        for session in sessions {
+            let sub = &session.subscriber;
+            sub.content_waiting
+                .deliver_piece(*from, envelope.clone(), &sub.tx);
+        }
+        !sessions.is_empty()
+    }
+}
+
+#[cfg(test)]
+impl WorkspaceRuntime {
+    /// The state stream of `device`'s newest subscribed connection, to change.
+    pub(crate) fn newest_state_mut(
+        &mut self,
+        device: &[u8; 32],
+    ) -> Option<&mut crate::peer::StateSession> {
+        self.sessions
+            .get_mut(device)?
+            .iter_mut()
+            .rev()
+            .find_map(|session| session.state.as_mut())
+    }
+
+    /// Give `device`'s newest subscribed connection the state stream `state`.
+    pub(crate) fn put_state(&mut self, device: &[u8; 32], state: crate::peer::StateSession) {
+        if let Some(session) = self.sessions.get_mut(device).and_then(|all| all.last_mut()) {
+            session.state = Some(state);
+        }
+    }
+
+    /// Drop every connection's state stream, keeping the subscriptions.
+    pub(crate) fn clear_states(&mut self) {
+        for session in self.sessions.values_mut().flatten() {
+            session.state = None;
+        }
+    }
+
+    /// Whether a live checkpoint for `channel` would reach `device`'s newest
+    /// connection now.
+    pub(crate) fn needs_checkpoint(&self, device: &[u8; 32], channel: &[u8; 32]) -> bool {
+        self.sessions_of(device)
+            .last()
+            .is_some_and(|session| session.needs_checkpoint(channel))
     }
 }
 
@@ -869,32 +991,125 @@ pub type SharedWorkspace = Arc<AsyncMutex<WorkspaceRuntime>>;
 /// when the workspace is busy, not the time any check may take.
 pub(crate) const ACCESS_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// What the workspace's devices may do, to decide `author`'s change in `ws` against, and the
-/// workspace's payload adapter.
+/// Most changes of one writer that wait at once for governance past what
+/// the workspace's access was read from: a writer whose changes the access
+/// refuses holds no more of the server than this while it waits.
+pub(crate) const GOVERNANCE_WAITS_PER_WRITER: usize = 16;
+
+/// What [`access_deciding`] decides a change against.
+pub(crate) struct AccessDecision {
+    pub(crate) device_access: Option<Arc<DeviceAccess>>,
+    pub(crate) payloads: Arc<dyn crate::payloads::ShellPayloads>,
+    /// The change would be refused, and the access was still read from
+    /// governance behind the workspace's when the wait ended: refused for that
+    /// ([`collab_types::GOVERNANCE_NEVER_ARRIVED`]), not for the access it was
+    /// decided against.
+    pub(crate) governance_behind: bool,
+}
+
+/// One of a writer's changes waiting for governance, counted while it waits.
+struct GovernanceWait {
+    waits: Arc<std::sync::Mutex<HashMap<[u8; 32], usize>>>,
+    author: [u8; 32],
+}
+
+impl GovernanceWait {
+    /// Count a wait of `author`'s, unless as many wait already as one
+    /// writer may have.
+    fn begin(
+        waits: &Arc<std::sync::Mutex<HashMap<[u8; 32], usize>>>,
+        author: [u8; 32],
+    ) -> Option<Self> {
+        let mut counts = waits.lock_recover();
+        let count = counts.entry(author).or_default();
+        if *count >= GOVERNANCE_WAITS_PER_WRITER {
+            return None;
+        }
+        *count = count.saturating_add(1);
+        drop(counts);
+        Some(Self {
+            waits: Arc::clone(waits),
+            author,
+        })
+    }
+}
+
+impl Drop for GovernanceWait {
+    fn drop(&mut self) {
+        let mut counts = self.waits.lock_recover();
+        if let Some(count) = counts.get_mut(&self.author) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                counts.remove(&self.author);
+            }
+        }
+    }
+}
+
+/// Where the workspace's governance as this server holds it now is read.
+struct Governing {
+    authority: Option<crate::workspaces::WorkspaceAuthority>,
+    #[cfg(test)]
+    pinned: Option<Vec<[u8; 32]>>,
+}
+
+impl Governing {
+    fn of(runtime: &WorkspaceRuntime) -> Self {
+        Self {
+            authority: runtime.workspace_authority.clone(),
+            #[cfg(test)]
+            pinned: runtime.test_governance.clone(),
+        }
+    }
+
+    /// The heads of the governance this server holds for the workspace, now;
+    /// none for a workspace it does not govern.
+    async fn heads(&self) -> Vec<[u8; 32]> {
+        #[cfg(test)]
+        if let Some(pinned) = &self.pinned {
+            return pinned.clone();
+        }
+        let Some(authority) = &self.authority else {
+            return Vec::new();
+        };
+        let Some(workspaces) = authority.workspaces() else {
+            return Vec::new();
+        };
+        workspaces
+            .governance_heads(authority.workspace())
+            .await
+            .unwrap_or_default()
+    }
+}
+
+/// What the workspace's devices may do, to decide `author`'s change in `ws`
+/// against, and the workspace's payload adapter.
 ///
 /// A device can hold a record's keys, and write, before the host has settled
 /// its own admission of that device: the keys come from another key holder,
 /// and a page counts itself in once its person is a member, while its device's
-/// row is still on its way into the workspace's governance. Decided against
+/// row is still on its way into the workspace's governance. A device can also
+/// write under a role given to it a moment ago, which the server has written
+/// into its governance but not yet read its access from. Decided against
 /// the projection of that moment, such a change would be refused for a grant
 /// the host is about to record. So a change the projection of the moment
-/// `refuses`, while the workspace projects what its devices may do and nothing for `author`'s,
-/// waits for the next projection, up to [`ACCESS_WAIT`], and is decided
-/// against that one. Every other change, the author's presence and
-/// governance among them, is decided at once. Nothing is decided without
-/// access: an author that has none when the wait ends is decided against
-/// the projection as it is, and refused as before.
+/// `refuses` waits for the next projection, up to [`ACCESS_WAIT`], while the
+/// workspace projects nothing for `author`'s device, or while this server's
+/// own governance is past the state the projection was read from; then it is
+/// decided against the projection as it is then, with every revocation in it.
+/// The governance says when to decide, never what against. Every other
+/// change is decided at once.
+/// Nothing is decided without access: an author that has none when the wait
+/// ends is decided against the projection as it is, and refused as before.
 pub(crate) async fn access_deciding(
     ws: &SharedWorkspace,
     author: [u8; 32],
     refuses: impl Fn(Option<&DeviceAccess>, &dyn crate::payloads::ShellPayloads) -> bool,
-) -> (
-    Option<Arc<DeviceAccess>>,
-    Arc<dyn crate::payloads::ShellPayloads>,
-) {
+) -> AccessDecision {
     let deadline = tokio::time::Instant::now()
         .checked_add(ACCESS_WAIT)
         .unwrap_or_else(tokio::time::Instant::now);
+    let mut counted: Option<Option<GovernanceWait>> = None;
     loop {
         let changed = Arc::clone(&ws.lock().await.access_changed);
         let next = changed.notified();
@@ -902,19 +1117,35 @@ pub(crate) async fn access_deciding(
         // Registered before the device_access are read, so a projection that
         // lands between the read and the wait still wakes it.
         next.as_mut().enable();
-        let (device_access, payloads) = {
+        let (device_access, payloads, heads, waits, authority) = {
             let runtime = ws.lock().await;
             (
                 runtime.device_access.clone(),
                 runtime.store.payloads().clone(),
+                runtime.governance_heads.clone(),
+                Arc::clone(&runtime.governance_waits),
+                Governing::of(&runtime),
             )
         };
-        let waiting = device_access
+        let refusing = refuses(device_access.as_deref(), &*payloads);
+        let unprojected = device_access
             .as_ref()
-            .is_some_and(|device_access| !device_access.contains_key(&author))
-            && refuses(device_access.as_deref(), &*payloads);
+            .is_some_and(|device_access| !device_access.contains_key(&author));
+        let behind =
+            refusing && device_access.is_some() && !heads.holds(&Box::pin(authority.heads()).await);
+        // A writer with as many changes waiting for governance as it may
+        // have is not waited for again.
+        let may_wait_behind = behind
+            && counted
+                .get_or_insert_with(|| GovernanceWait::begin(&waits, author))
+                .is_some();
+        let waiting = refusing && (unprojected || (behind && may_wait_behind));
         if !waiting || tokio::time::timeout_at(deadline, next).await.is_err() {
-            return (device_access, payloads);
+            return AccessDecision {
+                device_access,
+                payloads,
+                governance_behind: behind,
+            };
         }
     }
 }
@@ -1168,12 +1399,12 @@ mod tests {
         let (disconnect, _disconnect_rx) = mpsc::channel(1);
         rt.add_subscriber(Subscriber {
             device_public_key: RECIPIENT,
-            tx,
+            tx: tx.clone(),
             disconnect,
             content_waiting: Arc::default(),
         });
         let mailbox = Arc::new(PresenceMailbox::default());
-        rt.route_presence(RECIPIENT, Arc::clone(&mailbox));
+        rt.route_presence(RECIPIENT, &tx, Arc::clone(&mailbox));
         let presence = Envelope::Presence {
             workspace_id: WorkspaceId::from_u128(9),
             payload: b"caret".to_vec(),
@@ -1186,7 +1417,7 @@ mod tests {
         );
         assert_eq!(mailbox.take(Instant::now() + BATCH_WINDOW, false).len(), 1);
 
-        rt.presence_mailboxes.remove(&RECIPIENT);
+        rt.session_mut(&RECIPIENT, &tx).unwrap().presence = None;
         assert_eq!(rt.fanout_presence(&AUTHOR, &presence), 1);
         assert_eq!(rx.try_recv().unwrap(), presence);
     }
@@ -1216,15 +1447,15 @@ mod tests {
             frame: vec![byte],
         };
         for number in 0..20 {
-            assert!(rt.route_content(&A, &TO, piece(A, number)));
+            assert!(rt.route_content(&A, &TO, &piece(A, number)));
         }
-        assert!(rt.route_content(&B, &TO, piece(B, 0xBB)));
+        assert!(rt.route_content(&B, &TO, &piece(B, 0xBB)));
         assert!(
-            !rt.route_content(&B, &[9; 32], piece(B, 0xBB)),
+            !rt.route_content(&B, &[9; 32], &piece(B, 0xBB)),
             "a piece for a device that is not subscribed goes nowhere"
         );
 
-        let queue = Arc::clone(&rt.subscribers[&TO].content_waiting);
+        let queue = Arc::clone(&rt.subscriber(&TO).unwrap().content_waiting);
         let mut seen = Vec::new();
         while let Ok(envelope) = rx.try_recv() {
             if let Envelope::DocumentContent {
@@ -1355,9 +1586,10 @@ mod access_wait_tests {
     async fn a_change_before_its_authors_access_waits_and_is_decided_against_it() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = shared(&tmp);
-        ws.lock()
-            .await
-            .project_access(DeviceAccess::from([(LAPTOP, access())]));
+        ws.lock().await.project_access(
+            DeviceAccess::from([(LAPTOP, access())]),
+            tilo_peer_state::GovernanceHeads::default(),
+        );
 
         let deciding = access_deciding(&ws, PAGE, |_, _| true);
         tokio::pin!(deciding);
@@ -1369,19 +1601,21 @@ mod access_wait_tests {
             "a change whose author has no access yet is not decided"
         );
         // A projection that still leaves the page out keeps it waiting.
-        ws.lock()
-            .await
-            .project_access(DeviceAccess::from([(LAPTOP, access())]));
+        ws.lock().await.project_access(
+            DeviceAccess::from([(LAPTOP, access())]),
+            tilo_peer_state::GovernanceHeads::default(),
+        );
         assert!(
             tokio::time::timeout(std::time::Duration::ZERO, &mut deciding)
                 .await
                 .is_err()
         );
         // The page's admission settles.
-        ws.lock()
-            .await
-            .project_access(DeviceAccess::from([(LAPTOP, access()), (PAGE, access())]));
-        let (device_access, _) = deciding.await;
+        ws.lock().await.project_access(
+            DeviceAccess::from([(LAPTOP, access()), (PAGE, access())]),
+            tilo_peer_state::GovernanceHeads::default(),
+        );
+        let device_access = deciding.await.device_access;
         assert!(device_access.unwrap().contains_key(&PAGE));
     }
 
@@ -1393,19 +1627,22 @@ mod access_wait_tests {
         let ws = shared(&tmp);
         let unprojected = access_deciding(&ws, PAGE, |_, _| true);
         tokio::pin!(unprojected);
-        let (device_access, _) = tokio::time::timeout(std::time::Duration::ZERO, &mut unprojected)
+        let device_access = tokio::time::timeout(std::time::Duration::ZERO, &mut unprojected)
             .await
-            .expect("no projection: decided at once");
+            .expect("no projection: decided at once")
+            .device_access;
         assert!(device_access.is_none());
 
-        ws.lock()
-            .await
-            .project_access(DeviceAccess::from([(PAGE, access())]));
+        ws.lock().await.project_access(
+            DeviceAccess::from([(PAGE, access())]),
+            tilo_peer_state::GovernanceHeads::default(),
+        );
         let projected = access_deciding(&ws, PAGE, |_, _| true);
         tokio::pin!(projected);
-        let (device_access, _) = tokio::time::timeout(std::time::Duration::ZERO, &mut projected)
+        let device_access = tokio::time::timeout(std::time::Duration::ZERO, &mut projected)
             .await
-            .expect("an access already projected: decided at once");
+            .expect("an access already projected: decided at once")
+            .device_access;
         assert!(device_access.unwrap().contains_key(&PAGE));
         // A change the projection does not refuse, the author's presence or
         // governance among them, is decided at once, whether the author has member access or not.
@@ -1423,15 +1660,115 @@ mod access_wait_tests {
     async fn an_author_never_granted_is_decided_without_access_after_the_wait() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = shared(&tmp);
-        ws.lock()
-            .await
-            .project_access(DeviceAccess::from([(LAPTOP, access())]));
+        ws.lock().await.project_access(
+            DeviceAccess::from([(LAPTOP, access())]),
+            tilo_peer_state::GovernanceHeads::default(),
+        );
         let started = tokio::time::Instant::now();
-        let (device_access, _) = access_deciding(&ws, PAGE, |_, _| true).await;
+        let decision = access_deciding(&ws, PAGE, |_, _| true).await;
         assert!(started.elapsed() >= ACCESS_WAIT);
-        let device_access = device_access.unwrap();
+        assert!(!decision.governance_behind);
+        let device_access = decision.device_access.unwrap();
         assert!(device_access.contains_key(&LAPTOP));
         assert!(!device_access.contains_key(&PAGE));
+    }
+
+    /// A change its author's access refuses while this server's governance is
+    /// past what the access was read from (a role given a moment ago) waits
+    /// for the access to be read again; when it never is, it is refused for
+    /// that after the wait, never let through.
+    #[tokio::test(start_paused = true)]
+    async fn a_change_refused_while_governance_is_ahead_waits_then_is_refused_for_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = shared(&tmp);
+        {
+            let mut runtime = ws.lock().await;
+            runtime.project_access(
+                DeviceAccess::from([(PAGE, access())]),
+                tilo_peer_state::GovernanceHeads::default(),
+            );
+            runtime.test_governance = Some(vec![[9; 32]]);
+        }
+        let deciding = access_deciding(&ws, PAGE, |_, _| true);
+        tokio::pin!(deciding);
+        assert!(
+            tokio::time::timeout(std::time::Duration::ZERO, &mut deciding)
+                .await
+                .is_err(),
+            "a change refused while the access is behind is not decided yet"
+        );
+        let started = tokio::time::Instant::now();
+        let decision = deciding.await;
+        assert!(
+            started.elapsed() >= ACCESS_WAIT.saturating_sub(std::time::Duration::from_millis(1))
+        );
+        assert!(
+            decision.governance_behind,
+            "refused for the governance it waited for"
+        );
+        // One the access lets through is decided at once.
+        let allowed = access_deciding(&ws, PAGE, |_, _| false);
+        tokio::pin!(allowed);
+        let decision = tokio::time::timeout(std::time::Duration::ZERO, &mut allowed)
+            .await
+            .expect("a change nothing refuses: decided at once");
+        assert!(!decision.governance_behind);
+    }
+
+    /// One writer has at most [`GOVERNANCE_WAITS_PER_WRITER`] changes waiting
+    /// for governance at once: past that, a change is refused at once.
+    #[tokio::test(start_paused = true)]
+    async fn a_writer_waits_for_governance_with_a_bounded_number_of_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = shared(&tmp);
+        {
+            let mut runtime = ws.lock().await;
+            runtime.project_access(
+                DeviceAccess::from([(PAGE, access())]),
+                tilo_peer_state::GovernanceHeads::default(),
+            );
+            runtime.test_governance = Some(vec![[9; 32]]);
+        }
+        let waiting: Vec<_> = (0..GOVERNANCE_WAITS_PER_WRITER)
+            .map(|_| {
+                let ws = Arc::clone(&ws);
+                tokio::spawn(async move { access_deciding(&ws, PAGE, |_, _| true).await })
+            })
+            .collect();
+        tokio::task::yield_now().await;
+        while ws
+            .lock()
+            .await
+            .governance_waits
+            .lock_recover()
+            .get(&PAGE)
+            .copied()
+            != Some(GOVERNANCE_WAITS_PER_WRITER)
+        {
+            tokio::task::yield_now().await;
+        }
+        let over = access_deciding(&ws, PAGE, |_, _| true);
+        tokio::pin!(over);
+        let decision = tokio::time::timeout(std::time::Duration::ZERO, &mut over)
+            .await
+            .expect("a change past the writer's bound is decided at once");
+        assert!(decision.governance_behind);
+        // Another writer still waits.
+        let mut other = Box::pin(access_deciding(&ws, LAPTOP, |_, _| true));
+        ws.lock().await.project_access(
+            DeviceAccess::from([(PAGE, access()), (LAPTOP, access())]),
+            tilo_peer_state::GovernanceHeads::default(),
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::ZERO, &mut other)
+                .await
+                .is_err()
+        );
+        for wait in waiting {
+            assert!(wait.await.unwrap().governance_behind);
+        }
+        drop(other);
+        assert!(ws.lock().await.governance_waits.lock_recover().is_empty());
     }
 
     /// A burst from one sender is carried whole, and another sender's piece

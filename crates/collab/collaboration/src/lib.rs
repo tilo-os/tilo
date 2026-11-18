@@ -1665,16 +1665,6 @@ impl CollaborationManager {
         }
     }
 
-    /// The last publication outcome the transport reported, for telling a
-    /// refusal of one change apart from a lost connection.
-    #[cfg(test)]
-    pub fn document_publication_failure(&self) -> Option<DocumentPublicationError> {
-        match &self.backend {
-            Backend::Disabled(_) => None,
-            Backend::Transport(transport) => transport.publication_outcome(),
-        }
-    }
-
     /// The last change the peer answered but would not accept, while nothing
     /// later went through. The bridge is still connected: only that change is
     /// not accepted, and the owner reconciles its local copy.
@@ -1956,10 +1946,10 @@ fn auto_hello_env_uncached() -> (String, Uuid) {
 }
 
 #[cfg(test)]
-mod task4_route_tests {
+mod primary_route_state_tests {
     use super::{PrimaryRouteState, RouteSpec};
     #[test]
-    fn task4_primary_observation_requires_latest_success_and_current_health() {
+    fn a_primary_observation_requires_the_latest_success_and_current_health() {
         let a = RouteSpec::document("a", uuid::Uuid::nil(), "record-a");
         let b = RouteSpec::document("b", uuid::Uuid::nil(), "record-b");
         let mut state = PrimaryRouteState::default();

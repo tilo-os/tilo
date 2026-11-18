@@ -5,7 +5,7 @@
 
 use crate::framework_support::{notes, surface};
 use notes::read;
-use ui::widget::BlockKind;
+use ui::rich_edit::BlockKind;
 
 #[test]
 fn full_lifecycle_round_trips_through_the_resource() {

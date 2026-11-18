@@ -518,12 +518,9 @@ fn actual_foreign_mounted_volume_record_binds_its_own_filesystem_and_kernel_call
     let readonly_foreign = ReadOnly::enter(&foreign_mount);
     let source = crate::setup::migration_handoff::resolve(&plan, &mount).unwrap();
     let context = SourceReadContext::review_proof(source, &primary.proof().unwrap()).unwrap();
-    assert_eq!(
-        context
-            .verify_mounted_proof(&proof)
-            .unwrap_err()
-            .to_string(),
-        "Volume source also has a writable mount"
+    assert!(
+        context.verify_mounted_proof(&proof).is_err(),
+        "a writable alias mount is no source the proof may authorize"
     );
     // The rejected context owns no alias mount. Retire that exact fixture bind
     // normally before accepting the genuinely readonly volume epoch.

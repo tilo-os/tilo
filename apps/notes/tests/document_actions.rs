@@ -234,7 +234,7 @@ fn a_bad_block_is_refused_by_name_and_writes_nothing() {
 #[test]
 fn a_selection_in_a_note_is_shared_as_the_place_replace_range_edits() {
     use notes::NotesApp;
-    use ui::widget::block_editor::{CursorPlacement, DocumentPosition};
+    use ui::rich_edit::block_editor::{CursorPlacement, DocumentPosition};
 
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();

@@ -429,16 +429,16 @@ impl Thread {
             .map(|(id, reply)| (id.as_str(), reply))
     }
 
-    pub fn blocks(&self) -> Vec<ui::widget::BlockContent> {
+    pub fn blocks(&self) -> Vec<ui::rich_edit::BlockContent> {
         blocks_of(&self.comment.text, &self.comment.body)
     }
 }
 
-pub fn reply_blocks(reply: &Reply) -> Vec<ui::widget::BlockContent> {
+pub fn reply_blocks(reply: &Reply) -> Vec<ui::rich_edit::BlockContent> {
     blocks_of(&reply.text, &reply.body)
 }
 
-fn blocks_of(text: &str, rich: &[tilo_document::ClipBlock]) -> Vec<ui::widget::BlockContent> {
+fn blocks_of(text: &str, rich: &[tilo_document::ClipBlock]) -> Vec<ui::rich_edit::BlockContent> {
     if rich.is_empty() {
         tilo_rich_text::plain_blocks(text)
     } else {

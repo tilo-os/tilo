@@ -23,15 +23,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use linux_vm_protocol::client::{self, LaunchIo};
-use linux_vm_protocol::link::AgentLink;
-use linux_vm_protocol::{AGENT_PORT, Display, Launch, Stdio};
 use linux_vm::hosted::control::{ShareRequest, VmRequest};
 use linux_vm::hosted::firecracker::Machine;
 use linux_vm::hosted::meter::{RunEnd, UsageKind};
 use linux_vm::hosted::service::{Service, ServiceConfig};
 use linux_vm::hosted::size::VmSize;
 use linux_vm::hosted::vm::{Settings, system_clock};
+use linux_vm_protocol::client::{self, LaunchIo};
+use linux_vm_protocol::link::AgentLink;
+use linux_vm_protocol::{AGENT_PORT, Display, Launch, Stdio};
 
 fn env_path(name: &str) -> PathBuf {
     let path = std::env::var_os(name).map(PathBuf::from);

@@ -77,7 +77,7 @@ async fn unauthorized_completion_is_http_permission_denied() {
 async fn forged_identity_and_key_are_not_reflected() {
     let (url, _, _, task) = start(Caller::Agent).await;
     let client = crate::service::provider_client().unwrap();
-    let body = serde_json::json!({"version": RPC_VERSION, "verb":"set_api_key", "profile_id":"x", "api_key":"never-reflect-this", "app_id":"so.tilo.settings", "may_manage_credentials":true});
+    let body = serde_json::json!({"version": RPC_VERSION, "verb":"get_provider_config", "api_key":"never-reflect-this", "app_id":"so.tilo.settings", "may_manage_credentials":true});
     let unauthenticated = request(&client, &url).json(&body).send().await.unwrap();
     assert_eq!(unauthenticated.status(), 401);
     assert!(
@@ -102,8 +102,8 @@ async fn forged_identity_and_key_are_not_reflected() {
 async fn settings_identity_requires_explicit_management_and_revocation_is_observed() {
     let (url, grant, _, task) = start(Caller::Settings).await;
     let client = crate::service::provider_client().unwrap();
-    for verb in ["secret_status", "set_api_key", "remove_api_key"] {
-        let body = serde_json::json!({"version": RPC_VERSION,"verb":verb,"profile_id":"x","api_key":"not-a-provider-key"});
+    for verb in ["get_provider_config", "list_models"] {
+        let body = serde_json::json!({"version": RPC_VERSION,"verb":verb,"profile_id":"x"});
         let response = request(&client, &url)
             .bearer_auth("host-session")
             .json(&body)

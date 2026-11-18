@@ -57,8 +57,8 @@ pub type SessionFactory<H> =
     std::sync::Arc<dyn Fn() -> std::io::Result<McpServer<H>> + Send + Sync>;
 
 /// One MCP session. Its requests are answered through `&self`, so a client
-/// may overlap them: `tilo_status` or `tilo_cancel` answers while a
-/// `tilo_invoke` of the same session waits for its action.
+/// may overlap them: a `tilo_status`, reading or cancelling, answers while a
+/// `tilo_do` of the same session waits for its action.
 pub struct McpServer<H> {
     /// Shared with the blocking threads synchronous broker work runs on.
     host: std::sync::Arc<H>,
@@ -69,7 +69,7 @@ pub struct McpServer<H> {
     caller: Caller,
     /// The agent's group every invocation of this connection is attributed to.
     agent_session: std::sync::Mutex<Option<tilo_actions::WorkGroup>>,
-    /// The page `tilo_query` answers when a call names no `detail`; a client
+    /// The page a listing answers when a call names no `detail`; a client
     /// that parses v1 rows pins `full` for its session at `initialize`.
     detail: std::sync::Mutex<Detail>,
     /// The caller-chosen invocation ids a call of this session is running
@@ -1329,8 +1329,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// The turn a request of this session works in: at most [`MAX_WORKING`]
     /// work at once, and at most [`MAX_ADMITTED`] work or wait, beyond which
     /// a request is refused rather than queued. A request that only reads
-    /// the session or stops one of its invocations (`tilo_status`,
-    /// `tilo_cancel`, `ping`, `tools/list`, `initialize`) needs no turn: it
+    /// the session or stops one of its invocations (`tilo_status`, `ping`,
+    /// `tools/list`, `initialize`) needs no turn: it
     /// never waits behind the calls it is about.
     async fn turn(
         &self,
@@ -1341,7 +1341,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             "initialize" | "ping" | "tools/list" => true,
             "tools/call" => matches!(
                 params.get("name").and_then(Value::as_str),
-                Some("tilo_status" | "tilo_cancel")
+                Some("tilo_status")
             ),
             _ => false,
         };
@@ -2681,7 +2681,7 @@ const LAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// Where a workspace `open`'s answer names the instance it started.
 const OPENED_PEER: &str = "/update/output/value/peer_id";
 /// The experimental capability naming this surface's version. Version 2
-/// answers `tilo_query` with compact pages; version 3 names long resource
+/// answers listings with compact pages; version 3 names long resource
 /// ids by session handles in them and answers an `open` with the new
 /// instance's directory. A client sends `{"so.tilo.mcp": {"detail": "full"}}`
 /// to keep version 1's rows.
@@ -2721,12 +2721,12 @@ const SOME_WORDS_SEARCHED: usize = 6;
 const SOME_WORDS_MIN_CHARS: usize = 3;
 /// Largest directory an `open` answers with, in bytes of JSON, and how many
 /// resources beneath the top level it lists. A model reads it again on every
-/// later turn; beyond this, `tilo_query` browses the rest.
+/// later turn; beyond this, `tilo_ls` browses the rest.
 const DIRECTORY_BYTES: usize = 12 * 1024;
 const DIRECTORY_EXPANSIONS: usize = 6;
-const OPENED_NO_PEER: &str = "the workspace did not say which instance it started, so the file is not open; tilo_list_apps shows whether it runs";
+const OPENED_NO_PEER: &str = "the workspace did not say which instance it started, so the file is not open; tilo_ls shows whether it runs";
 const OPENED_NO_ACTION: &str = "the app offers no open action taking a path, so it started empty; its directory shows what it can do";
-/// How long `tilo_invoke` waits for a terminal update by default, and how
+/// How long `tilo_do` waits for a terminal update by default, and how
 /// long it holds at most. The API holds a call for as long as 60 seconds
 /// (`Prefer: wait=60`), so a caller that asks for that is held for it rather
 /// than told the run is still pending after 30.
@@ -2749,7 +2749,7 @@ fn instances_query() -> CatalogueQuery {
 }
 /// What an invocation this caller may not observe answers.
 const UNOWNED: &str = "Unknown or unowned invocation";
-/// Invocation `id`, observed, as `tilo_status` and `tilo_invoke` answer it:
+/// Invocation `id`, observed, as `tilo_status` and `tilo_do` answer it:
 /// labelled when its host says what it answers is untrusted content.
 fn state_json(
     id: tilo_actions::InvocationId,

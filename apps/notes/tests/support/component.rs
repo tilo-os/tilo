@@ -62,11 +62,11 @@ pub fn renderer() -> ui::TextRenderer {
 /// height, the way a scrolling page lays its body out, with its top-left
 /// corner at `(x, y)`, and run its first frame.
 pub fn framed_block_editor(
-    editor: ui::widget::BlockEditor,
+    editor: ui::rich_edit::BlockEditor,
     width: f32,
     (x, y): (f32, f32),
     theme: ui::Theme,
-) -> ui::headless::Framed<ui::widget::BlockEditor> {
+) -> ui::headless::Framed<ui::rich_edit::BlockEditor> {
     // Tall enough that the viewport cull never drops a fixture block.
     const HEIGHT: f32 = 10_000.0;
     ui::headless::Framed::with_options(

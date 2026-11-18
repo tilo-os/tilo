@@ -1928,19 +1928,25 @@ mod search_tests {
             let mut core = Core::new(WeatherModel::default(), Units::METRIC);
             let results = crate::sample::sample_model().locations;
             let chosen = results[1].clone();
-            core.geocode_cache.insert("city".into(), results);
+            // The query matches the names the geocoder answered with, as a real
+            // one does: the field narrows the suggestions to what it holds.
+            core.geocode_cache.insert("o".into(), results);
             core.begin_search();
+            // The field is placed where the window draws it, so its rows have
+            // bounds a reader can reach.
+            core.search
+                .apply_layout_external(Rect::new(0.0, 0.0, 300.0, 240.0));
             let core = Rc::new(RefCell::new(core));
             let mut pane = crate::panes::OverviewPane::new(core.clone());
             let mut state = AutoCommit::new();
             let search = pane.accessibility().unwrap().children.remove(0);
             assert!(pane.perform_semantic_action(
                 search.action_target.as_deref().unwrap(),
-                &Action::SetValue("city".into()),
+                &Action::SetValue("o".into()),
                 &mut ui::widget::Edits::lend(&mut state),
                 &automerge::ROOT,
             ));
-            assert_eq!(core.borrow().search_query, "city");
+            assert_eq!(core.borrow().search_query, "o");
             assert!(core.borrow().pending_query_at.is_some());
             let search = pane.accessibility().unwrap().children.remove(0);
             let row = &search.children[1];

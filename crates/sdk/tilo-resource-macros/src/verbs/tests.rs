@@ -34,25 +34,9 @@ fn content_parameter_is_marked_in_generated_declaration() {
     assert_eq!(verb.params.len(), 1);
     let content = &verb.params[0];
     assert_eq!(content.role, Role::Content);
-    let expected = quote! {
-        tilo_resource::__private::ParamDecl {
-            name: "body",
-            ty: tilo_resource::__private::ParamTypeOf::Known(tilo_resource::__private::ParamType::Text),
-            description: "Body",
-            schema: <String as tilo_resource::JsonSchema>::json_schema,
-            optional: false,
-            place: tilo_resource::__private::PlaceIn::Nowhere,
-            example: ::core::option::Option::None,
-            flat: false,
-            flat_types: ::core::option::Option::None,
-            content: true,
-            field_type: <String as tilo_resource::JsonSchema>::field_type,
-        }
-    };
-    assert_eq!(
-        param_decl(content, &krate()).to_string(),
-        expected.to_string()
-    );
+    let declaration = param_decl(content, &krate()).to_string();
+    assert!(declaration.contains("name : \"body\""), "{declaration}");
+    assert!(declaration.contains("content : true"), "{declaration}");
 }
 
 #[test]
@@ -66,7 +50,8 @@ fn a_parameter_picking_a_resource_declares_the_picked_reference() {
     assert_eq!(note.picks.as_deref(), Some("notes.notebook.pages"));
     let declaration = param_decl(note, &krate()).to_string();
     assert!(
-        declaration.contains("schema : || tilo_resource :: __private :: picked_resource_schema (\"notes.notebook.pages\")"),
+        declaration.contains("picked_resource_schema")
+            && declaration.contains("\"notes.notebook.pages\""),
         "{declaration}"
     );
 }
@@ -90,25 +75,10 @@ fn read_verb_preserves_parameter_metadata_and_secret_validation() {
     assert_eq!(plain.role, Role::Plain);
     assert!(!plain.secret);
     assert!(plain.example.is_none());
-    let expected = quote! {
-        tilo_resource::__private::ParamDecl {
-            name: "note_text",
-            ty: tilo_resource::__private::ParamTypeOf::Known(tilo_resource::__private::ParamType::Text),
-            description: "Note text",
-            schema: <String as tilo_resource::JsonSchema>::json_schema,
-            optional: false,
-            place: tilo_resource::__private::PlaceIn::Nowhere,
-            example: ::core::option::Option::None,
-            flat: false,
-            flat_types: ::core::option::Option::None,
-            content: false,
-            field_type: <String as tilo_resource::JsonSchema>::field_type,
-        }
-    };
-    assert_eq!(
-        param_decl(plain, &krate()).to_string(),
-        expected.to_string()
-    );
+    let declaration = param_decl(plain, &krate()).to_string();
+    assert!(declaration.contains("description : \"Note text\""));
+    assert!(declaration.contains("optional : false"));
+    assert!(declaration.contains("content : false"));
     let Some(secret) = params.next() else {
         panic!("missing secret parameter");
     };

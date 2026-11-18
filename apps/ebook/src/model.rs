@@ -401,7 +401,7 @@ pub struct Annotation {
     /// palette read.
     pub note: String,
     /// The note or comment as written, as the editor shows it.
-    pub blocks: Vec<ui::widget::BlockContent>,
+    pub blocks: Vec<ui::rich_edit::BlockContent>,
     pub color: HighlightColor,
     /// Creation time, ms since epoch. Used to sort the sidebar.
     pub created: u64,

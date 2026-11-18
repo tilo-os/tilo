@@ -26,6 +26,7 @@ agent-fail-spend-limit = { $agent } hat das heutige { $spent } aufgebraucht; bit
 # Anweisung, der der Agent folgt, gehören zum Arbeitsprotokoll des Laufs,
 # nicht zu dieser Copy.
 agent-failure-unavailable = Der Dienst des Modells ist gerade nicht erreichbar.
+agent-failure-offline = Offline gibt es kein Modell: Dein Modell wird auf dem Server deines Arbeitsbereichs gefragt, den dieser Computer gerade nicht erreicht.
 agent-failure-no-provider = Es ist kein Modell eingerichtet. Wähle eines in den Einstellungen unter Agentenmodelle.
 agent-failure-authentication = Der Anbieter des Modells hat seine Zugangsdaten nicht akzeptiert. Prüfe sie in den Einstellungen.
 agent-failure-permission-denied = Der Anbieter des Modells hat diese Anfrage abgelehnt.

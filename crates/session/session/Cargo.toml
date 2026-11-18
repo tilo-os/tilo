@@ -512,6 +512,7 @@ tilo-onboarding = { path = "../onboarding" }
 tilo-onboarding-session = { path = "../onboarding-session", features = ["test-support"] }
 tilo-quick-settings = { path = "../quick-settings", features = ["test-support"] }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
+tilo-rich-edit = { path = "../../sdk/tilo-rich-edit" }
 # The sheets' apps mounted for a person, so a test presses a control of one
 # as the person's own gesture.
 tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }

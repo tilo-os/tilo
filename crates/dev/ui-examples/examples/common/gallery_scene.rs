@@ -5,10 +5,10 @@
 
 use automerge::transaction::Transactable;
 
+use tilo_rich_edit::table;
 use tilo_ui::icons::Icon;
 use tilo_ui::theme::Theme;
 use tilo_ui::tokens::TextRole;
-use tilo_ui::widget::table;
 use tilo_ui::widget::toggle_group::Segment;
 use tilo_ui::widget::toolbar::Orientation;
 use tilo_ui::widget::{

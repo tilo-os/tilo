@@ -54,15 +54,17 @@ impl WindowPolicy for Movable {
 /// A frame asks the policy for its places, so the one that finds a move is the one that owes the
 /// frame showing it. When the display is due, that frame draws the move in the same pass; when it
 /// is not, the output keeps owing it until the next blank the display builds, which is the frame
-/// after. So both are drawn here: a shell rests after them whatever pace the machine ran at.
+/// after. So frames are drawn until the shell rests, whatever pace the machine ran at.
 fn settle(compositor: &mut Compositor) {
-    compositor
-        .draw_frame()
-        .expect("the frame that asks the policy for its places");
-    compositor
-        .draw_frame()
-        .expect("the frame the display paces the change to");
-    assert!(!compositor.owes_frame(), "the shell draws what it owes");
+    for _ in 0..4 {
+        compositor
+            .draw_frame()
+            .expect("the frame that asks the policy for its places");
+        if !compositor.owes_frame() {
+            return;
+        }
+    }
+    panic!("the shell still owes a frame after four of them");
 }
 
 tilo_test_env::scenario! {

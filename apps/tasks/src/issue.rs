@@ -209,7 +209,7 @@ impl RichTextSource for IssueBody {
         self.field.apply(edits, edit)
     }
 
-    fn presence_keys(&self) -> Option<ui::widget::PresenceKeyFn> {
+    fn presence_keys(&self) -> Option<ui::rich_edit::PresenceKeyFn> {
         self.field.presence_keys()
     }
 }

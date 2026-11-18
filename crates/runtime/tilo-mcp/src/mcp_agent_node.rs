@@ -24,13 +24,15 @@ impl Node {
     }
 }
 
-/// The titles `rows` read more than once, lowercased: a line named by one of
-/// them is told apart by its id beside it.
-pub(super) fn shared_titles(rows: &[Node]) -> std::collections::HashSet<String> {
+/// The names `rows` share, lowercased, each named among `siblings`
+/// ([`Node::name`]): a line named by one of them is told apart by its id
+/// beside it. Two titles used once each per parent are told apart by their
+/// places instead, so they are not shared.
+pub(super) fn shared_names(rows: &[Node], siblings: &[Node]) -> std::collections::HashSet<String> {
     let mut seen = std::collections::HashSet::new();
     rows.iter()
-        .filter(|row| !seen.insert(row.label.trim().to_lowercase()))
-        .map(|row| row.label.trim().to_lowercase())
+        .filter(|row| !seen.insert(row.name(siblings).trim().to_lowercase()))
+        .map(|row| row.name(siblings).trim().to_lowercase())
         .collect()
 }
 
@@ -45,6 +47,9 @@ pub(super) struct Node {
     /// id inside a bound id, else the id.
     pub(super) key: String,
     pub(super) parent: String,
+    /// Its place among the siblings that share its title, from 1: what tells
+    /// two pages titled alike apart in a path (`TODO`, `TODO 2`).
+    pub(super) ordinal: usize,
     pub(super) container: bool,
     pub(super) actions: Vec<ActionDescriptor>,
 }
@@ -79,6 +84,20 @@ impl Node {
     /// part), 2 its kind, 3 the start of either; `None` when it does not.
     pub(super) fn answers_to(&self, name: &str) -> Option<u8> {
         let same = |text: &str| text.trim().eq_ignore_ascii_case(name);
+        // A name that is a title and its place among the siblings of that
+        // title (`TODO 2`) names the one whose place it is, and no other:
+        // the title alone names the first.
+        if let Some((base, place)) = name.rsplit_once(' ')
+            && !base.trim().is_empty()
+            && place.chars().all(|character| character.is_ascii_digit())
+            && let Ok(place) = place.parse::<usize>()
+            && self.label.trim().eq_ignore_ascii_case(base.trim())
+        {
+            return (place == self.ordinal && place >= 2).then_some(0);
+        }
+        if same(self.label.trim()) && self.ordinal > 1 {
+            return None;
+        }
         let tail = |text: &str| {
             text.rsplit(['.', ':', '/'])
                 .next()
@@ -123,7 +142,20 @@ impl Node {
                     .all(|other| other.answers_to(name).is_none_or(|rank| rank > 0))
         };
         let label = self.label.trim();
-        if apart(label) {
+        // A page and the body published beside it share a title but not a
+        // level: only what sits beside this one takes its title.
+        let twin = !label.is_empty()
+            && siblings.iter().any(|other| {
+                other.id != self.id
+                    && other.parent == self.parent
+                    && other.label.trim().eq_ignore_ascii_case(label)
+            });
+        if !label.is_empty() && (apart(label) || twin) {
+            // The one a title names first keeps it; the others wear their
+            // place among them, which the path accepts back.
+            if twin && self.ordinal > 1 {
+                return path_name(&format!("{label} {}", self.ordinal));
+            }
             return path_name(label);
         }
         let tail = self.key.rsplit('/').next().unwrap_or_default();
@@ -169,6 +201,7 @@ pub(super) fn level_of(rows: &[CatalogueRow], parent: &str) -> Level {
                 label: row.resource.label.clone(),
                 key: key.clone().unwrap_or_else(|| row.resource.id.clone()),
                 parent: row.parent_resource.clone(),
+                ordinal: 1,
                 container: false,
                 actions: Vec::new(),
             });
@@ -183,6 +216,15 @@ pub(super) fn level_of(rows: &[CatalogueRow], parent: &str) -> Level {
                 node.actions.push(action.clone());
             }
         }
+    }
+    // Where each item stands among the siblings sharing its title: what a
+    // path names it by when its title alone would name several.
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for node in &mut level.children {
+        let title = node.label.trim().to_lowercase();
+        let count = seen.entry(title).or_insert(0);
+        *count = count.saturating_add(1);
+        node.ordinal = *count;
     }
     level
 }

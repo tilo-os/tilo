@@ -834,15 +834,16 @@ impl Compactor {
             let open: Vec<_> = candidates
                 .iter()
                 .filter_map(|device| {
-                    let subscriber = runtime
-                        .subscribers
-                        .get(device)
-                        .filter(|subscriber| !subscriber.tx.is_closed())?;
-                    let caught_up = runtime
-                        .state_sessions
-                        .get(device)
+                    let session = runtime
+                        .sessions_of(device)
+                        .iter()
+                        .rev()
+                        .find(|session| !session.subscriber.tx.is_closed())?;
+                    let caught_up = session
+                        .state
+                        .as_ref()
                         .is_none_or(crate::peer::StateSession::caught_up);
-                    Some((*device, subscriber.tx.clone(), caught_up))
+                    Some((*device, session.subscriber.tx.clone(), caught_up))
                 })
                 .collect();
             drop(runtime);

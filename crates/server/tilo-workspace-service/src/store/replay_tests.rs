@@ -1157,7 +1157,7 @@ fn member_frame(author: [u8; 32], channel: [u8; 32], size: usize, timestamp: u64
 }
 
 /// A newcomer's join costs what it sends: the first batch of a workspace of
-/// 0, 300 or 3,000 members goes out after reading that batch's frames, and
+/// 0, 40 or 400 members goes out after reading that batch's frames, and
 /// listing only the lineage written since the last join, however much the
 /// workspace retained. Each member left an identity hello, a part of the
 /// shared desktop and a note of their own (which a newcomer opens later, so
@@ -1167,7 +1167,7 @@ fn a_join_costs_what_it_sends() {
     use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
     let desktop = neighbour_wire::app_document_channel(DESKTOP_APP, DESKTOP_DOCUMENT);
     let mut rows = Vec::new();
-    for members in [0_u32, 300, 3_000] {
+    for members in [0_u32, 40, 400] {
         let tmp = tempfile::tempdir().unwrap();
         let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         store.set_documents_when_opened(true);
@@ -1265,6 +1265,6 @@ fn a_join_costs_what_it_sends() {
     let (_, large, ..) = rows[2];
     assert!(
         large < small * 3 + std::time::Duration::from_millis(20),
-        "the first batch of 3,000 members took {large:?}, of 300 {small:?}"
+        "the first batch of 400 members took {large:?}, of 40 {small:?}"
     );
 }

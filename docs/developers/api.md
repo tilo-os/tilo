@@ -176,6 +176,24 @@ seen once. `event` is the kind, `data` its JSON:
 
 A comment line (`: keep-alive`) every 15 seconds keeps idle connections open.
 
+## The person's model
+
+`POST /v1/workspaces/{workspace}/model/ask` asks the person's own model one turn: the model they
+chose on the server that keeps their workspace, asked there with the key their vault keeps, as a
+page asks it. The body is the conversation, `{"messages", "tools", "tool_choice",
+"max_output_tokens"}` (each message `{"role", "content"}`). Only the person on a device of theirs
+is answered; an agent's key is not.
+
+The answer is a server-sent event stream that follows the model as it writes:
+
+- `text` `{"text"}` and `reasoning` `{"text"}` — what the model wrote since the event before;
+- `answer` — the whole turn, ending the stream: `{"Ok": {"message", "stop_reason", "usage"}}`,
+  or `{"Err": {"kind", "message"}}` when the model gave none (`no_provider`: none is set up yet;
+  `authentication`: no key is kept for it);
+- `error` — the API's refusal shape, ending the stream when the server stopped answering.
+
+A computer's own apps ask their model this way, through the session `tilo login` holds.
+
 ## Webhooks
 
 On the API server, a workspace's events can be posted to a URL instead:

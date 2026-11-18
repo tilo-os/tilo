@@ -142,7 +142,7 @@ What runs, all on 127.0.0.1 (ports from TILO_SH_PORT_BASE, default 24100):
             http://127.0.0.1:BASE+23; stack.sh mail lists what it kept
   discord   with --discord, the fake Discord (crates/dev/fake-discord)
 
-Reached from elsewhere: TILO_SH_REACHED_THROUGH=https://live.eu1.tilo.sh (any
+Reached from elsewhere: TILO_SH_REACHED_THROUGH=https://live-eu1.tilo.sh (any
 packet relay's URL) has the server start no packet relay of its own and be
 reached through that one, its iroh endpoint on every address, so people on
 other networks join it with an invitation over iroh while nothing of the
@@ -509,7 +509,7 @@ wait_server_up() {
 server_env() {
   # TILO_SH_REACHED_THROUGH=<packet relay URL>: the server starts no packet relay
   # of its own and is reached through that one (tilo.sh's is
-  # https://live.eu1.tilo.sh), its iroh endpoint on every address: how a stack
+  # https://live-eu1.tilo.sh), its iroh endpoint on every address: how a stack
   # behind a router nobody dials into is reached by people elsewhere, with
   # nothing of it on the web. The stack's state keeps it, so `restart server`
   # serves it the same way; an empty value goes back to its own relay.
@@ -1508,6 +1508,12 @@ stop_native() {
     local deadline=$((SECONDS + 5))
     while kill -0 "$pid" 2>/dev/null && ((SECONDS < deadline)); do sleep 0.1; done
     kill -KILL -- "-$pid" 2>/dev/null || true
+    # Gone, every process of its group: one still exiting holds the ports the
+    # next start binds, which a restart then finds taken.
+    deadline=$((SECONDS + 10))
+    while { kill -0 -- "-$pid" 2>/dev/null || kill -0 "$pid" 2>/dev/null; } && ((SECONDS < deadline)); do
+      sleep 0.1
+    done
   fi
   rm -f "$pidfile"
 }

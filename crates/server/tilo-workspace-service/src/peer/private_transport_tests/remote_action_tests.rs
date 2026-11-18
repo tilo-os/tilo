@@ -104,13 +104,7 @@ async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
         crate::workspace_io::replace_membership(&workspace, Vec::new())
             .await
             .unwrap();
-        assert!(
-            workspace
-                .lock()
-                .await
-                .subscribers
-                .contains_key(&a.device_public_key)
-        );
+        assert!(workspace.lock().await.has_subscriber(&a.device_public_key));
     } else {
         let mut entry = tilo_user_identity::RevocationEntry {
             user_public_key: user.public_key,

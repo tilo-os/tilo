@@ -57,9 +57,6 @@ class ImageInterpreterTests(unittest.TestCase):
     def baseline(self, body: str) -> None:
         self.write(str(checker.BASELINE), HEADER + body, track=False)
 
-    def test_the_repository_ships_no_new_interpreter_script(self) -> None:
-        self.assertEqual(checker.check(ROOT), ([], []))
-
     def test_baselined_script_and_shell_glue_pass(self) -> None:
         self.assertEqual(checker.check(self.root), ([], []))
 

@@ -50,8 +50,9 @@ const ENTERING: Duration = Duration::from_secs(25);
 const STOPPED: &str = "agent-run-stopped";
 /// The longest the agent waits, as it goes, for its session to close: the host
 /// then sees the connection end at once, and takes the agent down, rather than
-/// after the connection's silence runs out.
-const CLOSING: Duration = Duration::from_secs(3);
+/// after the connection's silence ends. A session's endpoint gives its packet relay up to
+/// three seconds to hear it go, and a session entered anew under the same key waits that out.
+const CLOSING: Duration = Duration::from_secs(5);
 
 /// This device in the workspace: the one session every connection shares.
 pub(crate) struct Session {
@@ -147,6 +148,10 @@ pub(crate) struct Shared<E> {
     entry: tokio::sync::Mutex<Entry>,
     /// Counts finished attempts, so a call that waits for one hears that it ended.
     attempts: tokio::sync::watch::Sender<u64>,
+    /// The program this holder was started from, once it holds the device ([`held::Program`]).
+    held_as: std::sync::OnceLock<held::Program>,
+    /// Told when a holder of a newer program asked this one to let it hold the device.
+    stepping_down: tokio::sync::Notify,
 }
 
 #[derive(Default)]
@@ -176,6 +181,8 @@ impl<E: Enter> Shared<E> {
             session: tokio::sync::Mutex::new(None),
             entry: tokio::sync::Mutex::new(Entry::default()),
             attempts: tokio::sync::watch::channel(0).0,
+            held_as: std::sync::OnceLock::new(),
+            stepping_down: tokio::sync::Notify::new(),
         }
     }
 
@@ -254,9 +261,14 @@ impl<E: Enter> Shared<E> {
         if kept(session.device.is_live(), session.stopped().is_some(), fresh) {
             return Some(Arc::clone(session));
         }
-        // Its connection goes before another under the same key dials.
-        session.device.close();
+        // Its connection goes before another under the same key dials: a server keeps one
+        // connection per key, so the two would cut each other off, and the device would stay out
+        // of the workspace for as long as both went on dialing.
+        let peer = session.device.session().clone();
         *held = None;
+        drop(held);
+        peer.close();
+        closed(&peer).await;
         None
     }
 
@@ -268,15 +280,21 @@ impl<E: Enter> Shared<E> {
         };
         let peer = session.device.session().clone();
         drop(session);
-        // The session closes on its own task: the process waits for it rather than ending it
-        // with the runtime, which would leave the host waiting out the connection's silence.
-        let closed = async {
-            while peer.status().phase != tilo_session_client::TransportPhase::Closed {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        };
-        let _ = tokio::time::timeout(CLOSING, closed).await;
+        closed(&peer).await;
     }
+}
+
+/// Once `peer`'s session closed, for at most [`CLOSING`]. The session closes on its own task: the
+/// process waits for it rather than ending it with the runtime, which would leave the server waiting
+/// out the connection's silence, and a new session under the same key waits for it rather than
+/// being cut off by it.
+async fn closed(peer: &tilo_session_client::Link) {
+    let closed = async {
+        while peer.status().phase != tilo_session_client::TransportPhase::Closed {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    };
+    let _ = tokio::time::timeout(CLOSING, closed).await;
 }
 
 /// Whether a held session serves on rather than being entered anew: it is `live`, or the person
@@ -507,6 +525,26 @@ async fn answer<E: Enter>(connection: &Connection<E>, line: &str) -> Option<Stri
             );
         }
     };
+    if request.get("method").and_then(Value::as_str) == Some(STEP_DOWN) {
+        let id = request.get("id").cloned().unwrap_or(Value::Null);
+        let newer = request
+            .get("params")
+            .and_then(|params| params.get("program"))
+            .and_then(|program| serde_json::from_value::<held::Program>(program.clone()).ok());
+        let steps_down = connection
+            .shared
+            .held_as
+            .get()
+            .zip(newer)
+            .is_some_and(|(own, newer)| newer.replaces(own));
+        if steps_down {
+            connection.shared.stepping_down.notify_one();
+        }
+        return Some(
+            json!({"jsonrpc": "2.0", "id": id, "result": {"stepping_down": steps_down, "pid": std::process::id()}})
+                .to_string(),
+        );
+    }
     if request.get("method").and_then(Value::as_str) == Some(PEER_STATUS) {
         // Asked by `tilo status`: no agent run, and nothing entered for it.
         let id = request.get("id").cloned().unwrap_or(Value::Null);
@@ -580,6 +618,10 @@ fn account_or_people<E: Enter>(
 /// What `tilo status` asks this computer's peer: who it is, which workspaces it shows where, and
 /// whether they are in sync.
 pub(crate) const PEER_STATUS: &str = "tilo/peer";
+
+/// What a holder starting from a newer program asks the one holding the device: to let it hold the
+/// device instead, with the program it was started from ([`held::Program`]).
+pub(crate) const STEP_DOWN: &str = "tilo/stepDown";
 
 /// The peer's answer to [`PEER_STATUS`].
 async fn peer_status<E: Enter>(connection: &Connection<E>) -> Value {

@@ -77,9 +77,9 @@ pub struct FaceImage {
     pub source_content_hash: String,
 }
 
-/// A request that can cross the sandbox boundary. `SetApiKey` is only sent by
-/// Settings; a server also authenticates the launcher-provided app preamble.
-/// Caller-owned settings types cannot serialize it.
+/// A request that can cross the sandbox boundary. A server also authenticates
+/// the launcher-provided app preamble. No request carries a provider key:
+/// this computer keeps none.
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "verb", rename_all = "snake_case")]
 pub enum Request {
@@ -87,26 +87,14 @@ pub enum Request {
     /// Older gateways reject this verb; clients must not start paid work then.
     CancellationSupported,
     /// Native connection-local operation identity. Not an authentication claim.
-    Cancellable {
-        id: u64,
-        request: Box<Request>,
-    },
+    Cancellable { id: u64, request: Box<Request> },
     /// Cancel only the matching operation on this authenticated connection.
     /// The acknowledgement is a synchronization barrier, even after completion.
-    Cancel {
-        id: u64,
-    },
-    /// Read-only Agent check of the exact selection's local Plan prerequisites.
-    /// A positive `configured` response does not establish provider reachability,
-    /// accepted credentials, or live local-model availability. Older RPC3
-    /// servers reject this additive verb; callers must treat that as unavailable.
-    SelectionConfigured {
-        profile_id: String,
-        model_id: String,
-        protocol: agent_provider_config::ProviderProtocol,
-    },
-    /// Provider-neutral completion. Credentials and endpoints are resolved
-    /// exclusively by the trusted gateway.
+    Cancel { id: u64 },
+    /// Provider-neutral completion, asked of the person's own model on their
+    /// workspace's server. The provider and model it names are this
+    /// computer's description of the caller's choice; the server answers with
+    /// the model the person chose there.
     Complete {
         profile_id: String,
         model_id: String,
@@ -115,7 +103,8 @@ pub enum Request {
         #[serde(default)]
         stream: bool,
     },
-    /// Resolve the deliberate enabled default once, when this inference starts.
+    /// Provider-neutral completion with the person's default model, asked on
+    /// their workspace's server.
     CompleteDefault {
         request: agent_provider_config::protocol::ModelRequest,
         timeout_ms: u64,
@@ -175,30 +164,12 @@ pub enum Request {
     /// network reaches the caller, and nothing leaves the device. Answers a
     /// [`SubjectMatte`] as JSON. Older servers reject this verb; callers
     /// treat that as no model.
-    SegmentSubject {
-        image: VisionImage,
-    },
-    SecretStatus {
-        profile_id: String,
-    },
-    /// Whether the profile's key is stored and bound to its provider origin.
-    CredentialStatus {
-        profile_id: String,
-    },
+    SegmentSubject { image: VisionImage },
     /// The models a provider offers, asked with its stored key or sign-in:
     /// Settings' model list and connection test. Answers the models as JSON
     /// (`ModelDescriptor`s); a failure names its kind, never what the
     /// provider wrote. Older gateways reject this verb.
-    ListModels {
-        profile_id: String,
-    },
-    SetApiKey {
-        profile_id: String,
-        api_key: String,
-    },
-    RemoveApiKey {
-        profile_id: String,
-    },
+    ListModels { profile_id: String },
 }
 
 /// How much of each pixel of a [`Request::SegmentSubject`] picture is its
@@ -985,18 +956,6 @@ pub fn cluster_faces(
         .ok_or_else(|| ClientError::Protocol("gateway returned no face clusters".into()))
 }
 
-/// Compatibility alias for the shared administration contract.
-pub use agent_provider_config::management::CredentialStatus;
-
-/// Query whether the profile's key is stored on this device.
-pub fn credential_status(profile_id: &str) -> Result<CredentialStatus, ClientError> {
-    let response = request(Request::CredentialStatus {
-        profile_id: profile_id.into(),
-    })?;
-    serde_json::from_str(response.output.as_deref().unwrap_or(""))
-        .map_err(|_| ClientError::Protocol("gateway returned invalid credential status".into()))
-}
-
 /// Find the subject of one bounded picture with the installed on-device
 /// segmentation model.
 ///
@@ -1012,47 +971,6 @@ pub fn segment_subject(image: VisionImage) -> Result<SubjectMatte, ClientError> 
         .ok_or_else(|| ClientError::Protocol("gateway returned no subject".into()))?;
     serde_json::from_str(&output)
         .map_err(|error| ClientError::Protocol(format!("malformed subject: {error}")))
-}
-
-/// Query whether the profile has a secret stored by the isolated gateway.
-///
-/// # Errors
-///
-/// Returns [`ClientError`] when the gateway cannot be reached or rejects or
-/// malforms the response.
-pub fn secret_configured(profile_id: &str) -> Result<bool, ClientError> {
-    Ok(request(Request::SecretStatus {
-        profile_id: profile_id.to_string(),
-    })?
-    .configured
-    .unwrap_or(false))
-}
-
-/// Store a profile API key in the isolated gateway.
-///
-/// # Errors
-///
-/// Returns [`ClientError`] when the gateway cannot be reached, rejects the
-/// update, or returns a malformed response.
-pub fn set_api_key(profile_id: &str, api_key: String) -> Result<(), ClientError> {
-    request(Request::SetApiKey {
-        profile_id: profile_id.to_string(),
-        api_key,
-    })?;
-    Ok(())
-}
-
-/// Remove a profile API key from the isolated gateway.
-///
-/// # Errors
-///
-/// Returns [`ClientError`] when the gateway cannot be reached, rejects the
-/// update, or returns a malformed response.
-pub fn remove_api_key(profile_id: &str) -> Result<(), ClientError> {
-    request(Request::RemoveApiKey {
-        profile_id: profile_id.to_string(),
-    })?;
-    Ok(())
 }
 
 /// Write one size-bounded JSON frame to a gateway stream.
@@ -1420,18 +1338,6 @@ mod unsupported_platform_tests {
                 serde_json::Value::Null,
                 Duration::from_secs(1)
             ),
-            Err(ClientError::Unavailable)
-        ));
-        assert!(matches!(
-            secret_configured("hosted"),
-            Err(ClientError::Unavailable)
-        ));
-        assert!(matches!(
-            set_api_key("hosted", "owned fixture".into()),
-            Err(ClientError::Unavailable)
-        ));
-        assert!(matches!(
-            remove_api_key("hosted"),
             Err(ClientError::Unavailable)
         ));
     }

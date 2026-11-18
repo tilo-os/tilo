@@ -318,13 +318,6 @@ impl Worker {
                 }
                 Err(reason) => Reply::Failed(reason),
             },
-            Request::ChangedKeys {
-                record,
-                snapshot,
-                bytes,
-            } => document_change(&record, mutation(snapshot, bytes), |record, change| {
-                changed_keys(replica.changed_keys(record, &change))
-            }),
             Request::Resolve { address } => match decode(&address) {
                 Ok(address) => {
                     descriptors(&replica.descriptor(&address).into_iter().collect::<Vec<_>>())
@@ -554,19 +547,6 @@ fn document_change(
     match parse_document(wire) {
         Some(record) => asked(&record, change),
         None => Reply::Failed(format!("{wire} is not a record id")),
-    }
-}
-
-/// What the record's replica reports `change` wrote, or, for a record it holds
-/// none of, `null`: the host reads that one as it always did.
-fn changed_keys(written: Option<Result<Vec<Vec<String>>, String>>) -> Reply {
-    match written {
-        Some(Ok(keys)) => match serde_json::to_string(&keys) {
-            Ok(text) => Reply::Keys(text),
-            Err(error) => Reply::Failed(error.to_string()),
-        },
-        Some(Err(reason)) => Reply::Failed(reason),
-        None => Reply::Keys("null".into()),
     }
 }
 

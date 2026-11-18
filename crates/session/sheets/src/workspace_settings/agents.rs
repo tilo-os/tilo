@@ -67,13 +67,16 @@ pub struct KindLine {
     /// in segment order: an outside effect is never allowed unasked, so its
     /// line offers no Allow.
     pub choices: Vec<usize>,
+    /// What its actions are, where its name alone does not say: the outside
+    /// effects of the person's own account. Empty for an app's own line.
+    pub caption: Option<String>,
 }
 
 /// One app an agent's answers are given for.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccessApp {
-    /// The app it is, for its mark.
-    pub app: String,
+    /// The mark it wears: an app's own, or the person's account's.
+    pub icon: Icon,
     /// What its answers are asked for by.
     pub scope: String,
     pub label: String,
@@ -151,8 +154,6 @@ pub struct AgentReview {
     /// What an app's answers say as one tag, once any was set here.
     pub custom: String,
     pub apps: Vec<AccessApp>,
-    /// What the review says when there is no app to answer for.
-    pub empty: String,
     /// The model it plans with, for an agent the workspace keeps a record of.
     pub models: Option<Models>,
     /// What it may spend a day, for an agent the workspace keeps a record of.
@@ -473,9 +474,6 @@ fn reviewed(review: &AgentReview, parts: &Parts) -> Element {
     }
     groups.push(Box::new(head));
     groups.push(caption(&review.note));
-    if review.apps.is_empty() {
-        groups.push(caption(&review.empty));
-    }
     for app in &review.apps {
         groups.push(access_app(review, app, parts));
     }
@@ -525,8 +523,8 @@ fn reviewed(review: &AgentReview, parts: &Parts) -> Element {
 /// One app: its mark and name, with Reset once any of its answers was set
 /// here, then an Allow, Ask first or Deny control for each kind of action.
 fn access_app(review: &AgentReview, app: &AccessApp, parts: &Parts) -> Element {
-    let mut head = ListRow::new(format!("ws-agent-app-{}", app.scope), app.label.clone())
-        .icon(app_glyph(&app.app, None));
+    let mut head =
+        ListRow::new(format!("ws-agent-app-{}", app.scope), app.label.clone()).icon(app.icon);
     if app.customised {
         head = head.tags(&[(review.custom.as_str(), ChipStyle::Tinted(Tone::Info))]);
         let (agent, scope) = (review.agent.clone(), app.scope.clone());
@@ -579,6 +577,8 @@ fn kind_line(review: &AgentReview, app: &AccessApp, line: &KindLine, parts: &Par
     let answers = ToggleGroup::new(segments, chosen)
         .with_id(format!("ws-agent-answer-{}-{}", app.scope, line.kind))
         .with_accessible_name(format!("{} {}", app.label, line.label))
+        // Every line keeps a place per answer, so a line offering fewer lines up with the rest.
+        .with_columns(ANSWERS.len())
         .with_enabled(review.editable)
         .on_view(
             &format!("ws-agent-answer-{}-{}", app.scope, line.kind),
@@ -593,14 +593,17 @@ fn kind_line(review: &AgentReview, app: &AccessApp, line: &KindLine, parts: &Par
                 }
             },
         );
-    Box::new(
-        ListRow::new(
-            format!("ws-agent-kind-{}-{}", app.scope, line.kind),
-            line.label.clone(),
-        )
-        .nested()
-        .trailing(Box::new(answers)),
+    let mut row = ListRow::new(
+        format!("ws-agent-kind-{}-{}", app.scope, line.kind),
+        line.label.clone(),
     )
+    .nested();
+    if let Some(caption) = &line.caption {
+        // A caption wraps to the width the control leaves it, onto as many lines as it
+        // takes: it is never cut short.
+        row = row.secondary(caption.as_str()).secondary_lines(4);
+    }
+    Box::new(row.trailing(Box::new(answers)))
 }
 
 /// The agent's model: what it plans with, who chooses it, and the default
@@ -793,6 +796,7 @@ pub(super) fn sample_review() -> AgentReview {
         } else {
             vec![0, 1, 2]
         },
+        caption: None,
     };
     AgentReview {
         agent: "claude".to_owned(),
@@ -813,7 +817,7 @@ pub(super) fn sample_review() -> AgentReview {
         custom: "Set here".to_owned(),
         apps: vec![
             AccessApp {
-                app: "so.tilo.notes".to_owned(),
+                icon: app_glyph("so.tilo.notes", None),
                 scope: "so.tilo.notes".to_owned(),
                 label: "Notes".to_owned(),
                 customised: true,
@@ -824,7 +828,7 @@ pub(super) fn sample_review() -> AgentReview {
                 ],
             },
             AccessApp {
-                app: "so.tilo.calendar".to_owned(),
+                icon: app_glyph("so.tilo.calendar", None),
                 scope: "so.tilo.calendar".to_owned(),
                 label: "Calendar".to_owned(),
                 customised: false,
@@ -835,7 +839,6 @@ pub(super) fn sample_review() -> AgentReview {
                 ],
             },
         ],
-        empty: "No apps to answer for yet.".to_owned(),
         models: Some(Models {
             title: "Model".to_owned(),
             summary: "Sonnet from Anthropic".to_owned(),

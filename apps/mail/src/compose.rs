@@ -24,13 +24,14 @@ use ui::Widget;
 use ui::framework::Dispatcher;
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
+use ui::rich_edit::{BlockContent, BlockEditor, BlockKind};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::marks::Mark;
 use ui::widget::toolbar::Orientation;
 use ui::widget::{
-    BlockContent, BlockEditor, BlockKind, Button, ButtonFace, ButtonRole, ChipFace, ChipLead,
-    ControlSize, TextInput, TextInputKind, Toolbar,
+    Button, ButtonFace, ButtonRole, ChipFace, ChipLead, ControlSize, TextInput, TextInputKind,
+    Toolbar,
 };
 
 use crate::actions::DraftBodySeed;

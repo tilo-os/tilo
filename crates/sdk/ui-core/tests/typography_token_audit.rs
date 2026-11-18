@@ -101,6 +101,7 @@ pub fn typography_ratchet() -> Ratchet {
         roots: &[
             "crates/sdk/ui-core/src/widget",
             "crates/sdk/ui-core/src/chrome",
+            "crates/sdk/tilo-rich-edit/src",
             "apps/*/src",
         ],
         patterns: vec![

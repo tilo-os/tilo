@@ -175,7 +175,7 @@ fn an_agent_steps_a_replay_through_its_history() {
     let (file, states) = recording_file(&doc, made);
     let mut replay = HeadlessApp::<ShoppingApp>::replaying(file).unwrap();
     replay.settle();
-    // As an agent's `tilo_invoke` reaches the window.
+    // As an agent's `tilo_do` reaches the window.
     let mut call = |action: &str, arguments: serde_json::Value| {
         replay.call(action, arguments).unwrap().unwrap()
     };

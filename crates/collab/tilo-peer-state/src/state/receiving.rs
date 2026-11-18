@@ -137,7 +137,7 @@ impl StatePeer {
         if matches!(
             self.authorize_document(&source, app, document, op, now)
                 .map_err(|refusal| match refusal {
-                    super::authority::AuthorizeRefusal::Rules(refusal) => {
+                    super::authority::AuthorizeRefusal::Rules(refusal, said) => {
                         AdmissionError::ChangeRefused(Box::new(crate::ChangeRefused::of(
                             self.core.workspace.clone(),
                             workspace.to_owned(),
@@ -145,6 +145,7 @@ impl StatePeer {
                             document,
                             op,
                             &refusal,
+                            said,
                         )))
                     }
                     denied @ super::authority::AuthorizeRefusal::Denied(_) => {

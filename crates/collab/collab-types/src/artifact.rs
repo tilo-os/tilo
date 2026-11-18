@@ -20,13 +20,3 @@ impl Default for ArtifactId {
         Self::new()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn artifact_ids_are_unique() {
-        assert_ne!(ArtifactId::new(), ArtifactId::new());
-    }
-}

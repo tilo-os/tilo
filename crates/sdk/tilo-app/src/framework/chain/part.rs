@@ -38,6 +38,8 @@ type Written =
     for<'a> fn(&'a dyn Any) -> Result<(&'a dyn tilo_actions::Action, EncodedAction), ActionError>;
 type Group = fn(Vec<Action>) -> Result<(Box<dyn tilo_actions::Action>, EncodedAction), ActionError>;
 type Carry = fn(u64, &dyn Any) -> Option<Result<Action, String>>;
+/// [`Chained::tree`] of the parts held: each item's parent among them.
+type PartsTree = fn(&dyn Any) -> Vec<(tilo_resource::Id, Option<tilo_resource::Id>)>;
 
 type Answer = fn(&AutoCommit, &str, &[ui_core::automerge::Patch]) -> Option<serde_json::Value>;
 type Spread = fn(&dyn Any, u64, &dyn Any) -> Vec<(u64, Action)>;
@@ -134,6 +136,7 @@ pub(super) struct PartType {
     pub(super) resource: fn() -> super::super::root::ResourceType,
     /// [`Chained::places`] published, from the app's resource and the parts.
     pub(super) places: fn(&dyn Any, &dyn Any) -> Vec<tilo_actions::ResourceSpec>,
+    pub(super) tree: PartsTree,
     pub(super) search: fn(&dyn Any) -> Vec<tilo_resource::SearchEntry>,
     pub(super) search_over: fn(&dyn Any, &dyn Any) -> Vec<tilo_resource::SearchEntry>,
     pub(super) prepare_read: fn(&mut Filter, &dyn Any, &dyn Any) -> Result<(), String>,
@@ -190,6 +193,7 @@ impl<P: Chained> Of<P> {
         children: children::<P>,
         resource: super::super::root::ResourceType::of::<P>,
         places: places::<P>,
+        tree: tree::<P>,
         search: search::<P>,
         search_over: search_over::<P>,
         prepare_read: prepare_read::<P>,
@@ -544,6 +548,10 @@ fn places<P: Chained>(base: &dyn Any, parts: &dyn Any) -> Vec<tilo_actions::Reso
         return Vec::new();
     };
     tilo_resource::derived::published::<P>(P::places(base, parts_of::<P>(parts))).to_resources()
+}
+
+fn tree<P: Chained>(parts: &dyn Any) -> Vec<(tilo_resource::Id, Option<tilo_resource::Id>)> {
+    P::tree(parts_of::<P>(parts))
 }
 
 fn search<P: Chained>(state: &dyn Any) -> Vec<tilo_resource::SearchEntry> {

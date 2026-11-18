@@ -198,9 +198,6 @@ d-256inp7w-last = Zuletzt
 d-256inp7w-target = Ziel
 
 d-wjo4okew = Galerie
-    .w-more = Mehr
-    .w-copy-link = Link kopieren
-    .w-settings = Einstellungen
     .w-gallery = Galerie
     .w-basics = Grundlagen
     .w-controls = Bedienelemente
@@ -219,6 +216,11 @@ d-wjo4okew = Galerie
     .w-your-own = Eigene
 
 d-7chkyi44 = Grundlagen
+    .w-menu-button = Menüschaltfläche
+    .w-the-a-bar-keeps-what-does = Das „…“, hinter dem eine Leiste hält, was nicht mehr passt, offen für seine Einträge.
+    .w-more = Mehr
+    .w-copy-link = Link kopieren
+    .w-settings = Einstellungen
     .w-text-rich-text-and-a-quote = Text, formatierter Text und ein Zitat, Buttons, Chips, eine Karte mit Fakten und ein Leerzustand.
     .w-rich-text-and-a-quote = Formatierter Text und ein Zitat
     .w-a-message-s-own-text-and = Der eigene Text einer Nachricht, und darüber die Nachricht, auf die sie antwortet.

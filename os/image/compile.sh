@@ -256,7 +256,6 @@ case "$TILO_RUST_LTO" in \
          EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
          APP_FEATURES="${APP_FEATURES}" \
          CARGO_PROFILE_THIN_APP_CODEGEN_UNITS="$([ "$TILO_RUST_LTO" = off ] && echo 16 || echo 1)" \
-         CARGO_PROFILE_THIN_APP_DEBUG="$TILO_RUST_DEBUGINFO" \
          EXTRA_CARGO_ARGS="$1" \
            os/scripts/build-thin-apps.sh; \
        } \

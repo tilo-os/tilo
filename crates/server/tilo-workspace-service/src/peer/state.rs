@@ -6,7 +6,7 @@
 use super::{
     AgentRegistry, Arc, AuthenticatedPeer, Envelope, HashMap, PeerError, ReplayCatchup,
     ReplayPendingTarget, ServerTrust, SessionCtx, SharedWorkspace, WorkspaceOperation,
-    current_session, enqueue_state, lost_session, mpsc, trace_native_publication, workspace_access,
+    current_session, enqueue_state, mpsc, trace_native_publication, workspace_access,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
@@ -370,10 +370,9 @@ impl StateDelivery {
         outbound: &mpsc::Sender<Envelope>,
     ) -> bool {
         self.live.load(std::sync::atomic::Ordering::SeqCst)
-            && current_session(runtime, peer, outbound)
             && runtime
-                .state_sessions
-                .get(&peer.device_public_key)
+                .session(&peer.device_public_key, outbound)
+                .and_then(|current| current.state.as_ref())
                 .is_some_and(|current| Arc::ptr_eq(&current.live, &self.live))
     }
 }
@@ -459,11 +458,8 @@ pub(super) async fn handle_delta(
         // subscriber; a follow-up write must close rather than refuse twice.
         let runtime = ws.lock().await;
         if !current_session(&runtime, peer, session.outbound) {
-            return Err(lost_session(
-                &runtime,
-                peer,
-                session,
-                WorkspaceOperation::State,
+            return Err(PeerError::Protocol(
+                "subscriber authorization changed".into(),
             ));
         }
         let asker = StateSource::new(peer, session);
@@ -536,15 +532,20 @@ async fn change_refusal(
     };
     // The change itself must say what it does and stay inside what its app
     // publishes, before the server keeps or forwards it.
-    let (device_access, payloads) =
-        crate::workspace::access_deciding(ws, claimed, |device_access, payloads| {
+    let decision = Box::pin(crate::workspace::access_deciding(
+        ws,
+        claimed,
+        |device_access, payloads| {
             crate::surfaces::refusal(payloads, delta, device_access).is_some()
                 || crate::surfaces::role_refusal(delta, device_access, claimed).is_some()
-        })
-        .await;
+        },
+    ))
+    .await;
+    let device_access = decision.device_access.as_deref();
     let store = ws.lock().await.store.clone();
-    let refused = crate::surfaces::refusal(&*payloads, delta, device_access.as_deref())
-        .or_else(|| crate::surfaces::role_refusal(delta, device_access.as_deref(), claimed))
+    let refused = crate::surfaces::refusal(&*decision.payloads, delta, device_access)
+        .or_else(|| crate::surfaces::role_refusal(delta, device_access, claimed))
+        .map(|refusal| behind_governance(decision.governance_behind, refusal))
         .or_else(|| {
             (!attached)
                 .then(|| crate::surfaces::own_refusal(&store, &peer.user_public_key, delta))
@@ -808,11 +809,8 @@ pub(super) async fn handle_delta_prefix(
         trace_all(&envelopes, "server_source_refused");
         let runtime = workspace.lock().await;
         if !current_session(&runtime, peer, session.outbound) {
-            return Err(lost_session(
-                &runtime,
-                peer,
-                session,
-                WorkspaceOperation::State,
+            return Err(PeerError::Protocol(
+                "subscriber authorization changed".into(),
             ));
         }
         let asker = StateSource::new(peer, session);
@@ -971,6 +969,23 @@ pub(super) fn refused_reason(
 fn trace_all(envelopes: &[Envelope], step: &str) {
     for envelope in envelopes {
         trace_native_publication(step, envelope, None);
+    }
+}
+
+/// `refusal` of a change, or, for a change that waited in vain for the
+/// workspace's access to be read from its newer governance, that it waited
+/// for that: what its writer is told rather than a grant it was given
+/// meanwhile.
+pub(super) fn behind_governance(
+    behind: bool,
+    refusal: tilo_server_protocol::refusal::Refusal,
+) -> tilo_server_protocol::refusal::Refusal {
+    if behind {
+        tilo_server_protocol::refusal::Refusal::NotGranted(
+            collab_types::GOVERNANCE_NEVER_ARRIVED.into(),
+        )
+    } else {
+        refusal
     }
 }
 

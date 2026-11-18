@@ -670,3 +670,29 @@ fn a_group_reads_and_writes_its_record_once_and_replays_identically() {
         "nor does any member of it"
     );
 }
+
+/// What a group wrote, once at its end, is where the next action starts: it reads none of
+/// the group's own change back, and still writes what a replica with nothing kept writes.
+#[test]
+fn the_action_after_a_group_starts_from_what_the_group_wrote() {
+    let mut live = seeded(50);
+    let mut cold = live.fork();
+    let members: Vec<tilo_resource::Invoke<Checklist>> = (0..20)
+        .map(|n| Checklist::ADD.with(format!("bulk {n}")))
+        .collect();
+    live.apply(tilo_resource::Invoke::group(members)).unwrap();
+    let group = live.log().last().unwrap().clone();
+    follow(&mut live);
+    let (_, (loads, _)) = counted(|| live.apply(Checklist::DRAFT.with("after")).unwrap());
+    assert_eq!(
+        loads, 0,
+        "the next action reads none of the group's tasks back"
+    );
+    let next = live.log().last().unwrap().clone();
+    forget_all();
+    cold.replay(&group).unwrap();
+    forget_all();
+    cold.replay(&next).unwrap();
+    assert_eq!(live.heads(), cold.heads(), "the replayed actions differ");
+    assert_eq!(live.state().unwrap(), cold.state().unwrap());
+}

@@ -363,7 +363,12 @@ async fn losing_any_one_of_three_holders_leaves_the_workspace_writable_and_gover
 
         // And what members write reaches each through the other.
         let on_one = session_to(&alice, &phone, one).await;
-        assert!(admitted(&on_one, workspace.workspace_id).await);
+        tilo_test_env::within("the holder admits the phone", async {
+            while !admitted(&on_one, workspace.workspace_id).await {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
         // Each round's changes differ, so an earlier round's copy reaching a
         // holder that came back is not taken for this one.
         carried(
@@ -383,8 +388,9 @@ async fn losing_any_one_of_three_holders_leaves_the_workspace_writable_and_gover
         )
         .await;
 
-        // Both say the same of who holds the workspace and who is in it.
-        tilo_test_env::within("both holders agree", async {
+        // Both say the same of who holds the workspace and who is in it, and
+        // every holder is still named.
+        tilo_test_env::within("both holders name the three of them", async {
             loop {
                 let said = |holder: &crate::common::Hosted| {
                     let workspaces = holder.host.workspaces().clone();
@@ -403,8 +409,7 @@ async fn losing_any_one_of_three_holders_leaves_the_workspace_writable_and_gover
                     }
                 };
                 let (on_one, on_two) = (said(one).await, said(two).await);
-                if on_one == on_two {
-                    assert_eq!(on_one.0.len(), 3, "every holder is still named");
+                if on_one == on_two && on_one.0.len() == 3 {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;

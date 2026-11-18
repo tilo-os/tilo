@@ -1972,3 +1972,27 @@ mod tests {
         }
     }
 }
+
+/// A ground is *near black* below this relative luminance.
+pub const NEAR_BLACK_GROUND_LUMINANCE: f64 = 0.005;
+
+/// Gain applied to a derived tier's alpha on a near-black ground, and the alpha it never drops
+/// below — the high-contrast preset's own faintest re-solved veneer (`theme.rs`, `set_overlays`: 51
+/// / 77 / 110 / 153 / 217 against the dark 13 / 26 / 40 / 51 / 72).
+pub const NEAR_BLACK_TIER_GAIN: u32 = 3;
+pub const NEAR_BLACK_TIER_FLOOR: u8 = 51;
+
+/// A derived fill tier (band, stripe, track, thumb) on `surface`: [`Colors::hairline_on`] at
+/// `alpha`, with the near-black gain where the ground would otherwise swallow it.
+#[must_use]
+pub fn tier_on(surface: Color, alpha: u8) -> Color {
+    use crate::a11y::relative_luminance;
+    let alpha = if relative_luminance(surface) < NEAR_BLACK_GROUND_LUMINANCE {
+        let boosted =
+            u8::try_from((u32::from(alpha) * NEAR_BLACK_TIER_GAIN).min(255)).unwrap_or(u8::MAX);
+        boosted.max(NEAR_BLACK_TIER_FLOOR)
+    } else {
+        alpha
+    };
+    Colors::hairline_on(surface, alpha)
+}

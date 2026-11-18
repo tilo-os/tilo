@@ -1892,10 +1892,58 @@ mod tests {
 
         phase compound_editor_focus_follows_named_identity_across_rebuilds;
         {
+            /// A compound text widget as a document editor is one: a named, focusable owner
+            /// whose first line takes its focus, laid out as one unnamed measured leaf under its
+            /// own node.
+            struct Lines {
+                lines: Vec<crate::widget::TextInput>,
+                leaf: crate::widget::Spacer,
+            }
+            impl Lines {
+                fn new(count: usize) -> Self {
+                    Self {
+                        lines: (0..count)
+                            .map(|_| crate::widget::TextInput::new(Vec::new()))
+                            .collect(),
+                        leaf: crate::widget::Spacer::new(),
+                    }
+                }
+                fn first_line_focused(&self) -> bool {
+                    self.lines.first().is_some_and(|line| line.is_focused())
+                }
+            }
+            impl Widget for Lines {
+                fn build_layout(
+                    &mut self,
+                    tree: &mut TaffyTree<()>,
+                    theme: &Theme,
+                    nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+                ) -> NodeId {
+                    let leaf = self.leaf.build_layout(tree, theme, nodes);
+                    tree.widget_node(taffy::Style::default(), &[leaf], nodes, self)
+                }
+                fn name(&self) -> &str {
+                    "lines"
+                }
+                fn test_id(&self) -> Option<&str> {
+                    Some("lines")
+                }
+                fn is_focusable(&self) -> bool {
+                    true
+                }
+                fn set_focus(&mut self, focused: bool) {
+                    for (index, line) in self.lines.iter_mut().enumerate() {
+                        line.set_focus(focused && index == 0);
+                    }
+                }
+                fn is_focused(&self) -> bool {
+                    self.lines.iter().any(Widget::is_focused)
+                }
+            }
+
             fn compound_editor_focus_survives_rebuilt_or_split_focused_line() {
-                use crate::widget::BlockEditor;
                 for capture_leaf in [false, true] {
-                    let mut editor = BlockEditor::from_markdown("first");
+                    let mut editor = Lines::new(1);
                     editor.set_focus(true);
                     let mut tree = TaffyTree::new();
                     let mut nodes = HashMap::new();
@@ -1913,7 +1961,7 @@ mod tests {
                         .unwrap();
                     nodes.clear();
                     bindings.clear();
-                    editor = BlockEditor::from_markdown("first\n\nsecond");
+                    editor = Lines::new(2);
                     editor.set_focus(true);
                     let root = editor.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
                     unsafe {
@@ -1924,7 +1972,7 @@ mod tests {
                         Some(root)
                     );
                     assert!(editor.is_focused());
-                    assert!(editor.blocks()[0].line.is_focused());
+                    assert!(editor.first_line_focused());
                     assert_eq!(
                         unsafe { CompositionFocus::current(&nodes, &bindings, None) },
                         Some(root)
@@ -1961,9 +2009,9 @@ mod tests {
             }
 
             fn duplicate_named_editor_or_removed_editor_cannot_receive_focus() {
-                use crate::widget::{BlockEditor, Column};
+                use crate::widget::Column;
                 for duplicate in [false, true] {
-                    let mut old = BlockEditor::from_markdown("old");
+                    let mut old = Lines::new(1);
                     old.set_focus(true);
                     let mut tree = TaffyTree::new();
                     let mut nodes = HashMap::new();
@@ -1979,8 +2027,8 @@ mod tests {
                     let mut rebuilt = Column::new();
                     if duplicate {
                         rebuilt = rebuilt
-                            .push(Box::new(BlockEditor::from_markdown("one")))
-                            .push(Box::new(BlockEditor::from_markdown("two")));
+                            .push(Box::new(Lines::new(1)))
+                            .push(Box::new(Lines::new(1)));
                     }
                     let root = rebuilt.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
                     unsafe {
@@ -1992,8 +2040,7 @@ mod tests {
             }
 
             fn compound_editor_restores_owner_and_inner_text_focus_after_rebuild() {
-                use crate::widget::BlockEditor;
-                let mut editor = Box::new(BlockEditor::new());
+                let mut editor = Box::new(Lines::new(1));
                 editor.set_focus(true);
                 let mut tree = TaffyTree::new();
                 let mut nodes = HashMap::new();
@@ -2002,7 +2049,7 @@ mod tests {
                 unsafe {
                     bindings.rebuild(editor.as_ref(), &tree, root, &nodes);
                 }
-                assert!(editor.blocks()[0].line.is_focused());
+                assert!(editor.first_line_focused());
                 assert_eq!(
                     nodes
                         .values()
@@ -2025,12 +2072,12 @@ mod tests {
                         Some(rebuilt)
                     );
                     assert!(editor.is_focused());
-                    assert!(editor.blocks()[0].line.is_focused());
+                    assert!(editor.first_line_focused());
                 }
                 // The stable named owner still cannot bypass a current focus trap.
                 assert!(unsafe { focus.restore(&nodes, &bindings, Some(&[])) }.is_none());
                 assert!(!editor.is_focused());
-                assert!(!editor.blocks()[0].line.is_focused());
+                assert!(!editor.first_line_focused());
             }
 
             compound_editor_focus_survives_rebuilt_or_split_focused_line();

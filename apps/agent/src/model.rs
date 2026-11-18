@@ -52,6 +52,7 @@ fn person_key(kind: agent_provider_config::protocol::ErrorKind) -> &'static str 
     use agent_provider_config::protocol::ErrorKind;
     match kind {
         ErrorKind::Unavailable => "agent-failure-unavailable",
+        ErrorKind::Offline => "agent-failure-offline",
         ErrorKind::NoProvider => "agent-failure-no-provider",
         ErrorKind::Authentication => "agent-failure-authentication",
         ErrorKind::PermissionDenied => "agent-failure-permission-denied",

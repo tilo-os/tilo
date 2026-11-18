@@ -127,10 +127,10 @@ pub use mls_governance::{
 };
 pub use op::{
     ContentRetention, DocumentMutation, DocumentMutationEncodeError, DocumentMutationError,
-    EncryptionMetadata, EncryptionScheme, MAX_DOCUMENT_MUTATION_BYTES, RoutedDocumentPayload,
-    SignedOp, WholeDocumentPayload, document_artifact_id, document_attestation_id,
-    live_artifact_id, next_unordered_document_sequence, validate_document_payload_route,
-    validate_whole_document_payload_route,
+    EncryptionMetadata, EncryptionScheme, GOVERNANCE_NEVER_ARRIVED, MAX_DOCUMENT_MUTATION_BYTES,
+    RoutedDocumentPayload, SignedOp, WholeDocumentPayload, document_artifact_id,
+    document_attestation_id, live_artifact_id, next_unordered_document_sequence,
+    validate_document_payload_route, validate_whole_document_payload_route,
 };
 pub use own_resource::{OwnResource, own_kinds};
 pub use peer::{PeerPresence, PeerPresencePayload};
@@ -141,8 +141,8 @@ pub use personal::{
 pub use receipt::{
     Allows, ChangeAuthor, Receipt, ReceiptRefusal, ReceiptSurface, SurfaceSource, Surfaces,
     WrittenDocument, check_appearances, check_claims, check_claims_by_kind, check_continuations,
-    check_opened, check_opened_mutation, check_reassembled, claim_node, decide_op,
-    decide_op_pinned, written_node,
+    check_opened, check_opened_mutation, check_reassembled, claim_node, claimed_invokers,
+    decide_op, decide_op_pinned, written_node,
 };
 pub use redaction::{
     MAX_REDACTION_REASON_BYTES, OpId, RedactRequest, RedactedMarker, RedactionError,

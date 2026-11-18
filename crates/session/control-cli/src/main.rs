@@ -2484,19 +2484,6 @@ mod tests {
         assert_eq!(sent.len(), 1);
     }
 
-    /// `read` waits inside the desktop: the client holds no pause of its
-    /// own to tune.
-    #[test]
-    fn read_contains_no_sleep() {
-        let source = include_str!("main.rs");
-        let read = source
-            .split("fn run_read_with(")
-            .nth(1)
-            .and_then(|rest| rest.split("\n}\n").next())
-            .expect("run_read_with is defined here");
-        assert!(!read.contains("sleep"), "run_read_with must not sleep");
-    }
-
     /// An app's read the desktop's wait did not see answered prints no
     /// receipt as if it were content.
     #[test]

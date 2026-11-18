@@ -282,6 +282,9 @@ impl Workspaces {
         person: [u8; 32],
         question: PendingConfirmation,
     ) -> Result<(), ActionCallError> {
+        // Whoever waits for this invocation hears now that it waits for its person, not later
+        // that it took long.
+        let _ = ASKING.try_with(|told| told.notify_one());
         let asker = self
             .inner
             .asks_people
@@ -306,6 +309,12 @@ fn nothing(workspace: &str) -> Vec<Rule> {
         tilo_action_policy::KindSet::ALL,
         Answer::Deny,
     )]
+}
+
+tokio::task_local! {
+    /// Told when the invocation of this task puts a question to its person
+    /// ([`Workspaces::ask_person`]): its caller then hears it waits for their approval.
+    pub(crate) static ASKING: std::sync::Arc<tokio::sync::Notify>;
 }
 
 /// A fresh question's id.

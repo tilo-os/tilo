@@ -467,6 +467,18 @@ type RichRuns<'a, 's> = (
 );
 
 impl RichTextLayout {
+    /// The shaped paragraph, for the tests of a widget built on it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn buffer_for_test(&self) -> &Buffer {
+        &self.buffer
+    }
+
+    /// The underlined and struck-through byte ranges, for the tests of a widget built on it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn decorations_for_test(&self) -> (&[(usize, usize)], &[(usize, usize)]) {
+        (&self.underlines, &self.strikes)
+    }
+
     /// Revealed secret controls need geometry without an additional retained plaintext source snapshot.
     pub(crate) fn discard_prepared_inputs(&mut self) {
         self.prepared = None;

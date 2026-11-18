@@ -6,8 +6,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use collab_types::caps::{
-    Access, CapDecision, CapOverride, DeviceCap, Effect, ResourceRef, Scope, decide_app,
-    decide_capability,
+    Access, CapDecision, CapOverride, Effect, ResourceRef, decide_app, decide_capability,
 };
 use tilo_action_policy::{
     Acting, ActionKind, Answer, Authority, Change, Context, Grant, GrantId, Grantee, KindSet,
@@ -277,16 +276,43 @@ impl Workspace {
             .collect()
     }
 
-    /// Take back app `app_id`'s desktop control: every
-    /// [`DeviceCap::DesktopControl`] grant of its, whatever its lifetime.
-    /// Whether there was one.
+    /// The grant letting app `app_id` use the desktop's actions beyond its
+    /// own workspace (`tilo action` typed in a terminal), given by `by`: an
+    /// action grant naming the app, on the desktop's own node.
+    #[must_use]
+    pub fn desktop_control_grant(&self, app_id: &str, by: Grantee) -> Grant {
+        Grant::new(
+            format!("desktop-control:{app_id}"),
+            Grantee::app(app_id),
+            self.node().app(crate::commands::APP_ID),
+            KindSet::ALL,
+            Answer::Allow,
+            by,
+        )
+    }
+
+    /// Whether app `app_id` may act on this desktop beyond its own window at
+    /// `now`: what the workspace's grants naming the app answer for the
+    /// desktop's own actions.
+    pub fn holds_desktop_control_at(&self, app_id: &str, now: u64) -> bool {
+        self.policy
+            .party_of(Grantee::app(app_id))
+            .decide(
+                &self.node().app(crate::commands::APP_ID),
+                ActionKind::Undoable,
+                &context_at(now),
+            )
+            .answer
+            == Answer::Allow
+    }
+
+    /// Take back app `app_id`'s desktop control: every grant naming it on the
+    /// desktop's actions, whatever its lifetime. Whether there was one.
     pub fn stop_desktop_control(&mut self, app_id: &str) -> bool {
+        let node = self.node().app(crate::commands::APP_ID);
+        let app = Grantee::app(app_id);
         !self
-            .revoke_sandbox_matching(|cap| {
-                cap.names_app(app_id)
-                    && cap.effect == Effect::Grant
-                    && cap.scope == Scope::Device(DeviceCap::DesktopControl)
-            })
+            .revoke_grants_matching(|grant| grant.grantee == app && grant.node == node)
             .is_empty()
     }
 

@@ -393,7 +393,7 @@ fn agent_groups(changes: &[([u8; 32], Vec<u8>)]) -> Vec<Option<tilo_actions::Wor
 /// reads the note back, and everything it wrote is one run of the agent's,
 /// the connection's, which History lists with its changes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_persons_own_agent_starts_a_stopped_app_writes_and_reads_as_one_run() {
+async fn a_persons_own_agent_lists_a_stopped_app_into_running_writes_and_reads_as_one_run() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
@@ -421,15 +421,15 @@ async fn a_persons_own_agent_starts_a_stopped_app_writes_and_reads_as_one_run() 
     )
     .with_agent_session("session-7");
 
-    // Nobody started Notes: the listing says how to, and that works.
-    let (stopped, failed) = tool(&server, "tilo_ls", json!({"path": "notes"})).await;
+    // Nobody started Notes: listing it starts it, so the agent sees its notebook and can act
+    // on it without opening anything first.
+    let (started, failed) = tool(&server, "tilo_ls", json!({"path": "notes"})).await;
     assert!(
-        !failed && stopped.contains("not running") && stopped.contains("notes#open"),
-        "{stopped}"
+        !failed && !started.contains("not running"),
+        "listing an installed app starts it: {started}"
     );
-    let (opened, failed) = tool(&server, "tilo_do", json!({"path": "notes#open"})).await;
-    assert!(!failed, "notes#open as the listing said: {opened}");
-    // Said again once it runs, the same call still answers what is there.
+    notes_resource(&started);
+    // Opening it anyway still answers what is there.
     let (again, failed) = tool(&server, "tilo_do", json!({"path": "notes#open"})).await;
     assert!(!failed, "notes#open on running notes: {again}");
 

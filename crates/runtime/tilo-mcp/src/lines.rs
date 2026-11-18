@@ -117,8 +117,8 @@ pub enum Answer<'a> {
     /// `initialize`, whose run id and page detail every later call of the
     /// session reads, and a daemon's own native requests.
     InOrder(std::pin::Pin<Box<dyn std::future::Future<Output = Reply> + 'a>>),
-    /// On the runtime, beside the session's other requests: a `tilo_cancel`
-    /// or `tilo_status` answers while the `tilo_invoke` it is about waits.
+    /// On the runtime, beside the session's other requests: a `tilo_status`
+    /// (reading or cancelling) answers while the `tilo_do` it is about waits.
     /// The session bounds how many of these work at once.
     Overlapping(std::pin::Pin<Box<dyn std::future::Future<Output = Reply> + Send>>),
 }

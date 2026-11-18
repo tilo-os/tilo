@@ -134,17 +134,19 @@ mod tests {
         assert_eq!(ChunkTier::sticky(s, 1000), ChunkTier::Inline);
     }
 
+    /// Manifests keep the code, so a code that moved would misread stored content.
     #[test]
-    fn codes_round_trip() {
-        for tier in [
-            ChunkTier::Inline,
-            ChunkTier::Single,
-            ChunkTier::Small,
-            ChunkTier::Medium,
-            ChunkTier::Large,
+    fn codes_are_the_ones_manifests_keep() {
+        for (tier, code) in [
+            (ChunkTier::Inline, 0),
+            (ChunkTier::Single, 1),
+            (ChunkTier::Small, 2),
+            (ChunkTier::Medium, 3),
+            (ChunkTier::Large, 4),
         ] {
-            assert_eq!(ChunkTier::from_code(tier.code()), Some(tier));
+            assert_eq!(tier.code(), code);
+            assert_eq!(ChunkTier::from_code(code), Some(tier));
         }
-        assert_eq!(ChunkTier::from_code(9), None);
+        assert_eq!(ChunkTier::from_code(5), None);
     }
 }

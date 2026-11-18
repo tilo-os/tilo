@@ -11,6 +11,9 @@ extern crate runtime_dylib;
 // own.
 #[cfg(feature = "thin")]
 extern crate tilo_highlight_engine;
+// The interpreter of Typst's plugins comes from the wasm engine.
+#[cfg(feature = "thin")]
+extern crate tilo_wasm_engine;
 
 #[cfg(feature = "thin")]
 pub use comemo;

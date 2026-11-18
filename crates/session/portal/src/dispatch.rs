@@ -185,19 +185,3 @@ pub(crate) fn advertised_in_signature(xml: &str, method: &str) -> String {
         .map(|(ty, _)| ty)
         .collect()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn introspection_is_indented_like_the_interface_macro_writes_it() {
-        let xml = "<interface name=\"a.B\">\n  <!--\n   One.\n\n   Two.\n   -->\n  <method name=\"C\">\n  </method>\n</interface>\n";
-        let mut out = String::new();
-        write_introspection(&mut out, 2, xml);
-        assert_eq!(
-            out,
-            "  <interface name=\"a.B\">\n    <!--\n     One.\n\n     Two.\n     -->\n    <method name=\"C\">\n    </method>\n  </interface>\n"
-        );
-    }
-}

@@ -465,13 +465,13 @@ impl Device {
         self.host_action(KEEP_PERSONAL, arguments).await.map(drop)
     }
 
-    /// The host's own operation `action` with `arguments`, asked in the workspace this
+    /// The server's own operation `action` with `arguments`, asked in the workspace this
     /// device entered ([`crate::session::HOST_ITSELF`] before it entered one): no
     /// workspace decides it, but an agent the session was handed to asks as its grants
     /// there let it.
     ///
     /// # Errors
-    /// The host did not answer, refused, or did not finish.
+    /// The server did not answer, refused, or did not finish.
     pub async fn host_action(
         &self,
         action: &str,
@@ -484,12 +484,12 @@ impl Device {
         self.ask_host(self.workspace_id, target, arguments).await
     }
 
-    /// What the host itself answers to `target` with `arguments`, asked in
+    /// What the server itself answers to `target` with `arguments`, asked in
     /// `workspace_id` ([`crate::session::HOST_ITSELF`] for none): one of its own operations,
     /// or the person's account on it, asked as the person whose device this is.
     ///
     /// # Errors
-    /// The host did not answer, refused, or did not finish.
+    /// The server did not answer, refused, or did not finish.
     pub async fn ask_host(
         &self,
         workspace_id: WorkspaceId,
@@ -514,16 +514,16 @@ impl Device {
                 },
             )
             .await
-            .ok_or_else(|| DeviceRefusal::unanswered("the host did not answer"))?
+            .ok_or_else(|| DeviceRefusal::unanswered("the server did not answer"))?
             .map_err(|error| DeviceRefusal::of(&error))?;
         let unfinished =
-            || DeviceRefusal::unanswered("the host did not finish what was asked of it");
+            || DeviceRefusal::unanswered("the server did not finish what was asked of it");
         match receipt.status {
             ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
             ReceiptStatus::Failed { error } => Err(DeviceRefusal::failed(&error.message)),
             ReceiptStatus::Rejected { error } => Err(DeviceRefusal::of(&error)),
             ReceiptStatus::Cancelled { .. } => Err(unfinished()),
-            // Still running when the wait for its answer ran out (a host
+            // Still going when the wait for its answer ran out (a server
             // making hundreds of workspaces at once): followed until it ends.
             ReceiptStatus::Accepted => {
                 let now = tilo_clock::now();
@@ -938,12 +938,39 @@ impl DeviceRefusal {
     pub const NOT_ADMITTED: &'static str = "not_admitted";
     /// The device holds no certificate it could enter with, and no root to certify it.
     pub const NO_CERTIFICATE: &'static str = "no_certificate";
+    /// The operation waits for the person to approve it on a device that holds their identity,
+    /// and goes on once they allow it.
+    pub const AWAITING_APPROVAL: &'static str = tilo_actions::remote::AWAITING_APPROVAL;
+    /// The server does not know the person yet: its operator declares them an owner, or an
+    /// invitation brings them in.
+    pub const NOT_ON_THIS_SERVER: &'static str = tilo_actions::remote::NOT_ON_THIS_SERVER;
 
     /// The host's refusal `error`, its typed refusal read off it where it carries one.
     #[must_use]
     pub fn of(error: &ActionCallError) -> Self {
         match error {
-            ActionCallError::Refused { reason } => Self::said(error.code(), reason),
+            // The server put it to the person, who has not answered yet: it goes on once they
+            // allow it.
+            ActionCallError::Refused { reason }
+                if reason.starts_with(tilo_actions::remote::AWAITING_APPROVAL) =>
+            {
+                Self::awaiting_approval()
+            }
+            ActionCallError::Refused { reason } => {
+                match reason
+                    .strip_prefix(tilo_actions::remote::NOT_ON_THIS_SERVER)
+                    .and_then(|said| said.strip_prefix(": "))
+                {
+                    Some(said) => Self {
+                        code: Self::NOT_ON_THIS_SERVER.to_owned(),
+                        message: said.to_owned(),
+                        refusal: None,
+                        retry_after_ms: None,
+                        entry: None,
+                    },
+                    None => Self::said(error.code(), reason),
+                }
+            }
             other => Self::plain(other),
         }
     }
@@ -962,6 +989,20 @@ impl DeviceRefusal {
     #[must_use]
     pub fn failed(message: &str) -> Self {
         Self::said(Self::FAILED, message)
+    }
+
+    /// The operation waits for its person's approval ([`Self::AWAITING_APPROVAL`]).
+    #[must_use]
+    pub fn awaiting_approval() -> Self {
+        Self {
+            code: Self::AWAITING_APPROVAL.to_owned(),
+            message: "Waiting for your approval: Tilo asks you on the devices that hold your \
+                      identity (your Tilo tab). It is done once you allow it there."
+                .to_owned(),
+            refusal: None,
+            retry_after_ms: None,
+            entry: None,
+        }
     }
 
     /// No answer came: `why`.

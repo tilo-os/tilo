@@ -70,6 +70,20 @@ pub fn log_sessions_at(filter: &str) {
     let _ = SESSION_LOG.set(filter.to_owned());
 }
 
+/// How often a device's window shares ask the device sharing a window again for what it shows,
+/// and how long an ask keeps that device's streams up: the production periods unless a test says
+/// otherwise, as the session reads them ([`tilo_session::VIEW_AGAIN_ENV`]).
+static SHARE_VIEW: std::sync::OnceLock<(Duration, Duration)> = std::sync::OnceLock::new();
+
+/// Have every session this test starts from here on renew the windows of a workspace at `again`
+/// and keep a viewer's streams up for `expiry` instead of the production periods: what a test
+/// that proves a share outlives the waiting for the viewer to ask again watches in a fraction of
+/// a second, rather than spending the production seconds on it. Called before a test makes its
+/// devices.
+pub fn share_view_periods(again: Duration, expiry: Duration) {
+    let _ = SHARE_VIEW.set((again, expiry));
+}
+
 /// How long a device is given to hold the workspace it joined and to show it in front: the join is
 /// the product's own, which gives it [`tilo_session::sync::JOIN_PATIENCE`] before the person is told
 /// it did not happen, and the suite's hang bound after that.
@@ -1337,7 +1351,19 @@ impl Device {
             .env_remove("TILO_SHELL_JOIN_INVITATION_FILE")
             .env_remove("TILO_SHELL_JOIN_ADMINISTRATOR")
             .env_remove("WAYLAND_DISPLAY")
-            .env_remove("DISPLAY")
+            .env_remove("DISPLAY");
+        // The share periods a test shortened ([`share_view_periods`]): the session renews a
+        // viewer's ask that often, and keeps the sharing device's streams up that long after the
+        // last one.
+        if let Some((again, expiry)) = SHARE_VIEW.get() {
+            command
+                .env(tilo_session::VIEW_AGAIN_ENV, again.as_millis().to_string())
+                .env(
+                    tilo_session::VIEW_EXPIRY_ENV,
+                    expiry.as_millis().to_string(),
+                );
+        }
+        command
             // A stop of the whole group reaches it, as a session is stopped.
             .process_group(0)
             // And a test that ends without its destructors — the runner killing it for running

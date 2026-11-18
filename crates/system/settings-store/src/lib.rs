@@ -53,7 +53,6 @@ use std::sync::Arc;
 use serde_json::{Map, Value};
 
 pub mod accessibility;
-pub mod app_consent;
 pub mod app_scope;
 pub mod appearance;
 pub mod clipboard_history;
@@ -61,7 +60,6 @@ pub mod clock;
 pub mod continuity_privacy;
 pub mod control_hints;
 pub mod day_schedule;
-pub mod desktop_control;
 pub mod desktop_controls;
 pub mod device_class;
 pub mod device_vpn;

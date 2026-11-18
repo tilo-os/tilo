@@ -79,6 +79,15 @@ def collect(objects, library_dirs):
     report = subprocess.run(['ldd', *map(str, objects), *map(str, lazy)], env=environment,
                             capture_output=True, text=True)
     if report.returncode or 'not found' in report.stdout:
+        # An engine library names the engines it chains on. One of those absent
+        # from the set being signed cannot come back when the library loads:
+        # name it, rather than the loader's whole dump.
+        engines = list(dict.fromkeys(
+            name for name in re.findall(r'^\s*(\S+) => not found$', report.stdout, re.MULTILINE)
+            if re.fullmatch(r'libtilo_[a-z0-9_]+_engine\.so', name)))
+        if engines:
+            raise ValueError('runtime engine ' + ', '.join(engines) +
+                             ' is missing from the set being signed: the engine that names it must ship with it')
         raise ValueError('native dependencies are unresolved: ' +
                          (report.stdout + report.stderr).strip())
     paths = set(lazy)

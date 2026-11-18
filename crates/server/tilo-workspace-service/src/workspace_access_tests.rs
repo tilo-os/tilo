@@ -439,7 +439,7 @@ fn decide_matrix() {
             runtime.governed_user_roots.clear();
             runtime.attached_hosts.clear();
             runtime.workspace_authority = None;
-            runtime.state_sessions.clear();
+            runtime.clear_states();
             runtime.admission = *mode;
             (case.setup)(&mut runtime, &server);
             let actual: String = OPS

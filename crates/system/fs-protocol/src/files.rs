@@ -13,7 +13,6 @@ pub const FILE_METADATA_VERSION: u16 = 2;
 pub const FILE_METADATA_LEGACY_VERSION: u16 = 1;
 pub const FILE_PROPERTIES_VERSION: u16 = 1;
 pub const FILE_BINDING_VERSION: u16 = 1;
-pub const CONTENT_REVISION_VERSION: u16 = 1;
 pub const MAX_MIME_BYTES: usize = 255;
 pub const MAX_FILE_NAME_BYTES: usize = 255;
 pub const MAX_PREVIEW_VARIANTS: usize = 8;
@@ -21,7 +20,6 @@ pub const MAX_METADATA_TOKEN_BYTES: usize = 64;
 pub const MAX_IMAGE_DIMENSION: u32 = 1_000_000;
 pub const MAX_MEDIA_DURATION_MS: u64 = 100 * 365 * 24 * 60 * 60 * 1_000;
 pub const MAX_DOCUMENT_PAGES: u32 = 10_000_000;
-pub const MAX_VERSION_PARENTS: usize = 8;
 
 /// A Unix directory-entry name, preserved as the exact bytes supplied by the
 /// kernel.  The transparent byte-vector encoding is deliberately wire
@@ -133,57 +131,37 @@ impl Default for FileDocumentId {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct FileVersionId(pub Uuid);
-
-impl FileVersionId {
-    pub fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
-
-impl Default for FileVersionId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
+/// A content's hash: the BLAKE3 digest of its manifest, which names the bytes wherever they
+/// are kept. Readable formats carry it as hex, compact ones as its 32 bytes.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ContentHash(pub [u8; 32]);
 
-/// Atomic namespace pointer to one immutable, signed record-history version.
-///
-/// The namespace stores the canonical encoding as one CRDT scalar so a merge
-/// can never select a hash from one edit and a size or record identity from
-/// another. The referenced [`FileVersionV1`] remains the authority; this is a
-/// compact discovery pointer, not a replacement for signature verification.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ContentRevisionV1 {
-    pub schema_version: u16,
-    pub document_id: FileDocumentId,
-    pub version_id: FileVersionId,
-    pub content_hash: Option<ContentHash>,
-    pub byte_len: u64,
-    pub metadata_hash: ContentHash,
+impl fmt::Debug for ContentHash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ContentHash({})", hex::encode(self.0))
+    }
 }
 
-impl ContentRevisionV1 {
-    pub fn validate(&self) -> Result<(), FileDocumentError> {
-        if self.schema_version != CONTENT_REVISION_VERSION {
-            return Err(FileDocumentError::UnsupportedContentRevisionVersion(
-                self.schema_version,
-            ));
+impl Serialize for ContentHash {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if serializer.is_human_readable() {
+            serializer.serialize_str(&hex::encode(self.0))
+        } else {
+            self.0.serialize(serializer)
         }
-        if self.document_id.0.is_nil() {
-            return Err(FileDocumentError::NilDocumentId);
+    }
+}
+
+impl<'de> Deserialize<'de> for ContentHash {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        if deserializer.is_human_readable() {
+            let text = String::deserialize(deserializer)?;
+            let mut bytes = [0u8; 32];
+            hex::decode_to_slice(&text, &mut bytes).map_err(de::Error::custom)?;
+            Ok(Self(bytes))
+        } else {
+            <[u8; 32]>::deserialize(deserializer).map(Self)
         }
-        if self.version_id.0.is_nil() {
-            return Err(FileDocumentError::NilVersionId);
-        }
-        Ok(())
     }
 }
 
@@ -481,18 +459,6 @@ impl FileMetadataV1 {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub enum FileProvenance {
-    Create,
-    Edit,
-    Rename,
-    Move,
-    Delete,
-    Restore { from: FileVersionId },
-    ConflictResolution,
-}
-
 fn valid_file_name(name: &FileNameV1) -> bool {
     let bytes = name.as_bytes();
     !name.is_empty()
@@ -504,32 +470,6 @@ fn valid_file_name(name: &FileNameV1) -> bool {
             Ok(text) => !text.chars().any(char::is_control),
             Err(_) => !bytes.iter().any(u8::is_ascii_control),
         }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FileVersionV1 {
-    pub id: FileVersionId,
-    pub document_id: FileDocumentId,
-    pub parents: Vec<FileVersionId>,
-    pub actor: FileActor,
-    pub timestamp_ms: u64,
-    pub content_hash: Option<ContentHash>,
-    pub metadata_hash: ContentHash,
-    pub provenance: FileProvenance,
-}
-
-impl FileVersionV1 {
-    /// Validate bounded, acyclic parent references.
-    pub fn validate(&self) -> Result<(), FileDocumentError> {
-        if self.parents.len() > MAX_VERSION_PARENTS {
-            return Err(FileDocumentError::TooManyParents);
-        }
-        if self.parents.contains(&self.id) {
-            return Err(FileDocumentError::SelfParent);
-        }
-        Ok(())
-    }
 }
 
 /// What wrote a change for a person: an agent through Tilo actions or in a session of a
@@ -598,14 +538,10 @@ pub enum FileDocumentError {
     InvalidMetadataToken,
     #[error("file properties record is empty")]
     EmptyFileProperties,
-    #[error("unsupported content revision version {0}")]
-    UnsupportedContentRevisionVersion(u16),
     #[error("unsupported file binding version {0}")]
     UnsupportedBindingVersion(u16),
-    #[error("content revision has a nil record id")]
+    #[error("the file has a nil document id")]
     NilDocumentId,
-    #[error("content revision has a nil version id")]
-    NilVersionId,
     #[error("file binding has a nil parent record id")]
     NilParentDocumentId,
     #[error("file binding cannot name itself as parent")]
@@ -618,10 +554,6 @@ pub enum FileDocumentError {
     MimeTooLong,
     #[error("too many preview variants")]
     TooManyPreviews,
-    #[error("too many version parents")]
-    TooManyParents,
-    #[error("a version cannot be its own parent")]
-    SelfParent,
 }
 
 #[cfg(test)]
@@ -630,8 +562,7 @@ mod tests {
     use collab_types::canonical_bytes;
 
     /// Metadata v2 round-trips rich properties and migrates v1; rich properties enforce strict
-    /// bounds; metadata is versioned, bounded and canonical; a content revision is one canonical
-    /// bounded pointer.
+    /// bounds; metadata is versioned, bounded and canonical.
     #[test]
     fn file_metadata_is_versioned_bounded_and_canonical() {
         // Phase: metadata_v2_round_trips_rich_properties_and_v1_migrates.
@@ -716,23 +647,6 @@ mod tests {
             let decoded: FileMetadataV1 =
                 collab_types::canonical::from_canonical_bytes(&bytes).unwrap();
             assert_eq!(decoded, metadata);
-        }
-
-        // Phase: content_revision_is_one_canonical_bounded_pointer.
-        {
-            let revision = ContentRevisionV1 {
-                schema_version: CONTENT_REVISION_VERSION,
-                document_id: FileDocumentId::new(),
-                version_id: FileVersionId::new(),
-                content_hash: Some(ContentHash([8; 32])),
-                byte_len: 4096,
-                metadata_hash: ContentHash([9; 32]),
-            };
-            revision.validate().unwrap();
-            let bytes = collab_types::canonical::canonical_bytes(&revision).unwrap();
-            let decoded: ContentRevisionV1 =
-                collab_types::canonical::from_canonical_bytes(&bytes).unwrap();
-            assert_eq!(decoded, revision);
         }
     }
 
@@ -849,30 +763,6 @@ mod tests {
             assert!(
                 !scope.matches_resource(&collab_types::ResourceRef::FsPath("/renamed.txt".into()))
             );
-        }
-    }
-
-    /// History rejects cycles and unbounded parent sets.
-    #[test]
-    fn file_history_is_acyclic_and_bounded() {
-        // Phase: history_rejects_cycles_and_unbounded_parent_sets.
-        {
-            let id = FileVersionId::new();
-            let mut version = FileVersionV1 {
-                id,
-                document_id: FileDocumentId::new(),
-                parents: vec![id],
-                actor: actor(),
-                timestamp_ms: 1,
-                content_hash: None,
-                metadata_hash: ContentHash([0; 32]),
-                provenance: FileProvenance::Create,
-            };
-            assert_eq!(version.validate(), Err(FileDocumentError::SelfParent));
-            version.parents = (0..=MAX_VERSION_PARENTS)
-                .map(|_| FileVersionId::new())
-                .collect();
-            assert_eq!(version.validate(), Err(FileDocumentError::TooManyParents));
         }
     }
 }

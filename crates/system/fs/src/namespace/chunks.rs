@@ -61,10 +61,9 @@ pub(crate) struct Chunks {
     located: HashMap<String, TreeChunk>,
 }
 
-/// Make `doc` a chunk of the tree: its map of nodes and of histories, each the one change every
-/// replica makes alike, so two devices that start the same chunk start the same record.
+/// Make `doc` a chunk of the tree: its map of nodes, the one change every replica makes alike,
+/// so two devices that start the same chunk start the same document.
 fn chunk_maps(doc: &mut AutoCommit) -> Result<ObjId, AutomergeError> {
-    fs_protocol::tree::root_map(doc, super::history::HISTORY_KEY)?;
     fs_protocol::tree::tree_nodes(doc)
 }
 
@@ -346,19 +345,6 @@ impl Chunks {
         value: impl Into<automerge::ScalarValue>,
     ) -> Result<(), AutomergeError> {
         self.doc_of_mut(obj)?.put(&obj.id, prop, value)
-    }
-
-    pub(super) fn put_object(
-        &mut self,
-        obj: &Obj,
-        prop: impl Into<Prop>,
-        kind: ObjType,
-    ) -> Result<Obj, AutomergeError> {
-        let id = self.doc_of_mut(obj)?.put_object(&obj.id, prop, kind)?;
-        Ok(Obj {
-            chunk: obj.chunk,
-            id,
-        })
     }
 
     pub(super) fn delete(

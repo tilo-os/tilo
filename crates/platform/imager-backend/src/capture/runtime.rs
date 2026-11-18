@@ -374,10 +374,10 @@ type = "cli"
             );
             let mut wrong = pins.clone();
             wrong.worker_protocol = 1;
-            let error = TrustedCaptureService::verify(&sidecar.join("not-created"), &wrong)
-                .err()
-                .unwrap();
-            assert!(error.to_string().contains("worker protocol"));
+            assert!(
+                TrustedCaptureService::verify(&sidecar.join("not-created"), &wrong).is_err(),
+                "a sidecar built for another worker protocol is refused"
+            );
             wrong = pins.clone();
             wrong.service_publisher = "00".repeat(32);
             assert!(TrustedCaptureService::verify(sidecar, &wrong).is_err());

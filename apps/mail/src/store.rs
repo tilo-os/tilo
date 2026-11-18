@@ -9,6 +9,8 @@
 
 #[cfg(feature = "live")]
 use std::path::{Path, PathBuf};
+#[cfg(feature = "live")]
+use tilo_sort::CompactSort as _;
 
 #[cfg(feature = "live")]
 use serde::{Deserialize, Serialize};
@@ -135,7 +137,7 @@ impl Store {
         let Some(path) = self.file(account) else {
             return Vec::new();
         };
-        messages.sort_by_key(|message| std::cmp::Reverse(message.timestamp_min));
+        messages.compact_sort_by_key(|message| std::cmp::Reverse(message.timestamp_min));
         messages.truncate(KEEP);
         let mut files = Vec::new();
         let mut newly_kept = Vec::new();

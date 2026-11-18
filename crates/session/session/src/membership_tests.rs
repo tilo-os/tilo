@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use ed25519_dalek::SigningKey;
 use pollster::FutureExt as _;
-use tilo_action_policy::{Change, Grant, Grantee, Role, WorkspacePolicy};
+use tilo_action_policy::{Change, Grantee, Role, WorkspacePolicy};
 use tilo_desktop_model::grants::PolicyEdit;
 use tilo_desktop_model::{Workspace, WorkspaceId};
 use tilo_network_actor::DeviceIdentity;
@@ -1780,6 +1780,8 @@ fn a_share_signed_late_never_holds_the_loop_that_asked() {
 /// once is taken back the same way once spent.
 #[test]
 fn a_grant_the_person_gives_is_in_force_once_the_shell_carries_it() {
+    use tilo_action_policy::agent_answers::{AnswerScope, answer_grant};
+    use tilo_action_policy::{ActionKind, Answer};
     use tilo_workspace_service::apps::services::WorkspaceGrants as _;
     let (engine, mut workspace, _, _state) = workspace_here("ada");
     let engine = std::sync::Arc::new(engine);
@@ -1804,14 +1806,17 @@ fn a_grant_the_person_gives_is_in_force_once_the_shell_carries_it() {
         std::sync::Arc::clone(&session),
     );
     let today = "so.tilo.lang.today";
-    let grant = Grant::new(
-        "app-action:clear",
-        Grantee::person(&person),
-        tilo_action_policy::TreePath::workspace(WORKSPACE.to_owned()),
-        tilo_action_policy::KindSet::ALL,
-        tilo_action_policy::Answer::Allow,
+    // Today's "Always" for Tasks' action: a grant naming the app, given by the person.
+    let scope = AnswerScope::action("so.tilo.lang.tasks", "tasks", "clear_done");
+    let (kind, allow) = (ActionKind::Undoable, Answer::Allow);
+    let grant = answer_grant(
+        WORKSPACE,
+        Grantee::app(today),
+        (&scope, kind),
+        allow,
         Grantee::person(&person),
     );
+    let id = grant.id.as_str().to_owned();
     let request = tilo_workspace_service::apps::app_actions::AppActionConsentRequest {
         handle: "app-action:i1".into(),
         workspace: WORKSPACE.into(),
@@ -1845,7 +1850,7 @@ fn a_grant_the_person_gives_is_in_force_once_the_shell_carries_it() {
                 policy
                     .grants
                     .iter()
-                    .any(|grant| grant.id.as_str() == "app-action:clear")
+                    .any(|grant| grant.id.as_str() == id)
             })
         };
         // A loop that never sees the grant is a hang the suite only cuts off, so the governance
@@ -1869,16 +1874,14 @@ fn a_grant_the_person_gives_is_in_force_once_the_shell_carries_it() {
         session.publish(tree(&workspace));
         recording.await
     });
-    assert_eq!(recorded.as_deref(), Ok("app-action:clear"));
+    assert_eq!(recorded.as_deref(), Ok(id.as_str()));
 
     runtime.block_on(async {
-        grants.revoke(WORKSPACE, "app-action:clear");
-        while engine.policy(WORKSPACE).is_ok_and(|policy| {
-            policy
-                .grants
-                .iter()
-                .any(|grant| grant.id.as_str() == "app-action:clear")
-        }) {
+        grants.revoke(WORKSPACE, &id);
+        while engine
+            .policy(WORKSPACE)
+            .is_ok_and(|policy| policy.grants.iter().any(|grant| grant.id.as_str() == id))
+        {
             tokio::task::yield_now().await;
         }
     });

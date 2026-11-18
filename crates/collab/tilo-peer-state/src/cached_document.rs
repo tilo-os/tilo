@@ -63,8 +63,11 @@ struct Stored {
     /// A whole saved state of the document.
     base: Arc<[u8]>,
     since: Vec<Arc<[u8]>>,
-    /// The runs' bytes, one after the other, digested.
-    since_digest: blake3::Hasher,
+    /// The runs' bytes, one after the other, digested. Boxed: a hasher is
+    /// about 2 KB, and every document state carries the one it was changed
+    /// from, so a governance state kept beside an access read, and every
+    /// future holding one across an await, would carry it inline.
+    since_digest: Box<blake3::Hasher>,
     /// The heads the base and the runs hold the changes of.
     heads: Vec<automerge::ChangeHash>,
 }
@@ -400,7 +403,7 @@ impl CachedDocument {
                     crate::write_work::read(added.len());
                     let since_len = before.since_len().saturating_add(added.len());
                     if since_len.saturating_mul(2) <= before.base.len() {
-                        let mut since_digest = before.since_digest.clone();
+                        let mut since_digest = (*before.since_digest).clone();
                         since_digest.update(&added);
                         return StoredLayout {
                             base_len: before.base.len(),
@@ -488,7 +491,7 @@ impl CachedDocument {
             Stored {
                 base: self.saved_bytes().into(),
                 since: Vec::new(),
-                since_digest: blake3::Hasher::new(),
+                since_digest: Box::new(blake3::Hasher::new()),
                 heads,
             }
         });
@@ -523,7 +526,7 @@ impl CachedDocument {
         // Nothing has kept this state yet: the memo this state was made with
         // holds no base.
         crate::write_work::read(since.len());
-        let mut since_digest = blake3::Hasher::new();
+        let mut since_digest = Box::new(blake3::Hasher::new());
         since_digest.update(since);
         let _ = self.stored.set(Stored {
             base: base_bytes.into(),

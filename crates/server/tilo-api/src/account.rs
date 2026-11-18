@@ -140,11 +140,9 @@ pub(crate) fn refused(error: &ServerError) -> Outcome {
         // The host's own reason stays in the log: the person reads what they
         // would do about it. A key its workspace records as revoked is told
         // that, so the caller asks the person for another.
-        ServerError::Refused(reason) if reason.contains("key_revoked") => failed(
-            "key_revoked",
-            "this key was revoked",
-            "ask the person for a new key",
-        ),
+        ServerError::Refused(reason) if reason.contains("key_revoked") => {
+            failed("key_revoked", "this key was revoked", crate::APPROVE_AGAIN)
+        }
         ServerError::Refused(_) | ServerError::RefusedWorkspace(_) => failed(
             "refused",
             error.to_string(),
@@ -153,6 +151,17 @@ pub(crate) fn refused(error: &ServerError) -> Outcome {
         ServerError::Unavailable(_) => {
             failed("unavailable", error.to_string(), "try again shortly")
         }
+        ServerError::AwaitingApproval(_) => failed(
+            crate::v1::AWAITING_APPROVAL,
+            error.to_string(),
+            "tell the person to approve it in their Tilo; it is done once they allow it",
+        ),
+        ServerError::NotOnThisServer(_) => failed(
+            tilo_actions::remote::NOT_ON_THIS_SERVER,
+            error.to_string(),
+            "ask the server's operator to declare the person's key an owner, or have someone \
+             there send the person an invitation link",
+        ),
         ServerError::NoAccountHere => failed(
             "not_permitted",
             error.to_string(),
@@ -397,11 +406,7 @@ impl Server {
             return answer(
                 structured,
                 path,
-                failed(
-                    "key_revoked",
-                    "this key was revoked",
-                    "ask the person for a new key",
-                ),
+                failed("key_revoked", "this key was revoked", crate::APPROVE_AGAIN),
             );
         };
         let key = match session.connection() {
@@ -1122,7 +1127,7 @@ fn mint_key(
         return Err(failed(
             "expired",
             "this key has expired",
-            "ask the person for a new key",
+            crate::APPROVE_AGAIN,
         ));
     }
     let minted_key = GrantKey::generate().map_err(|_| {
@@ -1144,7 +1149,7 @@ fn mint_key(
         failed(
             "not_permitted",
             format!("this key cannot mint: {error}"),
-            "ask the person for a new key",
+            crate::APPROVE_AGAIN,
         )
     })?;
     let browser_pages = cert.capabilities.browser_pages;
@@ -1156,5 +1161,5 @@ fn mint_key(
         browser_pages,
         now_ns,
     )
-    .map_err(|error| failed("not_permitted", error.0, "ask the person for a new key"))
+    .map_err(|error| failed("not_permitted", error.0, crate::APPROVE_AGAIN))
 }

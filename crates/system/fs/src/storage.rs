@@ -583,7 +583,6 @@ impl StorageAuthority {
                 .as_ref()
                 .ok_or_else(|| anyhow!("durable eviction queue is unavailable"))?
                 .clone(),
-            Arc::clone(&self.namespace),
         ))
     }
 }
@@ -1010,7 +1009,7 @@ mod tests {
                 dirty.insert(7);
                 let mut record =
                     DocumentAvailability::new(document_id, crate::availability::EntryKind::File);
-                record.current_version = Some(fs_protocol::FileVersionId::new());
+                record.current_hash = Some(crate::availability::test_hash());
                 assert!(snapshot_candidate_ids(&logical, &dirty, &[record], unix_now_ms()).is_empty());
             }
         }
@@ -1211,7 +1210,7 @@ mod tests {
             .document_id_for(inodes[2])
             .unwrap();
         let mut record = DocumentAvailability::new(backed_up, EntryKind::File);
-        record.current_version = Some(fs_protocol::FileVersionId::new());
+        record.current_hash = Some(crate::availability::test_hash());
         registry.lock().unwrap().put(record).unwrap();
         let authority = StorageAuthority::new(
             namespace,

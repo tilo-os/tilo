@@ -1264,23 +1264,3 @@ mod line_ending_tests {
         }
     }
 }
-
-#[cfg(test)]
-mod comparison_cache_tests {
-    #[test]
-    fn exact_input_reuses_alignment_and_either_changed_side_invalidates_it() {
-        let original = super::comparison("left\n", "right\n");
-        let same = super::comparison("left\n", "right\n");
-        assert!(std::sync::Arc::ptr_eq(&original, &same));
-        let changed_left = super::comparison("other\n", "right\n");
-        assert!(!std::sync::Arc::ptr_eq(&original, &changed_left));
-        let changed_right = super::comparison("left\n", "left\n");
-        assert_eq!(changed_right.modified, 0);
-        assert!(changed_right.blocks.is_empty());
-        let evicted = super::comparison("left\n", "right\n");
-        assert!(
-            !std::sync::Arc::ptr_eq(&original, &evicted),
-            "only two comparisons are retained"
-        );
-    }
-}

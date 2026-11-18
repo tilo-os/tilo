@@ -272,7 +272,16 @@ fn apply_encoded(
             made.push(crate::action::take_minted());
         }
     }
-    deferring.finish(doc)
+    deferring.finish(doc)?;
+    // What the members minted together, in the order they were made, put down
+    // again: the one who invoked the group learns every item it made, as from
+    // one action.
+    for member in &made {
+        for id in member {
+            crate::action::note_minted(id);
+        }
+    }
+    Ok(())
 }
 
 /// Fill each [`MADE`](tilo_actions::params::MADE) marker in `member` with the

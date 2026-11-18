@@ -3552,7 +3552,7 @@ fn comment_text_starts_on_the_author_name_edge_at_any_scale() {
             PdfApp::comment_header_layout(body, PdfApp::resolve_button_w(&mut tr, &theme), &theme);
         let rect = app.rich_text_rect(&mut tr, hdr.text_x, hdr.body_top, 200.0);
         let mut view = RichTextView::new();
-        view.show(&[ui::widget::BlockContent::paragraph(
+        view.show(&[ui::rich_edit::BlockContent::paragraph(
             "a",
             "Should we spell it out?",
         )]);

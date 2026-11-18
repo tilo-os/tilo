@@ -156,7 +156,7 @@ impl PresenceCtx {
             .borrow()
             .iter()
             .filter_map(|(at, held)| {
-                let range = written_in(&held.interaction, region, block, text)?;
+                let range = held.interaction.written_in(region, block, text)?;
                 Some((
                     at.clone(),
                     held.interaction.clone(),
@@ -261,41 +261,6 @@ pub(crate) fn written_under(interaction: &SemanticInteraction) -> Option<String>
         Some((item, _)) => (!item.is_empty()).then(|| item.to_owned()),
         None => super::interaction::acted_item(interaction),
     }
-}
-
-/// The characters an invocation writes into the text `text` of block `block` (in `region`, when
-/// one is named), as byte offsets in it: the `Text` range its anchor names there, counted in
-/// characters because a place counts them that way.
-pub(crate) fn written_in(
-    interaction: &SemanticInteraction,
-    region: Option<&str>,
-    block: &str,
-    text: &str,
-) -> Option<(usize, usize)> {
-    let tilo_actions::InteractionAnchor::Text {
-        region: written,
-        ranges,
-    } = &interaction.anchor
-    else {
-        return None;
-    };
-    if region.is_some_and(|region| region != written) {
-        return None;
-    }
-    // A caller may name a block by the start of its id, as the document resolves it: a write that
-    // landed named one block only.
-    let range = ranges.iter().find(|range| {
-        range.block == block || (!range.block.is_empty() && block.starts_with(&range.block))
-    })?;
-    let chars = text.chars().count();
-    let start = usize::try_from(range.start).ok()?.min(chars);
-    let end = usize::try_from(range.end).ok()?.min(chars).max(start);
-    let byte = |index: usize| {
-        text.char_indices()
-            .nth(index)
-            .map_or(text.len(), |(byte, _)| byte)
-    };
-    Some((byte(start), byte(end)))
 }
 
 /// The characters `changes`, one action's patches, wrote into a rich text, as the anchor an

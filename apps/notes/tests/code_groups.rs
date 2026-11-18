@@ -34,7 +34,7 @@ fn code_fences_keep_their_groups_through_import_reopen_and_nesting() {
             assert_eq!(
                 blocks
                     .iter()
-                    .map(ui::widget::Block::text)
+                    .map(ui::rich_edit::Block::text)
                     .collect::<Vec<_>>(),
                 [
                     "Parent A",
@@ -46,10 +46,10 @@ fn code_fences_keep_their_groups_through_import_reopen_and_nesting() {
                     "Parent B"
                 ]
             );
-            assert_eq!(blocks[1].kind, ui::widget::BlockKind::Paragraph);
+            assert_eq!(blocks[1].kind, ui::rich_edit::BlockKind::Paragraph);
             assert_eq!(
                 blocks[2].kind,
-                ui::widget::BlockKind::CodeBlock {
+                ui::rich_edit::BlockKind::CodeBlock {
                     lang: Some("python".into())
                 }
             );
@@ -57,7 +57,7 @@ fn code_fences_keep_their_groups_through_import_reopen_and_nesting() {
             assert_eq!(
                 blocks
                     .iter()
-                    .map(ui::widget::Block::indent)
+                    .map(ui::rich_edit::Block::indent)
                     .collect::<Vec<_>>(),
                 [0, 1, 1, 1, 1, 2, 0]
             );
@@ -238,7 +238,7 @@ fn code_fence_edits_keep_identities_boundaries_and_copy_buttons() {
 
     eprintln!("phase multiline_paste_and_enter_keep_the_authored_fence_identity");
     {
-        let mut editor = ui::widget::BlockEditor::new();
+        let mut editor = ui::rich_edit::BlockEditor::new();
         editor.set_blocks(markdown::specs_to_blocks(&markdown::parse(
             "```python\na()\n```\n\n```python\nb()\n```\n",
         )));
@@ -248,8 +248,8 @@ fn code_fence_edits_keep_identities_boundaries_and_copy_buttons() {
         assert!(!editor.blocks()[1].same_code_group(&editor.blocks()[2]));
         assert_eq!(markdown::blocks_to_specs(editor.blocks()).len(), 2);
         editor.select_document_range(
-            ui::widget::DocumentPosition { block: 0, byte: 3 },
-            ui::widget::DocumentPosition { block: 1, byte: 0 },
+            ui::rich_edit::DocumentPosition { block: 0, byte: 3 },
+            ui::rich_edit::DocumentPosition { block: 1, byte: 0 },
         );
         assert!(editor.replace_document_selection("pasted()\ncontinued()"));
         assert_eq!(editor.blocks()[1].code_group, first_group);

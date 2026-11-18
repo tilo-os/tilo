@@ -33,6 +33,9 @@ impl Default for HostedWindow {
 
 #[derive(Default)]
 struct State {
+    /// The app's own header row is the window's bar, so no bar of the host's shows its parts
+    /// ([`crate::window_toolbar::is_hosted`]).
+    app_draws_bar: bool,
     toolbar: Option<WindowToolbar>,
     notice: Option<crate::window_toolbar::ToolbarNotice>,
     notice_presses: Vec<String>,
@@ -243,6 +246,17 @@ impl HostedWindow {
     #[must_use]
     pub fn workspace(&self) -> Option<String> {
         self.state().workspace.clone()
+    }
+
+    /// Whether the app's own header row is the window's bar, so it keeps its parts there.
+    #[must_use]
+    pub fn app_draws_bar(&self) -> bool {
+        self.state().app_draws_bar
+    }
+
+    /// The app's own header row is the window's bar.
+    pub fn set_app_draws_bar(&self, draws: bool) {
+        self.state().app_draws_bar = draws;
     }
 
     /// The slots as last declared.

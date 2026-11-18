@@ -104,15 +104,15 @@ impl NotesLocalViewV1 {
 
 pub(crate) struct PreparedFocus {
     pub focus: NotesFocus,
-    pub anchor: Option<ui::widget::DocumentPosition>,
-    pub caret: Option<ui::widget::DocumentPosition>,
+    pub anchor: Option<ui::rich_edit::DocumentPosition>,
+    pub caret: Option<ui::rich_edit::DocumentPosition>,
 }
 impl PreparedFocus {
     /// Where `view`'s caret and selection are in `editor`, among the blocks
     /// `durable` names: the ones the note stores, not a placeholder.
     pub fn resolve(
         view: &NotesLocalViewV1,
-        editor: &ui::widget::BlockEditor,
+        editor: &ui::rich_edit::BlockEditor,
         durable: &dyn Fn(&str) -> bool,
     ) -> Self {
         let blocks = editor.blocks();
@@ -128,7 +128,7 @@ impl PreparedFocus {
                     while !text.is_char_boundary(byte) {
                         byte = byte.saturating_sub(1);
                     }
-                    ui::widget::DocumentPosition { block: index, byte }
+                    ui::rich_edit::DocumentPosition { block: index, byte }
                 })
         };
         let anchor = view.anchor.as_ref().and_then(resolve);
@@ -139,7 +139,7 @@ impl PreparedFocus {
             focus: view.focus,
             anchor: if stale { None } else { anchor },
             caret: if stale {
-                first.map(|block| ui::widget::DocumentPosition { block, byte: 0 })
+                first.map(|block| ui::rich_edit::DocumentPosition { block, byte: 0 })
             } else {
                 caret
             },

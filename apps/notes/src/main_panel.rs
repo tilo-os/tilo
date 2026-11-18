@@ -57,10 +57,11 @@ use crate::note_list::NoteList;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
+use ui::rich_edit::BlockEditor;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::widget::{BlockEditor, EmptyState, EmptyStateContent, TextInput, TextInputKind};
+use ui::widget::{EmptyState, EmptyStateContent, TextInput, TextInputKind};
 use ui::widget::{PressOutcome, ScrollMetrics, Scrollbar};
 
 use crate::model::PageId;
@@ -251,8 +252,8 @@ fn notes_editor(page: Option<(PageId, ObjId)>, kept: Option<Kept>) -> NotesEdito
             .with_slash_commands(
                 true,
                 &[
-                    ui::widget::SlashHostCommand::Page,
-                    ui::widget::SlashHostCommand::Image,
+                    ui::rich_edit::SlashHostCommand::Page,
+                    ui::rich_edit::SlashHostCommand::Image,
                 ],
             ),
     )
@@ -609,7 +610,7 @@ impl MainPanel {
         if std::mem::take(&mut self.naming_new) {
             self.editor
                 .editor_mut()
-                .focus_block(0, ui::widget::CursorPlacement::Start);
+                .focus_block(0, ui::rich_edit::CursorPlacement::Start);
         }
         if let Some(node) = self.editor_node {
             *ctx.focus_target = Some(node);
@@ -654,7 +655,7 @@ impl MainPanel {
         // opening words before the person has interacted with it.
         self.editor
             .editor_mut()
-            .focus_block(0, ui::widget::CursorPlacement::Start);
+            .focus_block(0, ui::rich_edit::CursorPlacement::Start);
         self.take_body_snapshot();
         // A note opens where it was left off, or at its top the first time.
         self.scroll_y = self.scroll_by_page.get(&id).copied().unwrap_or(0.0);
@@ -720,9 +721,9 @@ impl MainPanel {
                     .blocks()
                     .iter()
                     .position(|block| block.id == id)?;
-                Some((index, ui::widget::CursorPlacement::Byte(byte)))
+                Some((index, ui::rich_edit::CursorPlacement::Byte(byte)))
             })
-            .unwrap_or((0, ui::widget::CursorPlacement::Start));
+            .unwrap_or((0, ui::rich_edit::CursorPlacement::Start));
         editor.editor_mut().focus_block(index, placement);
         self.editor = editor;
         self.content_generation = self.content_generation.wrapping_add(1);
@@ -1007,7 +1008,7 @@ impl MainPanel {
 
     pub fn set_transclusion_previews(
         &mut self,
-        previews: HashMap<PageId, ui::widget::TransclusionPreview>,
+        previews: HashMap<PageId, ui::rich_edit::TransclusionPreview>,
     ) {
         self.editor.editor_mut().set_transclusion_previews(previews);
     }
@@ -1075,12 +1076,12 @@ impl MainPanel {
     }
 
     /// The slash command the person chose that Notes carries out, once.
-    pub fn take_slash_request(&mut self) -> Option<ui::widget::SlashRequest> {
+    pub fn take_slash_request(&mut self) -> Option<ui::rich_edit::SlashRequest> {
         self.editor.editor_mut().take_slash_request()
     }
 
     /// Images pasted into the open note since the last call.
-    pub fn take_pasted_images(&mut self) -> Vec<ui::widget::block_editor::ImagePasteRequest> {
+    pub fn take_pasted_images(&mut self) -> Vec<ui::rich_edit::block_editor::ImagePasteRequest> {
         self.editor.editor_mut().take_image_paste_requests()
     }
 
@@ -1487,7 +1488,7 @@ impl MainPanel {
     /// A page's first content from its Markdown: the blocks an empty body is
     /// written with. `resolver` gives `[[Page]]` links the ids of real pages,
     /// so they point at stable resources before the content is dispatched.
-    pub fn seed_blocks<F>(body: &str, resolver: F) -> Vec<ui::widget::BlockContent>
+    pub fn seed_blocks<F>(body: &str, resolver: F) -> Vec<ui::rich_edit::BlockContent>
     where
         F: FnMut(&str) -> Option<PageId>,
     {
@@ -1495,7 +1496,7 @@ impl MainPanel {
         crate::markdown::resolve_link_ids(&mut specs, resolver);
         crate::markdown::specs_to_blocks(&specs)
             .iter()
-            .map(ui::widget::Block::content)
+            .map(ui::rich_edit::Block::content)
             .collect()
     }
 
@@ -1640,7 +1641,7 @@ impl MainPanel {
         self.editor.set_focus(true);
         self.editor
             .editor_mut()
-            .focus_block(index, ui::widget::CursorPlacement::Start);
+            .focus_block(index, ui::rich_edit::CursorPlacement::Start);
         self.follow_caret = true;
         self.dirty = true;
         true

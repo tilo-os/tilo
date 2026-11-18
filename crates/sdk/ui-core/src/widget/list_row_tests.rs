@@ -1419,6 +1419,55 @@ fn a_trailing_control_stands_before_the_disclosure_chevron_not_over_it() {
 }
 
 #[test]
+fn a_caption_wraps_onto_the_lines_its_control_leaves_it() {
+    let theme = Theme::dark();
+    let m = RowMetrics::new(&theme);
+    let mut text = TextRenderer::new();
+    let caption = "Inviting and removing people, their roles and bans, and the workspace's \
+                   settings and bots.";
+    let laid_out = |width: u32| {
+        let row = ListRow::new("ws-agent-kind-members-outside", "Outside effects")
+            .nested()
+            .secondary(caption)
+            .secondary_lines(4)
+            .trailing(Box::new(crate::widget::Button::new(
+                "ws-agent-answer-members-outside",
+                "Ask first",
+            )));
+        let harness = FrameHarness::new(
+            crate::State::new(),
+            Box::new(Column::new().with_no_padding().push(Box::new(row))),
+            (width, 300),
+        );
+        let root = harness.inspection().root;
+        (
+            rect_of(find(&root, "ListRow").unwrap()),
+            rect_of(find(&root, "Button").unwrap()),
+        )
+    };
+    for width in [720, 300] {
+        let (row, control) = laid_out(width);
+        // The band the caption stands in ends a column gap before the control.
+        let column =
+            crate::num::f32_of_f64((control.x0 - m.column_gap - (row.x0 + m.bleed)).max(0.0));
+        let lines = text.wrap_lines(caption, &m.secondary, column).len();
+        let title = RowMetrics::line(&mut text, &m.title);
+        let line = RowMetrics::line(&mut text, &m.secondary);
+        let held = title + crate::num::f64_of_usize(lines) * line + 2.0 * m.pad_y;
+        assert!(
+            row.height() + 0.5 >= held,
+            "the caption's {lines} lines at {column} fit the {width} wide row: {held} in {row:?}"
+        );
+        if width == 300 {
+            assert!(
+                lines > 2,
+                "at this width the caption takes more lines than a row reserved two would hold"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_trailing_control_reserves_its_width_and_wraps_under_narrow_text() {
     let layout = |width: u32| {
         let row = ListRow::new("wifi", "Wi-Fi")

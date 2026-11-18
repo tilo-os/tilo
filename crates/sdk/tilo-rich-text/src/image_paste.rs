@@ -1,7 +1,7 @@
 //! Image replacement shares the canonical paste action and its undo boundary.
 use tilo_document::action::RegionKind;
 use tilo_document::{ClipBlock, RichTextAction, RichTextState};
-use ui::widget::block_editor::ImagePasteTarget;
+use ui::rich_edit::block_editor::ImagePasteTarget;
 
 use crate::convert::{char_of_byte, content_of};
 

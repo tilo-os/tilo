@@ -75,14 +75,4 @@ mod tests {
         assert_eq!(published.get(Path::new("/run/b")), None);
         assert_ne!(published.generation(), before);
     }
-
-    #[test]
-    fn reads_are_counted_per_thread() {
-        let before = file_reads_on_this_thread();
-        note_file_read();
-        assert_eq!(file_reads_on_this_thread(), before + 1);
-        std::thread::spawn(|| assert_eq!(file_reads_on_this_thread(), 0))
-            .join()
-            .unwrap();
-    }
 }

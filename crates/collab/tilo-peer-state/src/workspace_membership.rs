@@ -321,8 +321,7 @@ pub enum WorkspaceMembershipCommand {
 const MAX_LEASE_ID: usize = 256;
 
 /// A change to the workspace's own settings: its name, its saved grant sets and
-/// their assignment, the actions its apps may use of each other, its apps'
-/// sandbox capabilities and its saved shortcuts.
+/// their assignment, its apps' sandbox capabilities and its saved shortcuts.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum SettingsChange {
     /// Name the workspace `name`.

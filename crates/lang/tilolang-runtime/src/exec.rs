@@ -589,8 +589,9 @@ impl Core {
         }
     }
 
-    fn note(ctx: &ExecCtx, pkg: &Package, aref: &ActionRef) -> ChangeNote {
+    fn note(&self, ctx: &ExecCtx, pkg: &Package, aref: &ActionRef) -> ChangeNote {
         ChangeNote {
+            creating: self.creating.get(),
             action: aref.action.clone(),
             args: Json::Array(
                 aref.args
@@ -751,7 +752,7 @@ impl Core {
             Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
             _ => None,
         });
-        let mut note = Self::note(ctx, &pkg, first);
+        let mut note = self.note(ctx, &pkg, first);
         note.count = u32::try_from(refs.len()).unwrap_or(u32::MAX);
         self.frames.borrow_mut().push(
             pkg.hash.clone(),
@@ -801,7 +802,7 @@ impl Core {
                     .collect();
                 (a.queued, a.suggestions, a.txn, note)
             }
-            _ => (Vec::new(), Vec::new(), txn, Self::note(ctx, &pkg, first)),
+            _ => (Vec::new(), Vec::new(), txn, self.note(ctx, &pkg, first)),
         };
         match failure {
             None => {
@@ -1260,7 +1261,7 @@ impl Core {
             Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
             _ => None,
         });
-        let mut note = Self::note(&ctx, pkg, &ActionRef::new(action.clone(), args.clone()));
+        let mut note = self.note(&ctx, pkg, &ActionRef::new(action.clone(), args.clone()));
         // A change of a run, and of every action it called, names the one invocation: what
         // makes the run one action of the workspace.
         if !state.journal.invocation.is_empty() {

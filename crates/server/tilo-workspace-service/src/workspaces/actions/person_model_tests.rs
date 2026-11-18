@@ -501,6 +501,87 @@ async fn a_page_asks_the_persons_model_through_their_host() {
     assert_eq!(scripted.asked().len(), 1, "nobody else's model answers him");
 }
 
+/// A page's ask is answered as the model writes it: the server admits it at
+/// once, its items each hold the answer so far, every one a beginning of the
+/// next, and its output is the whole turn.
+#[tokio::test]
+async fn a_pages_ask_is_answered_as_the_model_writes_it() {
+    use agent_provider_config::protocol::{ModelError, ModelResponse};
+    use tilo_actions::remote::{ActionProvider as _, ReceiptStatus, UpdateMark, settle_with};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let said = "one two three four five six seven eight";
+    workspaces.answer_models_with(ScriptedProvider::answering([Reply::text(said)]));
+    let provider = link(
+        &host,
+        workspace_id,
+        &ada,
+        ("Google", "https://models.example.com/v1", ADA_KEY),
+    )
+    .await;
+    workspaces
+        .offer_models_for(&ada.user_public_key, &provider, &["gemini-main"])
+        .unwrap();
+    ask_own(
+        &host,
+        workspace_id,
+        &ada,
+        person_models::SET_DEFAULT,
+        json!({"provider": provider, "model": "gemini-main"}),
+    )
+    .await
+    .unwrap();
+
+    let actions = host.in_workspace_as(workspace_id, &ada);
+    let her = super::tests::caller(&ada);
+    let mut request = super::tests::request(
+        "",
+        "",
+        serde_json::to_value(asking("Count to eight")).unwrap(),
+    );
+    request.target = person_models::target(person_models::ASK);
+    let invocation = request.invocation;
+    let receipt = super::tests::settled(actions.invoke(&her, request))
+        .await
+        .unwrap();
+    assert!(
+        matches!(receipt.status, ReceiptStatus::Accepted),
+        "an ask is admitted at once: {receipt:?}"
+    );
+    let now = tilo_clock::now();
+    let until = now.checked_add(tilo_test_env::hang_bound()).unwrap_or(now);
+    let mut seen = UpdateMark::Accepted;
+    let mut written = String::new();
+    let output = loop {
+        let state =
+            super::tests::settled(settle_with(&actions, &her, invocation, Some(seen), until))
+                .await
+                .expect("her ask is hers to follow");
+        seen = UpdateMark::of(&state.update);
+        if let tilo_actions::InvocationUpdate::Item { value, .. } = &state.update {
+            let so_far = value["text"].as_str().unwrap().to_owned();
+            assert!(so_far.starts_with(&written), "{so_far:?} after {written:?}");
+            assert!(said.starts_with(&so_far), "{so_far:?}");
+            written = so_far;
+        }
+        match state.receipt().status {
+            ReceiptStatus::Accepted => {}
+            ReceiptStatus::Completed { output } => break output,
+            other => panic!("{other:?}"),
+        }
+    };
+    let answer: Result<ModelResponse, ModelError> =
+        serde_json::from_value(output.value.unwrap()).unwrap();
+    assert!(
+        matches!(answer.unwrap().message.content.as_slice(), [Content::Text { text }] if text == said)
+    );
+}
+
 /// Everything written to the log while a key is kept, a model is asked and
 /// a call fails holds no key.
 #[tokio::test]

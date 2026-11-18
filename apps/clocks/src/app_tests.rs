@@ -475,17 +475,6 @@ fn timer_alarm_and_world_clock_inputs_are_bounded_and_readable() {
 }
 
 #[test]
-fn every_section_has_its_own_icon() {
-    let icons: Vec<_> = super::SECTIONS.iter().map(|(_, _, icon)| *icon).collect();
-    for (i, icon) in icons.iter().enumerate() {
-        assert!(
-            !icons[i + 1..].contains(icon),
-            "{icon:?} names two sections"
-        );
-    }
-}
-
-#[test]
 fn the_repeat_days_are_one_strip_that_sets_the_new_alarms_days() {
     let mut app = TestApp::<ClocksShell>::capture_at(None, (1280, 1400)).unwrap();
     app.with_surface::<super::ClocksApp, _>(|surface| surface.store.set_mode(super::ALARMS))

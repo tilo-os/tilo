@@ -6,6 +6,7 @@
     clippy::indexing_slicing,
     clippy::unwrap_used,
     clippy::assigning_clones,
+    clippy::panic,
     reason = "test fixtures: a failure here is the test's own assertion"
 )]
 
@@ -522,17 +523,39 @@ impl ActionProvider for HeldHost {
     }
 }
 
+/// The arguments of a `tilo_do` of the stub note's action as `invocation`,
+/// waiting long enough for its answer that only the test ends it.
 pub fn long_invoke(invocation: InvocationId) -> Value {
     json!({
-        "peer_id": 71, "revision": "1", "resource": "test.note:1",
-        "action": tilo_resource::APPLY, "arguments": {},
+        "path": "test/Note#apply", "args": {},
         "invocation_id": invocation.0.to_string(), "wait_ms": 20_000
     })
 }
 
+/// How the invocation a `tilo_do` or `tilo_status` reply is about stands, as
+/// its words say: `accepted` while it is pending, `cancelled`, or `succeeded`.
+///
+/// # Panics
+/// The reply says none of these.
+#[must_use]
+pub fn state(reply: &Value) -> &'static str {
+    let said = reply["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    if said.starts_with("pending ") {
+        "accepted"
+    } else if said == "cancelled" {
+        "cancelled"
+    } else if said == "ok" {
+        "succeeded"
+    } else {
+        panic!("no state in {reply}")
+    }
+}
+
 /// One MCP session over a newline-framed connection whose other end is
 /// `client`, used as an agent overlaps its calls: two invokes wait at once,
-/// a `tilo_status` and a `tilo_cancel` answer while they wait — the cancel
+/// a `tilo_status` and one that cancels answer while they wait — the cancel
 /// stopping its invoke, which a cancel queued behind the invoke's wait
 /// could not — and each reply comes back whole, on a line of its own, as
 /// soon as it is ready rather than in the order asked. Closing the client's
@@ -551,14 +574,18 @@ pub fn overlapping_lines(host: &HeldHost, client: &std::os::unix::net::UnixStrea
         writeln!(&*client, "{request}").unwrap();
     };
     let tool = |name: &str, invocation: InvocationId| {
-        let arguments = if name == "tilo_invoke" {
-            long_invoke(invocation)
+        let arguments = match name {
+            "tilo_do" => long_invoke(invocation),
+            "cancel" => json!({"invocation_id": invocation.0.to_string(), "cancel": true}),
+            _ => json!({"invocation_id": invocation.0.to_string()}),
+        };
+        let name = if name == "cancel" {
+            "tilo_status"
         } else {
-            json!({"invocation_id": invocation.0.to_string()})
+            name
         };
         json!({"name": name, "arguments": arguments})
     };
-    let state = |reply: &Value| reply["result"]["structuredContent"]["update"]["state"].clone();
     send(
         1,
         "initialize",
@@ -566,8 +593,8 @@ pub fn overlapping_lines(host: &HeldHost, client: &std::os::unix::net::UnixStrea
     );
     assert_eq!(reply()["id"], 1);
     let (cancelled, finished) = (InvocationId::new(), InvocationId::new());
-    send(2, "tools/call", tool("tilo_invoke", cancelled));
-    send(3, "tools/call", tool("tilo_invoke", finished));
+    send(2, "tools/call", tool("tilo_do", cancelled));
+    send(3, "tools/call", tool("tilo_do", finished));
     tilo_test_env::wait_until(
         "both invokes to reach the host while neither has finished",
         || host.invoked().len() == 2,
@@ -579,7 +606,7 @@ pub fn overlapping_lines(host: &HeldHost, client: &std::os::unix::net::UnixStrea
         "the status answers while both invokes wait"
     );
     assert_eq!(state(&status), "accepted", "{status}");
-    send(5, "tools/call", tool("tilo_cancel", cancelled));
+    send(5, "tools/call", tool("cancel", cancelled));
     let mut answered = std::collections::BTreeMap::new();
     while !answered.contains_key(&5) {
         let next = reply();

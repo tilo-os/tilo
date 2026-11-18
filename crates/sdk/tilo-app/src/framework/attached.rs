@@ -568,21 +568,12 @@ impl AttachedView {
         {
             return permitted;
         }
-        let permitted = {
-            let permissions = self.permissions.borrow();
-            Rc::new(
-                tree.iter()
-                    .cloned()
-                    .filter_map(|resource| {
-                        permissions.permitted_resource_on(
-                            self.definition.app_id(),
-                            self.checkout.id.as_str(),
-                            resource,
-                        )
-                    })
-                    .collect::<Vec<_>>(),
-            )
-        };
+        let permitted = Rc::new(
+            tree.iter()
+                .cloned()
+                .filter_map(|resource| self.permitted(resource))
+                .collect::<Vec<_>>(),
+        );
         if let Some(published) = self.published.borrow_mut().as_mut() {
             published.permitted = Some(Rc::clone(&permitted));
         }
@@ -600,17 +591,10 @@ impl AttachedView {
     /// resource.
     #[must_use]
     pub fn resources_past_page(&self) -> Vec<tilo_actions::ResourceSpec> {
-        let permissions = self.permissions.borrow();
         self.frame()
             .resources_past_page()
             .into_iter()
-            .filter_map(|resource| {
-                permissions.permitted_resource_on(
-                    self.definition.app_id(),
-                    self.checkout.id.as_str(),
-                    resource,
-                )
-            })
+            .filter_map(|resource| self.permitted(resource))
             .collect()
     }
 
@@ -703,17 +687,10 @@ impl AttachedView {
     /// costs.
     #[must_use]
     pub fn past_page_range(&self, offset: usize, take: usize) -> Vec<tilo_actions::ResourceSpec> {
-        let permissions = self.permissions.borrow();
         self.frame()
             .past_page_range(offset, take)
             .into_iter()
-            .filter_map(|resource| {
-                permissions.permitted_resource_on(
-                    self.definition.app_id(),
-                    self.checkout.id.as_str(),
-                    resource,
-                )
-            })
+            .filter_map(|resource| self.permitted(resource))
             .collect()
     }
 
@@ -730,11 +707,14 @@ impl AttachedView {
         &self,
         resource: tilo_actions::ResourceSpec,
     ) -> Option<tilo_actions::ResourceSpec> {
-        self.permissions.borrow().permitted_resource_on(
-            self.definition.app_id(),
-            self.checkout.id.as_str(),
-            resource,
-        )
+        self.permissions
+            .borrow()
+            .permitted_resource_on(
+                self.definition.app_id(),
+                self.checkout.id.as_str(),
+                resource,
+            )
+            .and_then(reachable)
     }
 
     /// The resource `id` with its own actions, as the member may reach
@@ -1177,18 +1157,6 @@ impl AttachedView {
         self.records.ask_workspace_for_missing();
     }
 
-    /// The keys `mutation` writes in `record`, as the view holds that record
-    /// now: a fork of it, so the answer costs a head set rather than the
-    /// record. `None` for a record this view does not hold.
-    pub fn changed_keys(
-        &self,
-        record: &ui_core::resource::DocumentId,
-        mutation: &DocumentMutation,
-    ) -> Option<Result<Vec<Vec<String>>, String>> {
-        self.records
-            .with(record, |doc| changed_keys_of(doc, mutation))
-    }
-
     /// What the view's records ask the workspace's hosts for
     /// ([`ResourceStore::wanted_resources`]). Each chain with a part here reads
     /// first: a chain follows what arrived only when it is read, so the part
@@ -1520,111 +1488,62 @@ fn set_aside_failed(record: &ui_core::resource::DocumentId, error: &str) -> Stri
     )
 }
 
-/// The heads of the record `document` holds: what a member joining it
-/// was given, past which anything its view writes while it opens is refused
-/// ([`refuse_written_on_open`]).
-/// The storage keys `mutation` writes, top down to what it put or deleted, in
-/// `doc`. Changes are read from their own operations ([`keys_written_by`]);
-/// anything else (a whole document) is applied to a fork, so the document
-/// itself is not touched.
-fn changed_keys_of(
-    doc: &mut ui_core::automerge::AutoCommit,
-    mutation: &DocumentMutation,
-) -> Result<Vec<Vec<String>>, String> {
-    use ui_core::automerge::PatchAction;
-    if let DocumentMutation::Incremental(bytes) = mutation
-        && let Some(keys) = keys_written_by(doc, bytes)
-    {
-        return Ok(keys);
-    }
-    let key = |prop: &ui_core::automerge::Prop| match prop {
-        ui_core::automerge::Prop::Map(key) => key.clone(),
-        ui_core::automerge::Prop::Seq(index) => index.to_string(),
-    };
-    let mut probe = doc.fork();
-    // Indexed from here: the diff below reads the change alone, not every
-    // operation the record holds.
-    probe.update_diff_cursor();
-    let was = probe.get_heads();
-    let bytes = match mutation {
-        DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => bytes,
-    };
-    tilo_automerge::ApplyIncoming::load_incoming(&mut probe, bytes)
-        .map_err(|error| error.to_string())?;
-    let now = probe.get_heads();
-    Ok(probe
-        .diff(&was, &now)
-        .into_iter()
-        .map(|patch| {
-            let mut keys: Vec<String> = patch.path.iter().map(|(_, prop)| key(prop)).collect();
-            match &patch.action {
-                PatchAction::PutMap { key: put, .. } | PatchAction::DeleteMap { key: put } => {
-                    keys.push(put.clone());
-                }
-                PatchAction::Increment { prop, .. } | PatchAction::Conflict { prop } => {
-                    keys.push(key(prop));
-                }
-                _ => {}
-            }
-            keys
-        })
-        .collect())
-}
-
-/// The storage keys the changes in `bytes` write, each top down to what it
-/// put or deleted, read from their operations: an object they make is placed
-/// where they make it, any other where `doc` holds it. Nothing of `doc` is
-/// copied or applied to, so the answer costs the changes, not the document.
-/// Changes `doc` holds already write nothing new. `None` when the bytes are
-/// not changes, or an operation is on an object neither `doc` nor the changes
-/// hold (they build on changes `doc` has not got).
-fn keys_written_by(
-    doc: &mut ui_core::automerge::AutoCommit,
-    bytes: &[u8],
+/// The storage keys `changes` write, each once and top down to what it put or
+/// deleted, read from their operations: an object they make is placed where
+/// they make it, any other where `doc` holds it. Nothing of `doc` is copied
+/// or applied to, so the answer costs the changes, not the document: the
+/// replica that admitted them names what they touched. `None` when an
+/// operation is on an object neither `doc` nor the changes hold.
+#[must_use]
+pub fn keys_written<'a>(
+    doc: &ui_core::automerge::AutoCommit,
+    changes: impl IntoIterator<Item = &'a ui_core::automerge::Change>,
 ) -> Option<Vec<Vec<String>>> {
-    use std::collections::HashMap;
-    use ui_core::automerge::legacy::{Key, ObjectId, OpType};
+    use std::collections::{HashMap, HashSet};
+    use ui_core::automerge::legacy::{Key, ObjectId, OpId, OpType};
     use ui_core::automerge::{Prop, ReadDoc};
-    let map_key = |key: &Key| match key {
-        Key::Map(key) => Some(key.to_string()),
-        Key::Seq(_) => None,
-    };
-    let changes = ui_core::automerge::Automerge::parse_changes(bytes).ok()?;
     // Each object the changes make, by its id: where it is made.
-    let mut made: HashMap<String, (ObjectId, Option<String>)> = HashMap::new();
-    let mut ops = Vec::new();
-    for change in &changes {
-        if doc.get_change_meta_by_hash(&change.hash()).is_some() {
-            continue;
-        }
-        let actor = change.actor_id().to_hex_string();
+    let mut made: HashMap<ObjectId, (ObjectId, Option<String>)> = HashMap::new();
+    // What the operations touch, each once: a map's key, or a list or text as
+    // a whole (a text's characters are an operation each, on one object).
+    let mut touched: Vec<(ObjectId, Option<String>)> = Vec::new();
+    let mut seen: HashSet<(ObjectId, Option<String>)> = HashSet::new();
+    for change in changes {
+        let actor = change.actor_id().clone();
         let start = change.start_op().get();
         for (offset, op) in change.decode().operations.into_iter().enumerate() {
+            let key = match op.key {
+                Key::Map(key) => Some(key.to_string()),
+                Key::Seq(_) => None,
+            };
             if matches!(op.action, OpType::Make(_)) {
                 let counter = start.saturating_add(u64::try_from(offset).ok()?);
                 made.insert(
-                    format!("{counter}@{actor}"),
-                    (op.obj.clone(), map_key(&op.key)),
+                    ObjectId::Id(OpId::new(counter, &actor)),
+                    (op.obj.clone(), key.clone()),
                 );
             }
-            ops.push(op);
+            let at = (op.obj, key);
+            if !seen.contains(&at) {
+                seen.insert(at.clone());
+                touched.push(at);
+            }
         }
     }
-    let mut paths: HashMap<String, Vec<String>> = HashMap::new();
+    let mut paths: HashMap<ObjectId, Vec<String>> = HashMap::new();
     let mut path_of = |obj: &ObjectId| -> Option<Vec<String>> {
         // Up through what the changes make, to the root or an object `doc`
         // holds, whose path `doc` names.
         let mut above: Vec<Option<String>> = Vec::new();
         let mut at = obj.clone();
         let base = loop {
-            let ObjectId::Id(id) = &at else {
+            if at == ObjectId::Root {
                 break Vec::new();
-            };
-            let name = id.to_string();
-            if let Some(known) = paths.get(&name) {
+            }
+            if let Some(known) = paths.get(&at) {
                 break known.clone();
             }
-            if let Some((parent, key)) = made.get(&name) {
+            if let Some((parent, key)) = made.get(&at) {
                 above.push(key.clone());
                 at = parent.clone();
                 if above.len() > made.len() {
@@ -1632,7 +1551,7 @@ fn keys_written_by(
                 }
                 continue;
             }
-            let (held, _) = doc.import(&name).ok()?;
+            let (held, _) = doc.import(&at.to_string()).ok()?;
             let mut keys: Vec<String> = doc
                 .parents(&held)
                 .ok()?
@@ -1642,23 +1561,25 @@ fn keys_written_by(
                 })
                 .collect();
             keys.reverse();
-            paths.insert(name, keys.clone());
+            paths.insert(at, keys.clone());
             break keys;
         };
         let mut path = base;
         path.extend(above.into_iter().rev().flatten());
-        if let ObjectId::Id(id) = obj {
-            paths.insert(id.to_string(), path.clone());
-        }
+        paths.insert(obj.clone(), path.clone());
         Some(path)
     };
-    ops.iter()
-        .map(|op| {
-            let mut path = path_of(&op.obj)?;
-            path.extend(map_key(&op.key));
-            Some(path)
-        })
-        .collect()
+    let mut written: Vec<Vec<String>> = Vec::with_capacity(touched.len());
+    let mut kept: HashSet<Vec<String>> = HashSet::with_capacity(touched.len());
+    for (obj, key) in touched {
+        let mut path = path_of(&obj)?;
+        path.extend(key);
+        if !kept.contains(&path) {
+            kept.insert(path.clone());
+            written.push(path);
+        }
+    }
+    Some(written)
 }
 
 /// The member `invoker` is: an automation opens no view of its own.
@@ -1670,10 +1591,26 @@ fn member_of(invoker: &tilo_actions::ActionInvoker) -> Result<&MemberId, String>
         .ok_or_else(|| "an automation opens no view of its own".to_owned())
 }
 
+/// The heads of the record `document` holds: what a member joining it
+/// was given, past which anything its view writes while it opens is refused
+/// ([`refuse_written_on_open`]).
 fn heads_of(document: &[u8]) -> Result<Vec<ui_core::automerge::ChangeHash>, String> {
     ui_core::automerge::AutoCommit::load(document)
         .map(|mut doc| doc.get_heads())
         .map_err(|error| error.to_string())
+}
+
+/// `resource` as a view publishes it: what its member may not take is left out. A listing marks
+/// a denied action not allowed, so an agent hears where it is refused; a view performs only what
+/// its member may do.
+fn reachable(mut resource: tilo_actions::ResourceSpec) -> Option<tilo_actions::ResourceSpec> {
+    resource.retain_actions(|action| action.contract.availability.refusal().is_none());
+    resource.children = resource
+        .children
+        .into_iter()
+        .filter_map(reachable)
+        .collect();
+    (!resource.actions.is_empty() || !resource.children.is_empty()).then_some(resource)
 }
 
 /// Refuse a view that wrote to the record `checkout` names, one its

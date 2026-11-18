@@ -34,7 +34,6 @@ use std::time::{Duration, SystemTime};
 
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
 use collab_types::{CommitNamed as _, PeerPresence, PeerPresencePayload};
-use neighbour_wire::NeighbourMsg;
 use tilo_delivery_protocol::transport_v2::{EnvelopeV2, SessionReader, encode_state};
 use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_workspace};
 use tilo_server::{AttributedPresence, Envelope, ServerCoeditSession};
@@ -50,6 +49,32 @@ const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(0x5e11_f00d_7110_4625_8000
 /// workspace it is sent to, and the server refuses one naming another.
 const SEEDED_WORKSPACE: &str = "5e11f00d-7110-4625-8000-000000000710";
 const MOVES: u32 = 60;
+
+/// What this test publishes as presence, with the shapes an app and the shell
+/// write: the server carries presence as opaque bytes, so these only give its
+/// batching realistic payloads to group and code.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+enum Presence {
+    Moved {
+        peer: u64,
+        user: String,
+        key: String,
+        point: (f64, f64),
+        ts: u64,
+        colour: Option<String>,
+    },
+    Cleared {
+        peer: u64,
+        key: String,
+    },
+    App {
+        peer: u64,
+        app_id: String,
+        cluster_id: String,
+        presence: PeerPresence,
+        colour: Option<String>,
+    },
+}
 
 /// A member reading the server's frames through the production session
 /// reader, which expands `PresenceBatch` frames.
@@ -108,7 +133,7 @@ impl Member {
 
     /// Every presence message up to and including the pointer being cleared,
     /// with its author.
-    async fn presence_until_cleared(&mut self) -> Vec<([u8; 32], NeighbourMsg)> {
+    async fn presence_until_cleared(&mut self) -> Vec<([u8; 32], Presence)> {
         tilo_test_env::within("the presence burst to arrive", async {
             let mut seen = Vec::new();
             loop {
@@ -118,8 +143,8 @@ impl Member {
                     continue;
                 };
                 let attributed = AttributedPresence::decode(&payload).unwrap();
-                let message: NeighbourMsg = postcard::from_bytes(&attributed.body).unwrap();
-                let cleared = matches!(message, NeighbourMsg::RetiredPresenceCleared { .. });
+                let message: Presence = postcard::from_bytes(&attributed.body).unwrap();
+                let cleared = matches!(message, Presence::Cleared { .. });
                 seen.push((attributed.author, message));
                 if cleared {
                     return seen;
@@ -154,8 +179,8 @@ fn session_bytes(server: &TestServer, device: [u8; 32]) -> u64 {
         .sum()
 }
 
-fn pointer(step: u32, user: &str) -> NeighbourMsg {
-    NeighbourMsg::RetiredPresenceMoved {
+fn pointer(step: u32, user: &str) -> Presence {
+    Presence::Moved {
         peer: 0x9e37_79b9_7f4a_7c15,
         user: user.into(),
         key: format!(
@@ -167,8 +192,8 @@ fn pointer(step: u32, user: &str) -> NeighbourMsg {
     }
 }
 
-fn caret(pos: u64) -> NeighbourMsg {
-    NeighbourMsg::RetiredAppPresenceV2 {
+fn caret(pos: u64) -> Presence {
+    Presence::App {
         peer: 0x9e37_79b9_7f4a_7c15,
         app_id: "so.tilo.word-processor".into(),
         cluster_id: SEEDED_WORKSPACE.into(),
@@ -180,8 +205,8 @@ fn caret(pos: u64) -> NeighbourMsg {
     }
 }
 
-fn typing(start: u64, end: u64) -> NeighbourMsg {
-    NeighbourMsg::RetiredAppPresenceV2 {
+fn typing(start: u64, end: u64) -> Presence {
+    Presence::App {
         peer: 0x9e37_79b9_7f4a_7c15,
         app_id: "so.tilo.word-processor".into(),
         cluster_id: SEEDED_WORKSPACE.into(),
@@ -193,21 +218,21 @@ fn typing(start: u64, end: u64) -> NeighbourMsg {
     }
 }
 
-fn publish(session: &ServerCoeditSession, message: &NeighbourMsg) {
+fn publish(session: &ServerCoeditSession, message: &Presence) {
     session
         .publish_presence(postcard::to_allocvec(message).unwrap())
         .unwrap();
 }
 
 /// What a member saw of the burst, checked against what a receiver must draw.
-fn check(seen: &[([u8; 32], NeighbourMsg)], author: [u8; 32], user: &str, protocol: &str) -> usize {
+fn check(seen: &[([u8; 32], Presence)], author: [u8; 32], user: &str, protocol: &str) -> usize {
     assert!(
         seen.iter().all(|(from, _)| *from == author),
         "{protocol}: the server stamps the authenticated author"
     );
     let moves: Vec<_> = seen
         .iter()
-        .filter(|(_, message)| matches!(message, NeighbourMsg::RetiredPresenceMoved { .. }))
+        .filter(|(_, message)| matches!(message, Presence::Moved { .. }))
         .collect();
     assert!(
         !moves.is_empty() && moves.len() <= MOVES as usize,
@@ -219,7 +244,7 @@ fn check(seen: &[([u8; 32], NeighbourMsg)], author: [u8; 32], user: &str, protoc
     let stamps: Vec<_> = moves
         .iter()
         .filter_map(|(_, message)| match message {
-            NeighbourMsg::RetiredPresenceMoved { ts, .. } => Some(*ts),
+            Presence::Moved { ts, .. } => Some(*ts),
             _ => None,
         })
         .collect();
@@ -235,7 +260,7 @@ fn check(seen: &[([u8; 32], NeighbourMsg)], author: [u8; 32], user: &str, protoc
     assert_eq!(
         seen.iter()
             .rev()
-            .find(|(_, message)| matches!(message, NeighbourMsg::RetiredAppPresenceV2 { .. }))
+            .find(|(_, message)| matches!(message, Presence::App { .. }))
             .map(|(_, message)| message),
         Some(&caret(42)),
         "{protocol}: the caret's last position arrives before the event sent after it"
@@ -271,7 +296,7 @@ async fn presence_reaches_a_member_in_order() {
     }
     publish(
         &publisher,
-        &NeighbourMsg::RetiredPresenceCleared {
+        &Presence::Cleared {
             peer: 0x9e37_79b9_7f4a_7c15,
             key: "tile".into(),
         },
@@ -306,7 +331,7 @@ impl Member {
                     Some(EnvelopeV2::State(Envelope::Delta { .. })) => delta = true,
                     Some(EnvelopeV2::State(Envelope::Presence { payload, .. })) => {
                         let attributed = AttributedPresence::decode(&payload).unwrap();
-                        let message: NeighbourMsg = postcard::from_bytes(&attributed.body).unwrap();
+                        let message: Presence = postcard::from_bytes(&attributed.body).unwrap();
                         saw_typing |= message == typing(pos - 1, pos);
                         if message == caret(pos) {
                             saw_caret = true;
@@ -441,7 +466,7 @@ async fn a_keystrokes_caret_and_typing_ride_in_its_deltas_write() {
 
 impl Member {
     /// Every pointer move until `last` arrives, with nothing sent after it.
-    async fn pointer_until(&mut self, last: &NeighbourMsg) -> Vec<NeighbourMsg> {
+    async fn pointer_until(&mut self, last: &Presence) -> Vec<Presence> {
         tilo_test_env::within("the pointer's resting position", async {
             let mut moves = Vec::new();
             loop {
@@ -451,8 +476,8 @@ impl Member {
                     continue;
                 };
                 let attributed = AttributedPresence::decode(&payload).unwrap();
-                let message: NeighbourMsg = postcard::from_bytes(&attributed.body).unwrap();
-                if matches!(message, NeighbourMsg::RetiredPresenceMoved { .. }) {
+                let message: Presence = postcard::from_bytes(&attributed.body).unwrap();
+                if matches!(message, Presence::Moved { .. }) {
                     let rested = message == *last;
                     moves.push(message);
                     if rested {

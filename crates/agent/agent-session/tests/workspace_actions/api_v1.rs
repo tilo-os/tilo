@@ -588,7 +588,11 @@ async fn a_workspaces_listing_reads_the_same_through_mcp_and_the_api() {
 }
 
 /// A workspace `person` made, with a key they approved at their `page`.
-async fn own_workspace(on_server: &OnServer, person: &SigningKey, page: &Device) -> String {
+pub(super) async fn own_workspace(
+    on_server: &OnServer,
+    person: &SigningKey,
+    page: &Device,
+) -> String {
     let backend = V1 {
         api: &on_server.api,
         token: approved_key(on_server, person, page, "Visa backend").await,
@@ -604,18 +608,18 @@ async fn own_workspace(on_server: &OnServer, person: &SigningKey, page: &Device)
 /// device of: that one session with the server, entered into `workspace` and
 /// the agent `agent`'s session as `tilo login` enters it, and Tilo's API
 /// served over it on a socket of its own, as the computer's commands reach it.
-struct Holder {
-    device: tilo_session_client::device::Device,
+pub(super) struct Holder {
+    pub(super) device: tilo_session_client::device::Device,
     socket: std::path::PathBuf,
     /// The API the holder serves, as `tilo mcp` asks it.
     direct: Arc<tilo_api::direct::Direct>,
     /// The person's device the computer is.
-    laptop: Device,
+    pub(super) laptop: Device,
     _sockets: tempfile::TempDir,
 }
 
 impl Holder {
-    async fn start(
+    pub(super) async fn start(
         on_server: &OnServer,
         person: &SigningKey,
         workspace: &str,
@@ -664,7 +668,7 @@ impl Holder {
     }
 
     /// One command of the computer's, as `tilo` is: a client of the holder's socket.
-    fn command(&self) -> tilo_api::client::Client {
+    pub(super) fn command(&self) -> tilo_api::client::Client {
         tilo_api::client::Client::session(&self.socket)
     }
 }
@@ -672,7 +676,9 @@ impl Holder {
 /// A computer `tilo login` made a device of holds that device's one session with its server, and
 /// the workspace commands of its login (`tilo do`, `ls`, `read`, `workspace`) are calls to the
 /// API the holder serves over that session: each answered, and the session never cut off by a
-/// second one under the same key.
+/// second one under the same key. A script on this computer acts with a key of its own, which
+/// the person approved for it (`tilo keys export`): its session and the computer's both stay up
+/// while each makes calls.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_logged_in_computers_commands_go_over_its_one_held_session() {
     let on_server = api_on_server(ISSUER).await;
@@ -681,13 +687,38 @@ async fn a_logged_in_computers_commands_go_over_its_one_held_session() {
     let workspace = own_workspace(&on_server, &ada, &page).await;
     let holder = Holder::start(&on_server, &ada, &workspace, "Claude Code").await;
     let command = || holder.command();
+    // The script's key, as `tilo keys export` writes it: one Ada approved for it, reaching where
+    // the computer's login reaches, never the computer's own.
+    let token = approved_key(&on_server, &ada, &page, "Nightly build").await;
+    let file = tilo_api::direct::KeyFile::new(
+        &on_server.server,
+        Some(&on_server.web_entry),
+        "Ada's laptop",
+        &holder.laptop.key,
+        &holder.laptop.cert,
+    );
+    let script_file = file.clone().with_token(&token).unwrap();
+    assert_ne!(script_file.key, file.key);
+    let keys = tempfile::tempdir().unwrap();
+    let script_path = keys.path().join("script.json");
+    std::fs::write(&script_path, serde_json::to_vec(&script_file).unwrap()).unwrap();
+    let script = tilo_api::client::Client::open(tilo_api::client::Reach {
+        api: None,
+        key_file: Some(&script_path),
+        json: false,
+    })
+    .unwrap();
     let mut took = Vec::new();
     for _ in 0..10 {
         let started = std::time::Instant::now();
-        let opened = command()
-            .act(&workspace, "notes", "open", &json!({}), "Open Notes")
-            .await
-            .expect("the action answers");
+        let (computer, nothing) = (command(), json!({}));
+        let listing = format!("/v1/workspaces/{workspace}/resources");
+        let (opened, scripted) = tokio::join!(
+            computer.act(&workspace, "notes", "open", &nothing, "Open Notes"),
+            script.get(&listing),
+        );
+        let opened = opened.expect("the action answers");
+        scripted.expect("the script's own session answers it");
         took.push(started.elapsed());
         assert_ne!(opened["status"], "pending", "{opened}");
         let listed = command()
@@ -705,7 +736,7 @@ async fn a_logged_in_computers_commands_go_over_its_one_held_session() {
     eprintln!("an action over the held session took {took:?}");
     assert!(
         holder.device.is_live(),
-        "the device's one session served every command, and no second one cut it off"
+        "the device's one session served every command, and the script's session never cut it off"
     );
 }
 

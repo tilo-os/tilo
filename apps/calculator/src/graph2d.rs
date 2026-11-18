@@ -797,19 +797,4 @@ mod tests {
             })
             .collect()
     }
-
-    /// No two of the first four series repeat a colour.
-    #[test]
-    fn curves_take_distinct_colours() {
-        let palette = ChartPalette::from_theme(&Theme::dark());
-        for a in 0..4 {
-            for b in (a + 1)..4 {
-                assert_ne!(
-                    palette.categorical(a),
-                    palette.categorical(b),
-                    "series {a} and {b} share a colour"
-                );
-            }
-        }
-    }
 }

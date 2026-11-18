@@ -383,8 +383,6 @@ mod tests {
                     size: 2,
                     mtime: 9,
                     author: "ada".into(),
-                    revision: None,
-                    keep_preview: false,
                 },
                 agent,
             );

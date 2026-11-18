@@ -146,7 +146,7 @@ fn row(
         person,
         server,
         agent,
-        work: domain::grant_set_sentence(grants, &Directory),
+        work: domain::grant_set_sentence(grants, &Directory::default()),
         until: ui::format::lifetime(Lifetime::Until(expires_at_ns / 1_000_000)),
         revocable,
     }
@@ -290,7 +290,7 @@ mod tests {
         assert_eq!(read[0].server, "server");
         assert_eq!(
             read[0].work,
-            domain::grant_set_sentence(std::slice::from_ref(&grant), &Directory)
+            domain::grant_set_sentence(std::slice::from_ref(&grant), &Directory::default())
         );
         assert_eq!(
             read[0].until,

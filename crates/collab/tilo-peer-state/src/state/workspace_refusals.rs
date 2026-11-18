@@ -44,7 +44,8 @@ pub struct ChangeRefused {
 impl ChangeRefused {
     /// What `envelope`, a change of `document_id` of `app_id` in `workspace_id`, is refused as
     /// when the workspace's rules refuse it by `refusal`: the changes it carries — its claims,
-    /// else those of its payload — and why, typed the way a server types its refusals.
+    /// else those of its payload — and why, typed the way a server types its refusals and in
+    /// `reason`, the refusing device's words.
     pub(crate) fn of(
         workspace_id: String,
         cluster_id: String,
@@ -52,6 +53,7 @@ impl ChangeRefused {
         document_id: &str,
         envelope: &collab_types::SignedOp,
         refusal: &collab_types::ReceiptRefusal,
+        reason: String,
     ) -> Self {
         let mut changes: Vec<[u8; 32]> = envelope.claims.iter().map(|claim| claim.change).collect();
         if changes.is_empty() {
@@ -69,7 +71,7 @@ impl ChangeRefused {
                 }
                 other => tilo_server_protocol::refusal::Refusal::NotAllowed(other.to_string()),
             },
-            reason: format!("document change forbidden: {refusal}"),
+            reason,
         }
     }
 }

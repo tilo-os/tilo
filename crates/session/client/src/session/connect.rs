@@ -14,7 +14,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-#[cfg(not(target_arch = "wasm32"))]
 use tilo_server_client::Carrier;
 use tilo_server_client::link::{Dialer, Purpose};
 
@@ -23,7 +22,6 @@ use super::{DeviceSigner, LinkError, PeerConfig, ServerClient, Task};
 /// The statement a page's device signs to speak through `endpoint` for a day:
 /// long enough for a session and its live sessions to outlive one roster change,
 /// short enough that a leaked page key is bounded by the page's device.
-#[cfg(not(target_arch = "wasm32"))]
 const DELEGATION_LIFETIME_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 
 /// Attempts one connect makes before its host's answer is surfaced.
@@ -213,8 +211,8 @@ async fn connect_entering(
         .clone();
     // Over iroh an ownership-held device's endpoint speaks for it by its signed
     // statement, which every live session grant carries; over WebTransport the
-    // device proves itself on each link instead.
-    #[cfg(not(target_arch = "wasm32"))]
+    // device proves itself on each link instead. A page reaches a server behind a
+    // NAT over iroh through its packet relay, and signs the same statement.
     if host.carrier() != Carrier::WebTransport {
         let endpoint = dialer.endpoint().await?;
         sign_delegation(
@@ -252,7 +250,6 @@ async fn connect_entering(
 /// as [`DELEGATION_LIFETIME_NS`]: empty for a device whose endpoint is its own
 /// key, and the device's own signature otherwise (through ownership, which keeps
 /// a page's key unextractable).
-#[cfg(not(target_arch = "wasm32"))]
 async fn sign_delegation(
     signer: &dyn DeviceSigner,
     device: [u8; 32],

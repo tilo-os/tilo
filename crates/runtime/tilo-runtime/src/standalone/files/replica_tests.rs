@@ -97,6 +97,7 @@ async fn server(state: &Path, operator: &SigningKey) -> tilo_server::Server {
             revocations: RevocationList::new(),
         },
         endpoint,
+        tilo_server::Reaching::OnItsOwn,
         Vec::new(),
     )
     .await

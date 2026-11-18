@@ -43,10 +43,11 @@ fn a_host_that_sells_nothing_answers_no_plans_and_no_subscription() {
         "Ada's server",
         Usage::default(),
     );
-    assert_eq!(
-        account,
-        ServerAccount::sells_nothing("Ada's server", ServerKind::SelfHosted)
-    );
+    assert_eq!(account.server, "Ada's server");
+    assert_eq!(account.kind, ServerKind::SelfHosted);
+    assert!(account.plans.is_empty());
+    assert!(account.subscription.is_none());
+    assert!(account.manage_billing.is_none());
     assert!(!account.sells());
 }
 

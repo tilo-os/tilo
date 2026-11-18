@@ -212,9 +212,7 @@ pub fn may_command(
         | DesktopCommand::RetiredDeleteShortcut { .. }
         | DesktopCommand::ClaimNamespace { .. }
         | DesktopCommand::SavePreset { .. }
-        | DesktopCommand::AssignPreset { .. }
-        | DesktopCommand::GrantAppAction { .. }
-        | DesktopCommand::RevokeAppAction { .. } => Ok(()),
+        | DesktopCommand::AssignPreset { .. } => Ok(()),
     }
 }
 

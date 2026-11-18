@@ -40,17 +40,31 @@ impl RegistryHandshake {
 mod tests {
     use super::*;
 
+    /// The greeting's JSON is the first thing a client reads; its field names and the version a
+    /// client bails on are the wire contract, so a rename must fail here rather than in the field.
     #[test]
-    fn handshake_json_roundtrip() {
-        let h = RegistryHandshake::new(
-            "aa".repeat(32),
+    fn the_greeting_json_names_the_fields_clients_read() {
+        let owner = "aa".repeat(32);
+        let handshake = RegistryHandshake::new(
+            owner.clone(),
             "Tilo official",
             "The default registry shipped with Tilo.",
             "https://apps.tilo.so",
         );
-        let s = serde_json::to_string(&h).expect("encode");
-        let back: RegistryHandshake = serde_json::from_str(&s).expect("decode");
-        assert_eq!(back, h);
-        assert_eq!(back.protocol_version, PROTOCOL_VERSION);
+        let json = serde_json::to_value(&handshake).expect("encode");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "protocol_version": PROTOCOL_VERSION,
+                "owner_pubkey_hex": owner,
+                "name": "Tilo official",
+                "description": "The default registry shipped with Tilo.",
+                "base_url": "https://apps.tilo.so",
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<RegistryHandshake>(json).expect("decode"),
+            handshake
+        );
     }
 }

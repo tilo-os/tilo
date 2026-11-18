@@ -111,6 +111,17 @@ impl From<crate::server::ServerError> for ApiError {
                 Self::new("unavailable", error.to_string()).next("try again in a minute")
             }
             ServerError::NoAccountHere => Self::new("not_permitted", error.to_string()),
+            // The message names the person's key and what makes them known to the server.
+            ServerError::NotOnThisServer(_) => {
+                Self::new(tilo_actions::remote::NOT_ON_THIS_SERVER, error.to_string()).next(
+                    "ask the server's operator to declare the person's key an owner, or have \
+                     someone there send the person an invitation link",
+                )
+            }
+            // Never "unreached": the person is asked, and it is done once they allow it.
+            ServerError::AwaitingApproval(_) => {
+                Self::new(crate::v1::AWAITING_APPROVAL, error.to_string())
+            }
             // Nothing that can read the workspace answered: what to do is in
             // the message itself.
             ServerError::NoHolder => Self::new("unavailable", error.to_string())
@@ -129,7 +140,7 @@ pub fn status_of(code: &str) -> StatusCode {
         "invalid_token" | "key_revoked" | "key_expired" | "unauthorized" => {
             StatusCode::UNAUTHORIZED
         }
-        "not_permitted" | "beyond_scope" => StatusCode::FORBIDDEN,
+        "not_permitted" | "beyond_scope" | "not_on_this_server" => StatusCode::FORBIDDEN,
         "not_found" | "unknown_action" | "unknown_resource" | "unknown_app" => {
             StatusCode::NOT_FOUND
         }

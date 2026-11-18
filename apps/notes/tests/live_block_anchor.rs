@@ -7,7 +7,7 @@ use notes::{NotesApp, NotesShell};
 use ui::collaboration::PresencePayload;
 use ui::framework::testing::with_surface;
 use ui::presence::PresenceKey;
-use ui::widget::block_editor::{Block, CursorPlacement};
+use ui::rich_edit::block_editor::{Block, CursorPlacement};
 
 #[test]
 fn remote_notes_caret_names_the_same_block_on_both_peers_across_inserted_blocks() {

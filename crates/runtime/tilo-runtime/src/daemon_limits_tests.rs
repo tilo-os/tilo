@@ -14,7 +14,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tilo_actions::InvocationId;
-use tilo_mcp::test_hosts::{HeldHost, long_invoke};
+use tilo_mcp::test_hosts::{HeldHost, long_invoke, state};
 use tilo_mcp::{MAX_ADMITTED, MAX_WORKING, McpServer};
 
 /// An endpoint accepting on a socket of its own, over a host whose
@@ -137,13 +137,6 @@ impl Client {
     }
 }
 
-/// The state a `tilo_invoke` or `tilo_cancel` answered with.
-fn state(reply: &Value) -> &str {
-    reply["result"]["structuredContent"]["update"]["state"]
-        .as_str()
-        .unwrap_or_else(|| panic!("no state in {reply}"))
-}
-
 /// One invocation a test starts: its id at the host and the id of the
 /// request that started it.
 #[derive(Clone, Copy)]
@@ -152,7 +145,7 @@ struct Started {
     request: u64,
 }
 
-/// Send a `tilo_invoke` for each of `count` new invocations, none waiting on
+/// Send a `tilo_do` for each of `count` new invocations, none waiting on
 /// another's answer.
 fn invoke_many(client: &Client, count: usize) -> Vec<Started> {
     (0..count)
@@ -161,11 +154,7 @@ fn invoke_many(client: &Client, count: usize) -> Vec<Started> {
                 invocation: InvocationId::new(),
                 request: 100_u64.saturating_add(u64::try_from(place).unwrap()),
             };
-            client.call(
-                started.request,
-                "tilo_invoke",
-                &long_invoke(started.invocation),
-            );
+            client.call(started.request, "tilo_do", &long_invoke(started.invocation));
             started
         })
         .collect()
@@ -267,8 +256,8 @@ fn a_connection_works_its_requests_at_once_up_to_the_bound_and_the_next_take_fre
 
     client.call(
         3,
-        "tilo_cancel",
-        &json!({"invocation_id": working[1].0.to_string()}),
+        "tilo_status",
+        &json!({"invocation_id": working[1].0.to_string(), "cancel": true}),
     );
     assert_eq!(state(&client.reply_to(3)), "cancelled");
     let cancelled = client.reply_to(request_of(&started, working[1]));
@@ -313,7 +302,7 @@ fn a_connection_refuses_the_request_past_those_it_admits_and_takes_it_once_one_a
     );
     let extra = InvocationId::new();
     for request in [900, 901] {
-        client.call(request, "tilo_invoke", &long_invoke(extra));
+        client.call(request, "tilo_do", &long_invoke(extra));
         let refused = client.reply_to(request);
         assert_eq!(refused["error"]["code"], -32000, "{refused}");
         let told = refused["error"]["message"].as_str().unwrap_or_default();
@@ -340,7 +329,7 @@ fn a_connection_refuses_the_request_past_those_it_admits_and_takes_it_once_one_a
     host.finish(first);
     let finished = client.reply_to(request_of(&started, first));
     assert_eq!(state(&finished), "succeeded", "{finished}");
-    client.call(902, "tilo_invoke", &long_invoke(extra));
+    client.call(902, "tilo_do", &long_invoke(extra));
 
     // Everything in flight ends as it reaches the host.
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));

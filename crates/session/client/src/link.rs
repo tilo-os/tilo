@@ -262,6 +262,9 @@ struct Reported {
     /// Told when a queue that takes the members' presence comes or goes
     /// ([`Reports::reads_presence`]).
     presence_moved: Option<Wake>,
+    /// Raised as the session is closed ([`Link::close`]): a dial under way hears it at once,
+    /// where the close command waits in the queue until the dial ends.
+    closing: tokio::sync::watch::Sender<bool>,
 }
 
 impl Reported {
@@ -302,7 +305,21 @@ impl Reports {
             live_note: None,
             inbound: None,
             presence_moved: None,
+            closing: tokio::sync::watch::Sender::new(false),
         })))
+    }
+
+    /// Say the session is being closed, to a dial under way ([`Self::closed`]).
+    pub fn close(&self) {
+        self.lock().closing.send_replace(true);
+    }
+
+    /// Once the session is being closed ([`Self::close`]).
+    pub fn closed(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let mut closing = self.lock().closing.subscribe();
+        async move {
+            let _ = closing.wait_for(|closing| *closing).await;
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, Reported> {
@@ -563,6 +580,7 @@ impl Link {
 
     /// End the session.
     pub fn close(&self) {
+        self.reports.close();
         let _ = self.send(Cmd::Stop);
     }
 
@@ -865,13 +883,6 @@ impl crate::remote::RemoteSession for Asking {
             }),
         );
         Some(changed)
-    }
-
-    fn connect_again(&self) {
-        // The host no longer takes this connection as the device's: the session
-        // dials again, and what waited for it is asked on the connection that
-        // carries.
-        let _ = self.outbox.send(Cmd::Reconnect);
     }
 }
 

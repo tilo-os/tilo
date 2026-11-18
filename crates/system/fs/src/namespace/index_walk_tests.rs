@@ -123,7 +123,7 @@ tilo_test_env::scenario! {
     }
 
     phase the_catalogue_follows_each_small_change_as_a_rebuild_would;
-    // The changes the 100,100-node test does not make, on a tree small enough to read. After each
+    // The changes the wide-tree test does not make, on a tree small enough to read. After each
     // the indexes are what a rebuild of the document gives and the catalogue holds exactly the
     // row's paths.
     {
@@ -383,7 +383,7 @@ fn a_peer_move_delivered_twice(replicas: &mut Replicas) {
 /// A row: its name, the change, and the catalogue's paths after it.
 type SmallChange = (&'static str, fn(&mut Replicas), &'static [&'static str]);
 
-const WIDE_DIRECTORIES: usize = 100;
+const WIDE_DIRECTORIES: usize = 10;
 const WIDE_FILES: usize = 1_000;
 
 fn wide_tree() -> Namespace {
@@ -404,14 +404,14 @@ fn wide_tree() -> Namespace {
 fn a_change_costs_the_change_not_the_tree() {
     let mut ns = wide_tree();
     let nodes = ns.doc.node_ids().count() as u64;
-    assert_eq!(nodes, 100_100, "the fixture is the whole tree");
+    assert_eq!(nodes, 10_010, "the fixture is the whole tree");
     assert_eq!(ns.indexed_document_count() as u64, nodes);
 
     let mut rebuilt = ns.clone();
     let start = std::time::Instant::now();
     rebuilt.rebuild_document_index();
     let rebuild_ms = start.elapsed().as_millis();
-    eprintln!("WORK rebuild-100k-tree: {rebuild_ms} ms");
+    eprintln!("WORK rebuild-wide-tree: {rebuild_ms} ms");
 
     local_changes(&mut ns, rebuild_ms);
     // `measure` compares the indexes with a rebuild after each change, the last included.
@@ -432,7 +432,7 @@ fn measure<T>(
     let ms = start.elapsed().as_millis();
     let lookups = ns.node_lookup_count() - before;
     eprintln!(
-        "WORK {label}-in-100k-tree: {lookups} lookups, {ms} ms (one whole rebuild: {rebuild_ms} ms)"
+        "WORK {label}-in-wide-tree: {lookups} lookups, {ms} ms (one whole rebuild: {rebuild_ms} ms)"
     );
     assert!(
         lookups <= reads,

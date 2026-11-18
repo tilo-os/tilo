@@ -9,7 +9,7 @@
 //! only its plain text and resolved mentions; [`legacy`] shows it as one
 //! paragraph with the same mentions marked.
 
-use ui::widget::BlockContent;
+use ui::rich_edit::BlockContent;
 use ui::widget::marks::{Mark, MarkSpan};
 
 use crate::mention::Mention;

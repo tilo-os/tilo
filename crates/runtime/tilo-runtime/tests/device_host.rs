@@ -241,23 +241,14 @@ async fn device_host(root: &SigningKey) -> Box_ {
     let endpoint = endpoint(&key).await;
     let state = tempfile::tempdir().unwrap();
     let key_sessions = KeySessions::new();
-    // A host opens only after its endpoint had its whole wait to reach a server
-    // (`tilo_workspace_service::workspaces::Workspaces::open`), and this endpoint has
-    // none to reach. A test on a runtime whose clock it can hold holds it over
-    // the open: the same wait runs on that clock, which passes it when nothing
-    // else can run instead of five seconds later.
-    let held = matches!(
-        tokio::runtime::Handle::current().runtime_flavor(),
-        tokio::runtime::RuntimeFlavor::CurrentThread
-    );
-    if held {
-        tokio::time::pause();
-    }
     let host = Arc::new(
         WorkspaceService::open(
             ServiceConfig {
                 apps: Some(Arc::clone(&key_sessions)
                     as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>),
+                // Reached on this machine's own network: nothing will name this
+                // endpoint's address, so opening does not wait for one.
+                reaching: tilo_workspace_service::Reaching::OnItsOwn,
                 ..ServiceConfig::new(
                     state.path().join("workspace-host"),
                     tilo_server_protocol::WorkSetting::none(),
@@ -275,9 +266,6 @@ async fn device_host(root: &SigningKey) -> Box_ {
         .await
         .unwrap(),
     );
-    if held {
-        tokio::time::resume();
-    }
     let made = host.workspaces().create("Shell").await.unwrap();
     let store = PersonalStore::open(
         root.verifying_key().to_bytes(),

@@ -74,7 +74,7 @@ impl TextBoxEditor {
         surface.set_focus(true);
         surface
             .editor_mut()
-            .focus_block(usize::MAX, ui::widget::CursorPlacement::End);
+            .focus_block(usize::MAX, ui::rich_edit::CursorPlacement::End);
         self.focused = true;
     }
 
@@ -501,16 +501,16 @@ impl SlidesApp {
     }
 }
 
-pub(super) fn listed(kind: &ui::widget::BlockKind, ordered: bool) -> bool {
+pub(super) fn listed(kind: &ui::rich_edit::BlockKind, ordered: bool) -> bool {
     if ordered {
-        matches!(kind, ui::widget::BlockKind::Numbered { .. })
+        matches!(kind, ui::rich_edit::BlockKind::Numbered { .. })
     } else {
-        matches!(kind, ui::widget::BlockKind::Bullet { .. })
+        matches!(kind, ui::rich_edit::BlockKind::Bullet { .. })
     }
 }
 
 pub(super) fn mark_covers(
-    blocks: &[ui::widget::BlockContent],
+    blocks: &[ui::rich_edit::BlockContent],
     mark: &ui::widget::marks::Mark,
 ) -> bool {
     let mut words = blocks

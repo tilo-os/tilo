@@ -128,8 +128,8 @@ fn duplicate_subtree_round_trips_rich_content_and_mints_fresh_ids() {
 /// The copy's blocks are the source's, with links into the copied subtree
 /// following the copy, under ids of its own.
 fn assert_remapped_blocks(
-    source: Vec<ui::widget::BlockContent>,
-    destination: Vec<ui::widget::BlockContent>,
+    source: Vec<ui::rich_edit::BlockContent>,
+    destination: Vec<ui::rich_edit::BlockContent>,
     copies: &[(notes::PageId, notes::PageId)],
 ) {
     use ui::widget::marks::Mark;

@@ -1911,7 +1911,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// Invoke any published action of the resource by id with JSON
-    /// arguments, as an agent's `tilo_invoke` does — the framework's own
+    /// arguments, as an agent's `tilo_do` does — the framework's own
     /// (`undo`, `history`, `render`) as well as the app's — and answer with
     /// what it reported.
     ///

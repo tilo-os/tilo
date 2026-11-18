@@ -149,7 +149,7 @@ pub(super) async fn handle_envelope(
         }
         Envelope::HostAction { frame } => Ok(handle_host_action(peer, session, &frame)),
         Envelope::WorkspacesRequest { request_id, frame } => {
-            handle_workspaces(peer, session, request_id, &frame).await
+            Box::pin(handle_workspaces(peer, session, request_id, &frame)).await
         }
         Envelope::AgentSession { request_id, label } => {
             Ok(Some(handle_agent_session(
@@ -173,7 +173,6 @@ pub(super) async fn handle_envelope(
         | Envelope::Committed { .. }
         | Envelope::CommitRefused { .. }
         | Envelope::ChangeRefused { .. }
-        | Envelope::LiveLeave { .. }
         | Envelope::LiveMember { .. }
         | Envelope::Position { .. }
         | Envelope::VoiceCallResult { .. }

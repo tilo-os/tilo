@@ -317,7 +317,11 @@ fn is_theme_source(path: &Path) -> bool {
 pub fn theme_ratchet() -> Ratchet {
     Ratchet {
         name: "theme",
-        roots: &["crates/sdk/ui-core/src", "apps/*/src"],
+        roots: &[
+            "crates/sdk/ui-core/src",
+            "crates/sdk/tilo-rich-edit/src",
+            "apps/*/src",
+        ],
         patterns: vec![
             // The constructor this tree actually calls, with a literal first
             // argument. A variable first argument (`Color::from_rgba8(c.r(), …)`,
@@ -429,6 +433,7 @@ pub fn chrome_border_ratchet() -> Ratchet {
             "crates/sdk/ui-core/src/widget",
             "crates/sdk/ui-core/src/chrome",
             "crates/sdk/ui-core/src/surface.rs",
+            "crates/sdk/tilo-rich-edit/src",
         ],
         patterns: vec![Pattern::new(
             "declared_border",

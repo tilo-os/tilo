@@ -569,13 +569,8 @@ async fn an_apps_own_change_of_another_app_is_asked_once_and_runs_as_allowed() {
         .run_until(async {
             let env = Environment::new();
             let mut services = env.membership.services();
+            // Where the person's "Always" is recorded: the workspace's grants.
             services.workspace_grants = Some(Arc::new(TreeGrants(env.membership.clone())));
-            // The person's settings, which keep their answers for one app's
-            // use of another app's actions.
-            services.settings = Some(Arc::new(settings_store::HostDocument::new(
-                serde_json::Map::new(),
-                |_| Ok(()),
-            )));
             // The app declares that it takes other apps' actions.
             services.app_action_access = Some(Arc::new(|_: &str| {
                 crate::apps::app_actions::AppActionAccess {
@@ -625,7 +620,8 @@ async fn an_apps_own_change_of_another_app_is_asked_once_and_runs_as_allowed() {
             assert!(sheets.try_recv().is_err(), "the person was asked once");
 
             // Allowed once, it is asked again; allowed always, the grant
-            // stands in the workspace and nothing more is asked.
+            // stands in the workspace, naming the app, and nothing more is
+            // asked.
             let again = call(NOTES_PEER, "notes.notebook", "create-page", None);
             let asking = app_asks(&app, again.clone());
             tokio::pin!(asking);
@@ -639,6 +635,17 @@ async fn an_apps_own_change_of_another_app_is_asked_once_and_runs_as_allowed() {
                 .unwrap();
             assert!(admitted(&asking.await));
             notes.try_recv().expect("Notes makes the page");
+            let asker = tilo_action_policy::Grantee::app(question.app_id.clone());
+            let granted: Vec<tilo_action_policy::Grant> = env.membership.read().workspaces[0]
+                .policy
+                .grants_of(&asker)
+                .cloned()
+                .collect();
+            assert_eq!(granted.len(), 1, "one grant names the app: {granted:?}");
+            assert_eq!(
+                granted[0].granted_by,
+                tilo_action_policy::Grantee::person(question.person.clone())
+            );
             let unasked = app_asks(
                 &app,
                 call(NOTES_PEER, "notes.notebook", "create-page", None),
@@ -647,6 +654,31 @@ async fn an_apps_own_change_of_another_app_is_asked_once_and_runs_as_allowed() {
             assert!(admitted(&unasked), "{unasked:?}");
             notes.try_recv().expect("Notes makes another page");
             assert!(sheets.try_recv().is_err(), "a lasting grant asks nothing");
+
+            // Revoked, as Privacy & Security does, the app is asked again,
+            // and refused when the person declines.
+            assert!(
+                env.membership.write().workspaces[0].revoke_grant(&granted[0].id),
+                "the grant is revoked"
+            );
+            let asking = app_asks(
+                &app,
+                call(NOTES_PEER, "notes.notebook", "create-page", None),
+            );
+            tokio::pin!(asking);
+            let (question, answer) = tokio::select! {
+                answer = &mut asking => panic!("ran after the revoke: {answer:?}"),
+                sheet = sheets.recv() => sheet.unwrap(),
+            };
+            assert_eq!(question.action, "create-page");
+            answer
+                .send(crate::apps::app_actions::AppActionAnswer::DENY)
+                .unwrap();
+            assert!(!admitted(&asking.await), "declined, it is refused");
+            assert!(
+                notes.try_recv().is_err(),
+                "Notes is handed nothing once revoked"
+            );
 
             // One action of the app asking two things at once: each is put
             // to the person in turn, neither refused for the other.

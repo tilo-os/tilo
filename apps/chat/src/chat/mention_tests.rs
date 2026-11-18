@@ -2,7 +2,7 @@
 //! synced, and found in the resource by the framework (`ui::mentions`), with no chat window open.
 
 use ui::automerge::AutoCommit;
-use ui::widget::BlockContent;
+use ui::rich_edit::BlockContent;
 use ui::widget::marks::{Mark, MarkSpan};
 
 use super::tests::{ADA, Talk, id};

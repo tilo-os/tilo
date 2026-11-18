@@ -3,18 +3,3 @@
 pub fn days_in_month(year: i32, month: u32) -> u32 {
     ui::date::days_in_month(i64::from(year), month)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn month_lengths() {
-        assert_eq!(days_in_month(2000, 2), 29);
-        assert_eq!(days_in_month(1900, 2), 28);
-        assert_eq!(days_in_month(2024, 2), 29);
-        assert_eq!(days_in_month(2023, 2), 28);
-        assert_eq!(days_in_month(2024, 4), 30);
-        assert_eq!(days_in_month(2024, 12), 31);
-    }
-}

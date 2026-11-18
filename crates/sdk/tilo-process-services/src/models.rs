@@ -4,7 +4,7 @@
 //! binds its authenticated session to a backend before passing it to an app.
 use std::rc::Rc;
 
-pub use agent_provider_config::management::{CredentialStatus, ProviderAdmin, ProviderSnapshot};
+pub use agent_provider_config::management::{ProviderAdmin, ProviderSnapshot};
 pub use agent_provider_config::protocol::*;
 
 /// Process-scoped authority to administer providers, independent of inference access.
