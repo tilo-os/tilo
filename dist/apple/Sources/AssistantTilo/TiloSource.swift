@@ -159,7 +159,11 @@ public final class TiloSource: AssistantSource {
     private var surveyAgain: Survey?
 
     private let sessions = Told<Session>(.signedOut)
-    private let reaches = Told<Reach>(.unreachable)
+    private let reaches = Told<Reach>(.unknown)
+    /// Whether the page just got in and who the main chat is with is still being found.
+    private var finds = false
+    /// The calls that wait for the device's way in to end.
+    private var waitingIn: [CheckedContinuation<Void, Never>] = []
     private let agents = Told<[SubAgent]>([])
     private let taskList = Told<[AssistantTask]>([])
     private let automationList = Told<[Automation]>([])
@@ -340,10 +344,55 @@ public final class TiloSource: AssistantSource {
 
     private func tell() {
         sessions.set(sessionNow)
-        if case .open = engine.state { reaches.set(.reachable) } else { reaches.set(.unreachable) }
+        sayReach()
+    }
+
+    /// Whether the person's Tilo answers, as far as a try has shown. It does once the page is
+    /// in, and it does not once a try has ended without getting in. A try that is in work says
+    /// nothing new, however long it takes: what was said last holds, and at the start that is
+    /// nothing, so a page on its way in is not said to be away. No count of seconds ends a
+    /// try: its page's own word does, or the network's failure.
+    private func sayReach() {
+        switch engine.state {
+        case .open: reaches.set(.reachable)
+        case .refused, .failed: reaches.set(.unreachable)
+        // Nothing is tried, so nothing is known.
+        case .away: reaches.set(.unknown)
+        // A try is in work, or the page waits for its person: nothing new is known.
+        case .arriving, .asking, .pairing: break
+        }
+        endWaits()
+    }
+
+    /// Every call that waits for the way in looks again at whether it still has to.
+    private func endWaits() {
+        let waiting = waitingIn
+        waitingIn = []
+        for call in waiting { call.resume() }
+    }
+
+    /// A call made at the start, while it is not known yet whether Tilo answers, waits for the
+    /// try that is in work to end: it is not answered that Tilo cannot be reached before a
+    /// try has failed.
+    private func tried() async {
+        while reaches.now == .unknown, startedOver {
+            await withCheckedContinuation { waitingIn.append($0) }
+        }
+    }
+
+    /// Who a message in the main chat goes to is found a moment after the page is in. A
+    /// message written before that waits for it: it is not answered that its person has no
+    /// assistant while nobody has been asked. The wait ends when the main chat's other side is
+    /// found or said not to be, or when a try fails.
+    private func found() async {
+        while recipient == nil, reaches.now != .unreachable, finds || startedOver {
+            await withCheckedContinuation { waitingIn.append($0) }
+        }
     }
 
     private func stood(_ state: TiloEngine.State) async {
+        // Whether Tilo answers is said the moment a try ends, before anything is asked of the page.
+        sayReach()
         if case .open(let route) = state {
             // The workspace, without the app the page shows of it.
             if let workspace = EngineAddress.workspace(of: route) { defaults.set(workspace, forKey: TiloSource.routeKey) }
@@ -356,6 +405,11 @@ public final class TiloSource: AssistantSource {
     /// conversation is the main chat.
     private func arrived(at route: String) async {
         var root: String?
+        finds = true
+        defer {
+            finds = false
+            endWaits()
+        }
         agentsRefused = 0
         if let whose = try? await engine.whose() {
             root = whose.person
@@ -399,6 +453,9 @@ public final class TiloSource: AssistantSource {
         case .assistant:
             await findAssistant()
         }
+        // Who the main chat is with is found, or is said not to be: a message that waited goes on.
+        finds = false
+        endWaits()
         // What her server told her so far is read before her conversation is said: what was a
         // reminder yesterday stands as one from the first, and is not told again.
         toldRefused = false
@@ -1385,10 +1442,14 @@ public final class TiloSource: AssistantSource {
     }
 
     public func send(_ draft: Draft, to chat: Chat) async throws {
+        // A message written while the device is still on its way in waits for the way in to end.
+        await tried()
+        if chat == .main { await found() }
         let to: ChatRecipient
         switch chat {
         case .main:
-            guard let recipient else { throw noAssistant }
+            // Where no try got in, nobody was asked who the assistant is: Tilo did not answer.
+            guard let recipient else { throw reaches.now == .unreachable ? SourceProblem.unreachable : noAssistant }
             to = recipient
         case .subAgent(let agent):
             guard let id = feeds[chat]?.conversation else { throw SourceProblem.refused("This sub-agent has no conversation yet") }
@@ -2064,6 +2125,7 @@ public final class TiloSource: AssistantSource {
 
     /// Run a call and say a failure the way the views read one.
     private func taken(_ call: @MainActor () async throws -> Void) async throws {
+        await tried()
         do {
             try await call()
         } catch TiloEngine.Problem.refused(let code, let reason) {

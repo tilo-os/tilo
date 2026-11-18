@@ -10,7 +10,8 @@ import Foundation
 ///
 /// **Calling.** A call returns when Tilo has taken it, and throws a `SourceProblem` when it did
 /// not. What the call changed arrives through the streams, never as the call's result, so every
-/// device shows the same.
+/// device shows the same. A call made at the start, while it is not known yet whether Tilo
+/// answers, waits until it is known: it is not said to have failed before anything has.
 ///
 /// Nothing here is about one person's line of work: a task, an event or a sub-agent is whatever
 /// the assistant was told to make of it.
@@ -20,7 +21,8 @@ public protocol AssistantSource: Sendable {
     /// Where this device stands: signed out, pairing, or signed in as someone.
     func session() -> AsyncStream<Session>
 
-    /// Whether the person's Tilo answers right now.
+    /// Whether the person's Tilo answers right now. From the start until a first try has ended
+    /// it is `.unknown`, and nothing is said to have failed: a page on its way in is not away.
     func reach() -> AsyncStream<Reach>
 
     /// Pair this device with a link that "Pair a new device" made on a device where the person is

@@ -133,6 +133,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
     public func reach() -> AsyncStream<Reach> { reachNow.stream() }
 
     public func pair(with link: PairingLink) async throws {
+        await known()
         guard pairsAs != nil, reachNow.current == .reachable else { throw SourceProblem.unreachable }
         // Where something is asked first, the pairing goes on once the person answered.
         if let pairingAsk {
@@ -248,6 +249,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
     }
 
     public func send(_ draft: Draft, to chat: Chat) async throws {
+        await known()
         try signedIn()
         guard !draft.isEmpty else { return }
         guard let feed = feed(chat) else { throw SourceProblem.refused("This conversation is gone.") }
@@ -418,8 +420,15 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
 
     // MARK: Inside
 
+    /// A call made before it is known whether Tilo answers waits until it is known, as a
+    /// source on Tilo does at its start.
+    private func known() async {
+        guard reachNow.current == .unknown else { return }
+        for await reach in reachNow.stream() where reach != .unknown { return }
+    }
+
     private func signedIn() throws {
-        guard reachNow.current == .reachable else { throw SourceProblem.unreachable }
+        guard reachNow.current != .unreachable else { throw SourceProblem.unreachable }
         guard case .signedIn = sessionNow.current else { throw SourceProblem.signedOut }
     }
 
