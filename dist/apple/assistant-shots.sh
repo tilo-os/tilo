@@ -14,7 +14,8 @@
 #                                              the app leaves the front: OUT/phone/secret.txt and its pictures
 #   dist/apple/assistant-shots.sh OUT typing   the main chat with the keyboard up, as the whole screen shows it
 #   dist/apple/assistant-shots.sh OUT keyboard the main chat with the keyboard up, put away and up again, light
-#                                              and dark: what a drag on the conversation does to the keyboard
+#                                              and dark: what a drag on the conversation does to the keyboard,
+#                                              what the window draws behind the keyboard's upper corners
 #                                              and what is kept (OUT/phone/keyboard-*.txt; a line FAULT fails
 #                                              it), and the whole screen with the keyboard up and with it away
 #

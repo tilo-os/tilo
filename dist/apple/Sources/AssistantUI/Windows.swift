@@ -213,6 +213,15 @@ public struct MacWindow: View {
 #endif
 
 #if os(iOS)
+private extension View {
+    /// The ground a whole screen of the iPhone stands on. It reaches past every safe area, the
+    /// keyboard's too: the keyboard's upper corners are round, and what they leave in sight is
+    /// the screen's own ground, where the system's view under it is black in the dark.
+    func ground(_ token: Token) -> some View {
+        background { Rectangle().fill(token).ignoresSafeArea() }
+    }
+}
+
 /// The iPhone's order of the same views: the conversation first, the sidebar one step
 /// back, the Tasks panel as a sheet over the conversation.
 public struct PhoneRoot: View {
@@ -242,7 +251,7 @@ public struct PhoneRoot: View {
             case .signedIn:
                 NavigationStack(path: $path) {
                     Sidebar { path = [model.place] }
-                        .background(Token.content)
+                        .ground(Token.content)
                         .toolbar(.hidden, for: .navigationBar)
                         .navigationDestination(for: AssistantModel.Place.self) { screen($0) }
                 }
@@ -293,7 +302,7 @@ public struct PhoneRoot: View {
                 SupervisionView()
             }
         }
-        .background(Token.content)
+        .ground(place == .assistantView ? Token.page : Token.content)
         // A drag down the conversation takes the keyboard down with the finger, as the system's own apps do.
         .scrollDismissesKeyboard(.interactively)
         .navigationTitle(title(place))

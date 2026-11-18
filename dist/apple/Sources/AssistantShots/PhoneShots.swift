@@ -247,7 +247,8 @@ enum PhoneShots {
 
     /// The main chat with the keyboard up and words in the field, then with the keyboard put away,
     /// then a message sent: whether a drag on the conversation takes the keyboard down with the
-    /// finger, and whether the words and the conversation's place are kept. Says each as a line
+    /// finger, what the window draws behind the keyboard's round upper corners, and whether the
+    /// words and the conversation's place are kept. Says each as a line
     /// and a fault as `FAULT`, and stays with the keyboard up and with it down, so a picture of the
     /// whole screen can be taken at both.
     static func keyboard(in window: UIWindow, dark: Bool) async {
@@ -303,6 +304,15 @@ enum PhoneShots {
             kept.say("FAULT: drag: a drag on the conversation leaves the keyboard up")
         }
         place("with the keyboard up")
+        // Where the keyboard's round upper corners leave the window in sight, it draws its own ground.
+        let shown = picture(of: window)
+        let beside = colour(in: shown, at: CGPoint(x: 3, y: top - 8))
+        let behind = [CGPoint(x: 2, y: top + 2), CGPoint(x: window.bounds.width - 2, y: top + 2)].map { colour(in: shown, at: $0) }
+        if behind.allSatisfy({ $0 == beside }) {
+            kept.say("ground: behind the keyboard's upper corners the window draws its ground, \(beside)")
+        } else {
+            kept.say("FAULT: ground: behind the keyboard's upper corners the window draws \(behind.joined(separator: " and ")), and \(beside) beside the field")
+        }
         let words = field.text ?? ""
         kept.say("ready up")
         try? await Task.sleep(for: .milliseconds(4000))
@@ -325,6 +335,18 @@ enum PhoneShots {
         kept.say(writes ? "send: the message is sent, the field is empty and keeps the keyboard" : "FAULT: send: after a message is sent the field is not empty with the keyboard up")
         place("after a message is sent")
         kept.say("done")
+    }
+
+    /// The colour of a picture at one point, as six digits.
+    static func colour(in picture: UIImage, at point: CGPoint) -> String {
+        guard let image = picture.cgImage, let data = image.dataProvider?.data, let bytes = CFDataGetBytePtr(data),
+              image.bitsPerPixel == 32
+        else { return "unread" }
+        let scale = CGFloat(image.width) / picture.size.width
+        let x = min(image.width - 1, max(0, Int(point.x * scale))), y = min(image.height - 1, max(0, Int(point.y * scale)))
+        let at = y * image.bytesPerRow + x * 4
+        let ends = image.bitmapInfo.contains(.byteOrder32Little) ? (at + 2, at) : (at, at + 2)
+        return String(format: "%02x%02x%02x", bytes[ends.0], bytes[at + 1], bytes[ends.1])
     }
 
     /// What the system is handed outside the window, through the app's own code and with the
