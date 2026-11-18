@@ -131,6 +131,22 @@ impl Job {
         }
     }
 
+    /// Which step of a content put the job is, for the log: a slow one is
+    /// told apart from the others by what it was doing.
+    pub(super) const fn step_kind(&self) -> Option<&'static str> {
+        match self {
+            Self::Content { step, .. } => Some(match step {
+                tilo_actions::remote::ContentPutStep::Begin { .. } => "begin",
+                tilo_actions::remote::ContentPutStep::Append { .. } => "append",
+                tilo_actions::remote::ContentPutStep::Finish { .. } => "finish",
+                tilo_actions::remote::ContentPutStep::Many { .. } => "many",
+                tilo_actions::remote::ContentPutStep::Have { .. } => "have",
+                tilo_actions::remote::ContentPutStep::Progress { .. } => "progress",
+            }),
+            _ => None,
+        }
+    }
+
     /// The workspace whose documents the job reads or changes.
     pub(super) const fn workspace(&self) -> Option<WorkspaceId> {
         match self {

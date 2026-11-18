@@ -1693,6 +1693,7 @@ impl Worker {
     fn timed(&mut self, queued: Instant, job: Job) {
         let started = Instant::now();
         let kind = job.kind();
+        let step = job.step_kind();
         self.take(job);
         // What it ended, it ended now, as a listing of runs says.
         self.log().stamp_ended();
@@ -1706,6 +1707,7 @@ impl Worker {
         if waited.max(ran) >= SLOW_JOB {
             tracing::warn!(
                 kind,
+                step = step.unwrap_or("-"),
                 waited_ms = waited.as_millis(),
                 ran_ms = ran.as_millis(),
                 "workspace actions: a request waited or ran long"
