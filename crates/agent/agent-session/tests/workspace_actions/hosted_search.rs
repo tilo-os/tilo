@@ -32,6 +32,11 @@ struct Served {
     ada: SigningKey,
 }
 
+/// The app that keeps the notes whose bodies the folder mirrors as `.md` files.
+const NOTES: &str = "so.tilo.notes";
+/// The app that keeps the tracker the issues are in.
+const TASKS: &str = "so.tilo.tasks";
+
 /// A rule about reading what is at `node`.
 pub(super) fn reading(node: String, answer: &str) -> Bound {
     Bound {
@@ -330,7 +335,7 @@ impl Served {
                 },
             )
             .await
-            .unwrap();
+            .unwrap_or_else(|error| panic!("a message is written: {error}"));
         let deadline = tilo_test_env::hang_deadline();
         loop {
             let part = conversation_part(&self.workspaces, workspace).await;
@@ -979,3 +984,276 @@ async fn a_find_answers_from_the_index_kept_as_documents_land() {
 /// How the service decides an agent the workspace's own list does not hold.
 #[path = "hosted_across.rs"]
 mod across;
+
+/// A workspace's folder is indexed as the tree's chunks land: a find over a hundred files reads
+/// no chunk document and no file, however many of them the word it asks about is in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_find_reads_no_folder_document_and_no_file_once_the_folder_is_indexed() {
+    // Where the time goes, as the service logs it, when `RUST_LOG` asks.
+    if std::env::var_os("RUST_LOG").is_some() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_timer(tracing_subscriber::fmt::time::uptime())
+            .with_writer(std::io::stderr)
+            .try_init();
+    }
+    let mut served = Served::start(1).await;
+    let (workspace, page, said) = served.workspace(|_| Vec::new()).await;
+    let ada = Served::person(&served.ada, &served.devices.1, &workspace);
+    let her_agent = on_a_turn(
+        &ada,
+        SCOUT,
+        (&conversation_with(&served.ada, SCOUT), &said),
+        Vec::new(),
+    );
+    let notes = 100;
+    let (answered, failed) = served
+        .tool(
+            &workspace,
+            &her_agent,
+            "tilo_do",
+            serde_json::json!({
+                "path": "files#new-folder",
+                "args": {"parent": "", "name": "Bodies"},
+            }),
+        )
+        .await;
+    assert!(!failed, "the folder: {answered}");
+    for file in 0..notes {
+        let (answered, failed) = served
+            .tool(
+                &workspace,
+                &her_agent,
+                "tilo_do",
+                serde_json::json!({
+                    "path": "files#write-file",
+                    "args": {
+                        "folder": "Bodies",
+                        "name": format!("note-{file}.md"),
+                        "text": format!("The word grebe appears in body {file}.\n"),
+                    },
+                }),
+            )
+            .await;
+        assert!(!failed, "{file}: {answered}");
+    }
+    // The folder's files are read into the index between requests; asking a find brings the
+    // notes' files into it as the writes land, so wait for every body to be in.
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        served.finds(&workspace, &ada, "grebe").await;
+        let warmed = served.actions.search_files_warmed() + served.actions.search_files_read();
+        if warmed >= notes as u64 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the folder is indexed: {warmed} of {notes} files read"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // A find asked once the writes settle reads nothing of the folder it ranks.
+    served.finds(&workspace, &ada, "grebe").await;
+    for ask in 0..2 {
+        let chunks = served.actions.search_files_chunks_read();
+        let files = served.actions.search_files_read();
+        let began = Instant::now();
+        let found = served
+            .found(&workspace, &her_agent, ("grebe", &Within::default()))
+            .await;
+        let elapsed = began.elapsed();
+        let chunk_read = served.actions.search_files_chunks_read() - chunks;
+        let file_read = served.actions.search_files_read() - files;
+        eprintln!(
+            "find {ask} over {notes} files: {elapsed:?}, {} found, {chunk_read} folder documents \
+             and {file_read} files read",
+            found.len()
+        );
+        assert!(
+            found
+                .iter()
+                .any(|found| found.app.as_deref() == Some(fs_protocol::tree::FILES_APP)),
+            "the word in the notes' files is found: {found:?}"
+        );
+        if ask == 1 {
+            assert_eq!(chunk_read, 0, "a settled find reads no folder document");
+            assert_eq!(file_read, 0, "a settled find reads no file");
+        }
+    }
+    page.peer.close();
+}
+
+/// What the page's search asks the workspace answers with a word in a note's body: the page
+/// itself no longer reads bodies, its documents being named there from names alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_page_search_finds_a_word_in_a_notes_body() {
+    let mut served = Served::start(1).await;
+    let (workspace, page, said) = served.workspace(|_| Vec::new()).await;
+    let ada = Served::person(&served.ada, &served.devices.1, &workspace);
+    let her_agent = on_a_turn(
+        &ada,
+        SCOUT,
+        (&conversation_with(&served.ada, SCOUT), &said),
+        Vec::new(),
+    );
+    for note in 0..8 {
+        let (answered, failed) = served
+            .tool(
+                &workspace,
+                &her_agent,
+                "tilo_do",
+                serde_json::json!({
+                    "path": "notes#import-markdown",
+                    "args": {
+                        "title": format!("Maritime Talk {note}"),
+                        "markdown": format!(
+                            "# Maritime Talk {note}\n\nThe hospitals are in this body.\n"
+                        ),
+                        "images": [],
+                    },
+                }),
+            )
+            .await;
+        assert!(!failed, "{note}: {answered}");
+    }
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let found = served
+            .found(&workspace, &ada, ("hospitals", &Within::default()))
+            .await;
+        if found
+            .iter()
+            .any(|found| found.app.as_deref() == Some(NOTES))
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the page's search never finds a word in a note's body: {found:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    page.peer.close();
+}
+
+/// What the page's search asks the workspace answers a title prefix with the note and the issue
+/// that carry it, each named as its own app lists it: what a person types in the search box.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_page_search_finds_a_title_prefix_in_a_note_and_an_issue() {
+    let mut served = Served::start(1).await;
+    let (workspace, page, said) = served.workspace(|_| Vec::new()).await;
+    let ada = Served::person(&served.ada, &served.devices.1, &workspace);
+    let her_agent = on_a_turn(
+        &ada,
+        SCOUT,
+        (&conversation_with(&served.ada, SCOUT), &said),
+        Vec::new(),
+    );
+    let title = "Write a launch checklist note in Notes with five short items";
+    for (path, arguments) in [
+        ("notes#new-note", serde_json::json!({"title": title})),
+        (
+            "tasks#create",
+            serde_json::json!({
+                "title": title,
+                "body": "Link it here and move this to In review.",
+            }),
+        ),
+    ] {
+        let (answered, failed) = served
+            .tool(
+                &workspace,
+                &her_agent,
+                "tilo_do",
+                serde_json::json!({"path": path, "args": arguments}),
+            )
+            .await;
+        assert!(!failed, "{path}: {answered}");
+    }
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let found = served
+            .found(&workspace, &ada, ("Write a launch", &Within::default()))
+            .await;
+        let kept_by = |app: &str| found.iter().any(|found| found.app.as_deref() == Some(app));
+        if kept_by(NOTES) && kept_by(TASKS) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "a title prefix finds the note and the issue: {found:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    page.peer.close();
+}
+
+/// What a find asks of the workspace is decided for the answers it returns, not for every
+/// document it ranks, and kept per caller: the next find asks nothing, however many documents
+/// the workspace holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_find_asks_what_its_caller_may_read_only_for_the_answers_it_returns() {
+    // Where the time goes, as the service logs it, when `RUST_LOG` asks.
+    if std::env::var_os("RUST_LOG").is_some() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_timer(tracing_subscriber::fmt::time::uptime())
+            .with_writer(std::io::stderr)
+            .try_init();
+    }
+    let mut served = Served::start(1).await;
+    let (workspace, page, said) = served.workspace(|_| Vec::new()).await;
+    let ada = Served::person(&served.ada, &served.devices.1, &workspace);
+    let her_agent = on_a_turn(
+        &ada,
+        SCOUT,
+        (&conversation_with(&served.ada, SCOUT), &said),
+        Vec::new(),
+    );
+    let notes = 60;
+    for file in 0..notes {
+        let (answered, failed) = served
+            .tool(
+                &workspace,
+                &her_agent,
+                "tilo_do",
+                serde_json::json!({
+                    "path": "notes#import-markdown",
+                    "args": {
+                        "title": format!("notes/note-{file}.md"),
+                        "markdown": format!("# Note {file}\n\nThe word grebe appears in this body.\n"),
+                        "images": [],
+                    },
+                }),
+            )
+            .await;
+        assert!(!failed, "{file}: {answered}");
+    }
+    // An agent that may read everything pays for the answers it returns and keeps them: the
+    // second find asks the workspace nothing.
+    let mut reads = Vec::new();
+    for ask in 0..2 {
+        let before = served.actions.search_permissions_read();
+        let began = Instant::now();
+        let found = served
+            .found(&workspace, &her_agent, ("grebe", &Within::default()))
+            .await;
+        let elapsed = began.elapsed();
+        let asked = served.actions.search_permissions_read() - before;
+        eprintln!(
+            "agent find {ask} over {notes} notes: {elapsed:?}, {} found, {asked} permission reads",
+            found.len()
+        );
+        assert!(!found.is_empty(), "the word in every note is found");
+        reads.push(asked);
+    }
+    assert!(
+        reads[0] > 0 && reads[0] < notes as u64,
+        "a find asks about its own answers, not every document it ranks: {reads:?} for {notes} notes"
+    );
+    assert_eq!(
+        reads[1], 0,
+        "the next find answers from what the workspace kept: {reads:?}"
+    );
+    page.peer.close();
+}

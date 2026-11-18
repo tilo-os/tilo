@@ -9,7 +9,7 @@
 //! short passes, as the document lands or as the workspace joins, and a find
 //! answers from what is kept without opening anything.
 
-use super::{Duration, Instant, Ordering, Worker, WorkspaceDocuments, WorkspaceId};
+use super::{Arc, Duration, Instant, Ordering, Worker, WorkspaceDocuments, WorkspaceId};
 
 /// How much of one pass the index build keeps the thread from the requests queued behind it:
 /// short enough that a request never waits on the pass, long enough that a workspace of a
@@ -67,5 +67,70 @@ impl Worker {
             .values()
             .filter_map(|workspace| workspace.documents.as_ref())
             .any(WorkspaceDocuments::has_unindexed)
+    }
+
+    /// Read the files of the workspaces' folders that the index has not read yet, for `budget`
+    /// at most: each tree document as it landed or as the workspace joined, so a find answers from
+    /// what is kept without reading a chunk or a file while the person waits. `true` when no
+    /// workspace's folder waits on this thread, or none of what waits could be read now, which
+    /// the next request looks at again.
+    pub(super) fn warm_files(&mut self, budget: Duration) -> bool {
+        let began = Instant::now();
+        let ids: Vec<WorkspaceId> = self.workspaces.keys().copied().collect();
+        let mut all = true;
+        let mut read_any = false;
+        'workspaces: for id in ids {
+            let Some(engine) = self
+                .workspaces
+                .get(&id)
+                .map(|workspace| Arc::clone(workspace.peer.engine()))
+            else {
+                continue;
+            };
+            let Some(cluster) = self
+                .workspaces
+                .get(&id)
+                .and_then(|workspace| workspace.cluster_id(id))
+            else {
+                continue;
+            };
+            let content = self.workspace_content(id);
+            let counted = &self.shared.search;
+            let Some(workspace) = self.workspaces.get_mut(&id) else {
+                break 'workspaces;
+            };
+            while let Some(chunk) = workspace.files.next() {
+                let known = workspace.files.known(chunk);
+                let chunk_id = fs_protocol::tree::chunk_document_id(chunk);
+                let read =
+                    engine.record_since(&cluster, fs_protocol::tree::FILES_APP, &chunk_id, known);
+                match read {
+                    Ok(Some((bytes, revision))) => {
+                        let files = workspace
+                            .files
+                            .read(chunk, &bytes, revision, content.as_ref());
+                        counted
+                            .files_warmed
+                            .fetch_add(files as u64, Ordering::Relaxed);
+                        read_any = true;
+                    }
+                    Ok(None) if known.is_some() => workspace.files.unchanged(chunk),
+                    Ok(None) | Err(_) => workspace.files.pending(chunk),
+                }
+                if began.elapsed() >= budget {
+                    all = false;
+                    break 'workspaces;
+                }
+            }
+        }
+        all || !read_any
+    }
+
+    /// Whether any workspace's folder has documents the index has not read yet: what a pass of
+    /// [`Self::warm_files`] reads next.
+    pub(super) fn files_unwarmed_any(&self) -> bool {
+        self.workspaces
+            .values()
+            .any(|workspace| !workspace.files.settled())
     }
 }

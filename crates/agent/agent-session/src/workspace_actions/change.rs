@@ -161,6 +161,15 @@ impl Workspace {
                     WorkspaceDocuments::new(&route.cluster_id, Arc::clone(self.peer.engine()))
                 })
                 .landed(&route);
+            // A document the folder is made of changed: the files it indexes are read again. Any
+            // write at all can move what a caller may read, so what a find kept of that is let
+            // go here rather than answered stale.
+            if route.app_id == fs_protocol::tree::FILES_APP {
+                self.files.landed(&route.document);
+            }
+            self.readers.clear();
+            self.listings.clear();
+            self.named.clear();
         }
         if landed_any {
             // What a watch reads is read again now: a write to any record, its governance among

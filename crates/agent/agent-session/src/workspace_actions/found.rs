@@ -10,7 +10,9 @@
 //! ranked whole, by its text read app-agnostically from the document ([`crate::search`]). A
 //! record this device holds no keys for has no text here and is not found by it.
 //!
-//! A caller is answered only with what it may read, decided before anything is ranked:
+//! A caller is answered only with what it may read, asked for the answers a find returns and
+//! kept per caller until a write lands, so a workspace of a hundred documents does not pay a
+//! permission read for every one to rank one query:
 //!
 //! - what the workspace's policy lets it read now, an agent held to the rules its turn carries
 //!   ([`Worker::readable`]). A listing is not enough to go by: it also names what a caller may
@@ -35,9 +37,8 @@ use tilo_actions::remote::{ChangePage, Found, Pending, RemoteActionMessage, With
 use ui::history_source::feed::DocumentKey;
 use ui::search::index_publication::{IndexEntry, IndexWeight};
 
-use std::collections::HashMap;
-
 use super::bounded::Bounded;
+use super::search_access::{Readable, Reader};
 use super::{
     ActionCallError, ActionKind, Answer, Caller, CatalogueQuery, CatalogueRow, DocumentRoute,
     Needs, TreePath, Worker, WorkspaceId, record_provider,
@@ -54,25 +55,6 @@ const NAMING_ROWS: u32 = 64;
 /// The most containers at an app's top level read, one page each, to name a
 /// resource it lists under one of them (a chain's issues).
 const NAMING_CONTAINERS: usize = 3;
-
-/// How much of one resource a search's caller may read.
-enum Readable {
-    /// All of it.
-    Whole,
-    /// Only the items their permissions name, each decided for itself.
-    Items(Box<ui::permissions::PermissionContext>),
-}
-
-impl Readable {
-    /// Whether the caller may read `resource`, which the resource at `route` holds.
-    fn reads(&self, route: &DocumentRoute, resource: &str) -> bool {
-        match self {
-            Self::Whole => true,
-            Self::Items(permissions) => item_node(route, resource)
-                .is_some_and(|node| permissions.answer(&node, ActionKind::Read) == Answer::Allow),
-        }
-    }
-}
 
 /// Whether `person` is answered with `entry` as far as where it was said goes: what is said in a
 /// direct conversation is found by the people it is between and by nobody else, whatever they
@@ -96,22 +78,49 @@ fn inside(within: &Within, entry: &IndexEntry) -> bool {
     within.holds(place, entry.when)
 }
 
-/// Where the workspace decides the item `resource` names as `<kind>/<field>/<item>` in the
-/// resource at `route`: what a grant on that item alone names. `None` for an id of another
-/// shape, which no such grant names.
-fn item_node(route: &DocumentRoute, resource: &str) -> Option<TreePath> {
-    let (collection, item) = resource.rsplit_once('/')?;
-    let (kind, field) = collection.split_once('/')?;
-    (!kind.is_empty() && !field.is_empty() && !field.contains('/') && !item.is_empty()).then(|| {
-        TreePath::root()
-            .app(route.app_id.as_str())
-            .kind(kind)
-            .resource(route.document.as_str())
-            .item(item)
-    })
-}
-
 impl Worker {
+    /// What a person types to name a resource as it is (`#12`, a handle) is found as written:
+    /// the entry whose identity field is the whole of `needle` answers first, ahead of every
+    /// entry that merely holds the word.
+    fn identity_matches(
+        &mut self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        who: Option<&Bounded>,
+        needle: &str,
+        docs: &[crate::search::SearchDoc],
+        searched: &[Option<IndexEntry>],
+        found: &mut Vec<Found>,
+    ) {
+        for (entry, doc) in searched.iter().zip(docs) {
+            if found.len() >= MOST_FOUND {
+                break;
+            }
+            let Some(entry) = entry else { continue };
+            let identity = entry.fields.iter().any(|(text, weight)| {
+                *weight == IndexWeight::Identity && text.trim().eq_ignore_ascii_case(needle.trim())
+            });
+            if !identity {
+                continue;
+            }
+            let readable = self.readable_cached(workspace_id, who, &doc.route);
+            if !readable
+                .as_ref()
+                .is_some_and(|readable| readable.reads(&doc.route, &entry.resource))
+            {
+                continue;
+            }
+            let resource = self
+                .listed_resource(&doc.route, entry)
+                .or_else(|| self.named_resource(workspace_id, caller, who, &doc.route, entry));
+            if let Some(resource) = resource
+                && !found.iter().any(|held| held.resource == resource.resource)
+            {
+                found.push(resource);
+            }
+        }
+    }
+
     /// What `needle` finds among the documents of `workspace_id`, best first, as `caller` lists
     /// them.
     pub(super) fn search(
@@ -129,52 +138,30 @@ impl Worker {
         let Some(cluster_id) = state.workspace.clone() else {
             return Ok(Vec::new());
         };
-        // What the caller may read is decided before anything is ranked: nothing they may not
-        // read weighs in what they are answered.
+        // What the caller may read is asked only for the answers a find returns, and kept per
+        // caller: nothing they may not read is answered, and a second find pays nothing for it.
         let who = self.bounded(caller);
         let person = who
             .as_ref()
             .map_or_else(|| self.member.clone(), |who| who.person.clone());
-        let routes: Vec<(DocumentRoute, Readable)> = self
+        let routes: Vec<DocumentRoute> = self
             .documents(&state, &cluster_id)
             .into_iter()
-            .filter_map(|route| {
-                let readable = self.readable(workspace_id, who.as_ref(), &route)?;
-                Some((route, readable))
-            })
             .take(crate::search::MOST_SEARCHED)
             .collect();
-        let (docs, searched) = self.searchable(workspace_id, &routes, (&person, within));
+        let (docs, searched) =
+            self.searchable(workspace_id, &routes, (who.as_ref(), &person, within));
         let entries_ms = began.elapsed().as_millis();
-        // One listing of a document answers for every hit in it: a listing mounts the document
-        // and reads it out, and a search that named twenty hits in one notebook paid for the
-        // notebook twenty times.
-        let mut listings: HashMap<DocumentRoute, Vec<CatalogueRow>> = HashMap::new();
         let mut found: Vec<Found> = Vec::new();
-        // What a person types to name a resource as it is (`#12`, a handle) is
-        // found as written: the entry whose identity field is the whole of
-        // `needle` answers first, ahead of every entry that merely holds the
-        // word, and the ranking below fills in the rest.
-        for (entry, doc) in searched.iter().zip(&docs) {
-            if found.len() >= MOST_FOUND {
-                break;
-            }
-            let Some(entry) = entry else { continue };
-            let identity = entry.fields.iter().any(|(text, weight)| {
-                *weight == IndexWeight::Identity && text.trim().eq_ignore_ascii_case(needle.trim())
-            });
-            if !identity {
-                continue;
-            }
-            let resource = self.listed_resource(&doc.route, entry).or_else(|| {
-                self.named_resource(workspace_id, caller, &doc.route, entry, &mut listings)
-            });
-            if let Some(resource) = resource
-                && !found.iter().any(|held| held.resource == resource.resource)
-            {
-                found.push(resource);
-            }
-        }
+        self.identity_matches(
+            workspace_id,
+            caller,
+            who.as_ref(),
+            needle,
+            &docs,
+            &searched,
+            &mut found,
+        );
         // Words rank what holds them. With no words, a search narrowed to a place or a time
         // lists what it holds there, the newest first, and one narrowed to nothing finds
         // nothing.
@@ -199,11 +186,22 @@ impl Worker {
             let (Some(doc), Some(what)) = (docs.get(at), searched.get(at)) else {
                 continue;
             };
+            let readable = self.readable_cached(workspace_id, who.as_ref(), &doc.route);
+            if let Some(entry) = what
+                && !readable
+                    .as_ref()
+                    .is_some_and(|readable| readable.reads(&doc.route, &entry.resource))
+            {
+                continue;
+            }
+            if what.is_none() && !matches!(readable, Some(Readable::Whole)) {
+                continue;
+            }
             let resource = match what {
                 Some(entry) => self.listed_resource(&doc.route, entry).or_else(|| {
-                    self.named_resource(workspace_id, caller, &doc.route, entry, &mut listings)
+                    self.named_resource(workspace_id, caller, who.as_ref(), &doc.route, entry)
                 }),
-                None => self.leading_resource(workspace_id, caller, &doc.route),
+                None => self.leading_resource(workspace_id, caller, who.as_ref(), &doc.route),
             };
             if let Some(resource) = resource
                 && !found.iter().any(|held| held.resource == resource.resource)
@@ -214,7 +212,9 @@ impl Worker {
         let named_ms = began.elapsed().as_millis();
         // And the files of the workspace's folder, by their paths there, for a caller who may
         // read them.
-        if within.is_everything() && self.reads_files(workspace_id, who.as_ref(), &cluster_id) {
+        if within.is_everything()
+            && self.reads_files_cached(workspace_id, who.as_ref(), &cluster_id)
+        {
             found.extend(self.found_files(workspace_id, &cluster_id, needle, MOST_FOUND));
         }
         tracing::debug!(
@@ -260,7 +260,7 @@ impl Worker {
     }
 
     /// Whether a search answers `who` with the files of the workspace `cluster`: whoever may
-    /// read what its Files app keeps there.
+    /// read what its Files app keeps there, asked once and kept until a write lands.
     fn reads_files(&self, workspace_id: WorkspaceId, who: Option<&Bounded>, cluster: &str) -> bool {
         who.is_none_or(|who| {
             self.permissions_across(workspace_id, who, cluster)
@@ -271,58 +271,101 @@ impl Worker {
         })
     }
 
-    /// What a search ranks for `person` of the documents at `routes` the replica holds, each as
-    /// far as its caller may read it: every resource their apps tell search about, with what it
-    /// says, and each record whose app tells it nothing, whole. Beside each document, the entry
-    /// it was made of, or `None` for one ranked whole.
+    /// [`Self::reads_files`] from what the workspace kept while no write landed there.
+    fn reads_files_cached(
+        &mut self,
+        workspace_id: WorkspaceId,
+        who: Option<&Bounded>,
+        cluster: &str,
+    ) -> bool {
+        let Some(who) = who else {
+            return true;
+        };
+        let key = Reader::of(who);
+        if let Some(access) = self.access(workspace_id, &key)
+            && let Some(known) = access.files
+        {
+            return known;
+        }
+        let answer = self.reads_files(workspace_id, Some(who), cluster);
+        self.shared
+            .search
+            .permissions
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Some(access) = self.access(workspace_id, &key) {
+            access.files = Some(answer);
+        }
+        answer
+    }
+
+    /// [`Self::readable`] from what the workspace kept for the caller while no write landed
+    /// there, else read now and kept: a second find over the same workspace pays nothing for it.
+    fn readable_cached(
+        &mut self,
+        workspace_id: WorkspaceId,
+        who: Option<&Bounded>,
+        route: &DocumentRoute,
+    ) -> Option<Readable> {
+        let Some(who) = who else {
+            return Some(Readable::Whole);
+        };
+        let key = Reader::of(who);
+        if let Some(access) = self.access(workspace_id, &key)
+            && let Some(known) = access.routes.get(route)
+        {
+            return known.clone();
+        }
+        let answer = self.readable(workspace_id, Some(who), route);
+        self.shared
+            .search
+            .permissions
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Some(access) = self.access(workspace_id, &key) {
+            access.routes.insert(route.clone(), answer.clone());
+        }
+        answer
+    }
+
+    /// What the workspace kept of `key`'s access, fresh for now.
+    fn access(
+        &mut self,
+        workspace_id: WorkspaceId,
+        key: &Reader,
+    ) -> Option<&mut super::search_access::SearchAccess> {
+        let workspace = self.workspaces.get_mut(&workspace_id)?;
+        let access = workspace.readers.entry(key.clone()).or_default();
+        access.fresh();
+        Some(access)
+    }
+
+    /// What a search ranks for `person` of the documents at `routes` the replica holds: every
+    /// resource their apps tell search about, with what it says, and each document whose app
+    /// tells it nothing, whole. Beside each document, the entry it was made of, or `None` for
+    /// one ranked whole.
+    ///
+    /// What the caller may read is not decided here: an entry the caller may not read is ranked
+    /// and dropped once it is one of the answers ([`Self::readable_cached`]), so a workspace of
+    /// a hundred documents does not pay a hundred permission reads to rank one query.
     fn searchable(
         &mut self,
         workspace_id: WorkspaceId,
-        routes: &[(DocumentRoute, Readable)],
-        (person, within): (&ui::permissions::policy::PersonId, &Within),
+        routes: &[DocumentRoute],
+        (who, person, within): (
+            Option<&Bounded>,
+            &ui::permissions::policy::PersonId,
+            &Within,
+        ),
     ) -> (Vec<crate::search::SearchDoc>, Vec<Option<IndexEntry>>) {
         let mut docs = Vec::new();
         let mut searched = Vec::new();
-        let Some(workspace) = self.workspaces.get_mut(&workspace_id) else {
-            return (docs, searched);
-        };
-        let engine = std::sync::Arc::clone(workspace.peer.engine());
-        let mut kept = workspace.documents.as_mut();
-        let readings = &mut self.titles;
-        let counted = &self.shared.search;
-        for (route, readable) in routes {
-            let mut read = |bytes: Vec<u8>| readings.entries(&route.app_id, bytes);
+        for route in routes {
             // What the app publishes for search is read once per change where the replica's
             // documents are followed; where none is followed, the document is read whole.
-            let (entries, changed) = if let Some(kept) = kept.as_deref_mut() {
-                // The index keeps what each document's app publishes, read as it landed
-                // ([`Worker::warm_entries`]): a query answers from it without opening the
-                // document, and opens only one that arrived since its last warm pass.
-                let (entries, opened) = if kept.indexed(route) {
-                    (kept.kept_entries(route), false)
-                } else {
-                    kept.entries(route, read)
-                };
-                if opened {
-                    counted
-                        .opened
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
-                (entries, kept.changed(route))
-            } else {
-                let bytes = engine
-                    .record(&route.cluster_id, &route.app_id, &route.document)
-                    .ok()
-                    .flatten();
-                let entries = bytes.and_then(|bytes| read(bytes).ok()).map(Into::into);
-                (entries, None)
-            };
+            let (entries, changed) = self.entries_of(workspace_id, route);
             let entries = entries.unwrap_or_default();
+            let held = !entries.is_empty();
             for entry in entries.iter() {
-                if !readable.reads(route, &entry.resource)
-                    || !placed_for(person, entry)
-                    || !inside(within, entry)
-                {
+                if !placed_for(person, entry) || !inside(within, entry) {
                     continue;
                 }
                 let text = entry
@@ -343,23 +386,16 @@ impl Worker {
             }
             // What its app tells search nothing about is ranked whole, so only for a caller
             // who may read all of it.
-            if !entries.is_empty()
-                || !matches!(readable, Readable::Whole)
-                || !within.is_everything()
-            {
+            if held || !within.is_everything() {
                 continue;
             }
-            let text = if let Some(kept) = kept.as_deref_mut() {
-                kept.text(route, Reading::Plain)
-            } else {
-                engine
-                    .record(&route.cluster_id, &route.app_id, &route.document)
-                    .ok()
-                    .flatten()
-                    .and_then(|bytes| automerge::AutoCommit::load(&bytes).ok())
-                    .map(|doc| crate::search::plain_text(&doc).into())
-            };
-            let Some(text) = text else {
+            if !matches!(
+                self.readable_cached(workspace_id, who, route),
+                Some(Readable::Whole)
+            ) {
+                continue;
+            }
+            let Some(text) = self.plain_text(workspace_id, route) else {
                 continue;
             };
             docs.push(crate::search::SearchDoc {
@@ -372,6 +408,47 @@ impl Worker {
             searched.push(None);
         }
         (docs, searched)
+    }
+
+    /// What the document at `route` publishes to search and when it last changed, opened only
+    /// when the index has not read it yet.
+    fn entries_of(
+        &mut self,
+        workspace_id: WorkspaceId,
+        route: &DocumentRoute,
+    ) -> (Option<Arc<[IndexEntry]>>, Option<u64>) {
+        let readings = &mut self.titles;
+        let counted = &self.shared.search;
+        let Some(workspace) = self.workspaces.get_mut(&workspace_id) else {
+            return (None, None);
+        };
+        let Some(kept) = workspace.documents.as_mut() else {
+            return (None, None);
+        };
+        let read = |bytes: Vec<u8>| readings.entries(&route.app_id, bytes);
+        // The index keeps what each document's app publishes, read as it landed
+        // ([`Worker::warm_entries`]): a query answers from it without opening the document,
+        // and opens only one that arrived since its last warm pass.
+        let (entries, opened) = if kept.indexed(route) {
+            (kept.kept_entries(route), false)
+        } else {
+            kept.entries(route, read)
+        };
+        if opened {
+            counted
+                .opened
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        (entries, kept.changed(route))
+    }
+
+    /// The document at `route` whole, as search ranks one whose app tells it nothing.
+    fn plain_text(&mut self, workspace_id: WorkspaceId, route: &DocumentRoute) -> Option<Arc<str>> {
+        self.workspaces
+            .get_mut(&workspace_id)?
+            .documents
+            .as_mut()?
+            .text(route, Reading::Plain)
     }
 
     /// The resource `entry` is about, in the record at `route`, as `caller`'s listing names it:
@@ -408,40 +485,121 @@ impl Worker {
         })
     }
 
-    /// The resource `entry` is about, in the document at `route`, as `caller`'s listing names
-    /// it: its own row, asked for among the rows that mention its id under each resource its id
-    /// extends (a note under its notebook), the nearest first, then at the document's top.
-    /// `None` for a resource the caller lists nothing of.
-    fn named_resource(
+    /// What the document at `route` lists at its top level, as `caller` names its resources: read
+    /// on a find and kept until a write lands (per caller, for one served within bounds), so a
+    /// second find names what it finds without mounting the document again.
+    fn route_listing(
+        &mut self,
+        workspace_id: WorkspaceId,
+        who: Option<&Bounded>,
+        caller: &Caller,
+        route: &DocumentRoute,
+    ) -> Option<Vec<CatalogueRow>> {
+        if let Some(who) = who {
+            let key = Reader::of(who);
+            if let Some(access) = self.access(workspace_id, &key)
+                && let Some(rows) = access.listings.get(route)
+            {
+                return Some(rows.clone());
+            }
+            let rows = self.page_rows(workspace_id, caller, route)?;
+            if let Some(access) = self.access(workspace_id, &key) {
+                access.listings.insert(route.clone(), rows.clone());
+            }
+            return Some(rows);
+        }
+        if let Some(rows) = self
+            .workspaces
+            .get(&workspace_id)
+            .and_then(|workspace| workspace.listings.get(route))
+        {
+            return Some(rows.clone());
+        }
+        let rows = self.page_rows(workspace_id, caller, route)?;
+        if let Some(workspace) = self.workspaces.get_mut(&workspace_id) {
+            workspace.listings.insert(route.clone(), rows.clone());
+        }
+        Some(rows)
+    }
+
+    /// The rows the document at `route` lists at its top level, as `caller` reads it now.
+    fn page_rows(
         &mut self,
         workspace_id: WorkspaceId,
         caller: &Caller,
         route: &DocumentRoute,
+    ) -> Option<Vec<CatalogueRow>> {
+        let query = CatalogueQuery {
+            provider: Some(record_provider(route)),
+            max_results: NAMING_ROWS,
+            ..CatalogueQuery::default()
+        };
+        self.catalogue_page(workspace_id, caller, &query)
+            .map(|page| page.rows)
+            .ok()
+    }
+
+    /// [`Self::resolve_named`] from what the workspace kept of it while no write landed there.
+    fn named_resource(
+        &mut self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        who: Option<&Bounded>,
+        route: &DocumentRoute,
         entry: &IndexEntry,
-        listings: &mut HashMap<DocumentRoute, Vec<CatalogueRow>>,
+    ) -> Option<Found> {
+        let key = (route.clone(), entry.resource.clone());
+        if let Some(who) = who {
+            let reader = Reader::of(who);
+            if let Some(access) = self.access(workspace_id, &reader)
+                && let Some(known) = access.named.get(&key)
+            {
+                return known.clone();
+            }
+            let answer = self.resolve_named(workspace_id, caller, Some(who), route, entry);
+            if let Some(access) = self.access(workspace_id, &reader) {
+                access.named.insert(key, answer.clone());
+            }
+            return answer;
+        }
+        if let Some(workspace) = self.workspaces.get(&workspace_id)
+            && let Some(known) = workspace.named.get(&key)
+        {
+            return known.clone();
+        }
+        let answer = self.resolve_named(workspace_id, caller, None, route, entry);
+        if let Some(workspace) = self.workspaces.get_mut(&workspace_id) {
+            workspace.named.insert(key, answer.clone());
+        }
+        answer
+    }
+
+    /// The resource `entry` is about, in the document at `route`, as `caller`'s listing names
+    /// it: its own row, asked for among the rows that mention its id under each resource its id
+    /// extends (a note under its notebook), the nearest first, then at the document's top.
+    /// `None` for a resource the caller lists nothing of.
+    fn resolve_named(
+        &mut self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        who: Option<&Bounded>,
+        route: &DocumentRoute,
+        entry: &IndexEntry,
     ) -> Option<Found> {
         let id = entry.resource.as_str();
-        // What the document lists from its top, asked once for every hit in it.
-        if !listings.contains_key(route) {
-            let query = CatalogueQuery {
-                provider: Some(record_provider(route)),
-                max_results: NAMING_ROWS,
-                ..CatalogueQuery::default()
-            };
-            let rows = self
-                .catalogue_page(workspace_id, caller, &query)
-                .map(|page| page.rows)
-                .unwrap_or_default();
-            listings.insert(route.clone(), rows);
-        }
-        if let Some(row) = listings
-            .get(route)
-            .and_then(|rows| rows.iter().find(|row| row.resource.id == id))
+        // What the document lists from its top, one read kept for every hit in it until a write
+        // lands: a listing mounts the document and reads it out, and a search that named twenty
+        // hits in one notebook paid for the notebook twenty times.
+        if let Some(row) = self
+            .route_listing(workspace_id, who, caller, route)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|row| row.resource.id == id)
         {
             return Some(Found {
                 resource: row.resource.id.clone(),
                 kind: row.resource.kind.clone(),
-                label: row.resource.label.clone(),
+                label: row.resource.label,
                 open: None,
                 arguments: serde_json::Map::new(),
                 app: Some(route.app_id.clone()),
@@ -522,15 +680,13 @@ impl Worker {
         &mut self,
         workspace_id: WorkspaceId,
         caller: &Caller,
+        who: Option<&Bounded>,
         route: &DocumentRoute,
     ) -> Option<Found> {
-        let query = CatalogueQuery {
-            provider: Some(record_provider(route)),
-            max_results: 1,
-            ..CatalogueQuery::default()
-        };
-        let page = self.catalogue_page(workspace_id, caller, &query).ok()?;
-        let row = page.rows.into_iter().next()?;
+        let row = self
+            .route_listing(workspace_id, who, caller, route)?
+            .into_iter()
+            .next()?;
         Some(Found {
             resource: row.resource.id,
             kind: row.resource.kind,
@@ -578,9 +734,7 @@ impl Worker {
         {
             Ok(Some(bytes)) => Ok(tilo_actions::remote::ResourceCopy::Document(bytes)),
             Ok(None) => Ok(tilo_actions::remote::ResourceCopy::Absent),
-            Err(error) => Err(ActionCallError::Unavailable {
-                reason: error.to_string(),
-            }),
+            Err(error) => Err(ActionCallError::Unavailable { reason: error }),
         }
     }
 

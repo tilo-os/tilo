@@ -19,7 +19,6 @@ impl Job {
             | Self::ContentGet { workspace_id, .. }
             | Self::ContentLink { workspace_id, .. }
             | Self::ReadDocument { workspace_id, .. }
-            | Self::ReadDocument { workspace_id, .. }
             | Self::Search { workspace_id, .. }
             | Self::Changes { workspace_id, .. }
             | Self::Invocations { workspace_id, .. }

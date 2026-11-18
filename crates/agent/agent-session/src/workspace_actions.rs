@@ -58,6 +58,7 @@ mod change;
 mod content;
 mod direct;
 mod feedback;
+mod files_index;
 mod files_listing;
 mod follow;
 mod found;
@@ -79,6 +80,7 @@ mod placed;
 mod publish;
 mod reads;
 mod run_context;
+mod search_access;
 mod session_voice;
 mod share;
 mod terminal;
@@ -173,13 +175,22 @@ struct Shared {
     search: SearchActivity,
 }
 
-/// Documents search opened, by what it read them for.
+/// What search read of the documents and the folder, counted for the timing lines and for the
+/// tests that hold a query to the index instead of to what it is built from.
 #[derive(Default)]
 struct SearchActivity {
     /// Documents opened to read what their apps publish to search while a query waited.
     opened: std::sync::atomic::AtomicU64,
     /// Documents opened to read the same between requests, so that a query never has to.
     warmed: std::sync::atomic::AtomicU64,
+    /// Folder chunks read while a find waited.
+    files_chunks: std::sync::atomic::AtomicU64,
+    /// Files whose words were read while a find waited, from a chunk or the content store.
+    files_read: std::sync::atomic::AtomicU64,
+    /// Files whose words were read between requests, so that a find never has to.
+    files_warmed: std::sync::atomic::AtomicU64,
+    /// Permission reads made for a find's caller while it waited.
+    permissions: std::sync::atomic::AtomicU64,
 }
 
 /// The host's page actions over every record of its workspaces.
@@ -248,6 +259,33 @@ impl WorkspaceActions {
     #[must_use]
     pub fn search_documents_warmed(&self) -> u64 {
         self.shared.search.warmed.load(Ordering::Relaxed)
+    }
+
+    /// How many of the workspace's folder documents a find read while it waited: none once the
+    /// folder's index is kept as its chunks land.
+    #[must_use]
+    pub fn search_files_chunks_read(&self) -> u64 {
+        self.shared.search.files_chunks.load(Ordering::Relaxed)
+    }
+
+    /// How many files a find read the words of while it waited, from a chunk or the content
+    /// store: what a folder kept without an index costs on every query.
+    #[must_use]
+    pub fn search_files_read(&self) -> u64 {
+        self.shared.search.files_read.load(Ordering::Relaxed)
+    }
+
+    /// How many files were read for the folder's index between requests, as they landed.
+    #[must_use]
+    pub fn search_files_warmed(&self) -> u64 {
+        self.shared.search.files_warmed.load(Ordering::Relaxed)
+    }
+
+    /// How many permission reads a find made for its caller: one for each answer it returned
+    /// that was not kept yet, and none once the caller's access is.
+    #[must_use]
+    pub fn search_permissions_read(&self) -> u64 {
+        self.shared.search.permissions.load(Ordering::Relaxed)
     }
 
     /// `caller`'s session became an agent's run in `workspace_id`: the run is
@@ -871,6 +909,16 @@ struct Workspace {
     /// The workspace's documents in the session's replica, once a write to one
     /// named the workspace.
     documents: Option<WorkspaceDocuments>,
+    /// The files of its folder, kept as the tree's chunks land ([`files_index`]).
+    files: files_index::FilesIndex,
+    /// What each caller of a find here may read, until a write lands in the workspace
+    /// ([`search_access`]).
+    readers: HashMap<search_access::Reader, search_access::SearchAccess>,
+    /// What each document's app lists at its top level, as a find of the workspace's own person
+    /// last read it: what names a hit the app anchors on another resource.
+    listings: HashMap<DocumentRoute, Vec<CatalogueRow>>,
+    /// The resource a hit at a document was named as, by the resource id the hit names.
+    named: HashMap<(DocumentRoute, String), Option<tilo_actions::remote::Found>>,
     /// What the host says for the runs it executes here ([`session_voice`]).
     sessions: session_voice::Sessions,
     /// What changed in its records, for those following it ([`found`]).
@@ -916,6 +964,10 @@ impl Workspace {
             gave_up: GaveUp::default(),
             undecided: BTreeSet::new(),
             documents: None,
+            files: files_index::FilesIndex::default(),
+            readers: HashMap::new(),
+            listings: HashMap::new(),
+            named: HashMap::new(),
             changes: ui::history_source::feed::ChangeLog::new(),
             run_index: invocations::Index::default(),
             watchers: change::Watchers::default(),
@@ -924,6 +976,17 @@ impl Workspace {
 
     /// The workspace as the session's replica holds it now.
     fn state(&mut self) -> WorkspaceState {
+        // A workspace this session joined after its documents were written has had no write
+        // land here yet, and a find over it would answer with nothing: its documents are in the
+        // replica, named where the workspace keeps them, so the index is built over those too.
+        if self.documents.is_none()
+            && let Some(cluster) = self.cluster_id(self.id)
+        {
+            self.documents = Some(WorkspaceDocuments::new(
+                &cluster,
+                Arc::clone(self.peer.engine()),
+            ));
+        }
         let engine = Arc::clone(self.peer.engine());
         match &mut self.documents {
             Some(kept) => WorkspaceState {
@@ -1292,10 +1355,12 @@ impl Worker {
     fn run(mut self, jobs: &mpsc::Receiver<(Instant, Job)>) {
         loop {
             // A document whose write landed since the last pass is read for the index here,
-            // between requests: a find answers from the index, never by opening every one
-            // while the person waits.
+            // between requests, and the folder's chunks likewise: a find answers from the
+            // indexes, never by opening every one while the person waits.
             if self.warming {
-                self.warming = !self.warm_entries(index::WARM_SLICE);
+                let entries = self.warm_entries(index::WARM_SLICE);
+                let files = self.warm_files(index::WARM_SLICE);
+                self.warming = !(entries && files);
             }
             let due = [
                 self.joining_until(),
@@ -1597,6 +1662,10 @@ impl Worker {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm per kind of request, read together: a dozen tiny methods hide the map"
+    )]
     fn take(&mut self, job: Job) {
         {
             match job {
@@ -1786,7 +1855,8 @@ impl Worker {
         }
         // A write that landed since the last pass is read for the index as soon as this
         // request is answered, so the next find answers from it.
-        if !self.warming && self.unindexed_any() {
+        let files_waiting = self.files_unwarmed_any();
+        if !self.warming && (self.unindexed_any() || files_waiting) {
             self.warming = true;
         }
         Ok(state)
@@ -2408,8 +2478,12 @@ impl Worker {
     /// The answer the committed source gives `request`, when what answers here
     /// does not publish that action itself: one it publishes never pays to
     /// open a worker for it.
+    #[allow(
+        clippy::result_large_err,
+        reason = "a failure here is the action API's Outcome, handed back to its caller unchanged"
+    )]
     fn source_read(
-        &mut self,
+        &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
@@ -2418,16 +2492,15 @@ impl Worker {
         if published_here {
             return Ok(None);
         }
-        Ok(self
-            .try_registered_read(workspace_id, caller, request)
-            .map_err(|error| *error)?)
+        self.try_registered_read(workspace_id, caller, request)
+            .map_err(|error| *error)
     }
 
     /// Whether this call is confirmed as the action's own contract asks and
     /// the caller answered: a token its person's device issued for this very
     /// call, taken once.
     fn confirmed_here(
-        &mut self,
+        &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
