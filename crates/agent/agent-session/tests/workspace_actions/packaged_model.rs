@@ -522,9 +522,11 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
         seen: seen.clone(),
         answers: answered,
     };
-    let approver = tilo_server_client::MemberApprover::new(Host::at(server.node_addr()));
+    let approver = tilo_server_client::MemberApprover::new(tilo_server_client::ServerAddress::at(
+        server.node_addr(),
+    ));
     let mut member = MemberQuestions {
-        host: &approver,
+        server: &approver,
         root: &root,
         device: None,
     };
