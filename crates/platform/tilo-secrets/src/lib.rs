@@ -22,6 +22,7 @@
 //! | Target | Backend | [`Protection`] |
 //! |---|---|---|
 //! | Linux | the freedesktop Secret Service over D-Bus (GNOME Keyring, `KWallet`) | [`Protection::OsKeychain`] |
+//! | Linux, in Tilo's sandbox | sealed files in the app's directory, keyed by the Secret portal | [`Protection::OsKeychain`] |
 //! | macOS | the login Keychain's generic passwords | [`Protection::OsKeychain`] |
 //! | Windows | generic credentials in the user's Credential Manager (DPAPI-encrypted, this machine only) | [`Protection::OsKeychain`] |
 //! | Web | AES-GCM under a non-extractable `CryptoKey`; key and ciphertext in `IndexedDB` | [`Protection::BrowserWrapped`] |
@@ -548,10 +549,31 @@ impl SecretBackend for Refused {
     }
 }
 
+/// An app the launcher sandboxed (it names the app's directory in `TILO_APP_DIR`) reaches the
+/// Secret portal and never the Secret Service: its secrets are sealed in that directory under the
+/// portal's key for it. Everything else asks the Secret Service.
 #[cfg(target_os = "linux")]
 fn system_backend() -> Backend {
-    Backend::Sync(Arc::new(linux::SecretService))
+    static SANDBOXED: std::sync::OnceLock<Option<Arc<dyn SecretBackend>>> =
+        std::sync::OnceLock::new();
+    let sandboxed = SANDBOXED.get_or_init(|| {
+        let app_dir = std::env::var_os(APP_DIR_ENV).filter(|dir| !dir.is_empty())?;
+        Some(
+            Arc::new(linux::PortalStore::in_app_dir(std::path::Path::new(
+                &app_dir,
+            ))) as _,
+        )
+    });
+    Backend::Sync(
+        sandboxed
+            .clone()
+            .unwrap_or_else(|| Arc::new(linux::SecretService)),
+    )
 }
+
+/// Where the launcher tells a sandboxed app its own directory is.
+#[cfg(target_os = "linux")]
+const APP_DIR_ENV: &str = "TILO_APP_DIR";
 
 /// A debug build inside `tools/with-test-environment.sh` (which cargo runs
 /// every test binary in) never reaches the user's login Keychain, just as the

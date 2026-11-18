@@ -53,6 +53,7 @@ mode = "off"
 
 [sandbox.portals]
 file-chooser = "via-host"
+secrets = "via-host"
 
 [sandbox.services]
 collab = "optional@31"

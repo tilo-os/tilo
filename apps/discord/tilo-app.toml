@@ -64,6 +64,7 @@ hosts = [
 ]
 
 [sandbox.portals]
+secrets = "via-host"
 
 [sandbox.services]
 collab = "optional@31"

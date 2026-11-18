@@ -36,6 +36,7 @@ mode = "allowlist"
 hosts = ["apps.tilo.so"]
 
 [sandbox.portals]
+secrets = "via-host"
 
 [sandbox.services]
 collab = "optional@31"

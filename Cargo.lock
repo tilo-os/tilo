@@ -8673,6 +8673,7 @@ dependencies = [
  "tilo-render-protocol",
  "tilo-rt",
  "tilo-sandbox-core",
+ "tilo-secrets",
  "tilo-startup-metrics",
  "tilo-system-stats",
  "tilo-test-env",

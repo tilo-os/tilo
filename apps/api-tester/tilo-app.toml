@@ -52,6 +52,7 @@ landlock   = "strict"
 mode = "host"
 
 [sandbox.portals]
+secrets = "via-host"
 
 [sandbox.services]
 collab = "optional@31"

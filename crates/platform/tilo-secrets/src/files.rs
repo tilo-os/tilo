@@ -31,17 +31,18 @@ fn failed(what: &str, error: impl std::fmt::Display) -> SecretError {
 
 impl FileStore {
     pub(crate) fn open(dir: &Path) -> Result<Self, SecretError> {
-        fs::create_dir_all(dir).map_err(|error| failed("secret store directory", error))?;
-        let meta = fs::symlink_metadata(dir).map_err(|error| failed("secret store", error))?;
-        if !meta.is_dir() {
-            return Err(SecretError::Unavailable(format!(
-                "{} is not a directory",
-                dir.display()
-            )));
-        }
-        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
-            .map_err(|error| failed("secret store directory", error))?;
+        prepare_dir(dir)?;
         let key = load_or_create_key(&dir.join(KEY_FILE))?;
+        Ok(Self {
+            dir: dir.to_owned(),
+            key,
+        })
+    }
+
+    /// The store in `dir` under `key`, which is kept elsewhere: no key file is read or written.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn with_key(dir: &Path, key: SymmetricKey) -> Result<Self, SecretError> {
+        prepare_dir(dir)?;
         Ok(Self {
             dir: dir.to_owned(),
             key,
@@ -60,6 +61,20 @@ impl FileStore {
         self.dir
             .join(format!("{}.{SUFFIX}", hex::encode(Sha256::digest(record))))
     }
+}
+
+/// Create `dir` owner-only, or make an existing directory so.
+fn prepare_dir(dir: &Path) -> Result<(), SecretError> {
+    fs::create_dir_all(dir).map_err(|error| failed("secret store directory", error))?;
+    let meta = fs::symlink_metadata(dir).map_err(|error| failed("secret store", error))?;
+    if !meta.is_dir() {
+        return Err(SecretError::Unavailable(format!(
+            "{} is not a directory",
+            dir.display()
+        )));
+    }
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+        .map_err(|error| failed("secret store directory", error))
 }
 
 impl SecretBackend for FileStore {
