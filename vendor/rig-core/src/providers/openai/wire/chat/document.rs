@@ -9,7 +9,7 @@
 
 use serde_json::{Map, Value};
 
-use super::{CallKind, ChatDecoder, ChatEvent, Quirks, REASONING_DETAILS, merge_details};
+use super::{CallKind, ChatDecoder, ChatEvent, Quirks, REASONING_DETAILS, merge_details, thought};
 use crate::wire::document::Reassemble;
 use crate::wire::{Decoder, WireEvent, WireFrame};
 
@@ -146,11 +146,12 @@ impl Reassemble<WireFrame> for ChatCompletion {
 
     fn finish(self) -> Value {
         let Self {
+            classifier,
             mut envelope,
             mut choices,
             bare,
-            ..
         } = self;
+        let tags = classifier.quirks.thought_tags;
         if bare || envelope.is_empty() {
             return Value::Null;
         }
@@ -161,10 +162,15 @@ impl Reassemble<WireFrame> for ChatCompletion {
             let choices = choices
                 .into_iter()
                 .map(|mut choice| {
-                    if let (false, Some(Value::Object(message))) =
-                        (choice.whole, choice.fields.get_mut("message"))
-                    {
-                        finish_message(message);
+                    if let Some(Value::Object(message)) = choice.fields.get_mut("message") {
+                        // A thought the dialect reads out of a content is
+                        // no part of the message's content.
+                        if tags {
+                            thought::strip(message);
+                        }
+                        if !choice.whole {
+                            finish_message(message);
+                        }
                     }
                     Value::Object(choice.fields)
                 })
@@ -208,8 +214,27 @@ fn merge_appending(map: &mut Map<String, Value>, part: &Map<String, Value>, appe
 
 /// Fold one `delta` into the message it continues.
 fn merge_delta(message: &mut Map<String, Value>, delta: &Map<String, Value>) {
+    // What its provider marks as a thought is no part of the message's
+    // content, and the mark is no part of the message.
+    let marked = thought::marked(delta);
     for (key, value) in delta {
         match (key.as_str(), value) {
+            ("content", _) if marked => {}
+            ("content", Value::Array(parts)) if parts.iter().any(thought::part) => {
+                let rest: Vec<Value> = parts
+                    .iter()
+                    .filter(|part| !thought::part(part))
+                    .cloned()
+                    .collect();
+                if !rest.is_empty() {
+                    keep(message, key, &Value::Array(rest));
+                }
+            }
+            ("extra_content", extra) if marked => {
+                if let Some(rest) = thought::unmarked(extra) {
+                    keep(message, key, &rest);
+                }
+            }
             (text, Value::String(fragment)) if APPENDED_TEXT.contains(&text) => {
                 append_text(message, key, fragment);
             }

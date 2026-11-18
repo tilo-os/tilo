@@ -30,6 +30,8 @@ enum Spoken {
     OpenRouter,
     /// Finds its prompt cache by `prompt_cache_key`.
     OpenAi,
+    /// May write a thought into the content of the answer it belongs to.
+    Google,
 }
 
 /// The name an endpoint is reached under, in lower case.
@@ -50,10 +52,16 @@ fn spoken(profile: &ProviderProfile) -> Option<Spoken> {
     [
         (Preset::OPENROUTER, Spoken::OpenRouter),
         (Preset::OPENAI, Spoken::OpenAi),
+        (Preset::GEMINI, Spoken::Google),
     ]
     .into_iter()
     .find(|(preset, _)| named(preset.endpoint()).as_deref() == Some(at.as_str()))
     .map(|(_, spoken)| spoken)
+}
+
+/// Whether `profile` speaks to Google's own endpoint for its Gemini models.
+pub(super) fn google(profile: &ProviderProfile) -> bool {
+    spoken(profile) == Some(Spoken::Google)
 }
 
 /// A key that is the same for every call of one conversation and tells
@@ -143,6 +151,8 @@ pub(super) fn beside(
                 object.insert("prompt_cache_key".into(), key.into());
             }
         }
+        // Asked nothing of its own.
+        Spoken::Google => {}
     }
 }
 

@@ -1151,6 +1151,9 @@ pub struct ChatDecoder {
     /// The run being written, its writer index, and a thinking run's text.
     writing: Option<(Writing, usize)>,
     thinking_text: String,
+    /// Where the message's content stands against a thought at its head,
+    /// for a dialect that reads one out of it ([`Quirks::thought_tags`]).
+    thoughts: thought::Thoughts,
     /// The writer index of the message's reasoning block while it is open,
     /// and its item as it will hold it: the field its text arrived in, its
     /// text, and every `reasoning_details` entry in order.
@@ -1243,12 +1246,14 @@ impl ChatDecoder {
 
     /// One delta of the assistant message: its reasoning text and
     /// `reasoning_details` into the reasoning block, then the content,
-    /// images and calls.
+    /// images and calls. Content its provider marks as a thought is
+    /// reasoning too ([`thought`]).
     fn delta(
         &mut self,
         delta: &Map<String, Value>,
         out: &mut Out<'_, Completion>,
     ) -> Result<(), ProviderError> {
+        let marked = thought::marked(delta);
         let reasoning = REASONING_TEXT_KEYS.iter().find_map(|key| {
             delta
                 .get(*key)
@@ -1273,7 +1278,12 @@ impl ChatDecoder {
         match delta.get("content") {
             Some(Value::Array(parts)) => {
                 for part in parts {
-                    self.part(part, out)?;
+                    let text = part.str("text").filter(|text| !text.is_empty());
+                    if marked && let Some(text) = text {
+                        self.content(text, marked, out)?;
+                    } else {
+                        self.part(part, out)?;
+                    }
                 }
             }
             Some(part @ Value::Object(_)) => self.part(part, out)?,
@@ -1289,7 +1299,7 @@ impl ChatDecoder {
                     .or_else(|| audio.and_then(|audio| audio.str("transcript")))
                     .filter(|text| !text.is_empty());
                 if let Some(text) = text {
-                    self.write(Writing::Text, text, out)?;
+                    self.content(text, marked, out)?;
                 }
             }
         }
@@ -1318,6 +1328,32 @@ impl ChatDecoder {
                 .filter_map(reported::annotation),
         );
         self.cite_turn(out);
+        Ok(())
+    }
+
+    /// Content text: the answer's words, or the message's reasoning where
+    /// its provider marks the delta as a thought (`marked`) or the dialect
+    /// reads a thought out of the content's head.
+    fn content(
+        &mut self,
+        text: &str,
+        marked: bool,
+        out: &mut Out<'_, Completion>,
+    ) -> Result<(), ProviderError> {
+        if !self.quirks.thought_tags {
+            return if marked {
+                self.reason(text, out)
+            } else {
+                self.write(Writing::Text, text, out)
+            };
+        }
+        for (thought, piece) in self.thoughts.take(text) {
+            if thought || marked {
+                self.reason(&piece, out)?;
+            } else {
+                self.write(Writing::Text, &piece, out)?;
+            }
+        }
         Ok(())
     }
 
@@ -1423,6 +1459,13 @@ impl ChatDecoder {
     /// One content part, through [`Part::of`].
     #[deny(clippy::wildcard_enum_match_arm)]
     fn part(&mut self, part: &Value, out: &mut Out<'_, Completion>) -> Result<(), ProviderError> {
+        // A part its provider marks as a thought is the message's reasoning.
+        if thought::part(part) {
+            if let Some(text) = part.str("text").filter(|text| !text.is_empty()) {
+                self.reason(text, out)?;
+            }
+            return Ok(());
+        }
         match Part::of(part) {
             Part::Text(text) => self.write(Writing::Text, &text, out),
             Part::Thinking(text) => self.write(Writing::Thinking, &text, out),
@@ -1686,6 +1729,15 @@ impl ChatDecoder {
     /// Write the provider's end of the reply. Its `raw` is the wire's
     /// reassembler's.
     fn end(&mut self, mut out: Out<'_, Completion>) -> Result<Flow, ProviderError> {
+        // What was held back while it might still become a tag is the
+        // thought's or the answer's, as far as the content came.
+        if let Some((thought, held)) = self.thoughts.end() {
+            if thought {
+                self.reason(&held, &mut out)?;
+            } else {
+                self.write(Writing::Text, &held, &mut out)?;
+            }
+        }
         self.close_writing(&mut out)?;
         self.close_reasoning(&mut out)?;
         self.cite_turn(&mut out);
@@ -1946,6 +1998,7 @@ impl ChatDecoder {
 
 mod document;
 mod reported;
+mod thought;
 
 #[cfg(test)]
 mod tests;
