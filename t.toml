@@ -3624,34 +3624,52 @@ id_token = ["registry.tilo.so"]
 #
 # Every image that installs from RPMs (the server, the servers, the environment runtime, the OS
 # image) installs from a set the registry holds by digest, so an unchanged tree copies a few
-# gigabytes instead of resolving Fedora again (tens of minutes). rpms-mirror-ARCH puts this
-# tree's package set there: the published set where a release tag published one, else a
-# development snapshot it resolved from Fedora and mirrored under `dev-set-<fingerprint>-<arch>`
-# — also written once, so the tag names one digest forever. image-rpms-ARCH copies whichever by
-# digest, and rpm-snapshot-ARCH resolves the published set, verifies its signature, its
-# provenance for that architecture's package set and the image's own architecture, and the build
-# records which set it installed from.
+# gigabytes instead of resolving Fedora again (tens of minutes). rpms-source-ARCH resolves this
+# tree's package set — the published set where a release tag published one, else the development
+# snapshot an earlier job mirrored, else it builds one — and rpms-mirror-ARCH puts that one in
+# the registry under `dev-set-<fingerprint>-<arch>`, also written once, so the tag names one
+# digest forever. image-rpms-ARCH copies whichever the source found by digest, and
+# rpm-snapshot-ARCH resolves the published set, verifies its signature, its provenance for that
+# architecture's package set and the image's own architecture, and the build records which set
+# it installed from.
 #
 # Nothing signs a development snapshot: a release tag publishes the signed set under its own tag
 # from the same bytes (publish-rpms), and a build that installed from the unsigned one records
 # that, which the signing guard (oci-sign.sh, require_published_snapshot) refuses.
 
 [[check]]
-name = "rpms-mirror-{arch}"
+name = "rpms-source-{arch}"
 # dnf installs from Fedora's mirrors, which are no fixed host list, and the resolution it makes
-# is what it mirrors: its answer is the resolution's, so it is not pinned. Only what it leaves
+# is what it leaves: its answer is the resolution's, so it is not pinned. Only what it leaves
 # behind — the set's reference — is what the checks above it read, and those are served.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/publish/rpms-build.sh {arch} /target/publish/rpms-mirror/{arch} --ref-only"
+run = "bash tools/ci/publish/rpms-build.sh {arch} /target/publish/rpms-source/{arch} --ref-only"
 needs = ["os-assets", "rpm-package-set"]
 optional_needs = ["mirror-base"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
-# `ref` where the registry took the set (main and release tags), the snapshot it built where it
-# could not (a branch, a working tree).
-outputs = ["/target/publish/rpms-mirror/{arch}/**"]
+# `ref` where the registry holds the set, the snapshot it built here where no tag does (a package
+# set no tag has published yet); the mirror then takes that one into the registry.
+outputs = ["/target/publish/rpms-source/{arch}/**"]
 timeout_secs = 10800
+default = false
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+[[check]]
+name = "rpms-mirror-{arch}"
+# dnf installs from Fedora's mirrors when the set is not in the registry, which are no fixed host
+# list; what it mirrors is what rpms-source-ARCH read. The registry token it writes with is what
+# makes it a trusted job's (main, a release tag, a dispatch): a branch reads or builds its own.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/publish/rpms-mirror.sh {arch} /target/publish/rpms-source/{arch} /target/publish/rpms-mirror/{arch}"
+needs = ["rpms-source-{arch}"]
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+requires = ["arch={arch}", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/publish/rpms-mirror/{arch}/**"]
+timeout_secs = 3600
 default = false
 # Mirrored when a main head resolves a new package set, as the base is (mirror-base), and when
 # dispatched; the images that install from it then read it by digest.
@@ -3663,11 +3681,11 @@ arch = ["x86_64", "aarch64"]
 [[check]]
 name = "image-rpms-{arch}"
 # Pinned: it copies the snapshot the registry holds, by the digest the reference
-# rpms-mirror-ARCH left names, and reads nothing else. The registry answers a blob read with a
+# rpms-source-ARCH left names, and reads nothing else. The registry answers a blob read with a
 # redirect into its object storage, named here.
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
-run = "bash tools/ci/publish/rpms-copy.sh {arch} /target/publish/rpms-mirror/{arch} /target/publish/rpms/{arch}"
-needs = ["rpms-mirror-{arch}"]
+run = "bash tools/ci/publish/rpms-copy.sh {arch} /target/publish/rpms-source/{arch} /target/publish/rpms/{arch}"
+needs = ["rpms-source-{arch}"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 requires = ["arch={arch}"]
 # No Git: the snapshot is dated by its packages' newest signature (rpms-copy.sh), never by the
