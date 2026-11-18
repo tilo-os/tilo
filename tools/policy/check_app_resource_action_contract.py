@@ -532,16 +532,18 @@ MODEL_RATCHETS = {
     ),
     # Palette rows, menus and agent tools all come from the tilo-resource
     # declarations: a row is a `LiveRow` offering `#[derive(Effect)]` values,
-    # never a published tree or an action built by hand.
+    # never a published tree or an action built by hand, and a control binds to
+    # the row itself rather than to a published copy of it.
     "hand_built_row": (
         re.compile(
             r"\bResourceSpec\s*(?:::\s*new\s*\(|\{\s*[a-z_]+\s*[:,}])"
             r"|\bActionSpec\s*::\s*[a-z_]+\s*\("
             r"|\bActionType\s*::\s*[a-z_]+\s*\("
             r"|\bActionRegistry\b"
+            r"|\.\s*into_resource\s*\(\s*\)"
         ),
         "hand-built row or action; publish a LiveRow offering a #[derive(Effect)] value, "
-        "or declare a #[resource] verb",
+        "bind controls to the row itself, or declare a #[resource] verb",
     ),
 }
 # Counted over every line of a workspace app's sources but its test files: a
