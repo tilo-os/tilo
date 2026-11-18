@@ -5,10 +5,6 @@ use tilo_action_policy::Acting;
 
 use super::{ExecutionLease, within};
 
-/// The longest label, in characters, an agent session takes from what it was
-/// asked ([`Caller::asked`]).
-const MAX_ASKED_CHARS: usize = 96;
-
 /// The agent a person's own computer runs under the name `name`: one agent
 /// on every computer of theirs and in every workspace, whichever session it
 /// comes in on. A workspace's record of its agents keeps it under this id
@@ -300,7 +296,7 @@ impl Caller {
     /// blank request leaves the session without a label.
     #[must_use]
     pub fn asked(mut self, request: &str) -> Self {
-        self.asked = crate::context::one_line(request, MAX_ASKED_CHARS);
+        self.asked = crate::context::one_line(request, crate::context::MAX_LABEL_CHARS);
         self
     }
 

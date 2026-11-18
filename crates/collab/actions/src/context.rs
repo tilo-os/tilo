@@ -1254,6 +1254,9 @@ mod wire {
     }
 }
 
+/// The longest label of a work group, in characters ([`one_line`]).
+pub const MAX_LABEL_CHARS: usize = 96;
+
 /// `text` as one line people read: its first line with words on it, without
 /// control characters, at most `max` characters, trimmed. `None` when it holds
 /// no words.

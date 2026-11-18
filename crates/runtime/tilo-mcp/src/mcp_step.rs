@@ -24,8 +24,6 @@ pub(super) const SURFACE_STRUCTURED: &str = "/so.tilo.mcp/structured";
 
 /// The longest invocation id a client may name.
 const MAX_INVOCATION_ID: usize = 96;
-/// The longest invocation title a client may name, as a label other tools show.
-const MAX_INVOCATION_TITLE: usize = 96;
 
 tokio::task_local! {
     /// The undo step the invocations of the tool call being answered join:
@@ -161,7 +159,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         };
         let title = title
             .as_str()
-            .and_then(|title| tilo_actions::context::one_line(title, MAX_INVOCATION_TITLE))
+            .and_then(|title| {
+                tilo_actions::context::one_line(title, tilo_actions::context::MAX_LABEL_CHARS)
+            })
             .ok_or("_meta so.tilo.mcp invocation title must be a non-empty string")?;
         Ok(Some(DeclaredInvocation { id, title }))
     }

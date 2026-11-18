@@ -3,8 +3,6 @@
 
 use tilo_actions::remote::{Caller, InvokeRequest};
 
-/// The longest title the host keeps, as the API bounds the one it reads.
-const MAX_INVOCATION_TITLE: usize = 96;
 /// The longest id the host keeps, as the API bounds the one it reads.
 const MAX_INVOCATION_ID: usize = 96;
 
@@ -15,7 +13,10 @@ const MAX_INVOCATION_ID: usize = 96;
 pub(super) fn said_invocation_title(request: &InvokeRequest) -> Option<String> {
     let group = request.context.as_ref()?.group.as_ref();
     let said = group.filter(|group| group.kind == tilo_actions::context::AGENT_SESSION_GROUP)?;
-    tilo_actions::context::one_line(said.label.as_deref()?, MAX_INVOCATION_TITLE)
+    tilo_actions::context::one_line(
+        said.label.as_deref()?,
+        tilo_actions::context::MAX_LABEL_CHARS,
+    )
 }
 
 /// The id the agent gave the group `request` says it is a step of (`_meta`

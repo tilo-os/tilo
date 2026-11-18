@@ -988,7 +988,6 @@ view history<R>(of: R) {
                                     }
                                 }
                             }
-                            // What the agent was asked, where it was asked anything.
                             if let run = s.run {
                                 if run.title != "" {
                                     ui.Text(run.title, role: .caption, secondary: true)

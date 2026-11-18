@@ -839,8 +839,7 @@ impl Core {
             many.props.insert("secondary".to_owned(), Value::Bool(true));
             held.children.push(many);
         }
-        // A step of a run offers the run, as the mark did: pressing it shows what the run did. It
-        // says what the run was asked, where it was asked anything.
+        // A step of a run offers the run, as the mark did: pressing it shows what the run did.
         if let Some(run) = newest.run.as_ref() {
             let mut review = UiNode::empty("ui.Button", &format!("{row_key}~run"));
             let label = if run.title.is_empty() {

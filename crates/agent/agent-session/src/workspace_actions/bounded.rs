@@ -342,10 +342,9 @@ pub(super) fn question(
     getrandom::fill(&mut id).map_err(|error| error.to_string())?;
     // An agent by the name its key goes by, as History names its
     // changes; else its id.
-    let agent = caller.acting().agent_id().map_or_else(
-        || "One of your devices".into(),
-        |agent| caller.agent_name().unwrap_or(agent).to_owned(),
-    );
+    let agent = caller
+        .agent_called()
+        .map_or_else(|| "One of your devices".into(), str::to_owned);
     // The invocation as the agent titled it (`_meta` invocation.title); one that
     // goes by the agent's own name says nothing more.
     let title = super::said_invocation_title(request)

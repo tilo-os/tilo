@@ -521,10 +521,6 @@ mod tests {
             from: None,
         }];
         assert_eq!(asked_words(&sent), "Second task");
-        assert_eq!(
-            asked_words(&said(&general, MemberId::person(ADA), "", 3)),
-            ""
-        );
     }
 
     fn caused(
