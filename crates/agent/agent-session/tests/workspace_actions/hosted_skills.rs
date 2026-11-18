@@ -70,8 +70,9 @@ struct Seen {
 /// A person's provider that answers as a model does what the words it is asked with say: a
 /// first line `do PATH ARGS` invokes what the path names with the arguments, `read PATH` reads
 /// it, and once a tool answered, the answer is what the tool said, so a test reads in the
-/// reply what the turn's tool did. A sub-agent's turn says its job is done. It keeps every
-/// call with the provider, the model and the key it was made with.
+/// reply what the turn's tool did. A sub-agent's turn does the same where its job is such a
+/// line, and says its job is done where it is not. It keeps every call with the provider, the
+/// model and the key it was made with.
 #[derive(Default)]
 struct Routed {
     seen: Mutex<Vec<Seen>>,
@@ -125,9 +126,6 @@ fn play(request: &ModelRequest) -> ModelResponse {
     if let Some((said, _)) = tool_answers(request).last() {
         return says(said);
     }
-    if of_sub_agent(request) {
-        return says("Done the way the skill says.");
-    }
     for line in own_lines(&asked_with(request)) {
         if let Some(call) = line.strip_prefix("do ") {
             let (path, args) = call.split_once(' ').expect("a path, then its arguments");
@@ -138,19 +136,29 @@ fn play(request: &ModelRequest) -> ModelResponse {
             return reads(path);
         }
     }
+    if of_sub_agent(request) {
+        return says("Done the way the skill says.");
+    }
     says("Nothing to do.")
 }
 
-/// The lines of what a turn's person wrote: `words` up to what the server tells the turn
-/// after them, which begins a paragraph of its own.
+/// What the turn a sub-agent's job started is asked with before the job's own words, in a
+/// paragraph of its own: Chat says of a message a cause wrote what started it, and that its
+/// person did not type it.
+const JOB_STARTED: &str = "(job) started this turn";
+
+/// The lines a turn was asked with in its own words: what its person wrote, and for the turn
+/// a sub-agent's job started the job, which stands after what is said of its cause. They end
+/// where what the server tells the turn after them begins a paragraph of its own.
 fn own_lines(words: &str) -> Vec<String> {
-    words
-        .split("\n\n")
-        .next()
-        .unwrap_or_default()
-        .lines()
-        .map(|line| line.trim().to_owned())
-        .collect()
+    let mut paragraphs = words.split("\n\n");
+    let first = paragraphs.next().unwrap_or_default();
+    let own = if first.contains(JOB_STARTED) {
+        paragraphs.next().unwrap_or_default()
+    } else {
+        first
+    };
+    own.lines().map(|line| line.trim().to_owned()).collect()
 }
 
 /// The calls of the turn whose person wrote `words`.
@@ -1344,6 +1352,270 @@ async fn a_bound_on_one_skill_refuses_handing_it_on_and_no_word_of_it_reaches_an
 
     // The turns Bo starts with her agent get none of it.
     let again = serde_json::json!({"name": "Check again", "job": job, "skill": REVIEW});
+    let asks = [
+        format!("do {START} {again}"),
+        format!("read {TEAM}"),
+        "read chat/Messages".to_owned(),
+    ];
+    his_turns_get_nothing!(agents, actions, workspaces, workspace, his, routed, &asks);
+    assert!(
+        roster(&workspaces, &workspace)
+            .await
+            .get(&Id::from_raw("check-again"))
+            .is_none(),
+        "no sub-agent was started with her skill"
+    );
+
+    his_page.peer.close();
+    page.peer.close();
+}
+
+/// A lead hands its own worker the skill it works by, and no other, and no word of the skill
+/// reaches another member. Ada keeps a skill she never said in a conversation, and another.
+/// Her agent starts a lead with the first; the lead starts a worker and names that skill: the
+/// worker is told the skill by the server, whole, and works with the skill's model, and her
+/// store says which skill it works by, while the workspace's list keeps no word of it. A lead
+/// that names her other skill, and a lead that was handed none and names hers, are each
+/// refused in words that say nothing of a skill, read nothing of the skill they named, and
+/// start nothing. The list of agents and the messages hold no sentence of either skill, as the
+/// server keeps them and as the device of Bo, another member, holds them, and the turns Bo
+/// starts with her agent get none of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lead_hands_its_worker_the_skill_it_works_by_and_no_word_of_it_reaches_another_member() {
+    const PART: &str = "Hold Brightway's last delivery against its date.";
+    team!(
+        ada_root,
+        ada_browser,
+        actions,
+        workspaces,
+        workspace,
+        page,
+        person,
+        served,
+        device
+    );
+    let (bo_root, _) = tilo_user_identity::UserIdentity::generate("Bo", 1);
+    let bo_browser = enrol(&bo_root, "bo-browser", DeviceCapabilities::member());
+    admit(&workspaces, &workspace, &bo_browser).await;
+    let mut his_page = crate::workspace_actions::resource_support::open_admitted_at(
+        &served,
+        &bo_browser,
+        &device,
+        &workspace,
+    )
+    .await;
+    let (hers, his) = ((&ada_root, &ada_browser), (&bo_root, &bo_browser));
+    let ada_key = ada_root.verifying_key().to_bytes();
+    let routed = Arc::new(Routed::default());
+    workspaces.answer_models_with(routed.clone());
+    link(&workspaces, &ada_key);
+    let servers = Arc::new(Mutex::new(Vec::new()));
+    let agents = worked(&workspaces, &actions, plays(&servers, |_| says("Told.")));
+    let skill = keeps_review(&workspaces, &ada_key, &workspace);
+    let report = serde_json::json!({
+        "name": "Weekly report",
+        "work": "A request for the weekly report",
+        "how": OTHER,
+    });
+    workspaces
+        .skills_action(
+            &ada_key,
+            &workspace,
+            None,
+            (person_skills::WRITE, &given(report)),
+        )
+        .unwrap();
+    // She lets the sub-agents of her agent start their own, in person.
+    on_roster(
+        &workspaces,
+        &workspace,
+        (None, person.as_str()),
+        WorkspaceAgents::SET_SUB_AGENT_LIMITS.with(workspace_agents::SetSubAgentLimits {
+            agent: Id::from_raw(SCOUT),
+            depth: Some(2),
+            at_once: None,
+        }),
+    )
+    .await
+    .expect("its keeper says in person how deep sub-agents go");
+
+    // Each lead's job has it start one worker with a skill named. The first lead is handed her
+    // review and names it; the second is handed it and names her other skill; the third is
+    // handed none and names her review.
+    let thread = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
+    let direct = |agent: &str| {
+        chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(agent)])
+    };
+    let leads = [
+        ("Lead", Some(REVIEW), "Worker", REVIEW),
+        (
+            "Second lead",
+            Some(REVIEW),
+            "Second worker",
+            "Weekly report",
+        ),
+        ("Third lead", None, "Third worker", REVIEW),
+    ];
+    let mut said = Vec::new();
+    for (count, (lead, handed, worker, names)) in leads.into_iter().enumerate() {
+        let worker = serde_json::json!({"name": worker, "job": PART, "skill": names});
+        let job = format!("do {START} {worker}");
+        let mut start = serde_json::json!({"name": lead, "job": job});
+        if let Some(handed) = handed {
+            start["skill"] = handed.into();
+        }
+        let id = lead.to_lowercase().replace(' ', "-");
+        let started = asked!(
+            agents,
+            actions,
+            workspaces,
+            workspace,
+            hers,
+            &format!("do {START} {start}")
+        );
+        assert!(started.contains(&id), "{started}");
+        // The server carries the lead's job to it and works it: what its start answered.
+        let own = direct(&id);
+        agents.look(&workspace).await.unwrap();
+        let jobs = caused(&workspaces, &workspace, (own.as_str(), "job"), 1).await;
+        let answered = replied!(agents, workspaces, workspace, &jobs[0].0, id.as_str());
+        if count == 0 {
+            // The lead's answer is its tool's and names the worker it started: asked before
+            // the wait for the worker's job, so a lead that started none fails in its own words.
+            assert!(
+                answered.contains("worker"),
+                "the lead started its worker: it answered {answered:?}, and the turns of \
+                 sub-agents were asked {:#?}",
+                routed
+                    .seen()
+                    .iter()
+                    .filter(|call| call.sub)
+                    .map(|call| (asked_with(&call.request), tool_answers(&call.request)))
+                    .collect::<Vec<_>>()
+            );
+            // Its worker is worked as any sub-agent is, and the lead answers the news of it.
+            let its = direct("worker");
+            agents.look(&workspace).await.unwrap();
+            let jobs = caused(&workspaces, &workspace, (its.as_str(), "job"), 1).await;
+            let done = replied!(agents, workspaces, workspace, &jobs[0].0, "worker");
+            assert_eq!(done, "Done the way the skill says.");
+            let news = caused(&workspaces, &workspace, (own.as_str(), "news"), 1).await;
+            replied!(agents, workspaces, workspace, &news[0].0, id.as_str());
+        }
+        // Her agent is told how the lead's work ended, and answers that before it is asked
+        // again: an agent takes one turn at a time in a conversation.
+        let news = caused(
+            &workspaces,
+            &workspace,
+            (thread.as_str(), "news"),
+            count + 1,
+        )
+        .await;
+        for (told, _) in &news {
+            replied!(agents, workspaces, workspace, told, SCOUT);
+        }
+        said.push((job, answered));
+    }
+
+    // The first lead's worker works by the skill, with the skill's model. Her store says which
+    // skill it works by; the workspace's list keeps its model and no word of how it works.
+    let list = roster(&workspaces, &workspace).await;
+    let worker = list
+        .get(&Id::from_raw("worker"))
+        .cloned()
+        .expect("the list holds what the lead started");
+    let lead = list.get(&Id::from_raw("lead")).cloned().expect("the lead");
+    assert_eq!(
+        (worker.model.as_deref(), worker.instruction.as_deref()),
+        (Some("Anthropic/claude-research"), None)
+    );
+    assert_eq!(lead.instruction, None, "nor of how the lead works");
+    // The lead named the skill to this server alone: what the list keeps of the worker, which
+    // every member's device holds, has no sentence of a skill and not the skill's name.
+    let entry = format!("{worker:?}");
+    for word in [HANDED, REVIEW, OTHER].iter().chain(&REVIEW_SAYS) {
+        assert!(!entry.contains(word), "{word:?} in {entry}");
+    }
+    let handed = workspaces
+        .skill_handed(&ada_key, &workspace, "worker")
+        .expect("her store says which skill the worker was handed");
+    assert_eq!(
+        (handed.skill.as_str(), handed.made_ms),
+        (skill.as_str(), Some(worker.created_at))
+    );
+    let seen = routed.seen();
+    let parts = calls_of(&seen, PART);
+    assert!(!parts.is_empty(), "the worker's turn asked a model");
+    for call in &parts {
+        assert!(call.sub, "only a worker is asked that job");
+        assert_eq!(
+            (
+                call.provider.as_str(),
+                call.model.as_str(),
+                call.key.as_deref()
+            ),
+            ("Anthropic", "claude-research", Some(PARTS_KEY)),
+            "the worker is asked of its skill's model"
+        );
+        let read = read_in(&call.request);
+        for word in [HANDED, REVIEW].iter().chain(&REVIEW_SAYS) {
+            assert!(read.contains(word), "{word:?} in {read}");
+        }
+        assert!(
+            !read.contains(OTHER),
+            "only the skill it was handed: {read}"
+        );
+    }
+
+    // The second lead named another skill of hers and the third was handed none: each is
+    // refused in words that say nothing of a skill, reads nothing of the skill it named, and
+    // starts nothing.
+    assert!(said[1].1.contains("and no other"), "{}", said[1].1);
+    assert!(said[2].1.contains("handed no skill"), "{}", said[2].1);
+    for call in calls_of(&seen, &said[1].0) {
+        assert!(!read_in(&call.request).contains(OTHER));
+    }
+    for call in calls_of(&seen, &said[2].0) {
+        let read = read_in(&call.request);
+        for word in [HANDED, OTHER].iter().chain(&REVIEW_SAYS) {
+            assert!(!read.contains(word), "{word:?} in {read}");
+        }
+    }
+    for none in ["second-worker", "third-worker"] {
+        assert!(
+            list.get(&Id::from_raw(none)).is_none(),
+            "{none} was not started"
+        );
+        assert!(
+            workspaces
+                .skill_handed(&ada_key, &workspace, none)
+                .is_none(),
+            "nothing is kept as handed to {none}"
+        );
+    }
+
+    // What the workspace shares holds the worker's job and the last lead's refusal, and no
+    // sentence of either skill: as the server keeps it, and as Bo's device holds it.
+    let shared = shared_with_him(
+        &workspaces,
+        &workspace,
+        &mut his_page,
+        ("third-lead", "You were handed no skill"),
+    )
+    .await;
+    assert_eq!(shared.len(), 4);
+    for (which, holds) in &shared {
+        assert!(
+            holds.contains(PART),
+            "{which} holds the worker's job: {holds}"
+        );
+        for word in [HANDED, OTHER].iter().chain(&REVIEW_SAYS) {
+            assert!(!holds.contains(word), "{which} holds {word:?}");
+        }
+    }
+
+    // The turns Bo starts with her agent get none of it.
+    let again = serde_json::json!({"name": "Check again", "job": PART, "skill": REVIEW});
     let asks = [
         format!("do {START} {again}"),
         format!("read {TEAM}"),
