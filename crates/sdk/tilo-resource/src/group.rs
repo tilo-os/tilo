@@ -172,7 +172,11 @@ where
         if !payload.windows(6).any(|window| window == b"$made:") {
             return apply_prepared(doc, &payload, &self.members());
         }
-        apply_encoded::<A>(doc, &payload)
+        apply_encoded(doc, &payload, &|doc, member| {
+            serde_json::from_value::<A>(member)
+                .map_err(ActionError::Encode)?
+                .apply(doc)
+        })
     }
 
     /// A group is as consequential as its most consequential member: one
@@ -244,10 +248,11 @@ fn apply_prepared(
 /// creates with a [`MADE`](tilo_actions::params::MADE) reference, and that
 /// member's id is known only as the group applies. The payload keeps the
 /// reference, so a replica fills it with the same id.
-fn apply_encoded<A>(doc: &mut Doc, payload: &[u8]) -> Result<(), ActionError>
-where
-    A: tilo_actions::Action + serde::de::DeserializeOwned,
-{
+fn apply_encoded(
+    doc: &mut Doc,
+    payload: &[u8],
+    apply_member: &dyn Fn(&mut Doc, serde_json::Value) -> Result<(), ActionError>,
+) -> Result<(), ActionError> {
     let members: Vec<serde_json::Value> =
         serde_json::from_slice(payload).map_err(ActionError::Encode)?;
     let seed = crate::action::seed(doc, b"tilo-resource/group-seed/v1", payload);
@@ -263,8 +268,7 @@ where
             MEMBER.with(|member| member.set(Some((seed, position))));
             let mut member = member;
             fill_made(&mut member, &made)?;
-            let action: A = serde_json::from_value(member).map_err(ActionError::Encode)?;
-            action.apply(doc)?;
+            apply_member(doc, member)?;
             made.push(crate::action::take_minted());
         }
     }
