@@ -147,16 +147,40 @@ pub fn mark_text_author(
     if inserted.is_empty() {
         return Ok(());
     }
-    let len = match doc.text_encoding() {
-        automerge::TextEncoding::Utf8CodeUnit => inserted.len(),
-        automerge::TextEncoding::Utf16CodeUnit => inserted.encode_utf16().count(),
-        _ => inserted.chars().count(),
-    };
+    let len = author_width(doc.text_encoding(), inserted);
     doc.mark(
         object,
         automerge::marks::Mark::new("author".to_owned(), author, at, at.saturating_add(len)),
         automerge::marks::ExpandMark::None,
     )
+}
+
+/// A new text holding `text`, written by `author`: made with the mark
+/// [`mark_text_author`] sets on it once written, so a batch that makes it
+/// writes the mark with it rather than an operation after.
+#[must_use]
+pub fn authored_text(
+    encoding: automerge::TextEncoding,
+    text: &str,
+    author: &str,
+) -> automerge::hydrate::Text {
+    let made = automerge::hydrate::Text::new(encoding, text);
+    if text.is_empty() {
+        return made;
+    }
+    made.with_mark(
+        automerge::marks::Mark::new("author".to_owned(), author, 0, author_width(encoding, text)),
+        automerge::marks::ExpandMark::None,
+    )
+}
+
+/// The width of `text` in `encoding`'s units, as an author mark counts it.
+fn author_width(encoding: automerge::TextEncoding, text: &str) -> usize {
+    match encoding {
+        automerge::TextEncoding::Utf8CodeUnit => text.len(),
+        automerge::TextEncoding::Utf16CodeUnit => text.encode_utf16().count(),
+        _ => text.chars().count(),
+    }
 }
 
 #[cfg(test)]

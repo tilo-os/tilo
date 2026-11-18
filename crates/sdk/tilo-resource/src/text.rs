@@ -45,46 +45,15 @@ pub fn mark_authored(
     tilo_automerge::mark_text_author(doc, obj, at, inserted, &author_mark(&author))
 }
 
-/// Mark the texts in `made`, made just now at once as the object `obj`
-/// (`make` of a place to write), as [`mark_authored`] marks a text a store
-/// writes: each a `String` field's whole text. In key order, as the batch made
-/// them, so every replica writing the same value marks them alike.
-///
-/// # Errors
-/// The document's write error.
-pub fn mark_made(
-    doc: &mut Doc,
-    obj: &ObjId,
-    made: &automerge::hydrate::Value,
-) -> Result<(), ModelError> {
-    use automerge::hydrate::Value as Made;
-    if crate::action::writing_author().is_none() {
-        return Ok(());
+/// A new text holding `text`, marked as [`mark_authored`] marks a text a
+/// store writes, made with its mark at once: a `String` field of an item
+/// made whole ([`crate::Model::fresh`]).
+#[must_use]
+pub fn authored(encoding: automerge::TextEncoding, text: &str) -> automerge::hydrate::Text {
+    match crate::action::writing_author() {
+        Some(author) => tilo_automerge::authored_text(encoding, text, &author_mark(&author)),
+        None => automerge::hydrate::Text::new(encoding, text),
     }
-    let Made::Map(fields) = made else {
-        return Ok(());
-    };
-    let marked = |value: &Made| match value {
-        Made::Text(text) => !String::from(text).is_empty(),
-        Made::Map(_) => true,
-        _ => false,
-    };
-    if !fields.values().any(|field| marked(&field.value)) {
-        return Ok(());
-    }
-    let children: Vec<(String, ObjId)> = doc
-        .map_range(obj, ..)
-        .filter(|item| fields.get(item.key.as_ref()).is_some_and(marked))
-        .map(|item| (item.key.to_string(), item.id()))
-        .collect();
-    for (key, child) in children {
-        match fields.get(&key) {
-            Some(Made::Text(text)) => mark_authored(doc, &child, 0, &String::from(text))?,
-            Some(nested @ Made::Map(_)) => mark_made(doc, &child, nested)?,
-            _ => {}
-        }
-    }
-    Ok(())
 }
 
 /// The value a text's author mark holds for `author`: the actor bytes their
@@ -473,6 +442,34 @@ mod tests {
             .apply_under(&mut plain, &obj)
             .unwrap();
             assert!(plain.marks(&obj).unwrap().is_empty());
+        }
+
+        phase a_text_made_whole_is_marked_as_a_store_marks_it;
+        {
+            use crate::model::{Fresh, Model};
+            let _writer = crate::action::ResourceActorScope::enter(
+                tilo_action_policy::MemberId::agent("helper"),
+            );
+            let actor = automerge::ActorId::from(b"writer".as_slice());
+            for text in ["", "héllo wörld"] {
+                let mut made = Doc::new().with_actor(actor.clone());
+                let Fresh::Value(value) = text.to_owned().fresh(made.text_encoding()) else {
+                    panic!("a text is made with its map");
+                };
+                made.batch_create_object(ROOT, "title", &value, false)
+                    .unwrap();
+                // As a store writes it: the text, then its writer's mark.
+                let mut stored = Doc::new().with_actor(actor.clone());
+                let obj = stored.put_object(ROOT, "title", ObjType::Text).unwrap();
+                stored.splice_text(&obj, 0, 0, text).unwrap();
+                mark_authored(&mut stored, &obj, 0, text).unwrap();
+                assert_eq!(
+                    stored.marks(&obj).unwrap().len(),
+                    usize::from(!text.is_empty()),
+                    "{text:?} is the helper's"
+                );
+                assert_eq!(made.save(), stored.save(), "{text:?}");
+            }
         }
 
         phase a_copied_text_keeps_its_words_and_its_marks;
