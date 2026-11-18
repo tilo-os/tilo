@@ -643,9 +643,10 @@ pub(crate) mod tests {
                 here.port
             ))],
         );
-        std::fs::write(
-            state.path().join(SUBSCRIPTIONS_FILE),
-            serde_json::to_vec(&kept).unwrap(),
+        // Kept as the server keeps it: a private file.
+        tilo_files::native::private::write_atomic(
+            &state.path().join(SUBSCRIPTIONS_FILE),
+            &serde_json::to_vec(&kept).unwrap(),
         )
         .unwrap();
         let push = WebPush::open(state.path(), "mailto:ops@example.com").unwrap();
