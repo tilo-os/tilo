@@ -1391,6 +1391,9 @@ impl Workspaces {
         self.follow_missing_surfaces();
         self.follow_personal_changes();
         self.follow_own_address();
+        // The servers the person's document names hold the workspaces it
+        // says they do, on every device of theirs that holds it.
+        self.follow_servers();
         #[cfg(feature = "agents")]
         self.follow_repaired_documents();
     }

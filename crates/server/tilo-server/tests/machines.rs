@@ -344,3 +344,79 @@ async fn a_person_with_no_server_plans_a_machine_and_walks_it_through_its_instal
     );
     assert_eq!(admin, admin_workspace_id(&alice.user_pk));
 }
+
+/// A person whose only device is a desktop approves their first server: the
+/// desktop holds their Servers workspace, and it hands that workspace to the
+/// server it names there. Every holder of the workspace attaches the servers
+/// the document names, so the desktop does it without a server of theirs
+/// running anything, and the server reads its own entry there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_desktop_alone_hands_its_first_server_the_servers_workspace() {
+    let alice = TestUser::fresh("Alice");
+    let desktop = alice.enrol("desktop", DeviceCapabilities::primary());
+    let nas = alice.enrol("nas", DeviceCapabilities::member());
+    let desktop_host = own_host(&alice, &desktop).await;
+    let server_host = crate::common::serve_on(
+        &alice,
+        &nas,
+        tilo_server_protocol::WorkSetting::own_person(),
+    )
+    .await;
+
+    // The person's own device makes the workspace when it is first needed.
+    servers::founded(desktop_host.host.workspaces())
+        .await
+        .unwrap();
+    assert!(
+        !servers::holds_admin(server_host.host.workspaces()).await,
+        "the server holds nothing yet"
+    );
+
+    // Their desktop enters the server among their servers, as approving it
+    // does. No other holder of the workspace takes part here.
+    servers::apply(
+        desktop_host.host.workspaces(),
+        Servers::ENROLL_SERVER.with((
+            hex::encode(nas.device_pubkey()),
+            "nas".into(),
+            serde_json::to_string(&server_host.host.node_addr()).unwrap(),
+        )),
+    )
+    .await
+    .unwrap();
+
+    // The desktop attaches it: the workspace names the server among its
+    // holders, and the server holds a copy of it and reads its entry.
+    tilo_test_env::within(
+        "the server to hold the workspace and read its entry",
+        async {
+            loop {
+                let held = servers::holds_admin(server_host.host.workspaces()).await;
+                let named = servers::read(server_host.host.workspaces())
+                    .await
+                    .is_ok_and(|servers| {
+                        servers
+                            .servers
+                            .get(&tilo_resource::Id::from_raw(hex::encode(
+                                nas.device_pubkey(),
+                            )))
+                            .is_some_and(|entry| entry.label == "nas")
+                    });
+                if held && named {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        },
+    )
+    .await;
+    let admin = admin_workspace_id(&alice.user_pk);
+    let holders = desktop_host.host.workspaces().hosts(&admin).await.unwrap();
+    assert_eq!(holders.len(), 2, "the desktop and the server hold it");
+    assert!(
+        holders
+            .iter()
+            .any(|hint| hint.host.device_public_key == nas.device_pubkey()),
+        "the server is named among the workspace's holders"
+    );
+}

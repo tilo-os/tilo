@@ -50,6 +50,7 @@ use tilo_user_identity::DeviceCert;
 
 use super::Workspaces;
 
+pub mod attach;
 pub mod device;
 pub mod machine;
 pub mod plan;
