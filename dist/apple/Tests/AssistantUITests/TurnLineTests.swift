@@ -262,5 +262,38 @@ final class TurnLineTests: XCTestCase {
         let part = try XCTUnwrap(stepsScroll(in: scroll, app.window), "the opened steps stand in no part of their own that scrolls")
         XCTAssertEqual(place(part).tall, part.frame.height, accuracy: 1, "three steps scroll though they need no more than their own height")
     }
+
+    func testAStepsTimeIsSaidAsTheAppsLanguageSaysItWhateverTheDevicesRegion() async throws {
+        // The sentences are English: the app holds no other language. The device's region is the
+        // one this machine is set to; the phone that found the fault read "2,0s" in a German one.
+        XCTAssertEqual(AssistantWords.stepFailed.said, "failed")
+        let app = try await Started.app()
+        defer { app.end() }
+        let drive = app.drive, source = app.source.inner
+        source.setAnswering(true)
+        source.post(reply(turn(at: 3)))
+        let count = counted(3)
+        await drive.until("the line stands") { drive.shows(count) }
+        await drawn(app)
+        drive.press(drive.tree().first { $0.label.contains(count) })
+        await drive.until("the steps so far stand over the line") { drive.shows(self.words(2)) }
+        let said = drive.tree().map { "\($0.label) \($0.value)" }
+        XCTAssertTrue(said.contains { $0.contains(words(2)) && $0.contains("2.0s") },
+                      "an English line says a step's time as the device's region (\(Locale.current.identifier)) does:\n\(drive.said())")
+    }
+
+    func testATimeIsWrittenByTheLanguageOfItsSentenceAndByARegionOnlyOfADeviceThatSpeaksIt() {
+        let german = Locale(identifier: "de_DE"), british = Locale(identifier: "en_GB")
+        // English sentences on a German device: English times. On a British one: that device's own ways.
+        let english = AssistantWords.language(spoken: "en", on: german)
+        XCTAssertEqual(english.identifier, "en")
+        XCTAssertEqual(AssistantWords.language(spoken: "en", on: british), british)
+        XCTAssertEqual(AssistantWords.language(spoken: "de", on: german), german)
+        // A bundle that names no language says its sentences in English.
+        XCTAssertEqual(AssistantWords.language(spoken: nil, on: german).identifier, "en")
+        XCTAssertEqual(TurnStepList.said(2, in: english), "2.0s")
+        XCTAssertEqual(TurnLine.said(257, in: english), "4:17")
+        XCTAssertTrue(TurnStepList.said(2, in: german).contains("2,0"), TurnStepList.said(2, in: german))
+    }
 }
 #endif
