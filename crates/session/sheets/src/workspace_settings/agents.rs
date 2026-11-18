@@ -73,10 +73,10 @@ pub struct KindLine {
 }
 
 /// One app an agent's answers are given for.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccessApp {
-    /// The app it is, for its mark.
-    pub app: String,
+    /// The mark it wears: an app's own, or the person's account's.
+    pub icon: Icon,
     /// What its answers are asked for by.
     pub scope: String,
     pub label: String,
@@ -523,8 +523,8 @@ fn reviewed(review: &AgentReview, parts: &Parts) -> Element {
 /// One app: its mark and name, with Reset once any of its answers was set
 /// here, then an Allow, Ask first or Deny control for each kind of action.
 fn access_app(review: &AgentReview, app: &AccessApp, parts: &Parts) -> Element {
-    let mut head = ListRow::new(format!("ws-agent-app-{}", app.scope), app.label.clone())
-        .icon(app_glyph(&app.app, None));
+    let mut head =
+        ListRow::new(format!("ws-agent-app-{}", app.scope), app.label.clone()).icon(app.icon);
     if app.customised {
         head = head.tags(&[(review.custom.as_str(), ChipStyle::Tinted(Tone::Info))]);
         let (agent, scope) = (review.agent.clone(), app.scope.clone());
@@ -599,7 +599,9 @@ fn kind_line(review: &AgentReview, app: &AccessApp, line: &KindLine, parts: &Par
     )
     .nested();
     if let Some(caption) = &line.caption {
-        row = row.secondary(caption.as_str()).two_line_secondary();
+        // A caption wraps to the width the control leaves it, onto as many lines as it
+        // takes: it is never cut short.
+        row = row.secondary(caption.as_str()).secondary_lines(4);
     }
     Box::new(row.trailing(Box::new(answers)))
 }
@@ -815,7 +817,7 @@ pub(super) fn sample_review() -> AgentReview {
         custom: "Set here".to_owned(),
         apps: vec![
             AccessApp {
-                app: "so.tilo.notes".to_owned(),
+                icon: app_glyph("so.tilo.notes", None),
                 scope: "so.tilo.notes".to_owned(),
                 label: "Notes".to_owned(),
                 customised: true,
@@ -826,7 +828,7 @@ pub(super) fn sample_review() -> AgentReview {
                 ],
             },
             AccessApp {
-                app: "so.tilo.calendar".to_owned(),
+                icon: app_glyph("so.tilo.calendar", None),
                 scope: "so.tilo.calendar".to_owned(),
                 label: "Calendar".to_owned(),
                 customised: false,

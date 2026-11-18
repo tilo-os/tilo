@@ -665,6 +665,17 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
         workspaces.kinds[2].caption.as_deref(),
         Some("Creating, branching, entering and deleting your workspaces.")
     );
+    // The row that governs the workspace's people wears the people's mark, not another
+    // window.
+    let members = listed_app(
+        &session,
+        &format!(
+            "app:{}",
+            tilo_action_policy::agent_answers::WORKSPACE_GOVERNANCE_APP
+        ),
+    );
+    assert_eq!(members.label, "Members and settings");
+    assert_eq!(members.icon, ui::icons::Icon::Users);
     assert_eq!(
         review.note,
         "In apps, outside effects ask you first or are denied; in your own account you may allow them."

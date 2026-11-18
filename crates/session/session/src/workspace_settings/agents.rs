@@ -330,7 +330,7 @@ impl Agents {
         };
         rows.iter()
             .map(|row| sheet::AccessApp {
-                app: row.app.clone(),
+                icon: Self::access_icon(&row.app),
                 scope: row.scope.key(),
                 label: row.label.clone(),
                 customised: row.customised(),
@@ -350,6 +350,16 @@ impl Agents {
                     .collect(),
             })
             .collect()
+    }
+
+    /// The mark a row wears: an app's own glyph, and the people's mark where the row governs
+    /// the workspace's members and settings.
+    fn access_icon(app: &str) -> ui::icons::Icon {
+        if app == tilo_action_policy::agent_answers::WORKSPACE_GOVERNANCE_APP {
+            ui::icons::Icon::Users
+        } else {
+            ui::icons::app_glyph(app, None)
+        }
     }
 
     /// One agent's review: what it may do in each app, the model it plans with and the actions it

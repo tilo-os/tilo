@@ -1062,7 +1062,11 @@ pub struct ListRow {
     title_family: Option<FontChoice>,
     subtitle: Option<String>,
     secondary: Option<String>,
+    /// The most lines the secondary text may take: the count the row asked for.
     secondary_line_count: u8,
+    /// The lines it takes at the width the row leaves it, once laid out: a caption
+    /// wraps onto as many lines as it needs, and the row is as tall as they are.
+    secondary_shown: Option<u8>,
     note: Option<String>,
     meta: Option<String>,
     meta_spans: Vec<(String, Tone)>,
@@ -1151,6 +1155,7 @@ impl ListRow {
             secondary: None,
             note: None,
             secondary_line_count: 1,
+            secondary_shown: None,
             meta: None,
             meta_spans: Vec::new(),
             value: None,
@@ -1320,6 +1325,7 @@ impl ListRow {
     #[must_use]
     pub fn secondary(mut self, text: impl Into<String>) -> Self {
         self.secondary = Some(text.into());
+        self.secondary_shown = None;
         self
     }
 
@@ -1327,6 +1333,7 @@ impl ListRow {
     #[must_use]
     pub fn two_line_secondary(mut self) -> Self {
         self.secondary_line_count = 2;
+        self.secondary_shown = None;
         self
     }
 
@@ -1334,6 +1341,7 @@ impl ListRow {
     #[must_use]
     pub fn secondary_lines(mut self, lines: u8) -> Self {
         self.secondary_line_count = lines.clamp(1, 4);
+        self.secondary_shown = None;
         self
     }
 
@@ -2111,6 +2119,39 @@ impl ListRow {
         (!trailing.wrapped).then(|| trailing.element.get_rect().width())
     }
 
+    /// How many lines the secondary text takes at the width the row leaves it, no more
+    /// than the row asked for: `None` for a row without one. Read from the band the text
+    /// stands in, so a caption wraps onto as many lines as it needs and the row is as tall
+    /// as they are, however wide the control beside it.
+    fn secondary_lines_that_fit(
+        &self,
+        taffy: &TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> Option<u8> {
+        let secondary = self.secondary.as_deref()?;
+        let metrics = self.metrics.as_ref()?;
+        let theme = self.theme.as_ref()?;
+        let area = match self.trailing.as_ref().and_then(|trailing| trailing.band) {
+            Some(band) => taffy.layout(band).ok()?,
+            None => taffy.layout(node).ok()?,
+        };
+        let band = Rect::new(
+            0.0,
+            0.0,
+            f64::from(area.size.width),
+            f64::from(area.size.height).max(1.0),
+        );
+        let width = self.with_face_over(None, |face| {
+            let geo = face.geometry(band, metrics, text, theme);
+            (geo.second_right - geo.text_x).max(0.0)
+        });
+        let lines = text
+            .wrap_lines(secondary, &metrics.secondary, crate::num::f32_of_f64(width))
+            .len();
+        Some(lines.clamp(1, usize::from(self.secondary_line_count)) as u8)
+    }
+
     /// The grid the row laid itself out on, for an audit comparing rows with each other. Read
     /// from the geometry the row paints from, so the two never disagree.
     fn grid(&self) -> Option<crate::widget::RowLayout> {
@@ -2155,6 +2196,16 @@ impl ListRow {
 
     /// The row as the face it draws, read by the list that builds it and by its tests.
     pub(crate) fn with_face<R>(&self, f: impl FnOnce(&ListRowFace<'_>) -> R) -> R {
+        self.with_face_over(self.trailing_reserve(), f)
+    }
+
+    /// [`Self::with_face`], with the width the trailing control takes said outright: a row
+    /// measuring its text before the control is placed passes the width left to it.
+    pub(crate) fn with_face_over<R>(
+        &self,
+        trailing_width: Option<f64>,
+        f: impl FnOnce(&ListRowFace<'_>) -> R,
+    ) -> R {
         let actions: Vec<RowAction<'_>> = self
             .actions
             .iter()
@@ -2220,9 +2271,11 @@ impl ListRow {
             face = face.subtitle(subtitle);
         }
         if let Some(secondary) = &self.secondary {
-            face = face
-                .secondary(secondary)
-                .secondary_lines(self.secondary_line_count);
+            face = face.secondary(secondary).secondary_lines(
+                self.secondary_shown
+                    .unwrap_or(self.secondary_line_count)
+                    .max(1),
+            );
         }
         face.described = self.description.is_some();
         if let Some(note) = &self.note {
@@ -2333,7 +2386,7 @@ impl ListRow {
         if self.separator {
             face = face.separator(self.next_selected);
         }
-        if let Some(width) = self.trailing_reserve() {
+        if let Some(width) = trailing_width {
             face = face.trailing_width(width);
         }
         if self.trailing_wrapped() {
@@ -2545,6 +2598,41 @@ impl CardBody for ListRow {
     }
 }
 
+/// Grow the band the row's text stands in to the height that text takes, and say whether it
+/// changed: a row whose caption took another line is laid out again.
+fn settle_trailing(
+    row: &mut ListRow,
+    taffy: &mut TaffyTree<()>,
+    node: NodeId,
+    text: &mut TextRenderer,
+) -> bool {
+    if row.trailing.is_none() {
+        return false;
+    }
+    let filled = row.fill_under_text(taffy, node, text);
+    let Some(theme) = &row.theme else {
+        return filled;
+    };
+    let height = row.with_face(|face| face.height(text, theme));
+    let Some(trailing) = &mut row.trailing else {
+        return filled;
+    };
+    let height = crate::num::f32_of_f64(height);
+    if (height - trailing.band_height).abs() < 0.5 {
+        return filled;
+    }
+    trailing.band_height = height;
+    let Some(band) = trailing.band else {
+        return filled;
+    };
+    let Ok(style) = taffy.style(band) else {
+        return filled;
+    };
+    let mut style = style.clone();
+    style.size.height = length(height);
+    taffy.set_style(band, style).is_ok() || filled
+}
+
 impl Widget for ListRow {
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.element("li");
@@ -2715,31 +2803,15 @@ impl Widget for ListRow {
         node: NodeId,
         text: &mut TextRenderer,
     ) -> bool {
-        if self.trailing.is_none() {
-            return false;
+        let mut fitted = false;
+        if let Some(lines) = self.secondary_lines_that_fit(taffy, node, text)
+            && self.secondary_shown != Some(lines)
+        {
+            self.secondary_shown = Some(lines);
+            self.dirty = true;
+            fitted = true;
         }
-        let filled = self.fill_under_text(taffy, node, text);
-        let Some(theme) = &self.theme else {
-            return filled;
-        };
-        let height = self.with_face(|face| face.height(text, theme));
-        let Some(trailing) = &mut self.trailing else {
-            return filled;
-        };
-        let height = crate::num::f32_of_f64(height);
-        if (height - trailing.band_height).abs() < 0.5 {
-            return filled;
-        }
-        trailing.band_height = height;
-        let Some(band) = trailing.band else {
-            return filled;
-        };
-        let Ok(style) = taffy.style(band) else {
-            return filled;
-        };
-        let mut style = style.clone();
-        style.size.height = length(height);
-        taffy.set_style(band, style).is_ok() || filled
+        settle_trailing(self, taffy, node, text) || fitted
     }
 
     fn measure(
