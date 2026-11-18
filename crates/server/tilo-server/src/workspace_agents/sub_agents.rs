@@ -667,7 +667,12 @@ impl HostAgents {
     /// Carry what a look found owed to the sub-agents of `workspace`: each job and note the
     /// list holds is written into its sub-agent's conversation, as the words of the agent
     /// that gave it, and a note that is there reaches the turn of its sub-agent that is going.
-    pub(super) async fn carry(&self, workspace: &str, owed: Owed) {
+    ///
+    /// The look read at `reading`, and a turn that began or went on since takes no note of it
+    /// ([`going::Going::reach_read`]): the note may be one its agent answered before, and the
+    /// turn would leave its person's newer words for it. Whether every note was still current
+    /// for the turn it was handed to: where one was not, the look reads again.
+    pub(super) async fn carry(&self, workspace: &str, owed: Owed, reading: going::Reading) -> bool {
         // A sub-agent its person asked for is started first: its job is owed at the next look.
         for (turn, start) in owed.starts {
             self.answer_start(workspace, &turn, &start).await;
@@ -677,12 +682,16 @@ impl HostAgents {
                 tracing::warn!(%workspace, kind = delivery.kind, %error, "a sub-agent was not told what the list holds for it");
             }
         }
+        let mut current = true;
         for note in owed.notes {
             // With no turn of it going the note is its next turn, as the next look gives it.
-            if let going::Entered::Goes(going) = self.going.enter(workspace, &note) {
-                going.reach(note);
+            if let going::Entered::Goes(going) = self.going.enter(workspace, &note)
+                && going.reach_read(note, reading) == going::Handed::Stale
+            {
+                current = false;
             }
         }
+        current
     }
 
     /// Start the sub-agent its person asked `turn`'s agent for, and answer the ask in that

@@ -465,3 +465,138 @@ async fn a_look_overtaken_by_the_next_turn_hands_that_turn_nothing() {
     let _ = person;
     page.peer.close();
 }
+
+/// A look reads a note its starter gave a sub-agent while the sub-agent works on its job. That
+/// look carries what it read only once the job's turn took the note, answered under it and
+/// ended, and a turn on what its person wrote next is at work: the look's two steps, taken one
+/// at a time. The turn that goes there now takes nothing of the note. Its person's message
+/// keeps its answer, the note's answer stands as it was written, and no model is asked again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_note_read_before_its_answer_is_not_handed_to_the_next_turn() {
+    team!(root, browser, actions, workspaces, workspace, page, person);
+    let ada = themselves(&root, &browser, &workspace);
+    let own = chat::Chat::direct_id([
+        MemberId::person(person.clone()),
+        MemberId::agent("usage-drop"),
+    ]);
+
+    // The sub-agent's first step on its job waits, and so does its answer to its person.
+    let (job_hold, person_hold) = (Arc::new(Hold::default()), Arc::new(Hold::default()));
+    let _opens = (
+        Opens(Arc::clone(&job_hold)),
+        Opens(Arc::clone(&person_hold)),
+    );
+    let (at_job, at_person) = (Arc::clone(&job_hold), Arc::clone(&person_hold));
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let agents = worked(
+        &workspaces,
+        &actions,
+        plays(&asked, move |request| {
+            if !of_sub_agent(request) {
+                return says("Told.");
+            }
+            let told = said_in(request);
+            if told.contains("only Safari") {
+                at_person.pass();
+                says("Yes, only Safari.")
+            } else if !answered_a_tool(request) {
+                at_job.pass();
+                looks()
+            } else if told.contains("Tuesday") {
+                says("Done, sign-in included.")
+            } else {
+                says("Done.")
+            }
+        }),
+    );
+    starts(
+        &workspaces,
+        &workspace,
+        &person,
+        ("Usage drop", "Find out why daily use fell."),
+    )
+    .await;
+    agents.look(&workspace).await.unwrap();
+    caused(&workspaces, &workspace, (own.as_str(), "job"), 1).await;
+    agents.look(&workspace).await.unwrap();
+    until("the sub-agent's first step is under way", || {
+        asked.lock().unwrap().iter().any(of_sub_agent)
+    })
+    .await;
+
+    // Its starter gives it a note, which the server writes into its conversation.
+    on_roster(
+        &workspaces,
+        &workspace,
+        (Some(SCOUT), person.as_str()),
+        WorkspaceAgents::NOTE_SUB_AGENT.with(workspace_agents::NoteSubAgent {
+            agent: Id::from_raw("usage-drop".to_owned()),
+            text: NonBlank::parse("Also check Tuesday's sign-in change.").unwrap(),
+        }),
+    )
+    .await
+    .expect("its starter gives it a note");
+    agents.look(&workspace).await.unwrap();
+    let notes = caused(&workspaces, &workspace, (own.as_str(), "note"), 1).await;
+    let note = notes[0].0.clone();
+
+    // A look reads: the note is there and unanswered. It carries nothing yet.
+    let overtaken = agents.read_look(&workspace).await.unwrap();
+
+    // Another look hands the note to the turn that works, which answers under it and ends.
+    agents.look(&workspace).await.unwrap();
+    job_hold.open();
+    let noted = reply_of(&workspaces, &workspace, &note, "usage-drop").await;
+    assert_eq!(noted.text, "Done, sign-in included.");
+    stands_as(&workspaces, &workspace, "usage-drop", Stands::Done).await;
+
+    // Its person writes into its conversation, and the turn on that message is at work.
+    let typed = writes_in(
+        &actions,
+        &workspaces,
+        &workspace,
+        &ada,
+        (own.as_str(), "is it only Safari?"),
+    )
+    .await;
+    agents.look(&workspace).await.unwrap();
+    until("the turn on its person's message asks its model", || {
+        asked
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|request| of_sub_agent(request) && said_in(request).contains("only Safari"))
+    })
+    .await;
+
+    // The first look carries the note only now.
+    let current = agents.enter_look(&workspace, overtaken).await;
+    person_hold.open();
+
+    let answered = reply_of(&workspaces, &workspace, &typed, "usage-drop").await;
+    assert_eq!(
+        answered.text, "Yes, only Safari.",
+        "its person's message keeps its answer"
+    );
+    let after = reply_of(&workspaces, &workspace, &note, "usage-drop").await;
+    assert_eq!(
+        (after.text.as_str(), end_of(&after)),
+        (noted.text.as_str(), end_of(&noted)),
+        "the note's answer stands as it was written"
+    );
+    let steps = asked
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|request| of_sub_agent(request))
+        .count();
+    assert_eq!(
+        steps, 3,
+        "two steps on its job and the note, one for its person"
+    );
+    assert!(
+        !current,
+        "the note the look read was overtaken, so a look reads again"
+    );
+    page.peer.close();
+}
