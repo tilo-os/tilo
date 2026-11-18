@@ -61,10 +61,11 @@ import sys
 state_path, source_path, medium_path, host_digest, destination = sys.argv[1:]
 state = json.loads(Path(state_path).read_text())
 source = json.loads(Path(source_path).read_text())
+with Path(medium_path).open("rb") as medium:
+    medium_digest = hashlib.file_digest(medium, "sha256").hexdigest()
 require = {
     "the installer answered": state.get("app") == "installer",
-    "the medium is fresh": (hashlib.sha256(Path(medium_path).read_bytes()).hexdigest()
-                            == source.get("medium_sha256")),
+    "the medium is fresh": medium_digest == source.get("medium_sha256"),
     "the medium preloads a target": isinstance(source.get("target"), dict),
 }
 target = source.get("target") or {}
