@@ -203,7 +203,12 @@ final class AssistantDrive {
             once("session", ["is": "signedIn", "name": .string(person.name), "workspace": .string(person.workspace),
                              "person": .string(String(person.id.value.prefix(6)))])
         }
-        once("reach", .string(model.reach == .reachable ? "reachable" : "unreachable"))
+        // Three words: from the start until a first try has ended it is not known.
+        switch model.reach {
+        case .unknown: once("reach", .string("unknown"))
+        case .reachable: once("reach", .string("reachable"))
+        case .unreachable: once("reach", .string("unreachable"))
+        }
         switch model.setup {
         case .unknown: once("setup", ["is": "unknown"])
         case .findingAssistant: once("setup", ["is": "findingAssistant"])
