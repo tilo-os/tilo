@@ -1466,3 +1466,7 @@ async fn what_undo_cannot_take_back_asks_its_person_first_inside_apply() {
 async fn what_undo_cannot_take_back_asks_its_person_first_inside_a_group() {
     Box::pin(the_removal_asks_first_inside("group")).await;
 }
+
+/// An action that asks its person, carried inside another.
+#[path = "hosted_question_in_carrier.rs"]
+mod in_a_carrier;
