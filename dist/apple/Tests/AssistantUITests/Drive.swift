@@ -465,6 +465,7 @@ final class Recording: AssistantSource, @unchecked Sendable {
     func pairingEnded() -> AsyncStream<String?> { inner.pairingEnded() }
     func pairingEndedDetails() -> AsyncStream<String?> { inner.pairingEndedDetails() }
     func joinApproved() -> AsyncStream<Date?> { inner.joinApproved() }
+    func pageLook() -> AsyncStream<Look?> { inner.pageLook() }
     func goOn() async { note("goOn()"); await inner.goOn() }
     func addTask(_ title: String) async throws { note("addTask(\(String(reflecting: title)))"); try await inner.addTask(title) }
     func automations() -> AsyncStream<[Automation]> { inner.automations() }

@@ -67,6 +67,9 @@ public final class AssistantModel {
     /// When this device was approved, where it then stopped before it got in: the way in goes
     /// on from there, and nothing is paired a second time. Nil where no approved join waits.
     public private(set) var joinApproved: Date?
+    /// Which look the person's Tilo draws in, light or dark: the frame draws in the same
+    /// (`AssistantRoot`). Nil while nothing is known of it, and the system's look stands in.
+    public private(set) var look: Look?
     public private(set) var subAgents: [SubAgent] = []
     public private(set) var tasks: [AssistantTask] = []
     public private(set) var automations: [Automation] = []
@@ -178,6 +181,7 @@ public final class AssistantModel {
         follow(source.sinceLeft()) { $0.sinceLeft = $1 }
         follow(source.joinStops()) { $0.joinStops = $1 }
         follow(source.joinApproved()) { $0.joinApproved = $1 }
+        follow(source.pageLook()) { $0.look = $1 }
         listen(.main)
     }
 
@@ -200,6 +204,7 @@ public final class AssistantModel {
         sinceLeft = await first(source.sinceLeft()) ?? nil
         joinStops = await first(source.joinStops()) ?? false
         joinApproved = await first(source.joinApproved()) ?? nil
+        look = await first(source.pageLook()) ?? nil
         for chat in [Chat.main] + subAgents.map({ Chat.subAgent($0.id) }) {
             guard let change = await first(source.conversation(chat)) else { continue }
             var conversation = Conversation()
