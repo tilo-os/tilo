@@ -8,20 +8,8 @@ use std::collections::BTreeSet;
 use ui_core::automerge::transaction::Transactable;
 use ui_core::automerge::{AutoCommit, ObjType, ROOT, ReadDoc};
 
-/// The names on each path, without the positions in lists a whole-document
-/// diff reads and a change's operations do not.
-fn named(keys: Vec<Vec<String>>) -> BTreeSet<Vec<String>> {
-    keys.into_iter()
-        .map(|path| {
-            path.into_iter()
-                .filter(|key| key.parse::<usize>().is_err())
-                .collect()
-        })
-        .collect()
-}
-
 #[test]
-fn a_change_names_the_keys_it_writes_as_the_document_with_it_applied_does() {
+fn a_change_names_the_keys_it_writes_from_its_operations() {
     let mut doc = AutoCommit::new();
     let issues = doc.put_object(ROOT, "issues", ObjType::Map).unwrap();
     let first = doc.put_object(&issues, "a", ObjType::Map).unwrap();
@@ -46,29 +34,24 @@ fn a_change_names_the_keys_it_writes_as_the_document_with_it_applied_does() {
     let entry = author.insert_object(&list, 0, ObjType::Map).unwrap();
     author.put(&entry, "k", 1).unwrap();
     author.commit();
-    let bytes: Vec<u8> = author
-        .get_changes(&before)
-        .iter()
-        .flat_map(|change| change.raw_bytes().to_vec())
-        .collect();
-
-    let read = keys_written_by(&mut doc, &bytes).expect("the changes build on the document");
-    let applied =
-        changed_keys_of(&mut doc.fork(), &DocumentMutation::Snapshot(author.save())).unwrap();
-    assert_eq!(named(read.clone()), named(applied));
-    assert!(read.contains(&vec![
-        "issues".into(),
-        "a".into(),
-        "comments".into(),
-        "c1".into(),
-        "text".into()
-    ]));
-    assert_eq!(doc.get_heads(), before, "the document itself is untouched");
-
-    // What the document holds already writes nothing new.
-    let mut holding = author.fork();
-    assert_eq!(keys_written_by(&mut holding, &bytes), Some(Vec::new()));
-    // Changes building on what the document has not got are read by applying them.
-    let mut empty = AutoCommit::new();
-    assert_eq!(keys_written_by(&mut empty, &bytes), None);
+    // Read from the document holding them, as the replica that admitted
+    // them reads them.
+    let changes = author.get_changes(&before);
+    let read = keys_written(&author, &changes).expect("the changes build on the document");
+    let read: BTreeSet<Vec<String>> = read.into_iter().collect();
+    let path = |keys: &[&str]| keys.iter().map(|key| (*key).to_owned()).collect::<Vec<_>>();
+    for written in [
+        path(&["issues", "b"]),
+        path(&["issues", "b", "title"]),
+        path(&["issues", "b", "body"]),
+        path(&["issues", "a", "comments", "c1"]),
+        path(&["issues", "a", "comments", "c1", "text"]),
+        path(&["issues", "a", "title"]),
+        path(&["list", "k"]),
+    ] {
+        assert!(read.contains(&written), "{written:?} in {read:?}");
+    }
+    // An operation on an object neither the document nor the changes hold.
+    let empty = AutoCommit::new();
+    assert_eq!(keys_written(&empty, &changes), None);
 }

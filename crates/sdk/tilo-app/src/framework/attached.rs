@@ -1085,18 +1085,6 @@ impl AttachedView {
         self.records.ask_workspace_for_missing();
     }
 
-    /// The keys `mutation` writes in `record`, as the view holds that record
-    /// now: a fork of it, so the answer costs a head set rather than the
-    /// record. `None` for a record this view does not hold.
-    pub fn changed_keys(
-        &self,
-        record: &ui_core::resource::DocumentId,
-        mutation: &DocumentMutation,
-    ) -> Option<Result<Vec<Vec<String>>, String>> {
-        self.records
-            .with(record, |doc| changed_keys_of(doc, mutation))
-    }
-
     /// What the view's records ask the workspace's hosts for
     /// ([`ResourceStore::wanted_resources`]). Each chain with a part here reads
     /// first: a chain follows what arrived only when it is read, so the part
@@ -1428,67 +1416,16 @@ fn set_aside_failed(record: &ui_core::resource::DocumentId, error: &str) -> Stri
     )
 }
 
-/// The heads of the record `document` holds: what a member joining it
-/// was given, past which anything its view writes while it opens is refused
-/// ([`refuse_written_on_open`]).
-/// The storage keys `mutation` writes, top down to what it put or deleted, in
-/// `doc`. Changes are read from their own operations ([`keys_written_by`]);
-/// anything else (a whole document) is applied to a fork, so the document
-/// itself is not touched.
-fn changed_keys_of(
-    doc: &mut ui_core::automerge::AutoCommit,
-    mutation: &DocumentMutation,
-) -> Result<Vec<Vec<String>>, String> {
-    use ui_core::automerge::PatchAction;
-    if let DocumentMutation::Incremental(bytes) = mutation
-        && let Some(keys) = keys_written_by(doc, bytes)
-    {
-        return Ok(keys);
-    }
-    let key = |prop: &ui_core::automerge::Prop| match prop {
-        ui_core::automerge::Prop::Map(key) => key.clone(),
-        ui_core::automerge::Prop::Seq(index) => index.to_string(),
-    };
-    let mut probe = doc.fork();
-    // Indexed from here: the diff below reads the change alone, not every
-    // operation the record holds.
-    probe.update_diff_cursor();
-    let was = probe.get_heads();
-    let bytes = match mutation {
-        DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => bytes,
-    };
-    tilo_automerge::ApplyIncoming::load_incoming(&mut probe, bytes)
-        .map_err(|error| error.to_string())?;
-    let now = probe.get_heads();
-    Ok(probe
-        .diff(&was, &now)
-        .into_iter()
-        .map(|patch| {
-            let mut keys: Vec<String> = patch.path.iter().map(|(_, prop)| key(prop)).collect();
-            match &patch.action {
-                PatchAction::PutMap { key: put, .. } | PatchAction::DeleteMap { key: put } => {
-                    keys.push(put.clone());
-                }
-                PatchAction::Increment { prop, .. } | PatchAction::Conflict { prop } => {
-                    keys.push(key(prop));
-                }
-                _ => {}
-            }
-            keys
-        })
-        .collect())
-}
-
-/// The storage keys the changes in `bytes` write, each top down to what it
-/// put or deleted, read from their operations: an object they make is placed
-/// where they make it, any other where `doc` holds it. Nothing of `doc` is
-/// copied or applied to, so the answer costs the changes, not the document.
-/// Changes `doc` holds already write nothing new. `None` when the bytes are
-/// not changes, or an operation is on an object neither `doc` nor the changes
-/// hold (they build on changes `doc` has not got).
-fn keys_written_by(
-    doc: &mut ui_core::automerge::AutoCommit,
-    bytes: &[u8],
+/// The storage keys `changes` write, each top down to what it put or
+/// deleted, read from their operations: an object they make is placed where
+/// they make it, any other where `doc` holds it. Nothing of `doc` is copied
+/// or applied to, so the answer costs the changes, not the document: the
+/// replica that admitted them names what they touched. `None` when an
+/// operation is on an object neither `doc` nor the changes hold.
+#[must_use]
+pub fn keys_written<'a>(
+    doc: &ui_core::automerge::AutoCommit,
+    changes: impl IntoIterator<Item = &'a ui_core::automerge::Change>,
 ) -> Option<Vec<Vec<String>>> {
     use std::collections::HashMap;
     use ui_core::automerge::legacy::{Key, ObjectId, OpType};
@@ -1497,14 +1434,10 @@ fn keys_written_by(
         Key::Map(key) => Some(key.to_string()),
         Key::Seq(_) => None,
     };
-    let changes = ui_core::automerge::Automerge::parse_changes(bytes).ok()?;
     // Each object the changes make, by its id: where it is made.
     let mut made: HashMap<String, (ObjectId, Option<String>)> = HashMap::new();
     let mut ops = Vec::new();
-    for change in &changes {
-        if doc.get_change_meta_by_hash(&change.hash()).is_some() {
-            continue;
-        }
+    for change in changes {
         let actor = change.actor_id().to_hex_string();
         let start = change.start_op().get();
         for (offset, op) in change.decode().operations.into_iter().enumerate() {
@@ -1578,6 +1511,9 @@ fn member_of(invoker: &tilo_actions::ActionInvoker) -> Result<&MemberId, String>
         .ok_or_else(|| "an automation opens no view of its own".to_owned())
 }
 
+/// The heads of the record `document` holds: what a member joining it
+/// was given, past which anything its view writes while it opens is refused
+/// ([`refuse_written_on_open`]).
 fn heads_of(document: &[u8]) -> Result<Vec<ui_core::automerge::ChangeHash>, String> {
     ui_core::automerge::AutoCommit::load(document)
         .map(|mut doc| doc.get_heads())

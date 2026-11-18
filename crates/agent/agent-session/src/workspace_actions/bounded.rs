@@ -603,8 +603,7 @@ impl Worker {
         // same record for everyone. Why it does not mount is the caller's to
         // read: a record this host cannot open is unavailable now, never a
         // record that does not exist.
-        self.mount(route, state).map_err(unavailable)?;
-        let holder = self.holder_of(route);
+        let holder = self.mount_held(route, state).map_err(unavailable)?;
         let key = (holder.clone(), who.person.clone(), who.agent.clone());
         if let Some(held) = self.parked.unpark(&key, super::publish::REUSE_WAIT) {
             self.bounded.insert(key.clone(), held);
@@ -667,6 +666,7 @@ impl Worker {
                         parts: HashMap::new(),
                         foreign: std::collections::HashSet::new(),
                         wanted_at: None,
+                        behind: None,
                         used: clock,
                     },
                     access: policy.access,
@@ -946,23 +946,29 @@ impl Worker {
         let taken = super::take_all(app, &holder)
             .map_err(|error| super::commit_failed(error.to_string(), false))?;
         super::timing_done("bounded.take", taking);
+        let wrote: Vec<DocumentRoute> = taken.iter().map(|(route, _)| route.clone()).collect();
         let saving = super::timing_start();
         self.save_bounded(
             workspace_id,
             (who, route, state),
-            (&holder, taken),
+            (&held.held, taken),
             (declared.as_deref(), confirmed),
         )?;
         super::timing_done("bounded.save", saving);
+        // It holds what it wrote: the next merge into it takes only what
+        // others wrote since, never its own change read back.
+        super::caught_up_with_own(&holder, &mut held.held, &wrote);
         self.bounded.insert(key, held);
         Ok((output, left_at))
     }
 
-    /// Save what an action changed for `who`: every field of every change
-    /// checked against their access read now, so that a member removed or
-    /// narrowed since their replica opened writes nothing, and only then
-    /// applied here and handed to the session: the action is done once the
-    /// host holds it ([`Worker::saving`]).
+    /// Save what an action changed for `who` in `replica`, their replica that
+    /// made and admitted it: every field of every change checked against
+    /// their access read now, so that a member removed or narrowed since
+    /// their replica opened writes nothing, and only then handed to the
+    /// session: the action is done once the host holds it
+    /// ([`Worker::saving`]). The host's own mount of the record takes it up
+    /// from the workspace when it is next used, not now.
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
@@ -971,7 +977,7 @@ impl Worker {
         &mut self,
         workspace_id: WorkspaceId,
         (who, route, state): (&Bounded, &DocumentRoute, &WorkspaceState),
-        (holder, taken): (&DocumentRoute, Vec<(DocumentRoute, DocumentMutation)>),
+        (replica, taken): (&super::Mounted, Vec<(DocumentRoute, DocumentMutation)>),
         (declared, confirmed): (Option<&str>, bool),
     ) -> Result<(), Outcome> {
         let reading_policy = super::timing_start();
@@ -982,12 +988,14 @@ impl Worker {
         let permissions = bounded_permissions(&policy, who).map_err(Outcome::Rejected)?;
         let checking = super::timing_start();
         for (changed, mutation) in &taken {
-            // What it wrote, from the record's own replica: neither the record
-            // nor its history is read for what one change touched. Only a
-            // record the replica does not hold is read before and diffed.
+            // What it wrote, read from the change's operations by the replica
+            // that admitted it: neither the record nor its history is read for
+            // what one change touched. Only a record the replica does not hold
+            // as changes (a part it started whole) is read before and diffed.
             let written = reads::document_id(&changed.document)
                 .ok()
-                .and_then(|record| self.app_at(holder)?.changed_keys(&record, mutation));
+                .and_then(|record| replica.app.written_keys(&record, mutation))
+                .map(Ok);
             let before = match written {
                 Some(_) => None,
                 None => state.document(changed).ok().map(|(bytes, _)| bytes),
@@ -1009,18 +1017,6 @@ impl Worker {
         super::timing_done("bounded.check", checking);
         let committing = super::timing_start();
         for (changed, mutation) in taken {
-            if let Some(app) = self.app_at(holder) {
-                let merged = if &changed == holder {
-                    app.apply(&mutation)
-                } else {
-                    reads::document_id(&changed.document)
-                        .map_err(crate::apps::AppError::Merge)
-                        .and_then(|record| app.apply_document(&record, &mutation))
-                };
-                if let Err(error) = merged {
-                    tracing::warn!(%error, "workspace actions: a change made for someone did not merge here");
-                }
-            }
             self.commit(workspace_id, &changed, &mutation)
                 .map_err(|reason| super::commit_failed(reason, true))?;
         }
