@@ -698,6 +698,9 @@ impl Replica {
         query: &tilo_actions::remote::CatalogueQuery,
         window: (bool, (usize, usize)),
     ) -> (usize, Vec<tilo_actions::remote::CatalogueRow>) {
+        if let Some(found) = self.looked_up(query, window) {
+            return found;
+        }
         // A lookup (one action by its address, a resource by its name) is
         // answered from the view as it stands: an action just done leaves
         // the view to lay out its change when it is read, and what the
@@ -711,6 +714,46 @@ impl Replica {
             }
         }
         self.survey_page_of(&self.view.published(), false, query, window)
+    }
+
+    /// The page a lookup `query` asks for, answered from the one resource it
+    /// names and never from the whole tree the view publishes: an action by
+    /// its address ([`Self::descriptor`]), or a chain's item by its id or
+    /// label, built alone from the part keeping it, past whatever page the
+    /// chain publishes. Either costs the same however many items there are.
+    /// `None` for a query that is no such lookup, or a name no chain item
+    /// answers.
+    fn looked_up(
+        &self,
+        query: &tilo_actions::remote::CatalogueQuery,
+        (can_render, window): (bool, (usize, usize)),
+    ) -> Option<(usize, Vec<tilo_actions::remote::CatalogueRow>)> {
+        if let Some(target) = &query.target {
+            let rows: Vec<_> = self
+                .descriptor(target)
+                .map(|descriptor| {
+                    tilo_actions::remote::CatalogueRow::for_action("", self.app_id(), descriptor)
+                })
+                .into_iter()
+                .collect();
+            return Some(Self::page_of(&rows, query, (can_render, window)));
+        }
+        let (Some(name), Some(parent)) = (
+            query.resource_name.as_deref(),
+            query.parent_resource.as_deref(),
+        ) else {
+            return None;
+        };
+        ui::resource::chain_of_resource_id(parent)?;
+        let named = self.view.chain_items_named(parent, name);
+        if named.is_empty() {
+            return None;
+        }
+        let surveyed: Vec<_> = named
+            .iter()
+            .flat_map(|child| self.rows_of_item(child, parent))
+            .collect();
+        Some(Self::page_of(&surveyed, query, (can_render, window)))
     }
 
     /// The rows the chain item `child` offers under `parent`: its actions as
@@ -764,28 +807,21 @@ impl Replica {
         query: &tilo_actions::remote::CatalogueQuery,
         (can_render, (offset, take)): (bool, (usize, usize)),
     ) -> (usize, Vec<tilo_actions::remote::CatalogueRow>) {
-        // A chain's item named by its id is built alone from the part
-        // keeping it, past whatever page the chain publishes: the page
-        // answers the name at the items' cost, however many items the chain
-        // holds, and never walks the tree for it.
-        if let (Some(name), Some(parent)) = (
-            query.resource_name.as_deref(),
-            query.parent_resource.as_deref(),
-        ) && ui::resource::chain_of_resource_id(parent).is_some()
-        {
-            let named = self.view.chain_items_named(parent, name);
-            if !named.is_empty() {
-                let mut surveyed = Vec::new();
-                for child in &named {
-                    surveyed.extend(self.rows_of_item(child, parent));
-                }
-                return Self::page_of(&surveyed, query, (can_render, (offset, take)));
-            }
-        }
-        // The tree the view publishes, and only the items past its pages the
-        // page reaches: a record holding thousands of notes costs a page its
-        // rows, not its notes.
-        let mut in_chains = chain_resources(resources);
+        // The level the query lists, and only the items past its pages the
+        // page reaches: every row a query admits stands under the resource it
+        // names (the top for none), so the resources further down, a
+        // notebook's thousands of notes or a chain's issues, are not walked.
+        let parent = query.parent_resource.as_deref().unwrap_or("");
+        let Some((level, level_in_chain)) = level_of(resources, parent) else {
+            return (0, Vec::new());
+        };
+        let mut in_chains: std::collections::HashSet<String> = level
+            .iter()
+            .filter(|child| {
+                level_in_chain || ui::resource::chain_of_resource_id(child.id.as_str()).is_some()
+            })
+            .map(|child| child.id.as_str().to_owned())
+            .collect();
         let mut walk = SurveyWalk {
             query,
             can_render,
@@ -822,7 +858,7 @@ impl Replica {
                 },
             ))
         };
-        let mut complete = tilo_actions::api::survey_placed_each(resources, &mut |placed| {
+        let mut complete = tilo_actions::api::survey_placed_level(level, parent, &mut |placed| {
             visit(placed, &mut walk, &in_chains)
         });
         // The items past the published pages, built only as far as the page
@@ -833,14 +869,14 @@ impl Replica {
             .map(|resource| resource.id.as_str().to_owned());
         // Items past the published pages are rows under the record's own
         // resource, so only a query pinned to that level (or to an exact
-        // target, which admits at any level) can list one of them. Any other
-        // query — a top-level name, a level inside the record — would walk
-        // every item the record holds to admit none, so it is not walked.
-        let past_wanted = query.target.is_some()
-            || query
-                .parent_resource
-                .as_deref()
-                .is_some_and(|parent| past_root.as_deref() == Some(parent));
+        // target, answered alone in [`Self::looked_up`]) can list one of
+        // them. Any other query — a top-level name, a level inside the record
+        // — would walk every item the record holds to admit none, so it is
+        // not walked.
+        let past_wanted = query
+            .parent_resource
+            .as_deref()
+            .is_some_and(|parent| past_root.as_deref() == Some(parent));
         let mut past_built = Vec::new();
         if let Some(root) = &past_root
             && past_wanted
@@ -897,7 +933,20 @@ impl Replica {
         }
         if complete && walk.total < walk.end {
             let mut containers = Vec::new();
-            self.survey_containers(resources, None, &walk.offering, &mut containers);
+            // A resource of the level that offers nothing itself but holds
+            // what does stands in a row of its own, which a caller reading a
+            // level at a time goes on into.
+            for child in level {
+                if !walk.offering.contains(child.id.as_str())
+                    && self.offers_below(
+                        child,
+                        level_in_chain
+                            || ui::resource::chain_of_resource_id(child.id.as_str()).is_some(),
+                    )
+                {
+                    containers.push(container_row(child, parent, self.app_id()));
+                }
+            }
             if let Some(root) = &past_root {
                 for child in &past_built {
                     containers_into(child, root, &walk.offering, self.app_id(), &mut containers);
@@ -910,6 +959,29 @@ impl Replica {
             }
         }
         (walk.total, walk.rows)
+    }
+
+    /// Whether anything below `resource` is offered ([`Self::offered`]), its
+    /// subtree kept by a chain when `in_chain`: walked only as far as the
+    /// first that is.
+    fn offers_below(&self, resource: &tilo_actions::ResourceSpec, in_chain: bool) -> bool {
+        let mut offered = false;
+        for child in &resource.children {
+            let chained =
+                in_chain || ui::resource::chain_of_resource_id(child.id.as_str()).is_some();
+            tilo_actions::api::survey_placed_under(child, resource.id.as_str(), &mut |placed| {
+                let held: std::collections::HashSet<String> = chained
+                    .then(|| placed.action.address.resource.clone())
+                    .into_iter()
+                    .collect();
+                offered = self.offered(placed.action, &held).is_some();
+                !offered
+            });
+            if offered {
+                return true;
+            }
+        }
+        false
     }
 
     /// What `surveyed` ([`Self::survey_rows`]) lists as `query` asks, on a
@@ -953,27 +1025,31 @@ impl Replica {
     }
 
     /// [`Self::survey`] for the one action `address` names: what a host that
-    /// already knows what it runs asks for, without listing every resource
-    /// the record holds. An action the record publishes for a chain's parts
-    /// is answered as the whole listing answers it; one the listing leaves
-    /// out is found in the listing, as before.
+    /// already knows the action asks for, built from the one resource it
+    /// names and never from the whole tree the view publishes, however many
+    /// items there are. An action published for a chain's parts, or on an
+    /// item a chain keeps, is offered as the whole listing offers it.
     #[must_use]
     pub fn descriptor(&self, address: &ActionAddress) -> Option<ActionDescriptor> {
-        let in_chains: std::collections::HashSet<String> =
-            ui::resource::chain_of_resource_id(address.resource.as_str())
-                .map(|_| address.resource.as_str().to_owned())
-                .into_iter()
-                .collect();
-        if let Some(descriptor) = self
-            .view
-            .descriptor(address)
-            .and_then(|descriptor| self.offered(descriptor, &in_chains))
-        {
-            return Some(descriptor);
-        }
-        self.survey()
+        let descriptor = self.view.descriptor(address)?;
+        // Only an effect is offered by where it stands: one on a chain or an
+        // item it keeps is the chain's, as the listing offers it.
+        let in_chains = if descriptor.kind == tilo_actions::OperationKind::Effect {
+            self.chained(address.resource.as_str())
+        } else {
+            std::collections::HashSet::new()
+        };
+        self.offered(descriptor, &in_chains)
+    }
+
+    /// `resource` alone when it is a chain or an item a chain keeps, found
+    /// in the part keeping it: the resources of [`chain_resources`] an
+    /// action on it is offered by, without the tree that lists them all.
+    fn chained(&self, resource: &str) -> std::collections::HashSet<String> {
+        (ui::resource::chain_of_resource_id(resource).is_some() || self.view.in_chain(resource))
+            .then(|| resource.to_owned())
             .into_iter()
-            .find(|descriptor| descriptor.address == *address)
+            .collect()
     }
 
     /// `descriptor` as [`Self::survey`] offers it, of a tree whose chains
@@ -1087,10 +1163,7 @@ impl Replica {
             return Ok(false);
         }
         if !descriptor.contract.reaches_agents()
-            || !self.offers(
-                &descriptor,
-                &chain_resources(&self.view.published_without_layout()),
-            )
+            || !self.offers(&descriptor, &self.chained(address.resource.as_str()))
         {
             return Err(not_offered(&descriptor));
         }
@@ -1457,23 +1530,60 @@ fn containers_into(
     }
     let own = offering.contains(id);
     if below && !own {
-        out.push(tilo_actions::remote::CatalogueRow {
-            provider: String::new(),
-            app_id: app_id.to_owned(),
-            parent_resource: parent.to_owned(),
-            resource: tilo_actions::remote::CatalogueResource {
-                id: id.to_owned(),
-                kind: resource.kind.clone(),
-                label: resource.label.clone(),
-                presentation: resource.presentation.clone(),
-            },
-            action: None,
-            has_children: true,
-            visibility: None,
-            surface: None,
-        });
+        out.push(container_row(resource, parent, app_id));
     }
     own || below
+}
+
+/// The row of `resource`, under `parent`, that offers nothing itself but
+/// holds what does: what a caller reading a level at a time goes on into.
+fn container_row(
+    resource: &tilo_actions::ResourceSpec,
+    parent: &str,
+    app_id: &str,
+) -> tilo_actions::remote::CatalogueRow {
+    tilo_actions::remote::CatalogueRow {
+        provider: String::new(),
+        app_id: app_id.to_owned(),
+        parent_resource: parent.to_owned(),
+        resource: tilo_actions::remote::CatalogueResource {
+            id: resource.id.as_str().to_owned(),
+            kind: resource.kind.clone(),
+            label: resource.label.clone(),
+            presentation: resource.presentation.clone(),
+        },
+        action: None,
+        has_children: true,
+        visibility: None,
+        surface: None,
+    }
+}
+
+/// The resources `parent` holds in `resources` (the forest itself for the
+/// top, `""`), and whether a chain keeps them: the level a listing under
+/// `parent` lists. `None` when no resource there is `parent`.
+fn level_of<'a>(
+    resources: &'a [tilo_actions::ResourceSpec],
+    parent: &str,
+) -> Option<(&'a [tilo_actions::ResourceSpec], bool)> {
+    fn find<'a>(
+        resources: &'a [tilo_actions::ResourceSpec],
+        parent: &str,
+        in_chain: bool,
+    ) -> Option<(&'a [tilo_actions::ResourceSpec], bool)> {
+        resources.iter().find_map(|resource| {
+            let chained =
+                in_chain || ui::resource::chain_of_resource_id(resource.id.as_str()).is_some();
+            if resource.id.as_str() == parent {
+                return Some((resource.children.as_slice(), chained));
+            }
+            find(&resource.children, parent, chained)
+        })
+    }
+    if parent.is_empty() {
+        return Some((resources, false));
+    }
+    find(resources, parent, false)
 }
 
 /// The ids of `resource` and everything published under it.

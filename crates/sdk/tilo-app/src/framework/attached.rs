@@ -515,8 +515,12 @@ impl AttachedView {
         {
             return Rc::clone(&published.tree);
         }
+        // Each build walks everything the view publishes: what a lookup that
+        // costs one resource never does, as an observation of it says.
+        let building = tilo_resource::profiling::Phase::start("framework.published_tree");
         let tree = Rc::new(frame.resources());
         drop(frame);
+        building.end();
         // Read after building: what building took in (a worker's reply that
         // had landed) is part of what the tree was published at.
         *self.published.borrow_mut() = Some(Published {
@@ -663,36 +667,34 @@ impl AttachedView {
     pub fn chain_items_named(&self, parent: &str, name: &str) -> Vec<tilo_actions::ResourceSpec> {
         let lookup = |frame: &mut FrameHarness| {
             frame
-                .with_widget_mut(|root: &mut super::root::ResourceRoot| {
-                    root.storage.chain_items_named(parent, name)
-                })
+                .widget_mut::<super::root::ResourceRoot>()
+                .map(|root| root.storage.chain_items_named(parent, name))
                 .unwrap_or_default()
         };
         let mut found = lookup(&mut self.frame.borrow_mut());
         if found.is_empty() && self.unsettled.get() {
-            // Something only a frame shows may name it: lay the view out once.
-            let _ = self.frame();
+            // A chain only a view opens may hold it: lay the view out once.
+            drop(self.frame());
             found = lookup(&mut self.frame.borrow_mut());
         }
-        if found.is_empty() {
-            return found;
-        }
-        // The item as the view publishes it carries what the view adds to
-        // its row; one past the page is the model's own build.
-        let ids: Vec<String> = found
-            .iter()
-            .map(|child| child.id.as_str().to_owned())
-            .collect();
-        let published: Vec<Option<tilo_actions::ResourceSpec>> = {
-            let frame = self.frame.borrow();
-            ids.iter().map(|id| frame.resource(id)).collect()
-        };
+        // Each is the item as the view publishes it, wherever it stands:
+        // the frame resolves an item of a chain the same way
+        // ([`super::root::ResourceRoot`]'s `resource_for`).
         found
             .into_iter()
-            .zip(published)
-            .map(|(child, published)| published.unwrap_or(child))
             .filter_map(|resource| self.permitted(resource))
             .collect()
+    }
+
+    /// Whether `id` is an item a chain the view opened keeps, found in the
+    /// part keeping it without a frame of the view: what an action on it is
+    /// offered as.
+    #[must_use]
+    pub fn in_chain(&self, id: &str) -> bool {
+        self.frame
+            .borrow_mut()
+            .widget_mut::<super::root::ResourceRoot>()
+            .is_some_and(|root| root.storage.chain_item(id).is_some())
     }
 
     /// The items the view's tree leaves out past each collection's published
@@ -745,7 +747,11 @@ impl AttachedView {
     }
 
     /// The contract of the action `address` names, as the view publishes it
-    /// now: `None` when the view publishes no such action.
+    /// now: `None` when the view publishes no such action. Answered from the
+    /// one resource it names, built alone. An item's address
+    /// (`<kind>/<field>/<item>`) is answered there and only there, from the
+    /// model as it stands: it costs the item however many there are, and an
+    /// item that is not there costs neither a layout nor the tree.
     #[must_use]
     pub fn descriptor(&self, address: &ActionAddress) -> Option<ActionDescriptor> {
         // The one resource's own actions, never its children's: an action
@@ -763,6 +769,9 @@ impl AttachedView {
                 .into_iter()
                 .find(|descriptor| descriptor.address == *address)
         };
+        if tilo_resource::items::item_kind(address.resource.as_str()).is_some() {
+            return own(&self.frame_as_is());
+        }
         let in_tree = |resources: &[tilo_actions::ResourceSpec]| {
             tilo_actions::api::survey(resources)
                 .into_iter()

@@ -328,6 +328,12 @@ pub(crate) trait ResourceApi {
     fn items_named(&self, _name: &str) -> Vec<tilo_actions::ResourceSpec> {
         Vec::new()
     }
+    /// The item `id` built alone from what keeps it: what an action
+    /// addressed to one resolves, however many items the resource holds and
+    /// whether or not its published page carries it.
+    fn item(&self, _id: &str) -> Option<tilo_actions::ResourceSpec> {
+        None
+    }
     fn apply_encoded(&self, action: &EncodedAction, invoker: &ActionInvoker) -> Result<(), String>;
     /// [`Self::apply_encoded`], answering its invoker with what it made.
     fn apply_answering(

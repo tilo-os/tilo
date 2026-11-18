@@ -26,6 +26,17 @@ pub(super) static LISTINGS: AtomicUsize = AtomicUsize::new(0);
 /// Counts the server's `catalogue` jobs as it logs them.
 pub(super) struct CatalogueJobs;
 
+/// Count [`CATALOGUES`] and [`LISTINGS`] from here on: every test of this
+/// binary installs the same counting, so one already installed serves them
+/// all.
+pub(super) fn count_jobs() {
+    let counting = CatalogueJobs.with_filter(Targets::new().with_target(
+        "tilo_agent_session::workspace_actions",
+        tracing::Level::DEBUG,
+    ));
+    let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry().with(counting));
+}
+
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CatalogueJobs {
     fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
         #[derive(Default)]
@@ -86,13 +97,7 @@ async fn per_create(agent: &mut Mcp<'_>, made: &mut usize, creates: usize) -> us
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_note_create_asks_the_host_the_same_however_full_the_notebook() {
-    let counting = CatalogueJobs.with_filter(Targets::new().with_target(
-        "tilo_agent_session::workspace_actions",
-        tracing::Level::DEBUG,
-    ));
-    // Counting the server's jobs: each test of this binary counts the same
-    // two, so one already installed serves both.
-    let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry().with(counting));
+    count_jobs();
     let on_server = api_on_server(ISSUER).await;
     let api = Arc::clone(&on_server.api);
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);

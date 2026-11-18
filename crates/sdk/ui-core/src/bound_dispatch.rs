@@ -1898,15 +1898,31 @@ fn discover_bound_resources_with_filter(
                     if let Some(address) = address
                         && root
                         && presence.is_none()
-                        && let Some(found) = crate::widget::capability::capability::<
+                        && let Some(forest) = crate::widget::capability::capability::<
                             dyn crate::resources::PublishesResources,
                         >(widget)
                         .and_then(|publisher| publisher.shared_resources_for(None, doc))
-                        .and_then(|forest| {
-                            shared_target(&forest, filtered.then_some(binding), address)
-                        })
                     {
-                        return vec![found];
+                        if let Some(found) =
+                            shared_target(&forest, filtered.then_some(binding), address)
+                        {
+                            return vec![found];
+                        }
+                        // One the shared tree leaves out (an item past a
+                        // published page) is resolved alone by id, as the
+                        // tree would carry it: never by publishing every
+                        // resource to look for it.
+                        if let Some(resource) =
+                            crate::resources::resource_for(widget, None, doc, &address.resource)
+                            && tilo_actions::api::resolve(std::slice::from_ref(&resource), address)
+                                .is_some()
+                        {
+                            return if filtered {
+                                filter_resource(binding, resource).into_iter().collect()
+                            } else {
+                                vec![resource]
+                            };
+                        }
                     }
                     let mut resources =
                         crate::resources::resources_for(widget, presence.as_ref(), doc);
