@@ -3,14 +3,14 @@
 //! under its own heading with the mark the sidebar gives it, and a preview
 //! worth reading before opening one.
 //!
-//! A part is searched on its own ([`crate::part::ArticlePart`]): it does not
+//! A part is searched on its own ([`crate::article_list::ArticleList`]): it does not
 //! read the library, so an article names where it came from by its address.
 
 use ui::tilo_resource::items::item_resource_id;
 use ui::tilo_resource::{SearchEntry, SearchPreview, SearchWeight};
 
+use crate::article_list::ArticleList;
 use crate::model::{Article, BlockKind, Feed, FeedKind, Folder, Library, Row};
-use crate::part::ArticlePart;
 
 pub const FOLDERS: &str = "Folders";
 pub const FEEDS: &str = "Feeds";
@@ -30,7 +30,7 @@ pub fn entries(library: &Library) -> Vec<SearchEntry> {
 }
 
 /// What search finds in one part of the library: its articles.
-pub fn part_entries(part: &ArticlePart) -> Vec<SearchEntry> {
+pub fn part_entries(part: &ArticleList) -> Vec<SearchEntry> {
     part.articles
         .iter()
         .map(|(id, article)| article_entry(id, article))
@@ -91,7 +91,7 @@ fn article_entry(id: &ui::tilo_resource::Id, article: &Article) -> SearchEntry {
         preview = preview.body(excerpt);
     }
     let mut entry = SearchEntry::new(&article.title, String::new())
-        .anchored(item_resource_id::<ArticlePart>("articles", id))
+        .anchored(item_resource_id::<ArticleList>("articles", id))
         .grouped(ARTICLES)
         .with_icon(ui::icons::Icon::FileText.name())
         .previewed(preview);
@@ -170,7 +170,7 @@ fn excerpt(article: &Article) -> Option<String> {
 mod tests {
     use super::*;
 
-    fn sample() -> (Library, ArticlePart) {
+    fn sample() -> (Library, ArticleList) {
         crate::sample::store()
     }
 

@@ -1,26 +1,17 @@
-//! The library's articles, kept in numbered parts beside the library.
+//! The library's articles: a collection the framework keeps beside the
+//! library, which decides where each article is stored, so that one article
+//! marked read costs that article, never the library. What is above the
+//! articles — the folders and the subscriptions — stays in the library's own
+//! document ([`crate::model::Library`]).
 //!
-//! One resource cannot hold every article a reader ever fetched at a cost that
-//! stays flat: every reader of a resource loads, verifies and diffs all of it,
-//! so one article marked read would cost every article fetched before it. The
-//! articles live in a chain of [`ArticlePart`] resources instead (`tilo_app`'s
-//! `Chained`), each holding up to [`PART_ARTICLES`] articles or
-//! [`PART_TEXT_BYTES`] of their text; a change touches the one part holding its
-//! article. What is above the articles — the folders and the subscriptions —
-//! stays in the library's own document ([`crate::model::Library`]).
-//!
-//! - **Where a fetched article goes.** To the newest part, unless it is full
-//!   ([`new_part`]): then to the next. Two writers starting the same part
-//!   start the same resource, so their articles meet there.
-//! - **Where a change goes.** To the part holding the article it names.
 //! - **Reading in one go.** Marking a subscription (or everything) read is one
-//!   step over articles of many parts, which no one part can take. It is
-//!   written as a mark in the part it is invoked on — how many of a
-//!   subscription's articles there were read ([`ArticlePart::mark_read`]) —
-//!   and the parts before that one count as read with it ([`Articles`]). One
-//!   small write, whatever the library holds.
-//! - **What reads across parts.** An article whose subscription is gone is
-//!   not shown and does not count: read so, never rewritten in other parts.
+//!   step over every article, which no one record can take. It is written as
+//!   a mark among the newest articles — how many of a subscription's articles
+//!   there were read ([`ArticleList::mark_read`]) — and every article kept
+//!   before it counts as read with it ([`Articles`]). One small write,
+//!   whatever the library holds.
+//! - **What reads across the collection.** An article whose subscription is
+//!   gone is not shown and does not count: read so, never rewritten.
 
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -30,18 +21,9 @@ use ui::tilo_resource::{self, ActionCx, Collection, Derived, Id, Model, Refusal,
 
 use crate::model::{Article, Fetched, Filter, Library, Row, tag_key};
 
-/// Articles a part holds before the next one starts.
-pub const PART_ARTICLES: usize = 300;
-
-/// Text, in bytes, a part's articles hold (titles, summaries and bodies)
-/// before the next one starts: what keeps one part, and so one change, cheap
-/// whatever its articles say.
-pub const PART_TEXT_BYTES: usize = 1024 * 1024;
-
-/// One part of the library's articles: every article a refresh brought in
-/// while it was the newest, and everything done to them since.
+/// The library's articles the framework keeps in one of its records.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct ArticlePart {
+pub struct ArticleList {
     /// Articles
     ///
     /// Each article is a storage unit of its own.
@@ -56,34 +38,8 @@ pub struct ArticlePart {
     pub read_through: BTreeMap<String, i64>,
 }
 
-impl ArticlePart {
-    /// The text its articles hold, in bytes: titles, summaries and bodies.
-    #[must_use]
-    pub fn text_bytes(&self) -> usize {
-        self.articles
-            .values()
-            .map(|article| {
-                article
-                    .title
-                    .len()
-                    .saturating_add(article.summary.len())
-                    .saturating_add(
-                        article
-                            .blocks
-                            .iter()
-                            .map(|block| {
-                                block
-                                    .text
-                                    .len()
-                                    .saturating_add(block.href.as_deref().unwrap_or_default().len())
-                            })
-                            .sum::<usize>(),
-                    )
-            })
-            .sum()
-    }
-
-    /// How many of subscription `feed`'s articles this part holds.
+impl ArticleList {
+    /// How many of subscription `feed`'s articles are kept here.
     #[must_use]
     pub fn of_feed(&self, feed: &Id) -> usize {
         self.articles
@@ -143,35 +99,20 @@ impl ArticlePart {
     }
 }
 
-/// The part a fetched article goes to, given the newest part held (its number
-/// and state): that part, or the next once it is full.
-#[must_use]
-pub fn new_part(head: Option<(u64, &ArticlePart)>) -> u64 {
-    match head {
-        None => 0,
-        Some((index, part))
-            if part.articles.len() >= PART_ARTICLES || part.text_bytes() >= PART_TEXT_BYTES =>
-        {
-            index.saturating_add(1)
-        }
-        Some((index, _)) => index,
-    }
-}
-
 #[resource(
     kind = "feeds.articles",
-    params = article_part,
-    children = ArticlePart::places,
-    search = ArticlePart::search,
+    params = article_list,
+    children = ArticleList::places,
+    search = ArticleList::search,
     effects = crate::resource::FeedsEffect,
-    read_content = ArticlePart::read_document
+    read_content = ArticleList::read_document
 )]
-impl ArticlePart {
+impl ArticleList {
     /// Land what a refresh fetched for one subscription.
     ///
     /// The articles the library does not hold yet; a refresh of the same feed
     /// brings nothing twice. Content from the feed, not anyone's edit.
-    #[action(external, audience = "agents", writes = articles)]
+    #[action(external, audience = "agents", writes = articles, items = articles)]
     pub fn receive(
         &mut self,
         cx: &mut ActionCx,
@@ -289,7 +230,7 @@ pub struct Articles<'a> {
 impl<'a> Articles<'a> {
     /// The articles `parts` keep, with the subscriptions `library` has.
     #[must_use]
-    pub fn of(parts: &'a [(u64, Rc<ArticlePart>)], library: &'a Library) -> Self {
+    pub fn of(parts: &'a [(u64, Rc<ArticleList>)], library: &'a Library) -> Self {
         let mut ordered = Vec::new();
         let mut through: BTreeMap<&'a str, (u64, i64)> = BTreeMap::new();
         for (index, part) in parts {
@@ -523,58 +464,11 @@ impl<'a> Articles<'a> {
     }
 }
 
-/// The part `action` changes, given the parts held, oldest first: the one
-/// holding the article it names, or for what a refresh brought the newest part
-/// (or the next, once that is full).
-///
-/// # Errors
-/// Refuses an action naming an article no part held here keeps.
-pub fn part_for(
-    action: &<ArticlePart as tilo_resource::Resource>::Action,
-    parts: &[(u64, Rc<ArticlePart>)],
-) -> Result<u64, String> {
-    let newest = || new_part(parts.last().map(|(index, part)| (*index, &**part)));
-    let holding = |article: &Id| {
-        parts
-            .iter()
-            .rev()
-            .find(|(_, part)| part.articles.contains(article))
-            .map(|(index, _)| *index)
-            .ok_or_else(|| "This article no longer exists".to_owned())
-    };
-    match &action.operation {
-        ArticlePartAction::Receive(_) => Ok(newest()),
-        // A mark reads everything before the part it is written in: it goes to
-        // the newest one.
-        ArticlePartAction::MarkRead(_) | ArticlePartAction::ForgetFeed(_) => {
-            Ok(parts.last().map_or(0, |(index, _)| *index))
-        }
-        other => match item_of(other) {
-            Some(article) => holding(article),
-            None => Ok(parts.last().map_or(0, |(index, _)| *index)),
-        },
-    }
-}
-
-/// The article a verb on one article names.
-#[must_use]
-pub fn item_of(action: &ArticlePartAction) -> Option<&Id> {
-    use crate::part::article_part as verb;
-    match action {
-        ArticlePartAction::SetRead(verb::SetRead { article, .. })
-        | ArticlePartAction::SetStarred(verb::SetStarred { article, .. })
-        | ArticlePartAction::SetTags(verb::SetTags { article, .. }) => Some(article),
-        // A field edit of one article (its tags, typed into its row) names it
-        // in its path.
-        ArticlePartAction::FieldEdit(edit) => match edit.path() {
-            [
-                tilo_resource::Segment::Field(field),
-                tilo_resource::Segment::Item(article),
-                ..,
-            ] if field == "articles" => Some(article),
-            _ => None,
-        },
-        _ => None,
+/// An article a refresh fetched is a new one: it names none kept already
+/// (a duplicate is dropped where the refresh is invoked).
+impl tilo_resource::NamesItem for Fetched {
+    fn named_item(&self) -> Option<Id> {
+        None
     }
 }
 
@@ -586,20 +480,20 @@ pub fn item_of(action: &ArticlePartAction) -> Option<&Id> {
 /// # Errors
 /// Refuses as the action's verb would, had it every part.
 pub fn prepare(
-    action: &mut <ArticlePart as tilo_resource::Resource>::Action,
+    action: &mut <ArticleList as tilo_resource::Resource>::Action,
     library: &Library,
-    parts: &[(u64, Rc<ArticlePart>)],
+    parts: &[(u64, Rc<ArticleList>)],
 ) -> Result<(), String> {
-    use crate::part::article_part::{ForgetFeed, Receive};
+    use crate::article_list::article_list::{ForgetFeed, Receive};
     let held = Articles::of(parts, library);
     match &mut action.operation {
-        ArticlePartAction::Receive(Receive { feed, articles }) => {
+        ArticleListAction::Receive(Receive { feed, articles }) => {
             if library.feeds.get(feed).is_none() {
                 return Err("no such subscription".into());
             }
             articles.retain(|article| !held.has_article(feed, &article.url, &article.title));
         }
-        ArticlePartAction::ForgetFeed(ForgetFeed { feed }) if library.feeds.get(feed).is_none() => {
+        ArticleListAction::ForgetFeed(ForgetFeed { feed }) if library.feeds.get(feed).is_none() => {
             return Err("no such subscription".into());
         }
         _ => {}
@@ -607,21 +501,17 @@ pub fn prepare(
     Ok(())
 }
 
-/// The chain the parts belong to, beside the library's own document.
+/// Where the framework keeps the articles: beside the library's own document.
 #[must_use]
 pub fn chain() -> ui::resource::DocumentId {
     ui::resource::DocumentId::derived("articles", &ui::resource::DocumentId::workspace_default())
 }
 
-impl Chained for ArticlePart {
+impl Chained for ArticleList {
     type Base = Library;
 
     fn chain() -> ui::resource::DocumentId {
         chain()
-    }
-
-    fn part_for(action: &Self::Action, parts: &[(u64, Rc<Self>)]) -> Option<Result<u64, String>> {
-        Some(part_for(action, parts))
     }
 
     fn prepare(
@@ -633,8 +523,7 @@ impl Chained for ArticlePart {
         prepare(action, library, parts)
     }
 
-    /// The list shows every article, so a window holds every part; a part
-    /// bounds what one change costs, not what is held.
+    /// The list shows every article, so a window holds all of them.
     const HELD_WHOLE: bool = true;
 }
 

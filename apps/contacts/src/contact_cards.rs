@@ -1,27 +1,16 @@
-//! The address book's contacts, kept in numbered parts beside the book.
-//!
-//! One resource cannot hold every contact a workspace ever took at a cost
-//! that stays flat: every holder of a resource loads, verifies, diffs and
-//! saves all of it, so a change to one contact of thousands would cost
-//! thousands. The contacts live in a chain of [`ContactPart`] resources
-//! instead (`tilo_app`'s `Chained`), each holding up to [`PART_CONTACTS`]
-//! contacts or [`PART_TEXT_BYTES`] of their text and pictures; a change
-//! touches the one part that holds its contact. The book's own document
+//! The address book's contacts: a collection the framework keeps beside the
+//! book, which decides where each contact is stored and how one change to
+//! one contact costs that contact, never the book. The book's own document
 //! ([`crate::resource::Contacts`]) holds nothing of theirs.
 //!
-//! - **Where a new contact goes.** To the newest part, unless it is full
-//!   ([`new_part`]): then to the next. Two writers starting the same part
-//!   start the same resource, so their contacts meet there.
-//! - **Where a change goes.** To the part holding the contact it names.
-//! - **Deleting.** A deleted contact's id is kept in the part that held it
-//!   ([`ContactPart::removed`]), and every read hides a contact whose id is
-//!   a tombstone in any part; its id never names a contact again, so a late
+//! - **Deleting.** A deleted contact's id is kept where the contact was
+//!   ([`ContactCards::removed`]), and every read hides a contact whose id is
+//!   a tombstone anywhere; its id never names a contact again, so a late
 //!   copy of its card cannot bring it back. A merge leaves the merged
-//!   contact where it is and tombstones it: the part holding the survivor
-//!   is the one change.
-//! - **What reads across parts.** The list, the groups, the favorites and
-//!   the likely duplicates read every part together ([`Book`]); nothing is
-//!   rewritten in another part.
+//!   contact where it is and tombstones it.
+//! - **What reads across the collection.** The list, the groups, the
+//!   favorites and the likely duplicates read every contact together
+//!   ([`Book`]); nothing is rewritten elsewhere.
 
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -37,18 +26,9 @@ use crate::actions::{
 };
 use crate::model::{Contact, ContactId, normalize_text, ordered_groups};
 
-/// Contacts a part holds before the next one starts.
-pub const PART_CONTACTS: usize = 500;
-
-/// Text, in bytes, a part's contacts hold (names, notes, rows and pictures)
-/// before the next one starts: what keeps one part, and so one change, cheap
-/// whatever its contacts say.
-pub const PART_TEXT_BYTES: usize = 512 * 1024;
-
-/// One part of the book's contacts: every contact made while it was the
-/// newest, and everything done to them since.
+/// The book's contacts the framework keeps in one of its records.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
-pub struct ContactPart {
+pub struct ContactCards {
     /// Contacts
     pub contacts: Keyed<Contact>,
     /// The contacts taken out of the book, by id. A deleted contact's id
@@ -58,58 +38,8 @@ pub struct ContactPart {
     pub removed: Set<ContactId>,
 }
 
-impl ContactPart {
-    /// The text its contacts hold, in bytes: names, organization, title,
-    /// website, notes, their rows and their pictures.
-    #[must_use]
-    pub fn text_bytes(&self) -> usize {
-        self.contacts
-            .iter()
-            .map(|contact| {
-                let rows = contact
-                    .phones
-                    .iter()
-                    .chain(&contact.emails)
-                    .map(|row| row.label.len().saturating_add(row.value.len()))
-                    .sum::<usize>()
-                    .saturating_add(
-                        contact
-                            .addresses
-                            .iter()
-                            .map(|address| {
-                                address
-                                    .label
-                                    .len()
-                                    .saturating_add(address.street.len())
-                                    .saturating_add(address.city.len())
-                                    .saturating_add(address.region.len())
-                                    .saturating_add(address.postal.len())
-                                    .saturating_add(address.country.len())
-                            })
-                            .sum::<usize>(),
-                    )
-                    .saturating_add(
-                        contact
-                            .groups
-                            .iter()
-                            .map(|group| group.value.len())
-                            .sum::<usize>(),
-                    );
-                contact
-                    .first
-                    .len()
-                    .saturating_add(contact.last.len())
-                    .saturating_add(contact.org.len())
-                    .saturating_add(contact.title.len())
-                    .saturating_add(contact.website.len())
-                    .saturating_add(contact.notes.len())
-                    .saturating_add(contact.photo.len())
-                    .saturating_add(rows)
-            })
-            .sum()
-    }
-
-    /// The contact `id`, when this part keeps it.
+impl ContactCards {
+    /// The contact `id`, when kept here.
     #[must_use]
     pub fn contact(&self, id: ContactId) -> Option<&Contact> {
         self.contacts.iter().find(|contact| contact.id == id)
@@ -121,7 +51,7 @@ impl ContactPart {
         self.removed.contains(id)
     }
 
-    /// What system search finds of the part: each contact, by its name and
+    /// What system search finds of these: each contact, by its name and
     /// everything it holds.
     #[must_use]
     pub fn search(&self) -> Vec<SearchEntry> {
@@ -134,47 +64,31 @@ impl ContactPart {
             .collect()
     }
 
-    /// What a part's contacts hold, as [`crate::resource::Contacts::read_document`]
+    /// What these contacts hold, as [`crate::resource::Contacts::read_document`]
     /// answers.
     ///
     /// # Errors
-    /// Refuses an item the part does not hold.
+    /// Refuses an item not kept here.
     pub fn read_document(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
         tilo_resource::read::fields(self, item)
     }
 }
 
-/// The part a new contact goes to, given the newest part held (its number
-/// and state): that part, or the next once it is full.
-#[must_use]
-pub fn new_part(head: Option<(u64, &ContactPart)>) -> u64 {
-    match head {
-        None => 0,
-        Some((index, part))
-            if part.contacts.len() >= PART_CONTACTS || part.text_bytes() >= PART_TEXT_BYTES =>
-        {
-            index.saturating_add(1)
-        }
-        Some((index, _)) => index,
-    }
-}
-
-/// The book as the window reads it: every contact the parts keep, and the
-/// ones taken out of it.
+/// The book as the window reads it: every contact kept, and the ones taken
+/// out of it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Book {
-    /// The contacts, the ones every part keeps but a tombstone hides left
-    /// out.
+    /// The contacts, the ones a tombstone hides left out.
     pub contacts: Keyed<Contact>,
     /// The contacts taken out of the book.
     pub removed: Set<ContactId>,
 }
 
 impl Book {
-    /// The book `parts` hold, oldest part first. A contact two parts both
-    /// keep (never written so, but read safely) is the newer part's.
+    /// The book `parts` hold, oldest first. A contact kept twice (never
+    /// written so, but read safely) is the newer one.
     #[must_use]
-    pub fn of(parts: &[(u64, Rc<ContactPart>)]) -> Self {
+    pub fn of(parts: &[(u64, Rc<ContactCards>)]) -> Self {
         let mut removed = Set::new();
         for (_, part) in parts {
             for id in part.removed.iter() {
@@ -252,7 +166,7 @@ pub fn key(id: ContactId) -> Id {
     Id::from_raw(id.to_string())
 }
 
-impl ContactPart {
+impl ContactCards {
     /// The contact `id` is stored under.
     #[must_use]
     pub fn key(id: ContactId) -> Id {
@@ -311,7 +225,7 @@ impl ContactPart {
         source: ContactId,
         take: impl IntoIterator<Item = MergeField>,
     ) -> Invoke<Self> {
-        Self::MERGE_CONTACTS.with(contact_part::MergeContacts {
+        Self::MERGE_CONTACTS.with(contact_cards::MergeContacts {
             contact: key(survivor),
             source,
             take_from_source: take.into_iter().collect(),
@@ -323,7 +237,7 @@ impl ContactPart {
 /// Where the book's groups, favorites and likely duplicates are published:
 /// the chain's own children.
 #[must_use]
-pub fn places(parts: &[(u64, Rc<ContactPart>)]) -> Vec<Derived<ContactPart>> {
+pub fn places(parts: &[(u64, Rc<ContactCards>)]) -> Vec<Derived<ContactCards>> {
     let book = Book::of(parts);
     let favorites = Derived::new("Favorites")
         .of_kind("favorites")
@@ -357,12 +271,12 @@ pub fn places(parts: &[(u64, Rc<ContactPart>)]) -> Vec<Derived<ContactPart>> {
                     source: source.id,
                 })
                 .with(
-                    ContactPart::MERGE_CONTACTS
+                    ContactCards::MERGE_CONTACTS
                         .bind(
-                            contact_part::MergeContacts::paths().contact,
+                            contact_cards::MergeContacts::paths().contact,
                             key(survivor.id),
                         )
-                        .and(contact_part::MergeContacts::paths().source, source.id),
+                        .and(contact_cards::MergeContacts::paths().source, source.id),
                 ),
             )
         });
@@ -375,7 +289,7 @@ pub fn places(parts: &[(u64, Rc<ContactPart>)]) -> Vec<Derived<ContactPart>> {
 /// What search finds beyond the contacts themselves: every group reveals
 /// its members.
 #[must_use]
-pub fn search(parts: &[(u64, Rc<ContactPart>)]) -> Vec<SearchEntry> {
+pub fn search(parts: &[(u64, Rc<ContactCards>)]) -> Vec<SearchEntry> {
     let book = Book::of(parts);
     ordered_groups(&book.contacts)
         .into_iter()
@@ -389,7 +303,11 @@ pub fn search(parts: &[(u64, Rc<ContactPart>)]) -> Vec<SearchEntry> {
 
 /// Whether `survivor` and `source` are a likely duplicate of the book.
 #[must_use]
-pub fn duplicate(parts: &[(u64, Rc<ContactPart>)], survivor: ContactId, source: ContactId) -> bool {
+pub fn duplicate(
+    parts: &[(u64, Rc<ContactCards>)],
+    survivor: ContactId,
+    source: ContactId,
+) -> bool {
     let book = Book::of(parts);
     book.contact(survivor)
         .zip(book.contact(source))
@@ -431,59 +349,10 @@ pub fn searchable_text(contact: &Contact) -> String {
 #[must_use]
 pub fn contact_resource_id(id: ContactId) -> String {
     tilo_resource::items::item_resource_id_in(
-        <ContactPart as tilo_resource::Resource>::KIND,
+        <ContactCards as tilo_resource::Resource>::KIND,
         "contacts",
         &key(id),
     )
-}
-
-/// The part `action` changes, given the parts held, oldest first: the one
-/// holding the contact it names, or for a new contact the newest part (or
-/// the next, once that is full).
-///
-/// # Errors
-/// Refuses an action naming a contact no part held here keeps.
-pub fn part_for(
-    action: &<ContactPart as tilo_resource::Resource>::Action,
-    parts: &[(u64, Rc<ContactPart>)],
-) -> Result<u64, String> {
-    let holding = |contact: &Id| {
-        parts
-            .iter()
-            .rev()
-            .find(|(_, part)| part.contacts.find(contact).is_some())
-            .map(|(index, _)| *index)
-            .ok_or_else(no_contact)
-    };
-    match &action.operation {
-        ContactPartAction::NewContact(_) | ContactPartAction::AddContacts(_) => Ok(new_part(
-            parts.last().map(|(index, part)| (*index, &**part)),
-        )),
-        other => match item_of(other) {
-            Some(contact) => holding(contact),
-            None => Ok(parts.last().map_or(0, |(index, _)| *index)),
-        },
-    }
-}
-
-/// The contact a verb on one contact names.
-#[must_use]
-pub fn item_of(action: &ContactPartAction) -> Option<&Id> {
-    use contact_part as verb;
-    match action {
-        ContactPartAction::DeleteContact(verb::DeleteContact { contact })
-        | ContactPartAction::MergeContacts(verb::MergeContacts { contact, .. }) => Some(contact),
-        // A field edit of one contact names it in its path.
-        ContactPartAction::FieldEdit(edit) => match edit.path() {
-            [
-                tilo_resource::Segment::Field(field),
-                tilo_resource::Segment::Item(contact),
-                ..,
-            ] if field == "contacts" => Some(contact),
-            _ => None,
-        },
-        _ => None,
-    }
 }
 
 /// Fill in, where `action` is invoked, what it reads of the whole book, and
@@ -493,20 +362,20 @@ pub fn item_of(action: &ContactPartAction) -> Option<&Id> {
 /// # Errors
 /// Refuses as the action's verb would, had it every part.
 pub fn prepare(
-    action: &mut <ContactPart as tilo_resource::Resource>::Action,
-    parts: &[(u64, Rc<ContactPart>)],
+    action: &mut <ContactCards as tilo_resource::Resource>::Action,
+    parts: &[(u64, Rc<ContactCards>)],
 ) -> Result<(), String> {
-    use contact_part::{AddContacts, MergeContacts};
+    use contact_cards::{AddContacts, MergeContacts};
     let book = Book::of(parts);
     match &mut action.operation {
-        ContactPartAction::AddContacts(AddContacts { contacts }) => {
+        ContactCardsAction::AddContacts(AddContacts { contacts }) => {
             for contact in contacts.iter() {
                 if book.removed.contains(&contact.id) || book.contact(contact.id).is_some() {
                     return Err("a contact with this id is in the book or was deleted".to_owned());
                 }
             }
         }
-        ContactPartAction::MergeContacts(MergeContacts {
+        ContactCardsAction::MergeContacts(MergeContacts {
             contact,
             source,
             take_from_source,
@@ -527,17 +396,25 @@ pub fn prepare(
     Ok(())
 }
 
+/// A card `add-contacts` takes makes a new contact: it names none kept
+/// already (its id is checked against the book where it is invoked).
+impl tilo_resource::NamesItem for Contact {
+    fn named_item(&self) -> Option<Id> {
+        None
+    }
+}
+
 fn no_contact() -> String {
     Refusal::new("no such contact").to_string()
 }
 
 #[resource(
     kind = "contacts.contacts",
-    params = contact_part,
-    search = ContactPart::search,
-    read_content = ContactPart::read_document
+    params = contact_cards,
+    search = ContactCards::search,
+    read_content = ContactCards::read_document
 )]
-impl ContactPart {
+impl ContactCards {
     /// New contact.
     ///
     /// A contact with a typed full name: its first word is the first name,
@@ -559,7 +436,7 @@ impl ContactPart {
     /// Whole cards, written in the form or imported, added as one change.
     /// Each id is new to the book: neither a contact's nor a deleted
     /// contact's.
-    #[action(step = "create")]
+    #[action(step = "create", items = contacts)]
     pub fn add_contacts(
         &mut self,
         #[param("The contacts")] contacts: Vec<Contact>,
@@ -615,21 +492,17 @@ impl ContactPart {
 #[cfg(test)]
 mod tests;
 
-/// The chain the parts belong to, beside the book's own document.
+/// Where the framework keeps the contacts: beside the book's own document.
 #[must_use]
 pub fn chain() -> ui::resource::DocumentId {
     ui::resource::DocumentId::derived("contacts", &ui::resource::DocumentId::workspace_default())
 }
 
-impl ui::framework::Chained for ContactPart {
+impl ui::framework::Chained for ContactCards {
     type Base = crate::resource::Contacts;
 
     fn chain() -> ui::resource::DocumentId {
         chain()
-    }
-
-    fn part_for(action: &Self::Action, parts: &[(u64, Rc<Self>)]) -> Option<Result<u64, String>> {
-        Some(part_for(action, parts))
     }
 
     fn prepare(
@@ -652,7 +525,6 @@ impl ui::framework::Chained for ContactPart {
         search(parts)
     }
 
-    /// The list shows every contact, so a window holds every part; a part
-    /// bounds what one change costs, not what is held.
+    /// The list shows every contact, so a window holds all of them.
     const HELD_WHOLE: bool = true;
 }

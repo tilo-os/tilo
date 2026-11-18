@@ -1,8 +1,8 @@
 //! The address book as vCards kept as content, for whoever acts without a file
 //! chooser: an agent hands the `.vcf` on where a person exports to a file.
 
+use crate::contact_cards::Book;
 use crate::model::Contact;
-use crate::part::Book;
 use crate::vcard::{VCardVersion, to_vcards};
 
 /// Keep every contact of `book`, or the one `contact` (or `name`, ignoring

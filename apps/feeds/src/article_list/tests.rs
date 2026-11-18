@@ -13,8 +13,13 @@ use std::rc::Rc;
 
 use ui::tilo_resource::{Id, Invoke, Replica};
 
+use crate::article_list::{ArticleList, Articles, article_list};
 use crate::model::{Fetched, Filter, Library};
-use crate::part::{ArticlePart, Articles, PART_ARTICLES, article_part};
+use ui::framework::PartLimits;
+
+/// Articles a record holds in these tests before the next one starts: few,
+/// so a handful of records shows what many would.
+const PART_ARTICLES: usize = 300;
 use crate::resource::library;
 
 /// What a refresh fetched for one article: the same title and address every
@@ -36,10 +41,11 @@ struct Shelf {
     library: Replica<Library>,
     /// The library as this device last read it.
     state: Library,
-    parts: Vec<(u64, Replica<ArticlePart>)>,
+    parts: Vec<(u64, Replica<ArticleList>)>,
     /// Each part's state as last written, as a window follows them.
-    states: Vec<(u64, Rc<ArticlePart>)>,
+    states: Vec<(u64, Rc<ArticleList>)>,
     author: String,
+    _limits: PartLimits,
 }
 
 impl Shelf {
@@ -52,10 +58,11 @@ impl Shelf {
             parts: Vec::new(),
             states: Vec::new(),
             author: author.to_owned(),
+            _limits: PartLimits::scoped(PART_ARTICLES, usize::MAX),
         }
     }
 
-    fn states(&self) -> Vec<(u64, Rc<ArticlePart>)> {
+    fn states(&self) -> Vec<(u64, Rc<ArticleList>)> {
         self.states.clone()
     }
 
@@ -77,9 +84,9 @@ impl Shelf {
         self.state.feed_at(url).map(|feed| feed.id.clone()).unwrap()
     }
 
-    fn part(&mut self, index: u64) -> &mut Replica<ArticlePart> {
+    fn part(&mut self, index: u64) -> &mut Replica<ArticleList> {
         if !self.parts.iter().any(|(held, _)| *held == index) {
-            let mut part = Replica::<ArticlePart>::new().as_author(&self.author);
+            let mut part = Replica::<ArticleList>::new().as_author(&self.author);
             part.set_now_ms(1_000);
             self.parts.push((index, part));
         }
@@ -99,14 +106,14 @@ impl Shelf {
         }
     }
 
-    /// Carry `invoke` out as the chain does: to the part `part_for` names,
+    /// Carry `invoke` out as the chain does: to the part the engine places it in,
     /// read against the library and the parts held, and refused as `prepare`
     /// refuses it. The part written.
-    fn apply(&mut self, invoke: &Invoke<ArticlePart>) -> Result<u64, String> {
+    fn apply(&mut self, invoke: &Invoke<ArticleList>) -> Result<u64, String> {
         let mut action = invoke.build(1_000)?;
         let held = self.states();
-        crate::part::prepare(&mut action, &self.state, &held)?;
-        let index = crate::part::part_for(&action, &held)?;
+        crate::article_list::prepare(&mut action, &self.state, &held)?;
+        let index = ui::framework::placed::<ArticleList>(&action, &held);
         self.part(index)
             .apply_action(&action)
             .map_err(|error| error.to_string())?;
@@ -116,7 +123,7 @@ impl Shelf {
 
     /// What a refresh brought for `feed`.
     fn receive(&mut self, feed: &Id, titles: &[&str]) -> Result<u64, String> {
-        self.apply(&ArticlePart::RECEIVE.with(article_part::Receive {
+        self.apply(&ArticleList::RECEIVE.with(article_list::Receive {
             feed: feed.clone(),
             articles: titles.iter().map(|title| fetched(title)).collect(),
         }))
@@ -188,7 +195,7 @@ fn marking_a_subscription_read_covers_every_part_before_the_mark() {
 
     // One step, one write into the newest part.
     let written = shelf
-        .apply(&ArticlePart::MARK_READ.with(Some(feed.clone())))
+        .apply(&ArticleList::MARK_READ.with(Some(feed.clone())))
         .unwrap();
     assert_eq!(written, 1);
     assert_eq!(
@@ -213,7 +220,7 @@ fn marking_everything_read_covers_every_subscription() {
     shelf.receive(&first, &["One", "Two"]).unwrap();
     shelf.receive(&second, &["Three"]).unwrap();
     assert_eq!(shelf.articles().total_unread(), 3);
-    shelf.apply(&ArticlePart::MARK_READ.with(None)).unwrap();
+    shelf.apply(&ArticleList::MARK_READ.with(None)).unwrap();
     assert_eq!(shelf.articles().total_unread(), 0);
 }
 
@@ -228,7 +235,7 @@ fn reading_starring_and_tagging_one_article_go_to_the_part_holding_it() {
 
     assert_eq!(
         shelf
-            .apply(&ArticlePart::SET_STARRED.with(article_part::SetStarred {
+            .apply(&ArticleList::SET_STARRED.with(article_list::SetStarred {
                 article: article.clone(),
                 starred: true,
             }))
@@ -238,7 +245,7 @@ fn reading_starring_and_tagging_one_article_go_to_the_part_holding_it() {
     );
     assert_eq!(
         shelf
-            .apply(&ArticlePart::SET_READ.with(article_part::SetRead {
+            .apply(&ArticleList::SET_READ.with(article_list::SetRead {
                 article: article.clone(),
                 read: true,
             }))
@@ -247,7 +254,7 @@ fn reading_starring_and_tagging_one_article_go_to_the_part_holding_it() {
     );
     assert_eq!(
         shelf
-            .apply(&ArticlePart::SET_TAGS.with(article_part::SetTags {
+            .apply(&ArticleList::SET_TAGS.with(article_list::SetTags {
                 article: article.clone(),
                 tags: vec![" Design ".into(), "#design".into(), "later".into()],
             }))
@@ -274,7 +281,7 @@ fn an_article_no_part_holds_is_refused() {
     let feed = shelf.subscribe("https://example.test/feed.xml");
     shelf.receive(&feed, &["Only"]).unwrap();
     let refused = shelf
-        .apply(&ArticlePart::SET_READ.with(article_part::SetRead {
+        .apply(&ArticleList::SET_READ.with(article_list::SetRead {
             article: Id::from_raw("gone"),
             read: true,
         }))
@@ -290,7 +297,7 @@ fn forgetting_a_subscription_takes_its_articles_out_of_the_part() {
     shelf.receive(&kept, &["Kept"]).unwrap();
     shelf.receive(&gone, &["Gone"]).unwrap();
     shelf
-        .apply(&ArticlePart::FORGET_FEED.with(article_part::ForgetFeed { feed: gone }))
+        .apply(&ArticleList::FORGET_FEED.with(article_list::ForgetFeed { feed: gone }))
         .unwrap();
     assert_eq!(shelf.articles().len(), 1, "only the kept one's articles");
     assert_eq!(shelf.states()[0].1.articles.len(), 1);
@@ -330,7 +337,7 @@ fn one_change_costs_one_part_whatever_the_library_holds() {
     // whatever the ten hold.
     let first = shelf.article_titled("Article 0");
     let written = shelf
-        .apply(&ArticlePart::SET_STARRED.with(article_part::SetStarred {
+        .apply(&ArticleList::SET_STARRED.with(article_list::SetStarred {
             article: first,
             starred: true,
         }))
@@ -339,7 +346,7 @@ fn one_change_costs_one_part_whatever_the_library_holds() {
     let states = shelf.states();
     for (_, part) in &states {
         assert!(
-            part.text_bytes() < crate::part::PART_TEXT_BYTES,
+            part.articles.len() <= PART_ARTICLES,
             "no part grows past its bound"
         );
     }
@@ -357,7 +364,7 @@ fn a_field_edit_of_one_article_writes_into_the_part_holding_it() {
     let feed = shelf.subscribe("https://example.test/feed.xml");
     shelf.receive(&feed, &["Only"]).unwrap();
     let article = shelf.article_titled("Only");
-    let edit = ArticlePart::paths()
+    let edit = ArticleList::paths()
         .articles
         .item(&article)
         .starred
@@ -388,7 +395,7 @@ fn a_chain_writes_a_verb_into_the_part_holding_its_article() {
     )
     .expect("a chain of parts");
     chain.write_start(0, &part).unwrap();
-    let held: Vec<(u64, Rc<ArticlePart>)> = chain.parts();
+    let held: Vec<(u64, Rc<ArticleList>)> = chain.parts();
     let article = held
         .iter()
         .flat_map(|(_, part)| {
@@ -400,12 +407,12 @@ fn a_chain_writes_a_verb_into_the_part_holding_its_article() {
         .next()
         .unwrap();
     chain
-        .invoke(&ArticlePart::SET_STARRED.with(article_part::SetStarred {
+        .invoke(&ArticleList::SET_STARRED.with(article_list::SetStarred {
             article: article.clone(),
             starred: true,
         }))
         .unwrap();
-    let after: Vec<(u64, Rc<ArticlePart>)> = chain.parts();
+    let after: Vec<(u64, Rc<ArticleList>)> = chain.parts();
     let starred = after
         .iter()
         .flat_map(|(_, part)| {

@@ -228,7 +228,7 @@ impl ResourceReservation {
                 .with_message(tilo_actions::FrameworkChange::Genesis.change_message()),
         );
         let history = crate::state::UndoLog::new(&mut doc);
-        let mut set = self.store.0.borrow_mut();
+        let mut set = self.store.set_mut();
         if set
             .pending
             .get(&self.checkout.id)

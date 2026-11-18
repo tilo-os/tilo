@@ -393,7 +393,7 @@ pub use app::{definition_launch_spec, run};
 pub use attached::{AttachedView, OpenView};
 pub use bar_actions::{BarActions, BarCommands};
 pub use chain::{Chain, Chained, PartArrival, PartRecord, Parts};
-pub use chain::{PART_BYTES, PART_ITEMS, PartLimits};
+pub use chain::{PART_BYTES, PART_ITEMS, PartLimits, placed};
 pub use chain_list::{ChainList, ChainPager, ChainRow, Paged};
 pub use children::{ChildResource, Children, Listed, child_resource_id};
 pub use controls::{ActionControl, Actions};

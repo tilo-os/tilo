@@ -40,6 +40,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation};
 
+use crate::article_list::{ArticleList, Articles};
 use crate::chrome::reader_settings_panel;
 use crate::fetch::{FetchRequest, FetchResult, FetchWorker, RefreshFailure};
 use crate::i18n::CATALOG;
@@ -49,7 +50,6 @@ use crate::model::{
     Article, Filter, Id, Library, ReadFont, ReadSettings, ReadTheme, Row, normalize_tags,
 };
 use crate::opml;
-use crate::part::{ArticlePart, Articles};
 use crate::reader_pane::{ReaderPane, ReaderState};
 use crate::resource::{self, FeedsEffect};
 #[cfg(feature = "samples")]
@@ -431,11 +431,11 @@ pub(crate) struct Core {
     pub(crate) dispatcher: Option<ui::framework::Dispatcher<Library>>,
     /// The articles, in parts beside the library, and the chain their actions
     /// are carried out through.
-    pub(crate) chain: Option<ui::framework::Chain<ArticlePart>>,
+    pub(crate) chain: Option<ui::framework::Chain<ArticleList>>,
     /// The library as the chain's own actions read it: kept apart from the
     /// window so a chain action never borrows the window it was invoked from.
     base: Rc<RefCell<Option<Rc<Library>>>>,
-    parts: Rc<Vec<(u64, Rc<ArticlePart>)>>,
+    parts: Rc<Vec<(u64, Rc<ArticleList>)>>,
     /// The chain's revision the parts were read at.
     parts_at: Cell<Option<u64>>,
     pub(crate) actions: Option<ui::framework::Actions<Library>>,
@@ -449,8 +449,8 @@ pub(crate) struct Core {
     pub(crate) requests: Requests,
 }
 
-fn read_edit(id: &Id, read: bool) -> ui::tilo_resource::Invoke<ArticlePart> {
-    ArticlePart::SET_READ.with(crate::part::article_part::SetRead {
+fn read_edit(id: &Id, read: bool) -> ui::tilo_resource::Invoke<ArticleList> {
+    ArticleList::SET_READ.with(crate::article_list::article_list::SetRead {
         article: id.clone(),
         read,
     })
@@ -482,7 +482,7 @@ impl Core {
     /// The chain of the parts this window holds, for what reads its stores
     /// outside the window (a test, a capture).
     #[cfg(test)]
-    pub(crate) fn chain(&self) -> Option<&ui::framework::Chain<ArticlePart>> {
+    pub(crate) fn chain(&self) -> Option<&ui::framework::Chain<ArticleList>> {
         self.chain.as_ref()
     }
 
@@ -665,7 +665,7 @@ impl Core {
         if let Some(starred) = self.articles().article(id).map(|article| !article.starred) {
             self.submit_part(
                 doc,
-                ArticlePart::SET_STARRED.with(crate::part::article_part::SetStarred {
+                ArticleList::SET_STARRED.with(crate::article_list::article_list::SetStarred {
                     article: id.clone(),
                     starred,
                 }),
@@ -707,10 +707,10 @@ impl Core {
         if !ids.is_empty() {
             match &filter {
                 Filter::All => {
-                    self.submit_part(doc, ArticlePart::MARK_READ.with(None));
+                    self.submit_part(doc, ArticleList::MARK_READ.with(None));
                 }
                 Filter::Feed(feed) => {
-                    self.submit_part(doc, ArticlePart::MARK_READ.with(Some(feed.clone())));
+                    self.submit_part(doc, ArticleList::MARK_READ.with(Some(feed.clone())));
                 }
                 _ => {
                     for id in &ids {
@@ -794,7 +794,7 @@ impl Core {
     fn submit_part(
         &mut self,
         edits: &mut ui::widget::Edits<'_>,
-        submit: impl ui::framework::Submit<ArticlePart>,
+        submit: impl ui::framework::Submit<ArticleList>,
     ) -> bool {
         let Some(chain) = self.chain.as_ref() else {
             self.set_toast("The library is not attached to its resource.");
@@ -1135,7 +1135,7 @@ impl Core {
                     .articles()
                     .unread_ids_for(&Filter::Feed(feed_id.clone()));
                 if !ids.is_empty() {
-                    self.submit_part(doc, ArticlePart::MARK_READ.with(Some(feed_id)));
+                    self.submit_part(doc, ArticleList::MARK_READ.with(Some(feed_id)));
                 }
                 self.set_toast(format!(
                     "Marked {} as read",
@@ -1240,7 +1240,7 @@ impl Core {
         // The article shows its tags; storing them says nothing.
         self.submit_part(
             doc,
-            ArticlePart::SET_TAGS.with(crate::part::article_part::SetTags {
+            ArticleList::SET_TAGS.with(crate::article_list::article_list::SetTags {
                 article: id.clone(),
                 tags,
             }),
@@ -1414,7 +1414,7 @@ impl Core {
         if !landing.articles.is_empty() {
             self.submit_part(
                 doc,
-                ArticlePart::RECEIVE.with(crate::part::article_part::Receive {
+                ArticleList::RECEIVE.with(crate::article_list::article_list::Receive {
                     feed: landing.feed,
                     articles: landing.articles,
                 }),
@@ -2758,7 +2758,7 @@ pub(crate) fn window(cx: &ViewCx<Library>) -> ui::widget::Element {
         let mut core = app.core.borrow_mut();
         core.live = Some(cx.live().clone());
         core.dispatcher = Some(cx.dispatcher());
-        core.chain = cx.chain::<ArticlePart>();
+        core.chain = cx.chain::<ArticleList>();
         core.actions = Some(cx.actions());
         core.follow_read_settings(cx.settings::<ReadSettings>());
         core.follow_document();

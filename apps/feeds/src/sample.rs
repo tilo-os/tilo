@@ -8,9 +8,9 @@
 //! live app never seeds this — it starts empty on the user's persisted
 //! subscriptions and fetches real feeds over HTTP once the user adds one.
 
+use crate::article_list::ArticleList;
 use crate::gemtext;
 use crate::model::{Article, BlockKind, ContentBlock, Feed, FeedKind, Folder, Id, Library};
-use crate::part::ArticlePart;
 
 /// The bundled library's articles, staged into the parts as a capture's or a
 /// test's window opens.
@@ -19,7 +19,7 @@ pub struct Scene;
 
 /// Fill an empty chain of parts with the bundled articles, as their
 /// fixture: each under its own id, so a scenario can name them.
-pub fn fill(chain: &ui::framework::Chain<ArticlePart>) {
+pub fn fill(chain: &ui::framework::Chain<ArticleList>) {
     if !chain.parts().is_empty() {
         return;
     }
@@ -55,10 +55,10 @@ const DAY: i64 = 24 * HOUR;
     reason = "one block of fixture literals per bundled article; splitting it would only \
               relocate the sample data, not shrink what a reader must trace for one entry"
 )]
-pub fn store() -> (Library, ArticlePart) {
+pub fn store() -> (Library, ArticleList) {
     let now = ui::clock::local_now().timestamp().as_second();
     let mut s = Library::new();
-    let mut part = ArticlePart::default();
+    let mut part = ArticleList::default();
 
     let tech = folder(&mut s, "Technology");
     let science = folder(&mut s, "Science");
@@ -501,7 +501,7 @@ impl<'a> SampleArticle<'a> {
     }
 }
 
-fn article(part: &mut ArticlePart, fixture: SampleArticle<'_>) {
+fn article(part: &mut ArticleList, fixture: SampleArticle<'_>) {
     let lower = fixture.title.to_lowercase();
     let tags = [
         lower.contains("rust").then_some("rust"),

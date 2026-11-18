@@ -1112,8 +1112,8 @@ mod tests {
         }
     }
 
-    fn book(contacts: Vec<Contact>) -> crate::part::Book {
-        crate::part::Book {
+    fn book(contacts: Vec<Contact>) -> crate::contact_cards::Book {
+        crate::contact_cards::Book {
             contacts: contacts.into(),
             removed: ui::tilo_resource::Set::default(),
         }

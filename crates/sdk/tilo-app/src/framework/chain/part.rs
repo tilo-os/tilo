@@ -345,7 +345,7 @@ fn route<P: Chained>(action: &dyn Any, base: &dyn Any, parts: &dyn Any) -> Route
     (place, P::part_for(action, parts_of::<P>(parts)))
 }
 
-fn each_item<P: Chained>(
+pub(super) fn each_item<P: Chained>(
     state: &dyn Any,
     found: &mut dyn FnMut(tilo_resource::Id, &dyn Any, &'static tilo_resource::table::ModelTable),
 ) {

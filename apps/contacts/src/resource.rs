@@ -2,10 +2,10 @@
 //! under, and the app.
 //!
 //! The contacts are kept in numbered parts beside the book
-//! ([`crate::part::ContactPart`]): a contact's fields change through the
+//! ([`crate::contact_cards::ContactCards`]): a contact's fields change through the
 //! field edits every path offers, and a saved form is exactly the edits
 //! between the contact it opened and the contact it saves
-//! ([`ContactPart::save`]), so a stale form never overwrites what someone
+//! ([`ContactCards::save`]), so a stale form never overwrites what someone
 //! else changed meanwhile. Groups, the favorites and likely duplicates are
 //! derived from every part and published by the parts' chain as places that
 //! reveal them.
@@ -16,11 +16,11 @@ use ui::widget::Element;
 use uuid::Uuid;
 
 use crate::app::ContactsApp;
+use crate::contact_cards::{Book, ContactCards};
 use crate::model::{Birthday, Contact, ContactId, Labeled, normalize_text, sample_contacts};
-use crate::part::{Book, ContactPart};
 
 /// The address book's own record: the page every contact hangs off. The
-/// contacts are kept in numbered parts beside it ([`crate::part::ContactPart`]),
+/// contacts are kept in numbered parts beside it ([`crate::contact_cards::ContactCards`]),
 /// so what a change costs is one part whatever the book holds.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct Contacts {}
@@ -62,7 +62,7 @@ pub fn duplicate_place(survivor: ContactId, source: ContactId) -> String {
 pub fn place_resource_id(place: &str) -> String {
     format!(
         "{}/derived/{place}",
-        <ContactPart as tilo_resource::Resource>::KIND
+        <ContactCards as tilo_resource::Resource>::KIND
     )
 }
 
@@ -169,7 +169,7 @@ impl ResourceApp for ContactsShell {
 
     /// The contacts, kept in parts beside the book.
     fn resources(resources: &mut ui::framework::Resources<'_>) {
-        resources.chain::<ContactPart>();
+        resources.chain::<ContactCards>();
     }
 
     /// What a capture stages of the book, provided before the window is
@@ -181,7 +181,7 @@ impl ResourceApp for ContactsShell {
 
     fn view(cx: &mut ViewCx<Contacts>) -> Element {
         if let Some(scene) = cx.fixture::<Scene>().map(|scene| *scene)
-            && let Some(chain) = cx.chain::<ContactPart>()
+            && let Some(chain) = cx.chain::<ContactCards>()
         {
             scene.fill(&chain);
         }
@@ -271,7 +271,7 @@ impl Scene {
     }
 
     /// Add the scene's contacts to `chain`, once.
-    pub(crate) fn fill(self, chain: &ui::framework::Chain<ContactPart>) {
+    pub(crate) fn fill(self, chain: &ui::framework::Chain<ContactCards>) {
         if !chain.parts().is_empty() {
             return;
         }
@@ -279,7 +279,7 @@ impl Scene {
         if book.is_empty() {
             return;
         }
-        if let Err(error) = chain.invoke(&ContactPart::add_all(book)) {
+        if let Err(error) = chain.invoke(&ContactCards::add_all(book)) {
             tracing::warn!(%error, "a capture's contacts are not staged");
         }
     }
@@ -299,7 +299,7 @@ impl ContactsApp {
             .contacts
             .iter()
             .map(|contact| Projected {
-                person: crate::part::key(contact.id),
+                person: crate::contact_cards::key(contact.id),
                 label: contact.display_name(),
                 phones: contact
                     .phones
@@ -326,7 +326,7 @@ impl ContactsApp {
         let removed: Vec<_> = state
             .removed
             .iter()
-            .map(|removed| crate::part::key(*removed))
+            .map(|removed| crate::contact_cards::key(*removed))
             .filter(|id| current.people.get(id).is_none_or(|person| !person.removed))
             .collect();
         // One change for the whole book, however many people it touches.

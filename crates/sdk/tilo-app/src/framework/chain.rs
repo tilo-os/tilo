@@ -93,7 +93,7 @@ use reading::{ChainRead, offer_nested_reads, parse_read_cursor, read_cursor, rea
 use shares::Written;
 
 pub(crate) use place::ItemIndex;
-pub use place::{PART_BYTES, PART_ITEMS, PartLimits};
+pub use place::{PART_BYTES, PART_ITEMS, PartLimits, placed};
 
 /// The operation type a chain's published actions are carried out under:
 /// the host applies the action to the part of the chain it names.
@@ -498,6 +498,10 @@ pub(crate) struct ChainCore {
     /// The store's [`ResourceStore::kept_revision`] when the window last
     /// looked for a newer head and at the parts it waits for.
     looked: Cell<Option<u64>>,
+    /// The store's [`ResourceStore::write_generation`] when the held parts
+    /// were last followed: while it stays, no part changed, and following
+    /// them again reads nothing.
+    followed_at: Cell<Option<u64>>,
     /// The person's record of the actions asked for while the part they
     /// change was on its way from the workspace ([`ChainState::apply_as`]),
     /// kept with the app's records: every window of the app shows them and
@@ -1060,6 +1064,7 @@ impl ChainCore {
             earlier: RefCell::new(None),
             part_search: RefCell::default(),
             looked: Cell::new(None),
+            followed_at: Cell::new(None),
             waiting_resource: unsent_checkout(&workspace.me),
             unsent_looked: Cell::new(false),
             workspace,
@@ -1069,6 +1074,26 @@ impl ChainCore {
     /// Follow every held part that changed, and take up a newer head that
     /// arrived on this device. Whether anything moved.
     fn follow_parts(&self) -> bool {
+        let mut moved = false;
+        let generation = self.workspace.store.write_generation();
+        if generation == u64::MAX || self.followed_at.get() != Some(generation) {
+            moved = self.follow_held();
+            self.followed_at
+                .set(Some(self.workspace.store.write_generation()));
+        }
+        if self.part.held_whole {
+            self.hold_earlier();
+        }
+        if self.due() {
+            moved |= self.look();
+            moved |= self.follow_waiting();
+        }
+        moved
+    }
+
+    /// Follow each held part's document, and hold a part opened in the store
+    /// since. Whether any moved.
+    fn follow_held(&self) -> bool {
         let mut moved = false;
         for (index, part) in self.parts.borrow().iter() {
             match self
@@ -1101,13 +1126,6 @@ impl ChainCore {
         };
         for index in opened {
             moved |= self.follow(index).is_ok();
-        }
-        if self.part.held_whole {
-            self.hold_earlier();
-        }
-        if self.due() {
-            moved |= self.look();
-            moved |= self.follow_waiting();
         }
         moved
     }

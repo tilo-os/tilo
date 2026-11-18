@@ -17,8 +17,8 @@ use super::files::{
 };
 use super::{ContactId, ContactsApp, FAVORITES_FILTER, FileWork, ImportConflict, VCardVersion};
 use crate::actions::ContactsEffect;
+use crate::contact_cards::{Book, ContactCards};
 use crate::model::group_names_equal;
-use crate::part::{Book, ContactPart};
 use crate::resource::Contacts;
 
 pub(crate) enum Ask {
@@ -63,7 +63,7 @@ impl Store {
 fn answer(
     asked: &Asked,
     file_work: &Rc<Cell<Option<FileWork>>>,
-    chain: Option<&Chain<ContactPart>>,
+    chain: Option<&Chain<ContactCards>>,
     effect: ContactsEffect,
     cx: &mut EffectCx<Contacts>,
 ) -> EffectAnswer {
@@ -175,7 +175,7 @@ fn read_duplicate(
         .ok_or_else(|| "contacts are no longer a likely duplicate".to_string())?;
     let person = |contact: &crate::model::Contact| {
         serde_json::json!({
-            "item": crate::part::contact_resource_id(contact.id),
+            "item": crate::contact_cards::contact_resource_id(contact.id),
             "name": contact.display_name(),
         })
     };
@@ -255,7 +255,7 @@ impl ContactsApp {
 /// answers the book's effects and publishes the pending import and account
 /// reviews.
 pub(crate) fn window(cx: &ViewCx<crate::resource::Contacts>, mut app: ContactsApp) -> Element {
-    let chain = cx.chain::<ContactPart>();
+    let chain = cx.chain::<ContactCards>();
     let book = chain
         .as_ref()
         .map(|chain| cx.chain_value(chain, |_, parts| Rc::new(Book::of(parts))));
@@ -278,7 +278,7 @@ pub(crate) fn window(cx: &ViewCx<crate::resource::Contacts>, mut app: ContactsAp
     // the parts publish.
     let mut open = app.opener();
     cx.on_open(move |anchor: &str| {
-        let (_, item) = ui::tilo_resource::items::item_of_resource::<ContactPart>(anchor)
+        let (_, item) = ui::tilo_resource::items::item_of_resource::<ContactCards>(anchor)
             .ok_or_else(|| {
                 ui::tilo_resource::Refusal::new(format!("`{anchor}` names no contact"))
             })?;

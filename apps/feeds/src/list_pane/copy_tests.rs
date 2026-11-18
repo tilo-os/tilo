@@ -97,18 +97,20 @@ fn library() -> (FeedsApp, Shared) {
         for index in 0..EXTRA {
             chain
                 .stage_as(
-                    &crate::part::ArticlePart::RECEIVE.with(crate::part::article_part::Receive {
-                        feed: feed.clone(),
-                        articles: vec![crate::model::Fetched {
-                            title: format!(
-                                "Article {index}: the quick brown fox jumps over the lazy dog"
-                            ),
-                            url: format!("https://example.test/copy-test-article-{index}"),
-                            summary: format!("Summary {index}"),
-                            published: now - 3_600 * (index + 1),
-                            ..crate::model::Fetched::default()
-                        }],
-                    }),
+                    &crate::article_list::ArticleList::RECEIVE.with(
+                        crate::article_list::article_list::Receive {
+                            feed: feed.clone(),
+                            articles: vec![crate::model::Fetched {
+                                title: format!(
+                                    "Article {index}: the quick brown fox jumps over the lazy dog"
+                                ),
+                                url: format!("https://example.test/copy-test-article-{index}"),
+                                summary: format!("Summary {index}"),
+                                published: now - 3_600 * (index + 1),
+                                ..crate::model::Fetched::default()
+                            }],
+                        },
+                    ),
                     &ui::tilo_resource::MemberId::person("component-test-author"),
                 )
                 .unwrap();
@@ -121,16 +123,16 @@ fn library() -> (FeedsApp, Shared) {
                 })
             {
                 if index % 3 == 0 {
-                    let _ = chain.invoke(&crate::part::ArticlePart::SET_READ.with(
-                        crate::part::article_part::SetRead {
+                    let _ = chain.invoke(&crate::article_list::ArticleList::SET_READ.with(
+                        crate::article_list::article_list::SetRead {
                             article: article.0.clone(),
                             read: true,
                         },
                     ));
                 }
                 if index % 7 == 0 {
-                    let _ = chain.invoke(&crate::part::ArticlePart::SET_STARRED.with(
-                        crate::part::article_part::SetStarred {
+                    let _ = chain.invoke(&crate::article_list::ArticleList::SET_STARRED.with(
+                        crate::article_list::article_list::SetStarred {
                             article: article.0.clone(),
                             starred: true,
                         },
@@ -322,8 +324,8 @@ fn a_frame_that_changes_the_rows_repaints_the_list_and_matches() {
             .article(&shown)
             .is_some_and(|article| !article.starred);
         chain
-            .invoke(&crate::part::ArticlePart::SET_STARRED.with(
-                crate::part::article_part::SetStarred {
+            .invoke(&crate::article_list::ArticleList::SET_STARRED.with(
+                crate::article_list::article_list::SetStarred {
                     article: shown.clone(),
                     starred,
                 },

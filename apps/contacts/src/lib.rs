@@ -17,6 +17,7 @@
 mod account_editor;
 pub mod actions;
 pub mod app;
+pub mod contact_cards;
 pub mod content_export;
 pub mod date;
 mod detail;
@@ -24,7 +25,6 @@ mod form;
 mod handoff;
 mod import_inbox;
 pub mod model;
-pub mod part;
 mod priority_contacts;
 pub mod resource;
 pub mod vcard;

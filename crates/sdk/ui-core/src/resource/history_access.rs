@@ -42,8 +42,7 @@ impl ResourceStore {
         f: impl FnOnce(&mut AutoCommit, &mut crate::state::UndoLog) -> R,
     ) -> Result<R, HistoryUnavailable> {
         let mut set = self
-            .0
-            .try_borrow_mut()
+            .try_set_mut()
             .map_err(|_| HistoryUnavailable::StoreInUse)?;
         if set.lent.contains(id) {
             return Err(HistoryUnavailable::Lent);

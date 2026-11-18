@@ -371,3 +371,25 @@ impl<P: super::Chained> super::Chain<P> {
         self.len() == 0
     }
 }
+
+/// The part the engine writes `action` into, given `parts` (oldest first),
+/// as a window holding them would: what a test applying actions to its own
+/// copies of the parts, or a program replaying a chain without a window, asks
+/// where each one goes.
+#[must_use]
+pub fn placed<P: super::Chained>(action: &P::Action, parts: &[(u64, Rc<P::State>)]) -> u64 {
+    let held: Vec<(u64, Rc<dyn Any>)> = parts
+        .iter()
+        .map(|(index, state)| (*index, Rc::clone(state) as Rc<dyn Any>))
+        .collect();
+    let mut index = ItemIndex::default();
+    index.follow(&held, super::part::each_item::<P>);
+    let item = P::beside(action).or_else(|| P::action_item(action));
+    if let Some(entries) = P::listed_items(action) {
+        return index
+            .shares(&entries)
+            .first()
+            .map_or_else(|| index.for_new(), |(at, _)| *at);
+    }
+    index.for_item(item.as_ref())
+}
