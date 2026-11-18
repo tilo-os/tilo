@@ -447,6 +447,7 @@ fn client(account: &Account, password: &str) -> Result<(DavClient, Url), String>
         timeout: std::time::Duration::from_secs(20),
         connect_timeout: Some(std::time::Duration::from_secs(8)),
         redirects: tilo_dav::Redirects::Refuse,
+        lookup: None,
     })
     .map_err(|_| "could not start the secure connection".to_owned())?
     .with_credentials(Credentials::new(

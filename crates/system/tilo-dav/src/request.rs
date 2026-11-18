@@ -63,12 +63,64 @@ pub enum Redirects {
     Refuse,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Options {
     pub user_agent: Option<&'static str>,
     pub timeout: Duration,
     pub connect_timeout: Option<Duration>,
     pub redirects: Redirects,
+    /// What every connection of the client asks where its server is. For a
+    /// name: the addresses it is dialled at, from the one look-up the
+    /// connection itself makes, so nothing an earlier look-up was answered
+    /// decides where a request goes. For an address a URL writes out, which
+    /// no connection looks up: the same question, before the request is sent
+    /// ([`tilo_net::address::asked_as_written`]). A client given one takes no
+    /// proxy from the environment, which would look names up behind it.
+    /// `None`: the system's resolver and any address. Whoever keeps its
+    /// requests on the public internet hands the one judge's look-up here
+    /// ([`tilo_net::address::public_only`]).
+    #[cfg(not(target_family = "wasm"))]
+    pub lookup: Option<tilo_net::Lookup>,
+}
+
+impl fmt::Debug for Options {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut shown = f.debug_struct("Options");
+        shown
+            .field("user_agent", &self.user_agent)
+            .field("timeout", &self.timeout)
+            .field("connect_timeout", &self.connect_timeout)
+            .field("redirects", &self.redirects);
+        #[cfg(not(target_family = "wasm"))]
+        shown.field("lookup", &self.lookup.is_some());
+        shown.finish()
+    }
+}
+
+/// The look-up a client was given ([`Options::lookup`]), which has no `Debug`
+/// of its own.
+#[cfg(not(target_family = "wasm"))]
+#[derive(Clone)]
+pub(crate) struct Asked(pub(crate) tilo_net::Lookup);
+
+#[cfg(not(target_family = "wasm"))]
+impl fmt::Debug for Asked {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Asked")
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl Asked {
+    /// Whether a request to `url` is sent: the address it writes out, where
+    /// it writes one, is asked of the look-up here, since the connection
+    /// looks no such address up.
+    pub(crate) fn of(&self, url: &tilo_net::Url) -> std::io::Result<()> {
+        match tilo_net::address::written_out(url) {
+            Some(address) => tilo_net::address::asked_as_written(&self.0, address),
+            None => Ok(()),
+        }
+    }
 }
 
 impl Default for Options {
@@ -78,6 +130,8 @@ impl Default for Options {
             timeout: Duration::from_secs(20),
             connect_timeout: None,
             redirects: Redirects::Follow,
+            #[cfg(not(target_family = "wasm"))]
+            lookup: None,
         }
     }
 }

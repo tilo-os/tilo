@@ -456,18 +456,21 @@ pub fn find(address: &str, sources: &dyn Sources) -> Result<MailServers, String>
 pub struct Live<'a> {
     allowed: &'a dyn Fn(&str) -> bool,
     roots: rustls::RootCertStore,
-    /// Where a mail server that is greeted may be: any address, unless
-    /// [`Self::within`] says otherwise.
-    reach: crate::imap::Reach,
+    /// Where a mail server that is greeted and a settings document that is
+    /// read may be: any address, unless [`Self::within`] says otherwise.
+    reach: Option<crate::imap::Reach>,
 }
 
-/// What one settings document at `url` says, where it answers with one.
-fn fetched(url: &str) -> Option<String> {
+/// What one settings document at `url` says, where it answers with one and
+/// is reached `within` the look's reach: its address is judged at the
+/// connection itself, whatever an earlier look-up of its name was answered.
+fn fetched(url: &str, within: Option<&crate::imap::Reach>) -> Option<String> {
     let client = tilo_dav::DavClient::new(&tilo_dav::Options {
         timeout: STEP,
         connect_timeout: Some(STEP),
         // A document is its own address's to give: nothing is followed to another.
         redirects: tilo_dav::Redirects::Refuse,
+        lookup: within.map(crate::imap::Reach::lookup),
         ..tilo_dav::Options::default()
     })
     .ok()?;
@@ -511,15 +514,16 @@ impl<'a> Live<'a> {
         Self {
             allowed,
             roots: tilo_net::system_roots(),
-            reach: crate::imap::Reach::any(),
+            reach: None,
         }
     }
 
-    /// The same, greeting mail servers only within `reach`: what a server
-    /// asks for, whose people name the addresses it looks at.
+    /// The same, greeting mail servers and reading settings documents only
+    /// within `reach`: what a server asks for, whose people name the
+    /// addresses it looks at.
     #[must_use]
     pub fn within(mut self, reach: crate::imap::Reach) -> Self {
-        self.reach = reach;
+        self.reach = Some(reach);
         self
     }
 
@@ -540,7 +544,7 @@ impl<'a> Live<'a> {
             .enable_all()
             .build()
             .ok()?;
-        let reach = self.reach.clone();
+        let reach = self.reach.clone().unwrap_or_else(crate::imap::Reach::any);
         asking.block_on(async {
             let looks: Vec<_> = candidates
                 .iter()
@@ -591,9 +595,10 @@ impl Sources for Live<'_> {
     )]
     fn documents(&self, urls: &[String]) -> Vec<Option<String>> {
         std::thread::scope(|scope| {
+            let within = self.reach.as_ref();
             let asked: Vec<_> = urls
                 .iter()
-                .map(|url| scope.spawn(move || fetched(url)))
+                .map(|url| scope.spawn(move || fetched(url, within)))
                 .collect();
             asked
                 .into_iter()

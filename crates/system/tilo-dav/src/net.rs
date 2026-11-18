@@ -20,6 +20,8 @@ pub use tilo_net::{StatusCode, Url};
 
 use crate::body::{PropName, propfind_body};
 use crate::multistatus::{self, Limits, Multistatus, XmlError};
+#[cfg(not(target_family = "wasm"))]
+use crate::request::Asked;
 use crate::request::XML_CONTENT_TYPE;
 pub use crate::request::{Credentials, Depth, Options, Precondition, Redirects};
 
@@ -62,6 +64,10 @@ impl From<NetError> for Error {
 pub struct DavClient {
     http: tilo_net::Client,
     credentials: Option<Arc<Credentials>>,
+    /// The look-up every connection asks, where one was given
+    /// ([`Options::lookup`]).
+    #[cfg(not(target_family = "wasm"))]
+    asked: Option<Asked>,
 }
 
 impl DavClient {
@@ -85,9 +91,17 @@ impl DavClient {
         if let Some(agent) = options.user_agent {
             builder = builder.user_agent(agent);
         }
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(lookup) = &options.lookup {
+            // No proxy of the environment either: it would look names up
+            // behind the look-up this client was given.
+            builder = builder.lookup(Arc::clone(lookup)).direct();
+        }
         Ok(Self {
             http: builder.build()?,
             credentials: None,
+            #[cfg(not(target_family = "wasm"))]
+            asked: options.lookup.clone().map(Asked),
         })
     }
 
@@ -96,6 +110,8 @@ impl DavClient {
         Self {
             http: self.http.clone(),
             credentials: Some(Arc::new(credentials)),
+            #[cfg(not(target_family = "wasm"))]
+            asked: self.asked.clone(),
         }
     }
 
@@ -106,7 +122,7 @@ impl DavClient {
         props: &[PropName],
     ) -> Result<DavResponse, Error> {
         let request = self
-            .request(method(b"PROPFIND"), url)
+            .request(method(b"PROPFIND"), url)?
             .header("Depth", depth.header())
             .header(CONTENT_TYPE, XML_CONTENT_TYPE)
             .body(propfind_body(props));
@@ -120,7 +136,7 @@ impl DavClient {
         body: String,
     ) -> Result<DavResponse, Error> {
         let request = self
-            .request(method(b"REPORT"), url)
+            .request(method(b"REPORT"), url)?
             .header("Depth", depth.header())
             .header(CONTENT_TYPE, XML_CONTENT_TYPE)
             .body(body);
@@ -128,7 +144,7 @@ impl DavClient {
     }
 
     pub async fn get(&self, url: &str) -> Result<DavResponse, Error> {
-        send(self.request(Method::GET, url)).await
+        send(self.request(Method::GET, url)?).await
     }
 
     /// `PUT` `body` under `precondition`, declaring `content_type` if given.
@@ -139,7 +155,7 @@ impl DavClient {
         content_type: Option<&str>,
         precondition: Precondition<'_>,
     ) -> Result<DavResponse, Error> {
-        let mut request = self.request(Method::PUT, url).body(body);
+        let mut request = self.request(Method::PUT, url)?.body(body);
         if let Some(content_type) = content_type {
             request = request.header(CONTENT_TYPE, content_type);
         }
@@ -163,7 +179,7 @@ impl DavClient {
         headers: &[(&str, &str)],
         precondition: Precondition<'_>,
     ) -> Result<DavResponse, Error> {
-        let mut request = self.request(Method::DELETE, url);
+        let mut request = self.request(Method::DELETE, url)?;
         for (name, value) in headers {
             request = request.header(*name, *value);
         }
@@ -171,7 +187,7 @@ impl DavClient {
     }
 
     pub async fn mkcol(&self, url: &str) -> Result<DavResponse, Error> {
-        send(self.request(method(b"MKCOL"), url)).await
+        send(self.request(method(b"MKCOL"), url)?).await
     }
 
     /// `MOVE` to `destination`; `overwrite: false` sends `Overwrite: F`.
@@ -183,15 +199,26 @@ impl DavClient {
         precondition: Precondition<'_>,
     ) -> Result<DavResponse, Error> {
         let request = self
-            .request(method(b"MOVE"), url)
+            .request(method(b"MOVE"), url)?
             .header("Destination", destination.as_str())
             .header("Overwrite", if overwrite { "T" } else { "F" });
         send(apply(request, precondition)).await
     }
 
-    fn request(&self, method: Method, url: &str) -> RequestBuilder {
+    /// A request to `url`, signed in. Where this client was given a look-up,
+    /// the address the URL writes out is asked of it first: a connection
+    /// asks it for a name, and looks no written-out address up.
+    fn request(&self, method: Method, url: &str) -> Result<RequestBuilder, Error> {
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(asked) = &self.asked
+            && let Ok(url) = Url::parse(url)
+        {
+            asked
+                .of(&url)
+                .map_err(|refused| Error::Transport(NetError::Blocked(refused.to_string())))?;
+        }
         let request = self.http.request(method, url);
-        match &self.credentials {
+        Ok(match &self.credentials {
             Some(credentials) if credentials.is_bearer() => request.header(
                 "Authorization",
                 format!("Bearer {}", credentials.password()).as_str(),
@@ -200,7 +227,7 @@ impl DavClient {
                 request.basic_auth(credentials.username(), Some(credentials.password()))
             }
             None => request,
-        }
+        })
     }
 }
 
