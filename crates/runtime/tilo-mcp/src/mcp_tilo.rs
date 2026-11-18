@@ -138,6 +138,9 @@ struct History {
     /// The resource is one the session itself publishes (the layout, the records it keeps
     /// for a package), taken back at the session's own provider.
     published: bool,
+    /// The call, as the workspace lists the invocation it was: what takes back a step kept in
+    /// a part of a chain, which the app's own history names by its part.
+    invocation: Option<String>,
 }
 
 impl History {
@@ -151,11 +154,13 @@ impl History {
                 app: app.to_owned(),
                 resource,
                 published: true,
+                invocation: None,
             },
             _ => Self {
                 app: app.to_owned(),
                 resource: format!("tl:{app}"),
                 published: false,
+                invocation: None,
             },
         }
     }
@@ -173,6 +178,10 @@ fn history_of(answer: &Value) -> Vec<History> {
                 app: entry.get("app")?.as_str()?.to_owned(),
                 resource: entry.get("resource")?.as_str()?.to_owned(),
                 published: entry.get("published").and_then(Value::as_bool) == Some(true),
+                invocation: entry
+                    .get("invocation")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
             })
         })
         .collect()
@@ -1500,9 +1509,23 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         .await;
         match value {
             Ok(value) => match value.pointer("/update/state").and_then(Value::as_str) {
-                Some("succeeded") => json!({
-                    "ok": value.pointer("/update/output").cloned().unwrap_or(Value::Null)
-                }),
+                Some("succeeded") => {
+                    let mut output = value
+                        .pointer("/update/output")
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    // What takes this change back: the invocation it was, as the workspace
+                    // lists it, and so the documents it changed.
+                    if let Some(invocation) = value
+                        .pointer("/update/invocation")
+                        .or_else(|| value.get("invocation_id"))
+                        .and_then(Value::as_str)
+                        && let Some(fields) = output.as_object_mut()
+                    {
+                        fields.insert("invocation".to_owned(), json!(invocation));
+                    }
+                    json!({"ok": output})
+                }
                 // Failed, cancelled, or not finished in time: it may still run, so the
                 // program cannot go on as if it had not.
                 _ => json!({"failed": super::outcome(&value).text}),
@@ -1889,9 +1912,30 @@ fn run_line(run: &Invocation) -> String {
 }
 
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
+    /// The step of the invocation `invocation` in the record it changed, and the part of a
+    /// chain that record is when it is one: the document the change landed in names it
+    /// (`derived:part.0@…`), which the chain's history verbs take as `part`.
+    async fn changed_step(&self, invocation: &str) -> Option<(String, Option<u64>)> {
+        let listed = self
+            .listed_invocations(&InvocationsQuery {
+                invocation: Some(invocation.to_owned()),
+                ..InvocationsQuery::default()
+            })
+            .await
+            .ok()?;
+        let found = listed.items.into_iter().next()?;
+        let part = found.records.iter().find_map(|change| {
+            collab_types::document::DocumentId::parse(&change.record)
+                .and_then(|id| id.chain_part())
+                .map(|(_, part)| part)
+        });
+        Some((found.step?, part))
+    }
+
     /// Take back this task's last step in each of `apps` (ids), the last changed first.
     async fn undo_in(&self, history: &[History]) -> Result<(), String> {
         let mut providers: Providers = BTreeMap::new();
+        let mut taken: std::collections::HashSet<String> = std::collections::HashSet::new();
         for at in history.iter().rev() {
             let name = app_names(std::slice::from_ref(&at.app)).join("");
             let record = self.programs.lock_recover().records.get(&at.app).cloned();
@@ -1925,10 +1969,27 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             } else {
                 self.provider_of(&at.app, &mut providers).await?
             };
-            // An app's history takes a count of steps; the session's own `undo` takes one.
+            // An app's history takes a count of steps; the session's own `undo` takes one. A
+            // call the workspace lists as an invocation is taken back by its step, in the part
+            // of a chain its change landed in — named by the document the listing gives.
             let mut arguments = Map::new();
             if !at.published {
-                arguments.insert("steps".to_owned(), json!(1));
+                let mut by_step = false;
+                if let Some(invocation) = at.invocation.as_deref()
+                    && let Some((step, part)) = self.changed_step(invocation).await
+                {
+                    // One step is taken back once, however many calls of the task changed it.
+                    if !taken.insert(step) {
+                        continue;
+                    }
+                    if let Some(part) = part {
+                        arguments.insert("part".to_owned(), json!(part));
+                    }
+                    by_step = true;
+                }
+                if !by_step {
+                    arguments.insert("steps".to_owned(), json!(1));
+                }
             }
             let value = Box::pin(self.invoke_one(OneCall {
                 provider,
@@ -2151,11 +2212,13 @@ mod tests {
                         app: "so.tilo.lang.notes".into(),
                         resource: "tl:so.tilo.lang.notes".into(),
                         published: false,
+                        invocation: None,
                     },
                     History {
                         app: "so.tilo.lang.todo".into(),
                         resource: "tl:so.tilo.lang.todo".into(),
                         published: false,
+                        invocation: None,
                     },
                 ])
             );
@@ -2201,11 +2264,13 @@ mod tests {
                         app: "so.tilo.tasks".to_owned(),
                         resource: "tasks.tracker".to_owned(),
                         published: false,
+                        invocation: None,
                     },
                     History {
                         app: "so.tilo.chat".to_owned(),
                         resource: "chat.workspace".to_owned(),
                         published: false,
+                        invocation: None,
                     },
                 ],
                 program: "tasks.create(tasks.tracker, \"Ship it\")".to_owned(),

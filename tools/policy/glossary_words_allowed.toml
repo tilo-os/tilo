@@ -550,3 +550,12 @@ reason = "The url crate's name for a URL's host part: which computers can open a
 words = ["host"]
 identifiers = ["host", "Host"]
 paths = ["crates/server/tilo-api/src/session/members.rs"]
+
+[[allow]]
+reason = "The workspace's invocation listing names the document a change was made in as its `record`: this file reads it to name the part of a chain an undo changes."
+words = ["record"]
+identifiers = ["record", "records"]
+paths = [
+    "crates/runtime/tilo-mcp/src/mcp_tilo.rs",
+    "crates/platform/tilolang-tilo/src/task.rs",
+]
