@@ -14,10 +14,9 @@
     reason = "app-local arithmetic; see the note above"
 )]
 pub mod actions;
-pub mod buffer;
 mod file;
 pub mod inspector;
-pub mod model;
+pub use hex_editor_model::{buffer, model};
 pub mod resource;
 #[cfg(feature = "samples")]
 pub mod sample;

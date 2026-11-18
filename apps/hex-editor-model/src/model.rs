@@ -1,13 +1,13 @@
 //! The view's copy of the bytes with its presentation state: cursor, selection, edit
 //! mode, column, bytes per row and the changed bytes. A keystroke edits the copy at
-//! once and records the [`BufferEdit`] the view submits; the resource's state replaces
+//! once and stores the [`BufferEdit`] the view submits; the resource's state replaces
 //! the copy whenever it differs. No rendering, no storage.
 
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 // `#[derive(JsonSchema)]` names the crate as `tilo_resource`.
-use ui::tilo_resource::{self, JsonSchema};
+use tilo_resource::{self, JsonSchema};
 
 use crate::buffer::Hex;
 
@@ -35,7 +35,7 @@ impl BufferEdit {
         }
     }
 
-    /// Whether `next`, right after `self`, continues the same run of typing or deleting.
+    /// Whether `next`, right after `self`, continues the same stretch of typing or deleting.
     #[must_use]
     pub fn continues(&self, next: &Self) -> bool {
         let ((at, len), (next_at, next_len)) = (self.span(), next.span());
@@ -747,7 +747,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn the_hex_model_moves_edits_scrolls_and_replaces;
 
-        phase insert_navigation_reaches_append_cell_and_records_an_append;
+        phase insert_navigation_reaches_append_cell_and_keeps_an_append;
         {
             let mut m = HexModel::new(vec![0xaa; 16]);
             m.toggle_mode();
@@ -824,7 +824,7 @@ mod tests {
             assert!(edited.set_byte(1, 0xAB));
             assert!(
                 edited.set_byte(1, 0xAB),
-                "an unchanged byte records nothing"
+                "an unchanged byte changes nothing"
             );
             edited.move_to(0, false);
             edited.move_to(1, true);

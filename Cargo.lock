@@ -6760,6 +6760,7 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "hex-editor",
+ "hex-editor-model",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -6771,6 +6772,20 @@ dependencies = [
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
+ "workspace-hack",
+]
+
+[[package]]
+name = "hex-editor-model"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "tilo-actions",
+ "tilo-automerge-fork",
+ "tilo-resource",
+ "tilo-test-env",
  "workspace-hack",
 ]
 

@@ -139,6 +139,7 @@ members = [
     "apps/firewall-model",
     "apps/git-client",
     "apps/hex-editor",
+    "apps/hex-editor-model",
     "apps/imager",
     "apps/launcher",
     "apps/logs",

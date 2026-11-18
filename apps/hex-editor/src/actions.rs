@@ -9,18 +9,7 @@ use ui::tilo_resource;
 use ui::tilo_resource::Effect;
 
 /// Hexadecimal bytes as a person writes them: `ff`, `0xFF`, `de ad be ef`, `DE-AD`.
-pub fn parse_bytes(text: &str) -> Result<Vec<u8>, String> {
-    let text = text.trim();
-    let text = text
-        .strip_prefix("0x")
-        .or_else(|| text.strip_prefix("0X"))
-        .unwrap_or(text);
-    if text.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-    crate::search::parse_hex_query(text)
-        .ok_or_else(|| format!("{text:?} is not hexadecimal bytes (e.g. `de ad be ef`)"))
-}
+pub use hex_editor_model::buffer::parse_bytes;
 
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "hex_editor.effects")]

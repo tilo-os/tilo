@@ -9,17 +9,17 @@ use std::sync::Arc;
 use automerge::transaction::Transactable as _;
 use automerge::{ObjId, ObjType, ReadDoc as _, ScalarValue, Value};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use ui::tilo_actions::Scalar;
-use ui::tilo_resource::path::OpDescription;
-use ui::tilo_resource::{
+use tilo_actions::Scalar;
+use tilo_resource::path::OpDescription;
+use tilo_resource::{
     self, ActionCx, Delta, Doc, EditOp, JsonSchema, Model, ModelError, Operations, Refusal,
     Segment, Slot,
 };
 
 use crate::model::{BufferEdit, common_suffix};
 
-pub(crate) const PAGE: usize = 4096;
-pub(crate) const MAX_PAGE: usize = 2 * PAGE;
+pub const PAGE: usize = 4096;
+pub const MAX_PAGE: usize = 2 * PAGE;
 
 /// Bytes as hexadecimal text: how they travel in an edit, a verb's arguments and
 /// history, and what a person writes (`"de ad be ef"`).
@@ -60,7 +60,7 @@ impl Serialize for Hex {
 impl<'de> Deserialize<'de> for Hex {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let text = String::deserialize(deserializer)?;
-        crate::actions::parse_bytes(&text)
+        crate::buffer::parse_bytes(&text)
             .map(Self)
             .map_err(serde::de::Error::custom)
     }
@@ -389,7 +389,7 @@ impl Operations for ByteBuffer {
     }
 }
 
-use ui::tilo_actions::EditOp as EditOpKind;
+use tilo_actions::EditOp as EditOpKind;
 
 impl Model for ByteBuffer {
     tilo_resource::leaf_paths!();
@@ -401,7 +401,7 @@ impl Model for ByteBuffer {
 
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
         match value {
-            serde_json::Value::String(text) => crate::actions::parse_bytes(text)
+            serde_json::Value::String(text) => crate::buffer::parse_bytes(text)
                 .map(|bytes| Self::of(&bytes))
                 .map_err(ModelError::invalid),
             serde_json::Value::Null => Ok(Self::default()),
@@ -505,6 +505,42 @@ impl Model for ByteBuffer {
     }
 }
 
+/// Hexadecimal bytes written out: pairs of hex digits, separated by blanks, dashes,
+/// colons, commas or underscores, with an optional `0x`.
+#[must_use]
+pub fn parse_hex_query(query: &str) -> Option<Vec<u8>> {
+    let cleaned: String = query
+        .chars()
+        .filter(|c| !c.is_whitespace() && !matches!(c, '-' | ':' | ',' | '_'))
+        .collect();
+    if cleaned.is_empty() || !cleaned.len().is_multiple_of(2) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(cleaned.len() / 2);
+    for pair in cleaned.as_bytes().chunks_exact(2) {
+        let hi = (*pair.first()? as char).to_digit(16)?;
+        let lo = (*pair.get(1)? as char).to_digit(16)?;
+        out.push(((hi << 4) | lo) as u8);
+    }
+    Some(out)
+}
+
+/// The bytes `text` writes, as a person types them into a hex field.
+///
+/// # Errors
+/// When `text` is not whole hexadecimal bytes.
+pub fn parse_bytes(text: &str) -> Result<Vec<u8>, String> {
+    let text = text.trim();
+    let text = text
+        .strip_prefix("0x")
+        .or_else(|| text.strip_prefix("0X"))
+        .unwrap_or(text);
+    if text.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    parse_hex_query(text)
+        .ok_or_else(|| format!("{text:?} is not hexadecimal bytes (e.g. `de ad be ef`)"))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
