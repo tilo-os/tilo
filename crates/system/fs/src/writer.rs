@@ -95,7 +95,11 @@ impl Writer {
         else {
             return None;
         };
-        let acting = tilo_actions::Acting::agent(harness.agent()).in_session(bounded(session));
+        // A coding agent on the person's own computer works in the session the
+        // person handed it: it carries the delegation a device gives its agents.
+        let acting = tilo_actions::Acting::agent(harness.agent())
+            .handed()
+            .in_session(bounded(session));
         Some(tilo_actions::ActionInvoker::admitted(&acting).named(Some(
             title.clone().unwrap_or_else(|| harness.name().to_owned()),
         )))

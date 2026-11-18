@@ -823,9 +823,11 @@ impl StatePeer {
         if let Some(person) = &person {
             cx = cx.with_own_resource(record, person);
         }
-        let allows = |node: &TreePath, kind: ActionKind| {
-            member.answer(node, kind, &cx) == tilo_action_policy::Answer::Allow
-        };
+        let allows =
+            |invoker: Option<&tilo_action_policy::Acting>, node: &TreePath, kind: ActionKind| {
+                collab_types::ChangeAuthor::answer(&member, invoker, node, kind, &cx)
+                    == tilo_action_policy::Answer::Allow
+            };
         let decided = collab_types::decide_op_pinned(
             envelope,
             &collab_types::WrittenDocument {
@@ -837,7 +839,7 @@ impl StatePeer {
             held,
             pinned,
             &self.surfaces,
-            &|node, kind| allows(node, kind),
+            &allows,
         );
         match decided {
             Ok(collab_types::Receipt::Admit) => Ok(Authorized::Admit { member, history }),

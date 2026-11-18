@@ -309,7 +309,9 @@ impl Caller {
             return self;
         };
         self.session_delegated = true;
-        self.acting = Acting::agent(agent_id).acting_for(Acting::person(person));
+        self.acting = Acting::agent(agent_id)
+            .handed()
+            .acting_for(Acting::person(person));
         self
     }
 
@@ -439,15 +441,12 @@ impl Caller {
         &self.acting
     }
 
-    /// The grants made for this caller's software: the delegation a person's
-    /// own device gives the agent it handed its session to, held to `kept`, the bound the
-    /// workspace's list of its agents keeps for it, when no turn carries one.
+    /// The grants made for this caller's software: the bound held on the agent a person's
+    /// own device handed its session to, `kept`, the bound the workspace's list of its agents
+    /// keeps for it, when no turn carries one. The delegation's preset is its acting's own
+    /// ([`Acting::handed_preset`]).
     #[must_use]
-    pub fn granted(
-        &self,
-        workspace: &str,
-        kept: &[tilo_action_policy::Rule],
-    ) -> Vec<tilo_action_policy::Grant> {
+    pub fn granted(&self, kept: &[tilo_action_policy::Rule]) -> Vec<tilo_action_policy::Grant> {
         let (Some(agent), Some(person)) = (self.acting.agent_id(), self.acting.acted_for_person())
         else {
             return Vec::new();
@@ -462,7 +461,7 @@ impl Caller {
         } else {
             kept
         };
-        tilo_action_policy::roles::agent_grants(workspace, agent, person, bound)
+        tilo_action_policy::roles::agent_bound(agent, person, bound)
     }
 
     /// The run this caller's actions are part of, as the provider that admitted it

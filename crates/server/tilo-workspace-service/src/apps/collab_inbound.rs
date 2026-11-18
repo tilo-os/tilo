@@ -51,11 +51,10 @@ pub fn validate_document(
     state: &mut InboundState,
     now: SystemTime,
 ) -> Result<(), ValidationError> {
-    let author = author.authority();
     if replayed {
-        validate_replayed_inbound_op(envelope, &author, state, now, MAX_CLOCK_SKEW)
+        validate_replayed_inbound_op(envelope, author, state, now, MAX_CLOCK_SKEW)
     } else {
-        validate_admitted_inbound_op(envelope, &author, state, now, MAX_CLOCK_SKEW)
+        validate_admitted_inbound_op(envelope, author, state, now, MAX_CLOCK_SKEW)
     }
 }
 

@@ -123,9 +123,7 @@ use collab_types::{
 use collab_types::{DocumentMutation, document_artifact_id, document_attestation_id};
 use runtime_collab::event::CollabEvent;
 use runtime_collab::wire::ContextUpdate;
-use tilo_action_policy::{
-    ActionKind, Answer, Authority, MemberId, TreePath, WorkspacePolicy, roles,
-};
+use tilo_action_policy::{ActionKind, Answer, MemberId, TreePath, WorkspacePolicy, roles};
 use ui::presence::PresenceKey;
 
 use crate::apps::collab_broker::{
@@ -421,7 +419,7 @@ impl AdmittedJoinIdentity {
         &self,
         membership: Option<&WorkspaceTreeHandle>,
         workspace: &str,
-        decide: impl FnOnce(&Authority<'_>) -> T,
+        decide: impl FnOnce(&tilo_action_policy::MemberAccess) -> T,
     ) -> Result<T, String> {
         match membership {
             Some(membership) => membership
@@ -435,7 +433,7 @@ impl AdmittedJoinIdentity {
         &self,
         tree: Option<&Layout>,
         workspace_id: &str,
-        decide: impl FnOnce(&Authority<'_>) -> T,
+        decide: impl FnOnce(&tilo_action_policy::MemberAccess) -> T,
     ) -> Result<T, String> {
         if (self.agent_id.is_none() || self.session_delegated)
             && self.verified.owns_personal_cluster(workspace_id)
@@ -444,11 +442,9 @@ impl AdmittedJoinIdentity {
             // held to the foreign-device bound there as anywhere, and an
             // agent one of them was handed to, to that delegation too.
             let policy = WorkspacePolicy::new(workspace_id, self.actor_key.clone());
-            let actor = self.broker_actor();
-            let acting = actor.acting();
-            let granted = actor.granted(workspace_id);
-            let authority = tilo_action_policy::Authority::of_acting(&acting, &policy, &granted);
-            return Ok(decide(&authority));
+            let access =
+                tilo_action_policy::MemberAccess::new(policy, self.broker_actor().acting());
+            return Ok(decide(&access));
         }
         let workspace = tree
             .ok_or("the identity has no workspace authority")?
@@ -456,7 +452,7 @@ impl AdmittedJoinIdentity {
             .iter()
             .find(|workspace| workspace.id().to_string() == workspace_id)
             .ok_or("the identity's workspace is no longer hosted")?;
-        Ok(self.broker_actor().with_authority_in(workspace, decide))
+        Ok(decide(&self.broker_actor().access_in(workspace)))
     }
 }
 
@@ -6459,12 +6455,17 @@ impl AppBrokerState {
             document: &route.document_id,
         };
         let allowed = admitted
-            .with_current_authority(self.membership.as_ref(), &route.cluster_id, |authority| {
-                let allows = |node: &tilo_action_policy::TreePath, kind| {
-                    authority
-                        .decide(node, kind, &tilo_desktop_model::context_at(now))
-                        .answer
-                        == Answer::Allow
+            .with_current_authority(self.membership.as_ref(), &route.cluster_id, |access| {
+                let allows = |invoker: Option<&tilo_action_policy::Acting>,
+                              node: &tilo_action_policy::TreePath,
+                              kind| {
+                    collab_types::ChangeAuthor::answer(
+                        access,
+                        invoker,
+                        node,
+                        kind,
+                        &tilo_desktop_model::context_at(now),
+                    ) == Answer::Allow
                 };
                 collab_types::decide_op(
                     envelope,
@@ -12613,8 +12614,9 @@ pub mod tests {
             );
             let changes = |admitted: &AdmittedJoinIdentity, tree: &WorkspaceTree| {
                 admitted
-                    .with_authority(Some(&tree.desktop), &route.cluster_id, |authority| {
-                        authority
+                    .with_authority(Some(&tree.desktop), &route.cluster_id, |access| {
+                        access
+                            .authority()
                             .decide(
                                 &tree.workspaces[0].node().app("so.tilo.notes"),
                                 ActionKind::Undoable,
@@ -12698,8 +12700,9 @@ pub mod tests {
             assert!(admitted.broker_actor().is_agent());
             let answer = |kind| {
                 admitted
-                    .with_authority(Some(&tree.desktop), &route.cluster_id, |authority| {
-                        authority
+                    .with_authority(Some(&tree.desktop), &route.cluster_id, |access| {
+                        access
+                            .authority()
                             .decide(
                                 &tree.workspaces[0].node().app("so.tilo.notes"),
                                 kind,
@@ -12811,8 +12814,9 @@ pub mod tests {
                           node: &TreePath,
                           kind: ActionKind| {
                 admitted
-                    .with_authority(Some(&tree.desktop), &route.cluster_id, |authority| {
-                        authority
+                    .with_authority(Some(&tree.desktop), &route.cluster_id, |access| {
+                        access
+                            .authority()
                             .decide(node, kind, &tilo_desktop_model::context_at(0))
                             .answer
                     })
@@ -13482,8 +13486,9 @@ pub mod tests {
         )
         .expect("the root's foreign device joins its personal cluster");
         let governs = foreign
-            .with_authority(None, &route.cluster_id, |authority| {
-                authority
+            .with_authority(None, &route.cluster_id, |access| {
+                access
+                    .authority()
                     .decide(
                         &roles::governance_action(&route.cluster_id, roles::governance::INVITE),
                         roles::GOVERNANCE_KIND,

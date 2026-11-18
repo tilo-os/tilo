@@ -56,6 +56,7 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "Acting.cause" = "Option<ResourceId> optional"
 "Acting.for" = "Vec<Acting> optional"
 "Acting.foreign_device" = "bool optional"
+"Acting.handed" = "bool optional"
 "ActionApp" = "struct"
 "ActionApp.id" = "String"
 "ActionApp.label" = "String"

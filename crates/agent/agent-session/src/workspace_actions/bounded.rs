@@ -376,7 +376,7 @@ pub(super) fn bounded_access(
     policy: &super::ViewReadPolicy,
     who: &Bounded,
 ) -> Result<policy::MemberAccess, ActionCallError> {
-    let granted = who.caller.granted(&policy.workspace, &policy.agent_bound);
+    let granted = who.caller.granted(&policy.agent_bound);
     policy
         .access
         .clone()
@@ -618,7 +618,7 @@ impl Worker {
         }
         self.clock = self.clock.wrapping_add(1);
         let clock = self.clock;
-        let granted = who.caller.granted(&policy.workspace, &policy.agent_bound);
+        let granted = who.caller.granted(&policy.agent_bound);
         let same = self.bounded.get(&key).is_some_and(|held| {
             held.access == policy.access
                 && held.sandbox == policy.sandbox

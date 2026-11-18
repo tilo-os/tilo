@@ -1414,6 +1414,7 @@ mod tests {
             assert_eq!(
                 interaction.actor,
                 tilo_actions::Acting::agent("scribe")
+                    .handed()
                     .acting_for(tilo_actions::Acting::person("owner"))
             );
             assert_eq!(interaction.phase, tilo_actions::InteractionPhase::Applying);
@@ -1488,6 +1489,7 @@ mod tests {
             assert_eq!(
                 interaction.actor,
                 tilo_actions::Acting::agent("mcp-1")
+                    .handed()
                     .acting_for(tilo_actions::Acting::person("owner"))
             );
 

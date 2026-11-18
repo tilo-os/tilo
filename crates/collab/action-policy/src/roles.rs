@@ -840,25 +840,47 @@ pub mod agent_policy {
 /// for the agent's resource ([`crate::turn::authority`]).
 #[must_use]
 pub fn agent_grants(workspace: &str, agent: &str, person: &str, bound: &[Rule]) -> Vec<Grant> {
+    let mut grants = agent_preset(workspace, agent, person);
+    grants.extend(agent_bound(agent, person, bound));
+    grants
+}
+
+/// The preset of [`agent_policy::ROLE_CAP`] an agent acting for `person` in
+/// `workspace` carries, before any bound: what a person's own device hands the
+/// agent it gives its session to ([`crate::Acting::handed`]), which
+/// [`crate::Authority::of_acting`] gives such an agent.
+#[must_use]
+pub fn agent_preset(workspace: &str, agent: &str, person: &str) -> Vec<Grant> {
     let grantee = Grantee::agent(agent.to_owned());
     let granted_by = Grantee::person(person.to_owned());
     let prefix = format!("turn:agent:{agent}");
-    let mut grants = role_preset(agent_policy::ROLE_CAP, workspace).assign(
+    role_preset(agent_policy::ROLE_CAP, workspace).assign(
         &prefix,
         &grantee,
         &granted_by,
         &Lifetime::UntilRevoked,
-    );
-    grants.extend(bound.iter().enumerate().map(|(index, rule)| Grant {
-        id: GrantId(format!("{}{index}", bound_prefix(agent))),
-        grantee: grantee.clone(),
-        node: rule.node.clone(),
-        kinds: rule.kinds,
-        answer: rule.answer,
-        lifetime: Lifetime::UntilRevoked,
-        granted_by: granted_by.clone(),
-    }));
-    grants
+    )
+}
+
+/// The rules of `agent`'s bound (`bound`) as grants, given by `person`: what
+/// narrows its preset ([`agent_preset`]).
+#[must_use]
+pub fn agent_bound(agent: &str, person: &str, bound: &[Rule]) -> Vec<Grant> {
+    let grantee = Grantee::agent(agent.to_owned());
+    let granted_by = Grantee::person(person.to_owned());
+    bound
+        .iter()
+        .enumerate()
+        .map(|(index, rule)| Grant {
+            id: GrantId(format!("{}{index}", bound_prefix(agent))),
+            grantee: grantee.clone(),
+            node: rule.node.clone(),
+            kinds: rule.kinds,
+            answer: rule.answer,
+            lifetime: Lifetime::UntilRevoked,
+            granted_by: granted_by.clone(),
+        })
+        .collect()
 }
 
 /// Where the ids of the grants [`agent_grants`] makes of `agent`'s bound begin.

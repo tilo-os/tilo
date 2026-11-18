@@ -71,15 +71,12 @@ pub(super) fn identity_reads_document(
         &route.document_id,
     );
     identity
-        .with_current_authority(membership, &route.cluster_id, |authority| {
-            authority
-                .decide(
-                    &node,
-                    ActionKind::Read,
-                    &tilo_desktop_model::context_at(now),
-                )
-                .answer
-                != Answer::Deny
+        .with_current_authority(membership, &route.cluster_id, |access| {
+            access.answer(
+                &node,
+                ActionKind::Read,
+                &tilo_desktop_model::context_at(now),
+            ) != Answer::Deny
         })
         .unwrap_or(false)
 }

@@ -239,6 +239,19 @@ impl ChangeClaim {
     }
 }
 
+/// Who made `change`, as its history entry names them, when not the person
+/// whose device signed it. Only a receiver that opened the change reads it:
+/// one that cannot decides the change as its signer, and the devices that open
+/// it decide it as this invoker.
+#[must_use]
+pub fn invoker_of(change: &automerge::Change) -> Option<tilo_action_policy::Acting> {
+    change
+        .message()
+        .and_then(ActionContext::from_change_message)
+        .and_then(|context| context.invoker)
+        .map(|invoker| invoker.acting)
+}
+
 /// The changes an incremental document mutation carries, parsed but merged
 /// into nothing.
 ///

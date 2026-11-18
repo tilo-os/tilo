@@ -272,7 +272,15 @@ impl BrokerActor {
             (None, Some(person)) => Acting::person(person.clone()),
             (None, None) => Acting::member(self.member.clone()),
             (Some(tilo_action_policy::Actor::Member(member)), Some(person)) => {
-                Acting::member(member).acting_for(Acting::person(person.clone()))
+                let delegate = Acting::member(member);
+                // The delegation a person's own device gives the agent it
+                // handed its session to is the acting's own.
+                let delegate = if self.session_delegated {
+                    delegate.handed()
+                } else {
+                    delegate
+                };
+                delegate.acting_for(Acting::person(person.clone()))
             }
             (Some(tilo_action_policy::Actor::Member(member)), None) => Acting::member(member),
             (
@@ -296,26 +304,10 @@ impl BrokerActor {
         }
     }
 
-    /// The grants made for this actor's software: the delegation a person's
-    /// own device gives the agent it handed its session to.
-    #[must_use]
-    pub fn granted(&self, workspace: &str) -> Vec<tilo_action_policy::Grant> {
-        match (self.delegate(), &self.for_person) {
-            (Some(tilo_action_policy::Actor::Member(MemberId::Agent(agent))), Some(person))
-                if self.session_delegated =>
-            {
-                tilo_action_policy::roles::agent_grants(workspace, &agent, person, &[])
-            }
-            _ => Vec::new(),
-        }
-    }
-
-    /// Who this actor's invocation in `workspace` is decided for, with the
-    /// grants the workspace's policy does not hold ([`Self::granted`]).
+    /// Who this actor's invocation in `workspace` is decided for.
     #[must_use]
     pub fn access_in(&self, workspace: &Workspace) -> MemberAccess {
-        let mut access = MemberAccess::new(workspace.policy.clone(), self.acting())
-            .granted(self.granted(&workspace.policy.workspace));
+        let mut access = MemberAccess::new(workspace.policy.clone(), self.acting());
         if let Some(kinds) = &self.app_kinds {
             access = access.in_app(kinds.clone());
         }

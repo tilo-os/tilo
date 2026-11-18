@@ -14,7 +14,7 @@ use web_time::{Duration, SystemTime};
 
 use thiserror::Error;
 
-use tilo_action_policy::{ActionKind, Answer, Authority, Context, Grant, Grantee, TreePath, roles};
+use tilo_action_policy::{ActionKind, Answer, Context, Grant, Grantee, TreePath, roles};
 
 use crate::artifact::ArtifactId;
 use crate::compaction::{CompactionCheckpoint, CompactionError, hash_op_prefix};
@@ -357,7 +357,8 @@ impl InboundState {
 /// boundary, while this function carries the signature, grant, freshness,
 /// replay and redaction checks.
 ///
-/// `author` is the author's authority from the workspace's live policy.
+/// `author` is who signed it, from the workspace's live policy: a change
+/// naming its invoker is decided as that invoker, bounded by the signer.
 /// `max_clock_skew` bounds how far an admitted device may backdate or
 /// future-date an operation.
 ///
@@ -368,7 +369,7 @@ impl InboundState {
 /// or a policy, replay or redaction error.
 pub fn validate_admitted_inbound_op(
     op: &SignedOp,
-    author: &Authority<'_>,
+    author: &dyn crate::receipt::ChangeAuthor,
     state: &mut InboundState,
     now: SystemTime,
     max_clock_skew: Duration,
@@ -400,7 +401,7 @@ pub fn validate_admitted_inbound_op(
 /// [`ValidationError::OutsideValidityWindow`] only for a future-dated op.
 pub fn validate_replayed_inbound_op(
     op: &SignedOp,
-    author: &Authority<'_>,
+    author: &dyn crate::receipt::ChangeAuthor,
     state: &mut InboundState,
     now: SystemTime,
     max_clock_skew: Duration,
@@ -417,7 +418,7 @@ pub fn validate_replayed_inbound_op(
 /// time proofs have passed.
 fn validate_authorized_op(
     op: &SignedOp,
-    author: &Authority<'_>,
+    author: &dyn crate::receipt::ChangeAuthor,
     state: &mut InboundState,
 ) -> Result<(), ValidationError> {
     check_op_permission(op, author, state)?;
@@ -488,7 +489,7 @@ const UNKNOWN_APP: &str = "-";
 /// (`tilo_action_policy::Verdict::privileged`).
 fn check_op_permission(
     op: &SignedOp,
-    author: &Authority<'_>,
+    author: &dyn crate::receipt::ChangeAuthor,
     state: &InboundState,
 ) -> Result<(), ValidationError> {
     if !state.artifacts.contains_key(&op.artifact) {
@@ -510,9 +511,10 @@ fn check_op_permission(
     if let Some(person) = state.artifact_owners.get(&op.artifact) {
         cx = cx.with_own_resource(document.document, person);
     }
-    let allows = |node: &tilo_action_policy::TreePath, kind: ActionKind| {
-        author.decide(node, kind, &cx).answer == Answer::Allow
-    };
+    let allows =
+        |invoker: Option<&tilo_action_policy::Acting>,
+         node: &tilo_action_policy::TreePath,
+         kind: ActionKind| { author.answer(invoker, node, kind, &cx) == Answer::Allow };
     match crate::receipt::decide_op(
         op,
         &document,

@@ -346,11 +346,16 @@ pub(crate) fn refusal(
     if let Some(person) = &person {
         cx = cx.with_own_resource(&route.document_id, person);
     }
-    let allows = |node: &tilo_action_policy::TreePath, kind| match author {
+    let allows = |invoker: Option<&tilo_action_policy::Acting>,
+                  node: &tilo_action_policy::TreePath,
+                  kind| match author {
         // No projection: membership already decided who may write here.
         None => true,
         Some(None) => false,
-        Some(Some(access)) => access.answer(node, kind, &cx) == tilo_action_policy::Answer::Allow,
+        Some(Some(access)) => {
+            collab_types::ChangeAuthor::answer(access, invoker, node, kind, &cx)
+                == tilo_action_policy::Answer::Allow
+        }
     };
     collab_types::decide_op(
         &envelope,

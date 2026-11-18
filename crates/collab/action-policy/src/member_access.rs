@@ -32,10 +32,11 @@ impl MemberAccess {
     /// `acting` in the workspace `policy` governs.
     #[must_use]
     pub fn new(policy: impl Into<std::sync::Arc<WorkspacePolicy>>, acting: Acting) -> Self {
+        let policy: std::sync::Arc<WorkspacePolicy> = policy.into();
         Self {
+            granted: acting.handed_preset(&policy.workspace),
             acting,
-            policy: policy.into(),
-            granted: Vec::new(),
+            policy,
             app_kinds: None,
         }
     }
@@ -79,8 +80,24 @@ impl MemberAccess {
         if acting.people().first().copied() != Some(person) {
             return None;
         }
+        self.granted
+            .extend(acting.handed_preset(&self.policy.workspace));
         self.acting = acting;
         Some(self)
+    }
+
+    /// This access as a change naming `invoker` (who made it) is decided,
+    /// signed by the device this access is: the invoker's whole tree, bounded
+    /// by the signer, every node allowing it ([`Acting::signed_by`]).
+    #[must_use]
+    pub fn invoked_by(&self, invoker: &Acting) -> Self {
+        let acting = invoker.clone().signed_by(&self.acting);
+        let mut access = self.clone();
+        access
+            .granted
+            .extend(acting.handed_preset(&self.policy.workspace));
+        access.acting = acting;
+        access
     }
 
     /// The same access, with the resource kinds the app in it declares.
