@@ -206,6 +206,7 @@ fn path_parameter(name: &str) -> &'static str {
         "webhook" => "The webhook's id, as its creation answered it",
         "upload" => "The upload's id, chosen by the caller when it opened the upload",
         "person" => "The person's user public key, as `GET members` lists it",
+        "invite" => "The open invitation's id, as `GET members` lists it",
         "entry" => {
             "The address's entry, as `GET /v1/workspaces/{workspace}/members/wait-list` lists it"
         }
