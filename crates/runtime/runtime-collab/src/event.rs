@@ -55,14 +55,6 @@ pub enum CollabEvent<C: EndpointOwnership = NoOwner> {
         /// change by, never an id. Session-local presentation.
         apps: Vec<collab_types::history::NamedApp>,
     },
-    /// The delegated agents on `cluster_id`'s roster whose person's root
-    /// signed the delegation for exactly that device, as the session
-    /// verified them: who the app's history names for changes their own
-    /// device keys signed. Session-local and presentation only.
-    HistoryAgents {
-        cluster_id: String,
-        agents: Vec<collab_types::history::RosterAgent>,
-    },
     /// Records of this application's trees (a chain's next part, a
     /// container's child) that a peer wrote and no window here holds:
     /// whatever follows those trees holds them. Session-local.

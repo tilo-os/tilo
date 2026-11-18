@@ -122,6 +122,8 @@ fn app_on(state: State) -> App {
 }
 /// An app on `state` showing `root` under the framework's registered History.
 pub(crate) fn app_with_root(state: State, root: Box<dyn crate::widget::Widget>) -> App {
+    // The session serves the history of the window's document.
+    crate::history_mode::feed::tests::serve(&state.doc);
     let registration = HistoryRegistration::new(
         &HISTORY,
         vec![HistorySourceRegistration::HostDocument {
@@ -151,7 +153,6 @@ pub(crate) fn layout(app: &mut App) {
 /// An app whose platform menus list its History, served the history of its document.
 pub(crate) fn native_chrome_app() -> App {
     let mut app = app();
-    let _served = crate::history_mode::feed::tests::serving(&app.state.doc);
     app.prepare_native_presentation(crate::host_chrome::HostChrome::Native);
     layout(&mut app);
     app
@@ -1269,6 +1270,14 @@ static OWNED_HISTORY: HistoryDefinition = HistoryDefinition {
 };
 impl RoutedOwners {
     fn install_history(&mut self) {
+        // The session serves the history of the window's first resource.
+        let first = &self.bindings[0];
+        crate::history_mode::feed::tests::serve(
+            &first
+                .records
+                .read_checked(&first.checkout.id, Clone::clone)
+                .unwrap(),
+        );
         let sources = self
             .bindings
             .iter()

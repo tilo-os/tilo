@@ -45,8 +45,6 @@ mod staged_admission;
 pub use staged_admission::StagedJob;
 use staged_admission::{Admitted, DefiniteOutcome, Delivery};
 mod file_clipboard;
-#[cfg(test)]
-mod history_agents_tests;
 mod host_workers;
 #[path = "invocation_journal.rs"]
 mod invocation_journal;
@@ -2479,8 +2477,6 @@ struct ContextSub {
     native: Option<NativeContext>,
     /// Shares the original receiver; membership refresh belongs to its document row.
     private_alias: bool,
-    /// The workspace's verified agents this receiver was last told.
-    history_agents: Vec<collab_types::history::RosterAgent>,
     /// The apps installed here, by what each is called, this receiver was last told: it is sent
     /// the context again when one is installed, removed, or renamed.
     apps: Vec<collab_types::history::NamedApp>,
@@ -6593,7 +6589,6 @@ impl AppBrokerState {
                 );
             }
             CollabEvent::ScrollbackBatch { .. }
-            | CollabEvent::HistoryAgents { .. }
             | CollabEvent::DocumentSnapshotRequested { .. }
             | CollabEvent::KeyAccess { .. }
             | CollabEvent::CommittedDocument { .. }
@@ -6822,11 +6817,6 @@ impl AppBrokerState {
                 apps: apps.clone(),
             });
         }
-        // Who the app's history names for changes an agent's own key signed.
-        let history_agents = self.history_agents_of(channel_id);
-        if !history_agents.is_empty() {
-            let _ = tx.send(ContextUpdate::HistoryAgents(history_agents.clone()));
-        }
         let certified = native.is_some();
         let held = tx.clone();
         if let Ok(mut m) = self.channels.lock() {
@@ -6838,7 +6828,6 @@ impl AppBrokerState {
                     tx,
                     native,
                     private_alias: false,
-                    history_agents,
                     apps,
                 });
         }
@@ -6873,7 +6862,6 @@ impl AppBrokerState {
                     tx: subscriber.tx.clone(),
                     native: subscriber.native.clone(),
                     private_alias: true,
-                    history_agents: subscriber.history_agents.clone(),
                     apps: subscriber.apps.clone(),
                 });
             if let Some(subscriber) = subscriber {
@@ -7130,66 +7118,6 @@ impl AppBrokerState {
             .unwrap_or_default()
     }
 
-    /// The delegated agents of the workspace `channel` belongs to whose person's
-    /// root signed the delegation for exactly that device, as the host's
-    /// authority verified them. Presentation only: history names who wrote
-    /// from it, and nothing is admitted by it.
-    fn history_agents_of(&self, channel: &str) -> Vec<collab_types::history::RosterAgent> {
-        let workspace = CrdtRoute::from_channel_key(channel).cluster_id;
-        self.membership
-            .as_ref()
-            .map(|membership| membership.history_agents(&workspace))
-            .unwrap_or_default()
-    }
-
-    /// Tell every context receiver whose workspace's verified agents changed
-    /// since it was last told. The authority is read before the channel
-    /// lock is taken, once per workspace.
-    fn refresh_history_agents(&self) {
-        let Ok(channels) = self.channels.lock() else {
-            return;
-        };
-        let workspaces = channels
-            .iter()
-            .filter(|(_, subscribers)| !subscribers.context.is_empty())
-            .map(|(channel, _)| CrdtRoute::from_channel_key(channel).cluster_id)
-            .collect::<std::collections::BTreeSet<_>>();
-        drop(channels);
-        let Some(membership) = self.membership.as_ref() else {
-            return;
-        };
-        let agents = workspaces
-            .into_iter()
-            .map(|workspace| {
-                let agents = membership.history_agents(&workspace);
-                (workspace, agents)
-            })
-            .collect::<HashMap<_, _>>();
-        let Ok(mut channels) = self.channels.lock() else {
-            return;
-        };
-        for (channel, subscribers) in channels.iter_mut() {
-            let workspace = CrdtRoute::from_channel_key(channel).cluster_id;
-            let Some(current) = agents.get(&workspace) else {
-                continue;
-            };
-            subscribers.context.retain_mut(|subscriber| {
-                if subscriber.history_agents == *current {
-                    return true;
-                }
-                if subscriber
-                    .tx
-                    .send(ContextUpdate::HistoryAgents(current.clone()))
-                    .is_err()
-                {
-                    return false;
-                }
-                subscriber.history_agents.clone_from(current);
-                true
-            });
-        }
-    }
-
     fn refresh_workspace_context_services(&self) -> Result<(), String> {
         for (channel, peer_id, admitted) in self.native_context_targets()? {
             let route = CrdtRoute::from_channel_key(&channel);
@@ -7324,9 +7252,6 @@ impl AppBrokerState {
     /// the next re-check must come on the one-second clock instead of on an
     /// announcement: an input nothing announces, or a check that failed.
     fn refresh_policy_surfaces(self: &Arc<Self>) -> bool {
-        // A workspace's verified agents change with its governance, which every
-        // host announces; apps' history follows on the same turn.
-        self.refresh_history_agents();
         // Only the opens waiting before this refresh reads the workspaces are
         // told its outcome; a later one waits for the next.
         let waiting = self.take_membership_surface_waiters();

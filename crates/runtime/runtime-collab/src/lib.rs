@@ -863,31 +863,10 @@ pub struct ChannelContext {
     /// instance; the bytes are `ui::collaboration::handoff` JSON. Not a
     /// roster update either.
     pub handoff: Option<Vec<u8>>,
-    /// `Some` only on a session-local frame naming the workspace's verified
-    /// delegated agents (possibly none). Not a roster update either.
-    pub history_agents: Option<Vec<HistoryAgent>>,
     /// On a session-local frame: records of this application's trees a peer
     /// wrote and no window here holds (`recordsArrived`); empty otherwise.
     /// Not a roster update either.
     pub resources_arrived: Vec<String>,
-}
-
-/// One delegated agent the session verified for a workspace: its person's root
-/// signed the delegation for exactly this device. Presentation only.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HistoryAgent {
-    /// The agent's own device key.
-    pub device: [u8; 32],
-    /// The root key of the person it acts for.
-    pub person: [u8; 32],
-    /// That person's name as the workspace's governance records it.
-    pub person_name: String,
-    /// The delegation's stable agent id.
-    pub agent_id: String,
-    /// The agent's display name.
-    pub label: String,
-    /// Packed `0x00RRGGBB`; the top byte is zero.
-    pub color: u32,
 }
 
 /// A page of previously-validated signed ops returned by

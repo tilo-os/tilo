@@ -1258,8 +1258,8 @@ impl HistoryHost {
         }
     }
     pub(crate) fn needs_refresh(&self, doc: &AutoCommit, width: f64) -> bool {
-        self.refresh_without_owners(width)
-            .unwrap_or_else(|| self.heads_need_refresh(doc))
+        let r = self.refresh_without_owners(width);
+        r.unwrap_or_else(|| self.heads_need_refresh(doc))
     }
     /// [`Self::needs_refresh`] as far as it can be answered without reading an owner's document: `None`
     /// leaves it to the committed frontier ([`Self::heads_need_refresh`]).

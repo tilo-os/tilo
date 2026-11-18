@@ -554,7 +554,8 @@ fn versioned_driver(viewport: (u32, u32)) -> (FrameHarness, String, Vec<automerg
 fn assert_history_frame_idle(driver: &mut FrameHarness, context: &str) {
     assert!(
         !driver.frame_output().needs_redraw,
-        "{context}: visible History branch stayed dirty after draw"
+        "{context}: visible History branch stayed dirty after draw: {:?}",
+        driver.frame_requesters()
     );
     assert!(
         !driver.poll_frame().unwrap(),
@@ -572,6 +573,8 @@ fn managed_history_visible_branches_drain_and_retained_modes_return_current() {
 
     wide.click_named("history-open").unwrap();
     assert!(wide.targets().contains_key("activity_timeline"));
+    // What History lists is the session's answer, which a frame after the one that asked takes up.
+    assert!(wide.poll_frame().unwrap());
     assert_history_frame_idle(&mut wide, "available timeline");
 
     wide.perform_semantic_named(
@@ -1150,6 +1153,8 @@ fn the_side_panel_names_the_selected_changes_and_bands_them_under_the_name() {
         Some("second"),
         "naming moves no content"
     );
+    crate::history_mode::feed::tests::sync(&driver.state_mut().doc);
+    driver.relayout();
     fn band(node: &crate::a11y::AccessNode, name: &str) -> bool {
         (node.role == crate::a11y::Role::TreeItem && node.name.as_deref() == Some(name))
             || node.children.iter().any(|child| band(child, name))

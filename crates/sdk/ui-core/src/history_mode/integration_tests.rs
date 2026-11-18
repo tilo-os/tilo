@@ -61,7 +61,13 @@ tilo_test_env::scenario! {
         let mut state = State::new();
         state.doc.put(ROOT, "body", "unrelated outer").unwrap();
         state.commit_action(None, None);
-        crate::history_mode::feed::tests::serve(&state.doc);
+        // The session serves the history of the window's own resource: the bound owner's.
+        crate::history_mode::feed::tests::serve(
+            &binding
+                .records
+                .read_checked(&binding.checkout.id, Clone::clone)
+                .unwrap(),
+        );
         let mut driver = FrameHarness::from_managed_root(
             state,
             ManagedRoot::new(root, registration),

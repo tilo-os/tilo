@@ -15,7 +15,6 @@
 //! and its peers already exchange, such as [`PeerPresence`], which
 //! broker-to-broker replication carries unchanged.
 
-use collab_types::history::RosterAgent;
 use collab_types::inbound::OpAdmission;
 use collab_types::presence::Member;
 use collab_types::{ArtifactId, MemberId, PeerPresence, SignedOp};
@@ -544,8 +543,9 @@ pub enum ContextUpdate {
     /// The next step of a handoff addressed to this instance, as
     /// `collab_types::handoff::HandoffRequest` JSON.
     Handoff(Vec<u8>),
-    /// The workspace's delegated agents the session verified, for history.
-    HistoryAgents(Vec<RosterAgent>),
+    /// Retired: an app's history names whom the workspace's history names, as the session serves
+    /// it. It keeps the updates after it at their encoded positions.
+    RetiredHistoryAgents,
     /// Records of the application's trees a peer wrote and no window holds.
     ResourcesArrived(Vec<String>),
     /// Retired: a conversation is an ordinary record of the workspace, which

@@ -3,13 +3,40 @@ use crate::tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeRequest, Pending, ReceiptStatus,
 };
-use crate::tilo_actions::{ActionOutput, InvocationId};
+use crate::tilo_actions::{InvocationId, InvocationUpdate};
 
-/// The workspace's history as a session serves it for a window whose resource is `doc`: each of
-/// its changes, under its own id, named as its own history names its author.
-struct DocumentHistory(wire::Feed);
+/// The workspace's history as a session serves it for a window whose resource is a test's
+/// document: each of its changes, under its own id, named as its own history names its author, and
+/// served again each time the session takes up a newer state of the document ([`Self::write`]).
+pub(crate) struct ServedHistory {
+    /// The feed as last read, under the sequence of that reading.
+    feed: std::sync::Mutex<(u64, wire::Feed)>,
+    /// Followers waiting for the next reading.
+    waiting: std::sync::Mutex<Vec<crate::tilo_actions::remote::Completer<()>>>,
+}
 
-impl ActionProvider for DocumentHistory {
+impl ServedHistory {
+    fn new(doc: &automerge::AutoCommit) -> Self {
+        Self {
+            feed: std::sync::Mutex::new((1, read(doc))),
+            waiting: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// The session took up `doc` as it is now: every follower is served its history again.
+    pub(crate) fn write(&self, doc: &automerge::AutoCommit) {
+        {
+            let mut feed = self.feed.lock().unwrap();
+            *feed = (feed.0 + 1, read(doc));
+        }
+        let waiting = std::mem::take(&mut *self.waiting.lock().unwrap());
+        for waiter in waiting {
+            waiter.complete(());
+        }
+    }
+}
+
+impl ActionProvider for ServedHistory {
     fn query(
         &self,
         _caller: &Caller,
@@ -28,17 +55,28 @@ impl ActionProvider for DocumentHistory {
         }
         Pending::ready(Ok(InvocationReceipt {
             invocation: request.invocation,
-            status: ReceiptStatus::Completed {
-                output: ActionOutput {
-                    value: serde_json::to_value(&self.0).ok(),
-                    resources: Vec::new(),
-                },
-            },
+            status: ReceiptStatus::Accepted,
         }))
     }
 
-    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
-        None
+    fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        let (sequence, feed) = &*self.feed.lock().unwrap();
+        Some(InvocationState {
+            update: InvocationUpdate::Item {
+                invocation: *id,
+                sequence: *sequence,
+                value: serde_json::to_value(feed).ok()?,
+            },
+            untrusted: false,
+            left_at: None,
+            link: None,
+        })
+    }
+
+    fn next_change(&self, _caller: &Caller, _id: &InvocationId) -> Option<Pending<()>> {
+        let (changed, next) = crate::tilo_actions::remote::pending();
+        self.waiting.lock().unwrap().push(changed);
+        Some(next)
     }
 
     fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
@@ -46,16 +84,35 @@ impl ActionProvider for DocumentHistory {
     }
 }
 
+thread_local! {
+    static SERVED: std::cell::RefCell<Option<std::sync::Arc<ServedHistory>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// Serve the history of `doc` to every History this test opens: each test is a process of its
 /// own, so the provider stays entered until it ends.
 pub(crate) fn serve(doc: &automerge::AutoCommit) {
-    std::mem::forget(serving(doc));
+    let served = std::sync::Arc::new(ServedHistory::new(doc));
+    SERVED.with(|current| *current.borrow_mut() = Some(served.clone()));
+    std::mem::forget(crate::remote_actions::RemoteActions::enter(
+        served,
+        Caller::local_app("so.tilo.test"),
+    ));
 }
 
-/// Serve the history of `doc` to every History this thread opens while the guard lives.
-pub(crate) fn serving(doc: &automerge::AutoCommit) -> crate::remote_actions::RemoteActionsGuard {
+/// The session took up `doc` as it is now: what this thread serves ([`serve`]) answers every
+/// History that follows it again.
+pub(crate) fn sync(doc: &automerge::AutoCommit) {
+    let served = SERVED.with(|current| current.borrow().clone());
+    served.expect("a history is served").write(doc);
+}
+
+/// The workspace's history of `doc` as the session reads it: its changes, newest first, and the spans
+/// of them its members named.
+fn read(doc: &automerge::AutoCommit) -> wire::Feed {
     let mut doc = doc.clone();
-    let entries = crate::history_source::HistorySource::new()
+    let source = crate::history_source::HistorySource::new();
+    let entries = source
         .entries(&mut doc)
         .iter()
         .rev()
@@ -80,15 +137,22 @@ pub(crate) fn serving(doc: &automerge::AutoCommit) -> crate::remote_actions::Rem
             }
         })
         .collect::<Vec<_>>();
-    let feed = wire::Feed {
+    let groups = crate::history_source::groups::read_named_ranges(&doc, source.authors())
+        .into_iter()
+        .map(|named| wire::Group {
+            id: named.id,
+            label: named.label,
+            start: wire::entry_hex(named.start.as_bytes()),
+            end: named.end.map(|end| wire::entry_hex(end.as_bytes())),
+            named_by: named.named_by.map(|author| author.name),
+        })
+        .collect();
+    wire::Feed {
         total: entries.len(),
         entries,
+        groups,
         ..wire::Feed::default()
-    };
-    crate::remote_actions::RemoteActions::enter(
-        std::sync::Arc::new(DocumentHistory(feed)),
-        Caller::local_app("so.tilo.test"),
-    )
+    }
 }
 
 fn hex(byte: u8) -> String {

@@ -103,12 +103,6 @@ pub trait WorkspaceAuthority: Send + Sync {
         false
     }
 
-    /// The delegated agents on `workspace`'s roster, as this host verified their person's root
-    /// signed the delegation for this device. Presentation only; the default knows none.
-    fn history_agents(&self, _workspace: &str) -> Vec<collab_types::history::RosterAgent> {
-        Vec::new()
-    }
-
     /// What each app installed on this device is called, in every language its package names it
     /// in: what a window names another app's changes by, sent with the workspace's people's
     /// names. Presentation only; the default names none.

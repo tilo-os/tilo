@@ -4935,32 +4935,6 @@ async fn spawn_context_stream(
                     }
                     continue;
                 }
-                if let Some(agents) = context.history_agents {
-                    let agents = agents
-                        .into_iter()
-                        .map(|agent| {
-                            let [_, red, green, blue] = agent.color.to_be_bytes();
-                            collab_types::history::RosterAgent {
-                                device: agent.device,
-                                person: agent.person,
-                                person_name: agent.person_name,
-                                agent_id: agent.agent_id,
-                                label: agent.label,
-                                color: [red, green, blue],
-                            }
-                        })
-                        .collect();
-                    if !tx
-                        .send_durable(CollabEvent::HistoryAgents {
-                            cluster_id: route.cluster_id.to_string(),
-                            agents,
-                        })
-                        .await
-                    {
-                        break;
-                    }
-                    continue;
-                }
                 // Membership/permission replacement fences cached private bodies
                 // before delivering the new public context. Presentation changes
                 // alone must not cause a private contacts refresh.
