@@ -230,12 +230,14 @@ impl TopBarChrome {
         }
         let avatar = self.own_avatar_rect;
         let radius = 3.5;
-        let centre = Point::new(avatar.x1 - radius, avatar.y0 + radius);
+        // On the corner the next face in the stack never covers: the person's own face stands
+        // first.
+        let centre = Point::new(avatar.x0 + radius, avatar.y0 + radius);
         let ring = vello::kurbo::Circle::new(centre, radius + 1.5);
         scene.fill(
             Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.base,
+            super::bar_ground(theme),
             None,
             &ring,
         );
@@ -288,7 +290,7 @@ impl TopBarChrome {
                 } else if self.ask.later.contains(p) {
                     *handled = chrome.intent(ChromeIntent::PutOffAvatarAsk);
                     true
-                } else if self.own_avatar_rect.contains(p) {
+                } else if self.own_avatar_rect.contains(p) && self.face_at(p).is_none() {
                     // The person's own face is theirs whoever else's surface reaches it: a bar too
                     // narrow for the ask's words gives it the band, and the face stands drawn over
                     // its end. The press goes on to the bar, which opens their own card — the card

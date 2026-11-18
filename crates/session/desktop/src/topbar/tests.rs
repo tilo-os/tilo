@@ -2427,11 +2427,12 @@ tilo_test_env::scenario! {
         ]);
         let mut bar = TopBarChrome::from_tree(&tree);
         bar.sync_from_tree(&tree);
+        // People first, then agents, whatever order the roster lists them in.
         assert_eq!(
             bar.face_members,
             vec![
-                collab_types::MemberId::agent("scribe"),
-                collab_types::MemberId::person("ada")
+                collab_types::MemberId::person("ada"),
+                collab_types::MemberId::agent("scribe")
             ]
         );
         // Each face is named for a reader, an agent as one.
@@ -2447,7 +2448,7 @@ tilo_test_env::scenario! {
             .iter()
             .filter_map(|face| face.name.as_deref())
             .collect();
-        assert_eq!(faces, ["Scribe, agent", "Ada"]);
+        assert_eq!(faces, ["Ada", "Scribe, agent"]);
         assert!(people.children.iter().all(|face| face.bounds.is_some()));
     }
 

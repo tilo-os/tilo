@@ -284,7 +284,11 @@ fn paint_avatar(
     // colour, dimmed while idle, ringed while in a call.
     let face = ui::presence::Face {
         dimmed: member.row.availability.dims(),
-        in_call: member.row.call.is_some().then_some(1.0),
+        active: member
+            .row
+            .call
+            .is_some()
+            .then_some(ui::motion::Sweep::Still),
         ..ui::presence::Face::member(&member.row.label, &member.row.member, member.row.color)
     };
     face.paint(

@@ -1044,25 +1044,33 @@ impl Float {
     }
 }
 
-/// A state that is live for as long as it lasts: the soft ring on the face of someone in a call.
-pub struct Breathe;
+/// A state that is live for as long as it lasts (someone in a call, an agent at work): a bright
+/// arc sweeping round the face's ring, or, where motion is reduced, the whole ring lit and still.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Sweep {
+    /// Where the arc stands, in turns from the ring's start.
+    Round(f32),
+    Still,
+}
 
-impl Breathe {
-    /// One breath, in and out.
-    pub const PERIOD: crate::time::Duration = crate::time::Duration::from_millis(1800);
+impl Sweep {
+    /// One turn of the arc.
+    pub const PERIOD: crate::time::Duration = crate::time::Duration::from_millis(1400);
 
-    /// How strong it is `since` it began, `0.35..=1`.
+    /// Where it is `since` it began.
     #[must_use]
-    pub fn level(since: crate::time::Duration, motion: EffectiveMotion) -> f32 {
+    pub fn at(since: crate::time::Duration, motion: EffectiveMotion) -> Self {
         if !motion.loops() {
-            return 1.0;
+            return Self::Still;
         }
-        let phase = (since.as_secs_f64() / Self::PERIOD.as_secs_f64()).fract();
-        let wave = 0.5 - 0.5 * (phase * std::f64::consts::TAU).cos();
-        unit_opacity(0.35 + 0.65 * wave)
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a share of one turn, in 0..1"
+        )]
+        Self::Round((since.as_secs_f64() / Self::PERIOD.as_secs_f64()).fract() as f32)
     }
 
-    /// When to paint it next: a breath is drawn at a gentle frame rate, not the display's.
+    /// When to paint it next: about 20 steps a turn, enough to read as moving at bar size.
     #[must_use]
     pub fn next_frame(now: Instant, motion: EffectiveMotion) -> Option<Instant> {
         motion

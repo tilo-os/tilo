@@ -150,7 +150,7 @@ impl TopBarChrome {
                 transform,
                 band,
                 theme,
-                theme.tokens.colors.surfaces.base,
+                super::bar_ground(theme),
             );
             if pill < 1.0 {
                 scene.pop_layer();

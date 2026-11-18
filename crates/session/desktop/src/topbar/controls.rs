@@ -243,9 +243,10 @@ impl TopBarChrome {
             ChromeIntent::ShowStrips
         } else if self.ws_pill_rect.contains(p) {
             ChromeIntent::ToggleWorkspaceMenu { at: None }
-        } else if self.own_avatar_rect.contains(p) {
+        } else if self.own_avatar_rect.contains(p) && self.face_at(p).is_none() {
             // The person's own card, whatever waits on their avatar: the card offers what a folded
-            // ask asks, so a press on their face never lands on anything but the card.
+            // ask asks, so a press on their face never lands on anything but the card. The face
+            // after it in the stack is drawn over its edge, and a press there is that face's.
             ChromeIntent::ToggleProfile
         } else if self.bell_hit_rect.contains(p) {
             ChromeIntent::ToggleNotifications

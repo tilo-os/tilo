@@ -85,34 +85,34 @@ impl TopBarChrome {
         self.chrome.as_ref()?.snapshot().own
     }
 
-    /// Read how each face looks: who is idle or away, in a call or an agent at work (their ring
-    /// breathing), as the roster the bar read says, or bouncing from a wave, which `presence` says.
+    /// Read how each face looks: who is idle or away, in a call or an agent at work (an arc sweeping
+    /// their ring), as the roster the bar read says, or bouncing from a wave, which `presence` says.
     pub(super) fn read_face_looks(
         &mut self,
         presence: &PresenceCtx,
         motion: ui::tokens::EffectiveMotion,
     ) {
         let now = ui::time::now();
-        let mut anyone_in_call = false;
-        let since = *self.call_since.get_or_insert(now);
+        let mut anyone_active = false;
+        let since = *self.active_since.get_or_insert(now);
         self.face_looks = self
             .face_ids
             .iter()
             .zip(&self.face_presence)
-            .map(|(id, &(availability, in_call))| {
+            .map(|(id, &(availability, active))| {
                 let user = ui::permissions::MemberId::person(id.clone());
-                anyone_in_call |= in_call;
+                anyone_active |= active;
                 FaceLook {
                     dimmed: availability.dims(),
-                    call: in_call.then(|| {
-                        ui::motion::Breathe::level(now.saturating_duration_since(since), motion)
+                    active: active.then(|| {
+                        ui::motion::Sweep::at(now.saturating_duration_since(since), motion)
                     }),
                     scale: presence.face_scale(&user, now),
                 }
             })
             .collect();
-        if !anyone_in_call {
-            self.call_since = None;
+        if !anyone_active {
+            self.active_since = None;
         }
     }
 
@@ -454,54 +454,13 @@ impl TopBarChrome {
             .collect()
     }
 
-    /// The person's own face as everyone here sees it, drawn by the one face painter the others'
-    /// faces use ([`ui::presence::FaceStack::BAR`]), so it has the same size, the same ring in
-    /// their colour and the same initials.
-    fn own_face(&self) -> Option<(String, String, Color)> {
+    /// The person's own face as everyone here sees it: the first of the bar's faces, in the one
+    /// stack the others' stand in ([`ui::presence::FaceStack::BAR`]), so it has the same size, the
+    /// same ring in their colour and the same initials. It opens their own menu.
+    pub(super) fn own_face(&self) -> Option<(String, String, Color)> {
         let own = self.own_chip()?;
         let (r, g, b) = own.rgb;
         Some((own.name, own.identity, Color::from_rgb8(r, g, b)))
-    }
-
-    /// Where the person's own avatar stands, ending at `right_x`. It opens their own menu.
-    /// Returns where the controls before it end.
-    pub(super) fn place_own_avatar(&mut self, theme: &Theme, center_y: f64, right_x: f64) -> f64 {
-        self.placed.own_face = None;
-        let Some((name, identity, colour)) = self.own_face() else {
-            self.own_avatar_rect = Rect::ZERO;
-            return right_x;
-        };
-        let face = ui::presence::Face::new(&name, &identity, colour);
-        let stack = ui::presence::FaceStack::BAR;
-        let (rects, _) = stack.layout((right_x, center_y), (&[face], 0));
-        self.own_avatar_rect = Self::faces_drawn(rects)
-            .first()
-            .copied()
-            .unwrap_or(Rect::ZERO);
-        self.placed.own_face = Some(right_x);
-        right_x - stack.width_of(1, 0) - f64::from(theme.tokens.spacing.s2)
-    }
-
-    /// Paint the person's own avatar where [`Self::place_own_avatar`] stood it.
-    pub(super) fn paint_own_avatar(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-    ) {
-        let (Some(right_x), Some((name, identity, colour))) =
-            (self.placed.own_face, self.own_face())
-        else {
-            return;
-        };
-        let face = ui::presence::Face::new(&name, &identity, colour);
-        let _ = ui::presence::FaceStack::BAR.paint(
-            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-            (right_x, self.placed.center_y),
-            (&[face], 0),
-            theme.tokens.colors.surfaces.base,
-        );
     }
 
     /// The sharing disclosure's chip showing `label` in `available` room: the eye, the words, and
@@ -572,7 +531,7 @@ impl TopBarChrome {
         let _ = self.sharing_chip(theme, label, *available).paint(
             &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             self.sharing_indicator_rect,
-            theme.tokens.colors.surfaces.base,
+            super::bar_ground(theme),
         );
     }
 
@@ -717,8 +676,8 @@ pub(super) struct SharingTargets {
 pub(super) struct FaceLook {
     /// Idle or away.
     pub(super) dimmed: bool,
-    /// In a call: the breathing ring's level.
-    pub(super) call: Option<f32>,
+    /// Active now (in a call, an agent at work): where the arc round the ring stands.
+    pub(super) active: Option<ui::motion::Sweep>,
     /// A wave's bounce (1 at rest).
     pub(super) scale: f64,
 }

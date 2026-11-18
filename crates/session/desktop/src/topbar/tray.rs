@@ -164,7 +164,7 @@ impl TopBarChrome {
         let _ = self.tray_face(&parts).paint(
             &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             self.tray_pill_rect,
-            theme.tokens.colors.surfaces.base,
+            super::bar_ground(theme),
         );
     }
 
@@ -256,7 +256,7 @@ impl TopBarChrome {
         .paint(
             &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             self.media_indicator_rect,
-            theme.tokens.colors.surfaces.base,
+            super::bar_ground(theme),
         );
     }
 
@@ -390,7 +390,7 @@ impl TopBarChrome {
             // own.
             ui::widget::BarControlFace::new(&item.title)
                 .hovered(hovered)
-                .paint_lift(scene, transform, hit, theme, tokens.colors.surfaces.base);
+                .paint_lift(scene, transform, hit, theme, super::bar_ground(theme));
             self.draw_app_tray_icon(scene, transform, theme, text_renderer, item, icon_rect);
             // The application's own unread count: the bell's total says how many there are, this
             // says whose.

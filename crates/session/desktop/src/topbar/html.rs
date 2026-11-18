@@ -34,7 +34,7 @@ impl TopBarChrome {
             return;
         }
         let theme = cx.theme().clone();
-        let ground = theme.tokens.colors.surfaces.base;
+        let ground = super::bar_ground(&theme);
         if self.presence() == TopBarPresence::Shown || theme.tokens.finishes.bar.is_some() {
             cx.surface(self.rect, "ground");
         }
@@ -131,7 +131,7 @@ impl TopBarChrome {
         theme: &Theme,
         part: &mut impl FnMut(&mut HtmlCx<'_>, &str, Rect, Option<&str>),
     ) {
-        let ground = theme.tokens.colors.surfaces.base;
+        let ground = super::bar_ground(theme);
         // The status cluster's gauges are drawn: one picture, its two targets over it.
         part(cx, "tray", self.tray_pill_rect, None);
         if !self.own_avatar_rect.is_zero_area() {

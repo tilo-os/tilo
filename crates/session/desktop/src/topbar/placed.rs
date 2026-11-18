@@ -21,12 +21,9 @@ pub(super) struct BarPlaced {
     pub media: Option<MediaPlaced>,
     /// The application tray's items, in the order they stand left to right.
     pub app_tray: Vec<AppTrayItem>,
-    /// Where the person's own face ends (its right edge), when it stands on the bar.
-    pub own_face: Option<f64>,
     /// The sharing disclosure's words and the room its label had.
     pub sharing: Option<(String, f64)>,
-    /// The others' faces shown, by roster index, the badge counting the rest, and where the stack
-    /// ends.
+    /// The faces shown, the badge counting the rest, and where the stack ends.
     pub faces: Option<FacesPlaced>,
     /// The people button stands for who is here: whether the pointer lights it.
     pub people_button: Option<bool>,
@@ -74,9 +71,11 @@ impl MediaPlaced {
     }
 }
 
-/// The others' faces on the bar.
+/// The faces on the bar: the person's own, then the others'.
 pub(super) struct FacesPlaced {
-    /// Roster indices, in the order they stand.
+    /// Whether the person's own face stands first.
+    pub own: bool,
+    /// The others' roster indices, in the order they stand.
     pub shown: Vec<usize>,
     pub more: usize,
     /// Where the stack ends, and its middle line.

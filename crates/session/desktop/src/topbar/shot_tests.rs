@@ -1,8 +1,8 @@
 //! The bar's right end as a person sees it: on a page (the bell alone) and on a machine (its
-//! readings too), light and dark, alone, with others and an agent, and phone-wide. Each case is
-//! written as a PNG when `TILO_SURFACE_SHOTS` names a directory, and always held to what the bar
-//! promises: this person appears once, nothing reserves room it leaves empty, and the bar's
-//! glyph controls share one size.
+//! readings too), light and dark, alone, with others and an agent at work, and phone-wide. Each
+//! case is written as a PNG when `TILO_SURFACE_SHOTS` names a directory, and always held to what
+//! the bar promises: this person appears once, nothing reserves width it leaves empty, and the
+//! bar's glyph controls share one size.
 use super::fixture::FixtureChrome;
 use super::*;
 use crate::chrome::AvatarAsk;
@@ -51,6 +51,12 @@ fn tree(others: &[(&str, &str, bool)]) -> Layout {
             }),
         ),
     );
+    // An agent here is at work, so each shot shows the arc sweeping its ring.
+    for present in &mut workspace.present {
+        if present.member.is_agent() {
+            present.status = Some(tilo_desktop_model::Status::default());
+        }
+    }
     Layout {
         active: workspace.id(),
         workspaces: vec![workspace],
@@ -352,11 +358,20 @@ fn the_right_end_shows_each_person_once_flush_and_in_one_icon_size() {
             (bar.rect.x1 - pill.x1 - f64::from(theme.tokens.spacing.s3)).abs() < 0.5,
             "{name}: the right group sits flush at the bar's edge pad"
         );
-        // The avatar stands the bar's one control gap before the notifications.
-        let gap = pill.x0 - bar.own_avatar_rect().x1;
+        // Who is here, then the invite, stand the bar's one control gap before the notifications.
+        let end = [
+            bar.own_avatar_rect(),
+            bar.avatar_stack_rect,
+            bar.invite_rect(),
+        ]
+        .into_iter()
+        .filter(|rect| !rect.is_zero_area())
+        .map(|rect| rect.x1)
+        .fold(f64::MIN, f64::max);
+        let gap = pill.x0 - end;
         assert!(
             gap <= f64::from(theme.tokens.spacing.s2) + ui::presence::Face::REACH + 0.5,
-            "{name}: the avatar stands one gap before the notifications, not {gap}"
+            "{name}: who is here stands one gap before the notifications, not {gap}"
         );
     }
 }
