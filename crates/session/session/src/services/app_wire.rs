@@ -366,6 +366,7 @@ pub(crate) fn start_app_wire(
                 channels,
                 std::sync::Arc::clone(&fanout),
                 sync.sibling_dials(),
+                options.wake.handle(),
             )
         }),
         _ => None,

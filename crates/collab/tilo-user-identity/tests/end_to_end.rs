@@ -10,16 +10,17 @@
 //! 2. The phone generates its own device keypair.
 //! 3. The token is decoded and verified; a `DeviceCert` is signed by
 //!    the primary and handed to the phone.
-//! 4. Both devices open a `WorkspaceDirectory` and exchange
-//!    authenticated deltas.
+//! 4. Both devices open a `WorkspaceDirectory` and take in each
+//!    other's state (the person's own store carries it between them,
+//!    and checks who wrote it).
 //! 5. Convergence: both devices see the same list, and each side
 //!    verifies the other's cert chains to the same user identity
 //!    — the "matching identities get owner permissions" check.
 
 use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity,
-    WorkspaceDirectory, WorkspaceId, decode_enrollment_token, encode_enrollment_token,
-    mint_enrollment_token, sign_device_cert, verify_device_cert_at, verify_enrollment_token,
+    DeviceCapabilities, DeviceCert, DeviceIdentity, UserIdentity, WorkspaceDirectory, WorkspaceId,
+    decode_enrollment_token, encode_enrollment_token, mint_enrollment_token, sign_device_cert,
+    verify_device_cert_at, verify_enrollment_token,
 };
 
 tilo_test_env::scenario! {
@@ -68,7 +69,7 @@ tilo_test_env::scenario! {
 
         // 5. Phone generates its own device key + submits its pubkey
         //    back to the primary. The primary signs a DeviceCert.
-        let (phone_sk, phone_dev) = DeviceIdentity::generate("Ada's phone", 1_500_000);
+        let (_, phone_dev) = DeviceIdentity::generate("Ada's phone", 1_500_000);
         let mut phone_cert = DeviceCert {
             user_public_key: user.public_key,
             device_public_key: phone_dev.public_key,
@@ -91,21 +92,11 @@ tilo_test_env::scenario! {
             .add_workspace(WorkspaceId::from_u128(2), "Photos")
             .unwrap();
 
-        // 7. They exchange deltas. Both accept because:
-        //    - Every delta's author cert chains to the same user identity.
-        //    - No revocation is active.
-        let primary_delta = primary_dir
-            .sync_incremental(&primary_sk, 1_700_000)
-            .unwrap();
-        let phone_delta = phone_dir.sync_incremental(&phone_sk, 1_700_000).unwrap();
-        let revs = RevocationList::new();
-
-        phone_dir
-            .apply_incremental(&primary_delta, &primary_cert, &revs, 1_750_000)
-            .unwrap();
-        primary_dir
-            .apply_incremental(&phone_delta, &phone_cert, &revs, 1_750_000)
-            .unwrap();
+        // 7. Each takes in the other's state.
+        let primary_state = primary_dir.save();
+        let phone_state = phone_dir.save();
+        phone_dir.merge(&primary_state).unwrap();
+        primary_dir.merge(&phone_state).unwrap();
 
         // 8. Convergence: both see workspaces 1 and 2.
         let primary_view = primary_dir.list_workspaces();
@@ -124,65 +115,5 @@ tilo_test_env::scenario! {
         verify_device_cert_at(&phone_cert, 1_750_000).unwrap();
         assert!(primary_cert.capabilities.can_own_workspaces);
         assert!(phone_cert.capabilities.can_own_workspaces);
-    }
-
-    phase peer_from_different_user_is_rejected;
-    {
-        // Two independent users. A device certified by Bob cannot
-        // apply deltas to Alice's directory even if its byte layout is
-        // valid — the cert-vs-directory user-key guard rejects.
-        let (alice_sk, alice) = UserIdentity::generate("Alice", 1);
-        let (bob_sk, bob) = UserIdentity::generate("Bob", 2);
-
-        let (a_dev_sk, a_dev) = DeviceIdentity::generate("Alice laptop", 100);
-        let mut a_cert = DeviceCert {
-            user_public_key: alice.public_key,
-            device_public_key: a_dev.public_key,
-            device_label: a_dev.label.clone(),
-            capabilities: DeviceCapabilities::primary(),
-            issued_at_ns: 200,
-            expires_at_ns: None,
-            signature: [0u8; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut a_cert, &alice_sk).unwrap();
-
-        let (b_dev_sk, b_dev) = DeviceIdentity::generate("Bob laptop", 100);
-        let mut b_cert = DeviceCert {
-            user_public_key: bob.public_key,
-            device_public_key: b_dev.public_key,
-            device_label: b_dev.label.clone(),
-            capabilities: DeviceCapabilities::primary(),
-            issued_at_ns: 200,
-            expires_at_ns: None,
-            signature: [0u8; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut b_cert, &bob_sk).unwrap();
-
-        let mut alice_dir = WorkspaceDirectory::new(alice.public_key, a_dev.public_key);
-        alice_dir
-            .add_workspace(WorkspaceId::from_u128(1), "Personal")
-            .unwrap();
-        let alice_delta = alice_dir.sync_incremental(&a_dev_sk, 300).unwrap();
-
-        let mut bob_dir = WorkspaceDirectory::new(bob.public_key, b_dev.public_key);
-        bob_dir
-            .add_workspace(WorkspaceId::from_u128(1), "Personal")
-            .unwrap();
-        let bob_delta = bob_dir.sync_incremental(&b_dev_sk, 300).unwrap();
-
-        // Bob presenting his cert against Alice's directory: rejected.
-        let revs = RevocationList::new();
-        assert!(
-            alice_dir
-                .apply_incremental(&bob_delta, &b_cert, &revs, 400)
-                .is_err()
-        );
-        assert!(
-            bob_dir
-                .apply_incremental(&alice_delta, &a_cert, &revs, 400)
-                .is_err()
-        );
     }
 }

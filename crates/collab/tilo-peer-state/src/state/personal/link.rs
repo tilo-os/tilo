@@ -366,31 +366,8 @@ impl PersonalSync {
             .map_err(|error| error.to_string())?;
         while let Some(message) = read_message(&mut recv).await? {
             let identity = matches!(message, NeighbourMsg::IdentityHello { .. });
-            let frame = admitted_frame(&message);
-            let admitted = self.0.store.write(|store| {
-                store.receive(self.0.key.as_ref(), remote, message, tilo_clock::wall())
-            });
-            // Whatever the store decided, what it now refuses of this
-            // device's writes is sent: the verdict reaches its author, live.
-            if self.publish_refusals() {
-                self.0.changed.send_modify(bump);
-            }
-            // A device this one just met, or learned of, is one its other
-            // siblings may lack: their record is sent with it.
-            self.publish_devices();
-            match admitted {
-                Ok(outcome) => {
-                    if outcome.changed || outcome.metadata_changed {
-                        self.0.changed.send_modify(bump);
-                    }
-                    if outcome.changed
-                        && let Some(frame) = frame
-                    {
-                        // No local app having the record open is no error: the
-                        // store has it for when one opens it.
-                        let _ = self.0.admitted.send(frame);
-                    }
-                }
+            match self.take(remote, message) {
+                Ok(_) => {}
                 Err(reason) if identity => {
                     connection.close(REFUSED.into(), reason.as_bytes());
                     return Err(reason);
@@ -404,6 +381,43 @@ impl PersonalSync {
             }
         }
         Ok(())
+    }
+
+    /// Admit one frame `remote` sent, as a link to it does: the store decides
+    /// it, what this device now refuses and the devices it now holds go to
+    /// every open link, a store that moved says so ([`Self::changes`]), and a
+    /// write that changed a document reaches the apps that have it open
+    /// ([`Self::admitted`]). Returns the store's verdict on the frame.
+    pub fn take(
+        &self,
+        remote: [u8; 32],
+        message: NeighbourMsg,
+    ) -> Result<super::super::ReceiveOutcome, String> {
+        let frame = admitted_frame(&message);
+        let admitted = self
+            .0
+            .store
+            .write(|store| store.receive(self.0.key.as_ref(), remote, message, tilo_clock::wall()));
+        // Whatever the store decided, what it now refuses of this device's
+        // writes is sent: the verdict reaches its author, live.
+        if self.publish_refusals() {
+            self.0.changed.send_modify(bump);
+        }
+        // A device this one just met, or learned of, is one its other
+        // siblings may lack: their resource is sent with it.
+        self.publish_devices();
+        let outcome = admitted?;
+        if outcome.changed || outcome.metadata_changed {
+            self.0.changed.send_modify(bump);
+        }
+        if outcome.changed
+            && let Some(frame) = frame
+        {
+            // No local app having the resource open is no error: the store
+            // has it for when one opens it.
+            let _ = self.0.admitted.send(frame);
+        }
+        Ok(outcome)
     }
 }
 

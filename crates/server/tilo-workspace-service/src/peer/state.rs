@@ -249,7 +249,6 @@ pub(super) fn live_audience(
 pub(super) fn guarded_checkpoint_channel(
     payloads: &dyn crate::payloads::ShellPayloads,
     envelope: &Arc<Envelope>,
-    source: Option<&StateSource>,
 ) -> Option<[u8; 32]> {
     let Envelope::Delta { delta, .. } = &**envelope else {
         return None;
@@ -265,13 +264,10 @@ pub(super) fn guarded_checkpoint_channel(
     {
         // Latest-wins state is a sequence of values that each replace the
         // last on one route, not a baseline of content a live device already
-        // holds: every one must reach it. A person's own state counts only
-        // from a device of that person.
-        let own = |user: [u8; 32]| source.is_some_and(|source| user == source.peer.user_public_key);
+        // holds: every one must reach it.
         let latest_wins = match checkpoint.kind {
             crate::payloads::CheckpointKind::Governance
             | crate::payloads::CheckpointKind::Identity => true,
-            crate::payloads::CheckpointKind::Directory { user } => own(user),
             crate::payloads::CheckpointKind::Other => false,
         };
         if latest_wins {

@@ -85,11 +85,6 @@ impl ShellPayloads for NeighbourPayloads {
         }
         let kind = match &msg {
             msg if msg.governance_workspace().is_some() => CheckpointKind::Governance,
-            NeighbourMsg::PersonalWorkspaces {
-                user_public_key, ..
-            } => CheckpointKind::Directory {
-                user: *user_public_key,
-            },
             NeighbourMsg::IdentityHello { .. } => CheckpointKind::Identity,
             _ => CheckpointKind::Other,
         };

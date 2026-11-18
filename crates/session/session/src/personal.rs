@@ -69,7 +69,9 @@ impl Personal {
 
     /// Take the store to the person's other devices from `endpoint` : dial the ones this device has
     /// no link to, hand what they write to this session's apps through `channels` and `fanout` ,
-    /// and keep the store beside this session's state as it changes.
+    /// keep the store beside this session's state as it changes, and `wake` the session's loop
+    /// when it does: what a sibling wrote of the session's own resources (the person's list of
+    /// workspaces, the shell's own resource) is taken in by the next pass.
     /// `dials` opens the other connection to the same devices: the session between two of the person's
     /// sessions is where they tell each other what they hold — their workspaces and their hosts — so
     /// one adopts what the other keeps. Without it a device keeps only what it was there to make.
@@ -82,6 +84,7 @@ impl Personal {
         channels: Arc<Mutex<BrokerChannels>>,
         fanout: Arc<FanoutState>,
         dials: Option<SiblingDials>,
+        wake: tilo_service::Wake,
     ) -> Links {
         // An identity is filed under its root's hex, in the profile and in the fleet of the
         // person's devices alike.
@@ -102,6 +105,7 @@ impl Personal {
         if let Some(dials) = dials {
             runtime.spawn(keep_siblings(self.sync.clone(), dials, held));
         }
+        runtime.spawn(wake_on_changes(self.sync.clone(), wake));
         links
     }
 }
@@ -119,6 +123,14 @@ async fn keep_siblings(sync: PersonalSync, dials: SiblingDials, mut held: Vec<[u
             return;
         }
         held = held_devices(&sync);
+    }
+}
+
+/// Wake the session's loop whenever the person's store changes, until it is gone.
+async fn wake_on_changes(sync: PersonalSync, wake: tilo_service::Wake) {
+    let mut changes = sync.changes();
+    while changes.changed().await.is_ok() {
+        wake();
     }
 }
 

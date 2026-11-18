@@ -8,9 +8,11 @@
 //! What a device additionally needs is the *list*: which workspaces are this
 //! person's, so that one made on the laptop appears on the board as well.
 //! That list is the person's workspace directory
-//! ([`WorkspaceDirectory`]), a small CRDT every device of theirs holds and
-//! only those devices can write: updates are device-signed and checked
-//! against the person's root before they merge.
+//! ([`WorkspaceDirectory`]), a small CRDT every device of theirs holds: one
+//! resource of the person's own store, which carries it between their devices
+//! as it carries every other resource of theirs, each write signed by the
+//! device that made it and checked against the person's root
+//! ([`Personal::sync_store`]).
 //!
 //! The whole session stays on the device. Besides the workspaces it records
 //! what this device is looking at (the active workspace, which strip each
@@ -41,10 +43,7 @@ use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_sheets::SheetState as _;
 use tilo_startup_metrics::JOIN_FLOW_TARGET;
-use tilo_user_identity::{
-    CommunityState, DeviceCert, DirectoryError, DirectoryUpdate, RevocationList,
-    WorkspaceDirectory, WorkspaceMeta,
-};
+use tilo_user_identity::{CommunityState, WorkspaceDirectory, WorkspaceMeta};
 
 use crate::directory;
 use crate::platform::notice::Notices;
@@ -126,10 +125,13 @@ pub(crate) struct Adoption {
 /// The person's list of their own workspaces, as this device holds it and last agreed it with their
 /// others.
 pub(crate) struct Personal {
-    /// This device's collaboration identity: the list's updates are signed with its key, and its
-    /// certificate names the device to the person's others.
+    /// This device's collaboration identity: its certificate names the device to the person's
+    /// others.
     identity: tilo_network_actor::HostIdentity,
     directory: WorkspaceDirectory,
+    /// The person's store's revision and this list's heads when the two were last brought together:
+    /// while neither moved, there is nothing to take in or to write.
+    synced: Option<(u64, Vec<automerge::ChangeHash>)>,
     /// This device, as the list's device registers name it.
     device: [u8; 32],
     /// The workspaces this device had at the last reconciliation.
@@ -148,12 +150,8 @@ pub(crate) struct Personal {
     hosts: BTreeMap<WorkspaceId, [u8; 32]>,
     /// The entries asked for of the person's other devices, by workspace and the host hint they
     /// were asked at: one ask per hint, so a workspace whose host has not answered yet is not asked
-    /// for again on every pass. A device of the person's that just came up may carry a newer hint,
-    /// so its arrival empties this.
+    /// for again on every pass. A newer hint the person's devices say is a new ask.
     asked: BTreeMap<WorkspaceId, tilo_peer_state::join::TransportHint>,
-    /// Set when the list changed without a pass over this session writing it — a device shown or kept
-    /// off — so the person's other devices are owed the list even though this session wrote nothing.
-    untold: bool,
     /// Where the list and `agreed` survive a restart; `None` keeps them in memory only.
     store: Option<PathBuf>,
     /// What the session offered the last time [`Self::publish_local`] ran to the end with everything
@@ -304,6 +302,7 @@ impl Personal {
         let mut personal = Self {
             identity,
             directory: WorkspaceDirectory::new(user, device),
+            synced: None,
             device,
             agreed: BTreeMap::new(),
             agreed_order: Vec::new(),
@@ -311,7 +310,6 @@ impl Personal {
             borrowed: BTreeSet::new(),
             hosts: BTreeMap::new(),
             asked: BTreeMap::new(),
-            untold: false,
             store,
             published: None,
             unreadable: false,
@@ -433,10 +431,8 @@ impl Personal {
             }
         };
         if changed {
-            // Not a pass over the session, which is what tells the person's other devices: this device
-            // says so itself.
+            // Not a pass over the session: the list moved all the same.
             self.published = None;
-            self.untold = true;
             self.persist();
         }
         changed
@@ -791,45 +787,107 @@ impl Personal {
         {
             return false;
         }
-        // Writing the choice is not a pass over the shell, which is what tells the person's other
-        // devices: this device says so itself.
+        // Writing the choice is not a pass over the shell: the list moved all the same.
         self.published = None;
-        self.untold = true;
         self.persist();
         true
     }
 
-    /// Merge another device's signed update. `author` is that device's
-    /// certificate, as the transport authenticated it; the list checks that
-    /// it belongs to this person and signed the update.
+    /// Bring the list and the person's own store together: take in what their other devices wrote
+    /// there, and write the list there when the store lacks something this device holds. The store
+    /// carries it to their other devices, and admits a write only from a device their root
+    /// certified. Returns whether another device's write moved this list.
     ///
-    /// # Errors
-    /// The list's reason for refusing the update.
-    pub(crate) fn merge(
-        &mut self,
-        update: &DirectoryUpdate,
-        author: &DeviceCert,
-        now_ns: u64,
-    ) -> Result<(), DirectoryError> {
-        self.published = None;
-        self.directory
-            .apply_incremental(update, author, &RevocationList::new(), now_ns)?;
-        self.persist();
-        Ok(())
+    /// Cheap when neither the store nor the list moved since the last call, which every pass makes.
+    pub(crate) fn sync_store(&mut self, personal: &tilo_peer_state::PersonalSync) -> bool {
+        let revision = *personal.changes().borrow();
+        let heads = self.directory.heads();
+        if self
+            .synced
+            .as_ref()
+            .is_some_and(|(was, held)| *was == revision && *held == heads)
+        {
+            return false;
+        }
+        let held = personal.read(tilo_peer_state::PersonalStore::workspace_list);
+        let taken = match held.as_deref().map(|bytes| self.directory.merge(bytes)) {
+            Some(Ok(taken)) => taken,
+            Some(Err(error)) => {
+                tracing::warn!(%error, "the person's list of workspaces in their store does not read");
+                false
+            }
+            None => false,
+        };
+        if taken {
+            self.published = None;
+            self.persist();
+        }
+        let owed = match &held {
+            Some(bytes) => self.directory.lacks(bytes),
+            None => !self.directory.heads().is_empty(),
+        };
+        if owed {
+            let whole = self.directory.save();
+            if let Err(error) =
+                personal.publish(|store, key, now| store.publish_workspace_list(whole, key, now))
+            {
+                tracing::warn!(%error, "the person's list of workspaces was not written to their store");
+            }
+        }
+        self.synced = Some((*personal.changes().borrow(), self.directory.heads()));
+        taken
     }
 
-    /// Whether `update` already holds everything this device's list does, so answering it with this
-    /// device's own would tell its author nothing.
-    pub(crate) fn covered_by(&mut self, update: &DirectoryUpdate) -> bool {
-        self.directory.covered_by(&update.delta)
+    /// Say where this device reaches the host of each listed workspace it holds, as each workspace's
+    /// own state names it (`hints`, by workspace id): a device of the person's that does not hold one
+    /// yet enters it there.
+    pub(crate) fn say_hints(&mut self, hints: &[(String, Vec<u8>)]) {
+        let listed: BTreeSet<WorkspaceId> = entries_of(&self.directory)
+            .into_iter()
+            .map(|(workspace, _)| workspace)
+            .collect();
+        let mut said = false;
+        for (workspace, hint) in hints {
+            let Some(workspace) = WorkspaceId::parse(workspace) else {
+                continue;
+            };
+            if !listed.contains(&workspace) {
+                continue;
+            }
+            match self.directory.set_host_hint(workspace, self.device, hint) {
+                Ok(changed) => said |= changed,
+                Err(error) => {
+                    tracing::warn!(%error, %workspace, "where a workspace's host is reached was not listed");
+                }
+            }
+        }
+        if said {
+            self.persist();
+        }
     }
 
-    /// This device's whole list, signed for the person's other devices.
+    /// Where `workspace` 's host is reached, as a device of the person's that holds it said in their
+    /// list. `None` while none of them said it yet.
+    pub(crate) fn host_hint(
+        &self,
+        workspace: WorkspaceId,
+    ) -> Option<tilo_peer_state::join::TransportHint> {
+        let bytes = self.directory.host_hint(workspace)?;
+        match postcard::from_bytes(&bytes) {
+            Ok(hint) => Some(hint),
+            Err(error) => {
+                tracing::warn!(%workspace, %error, "a device's host hint did not decode");
+                None
+            }
+        }
+    }
+
     /// The person's workspaces as their keys read them: every one the list carries, in the person's
-    /// order, each with the signed address of its host `hint` answers for it, as a workspace's id.
+    /// order, each with the signed address of its host: `hints` (by workspace id) where this device
+    /// holds it, else where the person's devices said it is reached.
     pub(crate) fn readable(
         &self,
-        hint: impl Fn(&str) -> Option<Vec<u8>>,
+        hints: &BTreeMap<String, Vec<u8>>,
     ) -> tilo_server_session::workspaces::PersonalList {
         let mut listed = self.directory.list_workspaces();
         listed.sort_by(|a, b| {
@@ -842,9 +900,13 @@ impl Personal {
             .into_iter()
             .map(|meta| {
                 let workspace = meta.id;
-                let host = hint(&workspace.to_string()).and_then(|hint| {
-                    tilo_server_session::workspaces::KeepingDeviceAddress::of_hint(&hint)
-                });
+                let host = hints
+                    .get(&workspace.to_string())
+                    .cloned()
+                    .or_else(|| self.directory.host_hint(workspace))
+                    .and_then(|hint| {
+                        tilo_server_session::workspaces::KeepingDeviceAddress::of_hint(&hint)
+                    });
                 tilo_server_session::workspaces::PersonalWorkspace {
                     name: meta.name,
                     host,
@@ -859,12 +921,6 @@ impl Personal {
             workspaces,
             devices: Vec::new(),
         }
-    }
-
-    pub(crate) fn snapshot(&mut self) -> Option<DirectoryUpdate> {
-        self.directory
-            .signed_snapshot(self.identity.signer.as_ref(), tilo_clock::unix_now_ns())
-            .ok()
     }
 
     fn persist(&mut self) {
@@ -925,28 +981,6 @@ fn keep(path: &Path, bytes: &[u8]) {
 /// identity to keep them for.
 pub(crate) fn personal_for(state: Option<&Path>) -> Option<RefCell<Personal>> {
     crate::sync::device_identity().map(|identity| RefCell::new(Personal::open(identity, state)))
-}
-
-/// Take the workspace lists the person's other devices sent since the last pass: whether anything
-/// of theirs was taken, and whether a device that sent one is missing something of this one's.
-fn take_personal(personal: &mut Personal, sync: &crate::sync::Client) -> (bool, bool) {
-    let mut taken = false;
-    let mut missing = false;
-    for (update, author) in sync.take_personal() {
-        // Asked before the merge: once theirs is taken, answering would only repeat it. Asked
-        // first, it says whether the device that sent it is missing something of this one's.
-        let behind = !personal.covered_by(&update);
-        match personal.merge(&update, &author, tilo_clock::unix_now_ns()) {
-            Ok(()) => {
-                taken = true;
-                missing |= behind;
-            }
-            Err(error) => {
-                tracing::warn!(%error, "a device's workspaces were not taken");
-            }
-        }
-    }
-    (taken, missing)
 }
 
 impl crate::Shared {
@@ -1390,29 +1424,15 @@ impl crate::Shared {
             // list names the device hosting a workspace, never the one that happens to hold it
             // here.
             personal.refresh_hosts(self.engine.as_deref());
-            let mut news = personal.publish_local(&self.handle);
+            let store = self.sync.as_ref().and_then(|sync| sync.personal());
+            let store = store.as_deref().map(crate::personal::Personal::sync);
+            // What the person's other devices wrote to the list is taken in before this session's
+            // pass is written over it, so the pass reconciles against their list.
+            let mut news = store.is_some_and(|store| personal.sync_store(store));
+            news |= personal.publish_local(&self.handle);
             news |= self.fleet_moved(&mut personal);
-            // A device shown or kept off is a change this session's pass did
-            // not write. The list is sent whole, so this asks for one now;
-            // a send that does not happen carries it the next time.
-            news |= personal.untold;
-            personal.untold = false;
-            let mut behind = false;
-            // A device that just came up has heard nothing of this device's workspaces yet, though
-            // nothing changed here since they were last said. It may carry a newer place for a
-            // workspace an entry is waiting on, so entries asked at an older one are asked again.
-            let arrived = self
-                .sync
-                .as_ref()
-                .is_some_and(|sync| sync.sibling_arrived());
-            if let Some(sync) = &self.sync {
-                let (taken, missing) = take_personal(&mut personal, sync);
-                news |= taken;
-                behind |= missing;
-            }
-            if arrived {
-                personal.asked.clear();
-                behind = true;
+            if let Some(engine) = &self.engine {
+                personal.say_hints(&engine.host_hints());
             }
             personal.ask_again_due();
             // A workspace whose governance holds no certificate of this device's is held as the
@@ -1476,13 +1496,12 @@ impl crate::Shared {
             for workspace in adoption.release {
                 self.release_workspace(workspace);
             }
-            if (news || behind)
-                && let Some(sync) = &self.sync
-                && let Some(update) = personal.snapshot()
-            {
-                sync.tell_personal(&update);
+            // What this pass wrote to the list goes to the person's store, which carries it to their
+            // other devices.
+            if let Some(store) = store {
+                news |= personal.sync_store(store);
             }
-            self.keep_readable(&mut personal, hosted, news || behind);
+            self.keep_readable(&mut personal, hosted, news);
             if adoption.changed {
                 self.keep_layout_now();
             }
@@ -1532,14 +1551,7 @@ impl crate::Shared {
             .as_ref()
             .map(|engine| engine.host_hints().into_iter().collect())
             .unwrap_or_default();
-        let mut list = personal.readable(|workspace| {
-            hints.get(workspace).cloned().or_else(|| {
-                self.sync
-                    .as_ref()?
-                    .host_hint(workspace)
-                    .and_then(|hint| postcard::to_stdvec(&hint).ok())
-            })
-        });
+        let mut list = personal.readable(&hints);
         // The keys the person's root certified on this device go with the
         // list, so the record every device of theirs reads holds them.
         if let Some(engine) = &self.engine {
@@ -1588,7 +1600,7 @@ impl crate::Shared {
         };
         // A workspace this session holds already says itself where its host is
         // reached, should none of the person's devices have said it yet.
-        let hint = sync.host_hint(&workspace).or_else(|| {
+        let hint = personal.host_hint(opened.workspace).or_else(|| {
             opened
                 .held
                 .then(|| {
@@ -1756,6 +1768,54 @@ mod tests {
     use super::*;
     use tilo_desktop_model::{IdMinter, Workspace, WorkspaceId};
     use tilo_desktop_surface::seed_tree;
+    use tilo_network_actor::HostIdentity;
+    use tilo_peer_state::{PeerPersonal, PersonalStore, PersonalSync};
+    use tilo_user_identity::DeviceCert;
+
+    /// The person's own store on the device `identity` names, as the session opens it.
+    fn store_of(identity: &HostIdentity) -> PersonalSync {
+        let store = PersonalStore::open(
+            identity.device_cert.user_public_key,
+            identity.device_cert.clone(),
+            tilo_clock::wall(),
+        )
+        .expect("a store for one of the person's devices");
+        PersonalSync::over(
+            PeerPersonal::new(store),
+            std::sync::Arc::clone(&identity.signer),
+        )
+    }
+
+    /// One of the person's devices: its list and its own store.
+    type Device<'a> = (&'a mut Personal, &'a PersonalSync, &'a HostIdentity);
+
+    /// `to` takes in what `from` keeps of the list: `from` writes its list to its store, the link
+    /// between the two devices carries the store as it does between two sessions — who `from` is,
+    /// then every resource of the person's it holds — and `to` takes its store's list in. Whether
+    /// `to`'s list moved.
+    fn hand_over(from: Device<'_>, to: Device<'_>) -> bool {
+        let (from_list, from_store, from_identity) = from;
+        let (to_list, to_store, _) = to;
+        from_list.sync_store(from_store);
+        let now = tilo_clock::wall();
+        let (from_device, to_device) = (
+            from_identity.device_cert.device_public_key,
+            to_store.read(|store| store.device().device_public_key),
+        );
+        from_store
+            .take(to_device, to_store.read(PersonalStore::hello))
+            .expect("the person's other device says who it is");
+        let frames = from_store
+            .store()
+            .write(|store| store.catch_up(from_identity.signer.as_ref(), to_device, now))
+            .expect("what the store hands the person's other device");
+        for frame in frames {
+            to_store
+                .take(from_device, frame)
+                .expect("the person's own device's store is taken");
+        }
+        to_list.sync_store(to_store)
+    }
 
     /// The list as a later session opens it: a session flushes its writes before it ends, and
     /// opening here stands for that start.
@@ -1770,7 +1830,7 @@ mod tests {
     }
 
     /// A device of the person's, certified for their own root key.
-    fn identity(user: u8, device: u8, label: &str) -> tilo_network_actor::HostIdentity {
+    fn identity(user: u8, device: u8, label: &str) -> HostIdentity {
         let person = ed25519_dalek::SigningKey::from_bytes(&[user; 32]);
         let this = ed25519_dalek::SigningKey::from_bytes(&[device; 32]);
         let mut cert = DeviceCert {
@@ -1906,7 +1966,7 @@ mod tests {
             .transport_hint(identity.signer.as_ref())
             .expect("a signed address");
             let hint = postcard::to_stdvec(&hint).expect("an address's bytes");
-            let list = personal.readable(|asked| (asked == workspace).then(|| hint.clone()));
+            let list = personal.readable(&BTreeMap::from([(workspace.clone(), hint)]));
             let read: Vec<_> = list
                 .workspaces
                 .iter()
@@ -2102,24 +2162,33 @@ mod tests {
                 panic!("the other device holds one workspace");
             };
             let (a_id, a_name) = (*a_id, a_name.clone());
-            let snapshot = a_list.snapshot().expect("the list is signed");
+            let a_store = store_of(&a_identity);
 
             let b = session();
             let b_identity = identity(0x11, 0x22, "The desktop");
             let b_device = b_identity.device_cert.device_public_key;
-            let mut b_list = open(b_identity, Some(b_state.path()));
+            let b_store = store_of(&b_identity);
+            let mut b_list = open(b_identity.clone(), Some(b_state.path()));
             b_list.publish_local(&b);
             assert!(
-                !b_list.covered_by(&snapshot),
-                "this device's list is missing theirs, so it is owed one back"
+                hand_over(
+                    (&mut a_list, &a_store, &a_identity),
+                    (&mut b_list, &b_store, &b_identity),
+                ),
+                "the person's own device's list is taken"
             );
-            b_list
-                .merge(
-                    &snapshot,
-                    &a_identity.device_cert,
-                    tilo_clock::unix_now_ns(),
-                )
-                .expect("the person's own device's list is taken");
+            // This device's own workspace goes the other way, through the store it wrote it to.
+            let [(b_id, _)] = on_shell(&b)
+                .try_into()
+                .expect("this device holds one workspace of its own");
+            hand_over(
+                (&mut b_list, &b_store, &b_identity),
+                (&mut a_list, &a_store, &a_identity),
+            );
+            assert!(
+                listed(&a_list, b_id).is_some(),
+                "and the person's other device lists this one's"
+            );
 
             let adoption = b_list.adopt_into(&b, &|_| false);
             assert_eq!(
@@ -2202,14 +2271,13 @@ mod tests {
             a_list.publish_local(&a);
 
             let b = session();
-            let mut b_list = open(identity(0x11, 0x22, "The desktop"), Some(b_state.path()));
-            b_list
-                .merge(
-                    &a_list.snapshot().expect("the list is signed"),
-                    &a_identity.device_cert,
-                    tilo_clock::unix_now_ns(),
-                )
-                .expect("the person's list");
+            let b_identity = identity(0x11, 0x22, "The desktop");
+            let (a_store, b_store) = (store_of(&a_identity), store_of(&b_identity));
+            let mut b_list = open(b_identity.clone(), Some(b_state.path()));
+            hand_over(
+                (&mut a_list, &a_store, &a_identity),
+                (&mut b_list, &b_store, &b_identity),
+            );
             let adoption = b_list.adopt_into(&b, &|_| false);
             for opened in &adoption.enter {
                 open_here(&b, opened.workspace, &opened.name);
@@ -2225,13 +2293,10 @@ mod tests {
             tree.workspaces.retain(|workspace| workspace.id() != other);
             a.replace_tree(tree);
             a_list.publish_local(&a);
-            b_list
-                .merge(
-                    &a_list.snapshot().expect("the list is signed"),
-                    &a_identity.device_cert,
-                    tilo_clock::unix_now_ns(),
-                )
-                .expect("the person's list");
+            hand_over(
+                (&mut a_list, &a_store, &a_identity),
+                (&mut b_list, &b_store, &b_identity),
+            );
             let adoption = b_list.adopt_into(&b, &|_| false);
             assert_eq!(
                 adoption.release,
@@ -2259,21 +2324,16 @@ mod tests {
             let b_device = b_identity.device_cert.device_public_key;
             let mut b_list = open(b_identity.clone(), Some(b_state.path()));
             b_list.publish_local(&b);
-            // Each device tells the other what it holds, as the sessions they keep between them do.
-            b_list
-                .merge(
-                    &a_list.snapshot().expect("the list is signed"),
-                    &a_identity.device_cert,
-                    tilo_clock::unix_now_ns(),
-                )
-                .expect("the person's list");
-            a_list
-                .merge(
-                    &b_list.snapshot().expect("the list is signed"),
-                    &b_identity.device_cert,
-                    tilo_clock::unix_now_ns(),
-                )
-                .expect("the person's list");
+            let (a_store, b_store) = (store_of(&a_identity), store_of(&b_identity));
+            // Each device's store carries what it holds to the other's.
+            hand_over(
+                (&mut a_list, &a_store, &a_identity),
+                (&mut b_list, &b_store, &b_identity),
+            );
+            hand_over(
+                (&mut b_list, &b_store, &b_identity),
+                (&mut a_list, &a_store, &a_identity),
+            );
             for opened in b_list.adopt_into(&b, &|_| false).enter {
                 open_here(&b, opened.workspace, &opened.name);
             }
@@ -2309,13 +2369,10 @@ mod tests {
 
             // The sessiontop learns of it and honours it: the workspace leaves its session and is not opened
             // there again.
-            b_list
-                .merge(
-                    &a_list.snapshot().expect("the list is signed"),
-                    &a_identity.device_cert,
-                    tilo_clock::unix_now_ns(),
-                )
-                .expect("the person's list");
+            hand_over(
+                (&mut a_list, &a_store, &a_identity),
+                (&mut b_list, &b_store, &b_identity),
+            );
             let adoption = b_list.adopt_into(&b, &|_| false);
             assert_eq!(
                 adoption.release,

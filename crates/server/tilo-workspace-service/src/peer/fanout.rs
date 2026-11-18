@@ -49,7 +49,6 @@ impl<'a> LiveFrame<'a> {
         envelope: &'a Arc<Envelope>,
         budget: &'a LiveBudget,
         fanned: Option<FanoutStamp>,
-        source: Option<&StateSource>,
         host: bool,
     ) -> Self {
         // The host's own change (a workspace's or a channel's governance) reaches
@@ -57,7 +56,7 @@ impl<'a> LiveFrame<'a> {
         // as checkpoints alone, which no delta before them covers.
         let payloads = &**runtime.store.payloads();
         let checkpoint_channel = (!host)
-            .then(|| guarded_checkpoint_channel(payloads, envelope, source))
+            .then(|| guarded_checkpoint_channel(payloads, envelope))
             .flatten();
         let audience = live_audience(runtime, envelope);
         let asks_admission = match &**envelope {

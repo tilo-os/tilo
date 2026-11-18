@@ -1929,20 +1929,6 @@ impl Client {
             .map_err(|_| "the peer network is gone".to_owned())
     }
 
-    /// Say this person's workspaces to their other devices, each with where this device's are
-    /// hosted, so a device that opens one enters it at its host.
-    #[cfg(target_os = "linux")]
-    pub fn tell_personal(&self, update: &tilo_user_identity::DirectoryUpdate) {
-        let hosts = self
-            .hosting
-            .local
-            .engine
-            .as_ref()
-            .map(|engine| engine.host_hints())
-            .unwrap_or_default();
-        self.inner.tell_personal(update, hosts);
-    }
-
     /// Dial one of the person's own devices, whose address this session was told: the session
     /// between the two carries their device fabric.
     #[cfg(target_os = "linux")]

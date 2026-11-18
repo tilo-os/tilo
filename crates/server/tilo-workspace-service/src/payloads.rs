@@ -63,12 +63,6 @@ pub enum CheckpointKind {
     /// A step of channel governance (a governance commit, an access request
     /// or its acknowledgement): each replaces the last on one route.
     Governance,
-    /// A device's snapshot of its person's workspace list, authored for
-    /// `user`: each replaces that device's last.
-    Directory {
-        /// The user public key the list belongs to.
-        user: [u8; 32],
-    },
     /// A device's certificate, introducing it to the workspace: each replaces
     /// that device's last.
     Identity,

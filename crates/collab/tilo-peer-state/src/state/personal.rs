@@ -70,6 +70,10 @@ const DEVICES_APP: &str = "so.tilo.identity";
 /// The kind of the person's resource that lists their devices: one entry per
 /// device, its key in hex naming its certificate's postcard bytes.
 const DEVICES_KIND: &str = "identity.devices";
+/// The kind of the person's resource that lists their workspaces: which they
+/// have, which of their devices holds, hosts and shows each, and where each
+/// is hosted (`tilo_user_identity::WorkspaceDirectory` reads and writes it).
+const WORKSPACES_KIND: &str = "identity.workspaces";
 /// The most devices that resource names to this device: entries past it are
 /// not read, and this device adds none.
 const MAX_DEVICES: usize = 256;
@@ -672,11 +676,11 @@ impl PersonalStore {
     /// Every document held, by what it belongs to.
     #[must_use]
     pub fn rows(&self) -> Vec<DocumentRow> {
-        let devices = Self::devices_route();
         self.documents
             .iter()
-            // The resource of the person's devices is the store's own.
-            .filter(|(route, _)| **route != devices)
+            // The identity's own resources — the person's devices and their
+            // workspaces — are the store's, which no app reads.
+            .filter(|(route, _)| route.app != DEVICES_APP)
             .map(|(route, held)| DocumentRow {
                 app_id: route.app.clone(),
                 document_id: route.record.clone(),
@@ -688,6 +692,37 @@ impl PersonalStore {
                     .collect(),
             })
             .collect()
+    }
+
+    /// The resource that lists the person's workspaces, as this device holds
+    /// it: the whole document, which `tilo_user_identity::WorkspaceDirectory`
+    /// reads. `None` while no device of theirs wrote it.
+    #[must_use]
+    pub fn workspace_list(&self) -> Option<Vec<u8>> {
+        self.document(DEVICES_APP, &Self::workspaces_id())
+    }
+
+    /// Write the list of the person's workspaces as `whole`, the document as
+    /// this device holds it once it took in the store's: signed with `key`,
+    /// admitted here, and returned as the frame for their other devices.
+    pub fn publish_workspace_list(
+        &mut self,
+        whole: Vec<u8>,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<NeighbourMsg, String> {
+        self.publish(
+            DEVICES_APP,
+            &Self::workspaces_id(),
+            &DocumentMutation::Snapshot(whole),
+            key,
+            now,
+        )
+    }
+
+    /// The id of the resource that lists the person's workspaces.
+    fn workspaces_id() -> String {
+        collab_types::person_document_id(WORKSPACES_KIND)
     }
 
     fn route(app: &str, resource: &str) -> Route {

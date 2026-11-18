@@ -5,12 +5,11 @@
 //! [`Transport`] and, where it keeps more of its own, a [`Host`] that takes what the peer network heard
 //! beside the boards and opens what only it can open.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use collab_types::presence::{Presence as Frame, ShellPresence};
 use iroh_base::{EndpointAddr, EndpointId};
-use neighbour_wire::NeighbourMsg;
 use tilo_desktop_model::Layout;
 
 use crate::Enrolled;
@@ -74,24 +73,6 @@ pub struct Client {
     shell: RefCell<Option<Rc<dyn Shell>>>,
     /// What this host keeps of the peer network beside the boards.
     host: RefCell<Option<Rc<dyn Host>>>,
-    /// The certificates each of the person's other devices was heard with, by its publisher.
-    siblings: RefCell<std::collections::BTreeMap<EndpointId, Vec<tilo_user_identity::DeviceCert>>>,
-    /// Whether one of the person's other devices came up since the last call: a device that just
-    /// said hello has not heard this device's list yet, and a list said only when something changed
-    /// here would never reach it.
-    sibling_arrived: Cell<bool>,
-    /// Where the workspaces the person's other devices hold are hosted, by workspace id: the host
-    /// hints they said with the list, so this device enters a workspace at the device hosting it
-    /// rather than guessing.
-    host_hints: RefCell<std::collections::BTreeMap<String, tilo_peer_state::join::TransportHint>>,
-    /// The workspace lists the person's other devices sent since the last call, each with the
-    /// certificate its device was heard by.
-    personal: RefCell<
-        Vec<(
-            tilo_user_identity::DirectoryUpdate,
-            tilo_user_identity::DeviceCert,
-        )>,
-    >,
     /// Where this device's endpoint is reached, as other devices dial it.
     endpoint: EndpointAddr,
     /// This device's endpoint itself, once it has bound: what the session's traffic runs on, and
@@ -142,10 +123,6 @@ impl Client {
             enrolled,
             shell: RefCell::new(None),
             host: RefCell::new(None),
-            siblings: RefCell::new(std::collections::BTreeMap::new()),
-            host_hints: RefCell::new(std::collections::BTreeMap::new()),
-            sibling_arrived: Cell::new(false),
-            personal: RefCell::new(Vec::new()),
             endpoint: device.endpoint,
             #[cfg(not(target_arch = "wasm32"))]
             endpoint_handle: std::sync::Arc::new(std::sync::OnceLock::new()),
@@ -347,7 +324,6 @@ impl Client {
             }
             return;
         }
-        self.keep_personal(&event);
         // What this host keeps of the peer network — its channels, its fabric, the windows it streams — is
         // the host's before the boards are: what it takes alone, the boards never see.
         if let Some(host) = self.host.borrow().clone()
@@ -367,125 +343,6 @@ impl Client {
     /// Take what became of the enrollments and entries asked for since the last call.
     pub fn take_enrolled(&self) -> Vec<Enrolled> {
         self.enrolled.try_iter().collect()
-    }
-
-    /// Where the workspace `workspace` is hosted, as a device of the person's that holds it said:
-    /// the host hint the person's other devices send with their list. `None` while none of them
-    /// said it yet.
-    #[must_use]
-    pub fn host_hint(&self, workspace: &str) -> Option<tilo_peer_state::join::TransportHint> {
-        self.host_hints.borrow().get(workspace).cloned()
-    }
-
-    /// Keep what the person's other devices said of their workspaces: a device's certificates when
-    /// its session comes up, and the lists it publishes with the certificate that signed them.
-    fn keep_personal(&self, event: &Event) {
-        match event {
-            Event::Sibling { peer, certs, .. } => {
-                self.siblings.borrow_mut().insert(*peer, certs.clone());
-                self.sibling_arrived.set(true);
-            }
-            Event::SiblingLeft { peer } => {
-                self.siblings.borrow_mut().remove(peer);
-            }
-            Event::SiblingMsg { peer, msg } => match &**msg {
-                NeighbourMsg::PersonalWorkspaces { update, .. } => {
-                    // The update names its author; the certificate the device was heard by is the
-                    // only one that says who it is, and the list checks it against the person's
-                    // root before it merges.
-                    let author = self
-                        .siblings
-                        .borrow()
-                        .get(peer)
-                        .and_then(|certs| author_of(certs, update));
-                    if let Some(author) = author {
-                        self.personal
-                            .borrow_mut()
-                            .push(((**update).clone(), author));
-                    } else {
-                        tracing::debug!(
-                            device = %hex::encode(update.author_device_public_key),
-                            "a device's workspaces arrived before its certificate"
-                        );
-                    }
-                }
-                NeighbourMsg::PersonalHosts {
-                    user_public_key,
-                    hosts,
-                } => {
-                    // Only this person's workspaces are entered, and only through a host the
-                    // workspace's own governance signed for.
-                    if Some(*user_public_key) != self.user {
-                        return;
-                    }
-                    for host in hosts {
-                        match postcard::from_bytes::<tilo_peer_state::join::TransportHint>(
-                            &host.hint,
-                        ) {
-                            Ok(hint) => {
-                                self.host_hints
-                                    .borrow_mut()
-                                    .insert(host.workspace.clone(), hint);
-                            }
-                            Err(error) => tracing::warn!(
-                                workspace = %host.workspace,
-                                %error,
-                                "a device's host hint did not decode"
-                            ),
-                        }
-                    }
-                }
-                _ => {}
-            },
-            _ => {}
-        }
-    }
-
-    /// Say this person's workspaces to their other devices: every one of them whose session is up
-    /// hears the list, and the ones this device has and its sender does not are opened there, each
-    /// with where its host is reached, so the device that opens it enters it at its host. `hosts`
-    /// is where this device's workspaces are hosted, as its own state names them.
-    pub fn tell_personal(
-        &self,
-        update: &tilo_user_identity::DirectoryUpdate,
-        hosts: Vec<(String, Vec<u8>)>,
-    ) {
-        let Some(user) = self.user else {
-            return;
-        };
-        let _ = self.say(Cmd::TellSiblings(Box::new(
-            NeighbourMsg::PersonalWorkspaces {
-                user_public_key: user,
-                update: Box::new(update.clone()),
-            },
-        )));
-        if hosts.is_empty() {
-            return;
-        }
-        let _ = self.say(Cmd::TellSiblings(Box::new(NeighbourMsg::PersonalHosts {
-            user_public_key: user,
-            hosts: hosts
-                .into_iter()
-                .map(|(workspace, hint)| neighbour_wire::PersonalHost { workspace, hint })
-                .collect(),
-        })));
-    }
-
-    /// Take the workspace lists the person's other devices sent since the last call, each with the
-    /// certificate its device was heard by.
-    pub fn take_personal(
-        &self,
-    ) -> Vec<(
-        tilo_user_identity::DirectoryUpdate,
-        tilo_user_identity::DeviceCert,
-    )> {
-        std::mem::take(&mut *self.personal.borrow_mut())
-    }
-
-    /// Whether one of the person's other devices came up since the last call: it has heard nothing
-    /// of this device's workspaces yet, whatever changed here since the list was last said.
-    pub fn sibling_arrived(&self) -> bool {
-        self.sibling_arrived.replace(false)
     }
 
     /// Where other devices reach this one, as it answers now: the endpoint it bound, with the
@@ -581,16 +438,4 @@ impl Client {
         );
         self.user = Some(root);
     }
-}
-
-/// The certificate among `certs` that says who authored `update`, if the device was heard with one:
-/// a list is worth no more than the device that signed it.
-pub fn author_of(
-    certs: &[tilo_user_identity::DeviceCert],
-    update: &tilo_user_identity::DirectoryUpdate,
-) -> Option<tilo_user_identity::DeviceCert> {
-    certs
-        .iter()
-        .find(|cert| cert.device_public_key == update.author_device_public_key)
-        .cloned()
 }

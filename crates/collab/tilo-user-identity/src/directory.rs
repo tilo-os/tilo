@@ -1,37 +1,24 @@
-//! The workspace-directory CRDT.
+//! The person's list of their workspaces, as every device of theirs holds it.
 //!
-//! Every user device holds a full copy of this small Automerge
-//! document. It carries:
+//! A small Automerge document. It carries:
 //!
-//! - The list of workspaces the user owns (`id`, `name`, and the
-//!   collaboration topic that carries the workspace's content).
-//! - Per-workspace member-device set — which of the user's devices
-//!   replicate the workspace.
-//! - Host assignments — which device(s) act as the always-on host
-//!   for a given workspace. Multiple hosts are replicas; hosts can
-//!   serve different workspaces.
-//! - Per-device pin state — a pinned workspace is held fully
-//!   offline on that device.
+//! - The workspaces the person has (`id`, `name`, who governs one that is
+//!   someone else's, and its place in their list).
+//! - Per workspace, the devices that hold it, host it, keep it pinned or keep
+//!   it off their desktop, and where each device that holds it reaches its
+//!   host ([`WorkspaceDirectory::host_hint`]).
+//! - The person's devices as they named them.
 //! - What the person decided about the community at a site
-//!   ([`CommunityState`]): one decision per person, so no device of
-//!   theirs joins their community a second time on its own.
-//! - The revocation list (kept alongside the directory for the same
-//!   reason: it must reach every device).
+//!   ([`CommunityState`]): one decision per person, so no device of theirs
+//!   joins their community a second time on its own.
 //!
-//! **Authenticated deltas.** Updates travel between devices as
-//! [`DirectoryUpdate`] blobs: an incremental automerge byte-string
-//! wrapped with the author's device pubkey + a signature over the
-//! bytes. Applying a delta requires:
-//!
-//! 1. `verify_device_cert` — the author's cert chains to this
-//!    directory's user identity.
-//! 2. `!revocation_list.is_revoked_at(root, author, timestamp)` — the
-//!    author was not already revoked.
-//! 3. Ed25519 signature check against `author_device_public_key`.
-//!
-//! Failed checks return `Err(DirectoryError::*)` and DO NOT merge —
-//! the caller is expected to log + drop.
-//!
+//! The document is one resource of the person's own store, which carries it
+//! between their devices as it carries every other resource of theirs: each
+//! write is signed by the device that made it and admitted only from a
+//! device the person's root certified and did not revoke. This type reads
+//! and writes the document; [`WorkspaceDirectory::merge`] takes in the whole
+//! state another device wrote, and [`WorkspaceDirectory::lacks`] says whether
+//! a state misses something this one holds.
 
 use std::collections::HashMap;
 use tilo_automerge::ApplyIncoming;
@@ -39,17 +26,8 @@ use tilo_automerge::{ReadTyped as _, WriteTyped as _};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
-use ed25519_dalek::{Signer, Verifier};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-
-use crate::canonical::CanonicalError;
-use crate::cert::{DeviceCert, DeviceCertError, verify_device_cert_at};
-use crate::revocation::{RevocationError, RevocationList};
-
-/// Signing-domain tag for a directory delta. Same shape as the
-/// other v1 tags: `tilo-dir-delta-v1\0`.
-pub const DIR_DELTA_PREIMAGE_TAG: &[u8] = b"tilo-dir-delta-v1\0";
 
 pub use collab_types::WorkspaceId;
 
@@ -92,6 +70,10 @@ pub struct WorkspaceMeta {
 /// workspace off its desktop; the rest of the key is the device's hex key.
 const KEPT_OFF_PREFIX: &str = "kept_off:";
 
+/// Key prefix on a workspace entry holding where one device of the person's
+/// reaches the workspace's host; the rest of the key is the device's hex key.
+const HINT_PREFIX: &str = "hint:";
+
 /// Key prefix on what this person decided about the community at a site;
 /// the rest of the key is the site's address as typed into the directory.
 const COMMUNITY_PREFIX: &str = "c:";
@@ -128,75 +110,12 @@ impl CommunityState {
     }
 }
 
-/// A signed, incremental directory delta. Produced by
-/// [`WorkspaceDirectory::sync_incremental`] and consumed by
-/// [`WorkspaceDirectory::apply_incremental`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DirectoryUpdate {
-    /// Device that authored the update. The receiver looks up the
-    /// device's cert to check it chains to the user's root.
-    pub author_device_public_key: [u8; 32],
-    /// Nanoseconds since epoch when the update was produced. Feeds
-    /// into `revocation_list.is_revoked_at` — a delta authored
-    /// after a device was revoked is rejected even if the delta
-    /// itself arrives quickly.
-    pub authored_at_ns: u64,
-    /// Automerge incremental bytes.
-    pub delta: Vec<u8>,
-    /// Ed25519 signature over
-    /// `blake3(DIR_DELTA_PREIMAGE_TAG || postcard(view))` where
-    /// `view` is the update without the signature.
-    #[serde(with = "serde_bytes")]
-    pub signature: [u8; 64],
-}
-
-#[derive(Serialize)]
-struct DirectoryUpdateView<'a> {
-    author_device_public_key: &'a [u8; 32],
-    authored_at_ns: u64,
-    delta: &'a [u8],
-}
-
-impl DirectoryUpdate {
-    fn view(&self) -> DirectoryUpdateView<'_> {
-        DirectoryUpdateView {
-            author_device_public_key: &self.author_device_public_key,
-            authored_at_ns: self.authored_at_ns,
-            delta: &self.delta,
-        }
-    }
-}
-
 /// Errors that surface from directory operations.
 #[derive(Debug, Error)]
 pub enum DirectoryError {
-    /// The author's device cert did not verify or was expired.
-    #[error("author device cert invalid: {0}")]
-    Cert(#[from] DeviceCertError),
-    /// The author's device was revoked at or before the update's
-    /// `authored_at_ns`.
-    #[error("author device was revoked")]
-    Revoked,
-    /// Delta signature did not verify against the author's device
-    /// public key.
-    #[error("delta signature did not verify")]
-    BadSignature,
-    /// Author's cert is for a *different* user identity than this
-    /// directory belongs to.
-    #[error("author identity does not match directory owner")]
-    WrongIdentity,
     /// The underlying Automerge merge failed.
     #[error("automerge error: {0}")]
     Automerge(#[from] automerge::AutomergeError),
-    /// Canonical encoding failed. Effectively unreachable.
-    #[error("canonicalisation failed: {0}")]
-    Canonical(#[from] CanonicalError),
-    /// A revocation-list operation failed.
-    #[error("revocation-list error: {0}")]
-    Revocation(#[from] RevocationError),
-    /// The device's signer refused.
-    #[error(transparent)]
-    Sign(#[from] collab_types::signer::SignError),
 }
 
 /// One user's workspace directory.
@@ -624,135 +543,84 @@ impl WorkspaceDirectory {
         Ok(())
     }
 
-    /// Produce an incremental delta of everything committed since
-    /// the last call — the wire payload devices push to each other.
-    ///
-    /// The delta is signed with the author's *device* signing key
-    /// (which the caller identifies by pubkey), and the wire form
-    /// includes the pubkey so a recipient can locate the matching
-    /// cert. Devices with a cert issued by the same user root
-    /// accept the delta; anyone else drops it.
-    ///
-    /// `now_ns` is stamped into the delta as `authored_at_ns` and
-    /// is used by recipients' revocation-list checks.
+    /// Take in the whole state `bytes` another device of the person wrote,
+    /// as their store carries it. Returns whether this list changed.
     ///
     /// # Errors
     ///
-    /// Returns [`DirectoryError::Canonical`] if the update cannot be
-    /// canonically encoded for signing (effectively unreachable).
-    pub fn sync_incremental(
-        &mut self,
-        device_signing_key: &ed25519_dalek::SigningKey,
-        now_ns: u64,
-    ) -> Result<DirectoryUpdate, DirectoryError> {
-        let author = device_signing_key.verifying_key().to_bytes();
-        let delta = self.doc.save_incremental();
-        let mut update = DirectoryUpdate {
-            author_device_public_key: author,
-            authored_at_ns: now_ns,
-            delta,
-            signature: [0u8; 64],
-        };
-        let digest = crate::canonical::signing_digest(DIR_DELTA_PREIMAGE_TAG, &update.view())?;
-        update.signature = device_signing_key.sign(&digest).to_bytes();
-        Ok(update)
+    /// Returns [`DirectoryError::Automerge`] if `bytes` is not an Automerge
+    /// document.
+    pub fn merge(&mut self, bytes: &[u8]) -> Result<bool, DirectoryError> {
+        let before = self.doc.get_heads();
+        self.doc.load_incoming(bytes)?;
+        Ok(self.doc.get_heads() != before)
     }
 
-    /// Sign a complete dependency-closed snapshot for a newly enrolled empty peer.
-    /// Unlike `sync_incremental`, this does not depend on the previous publication cursor.
-    ///
-    /// # Errors
-    /// Returns `DirectoryError::Canonical` if signing serialization fails.
-    pub fn signed_snapshot(
-        &mut self,
-        device: &dyn collab_types::signer::DeviceSigner,
-        now_ns: u64,
-    ) -> Result<DirectoryUpdate, DirectoryError> {
-        let mut update = DirectoryUpdate {
-            author_device_public_key: device.device_public_key(),
-            authored_at_ns: now_ns,
-            // `save` commits the open transaction first; saving a clone would
-            // commit it only there, and the next local change would reuse its
-            // sequence number.
-            delta: self.doc.save(),
-            signature: [0; 64],
-        };
-        let digest = crate::canonical::signing_digest(DIR_DELTA_PREIMAGE_TAG, &update.view())?;
-        update.signature = collab_types::signer::sign_now(device, digest.to_vec())?;
-        Ok(update)
+    /// The list's heads: what moves whenever it changes, here or by a merge.
+    pub fn heads(&mut self) -> Vec<automerge::ChangeHash> {
+        self.doc.get_heads()
     }
 
-    /// Whether the Automerge bytes `snapshot` (a peer's
-    /// [`Self::signed_snapshot`] delta) already contain every change this
-    /// directory holds. A device answers a peer's snapshot with its own
-    /// only when this is false, so two devices exchanging snapshots fall
-    /// quiet once they agree. Unreadable bytes contain nothing.
-    pub fn covered_by(&mut self, snapshot: &[u8]) -> bool {
-        let Ok(theirs) = AutoCommit::load(snapshot) else {
-            return false;
+    /// Whether the Automerge bytes `state` miss a change this list holds:
+    /// what says the person's store is owed this device's list. Bytes that
+    /// are no document hold nothing.
+    pub fn lacks(&mut self, state: &[u8]) -> bool {
+        let Ok(theirs) = AutoCommit::load(state) else {
+            return true;
         };
         self.doc
             .get_heads()
             .iter()
-            .all(|head| theirs.get_change_by_hash(head).is_some())
+            .any(|head| theirs.get_change_by_hash(head).is_none())
     }
 
-    /// Apply a peer's incremental delta after verifying signatures
-    /// + cert chain + revocation status.
-    ///
-    /// `author_cert` is the peer's device cert (fetched separately
-    /// from the peer or from a cached cert table). `revocations`
-    /// is the current merged revocation list.
-    ///
-    /// Returns `Ok(())` on merge; every check failure returns an
-    /// explicit `DirectoryError` variant so the caller can log the
-    /// exact rejection reason.
+    /// Say where `device`, which holds workspace `id`, reaches its host:
+    /// the host's signed hint, as that device's own state of the workspace
+    /// names it. Each device writes its own key of the entry, so two devices
+    /// that hold the workspace never write over each other. An unchanged
+    /// hint writes nothing.
     ///
     /// # Errors
     ///
-    /// Returns [`DirectoryError::WrongIdentity`] if `author_cert` is
-    /// for a different user or a different device than the update
-    /// claims, [`DirectoryError::Cert`] if the cert itself fails to
-    /// verify or has expired, [`DirectoryError::Revoked`] if the
-    /// author device was revoked at or before `update.authored_at_ns`,
-    /// [`DirectoryError::BadSignature`] if the delta's signature does
-    /// not verify, and [`DirectoryError::Automerge`] if merging the
-    /// delta into the local document fails.
-    pub fn apply_incremental(
+    /// Returns [`DirectoryError::Automerge`] if the underlying Automerge
+    /// document operation fails.
+    pub fn set_host_hint(
         &mut self,
-        update: &DirectoryUpdate,
-        author_cert: &DeviceCert,
-        revocations: &RevocationList,
-        now_ns: u64,
-    ) -> Result<(), DirectoryError> {
-        // Cert must be for THIS directory's user.
-        if author_cert.user_public_key != self.user_public_key {
-            return Err(DirectoryError::WrongIdentity);
+        id: WorkspaceId,
+        device: [u8; 32],
+        hint: &[u8],
+    ) -> Result<bool, DirectoryError> {
+        let obj = self.ensure_workspace_obj(id)?;
+        let key = format!("{HINT_PREFIX}{}", hex::encode(device));
+        if self.doc.bytes_at(&obj, key.as_str()).as_deref() == Some(hint) {
+            return Ok(false);
         }
-        // Cert must cover THIS device pubkey.
-        if author_cert.device_public_key != update.author_device_public_key {
-            return Err(DirectoryError::WrongIdentity);
-        }
-        // Cert must verify + not have expired.
-        verify_device_cert_at(author_cert, now_ns)?;
-        // Author must not have been revoked at the time of authoring.
-        if revocations.is_revoked_at(
-            &author_cert.user_public_key,
-            &update.author_device_public_key,
-            update.authored_at_ns,
-        ) {
-            return Err(DirectoryError::Revoked);
-        }
-        // Signature must cover the delta bytes.
-        let vk = ed25519_dalek::VerifyingKey::from_bytes(&update.author_device_public_key)
-            .map_err(|_| DirectoryError::BadSignature)?;
-        let digest = crate::canonical::signing_digest(DIR_DELTA_PREIMAGE_TAG, &update.view())?;
-        let sig = ed25519_dalek::Signature::from_bytes(&update.signature);
-        vk.verify(&digest, &sig)
-            .map_err(|_| DirectoryError::BadSignature)?;
-        // All checks pass — merge the automerge delta.
-        self.doc.load_incoming(&update.delta)?;
-        Ok(())
+        self.doc
+            .put(&obj, key.as_str(), ScalarValue::Bytes(hint.to_vec()))?;
+        Ok(true)
+    }
+
+    /// Where workspace `id`'s host is reached, as a device of the person's
+    /// that holds it said: the hint its host device wrote first, then any
+    /// other. `None` while no device said one.
+    pub fn host_hint(&self, id: WorkspaceId) -> Option<Vec<u8>> {
+        let Ok(Some((Value::Object(ObjType::Map), obj))) =
+            self.doc.get(ROOT, Self::workspace_key(id).as_str())
+        else {
+            return None;
+        };
+        let hosts = self.read_pubkey_list(&obj, "hosts");
+        let mut said: Vec<(bool, Vec<u8>)> = self
+            .doc
+            .keys(&obj)
+            .filter_map(|key| {
+                let device = key.strip_prefix(HINT_PREFIX)?;
+                let by_host = hosts.iter().any(|host| hex::encode(host) == device);
+                Some((by_host, self.doc.bytes_at(&obj, key.as_str())?))
+            })
+            .collect();
+        said.sort_by_key(|(by_host, _)| !*by_host);
+        said.into_iter().next().map(|(_, hint)| hint)
     }
 
     /// Snapshot of the current directory as a `HashMap` keyed by
@@ -780,9 +648,6 @@ impl WorkspaceDirectory {
 mod tests {
     use super::*;
     use crate::cert::{DeviceCapabilities, DeviceCert, sign_device_cert};
-    use crate::revocation::{
-        RevocationEntry, RevocationList, RevocationReason, sign_revocation_entry,
-    };
     use crate::{DeviceIdentity, UserIdentity};
 
     struct Fixture {
@@ -822,15 +687,11 @@ mod tests {
     /// Workspaces are added and listed, member hosts pin and unpin, concurrent adds merge, and the
     /// directory saves and loads.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one scenario: its phases read top to bottom"
-    )]
     fn the_workspace_directory_merges_and_persists_membership() {
         // Phase: add_and_list_workspaces.
         {
             let f = fresh_user();
-            let (_dev_sk, dev_pk, _cert) = enrol_device(
+            let (_, dev_pk, _) = enrol_device(
                 &f.user_sk,
                 f.user_pk,
                 "laptop",
@@ -850,13 +711,13 @@ mod tests {
         // Phase: hosts_pin_unpin.
         {
             let f = fresh_user();
-            let (_a_sk, a_pk, _) = enrol_device(
+            let (_, a_pk, _) = enrol_device(
                 &f.user_sk,
                 f.user_pk,
                 "laptop",
                 DeviceCapabilities::primary(),
             );
-            let (_h_sk, h_pk, _) = enrol_device(
+            let (_, h_pk, _) = enrol_device(
                 &f.user_sk,
                 f.user_pk,
                 "server",
@@ -882,13 +743,13 @@ mod tests {
         // Phase: concurrent_add_merges.
         {
             let f = fresh_user();
-            let (a_sk, a_pk, a_cert) = enrol_device(
+            let (_, a_pk, _) = enrol_device(
                 &f.user_sk,
                 f.user_pk,
                 "laptop",
                 DeviceCapabilities::primary(),
             );
-            let (b_sk, b_pk, b_cert) =
+            let (_, b_pk, _) =
                 enrol_device(&f.user_sk, f.user_pk, "phone", DeviceCapabilities::member());
 
             let mut dev_a = WorkspaceDirectory::new(f.user_pk, a_pk);
@@ -901,17 +762,11 @@ mod tests {
                 .add_workspace(WorkspaceId::from_u128(2), "Work")
                 .unwrap();
 
-            // Both push a delta; both apply the other's.
-            let delta_a = dev_a.sync_incremental(&a_sk, 1_000).unwrap();
-            let delta_b = dev_b.sync_incremental(&b_sk, 1_000).unwrap();
-
-            let revs = RevocationList::new();
-            dev_a
-                .apply_incremental(&delta_b, &b_cert, &revs, 1_100)
-                .unwrap();
-            dev_b
-                .apply_incremental(&delta_a, &a_cert, &revs, 1_100)
-                .unwrap();
+            // Each takes in the other's whole state.
+            let state_a = dev_a.save();
+            let state_b = dev_b.save();
+            assert!(dev_a.merge(&state_b).unwrap());
+            assert!(dev_b.merge(&state_a).unwrap());
 
             let id = WorkspaceId::from_u128;
             let ids_a: Vec<WorkspaceId> =
@@ -925,7 +780,7 @@ mod tests {
         // Phase: save_and_load_round_trip.
         {
             let f = fresh_user();
-            let (a_sk, a_pk, _) = enrol_device(
+            let (_, a_pk, _) = enrol_device(
                 &f.user_sk,
                 f.user_pk,
                 "laptop",
@@ -943,199 +798,6 @@ mod tests {
             assert_eq!(ws[0].id, WorkspaceId::from_u128(42));
             assert_eq!(ws[0].name, "Answer");
             assert_eq!(ws[0].pinned_devices, vec![a_pk]);
-            let _ = a_sk;
-        }
-    }
-
-    tilo_test_env::scenario! {
-        /// A change's author is provable via its signature; deltas from a revoked device, the wrong
-        /// device or another user are rejected.
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-        )]
-        fn directory_deltas_are_accepted_only_from_the_users_live_devices;
-
-        phase author_of_change_is_provable_via_signature;
-        {
-            let f = fresh_user();
-            let (a_sk, a_pk, a_cert) = enrol_device(
-                &f.user_sk,
-                f.user_pk,
-                "laptop",
-                DeviceCapabilities::primary(),
-            );
-
-            let mut dir = WorkspaceDirectory::new(f.user_pk, a_pk);
-            dir.add_workspace(WorkspaceId::from_u128(1), "Personal")
-                .unwrap();
-            let mut delta = dir.sync_incremental(&a_sk, 500).unwrap();
-
-            // Baseline: apply cleanly on a fresh replica.
-            let mut peer = WorkspaceDirectory::new(f.user_pk, [7u8; 32]);
-            peer.apply_incremental(&delta, &a_cert, &RevocationList::new(), 600)
-                .unwrap();
-
-            // Now flip a byte in the delta payload — signature should
-            // reject.
-            peer = WorkspaceDirectory::new(f.user_pk, [7u8; 32]);
-            if let Some(b) = delta.delta.get_mut(0) {
-                *b ^= 0x01;
-            }
-            assert!(matches!(
-                peer.apply_incremental(&delta, &a_cert, &RevocationList::new(), 600)
-                    .unwrap_err(),
-                DirectoryError::BadSignature
-            ));
-        }
-
-        phase revoked_device_delta_rejected;
-        {
-            let f = fresh_user();
-            let (a_sk, a_pk, a_cert) = enrol_device(
-                &f.user_sk,
-                f.user_pk,
-                "laptop",
-                DeviceCapabilities::primary(),
-            );
-            let (b_sk, b_pk, b_cert) =
-                enrol_device(&f.user_sk, f.user_pk, "phone", DeviceCapabilities::member());
-
-            // The user revokes phone at t=500.
-            let mut rev = RevocationEntry {
-                user_public_key: f.user_pk,
-                revoked_device_public_key: b_pk,
-                revoked_at_ns: 500,
-                reason: RevocationReason::Lost,
-                signature: [0u8; 64],
-            };
-            sign_revocation_entry(&mut rev, &f.user_sk).unwrap();
-            let mut revs = RevocationList::new();
-            revs.insert(rev).unwrap();
-
-            // Laptop's directory.
-            let mut dir = WorkspaceDirectory::new(f.user_pk, a_pk);
-            dir.add_workspace(WorkspaceId::from_u128(1), "Personal")
-                .unwrap();
-            let a_delta = dir.sync_incremental(&a_sk, 400).unwrap();
-
-            // Phone tries to publish an addition at t=600 (after
-            // revocation). Even though the phone still has its old
-            // cert, the apply-side rejects because the *update*
-            // timestamp postdates the revocation.
-            let mut phone_dir = WorkspaceDirectory::new(f.user_pk, b_pk);
-            phone_dir
-                .apply_incremental(&a_delta, &a_cert, &revs, 700)
-                .unwrap();
-            phone_dir
-                .add_workspace(WorkspaceId::from_u128(2), "Work")
-                .unwrap();
-            let b_delta = phone_dir.sync_incremental(&b_sk, 600).unwrap();
-
-            assert!(matches!(
-                dir.apply_incremental(&b_delta, &b_cert, &revs, 700)
-                    .unwrap_err(),
-                DirectoryError::Revoked
-            ));
-
-            // But a delta authored *before* the revocation cut-off is
-            // still accepted (grace: the change was legitimately made
-            // by a trusted device at the time).
-            let mut phone_dir = WorkspaceDirectory::new(f.user_pk, b_pk);
-            phone_dir
-                .add_workspace(WorkspaceId::from_u128(3), "PreRevoke")
-                .unwrap();
-            let pre_delta = phone_dir.sync_incremental(&b_sk, 400).unwrap();
-            dir.apply_incremental(&pre_delta, &b_cert, &revs, 700)
-                .unwrap();
-            assert!(
-                dir.list_workspaces()
-                    .iter()
-                    .any(|w| w.id == WorkspaceId::from_u128(3))
-            );
-        }
-
-        phase delta_signed_by_wrong_device_rejected;
-        {
-            let f = fresh_user();
-            let (_a_sk, a_pk, a_cert) = enrol_device(
-                &f.user_sk,
-                f.user_pk,
-                "laptop",
-                DeviceCapabilities::primary(),
-            );
-            let (b_sk, _b_pk, _b_cert) =
-                enrol_device(&f.user_sk, f.user_pk, "phone", DeviceCapabilities::member());
-
-            let mut dir = WorkspaceDirectory::new(f.user_pk, a_pk);
-            dir.add_workspace(WorkspaceId::from_u128(1), "Personal")
-                .unwrap();
-            // Sign with B's key but pass A's cert — the apply-side
-            // catches the identity mismatch.
-            let mut delta = dir.sync_incremental(&b_sk, 400).unwrap();
-            // Rewrite the author to A so the cert-vs-author check
-            // passes; the signature check then fails because the delta
-            // was signed with B's key.
-            delta.author_device_public_key = a_pk;
-            assert!(matches!(
-                dir.apply_incremental(&delta, &a_cert, &RevocationList::new(), 600)
-                    .unwrap_err(),
-                DirectoryError::BadSignature
-            ));
-        }
-
-        phase cross_user_delta_rejected;
-        {
-            let f_alice = fresh_user();
-            let f_bob = fresh_user();
-            let (_a_sk, a_pk, a_cert_alice) = enrol_device(
-                &f_alice.user_sk,
-                f_alice.user_pk,
-                "laptop",
-                DeviceCapabilities::primary(),
-            );
-            // Alice's directory. Bob attempts to apply a delta with a
-            // cert issued under Bob's identity — rejected as WrongIdentity.
-            let (b_sk, b_pk, _) = enrol_device(
-                &f_bob.user_sk,
-                f_bob.user_pk,
-                "phone",
-                DeviceCapabilities::primary(),
-            );
-            let mut alice_dir = WorkspaceDirectory::new(f_alice.user_pk, a_pk);
-            alice_dir
-                .add_workspace(WorkspaceId::from_u128(1), "AlicePersonal")
-                .unwrap();
-            let delta = alice_dir.sync_incremental(&b_sk, 100).unwrap();
-            // Pass Alice's own cert but the delta's author is Bob's
-            // device key — the cert-vs-author guard rejects.
-            assert!(matches!(
-                alice_dir
-                    .apply_incremental(&delta, &a_cert_alice, &RevocationList::new(), 200)
-                    .unwrap_err(),
-                DirectoryError::WrongIdentity
-            ));
-            // And a delta whose author matches Bob's cert, but the
-            // cert's user identity is Bob's — again WrongIdentity, but
-            // triggered by the different guard.
-            let (b_sk2, b_pk2, b_cert_bob) = enrol_device(
-                &f_bob.user_sk,
-                f_bob.user_pk,
-                "laptop",
-                DeviceCapabilities::primary(),
-            );
-            let mut bob_dir = WorkspaceDirectory::new(f_bob.user_pk, b_pk2);
-            bob_dir
-                .add_workspace(WorkspaceId::from_u128(1), "BobPersonal")
-                .unwrap();
-            let bob_delta = bob_dir.sync_incremental(&b_sk2, 100).unwrap();
-            assert!(matches!(
-                alice_dir
-                    .apply_incremental(&bob_delta, &b_cert_bob, &RevocationList::new(), 200)
-                    .unwrap_err(),
-                DirectoryError::WrongIdentity
-            ));
-            let _ = b_pk;
         }
     }
 
@@ -1147,13 +809,13 @@ mod tests {
         // brings it to another device of the same person.
         {
             let f = fresh_user();
-            let (a_sk, a_pk, a_cert) = enrol_device(
+            let (_, a_pk, _) = enrol_device(
                 &f.user_sk,
                 f.user_pk,
                 "laptop",
                 DeviceCapabilities::primary(),
             );
-            let (b_sk, b_pk, _) =
+            let (_, b_pk, _) =
                 enrol_device(&f.user_sk, f.user_pk, "board", DeviceCapabilities::member());
             let workspace = WorkspaceId::from_u128(7);
 
@@ -1169,63 +831,67 @@ mod tests {
             );
 
             let mut board = WorkspaceDirectory::new(f.user_pk, b_pk);
-            let snapshot = laptop.signed_snapshot(&a_sk, 1_000).unwrap();
-            board
-                .apply_incremental(&snapshot, &a_cert, &RevocationList::new(), 1_100)
-                .unwrap();
+            let state = laptop.save();
+            assert!(board.merge(&state).unwrap());
             let listed = board.list_workspaces();
             assert_eq!(listed.len(), 1);
             assert_eq!(listed[0].name, "Research");
             assert_eq!(listed[0].id, workspace);
 
             assert!(
-                board.covered_by(&snapshot.delta),
+                !board.lacks(&state),
                 "the board holds nothing the laptop lacks"
             );
-            assert!(laptop.covered_by(&board.signed_snapshot(&b_sk, 1_200).unwrap().delta));
+            assert!(!laptop.lacks(&board.save()));
+            assert!(!board.merge(&state).unwrap(), "a state taken in is no news");
 
             laptop.add_workspace(workspace, "Thesis").unwrap();
-            assert!(
-                !laptop.covered_by(&snapshot.delta),
-                "the rename is news to the board"
-            );
-            let renamed = laptop.signed_snapshot(&a_sk, 2_000).unwrap();
-            board
-                .apply_incremental(&renamed, &a_cert, &RevocationList::new(), 2_100)
-                .unwrap();
+            assert!(laptop.lacks(&state), "the rename is news to the board");
+            board.merge(&laptop.save()).unwrap();
             assert_eq!(board.list_workspaces()[0].name, "Thesis");
 
-            // Snapshots taken between uncommitted edits stay one history: the
-            // second edit must not reuse the first snapshot's change.
+            // States saved between uncommitted edits stay one history: the
+            // second edit must not reuse the first state's change.
             let mut fresh = WorkspaceDirectory::new(f.user_pk, a_pk);
             fresh
                 .add_workspace(WorkspaceId::from_u128(8), "One")
                 .unwrap();
-            let first = fresh.signed_snapshot(&a_sk, 3_000).unwrap();
+            let first = fresh.save();
             fresh
                 .add_workspace(WorkspaceId::from_u128(8), "Two")
                 .unwrap();
-            let second = fresh.signed_snapshot(&a_sk, 3_100).unwrap();
+            let second = fresh.save();
             let mut other = WorkspaceDirectory::new(f.user_pk, b_pk);
-            for update in [&first, &second] {
-                other
-                    .apply_incremental(update, &a_cert, &RevocationList::new(), 3_200)
-                    .unwrap();
+            for state in [&first, &second] {
+                other.merge(state).unwrap();
             }
             assert_eq!(other.list_workspaces()[0].name, "Two");
+
+            // Where each device that holds a workspace reaches its host is that
+            // device's to say; the host's own word comes first.
+            let hosted = WorkspaceId::from_u128(9);
+            laptop.add_workspace(hosted, "Hosted").unwrap();
+            laptop.set_host_devices(hosted, &[b_pk]).unwrap();
+            assert!(laptop.set_host_hint(hosted, a_pk, b"laptop's").unwrap());
+            assert!(!laptop.set_host_hint(hosted, a_pk, b"laptop's").unwrap());
+            assert_eq!(laptop.host_hint(hosted).as_deref(), Some(&b"laptop's"[..]));
+            board.merge(&laptop.save()).unwrap();
+            board.set_host_hint(hosted, b_pk, b"the host's").unwrap();
+            laptop.merge(&board.save()).unwrap();
+            assert_eq!(laptop.host_hint(hosted).as_deref(), Some(&b"the host's"[..]));
         }
 
         phase order_and_devices_reach_another_device;
         // Positions and the device roster travel like the rest of the list.
         {
             let f = fresh_user();
-            let (a_sk, a_pk, a_cert) = enrol_device(
+            let (_, a_pk, _) = enrol_device(
                 &f.user_sk,
                 f.user_pk,
                 "laptop",
                 DeviceCapabilities::primary(),
             );
-            let (_b_sk, b_pk, _) =
+            let (_, b_pk, _) =
                 enrol_device(&f.user_sk, f.user_pk, "board", DeviceCapabilities::member());
             let mut laptop = WorkspaceDirectory::new(f.user_pk, a_pk);
             laptop
@@ -1243,12 +909,7 @@ mod tests {
             );
             let mut board = WorkspaceDirectory::new(f.user_pk, b_pk);
             board
-                .apply_incremental(
-                    &laptop.signed_snapshot(&a_sk, 1_000).unwrap(),
-                    &a_cert,
-                    &RevocationList::new(),
-                    1_100,
-                )
+                .merge(&laptop.save())
                 .unwrap();
             assert_eq!(board.list_workspaces()[0].order, Some(2.5));
             assert_eq!(board.devices(), vec![(a_pk, "Laptop".to_string())]);
@@ -1260,13 +921,13 @@ mod tests {
         // not put back by the directory.
         {
             let f = fresh_user();
-            let (a_sk, a_pk, a_cert) = enrol_device(
+            let (_, a_pk, _) = enrol_device(
                 &f.user_sk,
                 f.user_pk,
                 "laptop",
                 DeviceCapabilities::primary(),
             );
-            let (_b_sk, b_pk, _) =
+            let (_, b_pk, _) =
                 enrol_device(&f.user_sk, f.user_pk, "board", DeviceCapabilities::member());
             let site = "https://tilo.sh/";
             let mut laptop = WorkspaceDirectory::new(f.user_pk, a_pk);
@@ -1297,12 +958,7 @@ mod tests {
 
             let mut board = WorkspaceDirectory::new(f.user_pk, b_pk);
             board
-                .apply_incremental(
-                    &laptop.signed_snapshot(&a_sk, 1_000).unwrap(),
-                    &a_cert,
-                    &RevocationList::new(),
-                    1_100,
-                )
+                .merge(&laptop.save())
                 .unwrap();
             assert_eq!(
                 board.community(site),
@@ -1321,13 +977,13 @@ mod tests {
         // devices both land.
         {
             let f = fresh_user();
-            let (a_sk, a_pk, a_cert) = enrol_device(
+            let (_, a_pk, _) = enrol_device(
                 &f.user_sk,
                 f.user_pk,
                 "laptop",
                 DeviceCapabilities::primary(),
             );
-            let (b_sk, b_pk, b_cert) =
+            let (_, b_pk, _) =
                 enrol_device(&f.user_sk, f.user_pk, "board", DeviceCapabilities::member());
             let (_, later_pk, _) =
                 enrol_device(&f.user_sk, f.user_pk, "phone", DeviceCapabilities::member());
@@ -1337,12 +993,7 @@ mod tests {
                 .unwrap();
             let mut board = WorkspaceDirectory::new(f.user_pk, b_pk);
             board
-                .apply_incremental(
-                    &laptop.signed_snapshot(&a_sk, 1_000).unwrap(),
-                    &a_cert,
-                    &RevocationList::new(),
-                    1_100,
-                )
+                .merge(&laptop.save())
                 .unwrap();
             laptop
                 .set_kept_off(WorkspaceId::from_u128(4), a_pk, true)
@@ -1350,14 +1001,8 @@ mod tests {
             board
                 .set_kept_off(WorkspaceId::from_u128(4), b_pk, true)
                 .unwrap();
-            let revs = RevocationList::new();
             laptop
-                .apply_incremental(
-                    &board.signed_snapshot(&b_sk, 1_200).unwrap(),
-                    &b_cert,
-                    &revs,
-                    1_300,
-                )
+                .merge(&board.save())
                 .unwrap();
             let mut both = vec![a_pk, b_pk];
             both.sort_unstable();

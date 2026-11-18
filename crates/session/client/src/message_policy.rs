@@ -87,12 +87,10 @@ pub fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceAction> 
             Some((TreePath::root(), ActionKind::Read))
         }
         // Settled before the check: identity is how a sender becomes known at all; a codec advert,
-        // the person's workspace list, a device's verdicts on its siblings' writes and its ask for
-        // a group's frames travel only between the person's own devices, never in a workspace.
+        // a device's verdicts on its siblings' writes and its ask for a group's frames travel only
+        // between the person's own devices, never in a workspace.
         NeighbourMsg::IdentityHello { .. }
         | NeighbourMsg::MediaCapabilities { .. }
-        | NeighbourMsg::PersonalWorkspaces { .. }
-        | NeighbourMsg::PersonalHosts { .. }
         | NeighbourMsg::MlsGovernanceWanted { .. }
         | NeighbourMsg::WriteRefusals { .. }
         // Retired generations, refused where they enter
@@ -102,7 +100,9 @@ pub fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceAction> 
         | NeighbourMsg::PermissionRequest { .. }
         | NeighbourMsg::RetiredPresenceMoved { .. }
         | NeighbourMsg::RetiredPresenceCleared { .. }
-        | NeighbourMsg::RetiredAppPresenceV2 { .. } => None,
+        | NeighbourMsg::RetiredAppPresenceV2 { .. }
+        | NeighbourMsg::RetiredPersonalWorkspaces
+        | NeighbourMsg::RetiredPersonalHosts => None,
     }
 }
 
@@ -373,18 +373,6 @@ mod tests {
                     delivery: 0,
                 },
                 Some(read()),
-            ),
-            (
-                NeighbourMsg::PersonalWorkspaces {
-                    user_public_key: [1; 32],
-                    update: Box::new(tilo_user_identity::DirectoryUpdate {
-                        author_device_public_key: [2; 32],
-                        authored_at_ns: 0,
-                        delta: Vec::new(),
-                        signature: [3; 64],
-                    }),
-                },
-                None,
             ),
             (
                 NeighbourMsg::DocumentContentWant {
