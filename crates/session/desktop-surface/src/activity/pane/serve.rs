@@ -140,6 +140,24 @@ fn lens_of(key: Option<&str>) -> LensSelection {
     }
 }
 
+/// Whether `id` is one of `resources`, or a part of a chain or a chunk of a resource among them.
+fn kept_by(id: &DocumentId, resources: &[String]) -> bool {
+    let mut id = id.clone();
+    loop {
+        if resources.iter().any(|resource| resource == id.as_str()) {
+            return true;
+        }
+        match id
+            .chain_part()
+            .map(|(chain, _)| chain)
+            .or_else(|| id.chunk_of().map(|(base, _)| base))
+        {
+            Some(base) => id = base,
+            None => return false,
+        }
+    }
+}
+
 fn entry_id(hex: &str) -> Option<HistoryEntryId> {
     wire::entry_id(hex).map(HistoryEntryId::from_bytes)
 }
@@ -335,9 +353,21 @@ impl WorkspaceActivityPane {
         }
         let groups = self.groups_by_entry();
         let refused = self.refusals_by_change();
+        let window = query.resources.as_ref();
         let visible = (0..self.timeline.visible_len())
             .filter_map(|index| self.timeline.visible_entry(index))
+            .filter(|entry| window.is_none_or(|window| self.in_window(entry, window)))
             .collect::<Vec<_>>();
+        // A window's own history names nothing of the workspace's beyond its resources: no other
+        // app's lens, no group or person none of its changes are in.
+        let in_view = |group: &str| {
+            window.is_none()
+                || visible.iter().any(|entry| {
+                    groups
+                        .get(&entry.id)
+                        .is_some_and(|id| id.as_deref() == Some(group))
+                })
+        };
         wire::Feed {
             workspace: self.workspace_name.clone(),
             scope: wire_scope(self.scope),
@@ -354,6 +384,7 @@ impl WorkspaceActivityPane {
             groups: self
                 .named
                 .iter()
+                .filter(|range| in_view(&range.id))
                 .map(|range| wire::Group {
                     id: range.id.clone(),
                     label: range.label.clone(),
@@ -362,11 +393,18 @@ impl WorkspaceActivityPane {
                     named_by: range.named_by.as_ref().map(|author| author.name.clone()),
                 })
                 .collect(),
-            people: self.contributors.clone(),
+            people: self
+                .contributors
+                .iter()
+                .filter(|name| {
+                    window.is_none() || visible.iter().any(|entry| &entry.author.name == *name)
+                })
+                .cloned()
+                .collect(),
             lenses: self
                 .lens_candidates()
                 .into_iter()
-                .filter(|(lens, _)| *lens != LensSelection::All)
+                .filter(|(lens, _)| window.is_none() && *lens != LensSelection::All)
                 .map(|(lens, label)| wire::Lens {
                     key: lens_key(&lens),
                     label,
@@ -375,6 +413,28 @@ impl WorkspaceActivityPane {
             mutations: self.host.mutations_available(),
             ..wire::Feed::default()
         }
+    }
+
+    /// Whether `entry` changed one of the resources `window` names, and the item it names if it
+    /// names one.
+    fn in_window(&self, entry: &HistoryEntry, window: &wire::WindowResources) -> bool {
+        let Some(super::super::index::HistoryOrigin::AppRecord { app, id, .. }) = self
+            .projected_origins
+            .get(&entry.id)
+            .map(|address| &address.origin)
+        else {
+            return false;
+        };
+        let item = entry
+            .context
+            .as_ref()
+            .and_then(|context| context.item.as_ref());
+        *app == window.app
+            && kept_by(id, &window.resources)
+            && window
+                .item
+                .as_ref()
+                .is_none_or(|wanted| item.is_some_and(|item| item.id == *wanted))
     }
 
     /// The named group each timeline entry sits in, by entry.

@@ -127,14 +127,46 @@ pub struct FeedQuery {
     /// Only the changes of this lens, by [`Lens::key`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lens: Option<String>,
+    /// Only the changes to the resources one window of an app keeps: what the
+    /// app's own History lists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resources: Option<WindowResources>,
     /// The newest this many changes; `0` for the first page.
     pub limit: usize,
+}
+
+/// The resources one window of an app keeps: its own, and the chains of parts
+/// it keeps beside it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WindowResources {
+    /// The app whose resources they are, by id.
+    pub app: String,
+    /// The window's own resource and each chain it keeps, by document id. A
+    /// part of one of these chains, or a chunk of one of these resources, is
+    /// the window's too.
+    pub resources: Vec<String>,
+    /// Only the changes to this item of them (a note, a task), by the id its
+    /// actions name it by.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
 }
 
 /// How many changes a feed answers when its query asks for no number.
 pub const FEED_PAGE: usize = 200;
 
 impl FeedQuery {
+    /// Whether this query reads only resources of `app` in the workspace its
+    /// caller works in: what an app may read as the person using it.
+    #[must_use]
+    pub fn reads_only_resources_of(&self, app: &str) -> bool {
+        self.scope == Scope::ThisWorkspace
+            && self
+                .resources
+                .as_ref()
+                .is_some_and(|resources| resources.app == app)
+    }
+
     /// How many changes the feed answers.
     #[must_use]
     pub const fn page(&self) -> usize {
@@ -1153,6 +1185,11 @@ mod tests {
                 period: Period::Week,
                 author: Some("Ada".into()),
                 lens: Some("app:so.tilo.notes".into()),
+                resources: Some(WindowResources {
+                    app: "so.tilo.notes".into(),
+                    resources: vec!["window:0000000000000000".into()],
+                    item: Some("note-1".into()),
+                }),
                 limit: 400,
             };
             let InvokeArgument::Json(map) = argument(&query) else {
@@ -1161,6 +1198,11 @@ mod tests {
             let read: FeedQuery = serde_json::from_value(serde_json::Value::Object(map)).unwrap();
             assert_eq!(read, query);
             assert_eq!(FeedQuery::default().page(), FEED_PAGE);
+            assert!(!query.reads_only_resources_of("so.tilo.notes"), "every workspace's is no app's own");
+            let here = FeedQuery { scope: Scope::ThisWorkspace, ..query };
+            assert!(here.reads_only_resources_of("so.tilo.notes"));
+            assert!(!here.reads_only_resources_of("so.tilo.chat"), "Notes' resources are not Chat's");
+            assert!(!FeedQuery::default().reads_only_resources_of("so.tilo.notes"));
         }
     }
 }

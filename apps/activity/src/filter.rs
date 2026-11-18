@@ -24,6 +24,7 @@ impl Filter {
             period: period(&self.period),
             author: Some(self.author.clone()).filter(|author| !author.is_empty()),
             lens: Some(self.lens.clone()).filter(|lens| !lens.is_empty()),
+            resources: None,
             limit: 0,
         }
     }
