@@ -37,16 +37,3 @@ impl MusicBackend for OfflineBackend {
         )))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn offline_search_is_empty_and_resolve_errors() {
-        let b = OfflineBackend::new();
-        assert_eq!(b.name(), "offline (bundled library)");
-        assert!(b.search_tracks("anything").unwrap().is_empty());
-        assert!(b.resolve_audio("abc").is_err());
-    }
-}

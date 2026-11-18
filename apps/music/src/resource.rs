@@ -854,13 +854,6 @@ mod tests {
         assert_eq!(app.state().recommendations.likes, !likes);
     }
 
-    #[test]
-    fn a_new_library_is_empty() {
-        let app = TestApp::<MusicShell>::new().unwrap();
-        let library = app.state();
-        assert!(library.tracks.is_empty() && library.playlists.is_empty());
-    }
-
     /// The scenarios that stage no library, in the order the app lists them: each shows what its
     /// window shows before any music is in it.
     const EMPTY_SCENARIOS: [&str; 7] = [

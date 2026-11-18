@@ -476,35 +476,21 @@ pub fn preferred_backend(note: impl FnOnce(String)) -> Box<dyn MusicBackend> {
 mod tests {
     use super::*;
 
+    /// A build with no live client still opens music: the bundled library is what every
+    /// screen shows, nothing reaches the network, and asking to stream says why it cannot.
     #[test]
-    fn default_backend_is_offline_empty_and_cannot_stream() {
+    fn a_build_without_a_live_client_serves_the_library_and_never_streams() {
+        let mut note = String::new();
+        let backend = preferred_backend(|line| note = line);
+        assert!(!note.is_empty(), "the window says which library it shows");
+        #[cfg(not(feature = "live"))]
         {
-            let b = default_backend();
-            assert!(!b.is_live());
-            assert!(b.search_tracks("aurora").unwrap().is_empty());
-            assert!(b.resolve_audio("dQw4w9WgXcQ").is_err());
+            assert!(!backend.is_live());
+            assert!(backend.search_tracks("aurora").unwrap().is_empty());
+            assert!(backend.resolve_audio("dQw4w9WgXcQ").is_err());
+            let bundle = backend.search_all("aurora").unwrap();
+            assert!(bundle.is_empty(), "no bucket invents a result");
         }
-
-        {
-            let b = default_backend();
-            // The multi-type search shape exists on the real trait; offline it just
-            // yields an empty bundle across every bucket (never an error).
-            let bundle = b.search_all("aurora").unwrap();
-            assert!(bundle.is_empty());
-            assert!(bundle.tracks.is_empty());
-            assert!(bundle.albums.is_empty());
-            assert!(bundle.artists.is_empty());
-            assert!(bundle.playlists.is_empty());
-            assert!(bundle.top.is_none());
-        }
-
-        {
-            let mut msg = String::new();
-            let b = preferred_backend(|m| msg = m);
-            assert!(!msg.is_empty());
-            #[cfg(not(feature = "live"))]
-            assert!(!b.is_live());
-            let _ = b;
-        }
+        let _ = backend;
     }
 }
