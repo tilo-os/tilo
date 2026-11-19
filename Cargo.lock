@@ -17989,6 +17989,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tilo-actions",
+ "tilo-automerge-isolate",
  "tilo-clock",
  "tilo-delivery-protocol",
  "tilo-device-mcp",

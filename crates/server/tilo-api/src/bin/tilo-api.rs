@@ -49,6 +49,12 @@ fn origins(name: &str) -> Result<Vec<String>, String> {
 }
 
 fn main() -> Result<(), String> {
+    // Automerge isolation workers re-enter this binary; serve them first. The
+    // sessions this server holds for the person's keys admit their
+    // workspaces' governance, which is decided there.
+    if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        std::process::exit(i32::from(code));
+    }
     // With no filter of its own a site keeps warnings, as the server beside it
     // does: among them why an approval was refused.
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
