@@ -78,7 +78,7 @@ impl ResourceLimiter for GrowthLimits {
         desired: usize,
         maximum: Option<usize>,
     ) -> wasmtime::Result<bool> {
-        if desired > self.limits.max_table_elements || maximum.is_some_and(|max| desired > max) {
+        if maximum.is_some_and(|max| desired > max) {
             return Err(wasmtime::Error::new(GrowthLimited));
         }
         Ok(true)
