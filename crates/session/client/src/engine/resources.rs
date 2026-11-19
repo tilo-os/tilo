@@ -154,6 +154,23 @@ impl Engine {
         self.publish_written(workspace, app, written).await
     }
 
+    /// Takes back the invocation `invocation` in `workspace`'s resources of `app`, in every
+    /// document it changed, as `stamp` names: an invocation of its own that names the verb it
+    /// takes back and, in `undoes`, the invocation.
+    ///
+    /// # Errors
+    /// As [`Self::put_resource`].
+    pub async fn undo_resources(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        invocation: &str,
+        stamp: &Stamp,
+    ) -> Result<Vec<AppWrite>, WriteRefusal> {
+        let written = self.write_store(workspace, app, |store| store.undo(invocation, stamp))?;
+        self.publish_written(workspace, app, written).await
+    }
+
     /// Edits the content of the resource `id` of `kind`, of `app`, in `workspace`, as `stamp`
     /// names: `edit` is given the root of its content.
     ///

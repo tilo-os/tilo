@@ -7475,6 +7475,14 @@ impl FrameHarness {
         self.settle_history_control(prepared, confirmed)
     }
 
+    /// Whether a control's invocation is still waiting for its answer: the
+    /// frames a test keeps running until the window has answered what a click
+    /// submitted.
+    #[must_use]
+    pub fn control_invocations_pending(&self) -> bool {
+        !self.pending_control_invocations.is_empty() || !self.bound_invocations.is_empty()
+    }
+
     fn dispatch_control_invocations(&mut self) {
         crate::history_mode::embedded::discard_active_output(self.root.as_mut());
         let registered = self.control_domain.drain_partitioned();

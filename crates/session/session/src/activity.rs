@@ -1998,14 +1998,10 @@ mod tests {
             ui::resource::DocumentId::package_primary().as_str(),
             "{action:?}"
         );
-        let finished = tilo_desktop::here::AgentFinished {
-            publisher: String::new(),
-            label: "Claude Code".into(),
-        };
         assert_eq!(
-            finished.summary(&first).map(|summary| summary.changes),
-            Some(2),
-            "the finished notice counts the two changes it made in the notebook"
+            run.changes(),
+            2,
+            "the run counts the two changes it made in the notebook"
         );
 
         // It writes again: the run ends at what it added, its fifth change.

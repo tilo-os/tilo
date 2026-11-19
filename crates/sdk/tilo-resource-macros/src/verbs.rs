@@ -254,8 +254,8 @@ struct ActionOptions {
     /// `by_app`: only the app's own code applies it. It is declared to no
     /// caller: never published, never built by its id, refused as a value.
     by_app: bool,
-    /// `step = "create"`: the kind of step it takes, as presence and the
-    /// activity card say it (`tilo_actions::StepKind`).
+    /// `step = "create"`: the kind of step it takes, as presence says it
+    /// (`tilo_actions::StepKind`).
     step: Option<syn::Ident>,
 }
 

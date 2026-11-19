@@ -30,7 +30,7 @@ impl Banners {}
 pub enum BannerEffect {
     /// Open notification
     #[effect(kind = "outside")]
-    #[effect(own_device, attended, icon = "bell")]
+    #[effect(own_device, attended, icon = "bell", on = BannerRow)]
     Open {
         #[param("The banner to open; the newest when left out")]
         banner: Option<String>,
@@ -92,6 +92,13 @@ pub enum BannerEffect {
         banner: Option<String>,
     },
 }
+
+/// A banner on screen, as a row of a declared type: what an agent reads to
+/// find the notification to act on, and opens through
+/// [`BannerEffect::Open`].
+#[derive(ui::tilo_resource::Row)]
+#[row(kind = "notifications.banner", label = "Notification banner", effects = BannerEffect)]
+pub struct BannerRow;
 
 /// The screenshot scenarios ([`crate::fixture`]).
 pub(crate) const SCENARIOS: &[&str] = &[

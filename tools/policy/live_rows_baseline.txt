@@ -12,7 +12,6 @@ hand-bound-action 1 crates/session/session/src/session_package.rs
 hand-bound-action 3 crates/session/session/src/style_packages.rs
 hand-bound-action 1 crates/session/session/src/window_share.rs
 hand-built-tree 1 apps/chat/src/testing.rs
-hand-built-tree 2 crates/session/app-launch/src/downloaded.rs
 hand-built-tree 2 crates/session/audio-service/src/media.rs
 hand-built-tree 3 crates/session/audio-service/src/sound.rs
 hand-built-tree 9 crates/session/connectivity-service/src/lib.rs
@@ -31,7 +30,6 @@ hand-built-tree 1 crates/session/portal/src/inhibit.rs
 hand-built-tree 2 crates/session/portal/src/lib.rs
 hand-built-tree 1 crates/session/portal/src/remote_desktop.rs
 hand-built-tree 1 crates/session/portal/src/restore.rs
-hand-built-tree 2 crates/session/service/src/questions.rs
 hand-built-tree 5 crates/session/session/src/controls.rs
 hand-built-tree 3 crates/session/session/src/conversations.rs
 hand-built-tree 3 crates/session/session/src/dev_rust_views.rs
@@ -40,7 +38,6 @@ hand-built-tree 1 crates/session/session/src/session_package.rs
 hand-built-tree 1 crates/session/session/src/style_packages.rs
 hand-built-tree 1 crates/session/session/src/window_share.rs
 hand-built-tree 4 crates/session/system-service/src/lib.rs
-hand-built-tree 3 crates/session/tray/src/service.rs
 row-operation 3 apps/chat/src/effects.rs
 row-operation 1 apps/contacts/src/account_editor.rs
 row-operation 2 apps/contacts/src/actions.rs
@@ -53,9 +50,6 @@ row-operation 16 apps/music/src/actions.rs
 row-operation 12 apps/music/src/app.rs
 row-operation 2 apps/pdf-viewer/src/actions.rs
 row-operation 3 apps/remote/src/actions.rs
-row-operation 5 apps/store/src/app.rs
-row-operation 1 crates/session/activities/src/surface.rs
-row-operation 1 crates/session/notification-banners/src/surface.rs
 untyped-live-row 4 apps/chat/src/effects.rs
 untyped-live-row 1 apps/contacts/src/account_editor.rs
 untyped-live-row 1 apps/contacts/src/actions.rs
@@ -71,6 +65,3 @@ untyped-live-row 9 apps/music/src/actions.rs
 untyped-live-row 2 apps/music/src/app.rs
 untyped-live-row 3 apps/pdf-viewer/src/actions.rs
 untyped-live-row 2 apps/remote/src/actions.rs
-untyped-live-row 13 apps/store/src/app.rs
-untyped-live-row 1 crates/session/activities/src/surface.rs
-untyped-live-row 1 crates/session/notification-banners/src/surface.rs

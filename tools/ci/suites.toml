@@ -289,6 +289,12 @@ suites = [
   "os/tests/test_kernel_build_environment.py",
 ]
 
+# The folder hand-over needs a tilo.sh stack and a FUSE mount, which no cheap suite has: the
+# peer-handover check brings both up in a job of its own.
+[[covered]]
+suite = "os/containers/tilo-sh/test-peer-handover.sh"
+check = "peer-handover"
+
 [[group]]
 name = "pipewire-echo-cancel"
 # The echo-cancelled microphone's PipeWire config, the node names and config

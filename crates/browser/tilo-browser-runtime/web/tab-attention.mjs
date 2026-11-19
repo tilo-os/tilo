@@ -2,22 +2,24 @@
  * What the browser tab says while the person is elsewhere. A tab in a row of
  * tabs shows only its title and icon, so both carry what needs the person:
  * - the title leads with the count of notices they have not seen (the shell's
- *   bell), then an agent waiting for them ("Claude Code needs you") or one
- *   that finished while they were away ("Claude Code finished"), then the
+ *   bell), then an agent waiting for them ("Claude Code needs you"), then the
  *   workspace;
  * - the icon carries a badge while anything of that is there.
- * An agent's finishing counts as news only until the person looks at the tab
- * again: they saw it on the shell then.
  *
  * The browser's notifications themselves are the runtime's to show (it shows
  * them only while the tab is hidden); this page asks for the permission they
  * need, once, at the moment the person first has news they could have been
- * told of elsewhere, never at load. The answer is the browser's to keep; a
- * "Not now" is kept here so the offer is not made again.
+ * told of elsewhere, never at load. It asks where the shell asks everything:
+ * a notification on the shell's own stack, with Turn on and Not now, which
+ * waits in the notification centre when put off. The browser keeps the
+ * answer; the page keeps that it asked, so it never asks twice.
  */
 
-/** The localStorage key that keeps a "Not now". */
-export const DECLINED_KEY = 'tilo.notifications.declined';
+/** The localStorage key that keeps that the page asked. */
+export const OFFERED_KEY = 'tilo.notifications.offered';
+
+/** What the offer's Turn on asks of the page. */
+export const TURN_ON_ACTION = 'browser-notifications-turn-on';
 
 /** `names` as a list read out: "A", "A and B", "A, B and C". */
 function listed(names) {
@@ -26,13 +28,10 @@ function listed(names) {
 }
 
 /** The tab's title for `workspace` and what needs the person: `unread`
- * notices, agents `waiting` for them and agents `finished` while they were
- * away. */
-export function tabTitle({workspace = null, unread = 0, waiting = [], finished = []} = {}) {
+ * notices and agents `waiting` for them. */
+export function tabTitle({workspace = null, unread = 0, waiting = []} = {}) {
   const parts = [];
   if (waiting.length) parts.push(`${listed(waiting)} ${waiting.length === 1 ? 'needs' : 'need'} you`);
-  const done = finished.filter(name => !waiting.includes(name));
-  if (done.length) parts.push(`${listed(done)} finished`);
   parts.push(workspace ? `Tilo · ${workspace}` : 'Tilo');
   const count = unread > 0 ? `(${unread > 99 ? '99+' : unread}) ` : '';
   return `${count}${parts.join(' · ')}`;
@@ -40,9 +39,9 @@ export function tabTitle({workspace = null, unread = 0, waiting = [], finished =
 
 /** What the icon's badge says: the unread count (`9+` beyond nine), a mark
  * when only an agent needs the person, or nothing. */
-export function badgeText({unread = 0, waiting = [], finished = []} = {}) {
+export function badgeText({unread = 0, waiting = []} = {}) {
   if (unread > 0) return unread > 9 ? '9+' : String(unread);
-  return waiting.length || finished.length ? '!' : null;
+  return waiting.length ? '!' : null;
 }
 
 /** The icon with `text` badged on its corner, as a PNG data URL drawn with
@@ -71,43 +70,34 @@ export async function badgedIcon(iconUrl, text, {document: doc = globalThis.docu
 }
 
 /** Whether to offer the browser's notifications now: the browser can show
- * them, nobody asked yet, the person did not say "Not now", and there is
- * news the person could have been told of elsewhere. */
-export function shouldOffer({permission, declined, attention}) {
-  if (permission !== 'default' || declined) return false;
-  return Boolean(attention && (attention.waiting?.length || attention.finished?.length || attention.unread > 0));
+ * them, the page never asked, and there is news the person could have been
+ * told of elsewhere. */
+export function shouldOffer({permission, offered, attention}) {
+  if (permission !== 'default' || offered) return false;
+  return Boolean(attention && (attention.waiting?.length || attention.unread > 0));
 }
 
 /**
  * Title the tab and badge its icon in `window` from the desktop's attention
  * (`update`) and the workspace in front (`setWorkspace`), and offer the
- * browser's notifications once they would have helped.
+ * browser's notifications on the shell (`attach` its mount) once they would
+ * have helped; the shell hands the offer's Turn on back to the page
+ * (`handles`, `perform`).
  */
 export function createTabAttention({window: win = globalThis, storage = safeStorage(win)} = {}) {
   const doc = win.document;
   let workspace = null;
-  let attention = {unread: 0, waiting: [], finished: []};
-  // Finished agents' notices the person saw: on the shell, while the tab was in view.
-  const seen = new Set();
+  let attention = {unread: 0, waiting: []};
   let shownBadge;
-  let offer = null;
+  let mount = null;
   const iconLink = () => doc?.querySelector?.('link[rel~="icon"]') ?? null;
   const baseIcon = iconLink()?.href ?? null;
   const hidden = () => doc?.visibilityState === 'hidden';
-  const finishedNames = () => {
-    const names = [];
-    for (const {id, agent} of attention.finished ?? []) {
-      if (!seen.has(id) && !names.includes(agent)) names.push(agent);
-    }
-    return names;
-  };
-  const current = () => ({unread: attention.unread ?? 0, waiting: attention.waiting ?? [], finished: finishedNames()});
 
   function render() {
-    const now = current();
-    const title = tabTitle({workspace, ...now});
+    const title = tabTitle({workspace, ...attention});
     if (doc && doc.title !== title) doc.title = title;
-    const text = badgeText(now);
+    const text = badgeText(attention);
     if (text === shownBadge) return;
     shownBadge = text;
     const link = iconLink();
@@ -118,33 +108,21 @@ export function createTabAttention({window: win = globalThis, storage = safeStor
     }).catch(() => {});
   }
 
-  function look() {
-    // In view, what is on the shell is seen.
-    if (hidden()) return;
-    for (const {id} of attention.finished ?? []) seen.add(id);
-    render();
-    maybeOffer();
-  }
-
   function maybeOffer() {
-    if (offer || hidden()) return;
+    if (!mount?.offerHostAction || hidden()) return;
     const permission = typeof win.Notification === 'function' ? win.Notification.permission : 'unavailable';
-    let declined = false;
-    try { declined = storage?.getItem(DECLINED_KEY) === '1'; } catch { /* no storage: ask */ }
-    if (!shouldOffer({permission, declined, attention: {...attention, finished: attention.finished ?? []}})) return;
-    offer = showOffer(doc, {
-      allow: () => {
-        offer?.remove();
-        void Promise.resolve(win.Notification.requestPermission?.()).then(answer => {
-          // The page subscribes to pushes now (web-push.mjs).
-          if (answer === 'granted') win.dispatchEvent?.(new win.Event('tilo-notifications-allowed'));
-        }).catch(() => {});
-      },
-      decline: () => { offer?.remove(); try { storage?.setItem(DECLINED_KEY, '1'); } catch { /* kept for this page only */ } },
+    let offered = false;
+    try { offered = storage?.getItem(OFFERED_KEY) === '1'; } catch { /* no storage: ask */ }
+    if (!shouldOffer({permission, offered, attention})) return;
+    try { storage?.setItem(OFFERED_KEY, '1'); } catch { /* asked on this page only */ }
+    mount.offerHostAction({
+      action: {id: TURN_ON_ACTION, title: 'Turn on'},
+      title: 'Get notified when an agent needs you',
+      body: 'Also when someone mentions you, with this tab in the background',
     });
   }
 
-  doc?.addEventListener?.('visibilitychange', look);
+  doc?.addEventListener?.('visibilitychange', () => { render(); maybeOffer(); });
   return {
     setWorkspace(name) {
       if (typeof name !== 'string' || !name || name === workspace) return;
@@ -152,10 +130,21 @@ export function createTabAttention({window: win = globalThis, storage = safeStor
       render();
     },
     update(next) {
-      attention = {unread: next?.unread ?? 0, waiting: next?.waiting ?? [], finished: next?.finished ?? []};
-      if (!hidden()) for (const {id} of attention.finished) seen.add(id);
+      attention = {unread: next?.unread ?? 0, waiting: next?.waiting ?? []};
       render();
       maybeOffer();
+    },
+    attach(shell) {
+      mount = shell ?? null;
+      maybeOffer();
+    },
+    handles: id => id === TURN_ON_ACTION,
+    perform() {
+      // The person's press on the shell's Turn on is still the gesture the browser asks inside.
+      void Promise.resolve(win.Notification?.requestPermission?.()).then(answer => {
+        // The page subscribes to pushes now (web-push.mjs).
+        if (answer === 'granted') win.dispatchEvent?.(new win.Event('tilo-notifications-allowed'));
+      }).catch(() => {});
     },
     get title() { return doc?.title; },
   };
@@ -163,37 +152,4 @@ export function createTabAttention({window: win = globalThis, storage = safeStor
 
 function safeStorage(win) {
   try { return win.localStorage ?? null; } catch { return null; }
-}
-
-/** The offer card: what turning notifications on does, Turn on and Not now.
- * It stands at the work area's bottom left: the shell's floating column is
- * the bottom right, where a person's call and other activities stand, and
- * page chrome over it would take the presses their controls are for. */
-function showOffer(doc, {allow, decline}) {
-  if (!doc?.body) return null;
-  const card = doc.createElement('div');
-  card.setAttribute('role', 'dialog');
-  card.setAttribute('aria-label', 'Browser notifications');
-  card.dataset.tiloNotificationOffer = '';
-  Object.assign(card.style, {position: 'fixed', left: '16px', bottom: '16px', zIndex: '2147483646', maxWidth: '320px',
-    padding: '14px 16px', borderRadius: '12px', background: '#1d1f24', color: '#eef0f4', font: '14px system-ui,sans-serif',
-    boxShadow: '0 12px 40px rgba(0,0,0,.45)', display: 'flex', flexDirection: 'column', gap: '10px'});
-  const text = doc.createElement('p');
-  text.textContent = 'Get a notification when an agent needs you, even with Tilo closed, and when one finishes or someone mentions you.';
-  Object.assign(text.style, {margin: '0', lineHeight: '1.4'});
-  const row = doc.createElement('div');
-  Object.assign(row.style, {display: 'flex', gap: '8px', justifyContent: 'flex-end'});
-  const button = (label, primary, act) => {
-    const node = doc.createElement('button');
-    node.type = 'button';
-    node.textContent = label;
-    Object.assign(node.style, {padding: '6px 14px', borderRadius: '8px', border: '0', font: 'inherit', cursor: 'pointer',
-      background: primary ? '#4c6ef5' : '#30333a', color: '#fff'});
-    node.addEventListener('click', act, {once: true});
-    return node;
-  };
-  row.append(button('Not now', false, decline), button('Turn on', true, allow));
-  card.append(text, row);
-  doc.body.append(card);
-  return card;
 }

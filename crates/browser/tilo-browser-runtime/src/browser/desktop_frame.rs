@@ -24,9 +24,7 @@ impl Mount {
     pub(crate) fn follow_desktop(&self, width: f64, reasons: Option<&mut Vec<String>>) -> bool {
         let held = self.desktop.as_ref().is_some_and(|desktop| {
             desktop.handle.set_viewport_width(width);
-            desktop.announce_agents_finished();
             desktop.offer_uploads(false);
-            desktop.follow_notice_choices();
             desktop.tell_mentions();
             desktop.serve_activity();
             let named = desktop.project_governance(self.peer);

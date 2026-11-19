@@ -16,6 +16,57 @@ use crate::reports::{Reports, report_row_id};
 
 pub const MODERATION_ID: &str = "store:moderation";
 
+/// One app of the catalogue, as published beneath the Store: its versions and
+/// review hang beneath it, and it offers what can be done with it now.
+#[derive(tilo_resource::Row)]
+#[row(kind = "store.app", label = "App", effects = StoreEffect)]
+pub struct CatalogueApp;
+
+/// One version of a catalogue app.
+#[derive(tilo_resource::Row)]
+#[row(kind = "store.version", label = "Version")]
+pub struct StoreVersion;
+
+/// What the Store's trust of one app comes to.
+#[derive(tilo_resource::Row)]
+#[row(kind = "store.review", label = "Review")]
+pub struct StoreReview;
+
+/// One publisher's apps, gathered.
+#[derive(tilo_resource::Row)]
+#[row(kind = "store.publisher", label = "Publisher")]
+pub struct StorePublisher;
+
+/// The rest of a catalogue too long to publish, found through search.
+#[derive(tilo_resource::Row)]
+#[row(kind = "store.catalogue-snapshot", label = "Catalogue snapshot")]
+pub struct CatalogueSnapshot;
+
+/// The Flatpak remotes this device offers, as one row.
+#[derive(tilo_resource::Row)]
+#[row(kind = "store.remote-list", label = "Flatpak remotes", effects = StoreEffect)]
+pub struct RemoteList;
+
+/// One Flatpak remote.
+#[derive(tilo_resource::Row)]
+#[row(kind = "store.remote", label = "Flatpak remote", effects = StoreEffect)]
+pub struct StoreRemote;
+
+/// Trust and moderation, as one row.
+#[derive(tilo_resource::Row)]
+#[row(kind = "store.moderation", label = "Trust and moderation", effects = StoreEffect)]
+pub struct Moderation;
+
+/// One report or moderation case.
+#[derive(tilo_resource::Row)]
+#[row(kind = "store.report", label = "Report", effects = StoreEffect)]
+pub struct ReportRow;
+
+/// The package operation running now.
+#[derive(tilo_resource::Row)]
+#[row(kind = "store.install-job", label = "Package job")]
+pub struct InstallJob;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReportProjection {
     /// The registry's case id once there is one, else `report:<app id>`.
@@ -87,7 +138,7 @@ pub enum StoreEffect {
         #[param("App identity")]
         app: String,
     },
-    #[effect(job, kind = "read")]
+    #[effect(job, kind = "read", on = StoreRemote)]
     BrowseRemote {
         #[param("Configured repository resource identity, including its account or device scope")]
         remote: String,
@@ -99,7 +150,7 @@ pub enum StoreEffect {
     },
     #[effect(screen)]
     ClearFilters,
-    #[effect(screen)]
+    #[effect(screen, on = CatalogueApp)]
     ShowDetails {
         #[param("App identity (for example so.tilo.notes)")]
         app: String,
@@ -111,7 +162,7 @@ pub enum StoreEffect {
         #[param("Optional enabled repository name; omit only when its offer is unambiguous")]
         registry: Option<String>,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = CatalogueApp)]
     #[effect(job)]
     InstallRuntime {
         #[param("Reviewed runtime package identity")]
@@ -155,9 +206,9 @@ pub enum StoreEffect {
     },
     #[effect(screen)]
     ShowCatalogue,
-    #[effect(screen)]
+    #[effect(screen, on = RemoteList)]
     ShowRemotes,
-    #[effect(screen)]
+    #[effect(screen, on = Moderation)]
     ShowTrust,
     #[effect(kind = "outside")]
     #[effect(idempotent)]
@@ -168,55 +219,55 @@ pub enum StoreEffect {
     /// Open.
     ///
     /// A Tilo app is fetched when it is not on this device yet.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = CatalogueApp)]
     #[effect(job, returns)]
     #[effect(label = "store-action-open")]
     OpenApp {
         #[param("App identity")]
         app: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = CatalogueApp)]
     #[effect(job)]
     #[effect(label = "store-action-update")]
     Update {
         #[param("App identity")]
         app: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = CatalogueApp)]
     #[effect(job)]
     Pin {
         #[param("App identity")]
         app: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = CatalogueApp)]
     #[effect(job)]
     #[effect(label = "store-action-release")]
     Unpin {
         #[param("App identity")]
         app: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = CatalogueApp)]
     #[effect(job)]
     #[effect(label = "store-action-install")]
     FlatpakInstall {
         #[param("App identity")]
         app: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = CatalogueApp)]
     #[effect(job)]
     #[effect(label = "store-action-update")]
     FlatpakUpdate {
         #[param("App identity")]
         app: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = CatalogueApp)]
     #[effect(job)]
     #[effect(label = "store-action-open")]
     FlatpakOpen {
         #[param("App identity")]
         app: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = CatalogueApp)]
     #[effect(job)]
     #[effect(label = "store-flatpak-unavailable")]
     FlatpakSetup {
@@ -227,13 +278,13 @@ pub enum StoreEffect {
     ///
     /// Bots run in workspaces, not on this device; this stays unavailable
     /// until a workspace offers its install-bot action to you.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = CatalogueApp)]
     #[effect(job)]
     AddBot {
         #[param("Bot identity")]
         app: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = RemoteList)]
     #[effect(job)]
     RefreshRemotes,
     /// Add Flatpak remote.
@@ -245,14 +296,14 @@ pub enum StoreEffect {
         #[param("HTTPS repository URL")]
         url: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = StoreRemote)]
     #[effect(job)]
     #[effect(label = "store-remote-enable")]
     EnableRemote {
         #[param("Account repository identity")]
         remote: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = StoreRemote)]
     #[effect(job)]
     #[effect(label = "store-remote-disable")]
     DisableRemote {
@@ -260,7 +311,7 @@ pub enum StoreEffect {
         remote: String,
     },
     /// Remove remote.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = StoreRemote)]
     #[effect(job, destructive)]
     RemoveRemote {
         #[param("Remote name")]
@@ -273,7 +324,7 @@ pub enum StoreEffect {
         #[param("Prepare an appeal instead of a report")]
         appeal: bool,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = ReportRow)]
     #[effect(job, sensitive)]
     SubmitReport {
         #[param("App identity of the report")]
@@ -281,14 +332,14 @@ pub enum StoreEffect {
         #[param("Exact operation JSON returned by prepare-moderation")]
         operation: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = ReportRow)]
     #[effect(job)]
     #[effect(label = "store-report-refresh")]
     RefreshStatus {
         #[param("App identity of the report")]
         app: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = ReportRow)]
     #[effect(job, sensitive)]
     #[effect(label = "store-report-appeal")]
     Appeal {
@@ -297,7 +348,7 @@ pub enum StoreEffect {
         #[param("Exact operation JSON returned by prepare-moderation")]
         operation: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = ReportRow)]
     #[effect(job)]
     #[effect(label = "store-report-export")]
     ExportEvidence {

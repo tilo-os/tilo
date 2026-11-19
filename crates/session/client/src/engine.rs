@@ -2474,7 +2474,7 @@ mod tests {
             verb: "add".to_owned(),
             invoker: "ada".to_owned(),
             invocation: "i1".to_owned(),
-            membership: Vec::new(),
+            ..Stamp::default()
         };
         let issue = |title: &str, readers: &str| Resource {
             readers: readers.to_owned(),

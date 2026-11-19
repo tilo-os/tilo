@@ -14,17 +14,14 @@ use super::written::written_under;
 use crate::ColorCompat;
 use crate::paint::PaintCtx;
 use crate::permissions::MemberId;
-use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
-use crate::tokens::TextRole;
 use std::collections::HashMap;
 use tilo_actions::{Acting, InteractionPhase, InvocationId, SemanticInteraction};
 use tilo_sort::CompactSort as _;
 use vello::{
-    Scene,
-    kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke},
-    peniko::{Color, Fill},
+    kurbo::{Circle, Point, Rect, Stroke},
+    peniko::Color,
 };
 
 /// A live phase that has not been restated stops occupying the app surface.
@@ -46,58 +43,9 @@ pub const AGENT_TARGET_DWELL: Duration = Duration::from_millis(900);
 /// burst of phases and edits flashes once.
 const AGENT_PULSE_QUIET: Duration = Duration::from_millis(700);
 const EXPIRY_EPSILON: Duration = Duration::from_nanos(1);
-const MAX_VISIBLE_CARDS: usize = 3;
-const CARD_WIDTH: f64 = 300.0;
-const CARD_HEIGHT: f64 = 52.0;
-const CARD_GAP: f64 = 6.0;
-const CARD_MARGIN: f64 = 12.0;
 /// How much more of an agent's would-click wash stands the moment its step was taken, fading over
 /// [`crate::motion::Attention::FLASH`]: the place a person should look at, once.
 const LOCUS_FLASH: f32 = 0.22;
-
-/// Where an app's activity cards stand in `viewport` when nothing of the app is in the way: a
-/// column rising from its bottom-right corner, where a toast stands, each a card's width and
-/// height, the shape and spacing the app draws them with
-/// ([`PresenceCtx::interaction_card_layout_excluding`]).
-///
-/// A host that stands cards of its own over a window ([`crate::control_hints`]) reads the same
-/// slots: a card placed by the toolkit and one the app draws never cover each other.
-#[must_use]
-pub fn interaction_card_slots(viewport: Rect) -> Vec<Rect> {
-    card_columns(viewport)
-        .into_iter()
-        .next()
-        .unwrap_or_default()
-}
-
-/// The columns cards may stand in, the one they prefer first: rising from the bottom-right corner,
-/// then the bottom-left, then hanging from the top-right and the top-left.
-fn card_columns(viewport: Rect) -> Vec<Vec<Rect>> {
-    if viewport.width() < 96.0 || viewport.height() < 32.0 {
-        return Vec::new();
-    }
-    let width = CARD_WIDTH.min((viewport.width() - CARD_MARGIN * 2.0).max(80.0));
-    let right = viewport.x1 - CARD_MARGIN - width;
-    let left = viewport.x0 + CARD_MARGIN;
-    let step = |index: usize| index as f64 * (CARD_HEIGHT + CARD_GAP);
-    let rising = |x: f64| -> Vec<Rect> {
-        (0..MAX_VISIBLE_CARDS)
-            .map(|index| {
-                let y1 = viewport.y1 - CARD_MARGIN - step(index);
-                Rect::new(x, y1 - CARD_HEIGHT, x + width, y1)
-            })
-            .collect()
-    };
-    let hanging = |x: f64| -> Vec<Rect> {
-        (0..MAX_VISIBLE_CARDS)
-            .map(|index| {
-                let y0 = viewport.y0 + CARD_MARGIN + step(index);
-                Rect::new(x, y0, x + width, y0 + CARD_HEIGHT)
-            })
-            .collect()
-    };
-    vec![rising(right), rising(left), hanging(right), hanging(left)]
-}
 
 #[derive(Debug, Clone)]
 pub(super) struct InteractionPresenceEntry {
@@ -160,16 +108,6 @@ pub struct AgentActionMarker {
     pub approach: f64,
     /// A short phase-change emphasis, from one down to zero.
     pub pulse: f64,
-}
-
-/// Geometry of one generic fallback card. Public so app hosts and tests can
-/// reserve the same non-overlapping activity rail without copying constants.
-#[derive(Debug, Clone, PartialEq)]
-pub struct InteractionCardPlacement {
-    pub invocation: InvocationId,
-    pub rect: Rect,
-    /// Count folded into this row instead of painting more cards over content.
-    pub additional: usize,
 }
 
 impl PresenceCtx {
@@ -379,8 +317,8 @@ impl PresenceCtx {
         before != self.interactions.len()
     }
 
-    /// Say that a widget drew `invocation`'s exact place, the characters a write landed in: no
-    /// card names it from then on, however many later frames keep that drawing.
+    /// Say that a widget drew `invocation`'s exact place, the characters a write landed in: its
+    /// mark stands there from then on, however many later frames keep that drawing.
     pub fn note_placed(&self, invocation: InvocationId) {
         if let Some(entry) = self.interactions.get(&invocation) {
             entry.placed.set(true);
@@ -421,10 +359,9 @@ impl PresenceCtx {
 
     /// All currently visible interactions in deterministic display order.
     /// The host uses this read-only view to resolve generic semantic-control
-    /// anchors against the current accessibility tree before falling back to
-    /// the activity rail.
+    /// anchors against the current accessibility tree.
     pub fn visible_interactions(&self, now: Instant) -> Vec<SemanticInteraction> {
-        self.visible_entries_excluding(now, &[])
+        self.visible_entries(now)
             .into_iter()
             .map(|entry| entry.interaction.clone())
             .collect()
@@ -771,94 +708,6 @@ impl PresenceCtx {
         }
     }
 
-    /// Lay out fallback cards without duplicating invocations whose exact
-    /// action locus the host has resolved for this frame, in the first corner
-    /// whose cards cover none of `occupied`: the app's words and controls stay
-    /// in sight and in reach.
-    pub fn interaction_card_layout_excluding(
-        &self,
-        viewport: Rect,
-        now: Instant,
-        resolved: &[InvocationId],
-        occupied: &[Rect],
-    ) -> Vec<InteractionCardPlacement> {
-        let entries = self.card_entries(now, resolved);
-        if entries.is_empty() || viewport.width() < 96.0 || viewport.height() < 32.0 {
-            return Vec::new();
-        }
-        let usable_height = (viewport.height() - CARD_MARGIN * 2.0).max(0.0);
-        let fit = ((usable_height + CARD_GAP) / (CARD_HEIGHT + CARD_GAP)).floor() as usize;
-        let visible = entries.len().min(MAX_VISIBLE_CARDS).min(fit);
-        if visible == 0 {
-            return Vec::new();
-        }
-        let columns = card_columns(viewport);
-        let clear = |column: &&Vec<Rect>| {
-            column.iter().take(visible).all(|cell| {
-                occupied
-                    .iter()
-                    .all(|taken| cell.intersect(*taken).is_zero_area())
-            })
-        };
-        let Some(cells) = columns.iter().find(clear).or_else(|| columns.first()) else {
-            return Vec::new();
-        };
-        let mut out = Vec::with_capacity(visible);
-        for (index, entry) in entries.iter().copied().take(visible).enumerate() {
-            let Some(&rect) = cells.get(index) else {
-                break;
-            };
-            out.push(InteractionCardPlacement {
-                invocation: entry.interaction.invocation,
-                rect,
-                additional: if index + 1 == visible {
-                    entries.len().saturating_sub(visible)
-                } else {
-                    0
-                },
-            });
-        }
-        out
-    }
-
-    /// Draw generic activity only for work not already projected onto an
-    /// exact locus in this frame.
-    pub fn draw_interactions_excluding(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        viewport: Rect,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        now: Instant,
-        (resolved, occupied): (&[InvocationId], &[Rect]),
-    ) {
-        let entries = self.card_entries(now, resolved);
-        let placements = self.interaction_card_layout_excluding(viewport, now, resolved, occupied);
-        for (entry, placement) in entries.iter().zip(&placements) {
-            self.draw_interaction_card(scene, transform, text_renderer, theme, entry, placement);
-        }
-    }
-
-    /// The work a card stands for: what is visible and not drawn in place
-    /// ([`Self::note_placed`], `excluded`), leaving out a read, which changes nothing a person could look at (the
-    /// line beside the agent's face says what it reads).
-    fn card_entries(
-        &self,
-        now: Instant,
-        excluded: &[InvocationId],
-    ) -> Vec<&InteractionPresenceEntry> {
-        let mut entries = self.visible_entries_excluding(now, excluded);
-        entries.retain(|entry| {
-            !entry.placed.get()
-                && tilo_actions::step::kind(
-                    entry.interaction.action.step,
-                    &entry.interaction.anchor,
-                ) != tilo_actions::StepKind::Read
-        });
-        entries
-    }
-
     fn newest_agent_entry(
         &self,
         actor: &tilo_actions::Actor,
@@ -884,97 +733,14 @@ impl PresenceCtx {
             })
     }
 
-    fn visible_entries_excluding(
-        &self,
-        now: Instant,
-        excluded: &[InvocationId],
-    ) -> Vec<&InteractionPresenceEntry> {
+    fn visible_entries(&self, now: Instant) -> Vec<&InteractionPresenceEntry> {
         let mut entries = self
             .interactions
             .values()
-            .filter(|entry| {
-                entry.visible_at(now) && !excluded.contains(&entry.interaction.invocation)
-            })
+            .filter(|entry| entry.visible_at(now))
             .collect::<Vec<_>>();
         sort_entries(&mut entries);
         entries
-    }
-
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "card widths are bounded UI pixels; f32 text shaping precision is sufficient"
-    )]
-    fn draw_interaction_card(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        entry: &InteractionPresenceEntry,
-        placement: &InteractionCardPlacement,
-    ) {
-        let interaction = &entry.interaction;
-        let rect = placement.rect;
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.overlay,
-            None,
-            &shape,
-        );
-        let actor_color = self.acting_color(&interaction.actor, theme);
-        let phase_color = phase_color(&interaction.phase, theme, actor_color);
-        let stroke = if matches!(interaction.phase, InteractionPhase::Locating) {
-            Stroke::new(1.5).with_dashes(0.0, [4.0, 3.0])
-        } else {
-            Stroke::new(1.5)
-        };
-        scene.stroke(&stroke, transform, phase_color, None, &shape);
-        let bar = Rect::new(rect.x0, rect.y0 + 7.0, rect.x0 + 3.0, rect.y1 - 7.0);
-        scene.fill(Fill::NonZero, transform, phase_color, None, &bar);
-
-        let is_agent = !interaction.actor.is_person();
-        let glyph_center = Point::new(rect.x0 + 15.0, rect.y0 + 16.0);
-        let glyph_outline = theme.on_surface(actor_color).ink;
-        if is_agent {
-            crate::agent_identity::draw_agent_identity_mark(
-                scene,
-                transform,
-                Rect::from_center_size(glyph_center, (10.0, 10.0)),
-                actor_color,
-                theme,
-                crate::agent_identity::AgentIdentityStyle::Solid,
-            );
-        } else {
-            let dot = vello::kurbo::Circle::new(glyph_center, 4.5);
-            scene.fill(Fill::NonZero, transform, actor_color, None, &dot);
-            scene.stroke(&Stroke::new(1.2), transform, glyph_outline, None, &dot);
-        }
-        let actor_label = actor_label(self, interaction);
-        let style = theme.text(TextRole::Caption);
-        let first = tr.elide_to_width_style(&actor_label, (rect.width() - 40.0) as f32, &style);
-        tr.draw_style(
-            scene,
-            &first,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((rect.x0 + 27.0, rect.y0 + 8.0)),
-            None,
-            &style.clone().with_weight(TextWeight::Medium),
-        );
-
-        // What it is doing, in the words presence says beside its face, in the
-        // language this window speaks. The phase is the mark's fade, not words.
-        let detail = card_detail(interaction, placement.additional);
-        let detail = tr.elide_to_width_style(&detail, (rect.width() - 24.0) as f32, &style);
-        tr.draw_style(
-            scene,
-            &detail,
-            theme.tokens.colors.text_dim,
-            transform * Affine::translate((rect.x0 + 12.0, rect.y0 + 29.0)),
-            None,
-            &style,
-        );
     }
 }
 
@@ -1228,32 +994,6 @@ fn phase_label(phase: &InteractionPhase) -> String {
     }
 }
 
-/// What the card says under its actor's name: the step in the same words
-/// presence says beside the actor's face, and how many other steps of it the
-/// one card stands for.
-fn card_detail(interaction: &SemanticInteraction, additional: usize) -> String {
-    let mut detail = step_line(interaction);
-    if additional > 0 {
-        use std::fmt::Write as _;
-        let _ = write!(detail, " · +{additional} more");
-    }
-    detail
-}
-
-fn phase_color(phase: &InteractionPhase, theme: &Theme, actor: Color) -> Color {
-    match phase {
-        InteractionPhase::Waiting { .. } => theme.tokens.colors.semantic.warning,
-        InteractionPhase::Failed { .. } => theme.tokens.colors.semantic.danger,
-        InteractionPhase::Cancelled { .. } => theme.tokens.colors.text_dim,
-        // A step that went through wears the actor's own colour: the card reads
-        // as whoever took it, never in a second colour beside their face.
-        InteractionPhase::Committed
-        | InteractionPhase::Locating
-        | InteractionPhase::Applying
-        | InteractionPhase::Progress { .. } => actor,
-    }
-}
-
 /// The item a step acts on, where its resource is one (`<kind>/<field>/<item>`): what a row
 /// showing that item names. A step that made an item names it once it landed.
 pub(crate) fn acted_item(interaction: &SemanticInteraction) -> Option<String> {
@@ -1323,10 +1063,10 @@ pub(crate) mod tests {
     use super::*;
     use crate::text_render::TextRenderer;
     use tilo_actions::{
-        Acting, ActionApp, ActionResource, INTERACTION_VERSION, InteractionAction,
-        InteractionAnchor, StepKind,
+        Acting, ActionResource, INTERACTION_VERSION, InteractionAction, InteractionAnchor, StepKind,
     };
     use uuid::Uuid;
+    use vello::{Scene, kurbo::Affine};
 
     pub(crate) fn interaction(
         invocation: u128,
@@ -1401,7 +1141,7 @@ pub(crate) mod tests {
         assert!(presence.apply_interaction_at(made.clone(), at).unwrap());
         for title in ["Packing list", "Packing for Monday"] {
             presence.relabel_items(&|id| (id == "notes.pages/pages/p2").then(|| title.into()));
-            assert!(card_detail(&presence.visible_interactions(at)[0], 0).ends_with(title));
+            assert!(step_line(&presence.visible_interactions(at)[0]).ends_with(title));
         }
         // An item of another resource is no landing of this step.
         (made.sequence, made.resource.id) = (3, "tasks.tracker/issues/p2".into());
@@ -1908,104 +1648,8 @@ pub(crate) mod tests {
                 assert!(presence.selections.is_empty());
                 assert!(presence.remote_cursors.is_empty());
             }
-            // phase: fallback_cards_do_not_overlap_and_fold_excess_activity
-            {
-                let at = crate::time::now();
-                let mut presence = PresenceCtx::empty();
-                for id in 1..=5 {
-                    let mut someone = interaction(id, 1, InteractionPhase::Applying);
-                    someone.actor = tilo_actions::Acting::person(format!("agent-{id}"));
-                    presence.apply_interaction_at(someone, at).unwrap();
-                }
-                let cards = presence.interaction_card_layout_excluding(Rect::new(0.0, 0.0, 800.0, 600.0), at, &[], &[]);
-                assert_eq!(cards.len(), 3);
-                assert_eq!(cards[2].additional, 2);
-                for pair in cards.windows(2) {
-                    assert!(pair[0].rect.intersect(pair[1].rect).is_zero_area());
-                }
-            }
         }
 
-        phase resolved_interactions_are_excluded_from_fallback_and_expire_on_a_precise_wake;
-        {
-            let at = crate::time::now();
-            let mut presence = PresenceCtx::empty();
-            let resolved = interaction(60, 1, InteractionPhase::Applying);
-            let mut unresolved = interaction(61, 1, InteractionPhase::Applying);
-            unresolved.actor = tilo_actions::Acting::agent("another-agent");
-            presence.apply_interaction_at(resolved.clone(), at).unwrap();
-            presence
-                .apply_interaction_at(unresolved, at)
-                .unwrap();
-            let cards = presence.interaction_card_layout_excluding(
-                Rect::new(0.0, 0.0, 800.0, 600.0),
-                at,
-                &[resolved.invocation],
-                &[],
-            );
-            assert_eq!(cards.len(), 1);
-            assert_eq!(cards[0].invocation, InvocationId(Uuid::from_u128(61)));
-            assert_eq!(
-                presence.interaction_next_wake_deadline(at),
-                Some(at + ACTIVE_INTERACTION_EXPIRY + EXPIRY_EPSILON)
-            );
-        }
-    }
-
-    #[test]
-    fn a_place_a_widget_painted_leaves_the_rail() {
-        let at = crate::time::now();
-        let cards = |presence: &PresenceCtx, now| {
-            presence
-                .interaction_card_layout_excluding(Rect::new(0.0, 0.0, 800.0, 600.0), now, &[], &[])
-                .len()
-        };
-        let mut presence = PresenceCtx::empty();
-        let event = interaction(70, 1, InteractionPhase::Applying);
-        presence.apply_interaction_at(event.clone(), at).unwrap();
-        assert_eq!(
-            cards(&presence, at),
-            1,
-            "an unwritten place is named by a card"
-        );
-        presence.note_placed(event.invocation);
-        assert_eq!(cards(&presence, at), 0, "the characters are the mark");
-        // A later frame keeps the widget's drawing without drawing it again.
-        let later = at + Duration::from_millis(400);
-        let committed = interaction(70, 2, InteractionPhase::Committed);
-        presence.apply_interaction_at(committed, later).unwrap();
-        assert_eq!(
-            cards(&presence, later),
-            0,
-            "its next phase stands there too"
-        );
-    }
-
-    #[test]
-    fn an_agent_reading_takes_no_card() {
-        let at = crate::time::now();
-        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let mut presence = PresenceCtx::empty();
-        let mut read = interaction(71, 1, InteractionPhase::Applying);
-        read.action.id = "read".into();
-        read.action.step = Some(StepKind::Read);
-        presence.apply_interaction_at(read, at).unwrap();
-        assert!(
-            presence
-                .interaction_card_layout_excluding(viewport, at, &[], &[])
-                .is_empty(),
-            "a read changes nothing on the page: no card stands for it"
-        );
-        let mut rename = interaction(72, 1, InteractionPhase::Applying);
-        rename.actor = Acting::agent("other");
-        presence.apply_interaction_at(rename, at).unwrap();
-        assert_eq!(
-            presence
-                .interaction_card_layout_excluding(viewport, at, &[], &[])
-                .len(),
-            1,
-            "work nothing on the page shows keeps its card"
-        );
     }
 
     #[test]
@@ -2279,41 +1923,6 @@ pub(crate) mod tests {
                 (locus_tint(Some(at), at, &still) - at_rest).abs() < f32::EPSILON,
                 "no flash for a person who asked for less motion"
             );
-        }
-
-        phase a_card_wears_its_actors_colour_and_words;
-        // A card reads as its actor: one colour from its face through its border
-        // and bar, and the words presence says beside that face.
-        {
-            let theme = Theme::light();
-            let actor = Color::from_rgb8(0x12, 0x9f, 0x8a);
-            for phase in [
-                InteractionPhase::Locating,
-                InteractionPhase::Applying,
-                InteractionPhase::Progress {
-                    label: "halfway".into(),
-                    completed: Some(1),
-                    total: Some(2),
-                },
-                InteractionPhase::Committed,
-            ] {
-                assert_eq!(phase_color(&phase, &theme, actor), actor, "{phase:?}");
-            }
-            let mut made = interaction(90, 1, InteractionPhase::Committed);
-            made.action = InteractionAction {
-                id: "create".into(),
-                label: "Create an issue".into(),
-                app: Some(ActionApp {
-                    id: "so.tilo.tasks".into(),
-                    label: "Tasks".into(),
-                }),
-                step: Some(StepKind::Create),
-                creates: None,
-                did: None,
-            };
-            made.resource.label = "Issues".into();
-            assert_eq!(card_detail(&made, 0), "Creating in Issues");
-            assert_eq!(card_detail(&made, 2), "Creating in Issues · +2 more");
         }
 
         phase a_step_reads_as_the_kind_of_work_it_declares;

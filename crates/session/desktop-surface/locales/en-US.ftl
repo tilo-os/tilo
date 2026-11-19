@@ -855,19 +855,6 @@ overview-strip-rename = Rename
 overview-strip-move-up = Move up
 overview-strip-move-down = Move down
 browser-new-workspace-name = Workspace { $number }
-workspace-notice-joined = { $name } joined
-workspace-notice-agent-finished = { $agent } finished
-workspace-notice-agent-card = Open card
-workspace-notice-agent-open = Open in { $app }
-workspace-notice-agent-finished-changes = { $agent } finished: { $count ->
-    [one] 1 change
-   *[other] { $count } changes
-}
-workspace-notice-agent-finished-in = { $agent } finished: { $count ->
-    [one] 1 change
-   *[other] { $count } changes
-} in { $workspace }
-workspace-notice-renamed = The workspace is now called { $workspace }
 # What the shell says when something a person asked for did not happen: what
 # they asked for, why, and the button that tries it again.
 answer-app-not-opened = { $app } could not open

@@ -23,7 +23,6 @@ pub(crate) fn draw_action_presence(
     now: crate::time::Instant,
 ) -> Vec<PaintedActionMarker> {
     let mut painted = Vec::new();
-    let mut resolved = Vec::new();
     let occupied = occupied(tree, viewport);
     presence.relabel_items(label_of);
     for interaction in presence.visible_interactions(now) {
@@ -95,24 +94,14 @@ pub(crate) fn draw_action_presence(
                 ),
             });
         }
-        resolved.push(interaction.invocation);
     }
-    presence.draw_interactions_excluding(
-        paint.scene,
-        paint.transform,
-        viewport,
-        paint.text,
-        paint.theme,
-        now,
-        (&resolved, &occupied),
-    );
     for interaction in presence.visible_interactions(now) {
         presence.note_drawn(interaction.invocation, now);
     }
     painted
 }
 
-/// What a card over the frame, or a marker's tag, would hide: each line of words and each control
+/// What a marker's tag would hide: each line of words and each control
 /// it shows within `viewport`. A box taller than a few lines (a list, a pane, the window) is where
 /// a tag may go, not ink.
 fn occupied(

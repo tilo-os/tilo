@@ -396,7 +396,7 @@ pub mod __private {
         pub item_field: Option<&'static str>,
         pub writes: &'static [&'static str],
         /// The kind of step it takes (`#[action(step = "create")]`): what
-        /// presence and the activity card say of it
+        /// presence says of it
         /// ([`tilo_actions::StepKind`]). `None` for a verb whose declaration
         /// names none, whose step reads as the part of the record it acts on.
         pub step: Option<tilo_actions::StepKind>,

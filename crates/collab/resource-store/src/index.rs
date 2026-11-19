@@ -811,6 +811,11 @@ impl Index {
         self.docs.get(doc).map(|held| held.heads.as_slice())
     }
 
+    /// Every document a commit reached the index from.
+    pub fn documents(&self) -> impl Iterator<Item = &str> {
+        self.docs.keys().map(String::as_str)
+    }
+
     /// Who may read `doc`.
     #[must_use]
     pub fn readers(&self, doc: &str) -> Option<&str> {
