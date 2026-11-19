@@ -1646,8 +1646,7 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
         let attendee_email = attendee.email.clone();
         let output = app
             .effect(&crate::resource::CalendarEffect::PrepareInMail {
-                event_id: event.id.to_string(),
-                attendee_id: attendee.id.to_string(),
+                attendee: crate::actions::attendee_resource_id(event.id, attendee.id),
             })
             .expect("Calendar answers its invitation effect");
         let value = output.value.expect("typed handoff result");

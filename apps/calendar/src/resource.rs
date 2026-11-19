@@ -86,19 +86,17 @@ pub enum CalendarEffect {
     ///
     /// Answers with the arguments of Mail's invitation draft for one attendee;
     /// nothing is sent.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = crate::rows::AttendeeRow)]
     #[effect(returns, audience = "agents")]
     PrepareInMail {
-        #[param("Event id")]
-        event_id: String,
-        #[param("Attendee id")]
-        attendee_id: String,
+        #[param("The attendee row's id")]
+        attendee: String,
     },
     /// Set a calendar's colour
     ///
     /// A display choice of this person, which follows them to their other
     /// devices.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = crate::rows::CalendarRow)]
     SetColor {
         #[param("Calendar id")]
         id: String,
@@ -111,8 +109,24 @@ pub enum CalendarEffect {
     /// shown, its colour and how many events it holds. It is the calendar
     /// row's read: what discloses the row, so showing, hiding and
     /// recolouring it are offered to whoever may read it, an agent too.
-    #[effect(view, row, returns, idempotent)]
+    #[effect(view, row, returns, idempotent, on = crate::rows::CalendarRow)]
     ReadCalendar {
+        #[param("Calendar id")]
+        id: String,
+    },
+    /// Show calendar
+    ///
+    /// Shows one calendar's events.
+    #[effect(kind = "outside", on = crate::rows::CalendarRow)]
+    ShowCalendar {
+        #[param("Calendar id")]
+        id: String,
+    },
+    /// Hide calendar
+    ///
+    /// Hides one calendar's events.
+    #[effect(kind = "outside", on = crate::rows::CalendarRow)]
+    HideCalendar {
         #[param("Calendar id")]
         id: String,
     },
@@ -174,7 +188,7 @@ pub enum CalendarEffect {
     ///
     /// Shows an event, one occurrence of it, a task, a project's tasks or
     /// one calendar's events.
-    #[effect(view, row, idempotent)]
+    #[effect(view, row, idempotent, on = crate::rows::CalendarRow)]
     Open {
         #[param("The event, occurrence, task, project or calendar's resource id")]
         item: String,
