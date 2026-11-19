@@ -70,6 +70,7 @@ impl SystemResourceBroker {
     /// A lease and its audio graph, prepared under a name no other lease has: a program kept
     /// open while the desktop restarted holds the lease a desktop before this one named.
     fn prepare(&self, microphone: bool) -> Result<(String, AudioGraph), AudioGraphError> {
+        own_lease_root(self.uid)?;
         loop {
             let id = self.lease_id();
             match (self.prepare_audio_graph)(
@@ -108,6 +109,32 @@ impl SystemResourceBroker {
             }
         }
     }
+}
+
+/// This person's lease directory, made private on first use. Anyone who launches may write the
+/// computer's root, which has no sticky bit: a directory found there counts only when it is this
+/// person's and nobody else can write into it.
+fn own_lease_root(uid: u32) -> Result<PathBuf, AudioGraphError> {
+    own_lease_root_at(crate::plan::lease_root(), uid)
+}
+
+fn own_lease_root_at(root: PathBuf, uid: u32) -> Result<PathBuf, AudioGraphError> {
+    use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
+
+    let unsafe_root = || AudioGraphError::UnsafePath(root.clone());
+    match std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&root)
+    {
+        Ok(()) => {}
+        Err(_) => return Err(unsafe_root()),
+    }
+    let metadata = std::fs::symlink_metadata(&root).map_err(|_| unsafe_root())?;
+    if !metadata.is_dir() || metadata.uid() != uid || metadata.mode() & 0o022 != 0 {
+        return Err(unsafe_root());
+    }
+    Ok(root)
 }
 
 impl Default for SystemResourceBroker {
@@ -197,6 +224,32 @@ mod tests {
     use launcher::capabilities::CapabilityPlan;
 
     use super::*;
+
+    /// The leases' directory is the person's own: made private, and refused when someone else
+    /// could write into it.
+    #[test]
+    fn a_persons_leases_live_in_a_directory_only_they_can_write() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let home = tempfile::tempdir().unwrap();
+        let uid = rustix::process::geteuid().as_raw();
+        let root = home.path().join("leases").join(uid.to_string());
+        assert_eq!(own_lease_root_at(root.clone(), uid).unwrap(), root);
+        assert_eq!(
+            std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o770)).unwrap();
+        assert!(matches!(
+            own_lease_root_at(root.clone(), uid),
+            Err(AudioGraphError::UnsafePath(_))
+        ));
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(matches!(
+            own_lease_root_at(root, uid.wrapping_add(1)),
+            Err(AudioGraphError::UnsafePath(_))
+        ));
+    }
 
     #[test]
     fn audio_graph_failure_is_fail_closed() {

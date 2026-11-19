@@ -19,14 +19,16 @@ pub(crate) const TILO_LAUNCHER: &str = "/usr/libexec/tilo/tilo-launcher";
 const SHIM_MOUNT: &str = "/tilo-launcher";
 const LEASE_ROOT: &str = "/run/tilo/windows-compat/leases";
 
-/// Where launches' leases live: the computer's own root, or the one a test pointed the service at
-/// ([`test_lease_root_at`]).
+/// Where this person's launches' leases live: their own directory below the computer's root, or
+/// the one a test pointed the service at ([`test_lease_root_at`]). The computer's root can be
+/// written but not listed by the people who launch, so each lists only their own: a desktop
+/// finds the leases of programs that ended while no desktop of theirs was there.
 pub(crate) fn lease_root() -> PathBuf {
     #[cfg(feature = "test-support")]
     if let Some(root) = TEST_LEASE_ROOT.get() {
         return root.clone();
     }
-    PathBuf::from(LEASE_ROOT)
+    PathBuf::from(LEASE_ROOT).join(rustix::process::geteuid().as_raw().to_string())
 }
 
 /// The root a test of a crate that serves this service leases in: the first one it named, which
@@ -2202,41 +2204,40 @@ mod tests {
                 devices: vec![collab_types::caps::DeviceCap::Microphone],
                 ..CapabilityPlan::empty()
             };
+            let graph = lease_root().join("audio-lease");
+            let pipewire = graph.join("audio/pipewire-0");
+            let pulse = graph.join("audio/pulse/native");
             let lease = LaunchLease {
                 id: "audio-lease".to_string(),
                 audio: vec![
                     AudioBinding {
                         protocol: AudioProtocol::PipeWire,
-                        host_socket: PathBuf::from(
-                            "/run/tilo/windows-compat/leases/audio-lease/audio/pipewire-0",
-                        ),
+                        host_socket: pipewire.clone(),
                         input_enabled: true,
                     },
                     AudioBinding {
                         protocol: AudioProtocol::Pulse,
-                        host_socket: PathBuf::from(
-                            "/run/tilo/windows-compat/leases/audio-lease/audio/pulse/native",
-                        ),
+                        host_socket: pulse.clone(),
                         input_enabled: true,
                     },
                 ],
-                audio_graph: Some(PathBuf::from(LEASE_ROOT).join("audio-lease")),
+                audio_graph: Some(graph),
                 egress_proxy: None,
             };
             let command = planner
                 .plan(&route, &state, &program, &capabilities, "workspace", &lease)
                 .unwrap();
             assert!(
-                command.bwrap_argv.iter().any(
-                    |arg| arg == "/run/tilo/windows-compat/leases/audio-lease/audio/pipewire-0"
-                )
+                command
+                    .bwrap_argv
+                    .iter()
+                    .any(|arg| *arg == pipewire.to_string_lossy())
             );
             assert!(
                 command
                     .bwrap_argv
                     .iter()
-                    .any(|arg| arg
-                        == "/run/tilo/windows-compat/leases/audio-lease/audio/pulse/native")
+                    .any(|arg| *arg == pulse.to_string_lossy())
             );
             assert!(!command.bwrap_argv.iter().any(|arg| arg == "/dev/snd"));
             // The sandbox must name its own runtime destination so clients can
