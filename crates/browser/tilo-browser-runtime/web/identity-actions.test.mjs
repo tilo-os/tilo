@@ -722,3 +722,20 @@ test('an agent setup code comes from the workspace in front, else the home host'
   assert.equal(setupOrigin({peer: null, home}), 'https://eu1.tilo.sh');
   assert.equal(setupOrigin({peer: null, home: null}), null);
 });
+
+test('a workspace reached only over iroh asks its codes at the site’s home server, when that is the same one', () => {
+  const ENDPOINT = 'b'.repeat(64);
+  // The site's entry names its home server, as entry.json does.
+  const home = {host: {origin: 'http://127.0.0.1:24300', info: JSON.stringify({
+    hostCert: {}, address: {endpointAddr: {id: ENDPOINT}},
+  })}};
+  // Its invitation named the server by its endpoint alone: the address the
+  // page reached it on has no HTTP, so the site's home server answers, as it
+  // does for a hosted site's page.
+  const invited = {origin: 'https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.iroh.invalid',
+    host: {address: {endpointAddr: {id: ENDPOINT}}}};
+  assert.equal(setupOrigin({peer: invited, home}), 'http://127.0.0.1:24300');
+  // Another endpoint is another server: its workspace has no HTTP address here.
+  const elsewhere = {origin: invited.origin, host: {address: {endpointAddr: {id: 'c'.repeat(64)}}}};
+  assert.equal(setupOrigin({peer: elsewhere, home}), null);
+});

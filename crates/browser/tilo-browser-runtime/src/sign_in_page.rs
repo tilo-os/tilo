@@ -61,7 +61,8 @@ struct Ask {
     #[serde(default)]
     expires_at_ms: Option<f64>,
     /// The grant is a server key the person creates for their own backend:
-    /// it reaches all their workspaces and may last until revoked.
+    /// it reaches all their workspaces or the one the scope names, and may
+    /// last until revoked only reaching all of them.
     #[serde(default)]
     server_key: bool,
     /// The key may operate web pages in Browser without asking its person

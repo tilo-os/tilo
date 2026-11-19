@@ -100,8 +100,10 @@ impl Person {
         scope: AgentScope,
         expires_ms: Option<u64>,
     ) -> DeviceCert {
+        // A key the person makes is their own, and reaches what they were
+        // asked for: all their workspaces or the one the link names.
         let capabilities = if asked.server_key {
-            DeviceCapabilities::server_key_grant()
+            DeviceCapabilities::own_key_grant(scope)
         } else {
             DeviceCapabilities::agent_grant(scope)
         }
@@ -1016,6 +1018,39 @@ async fn only_a_key_reaching_all_workspaces_lasts_and_only_the_key_flow_makes_on
         SignInProof::sign(alice.cert.clone(), &alice.device, ISSUER, asked.challenge).unwrap();
     let reply = answer(&server, &answer_form(&asked, &proof, &lasting)).await;
     assert_eq!(reply.status(), StatusCode::FORBIDDEN);
+}
+
+/// A terminal asking for a key that reaches one workspace: the person's Tilo
+/// is asked to certify exactly that workspace, as their own server key, and
+/// what it approves is the key the terminal collects.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_key_a_terminal_asks_for_holds_the_person_to_the_one_workspace() {
+    let alice = Person::new(4);
+    let server = server();
+    let studio = "6a1f8f2e-4c55-4b0e-9f43-0d6c1b7a9e21";
+    let (poll, asked) =
+        ask_for_key(&server, &json!({"name": "Nightly", "workspace": studio})).await;
+    assert_eq!(
+        asked.scope,
+        AgentScope::parse(studio).unwrap(),
+        "the link names the workspace the key reaches"
+    );
+    assert!(asked.server_key, "a key the person makes is a server key");
+    assert!(asked.expires_ms.is_some(), "and ends within a grant's life");
+    assert!(
+        answer(&server, &alice.allow(&asked))
+            .await
+            .status()
+            .is_success()
+    );
+    let (status, key) = poll_key(&server, &poll).await;
+    assert_eq!(status, StatusCode::OK);
+    let token = key["key"].as_str().unwrap();
+    let grant = server
+        .store
+        .access(token, tilo_clock::unix_now_ms())
+        .expect("the key reaches the person's workspaces");
+    assert_eq!(grant.scope, store::Scope::Workspace(studio.to_owned()));
 }
 
 #[test]

@@ -119,8 +119,9 @@ struct GrantAsk {
     /// certificate they answer with may be narrower — one of their
     /// workspaces where all were asked for.
     scope: AgentScope,
-    /// A server key: an API key reaching all the person's workspaces,
-    /// which lasts until revoked unless they chose an expiry.
+    /// A server key: an API key reaching all the person's workspaces or
+    /// one of them, which lasts until revoked (only one reaching all of
+    /// them may) or until an expiry they chose.
     server_key: bool,
     /// When the grant expires, in Unix milliseconds; `None` for a server
     /// key that lasts until revoked.

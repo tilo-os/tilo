@@ -57,7 +57,7 @@ test('a key that may operate web pages in Browser says so, and only a grant carr
   assert.equal(read({grant_key: null, grant_scope: null, grant_expires: null, grant_pages: '1'}).grantPages, false);
 });
 
-test('a server key reaches all workspaces and lasts until revoked, or as long as the person chose', () => {
+test('a server key reaches all workspaces or one, and only reaching all may last until revoked', () => {
   const lasting = read({grant_kind: 'server_key', grant_expires: 'never'});
   assert.equal(lasting.grantServerKey, true);
   assert.equal(lasting.grantExpiresMs, null);
@@ -65,7 +65,16 @@ test('a server key reaches all workspaces and lasts until revoked, or as long as
   const chosen = read({grant_kind: 'server_key', grant_expires: String(NOW + 5 * MAX_GRANT_LIFETIME_MS)});
   assert.equal(chosen.grantExpiresMs, NOW + 5 * MAX_GRANT_LIFETIME_MS);
   assert.throws(() => read({grant_kind: 'server_key', grant_expires: String(NOW)}), /has expired/);
-  assert.throws(() => read({grant_kind: 'server_key', grant_scope: WORKSPACE}), /grant Tilo cannot give/);
+  // A key the person makes for one workspace is theirs to approve too; like
+  // an agent's grant it ends within the 90 days one may last.
+  const one = read({grant_kind: 'server_key', grant_scope: WORKSPACE});
+  assert.equal(one.grantServerKey, true);
+  assert.equal(one.grantScope, WORKSPACE);
+  assert.equal(one.grantExpiresMs, NOW + 7 * DAY);
+  assert.throws(() => read({grant_kind: 'server_key', grant_scope: WORKSPACE, grant_expires: 'never'}),
+    /grant Tilo cannot give/);
+  assert.throws(() => read({grant_kind: 'server_key', grant_scope: WORKSPACE,
+    grant_expires: String(NOW + MAX_GRANT_LIFETIME_MS + 1)}), /longer than Tilo gives/);
   assert.throws(() => read({grant_kind: 'agent'}), /grant Tilo cannot give/);
   // Only a server key may last until revoked.
   assert.throws(() => read({grant_expires: 'never'}), /grant Tilo cannot give/);
@@ -138,8 +147,10 @@ test('the card says who asks, through which service, what it reaches and until w
     until: untilText(NOW + 7 * DAY, 'en-GB'),
     pages: 'It asks you before every page action.',
   });
+  // A workspace this browser knows no name for is named by its id, said as
+  // the workspace it is.
   const one = requestWords(read({grant_scope: WORKSPACE}), {locale: 'en-GB'});
-  assert.equal(one.reaches, `Only the workspace ${WORKSPACE}`);
+  assert.equal(one.reaches, `Only the workspace with id ${WORKSPACE}`);
   const proofOnly = requestWords(read({grant_key: null, grant_scope: null, grant_expires: null}));
   assert.deepEqual(proofOnly, {
     heading: 'Sign in to entry.example?',
@@ -394,11 +405,43 @@ test('a service that asks for one workspace is held to it, and the card names it
     search: link_({grant_scope: STUDIO}), local: entered([LOUNGE, 'Lounge'], [STUDIO, 'Studio']),
   });
   await mounted;
-  assert.equal(shown().reaches, 'Only the workspace Studio');
+  assert.equal(shown().reaches, 'Only the workspace “Studio”');
   // Nothing to choose: the service asked for that one.
   assert.equal(scopes(), null);
   await elements.allow.fire('click');
   assert.equal(posted.find(entry => entry.ask)?.ask.grantScope, STUDIO);
+});
+
+test('a card nobody is signed in to says which workspace the key reaches', async () => {
+  const {shown, mounted} = page({
+    search: link_({grant_kind: 'server_key', grant_scope: STUDIO}),
+    local: entered([LOUNGE, 'Lounge'], [STUDIO, 'Studio']), kept: null,
+  });
+  await mounted;
+  assert.equal(shown().state, 'signed-out');
+  assert.equal(shown().reaches, 'Only the workspace “Studio”');
+});
+
+test('an API key the person makes for one workspace is approved as that server key', async () => {
+  const {elements, posted, scopes, shown, mounted} = page({
+    search: link_({grant_kind: 'server_key', grant_scope: STUDIO, client: 'API key “Visa backend”'}),
+    local: entered([LOUNGE, 'Lounge'], [STUDIO, 'Studio']),
+  });
+  await mounted;
+  assert.equal(shown().heading, 'Let API key “Visa backend” act for you?');
+  assert.equal(shown().reaches, 'Only the workspace “Studio”');
+  assert.equal(scopes(), null);
+  await elements.allow.fire('click');
+  assert.deepEqual(posted.find(entry => entry.ask)?.ask, {
+    audience: 'https://entry.example',
+    challenge: CHALLENGE,
+    client: 'API key “Visa backend”',
+    grantKey: KEY,
+    grantScope: STUDIO,
+    expiresAtMs: NOW + 7 * DAY,
+    serverKey: true,
+    operateBrowserPages: false,
+  });
 });
 
 test('a browser that knows no workspaces is offered no choice', async () => {
@@ -428,6 +471,8 @@ test('a browser with nobody signed in asks the question and offers the ways in o
   await mounted;
   assert.equal(shown().state, 'signed-out');
   assert.match(shown().heading, /Let Claude Code act for you/);
+  // What it reaches is said before the person signs in to answer it.
+  assert.equal(shown().reaches, 'All your workspaces, and it may create new ones');
   assert.equal(elements.signedOut.hidden, false);
   assert.match(elements.signedOutText.textContent, /Sign in to Tilo in this browser/);
   assert.equal(elements.passkey.hidden, false);

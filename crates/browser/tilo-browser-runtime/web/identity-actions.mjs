@@ -1,5 +1,5 @@
 /**
- * Keeping the person this browser is, as the desktop's host actions.
+ * Keeping the person this browser is, as the desktop's own actions.
  *
  * The first visit already made a real identity (`browserIdentity`); these
  * actions only add ways to open it elsewhere. They live in the desktop like
@@ -18,7 +18,7 @@
  *   where the browser has one to offer (`PasswordCredential`), else saved as
  *   a file. Never shown on the page for longer than that.
  * - `sign-in-passkey`: be, in this browser, a person kept with a passkey
- *   elsewhere; its envelope comes from a host that keeps it, and the page
+ *   elsewhere; its envelope comes from a server that keeps it, and the page
  *   reloads to join as them.
  * - `set-name`: the name others see, in history and presence; once set,
  *   a banner offers to keep the person it names. Asked in a form, or taken
@@ -27,7 +27,7 @@
  *   chosen from an image file (`profile-photos.mjs`), or back to initials.
  *   Kept in the profile with the name, so it follows the person too.
  * - `set-linked`: the accounts elsewhere a workspace linked to the person, as
- *   its host answered (`{accounts, keep: true}`), or as the kept profile
+ *   its server answered (`{accounts, keep: true}`), or as the kept profile
  *   says (`{photoFrom, linked, keep: false}`). The profile names them, and
  *   wears an account's picture (Discord's avatar) until the person uploads
  *   their own; unlinking takes the account's picture away again.
@@ -35,14 +35,14 @@
  *   with a link, and its QR code, that opens this workspace there as a new
  *   device of this person. Each link names a fresh invite (`pairing.mjs`):
  *   it works once, for ten minutes, and only this page asks about a device
- *   that answers it, with what the host saw of that device and the code it
+ *   that answers it, with what the server saw of that device and the code it
  *   shows. Approving signs its certificate with the root held here; the
- *   host the two share only relays the request and the certificate.
+ *   server the two share only relays the request and the certificate.
  *
- * Each change to the envelope goes to every host this person joined through,
- * so a new browser finds it wherever it asks. So does the name the person
- * chooses (their profile, signed by the root): each of their devices, paired
- * or signed in, comes up with it (`syncProfile`).
+ * Each change to the envelope goes to every server this person joined
+ * through, so a new browser finds it wherever it asks. So does the name the
+ * person chooses (their profile, signed by the root): each of their devices,
+ * paired or signed in, comes up with it (`syncProfile`).
  */
 import {forInvites, openInvites} from './pairing.mjs';
 import {
@@ -68,10 +68,38 @@ export const PAIR = Object.freeze({id: 'pair-device', title: 'Pair a new device'
   subtitle: 'A code or link that opens this workspace there as you', source: 'devices'});
 /** Opening the agent setup again, in the person's card: the first screen's
  * own flow, with a fresh code (`showAgentSetup`). */
-/** The host an agent's setup code comes from: the workspace in front, else
- * the person's home host (their own desktop has no workspace peer). */
+/**
+ * The server an agent's setup code comes from, as the address a page asks it
+ * at over HTTP: the workspace in front (or, on the person's own desktop,
+ * which has no workspace peer, the site's home server).
+ *
+ * A workspace this page reached only over iroh — an invitation's own word for
+ * a server with no web address, named `<endpoint>.iroh.invalid` — is named by
+ * an address no HTTP request reaches, so the code comes from the site's home
+ * server instead, as a page in a hosted site's workspace asks the server it
+ * is in. A server of one's own that only an invitation reached has none to
+ * ask, and offers no setup.
+ */
 export function setupOrigin({peer, home}) {
-  return peer?.origin ?? home?.host?.origin ?? null;
+  const named = home?.host?.origin ?? null;
+  const origin = peer?.origin ?? named;
+  if (!origin || !namedByInvitation(origin)) return origin;
+  // The same server, named twice: the site's home and the one the invitation
+  // reached, by the endpoint each names.
+  const bySite = JSON.parse(home?.host?.info ?? 'null')?.address?.endpointAddr?.id ?? null;
+  const reached = peer?.host?.address?.endpointAddr?.id ?? null;
+  return bySite !== null && bySite === reached ? named : null;
+}
+
+/** Whether `origin` is the name an invitation gives a server it reached only
+ * over iroh (`<endpoint>.iroh.invalid`, `site-host.mjs`'s `invitedOrigin`): a
+ * name that never resolves, so no HTTP request reaches it. */
+function namedByInvitation(origin) {
+  try {
+    return /\.iroh\.invalid$/.test(new URL(origin).origin);
+  } catch {
+    return false;
+  }
 }
 
 export const CONNECT_AGENT = Object.freeze({id: 'connect-agent', title: 'Connect an agent or computer',
@@ -160,7 +188,7 @@ export async function saveRecoveryKey(recoveryKey, {userPublicKey, name = 'Tilo'
  * between things (no input for a moment, nothing held down), so the ask
  * never lands mid-sentence or mid-drag. `searchChord` is how this page
  * opens search, said in the ask so the person can find it later.
- * `pairing` is the host side of pairing: `link(invite)`, `pending()` and
+ * `pairing` is the server side of pairing: `link(invite)`, `pending()` and
  * `answer(digest, approved)`. `showPairLink({link, expiresAt, copy})` shows
  * a new pairing link (`copy()` puts it on the clipboard, resolving whether
  * it could); `askPairing(request, decide)` asks the person about a device
@@ -196,8 +224,8 @@ export function createIdentityActions({
     ...(photos ? [PHOTO, ...(photos.current() ? [RESET_PHOTO] : [])] : []),
     ...(identity.kept ? [RECOVERY] : unkept()),
     ...(pairing ? [PAIR] : []), ...(showAgentSetup ? [CONNECT_AGENT] : [])];
-  // Keep the profile (name and picture) on every host; a refusal throws,
-  // an unreachable host is only reported.
+  // Keep the profile (name and picture) on every server; a refusal throws,
+  // a server not reached is only reported.
   // What the person says they are doing and how they share it, as their
   // profile keeps it beside their name and picture.
   let said = {status: '', sharing: ''};
