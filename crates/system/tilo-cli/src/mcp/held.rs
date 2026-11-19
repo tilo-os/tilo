@@ -57,7 +57,7 @@ pub(crate) const UNMOUNTING: Duration = Duration::from_secs(3);
 /// How long a stop waits for the folders to unmount and each workspace's tree to be kept on
 /// disk, all of them together: a tree's changes made here are saved, and a step still running
 /// is left behind rather than waited for.
-const STOPPING: Duration = Duration::from_secs(8);
+const STOPPING: Duration = Duration::from_secs(16);
 /// How often a holder looks whether the login it serves is still the one under its device
 /// directory: a login made again makes another device, and the holder it replaced steps down so
 /// one computer runs one holder.
@@ -476,8 +476,10 @@ fn hold_for<E: Enter>(
     claim: Claim,
 ) -> Result<ExitCode> {
     let Some(_held) = take_lock(place, taking_over, claim)? else {
+        tracing::error!("this holder ends: another holder of this device's session keeps it");
         return Ok(ExitCode::SUCCESS);
     };
+    say_panics();
     trim_log();
     let _ = shared.held_as.set(claim);
     let runtime = bridge_runtime()?;
@@ -500,8 +502,27 @@ fn hold_for<E: Enter>(
         }
         releasing.shutdown_timeout(SHUTDOWN);
     }
+    if let Err(error) = &served {
+        tracing::error!(%error, "this holder ends: it could not serve");
+    }
     served?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// Say every panic in the holder's log at error level before it unwinds or aborts: a holder
+/// that ends never does so without its log saying why, and one task's panic (which ends that
+/// task alone) is said too.
+fn say_panics() {
+    let earlier = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic| {
+        let thread = std::thread::current();
+        tracing::error!(
+            thread = thread.name().unwrap_or("unnamed"),
+            %panic,
+            "a step of this holder panicked; if it was the holder's own, this holder ends"
+        );
+        earlier(panic);
+    }));
 }
 
 /// The lock that makes this process the device's one holder, once one that is leaving let go of
@@ -616,26 +637,25 @@ async fn serve_held<E: Enter>(
     // Whether the login this holder serves was replaced: a holder on its way out then unmounts
     // nothing, since the holder of the new login shows the folders again.
     let mut replaced = false;
-    loop {
+    // Why this holder ends, said in its log at error level whatever it is: a holder that ended
+    // without its log saying why left the person's folders unmounted with nothing to read.
+    let why = loop {
         tokio::select! {
-            () = idle(&mut live, linger) => break,
+            () = idle(&mut live, linger) => break "no connection came for as long as it lingers".to_owned(),
             _ = login.tick() => if !place.serves_current_login() {
-                tracing::info!(
-                    "this computer logged in again; the holder of the new login takes over"
-                );
                 replaced = true;
-                break;
+                break "this computer logged in again; the holder of the new login takes over"
+                    .to_owned();
             },
-            _ = ended.recv() => break,
+            Some(signal) = ended.recv() => break format!("it was told to stop ({signal})"),
             () = shared.stepping_down.notified() => {
-                tracing::info!(
-                    "a holder of a newer Tilo, or the user service's, takes over this device; \
-                     this one steps down"
-                );
-                break;
+                break "a holder of a newer Tilo, or the user service's, takes this device over \
+                       now that its folders are quiet"
+                    .to_owned();
             },
         }
-    }
+    };
+    tracing::error!("this holder ends: {why}");
     // No connection from here on: the socket is shut down rather than left queuing clients that
     // would be told a holder is there by the kernel and wait in vain for it.
     accepting.stop();
@@ -752,7 +772,7 @@ fn serve_api<E: Enter>(place: &Place, shared: &Arc<Shared<E>>) -> Result<()> {
 /// The signals are waited for on a thread of their own, with a runtime of its own: the holder's
 /// two workers may both be inside a step that walks a whole folder tree, and a stop that waited
 /// for a free worker was heard only once that step ended.
-fn ending() -> Result<tokio::sync::mpsc::UnboundedReceiver<()>> {
+fn ending() -> Result<tokio::sync::mpsc::UnboundedReceiver<&'static str>> {
     use tokio::signal::unix::{SignalKind, signal};
     let (said, ended) = tokio::sync::mpsc::unbounded_channel();
     std::thread::Builder::new()
@@ -762,28 +782,33 @@ fn ending() -> Result<tokio::sync::mpsc::UnboundedReceiver<()>> {
                 .enable_all()
                 .build()
             else {
+                tracing::error!("this holder cannot hear a stop by a signal");
                 return;
             };
             runtime.block_on(async move {
                 let (signalled, mut heard) = tokio::sync::mpsc::channel(1);
-                for kind in [
-                    SignalKind::terminate(),
-                    SignalKind::interrupt(),
-                    SignalKind::hangup(),
+                for (kind, name) in [
+                    (SignalKind::terminate(), "SIGTERM"),
+                    (SignalKind::interrupt(), "SIGINT"),
+                    (SignalKind::hangup(), "SIGHUP"),
                 ] {
                     let Ok(mut signal) = signal(kind) else {
+                        tracing::error!(
+                            signal = name,
+                            "this holder cannot hear a stop by this signal"
+                        );
                         continue;
                     };
                     let signalled = signalled.clone();
                     tokio::spawn(async move {
                         if signal.recv().await.is_some() {
-                            let _ = signalled.send(()).await;
+                            let _ = signalled.send(name).await;
                         }
                     });
                 }
                 drop(signalled);
-                if heard.recv().await.is_some() {
-                    let _ = said.send(());
+                if let Some(name) = heard.recv().await {
+                    let _ = said.send(name);
                 }
             });
         })?;

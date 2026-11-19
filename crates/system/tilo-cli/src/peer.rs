@@ -446,6 +446,44 @@ impl Peer {
         self.held.lock().await.clear();
     }
 
+    /// Why this peer should not end now, if it should not: a folder is answering requests or took
+    /// one within [`QUIET`] (a checkout writing thousands of files, a `git fsck` reading packs),
+    /// or changes made here have not all reached the workspace yet. A holder asked to hand the
+    /// device over to a newer Tilo keeps it while this says why: ending would answer the
+    /// requests under way with I/O errors.
+    pub(crate) async fn busy(&self) -> Option<String> {
+        let folders: Vec<_> = self
+            .held
+            .lock()
+            .await
+            .iter()
+            .map(|shown| {
+                (
+                    shown.showing.at.clone(),
+                    Arc::clone(&shown.showing.activity),
+                    shown.replica.status(),
+                )
+            })
+            .collect();
+        for (at, activity, status) in folders {
+            if !activity.quiet(QUIET) {
+                return Some(format!(
+                    "{} is in use ({} requests under way, the last {} ms ago)",
+                    at.display(),
+                    activity.in_flight(),
+                    activity.quiet_for().as_millis()
+                ));
+            }
+            if !status.paused && status.opened && !(status.sent && status.durable) {
+                return Some(format!(
+                    "changes made in {} are still going out to the workspace",
+                    at.display()
+                ));
+            }
+        }
+        None
+    }
+
     /// Stop showing the folders and keep their trees on disk: called when the holder stops, so
     /// no write lands after the session ends and nothing made here is lost with the process.
     /// Each step is bounded, and all of them together by `within`: a step still walking a tree
@@ -456,10 +494,27 @@ impl Peer {
         let deadline = Instant::now()
             .checked_add(within)
             .unwrap_or_else(Instant::now);
+        // Each folder's requests under way are answered first, and the folder given a moment of
+        // quiet: unmounting in the middle of one answers it with an I/O error (a program reading
+        // a mapped file dies of SIGBUS). A folder kept busy past the bound is unmounted anyway,
+        // and said so.
+        let draining = deadline
+            .saturating_duration_since(Instant::now())
+            .min(DRAINING);
+        let drained = drain(held.iter().map(|shown| &shown.showing), draining).await;
         for shown in held {
             let Held {
                 showing, replica, ..
             } = shown;
+            if !drained {
+                tracing::error!(
+                    at = %showing.at.display(),
+                    in_flight = showing.activity.in_flight(),
+                    waited_ms = draining.as_millis(),
+                    "a folder was still in use when the holder stopped; requests under way there \
+                     fail with an I/O error"
+                );
+            }
             // Unmount first, so no write lands after the session ends; a mount whose thread is
             // inside a step on the tree is given up on rather than waited for.
             let unmounting = deadline
@@ -492,6 +547,36 @@ impl Peer {
             tracing::warn!("the device's endpoint did not close in time");
         }
     }
+}
+
+/// How long a folder must have taken no request for this peer to count it as quiet.
+const QUIET: Duration = Duration::from_secs(5);
+/// How long a stop waits for the folders' requests under way to be answered and for a moment of
+/// quiet before it unmounts them: part of the stop's own bound, inside the unit's stop timeout.
+pub(crate) const DRAINING: Duration = Duration::from_secs(10);
+/// The quiet a stop waits for before it unmounts a folder.
+const DRAINED: Duration = Duration::from_millis(300);
+
+/// Wait until every folder of `showing` has no request under way and took none for [`DRAINED`],
+/// at most `within`: whether they all did. How long it took is said either way.
+async fn drain<'a>(showing: impl Iterator<Item = &'a mount::Showing>, within: Duration) -> bool {
+    let activities: Vec<_> = showing.map(|shown| Arc::clone(&shown.activity)).collect();
+    let started = Instant::now();
+    let quiet = || activities.iter().all(|activity| activity.quiet(DRAINED));
+    let waiting = async {
+        while !quiet() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    };
+    let drained = tokio::time::timeout(within, waiting).await.is_ok();
+    let waited_ms = started.elapsed().as_millis();
+    if drained {
+        tracing::info!(
+            waited_ms,
+            "the folders' requests were answered before they unmount"
+        );
+    }
+    drained
 }
 
 /// Drop `what` on the blocking pool, waiting at most `within` for it: unmounting a folder
