@@ -36,7 +36,7 @@ fn walked(mutation: &DocumentMutation, admitted: &Automerge) -> Result<Automerge
     if !history
         .get_heads()
         .iter()
-        .all(|head| admitted.get_change_by_hash(head).is_some())
+        .all(|head| admitted.has_change(head))
     {
         return Err("retained publication changes are not in admitted history".into());
     }

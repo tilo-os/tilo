@@ -33,7 +33,6 @@ pub(super) fn missing_history(
     workspace: Option<&automerge::AutoCommit>,
     changes: &[Vec<u8>],
 ) -> Result<usize, String> {
-    use automerge::ReadDoc as _;
     let changes = changes
         .iter()
         .map(|bytes| automerge::Change::from_bytes(bytes.clone()).map_err(|e| e.to_string()))
@@ -43,10 +42,7 @@ pub(super) fn missing_history(
     Ok(changes
         .iter()
         .flat_map(automerge::Change::deps)
-        .filter(|dep| {
-            !brought.contains(*dep)
-                && workspace.is_none_or(|doc| doc.get_change_by_hash(dep).is_none())
-        })
+        .filter(|dep| !brought.contains(*dep) && workspace.is_none_or(|doc| !doc.has_change(dep)))
         .count())
 }
 

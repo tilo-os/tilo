@@ -2112,7 +2112,7 @@ mod tests {
                     Some("already admitted graph")
                 );
                 for head in &heads {
-                    assert!(doc.get_change_by_hash(head).is_some());
+                    assert!(doc.has_change(head));
                 }
             })
             .unwrap();
@@ -2174,7 +2174,7 @@ mod tests {
                     Some("original history")
                 );
                 for head in heads {
-                    assert!(doc.get_change_by_hash(&head).is_some());
+                    assert!(doc.has_change(&head));
                 }
             })
             .unwrap();

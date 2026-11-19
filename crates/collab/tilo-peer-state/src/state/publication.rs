@@ -4,7 +4,7 @@ use super::{
     BTreeMap, DocumentAdmission, DocumentMutation, NeighbourMsg, Route, StatePeer, SystemTime, err,
 };
 use super::{PeerPublicationMut, backend};
-use automerge::{ReadDoc as _, transaction::Transactable as _};
+use automerge::transaction::Transactable as _;
 use collab_types::signer::DeviceSigner;
 
 impl StatePeer {
@@ -260,7 +260,7 @@ impl PeerPublicationMut<'_> {
                 .doc
                 .base_heads()
                 .iter()
-                .any(|head| document.doc.get_change_by_hash(head).is_none())
+                .any(|head| !document.doc.has_change(head))
                 || prior
                     .channel
                     .last_seq_per_author
@@ -284,10 +284,7 @@ impl PeerPublicationMut<'_> {
             .as_mut()
             .ok_or("missing workspace governance")?;
         let before_heads = before_workspace.base_heads();
-        if before_heads
-            .iter()
-            .any(|head| workspace.get_change_by_hash(head).is_none())
-        {
+        if before_heads.iter().any(|head| !workspace.has_change(head)) {
             return Err("publication discards workspace history".into());
         }
         crate::coverage::monotonic(Some(before_workspace), workspace)?;

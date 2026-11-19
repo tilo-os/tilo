@@ -415,10 +415,7 @@ pub(crate) fn record_since(
             .copied()
             .map(ui::automerge::ChangeHash)
             .collect::<Vec<_>>();
-        if base
-            .iter()
-            .all(|head| doc.get_change_by_hash(head).is_some())
-        {
+        if base.iter().all(|head| doc.has_change(head)) {
             let mut at = doc.get_heads();
             at.sort();
             if at == base {
@@ -1604,11 +1601,7 @@ impl Joined {
                 // stand before the heads this mount took in last.
                 let holds = store.read(&checkout.id, |doc| {
                     heads.iter().all(|head| {
-                        ui::automerge::ReadDoc::get_change_by_hash(
-                            doc,
-                            &ui::automerge::ChangeHash(*head),
-                        )
-                        .is_some()
+                        ui::automerge::ReadDoc::has_change(doc, &ui::automerge::ChangeHash(*head))
                     })
                 });
                 if holds != Some(true) || shared.is_some_and(|shared| shared != heads) {

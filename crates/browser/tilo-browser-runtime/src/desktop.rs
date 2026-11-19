@@ -1742,7 +1742,7 @@ impl Persistence {
         };
         if heads
             .iter()
-            .all(|head| self.layout.document().get_change_by_hash(head).is_some())
+            .all(|head| self.layout.document().has_change(head))
         {
             return Ok(false);
         }

@@ -1442,7 +1442,7 @@ mod tests {
             assert_eq!(ui::resource::workspace_scope(&copied).as_deref(), Some(TO));
             for change in plan.get_heads() {
                 assert!(
-                    copied.get_change_by_hash(&change).is_some(),
+                    copied.has_change(&change),
                     "the branch holds the record's history"
                 );
             }

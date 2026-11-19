@@ -955,9 +955,7 @@ fn missing_of(record: &AutoCommit, mutation: &DocumentMutation) -> Vec<String> {
     let mut missing: Vec<String> = changes
         .iter()
         .flat_map(|change| change.deps().iter().copied())
-        .filter(|dep| {
-            !own.contains(dep) && automerge::ReadDoc::get_change_by_hash(document, dep).is_none()
-        })
+        .filter(|dep| !own.contains(dep) && !automerge::ReadDoc::has_change(document, dep))
         .map(|dep| dep.to_string())
         .collect();
     missing.dedup();

@@ -8,7 +8,7 @@
 //! bounded replacement checkpoint; no actor-named files accumulate. Other live
 //! slots are never reclaimed. If all eight are busy, evidence is unavailable
 //! rather than overwriting an active writer. Nothing scans or deletes user data.
-use automerge::{AutoCommit, ChangeHash, ReadDoc};
+use automerge::{AutoCommit, ChangeHash};
 use durable_store::{Durability, DurableStore, Lease, Revision, StorageKey, WriteOp};
 use std::{collections::VecDeque, rc::Rc};
 
@@ -38,7 +38,7 @@ impl PrivateAction {
     pub fn is_present_in(&self, doc: &AutoCommit) -> bool {
         self.hashes
             .iter()
-            .all(|hash| doc.get_change_by_hash(&ChangeHash(*hash)).is_some())
+            .all(|hash| doc.has_change(&ChangeHash(*hash)))
     }
 }
 
@@ -759,9 +759,7 @@ mod tests {
             assert_eq!(history.entries().next(), Some(&admitted));
             assert_eq!(history.durability(), Durability::Durable);
             assert!(
-                loaded
-                    .get_change_by_hash(&ChangeHash(admitted.hashes[0]))
-                    .is_some()
+                loaded.has_change(&ChangeHash(admitted.hashes[0]))
             );
         }
     }

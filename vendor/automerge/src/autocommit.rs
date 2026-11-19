@@ -762,6 +762,12 @@ impl AutoCommit {
         self.doc.get_change_by_hash(hash)
     }
 
+    /// TILO(has-change): whether the committed document holds the change `hash` names, without
+    /// rebuilding it as [`Self::get_change_by_hash`] does.
+    pub fn has_change(&self, hash: &ChangeHash) -> bool {
+        self.doc.has_change(hash)
+    }
+
     pub fn get_change_meta_by_hash(&mut self, hash: &ChangeHash) -> Option<ChangeMetadata<'_>> {
         self.ensure_transaction_closed();
         self.doc.get_change_meta_by_hash(hash)
@@ -1191,6 +1197,10 @@ impl ReadDoc for AutoCommit {
 
     fn get_change_by_hash(&self, hash: &ChangeHash) -> Option<Change> {
         self.doc.get_change_by_hash(hash)
+    }
+
+    fn has_change(&self, hash: &ChangeHash) -> bool {
+        self.doc.has_change(hash)
     }
 
     fn stats(&self) -> crate::read::Stats {

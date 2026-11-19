@@ -252,10 +252,7 @@ pub fn prepare_content_restore(
         return Err(RestoreError::StaleReview);
     }
     let target_heads = sorted_heads(target_heads);
-    if target_heads
-        .iter()
-        .any(|hash| source.get_change_by_hash(hash).is_none())
-    {
+    if target_heads.iter().any(|hash| !source.has_change(hash)) {
         return Err(RestoreError::InvalidTargetHeads);
     }
     let mut target_doc = source

@@ -98,10 +98,7 @@ fn derive(
 ) -> Option<PolicyData> {
     use automerge::ReadDoc as _;
     for (base_heads, base) in remembered::all(workspace) {
-        if !base_heads
-            .iter()
-            .all(|head| document.get_change_by_hash(head).is_some())
-        {
+        if !base_heads.iter().all(|head| document.has_change(head)) {
             continue;
         }
         // Every change of `document` that is not in the remembered state's

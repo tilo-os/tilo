@@ -330,11 +330,7 @@ impl Workspaces {
             .ok()
             .flatten()
             .and_then(|bytes| automerge::AutoCommit::load(&bytes).ok())
-            .is_some_and(|mut kept| {
-                wanted
-                    .iter()
-                    .all(|head| kept.get_change_by_hash(head).is_some())
-            });
+            .is_some_and(|kept| wanted.iter().all(|head| kept.has_change(head)));
         if !taken {
             return Err(CollaborationError::new(
                 "the workspace did not take the bot's change",

@@ -300,6 +300,10 @@ macro_rules! impl_read_doc_for_tx {
                 self.doc.get_change_by_hash(hash)
             }
 
+            fn has_change(&self, hash: &crate::ChangeHash) -> bool {
+                self.doc.has_change(hash)
+            }
+
             fn stats(&self) -> crate::read::Stats {
                 self.doc.stats()
             }

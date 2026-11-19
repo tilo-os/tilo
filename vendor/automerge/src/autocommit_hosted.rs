@@ -466,6 +466,11 @@ impl AutoCommit {
         outside_device("changes")
     }
 
+    #[inline(always)]
+    pub fn has_change(&self, _hash: &ChangeHash) -> bool {
+        outside_device("changes")
+    }
+
     pub fn get_change_meta_by_hash(&mut self, hash: &ChangeHash) -> Option<ChangeMetadata<'_>> {
         self.committed_change_meta(hash)
     }
@@ -952,6 +957,11 @@ impl ReadDoc for AutoCommit {
 
     #[inline(always)]
     fn get_change_by_hash(&self, _hash: &ChangeHash) -> Option<Change> {
+        outside_device("changes")
+    }
+
+    #[inline(always)]
+    fn has_change(&self, _hash: &ChangeHash) -> bool {
         outside_device("changes")
     }
 

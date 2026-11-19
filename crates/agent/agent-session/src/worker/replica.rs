@@ -138,10 +138,7 @@ fn changes_since(document: &mut AutoCommit, held: &mut AutoCommit) -> Option<Vec
     if heads.is_empty() {
         return None;
     }
-    if heads
-        .iter()
-        .any(|head| document.get_change_by_hash(head).is_none())
-    {
+    if heads.iter().any(|head| !document.has_change(head)) {
         return None;
     }
     let mut bytes = Vec::new();
@@ -1079,7 +1076,7 @@ impl ConfinedReplica {
                     None => Dependencies::RequireComplete,
                 };
                 match tilo_automerge_isolate::apply(&mut inner.mirror, &bytes, dependencies) {
-                    Ok(Applied::Changed(_)) if holds(&mut inner.mirror, own.as_deref()) => {
+                    Ok(Applied::Changed(_)) if holds(&inner.mirror, own.as_deref()) => {
                         Ok(Some(bytes))
                     }
                     Ok(_) => {
@@ -1128,7 +1125,7 @@ impl ConfinedReplica {
         // What the mirror holds already (this replica's own write, coming back
         // from the workspace) is no change: neither merged again nor sent the
         // worker.
-        if !snapshot && holds_all(&mut inner.mirror, bytes) {
+        if !snapshot && holds_all(&inner.mirror, bytes) {
             return Ok(());
         }
         // Admitted here before the worker sees it. A whole document may be
@@ -1458,16 +1455,13 @@ fn admit_beside_incoming(mirror: &mut Deferred, bytes: &[u8]) -> Result<(), AppE
 /// that waits in `doc`'s queue for a dependency it has not got is not held,
 /// and is never published as if it were whole. Changes the bytes did not name
 /// cannot be asked after, and are the whole record's business instead.
-fn holds(doc: &mut AutoCommit, own: Option<&[automerge::ChangeHash]>) -> bool {
-    own.is_none_or(|own| {
-        own.iter()
-            .all(|hash| doc.get_change_by_hash(hash).is_some())
-    })
+fn holds(doc: &AutoCommit, own: Option<&[automerge::ChangeHash]>) -> bool {
+    own.is_none_or(|own| own.iter().all(|hash| doc.has_change(hash)))
 }
 
 /// Whether `doc` holds every change the increment `bytes` carries, read
 /// from the changes' headers alone: then merging it brings nothing new.
-fn holds_all(doc: &mut AutoCommit, bytes: &[u8]) -> bool {
+fn holds_all(doc: &AutoCommit, bytes: &[u8]) -> bool {
     tilo_automerge_isolate::change_hashes(bytes).is_some_and(|carried| holds(doc, Some(&carried)))
 }
 
@@ -1770,8 +1764,8 @@ mod tests {
 
     /// Whether `replica`'s record holds every change `hashes` names.
     fn recorded(replica: &ConfinedReplica, hashes: &[automerge::ChangeHash]) -> bool {
-        let mut inner = replica.lock();
-        holds(&mut inner.mirror, Some(hashes))
+        let inner = replica.lock();
+        holds(&inner.mirror, Some(hashes))
     }
 
     /// A change of the worker's own that waits for a dependency is not

@@ -699,10 +699,7 @@ impl Records for Counted {
         else {
             return Since::Whole;
         };
-        if heads
-            .iter()
-            .any(|head| doc.get_change_by_hash(head).is_none())
-        {
+        if heads.iter().any(|head| !doc.has_change(head)) {
             return Since::Whole;
         }
         let now = doc.get_heads();

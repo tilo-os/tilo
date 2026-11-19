@@ -631,3 +631,14 @@ committed changes' metadata (`committed_change_meta`,
 the committed `Automerge`, which a module has none of. `AutomergeError::Device`
 carries the host's refusals. The marked spots are `TILO(model-device)`. Pinned
 by `crates/server/tilo-workspace-service/src/workspaces/packaged_model_tests.rs`.
+
+# Tilo patch: ask whether a document holds a change without rebuilding it
+
+`get_change_by_hash` rebuilds the change from the op set, which walks the
+whole document: about 50 ms on a document of a thousand tracker issues. Tilo
+asked it only to learn whether a document holds a change (whether a reader's
+heads are still in it) many times per received write, so a page catching up
+on a large record spent seconds rebuilding changes it threw away.
+`ReadDoc::has_change`, with `Automerge::has_change` and `AutoCommit::has_change`,
+answers from the change graph's hash index. Pinned by
+`crates/doc/tilo-automerge/tests/has_change.rs`.

@@ -359,12 +359,9 @@ impl Save {
         // The layout is written against the record it was laid out from, and what reached the record
         // since is merged in after: what another member changed meanwhile, which this session does not
         // show yet, is theirs, and this write carries only what changed here.
-        let mut candidate = match laid_at.filter(|at| {
-            !at.is_empty()
-                && at
-                    .iter()
-                    .all(|head| base.get_change_by_hash(head).is_some())
-        }) {
+        let mut candidate = match laid_at
+            .filter(|at| !at.is_empty() && at.iter().all(|head| base.has_change(head)))
+        {
             Some(at) => match base.fork_at(&at) {
                 Ok(fork) => fork,
                 Err(error) => return Laid::Failed(error.to_string(), Some(Box::new(base))),
@@ -2225,7 +2222,7 @@ fn base_of(
             if kept
                 .committed_heads()
                 .iter()
-                .all(|head| automerge::ReadDoc::get_change_by_hash(&reached, head).is_some()) =>
+                .all(|head| automerge::ReadDoc::has_change(&reached, head)) =>
         {
             reached
         }

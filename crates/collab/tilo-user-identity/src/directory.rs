@@ -571,7 +571,7 @@ impl WorkspaceDirectory {
         self.doc
             .get_heads()
             .iter()
-            .any(|head| theirs.get_change_by_hash(head).is_none())
+            .any(|head| !theirs.has_change(head))
     }
 
     /// Say where `device`, which holds workspace `id`, reaches its host:

@@ -26,10 +26,9 @@ impl GovernanceHeads {
             return true;
         }
         heads.iter().all(|head| {
-            self.0.as_ref().is_some_and(|doc| {
-                doc.get_change_by_hash(&automerge::ChangeHash(*head))
-                    .is_some()
-            })
+            self.0
+                .as_ref()
+                .is_some_and(|doc| doc.has_change(&automerge::ChangeHash(*head)))
         })
     }
 

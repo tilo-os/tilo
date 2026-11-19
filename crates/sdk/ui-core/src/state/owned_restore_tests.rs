@@ -330,7 +330,7 @@ fn owned_restore_mixed_overlay_and_undo_preserve_live_remote_operational_state()
         Some("current remote session")
     );
     for head in remote_heads {
-        assert!(state.doc.get_change_by_hash(&head).is_some());
+        assert!(state.doc.has_change(&head));
     }
     assert_eq!(
         state

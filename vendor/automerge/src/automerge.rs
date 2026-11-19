@@ -2344,7 +2344,9 @@ impl Automerge {
         other.shared_heads == self.get_heads()
     }
 
-    pub(crate) fn has_change(&self, head: &ChangeHash) -> bool {
+    /// TILO(has-change): whether this document holds the change `head` names, without
+    /// rebuilding it as [`ReadDoc::get_change_by_hash`] does.
+    pub fn has_change(&self, head: &ChangeHash) -> bool {
         self.change_graph.has_change(head)
     }
 
@@ -2614,6 +2616,10 @@ impl ReadDoc for Automerge {
         ChangeCollector::for_hashes(&self.ops, &self.change_graph, [*hash])
             .ok()?
             .pop()
+    }
+
+    fn has_change(&self, hash: &ChangeHash) -> bool {
+        Automerge::has_change(self, hash)
     }
 
     fn stats(&self) -> crate::read::Stats {

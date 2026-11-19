@@ -713,14 +713,14 @@ impl Store {
                     continue;
                 }
                 let doc = self.doc(doc_id)?;
-                if doc.get_change_by_hash(&hash).is_some() {
+                if doc.has_change(&hash) {
                     continue;
                 }
                 if received
                     .change
                     .deps()
                     .iter()
-                    .any(|dep| doc.get_change_by_hash(dep).is_none())
+                    .any(|dep| !doc.has_change(dep))
                 {
                     waiting.push(received);
                     continue;

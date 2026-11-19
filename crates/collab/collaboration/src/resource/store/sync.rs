@@ -205,7 +205,7 @@ impl DocumentSync {
         incoming
             .get_missing_deps(&[])
             .iter()
-            .all(|hash| doc.get_change_by_hash(hash).is_some())
+            .all(|hash| doc.has_change(hash))
     }
 }
 

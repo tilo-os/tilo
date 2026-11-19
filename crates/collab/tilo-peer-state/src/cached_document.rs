@@ -242,17 +242,12 @@ impl CachedDocument {
     /// a copy of it), keeping what reading this state's rows took for the
     /// rows `doc` holds unchanged.
     pub(crate) fn followed_by(&self, mut doc: AutoCommit) -> Self {
-        use automerge::ReadDoc as _;
         // Only from a state whose every change `doc` holds: one whose change
         // `doc` pruned may have held receipts `doc` no longer does.
         let since_checked = self
             .receipts
             .get()
-            .filter(|heads| {
-                heads
-                    .iter()
-                    .all(|head| doc.get_change_by_hash(head).is_some())
-            })
+            .filter(|heads| heads.iter().all(|head| doc.has_change(head)))
             .map(|heads| Arc::new(doc.get_changes(heads)));
         Self {
             earlier: self.views().or_else(|| self.earlier.clone()),

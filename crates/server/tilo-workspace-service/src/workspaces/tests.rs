@@ -1062,10 +1062,7 @@ async fn governor_authors_a_workspace_record_no_factory_makes() {
     let second = read().await.unwrap();
     assert_eq!(text(&second), "second");
     let first_head = first.get_heads()[0];
-    assert!(
-        second.get_change_by_hash(&first_head).is_some(),
-        "the record keeps its graph"
-    );
+    assert!(second.has_change(&first_head), "the record keeps its graph");
     let mut different = cert.clone();
     different.device_label = "different current certificate".into();
     sign_device_cert(&mut different, &SigningKey::from_bytes(&[1; 32])).unwrap();
@@ -1872,11 +1869,11 @@ async fn a_window_a_member_opens_becomes_the_workspaces_next_generation() {
             workspace.record.generation > generation,
             "the governor committed the window as the workspace's next generation"
         );
-        let mut admitted = workspace.peer().admitted_workspace().unwrap().clone();
+        let admitted = workspace.peer().admitted_workspace().unwrap().clone();
         drop(workspace);
         for hash in &hashes {
             assert!(
-                admitted.get_change_by_hash(hash).is_some(),
+                admitted.has_change(hash),
                 "the governed workspace holds the member's window"
             );
         }
