@@ -52,7 +52,6 @@ row-operation 1 apps/calendar/src/app/store.rs
 row-operation 4 apps/camera/src/actions.rs
 row-operation 2 apps/chat/src/direct.rs
 row-operation 14 apps/chat/src/effects.rs
-row-operation 3 apps/clocks/src/resource.rs
 row-operation 1 apps/contacts/src/account_editor.rs
 row-operation 2 apps/contacts/src/actions.rs
 row-operation 6 apps/containers/src/app.rs
@@ -83,7 +82,6 @@ untyped-live-row 1 apps/calendar/src/app/store.rs
 untyped-live-row 5 apps/camera/src/actions.rs
 untyped-live-row 1 apps/chat/src/direct.rs
 untyped-live-row 5 apps/chat/src/effects.rs
-untyped-live-row 4 apps/clocks/src/resource.rs
 untyped-live-row 1 apps/contacts/src/account_editor.rs
 untyped-live-row 1 apps/contacts/src/actions.rs
 untyped-live-row 6 apps/containers/src/app.rs

@@ -304,7 +304,8 @@ impl Clocks {
 
 #[resource(
     kind = "clocks.collection",
-    read_content = Clocks::read_document
+    read_content = Clocks::read_document,
+    effects = crate::effects::ClocksEffect
 )]
 impl Clocks {
     /// Add a city.

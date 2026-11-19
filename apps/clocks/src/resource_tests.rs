@@ -2,6 +2,7 @@ use super::*;
 use crate::model::{Stopwatch, WeekdayKey};
 use std::time::Duration;
 use ui::prelude::{Replica, TestApp};
+use ui::tilo_resource::items::item_resource_id;
 
 const T0: i64 = 1_800_000_000_000;
 
@@ -131,13 +132,12 @@ fn one_published_tree_offers_every_clock_and_floats_timers_on_this_device_only()
     assert!(
         row.actions
             .iter()
-            .any(|action| action.id == "float-timer" && action.params().is_empty()),
-        "the row offers floating it back, nothing left to supply"
+            .any(|action| action.id == "unfloat-timer" && action.params().is_empty()),
+        "the row offers putting it back in its window, nothing left to supply"
     );
     assert!(
         app.effect(&ClocksEffect::FloatTimer {
             timer: "missing".into(),
-            floating: true,
         })
         .is_err(),
         "only a timer that exists floats"
