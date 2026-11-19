@@ -282,7 +282,7 @@ impl AppContentIndex {
     fn allowed_keys(&self, workspace: Option<&str>) -> Option<BTreeSet<IndexKey>> {
         let policy = self.policy.get()?;
         // A policy reader can ask the replica, whose publication reads this index.
-        let entries_by_key: Vec<_> = self
+        let mut allowed: BTreeSet<_> = self
             .inner
             .lock_recover()
             .entries_by_key
@@ -290,12 +290,8 @@ impl AppContentIndex {
             .filter(|key| workspace.is_none_or(|id| key.workspace == id))
             .cloned()
             .collect();
-        Some(
-            entries_by_key
-                .into_iter()
-                .filter(|key| (policy.allows)(key))
-                .collect(),
-        )
+        allowed.retain(|key| (policy.allows)(key));
+        Some(allowed)
     }
 
     /// The ids installed apps had before, as the catalogue says: what a
@@ -565,7 +561,7 @@ pub fn session() -> Arc<AppContentIndex> {
 /// The file the apps' lock reports are kept in.
 const SECRETS_FILE: &str = "secrets.json";
 
-/// The form entries_by_key are kept in: 1 since apps publish the text of rich text as the person
+/// The form `entries_by_key` are kept in: 1 since apps publish the text of rich text as the person
 /// reads it (a reference to a resource they cannot read never by its title).
 const SLOT_FORM: u32 = 1;
 

@@ -293,8 +293,10 @@ impl Workspaces {
                 super::Change::Other,
                 |entry, _| Ok(entry.collaboration.clone()),
             )?;
+            drop(replica);
         }
         self.settle(&mut governed).await?;
+        drop(governed);
         Ok(true)
     }
 

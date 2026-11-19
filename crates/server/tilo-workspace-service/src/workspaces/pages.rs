@@ -255,6 +255,8 @@ impl Workspaces {
                 .then_some((app, document))
             })
             .collect();
+        drop(peer);
+        drop(workspace);
         let documents: Vec<_> = documents.into_iter().collect();
         let documents = collab_types::document_access_scopes(&member.policy, &documents, []);
         let rules = collab_types::document_access_rules(&member.policy, &documents);
@@ -995,6 +997,7 @@ impl Workspaces {
         let member = workspace
             .peer()
             .permissions(device.device_public_key, system_time(now))?;
+        drop(workspace);
         Ok(WorkspacesReply::Roles(WorkspaceRoles {
             custom_roles: member.policy.custom_roles.clone(),
             assigned_roles: member.policy.assigned_roles.clone(),

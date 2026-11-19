@@ -3077,10 +3077,8 @@ fn describe_capability(cap: &CapOverride) -> String {
         Access::Write => "write",
     };
     let effect = match cap.effect {
-        Effect::Grant => "grant",
-        Effect::Restrict => "restrict",
-        Effect::WorkspaceFileAccess => "grant",
-        Effect::WorkspaceFileBoundary => "restrict",
+        Effect::Grant | Effect::WorkspaceFileAccess => "grant",
+        Effect::Restrict | Effect::WorkspaceFileBoundary => "restrict",
     };
     t_args(
         "activity-capability",

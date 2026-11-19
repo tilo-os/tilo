@@ -2095,7 +2095,7 @@ impl Task {
                 |artifact, metadata, payload| {
                     let keys = self
                         .keys_for_ciphertext(route, *metadata)
-                        .ok_or("the document's keys have not arrived".to_owned())?;
+                        .ok_or_else(|| "the document's keys have not arrived".to_owned())?;
                     keys.open_content(artifact, metadata, payload)
                         .map(|plaintext| plaintext.to_vec())
                         .map_err(|error| error.to_string())

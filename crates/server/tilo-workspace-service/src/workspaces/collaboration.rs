@@ -705,17 +705,20 @@ impl Workspaces {
             self.authorize(caller, Some(&workspace), WorkspaceOp::Change(change), now)?;
         }
         let key = self.inner.host.key.clone();
-        self.administer(
-            &mut workspace,
-            request_id,
-            request_digest(&("document-access", recipient, app, document, access))?,
-            |peer| {
-                peer.governance_mut()
-                    .change_document_access(changes, &key, at)
-            },
-            now,
-        )
-        .await
+        let completion = self
+            .administer(
+                &mut workspace,
+                request_id,
+                request_digest(&("document-access", recipient, app, document, access))?,
+                |peer| {
+                    peer.governance_mut()
+                        .change_document_access(changes, &key, at)
+                },
+                now,
+            )
+            .await;
+        drop(workspace);
+        completion
     }
 
     /// Hold the person `request.user_public_key` in `workspace` at

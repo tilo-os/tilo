@@ -82,10 +82,14 @@ fn key_scope(body: &[u8]) -> Option<neighbour_wire::KeyScope> {
     if !NeighbourMsg::is_governance(body) && !NeighbourMsg::is_access_request(body) {
         return None;
     }
-    let scope = match postcard::from_bytes(body).ok()? {
-        NeighbourMsg::MlsGovernance { workspace, .. }
-        | NeighbourMsg::MlsAccessRequest { workspace, .. } => workspace,
-        _ => return None,
+    let (NeighbourMsg::MlsGovernance {
+        workspace: scope, ..
+    }
+    | NeighbourMsg::MlsAccessRequest {
+        workspace: scope, ..
+    }) = postcard::from_bytes(body).ok()?
+    else {
+        return None;
     };
     neighbour_wire::KeyScope::parse(&scope)
 }
@@ -127,7 +131,7 @@ pub(super) async fn handle_open_document(
 ) -> Result<Option<Envelope>, PeerError> {
     let Envelope::OpenDocument {
         workspace_id,
-        channel,
+        channel: requested,
         own,
     } = envelope
     else {
@@ -148,7 +152,7 @@ pub(super) async fn handle_open_document(
     // A browser environment's device opens its own record and no other.
     if session
         .environment(&peer.device_public_key)
-        .is_some_and(|scope| !scope.reaches(Some(channel)))
+        .is_some_and(|scope| !scope.reaches(Some(requested)))
     {
         return refused(crate::workspace_access::DenyReason::OutOfEnvironmentScope.refusal());
     }
@@ -162,7 +166,7 @@ pub(super) async fn handle_open_document(
     let heading = crate::timing::start();
     let head = {
         let store = ws.lock().await.store.clone();
-        tokio::task::spawn_blocking(move || store.chain_head_channel(&channel))
+        tokio::task::spawn_blocking(move || store.chain_head_channel(&requested))
             .await
             .map_err(|error| PeerError::Protocol(format!("record read: {error}")))??
     };
@@ -179,11 +183,11 @@ pub(super) async fn handle_open_document(
         // and is sent nothing of it. A host the workspace is attached to keeps
         // all of the workspace.
         // The record may be one nothing was written of yet: what the device
-        // says it is counts when it names the channel opened.
-        let read = head.unwrap_or(channel);
+        // says it is counts when it names the requested opened.
+        let read = head.unwrap_or(requested);
         let named_owner = own
             .as_ref()
-            .filter(|own| own.names(&channel))
+            .filter(|own| own.names(&requested))
             .map(|own| own.record.owner);
         if !runtime.attached(&peer.device_public_key)
             && (!runtime.store.reaches_person(&read, &peer.user_public_key)
@@ -191,19 +195,19 @@ pub(super) async fn handle_open_document(
         {
             return Ok(Some(Envelope::DocumentOpened {
                 workspace_id,
-                channel,
+                channel: requested,
                 answer: tilo_server_protocol::DocumentAnswer::NotYours,
             }));
         }
         // Its person's device opening their own record says whose it is.
         if let Some(own) = own
             .as_ref()
-            .filter(|own| own.names(&channel) && own.record.owner == peer.user_public_key)
+            .filter(|own| own.names(&requested) && own.record.owner == peer.user_public_key)
         {
             runtime.store.learn_own(&own.app_id, &own.record);
         }
         let device = &peer.device_public_key;
-        runtime.hold_document(device, session.outbound, channel);
+        runtime.hold_document(device, session.outbound, requested);
         if let Some(head) = head {
             runtime.hold_document(device, session.outbound, head);
         }
@@ -219,36 +223,47 @@ pub(super) async fn handle_open_document(
     // Sent whether or not the device holds the head already: an answer of no
     // frames says the chain has no part at all, never "you have it", so a
     // device whose copy has not opened yet never takes the chain as empty.
-    let read = head.unwrap_or(channel);
+    let read = head.unwrap_or(requested);
     let frames = frames_of(store, governed, workspace_id, read).await?;
-    // Read the projection again after loading retained frames. A policy
-    // change while reading must apply to the answer about to be queued.
-    let mut runtime = crate::workspace_io::fresh_membership(&ws).await?;
-    let policy = DocumentRead::of(&runtime, peer);
-    if frames
-        .iter()
-        .any(|frame| !policy.allows(&runtime.store, frame))
-    {
-        let device = &peer.device_public_key;
-        runtime.unhold_document(device, session.outbound, &channel);
-        if let Some(head) = head {
-            runtime.unhold_document(device, session.outbound, &head);
-        }
+    if !still_readable(&ws, peer, session, (requested, head), &frames).await? {
         return Ok(Some(Envelope::DocumentOpened {
             workspace_id,
-            channel,
+            channel: requested,
             answer: tilo_server_protocol::DocumentAnswer::NotYours,
         }));
     }
-    drop(runtime);
     let sent = u32::try_from(frames.len()).unwrap_or(u32::MAX);
     crate::timing::event("document.open.total", opened, u64::from(sent));
     answer.extend(frames);
     Ok(Some(Envelope::DocumentOpened {
         workspace_id,
-        channel,
+        channel: requested,
         answer: tilo_server_protocol::DocumentAnswer::Sent { frames: sent },
     }))
+}
+
+/// Apply the current policy after loading the retained frames.
+async fn still_readable(
+    workspace: &crate::workspace::SharedWorkspace,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    (requested, head): ([u8; 32], Option<[u8; 32]>),
+    frames: &[Envelope],
+) -> Result<bool, PeerError> {
+    let mut runtime = crate::workspace_io::fresh_membership(workspace).await?;
+    let policy = DocumentRead::of(&runtime, peer);
+    let allowed = frames
+        .iter()
+        .all(|frame| policy.allows(&runtime.store, frame));
+    if !allowed {
+        let device = &peer.device_public_key;
+        runtime.unhold_document(device, session.outbound, &requested);
+        if let Some(head) = head {
+            runtime.unhold_document(device, session.outbound, &head);
+        }
+    }
+    drop(runtime);
+    Ok(allowed)
 }
 
 /// Everything `store` retains of the document on `read`, beside the writes

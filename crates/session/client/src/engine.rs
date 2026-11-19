@@ -1389,7 +1389,7 @@ impl Engine {
         }
     }
 
-    /// Every document_id `workspace` holds here, by its app and id. A workspace this device
+    /// Every document the replica holds for `workspace`, by its app and id. A workspace this device
     /// does not hold lists nothing.
     /// # Errors
     /// The workspace is not held here, or its documents cannot be listed now.
