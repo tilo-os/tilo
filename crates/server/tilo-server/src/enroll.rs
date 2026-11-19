@@ -768,7 +768,7 @@ fn commit_staged_personal_enrollment(
             .and_then(|stem| stem.to_str())
             .context("joined identity record has no runtime id")?;
         as_person(&marker.identity_dir, || {
-            runtime_identity::set_active_identity(&marker.identity_dir, document_id)
+            tilo_identity::store::set_active_identity(&marker.identity_dir, document_id)
         })
         .context("select the joined identity")?;
     }

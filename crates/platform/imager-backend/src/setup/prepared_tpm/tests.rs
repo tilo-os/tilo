@@ -887,7 +887,7 @@ user_pref("mail.identity.id1.fullName", "Personal");
     // A real prepared identity package, not a synthetic blob. Its exact bytes,
     // not the mailbox, are what the TPM sidecar binds.
     let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     std::fs::set_permissions(
         fixture.scratch.path(),
         std::fs::Permissions::from_mode(0o700),

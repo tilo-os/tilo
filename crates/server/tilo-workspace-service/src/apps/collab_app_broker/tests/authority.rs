@@ -194,7 +194,7 @@ tilo_test_env::scenario! {
         let route = CrdtRoute::cluster("workspace-a");
         let mut presentation = certified_join("workspace-a", &root, &device);
         presentation.proof = stranger
-            .sign(&runtime_identity::collaboration_join_digest(
+            .sign(&tilo_identity_client::collaboration_join_digest(
                 "workspace-a",
             ).unwrap())
             .to_bytes()

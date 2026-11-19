@@ -96,7 +96,7 @@ impl PreparedIdentity {
         let _ = (destination, password, binding);
         Err(unsupported())
     }
-    pub fn metadata(&self) -> io::Result<runtime_identity::IdentityMetadata> {
+    pub fn metadata(&self) -> io::Result<tilo_identity_client::IdentityMetadata> {
         Err(unsupported())
     }
     pub fn resume(directory: &Path, expected_public_key: [u8; 32]) -> io::Result<Self> {
@@ -115,19 +115,22 @@ impl PreparedIdentity {
     pub fn public_key(&self) -> [u8; 32] {
         match self.never {}
     }
-    pub fn update_photo(&self, photo: Option<runtime_identity::ProfilePhoto>) -> io::Result<()> {
+    pub fn update_photo(
+        &self,
+        photo: Option<tilo_identity_client::ProfilePhoto>,
+    ) -> io::Result<()> {
         let _ = (photo,);
         Err(unsupported())
     }
     pub fn update_presentation(
         &self,
         name: &str,
-        photo: Option<runtime_identity::ProfilePhoto>,
-    ) -> io::Result<runtime_identity::IdentityMetadata> {
+        photo: Option<tilo_identity_client::ProfilePhoto>,
+    ) -> io::Result<tilo_identity_client::IdentityMetadata> {
         let _ = (name, photo);
         Err(unsupported())
     }
-    pub fn update_name(&self, name: &str) -> io::Result<runtime_identity::IdentityMetadata> {
+    pub fn update_name(&self, name: &str) -> io::Result<tilo_identity_client::IdentityMetadata> {
         let _ = (name,);
         Err(unsupported())
     }
@@ -135,7 +138,7 @@ impl PreparedIdentity {
         &self,
         name: &str,
         color: [u8; 3],
-    ) -> io::Result<runtime_identity::IdentityMetadata> {
+    ) -> io::Result<tilo_identity_client::IdentityMetadata> {
         let _ = (name, color);
         Err(unsupported())
     }
@@ -143,7 +146,7 @@ impl PreparedIdentity {
         &self,
         destination: &Path,
         password: Zeroizing<String>,
-    ) -> io::Result<runtime_identity::PortableBackupInfo> {
+    ) -> io::Result<tilo_identity::store::PortableBackupInfo> {
         let _ = (destination, password);
         Err(unsupported())
     }

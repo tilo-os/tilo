@@ -12,8 +12,8 @@ use collab_types::DocumentMutation;
 use tilo_automerge::ApplyIncoming as _;
 
 use super::{DocumentCheckout, DocumentId, ResourceStore};
-use crate::automerge::AutoCommit;
 use crate::state::DocumentFrontier;
+use automerge::AutoCommit;
 
 /// A record's replication beside one peer.
 #[derive(Default)]

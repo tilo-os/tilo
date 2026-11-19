@@ -25,7 +25,8 @@ use zeroize::Zeroizing;
 /// pass through its bounded stdin.
 const MAX_IDENTITY_SECRET_BYTES: u64 = 32 * 1024;
 
-use crate::{KeyProtection, SecretReference};
+use super::SecretReference;
+use tilo_identity_client::KeyProtection;
 
 const SECRETS_APP: &str = "so.tilo.identity";
 const PURPOSE_ATTRIBUTE: &str = "tilo-identity-signing-v1";
@@ -94,7 +95,7 @@ fn secret_key(locator: &str) -> String {
 fn store_error(error: SecretError) -> io::Error {
     match error {
         SecretError::Unavailable(_) | SecretError::Denied | SecretError::Unsupported(_) => {
-            crate::secret_service_unavailable_error()
+            super::secret_service_unavailable_error()
         }
         SecretError::InvalidKey => {
             io::Error::new(io::ErrorKind::InvalidInput, "invalid identity secret key")
@@ -128,7 +129,7 @@ impl SecretProvider for SecretServiceProvider {
                     "a different key already uses this identity locator",
                 ));
             }
-            Err(error) if crate::is_secret_service_unavailable_io(&error) => {}
+            Err(error) if super::is_secret_service_unavailable_io(&error) => {}
             Err(error) => return Err(error),
         }
         let encoded = Zeroizing::new(hex::encode(secret));
@@ -157,7 +158,7 @@ impl SecretProvider for SecretServiceProvider {
             .store
             .get_blocking(&secret_key(locator))
             .map_err(store_error)?
-            .ok_or_else(crate::secret_service_unavailable_error)?;
+            .ok_or_else(super::secret_service_unavailable_error)?;
         // Corruption must surface; never mask it by generating a replacement key.
         let encoded = std::str::from_utf8(stored.expose())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid keyring value"))?;

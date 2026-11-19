@@ -9,7 +9,7 @@ use std::fs;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use runtime_identity::{IdentitySummary, KeyProtection};
+use tilo_identity_client::{IdentitySummary, KeyProtection};
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow, ViewCx};
 use ui::icons::Icon;

@@ -45,7 +45,7 @@ FEATURES = [
     (re.compile(r"^crates/system/secret-service/"), "secrets"),
     (re.compile(r"^crates/platform/tilo-secrets/"), "secrets"),
     (re.compile(r"^crates/session/session/src/(shell/mls_vault\.rs|portal/secret\.rs)$"), "secrets"),
-    (re.compile(r"^crates/runtime/runtime-identity/src/secure_store\.rs$"), "secrets"),
+    (re.compile(r"^crates/runtime/tilo-identity/src/store/secure_store\.rs$"), "secrets"),
     # What keeps the machine's own apps open through an in-place desktop restart: the keeper,
     # the session's launch and adoption of kept apps, the launcher starting them behind it, and
     # the wrapper and the session telling a restart from a logout.

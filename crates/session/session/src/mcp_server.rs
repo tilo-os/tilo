@@ -1835,7 +1835,7 @@ fn certify(
         now_ns.saturating_add(MAX_AGENT_CERT_NS),
     )
     .map_err(|error| format!("the agent certificate does not sign: {error}"))?;
-    let digest = runtime_identity::collaboration_join_digest(admitted.workspace)
+    let digest = tilo_identity_client::collaboration_join_digest(admitted.workspace)
         .map_err(|error| error.to_string())?;
     runtime_collab::AgentJoinIdentity {
         workspace_id: admitted.workspace.to_owned(),

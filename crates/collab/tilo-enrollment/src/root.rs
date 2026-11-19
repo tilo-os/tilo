@@ -11,7 +11,7 @@ pub trait RootSigner: StatementSigner {}
 
 impl RootSigner for ed25519_dalek::SigningKey {}
 
-impl RootSigner for runtime_identity::SigningIdentity {}
+impl RootSigner for tilo_identity::store::SigningIdentity {}
 
 /// Open the root signer, falling back to an identity file only for an absent seed.
 ///
@@ -34,13 +34,13 @@ pub fn load_root(
             .context(MISSING_ROOT)?;
         return Ok(Box::new(root));
     };
-    let file = runtime_identity::resolve_active_identity(identity_dir).with_context(|| {
+    let file = tilo_identity_client::resolve_active_identity(identity_dir).with_context(|| {
         format!(
             "{MISSING_ROOT}: {} holds no active identity",
             identity_dir.display()
         )
     })?;
-    let identity = runtime_identity::load_from_path(file.clone()).map_err(|error| {
+    let identity = tilo_identity::store::load_from_path(file.clone()).map_err(|error| {
         anyhow::anyhow!(
             "{MISSING_ROOT}: cannot open {}: {error} (start this as the account that owns the \
              identity, in a session that can reach its secret store)",

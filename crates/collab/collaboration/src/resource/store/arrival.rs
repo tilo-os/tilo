@@ -22,9 +22,11 @@ impl ResourceStore {
     /// Wake every window that reads this store ([`Self::wake_on_arrival`]).
     /// Callable while a frame reads the store.
     pub(super) fn wake_readers(&self) {
-        let readers = match self.0.try_borrow() {
-            Ok(set) => set.readers.borrow().clone(),
-            Err(_) => return,
+        let Ok(readers) = tilo_failure::ignored!(
+            "a frame holding the store is reading it and sees what arrived",
+            self.0.try_borrow().map(|set| set.readers.borrow().clone())
+        ) else {
+            return;
         };
         for reader in readers {
             reader.wake();
@@ -87,7 +89,7 @@ impl ResourceStore {
 
     /// A peer's change to `id` was merged: more may follow, and every window
     /// reading the store is woken, as its own merge of it finds nothing new.
-    pub(crate) fn peer_change_merged(&self, id: &DocumentId) {
+    pub fn peer_change_merged(&self, id: &DocumentId) {
         if let Ok(set) = self.0.try_borrow() {
             set.answered.borrow_mut().remove(id);
         }

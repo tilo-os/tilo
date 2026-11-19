@@ -191,6 +191,7 @@ impl App {
                             .map(crate::state::DocumentReplica::document_mut),
                         want,
                         mutation,
+                        crate::history_mode::routes::merge_into_state(mutation),
                     )
                 })
                 .unwrap_or(false);

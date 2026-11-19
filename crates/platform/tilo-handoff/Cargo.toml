@@ -17,7 +17,7 @@ default = ["peer"]
 peer = [
     "dep:base64",
     "dep:ed25519-dalek",
-    "dep:runtime-identity",
+    "dep:tilo-identity-client",
     "dep:tilo-files",
     "dep:tilo-identity",
     "dep:tilo-net-p2p",
@@ -33,7 +33,7 @@ test-support = []
 base64 = { workspace = true, optional = true }
 ed25519-dalek = { workspace = true, optional = true }
 hex.workspace = true
-runtime-identity = { path = "../../runtime/runtime-identity", optional = true }
+tilo-identity-client = { path = "../../runtime/tilo-identity-client", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

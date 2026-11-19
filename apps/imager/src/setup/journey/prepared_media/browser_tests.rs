@@ -9,7 +9,7 @@ use std::{fs, os::unix::fs::PermissionsExt};
 #[test]
 fn browser_only_preparation_authenticates_identity_and_keeps_only_ciphertext() {
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let private = tempfile::Builder::new()
         .permissions(fs::Permissions::from_mode(0o700))
         .tempdir()

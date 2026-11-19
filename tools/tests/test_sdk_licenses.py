@@ -24,8 +24,8 @@ class AppLicenseGraph(unittest.TestCase):
         self.assertTrue(any("unknown" in error for error in errors))
 
     def test_host_implementation_is_rejected_even_if_manifest_is_mislicensed(self):
-        errors = sdk_licenses.findings("runtime-identity v0.1.0\tMIT\n", {"MIT"})
-        self.assertEqual(errors, ["runtime-identity: host implementation in the app dependency graph"])
+        errors = sdk_licenses.findings("tilo-identity v0.1.0\tMIT\n", {"MIT"})
+        self.assertEqual(errors, ["tilo-identity: host implementation in the app dependency graph"])
 
     def test_does_not_accept_an_unreviewed_expression_containing_mit(self):
         self.assertTrue(sdk_licenses.findings("bad v1.0.0\tMIT AND AGPL-3.0-only", {"MIT"}))

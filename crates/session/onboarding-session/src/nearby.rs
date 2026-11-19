@@ -412,7 +412,7 @@ fn read_status(status_path: &Path, identity_dir: &Path, final_look: bool) -> Sta
         _ => None,
     };
     let active = final_look
-        .then(|| runtime_identity::resolve_active_identity(identity_dir))
+        .then(|| tilo_identity_client::resolve_active_identity(identity_dir))
         .flatten()
         .and_then(|path| verified(identity_dir, &path, None));
     StatusRead {
@@ -755,7 +755,7 @@ mod tests {
     fn joined_record(fixture: &Fixture, user: [u8; 32]) -> PathBuf {
         let path = fixture.identity_dir.join("identity-joined.json");
         let bytes =
-            runtime_identity::public_member_record("Member", [1, 2, 3], user).expect("record");
+            tilo_identity::store::public_member_record("Member", [1, 2, 3], user).expect("record");
         std::fs::write(&path, bytes).expect("write record");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
             .expect("private record");
@@ -809,7 +809,7 @@ mod tests {
         {
             let fixture = fixture();
             let record = joined_record(&fixture, [9; 32]);
-            runtime_identity::set_active_identity(&fixture.identity_dir, "identity-joined")
+            tilo_identity::store::set_active_identity(&fixture.identity_dir, "identity-joined")
                 .expect("select joined identity");
             let mut pairing = helper(&fixture, "exit 0", PROCESS_BOUND);
             assert_eq!(
@@ -989,7 +989,7 @@ mod tests {
     fn a_selected_identity_lets_the_helper_finish_its_commit() {
         let fixture = fixture();
         let record = joined_record(&fixture, [10; 32]);
-        runtime_identity::set_active_identity(&fixture.identity_dir, "identity-joined")
+        tilo_identity::store::set_active_identity(&fixture.identity_dir, "identity-joined")
             .expect("select joined identity");
         let finished = fixture.identity_dir.join("helper-finished");
         let status = serde_json::json!({
@@ -1184,7 +1184,7 @@ mod tests {
                 // Even an identity already on disk cannot be accepted until the
                 // watcher verifies it. The reader remains guarded throughout.
                 joined_record(&fixture, [7; 32]);
-                runtime_identity::set_active_identity(&fixture.identity_dir, "identity-joined")
+                tilo_identity::store::set_active_identity(&fixture.identity_dir, "identity-joined")
                     .expect("active identity");
                 let now = if exited {
                     Instant::now()
@@ -1226,7 +1226,7 @@ mod tests {
                 let now = Instant::now();
                 assert_eq!(pairing.poll(now), NearbyEvent::Idle);
                 let record = joined_record(&fixture, [7; 32]);
-                runtime_identity::set_active_identity(&fixture.identity_dir, "identity-joined")
+                tilo_identity::store::set_active_identity(&fixture.identity_dir, "identity-joined")
                     .expect("active identity");
                 if !valid {
                     std::fs::write(&record, b"{}").expect("invalid record");
@@ -1265,7 +1265,7 @@ mod tests {
                 // A synchronous final read would incorrectly find and accept
                 // this identity instead of preserving the cached helper error.
                 joined_record(&fixture, [7; 32]);
-                runtime_identity::set_active_identity(&fixture.identity_dir, "identity-joined")
+                tilo_identity::store::set_active_identity(&fixture.identity_dir, "identity-joined")
                     .expect("active identity");
                 let failure = NearbyFailure::new(NearbyCause::PermissionDenied);
                 pairing.status.progress = NearbyProgress::Failed(failure.clone());

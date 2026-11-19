@@ -257,7 +257,7 @@ pub trait IdentityKey {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl IdentityKey for runtime_identity::SigningIdentity {
+impl IdentityKey for crate::store::SigningIdentity {
     fn person(&self) -> [u8; 32] {
         self.group_public_key()
     }

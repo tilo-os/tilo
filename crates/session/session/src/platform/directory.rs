@@ -283,7 +283,7 @@ mod tests {
                 "a computer with no identity goes by the name its session acts as"
             );
             assert_eq!(
-                person_name(Some(runtime_identity::UNNAMED_DISPLAY_NAME.into()), "Pat"),
+                person_name(Some(tilo_identity::store::UNNAMED_DISPLAY_NAME.into()), "Pat"),
                 "Pat",
                 "an unnamed identity leaves the session's name in place"
             );

@@ -393,7 +393,7 @@ fn owner_producer() {
     // SAFETY: this call merely observes process authority.
     assert_ne!(rustix::process::geteuid().as_raw(), 0);
     let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     environment.set("TILO_NATIVE_FLATPAK_FIXTURE_DIAGNOSTICS", "1");
     let source_home = PathBuf::from(std::env::var_os("TILO_FLATPAK_SYSTEM_SOURCE").unwrap());
     let inventory = discover(&NativeRunner, &source_home).unwrap();

@@ -146,7 +146,7 @@ fn validate_record(bytes: &[u8], root: [u8; 32]) -> io::Result<()> {
     {
         return Err(invalid());
     }
-    let identity = runtime_identity::load_from_bytes(bytes).map_err(|_| invalid())?;
+    let identity = crate::store::load_from_bytes(bytes).map_err(|_| invalid())?;
     if identity.group_public_key() != root || identity.is_single_device() {
         return Err(invalid());
     }
@@ -360,10 +360,9 @@ impl EnrolledDevice {
     ///
     /// # Errors
     /// Refuses changed source identity store or invalid canonical public metadata.
-    pub fn metadata(&self) -> io::Result<runtime_identity::IdentityMetadata> {
+    pub fn metadata(&self) -> io::Result<tilo_identity_client::IdentityMetadata> {
         self.validate_source()?;
-        runtime_identity::load_metadata_from_bytes(&self.payload.public_record)
-            .map_err(|_| invalid())
+        crate::store::load_metadata_from_bytes(&self.payload.public_record).map_err(|_| invalid())
     }
     pub fn identity_record_name(&self) -> &str {
         &self.record_name

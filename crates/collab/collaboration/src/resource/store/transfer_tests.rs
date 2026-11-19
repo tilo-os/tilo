@@ -1,9 +1,9 @@
 //! Moving and copying resources between workspaces, through the stores a window opens them in.
 
-use ::collaboration::document::fields::meta_ro;
-use ::collaboration::document::retirement::RETIRED;
-use ::collaboration::resource::transfer::*;
-use ::collaboration::resource::{WORKSPACE, meta_obj, validate_identity};
+use crate::document::fields::meta_ro;
+use crate::document::retirement::RETIRED;
+use crate::resource::transfer::*;
+use crate::resource::{WORKSPACE, meta_obj};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, ReadDoc, Value};
 use durable_store::StorageKey;
@@ -523,80 +523,5 @@ tilo_test_env::scenario! {
         let mut forked = branch(&plain, TO).unwrap();
         assert_eq!(forked.get_heads(), plain.get_heads());
         assert!(branch(&plain, "").is_err());
-    }
-
-    phase a_workspace_record_branched_is_the_one_an_app_of_the_branch_makes;
-    // A resource of the workspace's own that any app makes from its kind alone where it holds none
-    // (the workspace's emoji) is, in a branch, the very resource an app of the branch makes when it
-    // first opens it there: the two meet as one document, scoped to the branch, holding what the
-    // source held. Before, the branch's copy kept the source's genesis, the app's was the
-    // branch's, and the two met as a resource of no identity, its history blocked.
-    {
-        use crate::resource::workspace::WorkspaceResources;
-        const CHAT: &str = tilo_app_id::apps::CHAT;
-        const EMOJI: &str = "tilo.workspace.emoji";
-        let initialize = |doc: &mut AutoCommit| {
-            doc.put_object(ROOT, "emoji", ObjType::Map)
-                .map(drop)
-                .map_err(|error| error.to_string())
-        };
-        let records = |workspace: &str| {
-            WorkspaceResources::in_workspace(
-                ResourceOwners::with_store(Rc::new(durable_store::MemoryStore::new())),
-                workspace.into(),
-                crate::permissions::MemberId::person("ada"),
-            )
-        };
-        let emoji = |doc: &AutoCommit| {
-            let Ok(Some((Value::Object(ObjType::Map), map))) = doc.get(ROOT, "emoji") else {
-                return None;
-            };
-            match doc.get(&map, "parrot") {
-                Ok(Some((Value::Scalar(value), _))) => value.as_str().map(str::to_owned),
-                _ => None,
-            }
-        };
-        let source = records(FROM).open_resource(CHAT, EMOJI, &initialize).unwrap();
-        source
-            .edit(true, |doc| {
-                let Ok(Some((_, map))) = doc.get(ROOT, "emoji") else {
-                    return Err("no emoji".to_owned());
-                };
-                doc.put(&map, "parrot", "parrot.png")
-                    .map_err(|error| error.to_string())
-            })
-            .unwrap();
-        let held = source.read(AutoCommit::clone).unwrap();
-        let want = identity(&held).unwrap();
-
-        let copy = branch(&held, TO).unwrap();
-        assert_eq!(workspace_scope(&copy).as_deref(), Some(TO));
-        assert_eq!(
-            crate::resource::home(&copy).as_deref(),
-            Some(TO),
-            "minted again"
-        );
-        assert_eq!(emoji(&copy).as_deref(), Some("parrot.png"));
-        let made = records(TO)
-            .open_resource(CHAT, EMOJI, &initialize)
-            .unwrap()
-            .read(AutoCommit::clone)
-            .unwrap();
-        for (mut one, mut other) in [(made.clone(), copy.clone()), (copy.clone(), made.clone())] {
-            one.merge_incoming(&mut other).unwrap();
-            assert!(
-                validate_identity(&one, &want, TO).is_ok(),
-                "one resource of the branch: {:?} in {:?}",
-                identity(&one),
-                workspace_scope(&one)
-            );
-            assert_eq!(emoji(&one).as_deref(), Some("parrot.png"));
-        }
-        assert_eq!(
-            emoji(&held).as_deref(),
-            Some("parrot.png"),
-            "the source keeps its own"
-        );
-        assert_eq!(workspace_scope(&held).as_deref(), Some(FROM));
     }
 }

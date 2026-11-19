@@ -9,8 +9,8 @@ use std::rc::Rc;
 
 use durable_store::MemoryStore;
 
-use crate::collaboration::CollaborationManager;
-use crate::collaboration::native_initial::NativeConstruction;
+use crate::CollaborationManager;
+use crate::native_initial::NativeConstruction;
 use crate::resource::{
     DocumentCheckout, DocumentId, ResourceOpenError, ResourceOwners, ResourceStore, ResourceType,
 };

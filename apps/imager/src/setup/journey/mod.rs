@@ -6289,7 +6289,7 @@ mod tests {
         let original_certificate =
             std::fs::read(root.join("future-device/device/cert.bin")).unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         env.set("XDG_STATE_HOME", &state_root);
         let mut app = fixture();
         choose(&mut app, "computer");
@@ -6434,7 +6434,7 @@ mod tests {
         let (root, intent) =
             imager_backend::setup::migration_intent::reviewed_app_routing_fixture();
         let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         environment.set("XDG_STATE_HOME", root.path().join("state"));
         environment.set("XDG_CONFIG_HOME", root.path().join("config"));
         let minimum = intent.application_minimum();
@@ -6623,7 +6623,7 @@ mod tests {
         let (root, intent) =
             imager_backend::setup::migration_intent::reviewed_app_routing_fixture();
         let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         environment.set("XDG_STATE_HOME", root.path().join("state"));
         environment.set("XDG_CONFIG_HOME", root.path().join("config"));
         let minimum = intent.application_minimum();
@@ -6747,7 +6747,7 @@ mod tests {
         let (root, intent) =
             imager_backend::setup::migration_intent::reviewed_app_routing_fixture();
         let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         environment.set("XDG_STATE_HOME", root.path().join("state"));
         environment.set("XDG_CONFIG_HOME", root.path().join("config"));
         let minimum = intent.application_minimum();
@@ -6854,7 +6854,7 @@ mod tests {
         let (root, intent) =
             imager_backend::setup::migration_intent::reviewed_app_routing_fixture();
         let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         environment.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "1");
         environment.set("XDG_STATE_HOME", root.path().join("state"));
         environment.set("XDG_CONFIG_HOME", root.path().join("config"));
@@ -7216,7 +7216,7 @@ mod tests {
         use imager_backend::prepared_identity::PreparedIdentity;
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -7229,7 +7229,7 @@ mod tests {
         )
         .unwrap();
         let expected_photo =
-            runtime_identity::ProfilePhoto::new(1, 1, vec![9, 20, 30, 255]).unwrap();
+            tilo_identity_client::ProfilePhoto::new(1, 1, vec![9, 20, 30, 255]).unwrap();
         donor.update_photo(Some(expected_photo.clone())).unwrap();
         let backup = root.join("original.sealed");
         donor
@@ -7391,7 +7391,7 @@ mod tests {
     fn profile_continue_prepares_identity_and_profile_edits_keep_its_key() {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -7416,7 +7416,7 @@ mod tests {
         let entries = preparation_operations(&preparations);
         assert_eq!(entries.len(), 1);
         let record = entries.first().unwrap().join("identity/primary.json");
-        let original = runtime_identity::load_from_path(record.clone()).unwrap();
+        let original = tilo_identity::store::load_from_path(record.clone()).unwrap();
         assert_eq!(original.display_name(), "Ada");
         let proof = original.sign(b"installer-profile-edit").unwrap();
         app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
@@ -7433,7 +7433,7 @@ mod tests {
             edited["prepared_identity"]["public_key"],
             created["prepared_identity"]["public_key"]
         );
-        let updated = runtime_identity::load_from_path(record).unwrap();
+        let updated = tilo_identity::store::load_from_path(record).unwrap();
         assert_eq!(updated.display_name(), "Ada");
         assert_eq!(updated.sign(b"installer-profile-edit").unwrap(), proof);
         assert_eq!(preparation_operations(&preparations).len(), 1);
@@ -7450,7 +7450,7 @@ mod tests {
     fn selected_avatar_is_cached_and_exported_without_rereading_originals() {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -7487,12 +7487,13 @@ mod tests {
         let operations = preparation_operations(&state_home.join("tilo/installer/preparations"));
         assert_eq!(operations.len(), 1);
         let record = operations.first().unwrap().join("identity/primary.json");
-        let identity = runtime_identity::load_from_path(record.clone()).unwrap();
-        let expected = runtime_identity::ProfilePhoto::new(1, 1, vec![200, 100, 50, 255]).unwrap();
+        let identity = tilo_identity::store::load_from_path(record.clone()).unwrap();
+        let expected =
+            tilo_identity_client::ProfilePhoto::new(1, 1, vec![200, 100, 50, 255]).unwrap();
         assert_eq!(identity.profile_photo(), Some(&expected));
         let key = identity.group_public_key();
         let artifact = root.join("photo.sealed");
-        runtime_identity::export_portable_backup(
+        tilo_identity::store::export_portable_backup(
             &record,
             &artifact,
             b"a sufficiently long photo password",
@@ -7501,7 +7502,7 @@ mod tests {
         let restored = root.join("restored");
         std::fs::create_dir(&restored).unwrap();
         std::fs::set_permissions(&restored, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let imported = runtime_identity::import_portable_backup(
+        let imported = tilo_identity::store::import_portable_backup(
             &artifact,
             b"a sufficiently long photo password",
             &restored,
@@ -7509,7 +7510,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            runtime_identity::load_from_path(imported)
+            tilo_identity::store::load_from_path(imported)
                 .unwrap()
                 .profile_photo(),
             Some(&expected)
@@ -7533,7 +7534,7 @@ mod tests {
             "the changed original stays refused: {refused}"
         );
         assert_eq!(
-            runtime_identity::load_from_path(record)
+            tilo_identity::store::load_from_path(record)
                 .unwrap()
                 .group_public_key(),
             key
@@ -7546,7 +7547,7 @@ mod tests {
     fn ordinary_password_continue_refuses_symlink_ownership_without_advancing() {
         use std::os::unix::fs::{PermissionsExt, symlink};
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -7580,7 +7581,7 @@ mod tests {
     fn identity_preparation_and_export_use_device_local_public_effects() {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -7671,7 +7672,7 @@ mod tests {
             );
         }
         let metadata =
-            runtime_identity::load_metadata_from_path(&ownership.join("primary.json")).unwrap();
+            tilo_identity_client::load_metadata_from_path(&ownership.join("primary.json")).unwrap();
         assert_eq!(metadata.display_name, "Ada");
         assert_eq!(metadata.avatar_color, [0xab, 0xcd, 0xef]);
         #[cfg(target_os = "linux")]
@@ -9253,7 +9254,7 @@ mod tests {
         let mut environment = tilo_test_env::ScopedEnv::new();
         environment.set("XDG_STATE_HOME", root.path().join("state"));
         let (reply, receiver) = std::sync::mpsc::channel();
-        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         environment.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "1");
         let mut app = fixture();
         choose(&mut app, "computer");
@@ -9366,7 +9367,7 @@ mod tests {
         std::fs::create_dir(&home).unwrap();
         std::fs::write(home.join("original"), b"untouched").unwrap();
         let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         environment.set("XDG_STATE_HOME", root.path().join("state"));
         environment.set("XDG_CONFIG_HOME", root.path().join("config"));
         let mut app = fixture();
@@ -9473,7 +9474,7 @@ mod tests {
         std::fs::create_dir(&home).unwrap();
         std::fs::write(home.join("original"), b"untouched").unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         env.set("XDG_STATE_HOME", root.path().join("state"));
         let mut app = fixture();
         choose(&mut app, "another");
@@ -9937,7 +9938,7 @@ mod tests {
         let root = crate::setup::test_support::qualified_tempdir();
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         env.set("XDG_STATE_HOME", root.path().join("state"));
         env.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "0");
         let home = root.path().join("home");
@@ -10094,7 +10095,7 @@ mod tests {
     fn guarded_computer_route_reviews_explicit_usb_choice_without_empty_storage() {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         env.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "0");
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
@@ -10283,7 +10284,7 @@ mod tests {
     fn review_profile_save_and_cancel_preserve_ownership_and_exact_cached_photo() {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -10302,9 +10303,9 @@ mod tests {
         )
         .unwrap();
         let original_photo =
-            runtime_identity::ProfilePhoto::new(1, 1, vec![200, 100, 50, 255]).unwrap();
+            tilo_identity_client::ProfilePhoto::new(1, 1, vec![200, 100, 50, 255]).unwrap();
         let changed_photo =
-            runtime_identity::ProfilePhoto::new(1, 1, vec![25, 90, 210, 255]).unwrap();
+            tilo_identity_client::ProfilePhoto::new(1, 1, vec![25, 90, 210, 255]).unwrap();
         let mut app = fixture();
         choose(&mut app, "another");
         choose(&mut app, "fresh");
@@ -10488,7 +10489,7 @@ mod tests {
     fn review_device_edit_preserves_live_identity_and_commits_only_on_save() {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -11645,7 +11646,7 @@ mod tests {
     fn inspected_storage_changes_the_real_plan_and_live_setup_cannot_fake_completion() {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         env.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "1");
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();

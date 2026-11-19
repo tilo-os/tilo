@@ -55,7 +55,7 @@ impl ResourceSet {
         let (sent, decoded) = mpsc::sync_channel(1);
         let wakes: Arc<Mutex<Vec<crate::WakeHandle>>> = Arc::default();
         let waking = Arc::clone(&wakes);
-        crate::background::Background::current()
+        tilo_rt::background::Background::current()
             .spawn("record-decode", move || {
                 let _ = sent.send(stored.decode());
                 for wake in waking.lock_recover().drain(..) {
@@ -84,7 +84,7 @@ impl ResourceSet {
     pub(super) fn opening_route(
         &self,
         want: &DocumentCheckout,
-    ) -> Option<Result<crate::collaboration::RouteSpec, ResourceOpenError>> {
+    ) -> Option<Result<crate::RouteSpec, ResourceOpenError>> {
         let opening = self.opening.get(&want.id)?;
         Some(if opening.checkout.kind == want.kind {
             self.wire_route(&want.id)
@@ -130,7 +130,7 @@ impl ResourceSet {
                 kind: opening.checkout.kind.clone(),
                 autosave: Some(autosave),
                 history,
-                action_state: crate::bound_dispatch::ResourceActionState::default(),
+                action_state: super::ResourceActions::default(),
             },
         );
         Ok(true)

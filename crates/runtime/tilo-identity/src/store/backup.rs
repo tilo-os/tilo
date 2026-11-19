@@ -640,7 +640,7 @@ mod tests {
     fn canonical_photo_survives_authenticated_backup_and_provider_reseal() {
         let source = tempfile::tempdir().unwrap();
         let path = secured_identity(source.path(), "personal", 75);
-        let photo = crate::ProfilePhoto::new(1, 1, vec![21, 22, 23, 255]).unwrap();
+        let photo = tilo_identity_client::ProfilePhoto::new(1, 1, vec![21, 22, 23, 255]).unwrap();
         super::super::update_identity_photo(source.path(), "personal", Some(photo.clone()))
             .unwrap();
         let original = fs::read(&path).unwrap();

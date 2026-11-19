@@ -55,7 +55,8 @@ workspace-hack = { version = "0.1" }
 tempfile.workspace = true
 # tests/identity_ownership.rs: where the production identity and vault code
 # keep their keys when this service answers, is locked, or is absent.
-runtime-identity = { path = "../../runtime/runtime-identity" }
+tilo-identity = { path = "../../runtime/tilo-identity" }
+tilo-identity-client = { path = "../../runtime/tilo-identity-client" }
 tilo-secret-vault = { path = "../secret-vault" }
 # The client half of the device-identity proof a non-dumpable caller makes.
 tilo-secrets = { path = "../../platform/tilo-secrets" }

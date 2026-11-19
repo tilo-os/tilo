@@ -20,7 +20,7 @@ use tilo_lock::MutexRecover as _;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct IdentityRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub profile_photo: Option<runtime_identity::ProfilePhoto>,
+    pub profile_photo: Option<tilo_identity_client::ProfilePhoto>,
     pub display_name: String,
     /// `[r, g, b]` for direct painting.
     pub avatar_color: [u8; 3],

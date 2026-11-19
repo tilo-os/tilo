@@ -54,7 +54,7 @@ fn fixture() -> Fixture {
     persist::write_public_key(&paths.user_pubkey, &root).unwrap();
     persist::write_device_cert(&paths.device_cert, &cert).unwrap();
     let record = identity.join("member.json");
-    let bytes = runtime_identity::public_member_record("Ada", [88, 101, 242], root).unwrap();
+    let bytes = crate::store::public_member_record("Ada", [88, 101, 242], root).unwrap();
     tilo_files::native::atomic::write_with_mode(&record, &bytes, 0o600).unwrap();
     let mut fleet = DeviceFleet::new(hex::encode(root));
     fleet.certificates.push(cert);
@@ -171,7 +171,7 @@ tilo_test_env::scenario! {
             fixture.device
         );
         assert_eq!(
-            runtime_identity::load_metadata_from_path(&imported.identity_record)
+            tilo_identity_client::load_metadata_from_path(&imported.identity_record)
                 .unwrap()
                 .group_public_key,
             fixture.root
@@ -250,7 +250,7 @@ tilo_test_env::scenario! {
 fn current_owner_reference_roundtrip_uses_existing_member_without_exporting_private_keys() {
     let fixture = fixture();
     let identity = fixture.record.parent().unwrap();
-    runtime_identity::set_active_identity(identity, "member").unwrap();
+    crate::store::set_active_identity(identity, "member").unwrap();
     let before = snapshot(fixture.source.path());
     let reviewed = CurrentDeviceReference::review(&fixture.system, identity).unwrap();
     let sealed = fixture.output.join("current-device.sealed");
@@ -309,7 +309,7 @@ fn current_owner_reference_roundtrip_uses_existing_member_without_exporting_priv
 fn current_owner_reference_refuses_other_owner_and_changed_current_key_before_activation() {
     let fixture = fixture();
     let identity = fixture.record.parent().unwrap();
-    runtime_identity::set_active_identity(identity, "member").unwrap();
+    crate::store::set_active_identity(identity, "member").unwrap();
     let reviewed = CurrentDeviceReference::review(&fixture.system, identity).unwrap();
     let sealed = fixture.output.join("current-device.sealed");
     reviewed
@@ -349,7 +349,7 @@ fn current_owner_reference_refuses_other_owner_and_changed_current_key_before_ac
 fn current_owner_reference_refuses_changed_original_record_and_never_replaces_it() {
     let fixture = fixture();
     let identity = fixture.record.parent().unwrap();
-    runtime_identity::set_active_identity(identity, "member").unwrap();
+    crate::store::set_active_identity(identity, "member").unwrap();
     let reviewed = CurrentDeviceReference::review(&fixture.system, identity).unwrap();
     let sealed = fixture.output.join("current-device.sealed");
     reviewed
@@ -360,7 +360,7 @@ fn current_owner_reference_refuses_changed_original_record_and_never_replaces_it
         .unwrap();
     tilo_files::native::atomic::write_with_mode(
         &fixture.record,
-        &runtime_identity::public_member_record(
+        &crate::store::public_member_record(
             "Changed owner presentation",
             [88, 101, 242],
             fixture.root,
@@ -446,12 +446,8 @@ fn current_owner_reference_actual_user_reads_root_owned_host_and_retains_activat
         // must reject replacement while the same source object is still alive.
         tilo_files::native::atomic::write_with_mode(
             &identity.join("member.json"),
-            &runtime_identity::public_member_record(
-                "Replaced",
-                [88, 101, 242],
-                source.public_key(),
-            )
-            .unwrap(),
+            &crate::store::public_member_record("Replaced", [88, 101, 242], source.public_key())
+                .unwrap(),
             0o600,
         )
         .unwrap();
@@ -477,7 +473,7 @@ fn current_owner_reference_actual_user_reads_root_owned_host_and_retains_activat
     );
     let fixture = fixture();
     let identity = fixture.record.parent().unwrap();
-    runtime_identity::set_active_identity(identity, "member").unwrap();
+    crate::store::set_active_identity(identity, "member").unwrap();
     fn ownership(path: &Path, uid: u32, gid: u32) {
         use std::os::unix::ffi::OsStrExt as _;
         let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
@@ -558,10 +554,10 @@ fn current_owner_reference_refuses_corrupt_selector_and_non_root_namespace() {
     assert_eq!(snapshot(fixture.source.path()), before);
     // Strict canonical parsing independently proves a present bad selector
     // cannot become the legacy primary selection on an unprivileged reader.
-    assert!(runtime_identity::selected_identity_id_from_bytes(Some(b"../../member")).is_err());
-    assert!(runtime_identity::selected_identity_id_from_bytes(Some(b"\xff")).is_err());
+    assert!(crate::store::selected_identity_id_from_bytes(Some(b"../../member")).is_err());
+    assert!(crate::store::selected_identity_id_from_bytes(Some(b"\xff")).is_err());
     assert_eq!(
-        runtime_identity::selected_identity_id_from_bytes(None).unwrap(),
+        crate::store::selected_identity_id_from_bytes(None).unwrap(),
         "primary"
     );
 }

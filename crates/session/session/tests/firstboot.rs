@@ -140,7 +140,7 @@ fn certificate_dated_ahead(machine: &Machine, ahead: Duration) -> u64 {
     let mut cert =
         persist::read_device_cert(&machine.paths.device_cert).expect("this device's certificate");
     cert.issued_at_ns = issued_at_ns;
-    let person = runtime_identity::load_from_path(record()).expect("the person's root key");
+    let person = tilo_identity::store::load_from_path(record()).expect("the person's root key");
     cert.signature = person
         .sign(
             &tilo_user_identity::device_cert_signing_digest(&cert)

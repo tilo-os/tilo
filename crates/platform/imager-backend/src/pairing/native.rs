@@ -337,7 +337,7 @@ fn authenticate(
 pub fn certified_fixture() -> (tempfile::TempDir, Pairing) {
     use std::os::unix::fs::PermissionsExt as _;
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let temporary = crate::test_support::qualified_tempdir();
     let state = temporary.path().canonicalize().unwrap();
     let directory = state
@@ -352,7 +352,8 @@ pub fn certified_fixture() -> (tempfile::TempDir, Pairing) {
         tilo_identity::provisioning::IdentityStorage::for_session(),
     )
     .unwrap();
-    let signer = runtime_identity::load_from_path(directory.join("approver/primary.json")).unwrap();
+    let signer =
+        tilo_identity::store::load_from_path(directory.join("approver/primary.json")).unwrap();
     let system = directory.join("future-device");
     let identities = directory.join("identities");
     std::fs::create_dir(&system).unwrap();
@@ -382,7 +383,7 @@ pub fn certified_fixture() -> (tempfile::TempDir, Pairing) {
     .unwrap();
     tilo_device_identity::persist::write_device_cert(&paths.device_cert, &certificate).unwrap();
     let record = identities.join("member.json");
-    let bytes = runtime_identity::public_member_record(
+    let bytes = tilo_identity::store::public_member_record(
         "Approving person",
         [10, 20, 30],
         certificate.user_public_key,

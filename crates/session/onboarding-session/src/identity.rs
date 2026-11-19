@@ -391,7 +391,7 @@ fn existing_identity_in(identity_dir: &Path) -> Result<MintedIdentity, Onboardin
     use crate::identity_provisioning::DiskIdentityStore;
     use tilo_identity_ceremony::{IdentityFlowError, IdentityStore as _};
 
-    let path = runtime_identity::resolve_active_identity(identity_dir)
+    let path = tilo_identity_client::resolve_active_identity(identity_dir)
         .unwrap_or_else(|| identity_dir.join(crate::firstboot::PRIMARY_IDENTITY_FILE));
     let unreadable = |problem, error: &dyn fmt::Display| OnboardingError::Identity {
         problem,
@@ -652,7 +652,7 @@ mod tests {
                 )
                 .unwrap()
             );
-            let selected = runtime_identity::resolve_active_identity(&identity_dir).unwrap();
+            let selected = tilo_identity_client::resolve_active_identity(&identity_dir).unwrap();
             assert!(!identity_dir.join("primary.json").exists());
 
             let minted = mint_into_with_paths(&identity_dir, &system, false)
@@ -676,7 +676,7 @@ mod tests {
             use std::io;
             let of = |error: io::Error| IdentityProblem::of(&error);
             assert_eq!(
-                of(runtime_identity::secret_service_unavailable_error()),
+                of(tilo_identity::store::secret_service_unavailable_error()),
                 Some(IdentityProblem::KeyringUnavailable)
             );
             assert_eq!(
@@ -729,12 +729,12 @@ mod tests {
                 .env("XDG_CONFIG_HOME", fixture.path().join("config"))
                 .env("XDG_STATE_HOME", fixture.path().join("state"))
                 .env("TILO_IDENTITY_ROOT", fixture.path().join("system"))
-                .env(runtime_identity::FILE_SECRETS_ENV, "1")
+                .env(tilo_identity::store::FILE_SECRETS_ENV, "1")
                 .status_locked().unwrap();
             assert!(status.success());
             return;
         }
-        let directory = runtime_identity::identity_dir_from_env().unwrap();
+        let directory = tilo_identity::store::identity_dir_from_env().unwrap();
         let minted = mint_into(
             &directory,
             &crate::firstboot::collaboration_identity_paths(),

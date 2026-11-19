@@ -1092,7 +1092,7 @@ user_pref("mail.identity.id1.fullName", "Personal");
         let root = fixture.path().join("root");
         source_dir(&root);
         let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let identity = PreparedIdentity::create(
             &root.join("identity"),
             "Ada",

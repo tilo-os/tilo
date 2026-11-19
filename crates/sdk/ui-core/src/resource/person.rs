@@ -36,10 +36,7 @@ use crate::permissions::MemberId;
 #[path = "person_owner_tests.rs"]
 mod owner_tests;
 
-/// The scope of the person's own records, `(app, personal)`: theirs and not
-/// a workspace's, so it is carried to their devices by their personal store
-/// and never by a workspace's route.
-pub const PERSONAL_SCOPE: &str = "personal";
+pub use super::PERSONAL_SCOPE;
 
 /// The id of the person's record of `kind` for an app: one per kind, the
 /// same on every device, so every device opens the same record. It plays

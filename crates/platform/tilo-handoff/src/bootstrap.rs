@@ -45,7 +45,7 @@ impl SourceIdentity {
         {
             return Err(invalid("The preparing identity export is invalid"));
         }
-        let metadata = runtime_identity::load_metadata_from_bytes(&self.identity_record)
+        let metadata = tilo_identity::store::load_metadata_from_bytes(&self.identity_record)
             .map_err(|_| invalid("The preparing identity export is invalid"))?;
         if metadata.group_public_key != self.identity_public_key
             || self.certificates.len() > 256
@@ -337,7 +337,7 @@ pub(crate) fn install(
     if projection.schema != PROJECTION_SCHEMA {
         return Err(invalid("The identity export is invalid"));
     }
-    if runtime_identity::resolve_active_identity(identity_dir).is_some()
+    if tilo_identity_client::resolve_active_identity(identity_dir).is_some()
         || !identity_dir_empty(identity_dir)?
     {
         return Err(invalid("This computer already has an identity"));
@@ -347,7 +347,7 @@ pub(crate) fn install(
         return Err(invalid("This computer already has an identity"));
     }
     let record = decode_b64(&projection.identity_record)?;
-    let metadata = runtime_identity::load_metadata_from_bytes(&record)
+    let metadata = tilo_identity::store::load_metadata_from_bytes(&record)
         .map_err(|_| invalid("The identity export is invalid"))?;
     if metadata.group_public_key != request.user_public_key {
         return Err(invalid("The identity export is for another person"));
@@ -406,7 +406,7 @@ pub(crate) fn install(
         &record,
         0o600,
     )?;
-    runtime_identity::set_active_identity(identity_dir, &document_id)
+    tilo_identity::store::set_active_identity(identity_dir, &document_id)
         .map_err(|_| invalid("The joined identity could not be selected"))?;
     let store = tilo_identity::device_fleet::DeviceFleetStore::at(identity_dir, paths);
     for known in fleet.certificates {
@@ -427,7 +427,7 @@ pub(crate) fn install(
 }
 
 fn identity_dir_empty(directory: &Path) -> io::Result<bool> {
-    match runtime_identity::list_identities(directory) {
+    match tilo_identity::store::list_identities(directory) {
         Ok(identities) => Ok(identities.is_empty()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
         Err(error) => Err(error),
@@ -466,9 +466,9 @@ pub fn public_member_record(
     display_name: &str,
     avatar_color: [u8; 3],
     identity_public_key: [u8; 32],
-    photo: Option<runtime_identity::ProfilePhoto>,
+    photo: Option<tilo_identity_client::ProfilePhoto>,
 ) -> io::Result<Vec<u8>> {
-    runtime_identity::public_member_record_with_presentation(
+    tilo_identity::store::public_member_record_with_presentation(
         display_name,
         avatar_color,
         identity_public_key,

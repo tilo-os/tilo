@@ -1,5 +1,5 @@
 use super::*;
-use ::collaboration::resource::{WORKSPACE, genesis_actor_of, meta_obj};
+use crate::resource::{WORKSPACE, genesis_actor_of, meta_obj};
 use std::path::Path;
 
 tilo_test_env::scenario! {
@@ -174,8 +174,8 @@ tilo_test_env::scenario! {
     {
         let kind = ResourceType::new("test.genesis-note");
         // The app's surface is named in the record's identity.
-        crate::app_surface::register_package("so.tilo.test-genesis", b"surface");
-        crate::app_surface::register_kind(kind.as_str(), "so.tilo.test-genesis");
+        collab_types::app_surface::register_package("so.tilo.test-genesis", b"surface");
+        collab_types::app_surface::register_kind(kind.as_str(), "so.tilo.test-genesis");
         let checkout = DocumentCheckout::new(DocumentId::for_tab(3), kind);
         let create = |actor: &[u8]| {
             let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(actor));
@@ -741,8 +741,8 @@ tilo_test_env::scenario! {
             let entry = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
 
             let open_workspace = |workspace: &str| {
-                ::collaboration::document::save::open_stored(
-                    ::collaboration::document::save::workspace_document(&documents, package, workspace)
+                crate::document::save::open_stored(
+                    crate::document::save::workspace_document(&documents, package, workspace)
                         .expect("workspace index"),
                 )
             };
@@ -1437,7 +1437,8 @@ tilo_test_env::scenario! {
             &mut state,
             None,
             &want,
-            &collab_types::DocumentMutation::Snapshot(bytes)
+            &collab_types::DocumentMutation::Snapshot(bytes),
+            |_| false
         ));
         assert_eq!(
             state.doc.get_heads(),
@@ -1470,7 +1471,8 @@ tilo_test_env::scenario! {
             &mut state,
             None,
             &want,
-            &collab_types::DocumentMutation::Snapshot(actual.save())
+            &collab_types::DocumentMutation::Snapshot(actual.save()),
+            |_| false
         ));
         assert_eq!(state.doc.pending_ops(), pending);
         assert!(set.active().is_none());

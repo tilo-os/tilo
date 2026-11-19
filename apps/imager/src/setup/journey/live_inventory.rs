@@ -64,7 +64,7 @@ mod tests {
         fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
         env.set("HOME", &home);
         env.set("XDG_STATE_HOME", home.join(".local/state"));
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         // An ambient tempfile selection must not participate in this path.
         env.set("TMPDIR", root.path().join("ungranted-missing"));
         let store = DraftStore::for_session().unwrap();

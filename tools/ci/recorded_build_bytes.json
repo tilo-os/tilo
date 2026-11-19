@@ -123,7 +123,6 @@
   "runtime-dylib": {"libraries": 0, "tests": 2856568},
   "runtime-fs": {"libraries": 39453253, "tests": 26098088},
   "runtime-fs-fuse": {"libraries": 1853046, "tests": 31595752},
-  "runtime-identity": {"libraries": 2992629, "tests": 42530104},
   "runtime-portal": {"libraries": 11582962, "tests": 30049216},
   "runtime-update": {"libraries": 524646, "tests": 8207768},
   "rustls-native-certs": {"libraries": 641554, "tests": 3464768},

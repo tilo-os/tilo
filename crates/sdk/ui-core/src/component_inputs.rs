@@ -55,6 +55,8 @@ thread_local! {
 /// Run `pass` as the pass of the component `owner` names, gathering what it reads outside the
 /// component.
 pub(crate) fn reading<R>(owner: &WakeHandle, pass: impl FnOnce() -> R) -> (R, Reads) {
+    // The store tells this pass which resources it read.
+    crate::resource::observe_reads(read_resource);
     let _feeding = crate::wake::FeedsComponent::begin();
     let pass_reading = PassReading::begin(owner);
     let result = pass();
@@ -174,7 +176,7 @@ pub(crate) fn read_owned_by(owner: &WakeHandle) {
 /// A pass read `document`, record `id` of `store`: the pass reads it again once its frontier moved,
 /// whoever wrote it.
 #[inline(never)]
-pub(crate) fn read_resource(
+fn read_resource(
     store: &crate::resource::ResourceStore,
     id: &crate::resource::DocumentId,
     document: &automerge::AutoCommit,

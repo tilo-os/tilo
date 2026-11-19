@@ -7,7 +7,7 @@ use tilo_automerge::ApplyIncoming;
 
 pub(super) fn finish(
     mut store: app_state::DocStore,
-    read: crate::collaboration::CommittedDocument,
+    read: crate::CommittedDocument,
     validate: impl Fn(&automerge::AutoCommit) -> Result<(), String>,
 ) -> Result<(automerge::AutoCommit, app_state::DocWriter), String> {
     let mut incoming = read.with_mutation(|mutation| {

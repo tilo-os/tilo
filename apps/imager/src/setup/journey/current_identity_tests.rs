@@ -56,7 +56,8 @@ fn current_owner_desktop_actions_restart_and_authenticated_import_preserve_origi
     tilo_device_identity::persist::write_public_key(&paths.user_pubkey, &public_key).unwrap();
     tilo_device_identity::persist::write_device_cert(&paths.device_cert, &cert).unwrap();
     let record = identity.join("member.json");
-    let original = runtime_identity::public_member_record("Ada", [1, 2, 3], public_key).unwrap();
+    let original =
+        tilo_identity::store::public_member_record("Ada", [1, 2, 3], public_key).unwrap();
     tilo_files::native::atomic::write_with_mode(&record, &original, 0o600).unwrap();
     let mut fleet = tilo_identity::device_fleet::DeviceFleet::new(hex::encode(public_key));
     fleet.certificates.push(cert);
@@ -68,7 +69,7 @@ fn current_owner_desktop_actions_restart_and_authenticated_import_preserve_origi
         0o600,
     )
     .unwrap();
-    runtime_identity::set_active_identity(&identity, "member").unwrap();
+    tilo_identity::store::set_active_identity(&identity, "member").unwrap();
     let registry_store = tilo_identity::registry::IdentityRegistryStore::at(&identity);
     let mut registry = registry_store.load().unwrap();
     registry.register_record(&record).unwrap();
@@ -231,7 +232,7 @@ fn current_owner_desktop_actions_restart_and_authenticated_import_preserve_origi
     );
     tilo_files::native::atomic::write_with_mode(
         &record,
-        &runtime_identity::public_member_record("Changed", [1, 2, 3], public_key).unwrap(),
+        &tilo_identity::store::public_member_record("Changed", [1, 2, 3], public_key).unwrap(),
         0o600,
     )
     .unwrap();

@@ -1,5 +1,6 @@
 //! Opaque ownership observations. These never enter historical presentation inputs.
 use super::{HistoryRegistrationError, HistoryResource};
+use crate::bound_dispatch::StoreActions as _;
 use crate::{
     bound_dispatch::CallbackBinding,
     resource::{DocumentCheckout, ResourceStore},

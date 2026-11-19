@@ -639,7 +639,7 @@ impl DeviceFleetStore {
     /// This device's material of `identity_id`'s key, which signs only
     /// after the person approved what it signs
     /// ([`crate::certification_ceremony`]).
-    pub fn identity_key(&self, identity_id: &str) -> io::Result<runtime_identity::SigningIdentity> {
+    pub fn identity_key(&self, identity_id: &str) -> io::Result<crate::store::SigningIdentity> {
         self.identity(identity_id).map(|(key, _)| key)
     }
 
@@ -647,7 +647,7 @@ impl DeviceFleetStore {
         &self,
         identity_id: &str,
     ) -> io::Result<(
-        runtime_identity::SigningIdentity,
+        crate::store::SigningIdentity,
         crate::registry::IdentityProfile,
     )> {
         let store = crate::registry::IdentityRegistryStore::at(&self.identity_dir);
@@ -657,7 +657,7 @@ impl DeviceFleetStore {
             .get(identity_id)
             .cloned()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "identity is not registered"))?;
-        let identity = runtime_identity::load_from_path(profile.record_path.clone())
+        let identity = crate::store::load_from_path(profile.record_path.clone())
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
         if identity.group_public_key() != profile.user_public_key {
             return Err(io::Error::new(

@@ -221,7 +221,7 @@ pub fn bounded_home_peer_registry(
 /// A public-only runtime identity file for `user`: what a joining device is
 /// handed so its first start names the person.
 pub fn public_identity_document(user: [u8; 32], display_name: &str) -> anyhow::Result<Vec<u8>> {
-    Ok(runtime_identity::public_member_record(
+    Ok(tilo_identity::store::public_member_record(
         display_name,
         [88, 101, 242],
         user,

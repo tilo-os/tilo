@@ -438,7 +438,7 @@ pub(super) fn verify_join_presentation(
     let proof = <[u8; 64]>::try_from(presentation.proof.as_slice())
         .map_err(|_| "collaboration join proof must be 64 bytes".to_string())?;
     let workspace = presentation.workspace_id.as_str();
-    let digest = runtime_identity::collaboration_join_digest(workspace)
+    let digest = tilo_identity_client::collaboration_join_digest(workspace)
         .map_err(|error| format!("collaboration join cannot be encoded: {error}"))?;
     admission_memo::join_proof_verified(&cert.device_public_key, workspace, &proof, || {
         VerifyingKey::from_bytes(&cert.device_public_key)

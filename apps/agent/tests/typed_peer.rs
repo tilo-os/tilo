@@ -61,7 +61,8 @@ pub fn endpoint_identity(handle: &str) -> CertifiedEndpointIdentity {
         device_certificate: serde_json::to_vec(&certificate).expect("certificate JSON"),
         proof: device
             .sign(
-                &runtime_identity::collaboration_join_digest(&TEST_WORKSPACE.to_string()).unwrap(),
+                &tilo_identity_client::collaboration_join_digest(&TEST_WORKSPACE.to_string())
+                    .unwrap(),
             )
             .to_bytes()
             .to_vec(),

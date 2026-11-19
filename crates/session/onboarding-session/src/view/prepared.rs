@@ -45,7 +45,7 @@ impl OnboardingView {
     /// explicit message instead of a generic failure.
     #[cfg(target_os = "linux")]
     fn load_peer_setup(&mut self, home: &Path, identity_dir: &Path) {
-        let active = runtime_identity::resolve_active_identity(identity_dir);
+        let active = tilo_identity_client::resolve_active_identity(identity_dir);
         let Some(system) = self.session.identity.clone() else {
             return;
         };
@@ -86,7 +86,7 @@ impl OnboardingView {
     #[cfg(target_os = "linux")]
     fn peer_failed(&mut self, home: &Path, active: Option<&Path>) {
         let unrelated = active
-            .and_then(|path| runtime_identity::load_metadata_from_path(path).ok())
+            .and_then(|path| tilo_identity_client::load_metadata_from_path(path).ok())
             .is_some_and(|metadata| {
                 crate::peer::Peer::descriptor_identity_at(home)
                     .ok()
@@ -228,7 +228,7 @@ impl OnboardingView {
             return Err(());
         }
         let primary = directory.join("primary.json");
-        let signer = runtime_identity::load_from_path(primary.clone()).map_err(|_| ())?;
+        let signer = tilo_identity::store::load_from_path(primary.clone()).map_err(|_| ())?;
         if signer.group_public_key() != imported.identity_public_key {
             return Err(());
         }
@@ -241,7 +241,7 @@ impl OnboardingView {
             .file_stem()
             .and_then(|v| v.to_str())
             .ok_or(())?;
-        runtime_identity::set_active_identity(directory, runtime_id).map_err(|_| ())?;
+        tilo_identity::store::set_active_identity(directory, runtime_id).map_err(|_| ())?;
         let paths = self.session.identity_paths().ok_or(())?;
         if imported.device_label.is_empty() {
             crate::firstboot::ensure_collaboration_identity(directory, &paths)
@@ -405,7 +405,7 @@ impl OnboardingView {
         let Some(directory) = self.identity_dir.clone() else {
             return;
         };
-        let active = runtime_identity::resolve_active_identity(&directory);
+        let active = tilo_identity_client::resolve_active_identity(&directory);
         if active.is_none() {
             return;
         }

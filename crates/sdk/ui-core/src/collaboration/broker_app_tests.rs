@@ -414,7 +414,13 @@ fn committed_initial_route_uses_one_worker_and_blocks_default_publication() {
     let mut state = crate::state::State::new();
     assert!(
         read.with_mutation(|mutation| {
-            set.checkout_with_initial(&mut state, None, &want, mutation)
+            set.checkout_with_initial(
+                &mut state,
+                None,
+                &want,
+                mutation,
+                crate::history_mode::routes::merge_into_state(mutation),
+            )
         })
         .unwrap()
     );
@@ -493,7 +499,13 @@ fn switching_to_a_record_still_joining_joins_its_route_once() {
     let mut state = crate::state::State::new();
     assert!(
         read.with_mutation(|mutation| {
-            set.checkout_with_initial(&mut state, None, &want, mutation)
+            set.checkout_with_initial(
+                &mut state,
+                None,
+                &want,
+                mutation,
+                crate::history_mode::routes::merge_into_state(mutation),
+            )
         })
         .unwrap()
     );

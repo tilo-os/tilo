@@ -79,7 +79,7 @@ fn private_environment(root: &Path) -> tilo_test_env::ScopedEnv {
     environment.set("HOME", &home);
     environment.set("XDG_CONFIG_HOME", &config);
     environment.set("XDG_STATE_HOME", root.join("state"));
-    environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     environment.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "1");
     environment
 }

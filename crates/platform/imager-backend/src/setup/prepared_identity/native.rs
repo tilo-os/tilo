@@ -22,8 +22,9 @@ impl PreparedIdentity {
         let pin = PinnedDirectory::open_absolute(directory)?;
         pin.validate_destination()?;
         destination_security::check_private_file(&pin.file)?;
-        let metadata = runtime_identity::load_metadata_from_path(&directory.join("primary.json"))
-            .map_err(|error| io::Error::other(error.to_string()))?;
+        let metadata =
+            tilo_identity_client::load_metadata_from_path(&directory.join("primary.json"))
+                .map_err(|error| io::Error::other(error.to_string()))?;
         Self::resume(directory, metadata.group_public_key)
     }
 
@@ -75,7 +76,7 @@ impl PreparedIdentity {
         })?)?;
         create_primary_identity(directory, name, color, storage)?;
         pin.validate()?;
-        let signer = runtime_identity::load_from_path(directory.join("primary.json"))
+        let signer = tilo_identity::store::load_from_path(directory.join("primary.json"))
             .map_err(|error| io::Error::other(error.to_string()))?;
         migration_durability::sync_directory(&pin.file)?;
         migration_durability::sync_directory(&parent.file)?;
@@ -94,7 +95,7 @@ impl PreparedIdentity {
         backup: &Path,
         password: Zeroizing<String>,
     ) -> io::Result<Self> {
-        let info = runtime_identity::verify_portable_backup(backup, password.as_bytes())?;
+        let info = tilo_identity::store::verify_portable_backup(backup, password.as_bytes())?;
         let parent = PinnedDirectory::open_absolute(
             directory
                 .parent()
@@ -107,7 +108,7 @@ impl PreparedIdentity {
                 .file_name()
                 .ok_or_else(|| io::Error::other("missing ownership name"))?,
         )?;
-        runtime_identity::import_portable_backup_matching(
+        tilo_identity::store::import_portable_backup_matching(
             backup,
             password.as_bytes(),
             directory,
@@ -154,7 +155,7 @@ impl PreparedIdentity {
                 .ok_or_else(|| io::Error::other("missing ownership name"))?,
         )?;
         let metadata = current.metadata()?;
-        let bytes = runtime_identity::public_member_record_with_presentation(
+        let bytes = tilo_identity::store::public_member_record_with_presentation(
             &metadata.display_name,
             metadata.avatar_color,
             metadata.group_public_key,
@@ -208,7 +209,7 @@ impl PreparedIdentity {
             .parent()
             .and_then(Path::parent)
             .ok_or_else(|| io::Error::other("missing host identity namespace"))?;
-        let directory = runtime_identity::identity_dir_from_env()?;
+        let directory = tilo_identity::store::identity_dir_from_env()?;
         let current =
             tilo_identity::enrolled_transport::CurrentDeviceReference::review(system, &directory)?;
         let registry = tilo_identity::registry::IdentityRegistryStore::at(&directory).load()?;
@@ -279,7 +280,7 @@ impl PreparedIdentity {
             .export_password_sealed(destination, password, binding)
     }
 
-    pub fn metadata(&self) -> io::Result<runtime_identity::IdentityMetadata> {
+    pub fn metadata(&self) -> io::Result<tilo_identity_client::IdentityMetadata> {
         self.validate()?;
         if let Some(current) = &self.current {
             return current.metadata();
@@ -287,7 +288,7 @@ impl PreparedIdentity {
         if let Some(enrolled) = &self.enrolled {
             return enrolled.metadata();
         }
-        runtime_identity::load_metadata_from_path(&self.directory.join("primary.json"))
+        tilo_identity_client::load_metadata_from_path(&self.directory.join("primary.json"))
             .map_err(|error| io::Error::other(error.to_string()))
     }
 
@@ -353,8 +354,8 @@ impl PreparedIdentity {
         // A prepared or restored identity keeps its root here; an explicitly reviewed current
         // identity signs through this session's active root record, which the signer rechecks.
         let record_path = if self.current.is_some() {
-            let directory = runtime_identity::identity_dir_from_env()?;
-            runtime_identity::resolve_active_identity(&directory).ok_or_else(|| {
+            let directory = tilo_identity::store::identity_dir_from_env()?;
+            tilo_identity_client::resolve_active_identity(&directory).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::NotFound,
                     "This identity's active root is unavailable",
@@ -365,7 +366,7 @@ impl PreparedIdentity {
         };
         let expected = self.public_key;
         let signer = Arc::new(move |digest: &[u8]| {
-            let identity = runtime_identity::load_from_path(record_path.clone())
+            let identity = tilo_identity::store::load_from_path(record_path.clone())
                 .map_err(|error| io::Error::other(error.to_string()))?;
             if identity.group_public_key() != expected {
                 return Err(io::Error::other(
@@ -390,7 +391,7 @@ impl PreparedIdentity {
         if let Some(current) = &self.current {
             current.validate()?;
             let metadata =
-                runtime_identity::load_metadata_from_path(&self.directory.join("primary.json"))
+                tilo_identity_client::load_metadata_from_path(&self.directory.join("primary.json"))
                     .map_err(|error| io::Error::other(error.to_string()))?;
             let expected = current.metadata()?;
             if metadata.group_public_key != self.public_key
@@ -405,7 +406,7 @@ impl PreparedIdentity {
         if let Some(enrolled) = &self.enrolled {
             return enrolled.validate();
         }
-        let signer = runtime_identity::load_from_path(self.directory.join("primary.json"))
+        let signer = tilo_identity::store::load_from_path(self.directory.join("primary.json"))
             .map_err(|error| io::Error::other(error.to_string()))?;
         if signer.group_public_key() != self.public_key {
             return Err(io::Error::new(
@@ -416,7 +417,10 @@ impl PreparedIdentity {
         self.pin.validate()
     }
 
-    pub fn update_photo(&self, photo: Option<runtime_identity::ProfilePhoto>) -> io::Result<()> {
+    pub fn update_photo(
+        &self,
+        photo: Option<tilo_identity_client::ProfilePhoto>,
+    ) -> io::Result<()> {
         self.validate()?;
         if self.enrolled.is_some() || self.current.is_some() {
             if self.metadata()?.profile_photo == photo {
@@ -427,15 +431,15 @@ impl PreparedIdentity {
                 "enrolled identity presentation is retained from its approval",
             ));
         }
-        runtime_identity::update_identity_photo(&self.directory, "primary", photo)?;
+        tilo_identity::store::update_identity_photo(&self.directory, "primary", photo)?;
         self.validate()
     }
 
     pub fn update_presentation(
         &self,
         name: &str,
-        photo: Option<runtime_identity::ProfilePhoto>,
-    ) -> io::Result<runtime_identity::IdentityMetadata> {
+        photo: Option<tilo_identity_client::ProfilePhoto>,
+    ) -> io::Result<tilo_identity_client::IdentityMetadata> {
         self.validate()?;
         let before = self.metadata()?;
         if self.enrolled.is_some() || self.current.is_some() {
@@ -447,7 +451,7 @@ impl PreparedIdentity {
                 "enrolled identity presentation is retained from its approval",
             ));
         }
-        let metadata = runtime_identity::update_identity_presentation(
+        let metadata = tilo_identity::store::update_identity_presentation(
             &self.directory,
             "primary",
             name,
@@ -458,7 +462,7 @@ impl PreparedIdentity {
         Ok(metadata)
     }
 
-    pub fn update_name(&self, name: &str) -> io::Result<runtime_identity::IdentityMetadata> {
+    pub fn update_name(&self, name: &str) -> io::Result<tilo_identity_client::IdentityMetadata> {
         self.validate()?;
         let metadata = self.metadata()?;
         self.update_profile(name, metadata.avatar_color)
@@ -469,7 +473,7 @@ impl PreparedIdentity {
         &self,
         name: &str,
         color: [u8; 3],
-    ) -> io::Result<runtime_identity::IdentityMetadata> {
+    ) -> io::Result<tilo_identity_client::IdentityMetadata> {
         self.validate()?;
         if self.enrolled.is_some() || self.current.is_some() {
             let metadata = self.metadata()?;
@@ -482,7 +486,7 @@ impl PreparedIdentity {
             ));
         }
         let metadata =
-            runtime_identity::update_identity_profile(&self.directory, "primary", name, color)?;
+            tilo_identity::store::update_identity_profile(&self.directory, "primary", name, color)?;
         self.validate()?;
         Ok(metadata)
     }
@@ -493,7 +497,7 @@ impl PreparedIdentity {
         &self,
         destination: &Path,
         password: Zeroizing<String>,
-    ) -> io::Result<runtime_identity::PortableBackupInfo> {
+    ) -> io::Result<tilo_identity::store::PortableBackupInfo> {
         crate::startup_password::validate(&password)
             .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;
         self.validate()?;
@@ -511,7 +515,7 @@ impl PreparedIdentity {
                 "Current identity requires its certified reference",
             ));
         }
-        let info = runtime_identity::export_portable_backup(
+        let info = tilo_identity::store::export_portable_backup(
             self.directory.join("primary.json"),
             destination,
             password.as_bytes(),
@@ -535,7 +539,7 @@ mod tests {
     #[test]
     fn real_preparation_survives_drop_edits_and_encrypted_target_import() {
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
@@ -543,12 +547,12 @@ mod tests {
         let prepared =
             PreparedIdentity::create(&ownership, "Ada", [1, 2, 3], IdentityStorage::Files).unwrap();
         let public_key = prepared.public_key();
-        let before = runtime_identity::load_from_path(ownership.join("primary.json"))
+        let before = tilo_identity::store::load_from_path(ownership.join("primary.json"))
             .unwrap()
             .sign(b"proof")
             .unwrap();
         prepared.update_profile("Ada", [4, 5, 6]).unwrap();
-        let photo = runtime_identity::ProfilePhoto::new(1, 1, vec![15, 80, 210, 255]).unwrap();
+        let photo = tilo_identity_client::ProfilePhoto::new(1, 1, vec![15, 80, 210, 255]).unwrap();
         prepared.update_photo(Some(photo.clone())).unwrap();
         assert_eq!(
             prepared.metadata().unwrap().profile_photo,
@@ -576,7 +580,7 @@ mod tests {
                 .is_err()
         );
         let target = root.join("target");
-        let imported = runtime_identity::import_portable_backup_matching(
+        let imported = tilo_identity::store::import_portable_backup_matching(
             &artifact,
             password.as_bytes(),
             &target,
@@ -584,7 +588,7 @@ mod tests {
             public_key,
         )
         .unwrap();
-        let signer = runtime_identity::load_from_path(imported).unwrap();
+        let signer = tilo_identity::store::load_from_path(imported).unwrap();
         assert_eq!(signer.display_name(), "Ada");
         assert_eq!(signer.avatar_color(), [4, 5, 6]);
         assert_eq!(signer.profile_photo(), Some(&photo));

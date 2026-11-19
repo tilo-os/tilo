@@ -308,7 +308,7 @@ pub fn trusted_current_join_proof(workspace: &str) -> io::Result<CurrentDeviceJo
     let (device, certificate) = crate::broker::trusted_current_device(workspace)?;
     #[cfg(test)]
     MINTS.with(|mints| mints.set(mints.get().saturating_add(1)));
-    let digest = runtime_identity::collaboration_join_digest(workspace)
+    let digest = tilo_identity_client::collaboration_join_digest(workspace)
         .map_err(|error| io::Error::other(error.to_string()))?;
     let proof = CurrentDeviceJoinProof {
         proof: device
@@ -478,7 +478,7 @@ pub(crate) mod tests {
             ed25519_dalek::VerifyingKey::from_bytes(&proof.certificate.device_public_key)
                 .expect("device key")
                 .verify_strict(
-                    &runtime_identity::collaboration_join_digest(&fixture.workspace).unwrap(),
+                    &tilo_identity_client::collaboration_join_digest(&fixture.workspace).unwrap(),
                     &ed25519_dalek::Signature::from_bytes(&proof.proof),
                 )
                 .expect("the proof is this device's signature for this workspace");
@@ -561,7 +561,7 @@ pub(crate) mod tests {
                 fixture.store().load(&fixture.identity_id).expect("fleet");
                 let proof = key
                     .sign_digest(
-                        &runtime_identity::collaboration_join_digest(&fixture.workspace).unwrap(),
+                        &tilo_identity_client::collaboration_join_digest(&fixture.workspace).unwrap(),
                     )
                     .unwrap();
                 assert_eq!(proof.len(), 64);

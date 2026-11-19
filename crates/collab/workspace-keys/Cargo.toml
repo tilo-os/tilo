@@ -20,7 +20,7 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # The identity wire a route's keys are answered on, and the policy announcements a group's re-check
 # waits on.
 tilo-identity = { version = "0.1.0", path = "../../runtime/tilo-identity" }
-runtime-identity = { package = "tilo-identity-client", version = "0.1.0", path = "../../runtime/tilo-identity-client" }
+tilo-identity-client = { version = "0.1.0", path = "../../runtime/tilo-identity-client" }
 ed25519-dalek.workspace = true
 postcard = { workspace = true, features = ["alloc", "use-std"] }
 serde.workspace = true

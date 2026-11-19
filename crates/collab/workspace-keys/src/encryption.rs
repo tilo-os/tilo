@@ -2522,7 +2522,7 @@ fn wire_keys(
     generation: u64,
     known_generation: u64,
 ) -> Option<Result<tilo_identity::sources::GroupKeys, String>> {
-    use runtime_identity::wire::KeyAccess as Wire;
+    use tilo_identity_client::wire::KeyAccess as Wire;
     // A caller holding no keys asks with generation 0, which is also
     // the generation of a service that has changed nothing since it
     // started (a group it restored from disk, after a restart): it is

@@ -236,11 +236,11 @@ impl RouteKeys {
     /// Apply what the identity service answered.
     pub(super) fn update(
         &mut self,
-        access: runtime_identity::wire::KeyAccess,
+        access: tilo_identity_client::wire::KeyAccess,
         generation: u64,
         encoded: Option<&[u8]>,
     ) {
-        use runtime_identity::wire::KeyAccess as Wire;
+        use tilo_identity_client::wire::KeyAccess as Wire;
         match access {
             Wire::Ready => {
                 if let Some(encoded) = encoded {
@@ -431,7 +431,7 @@ fn opened(
 mod tests {
     use super::*;
     use collab_types::{AttestationId, Ed25519PublicKey, OpKind, WorkspaceId};
-    use runtime_identity::wire::KeyAccess as Wire;
+    use tilo_identity_client::wire::KeyAccess as Wire;
 
     fn keys(workspace: WorkspaceId) -> (key_group::KeyGroup, Vec<u8>) {
         let group = key_group::KeyGroup::create(

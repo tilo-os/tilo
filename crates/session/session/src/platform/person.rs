@@ -42,7 +42,7 @@ fn is_identity_key(person: &str) -> bool {
 /// before they named themselves.
 #[cfg(target_os = "linux")]
 fn given_by_person(name: &str) -> bool {
-    runtime_identity::is_chosen_display_name(name)
+    tilo_identity::store::is_chosen_display_name(name)
 }
 
 #[cfg(not(target_os = "linux"))]

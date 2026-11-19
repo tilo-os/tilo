@@ -247,7 +247,7 @@ tilo_test_env::scenario! {
             user
         );
         let record =
-            runtime_identity::load_from_path(identity_record_path(identity_dir.path(), user)).unwrap();
+            tilo_identity::store::load_from_path(identity_record_path(identity_dir.path(), user)).unwrap();
         assert_eq!(record.group_public_key(), user);
         assert!(record.sign(b"root-only operation").is_err());
 
@@ -825,7 +825,7 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
         // First use reads a selected joined identity as a finished join;
         // an interrupted commit has selected nothing yet.
         assert_eq!(
-            runtime_identity::resolve_active_identity(identity_dir.path()),
+            tilo_identity_client::resolve_active_identity(identity_dir.path()),
             None,
             "an unfinished join selected its identity"
         );
@@ -879,7 +879,7 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
             vec![hex::encode(member.verifying_key().to_bytes())]
         );
         assert!(
-            runtime_identity::resolve_active_identity(identity_dir.path()).is_some(),
+            tilo_identity_client::resolve_active_identity(identity_dir.path()).is_some(),
             "the finished join selects its identity"
         );
         // What the runtime starts the identity from is the registry this
@@ -929,10 +929,10 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
         // The joined identity is what this device acts for from the next
         // login on, not an absent default that asks to create one.
         assert_eq!(
-            runtime_identity::resolve_active_identity(identity_dir.path()),
+            tilo_identity_client::resolve_active_identity(identity_dir.path()),
             Some(record.clone())
         );
-        let loaded = runtime_identity::load_from_path(record).unwrap();
+        let loaded = tilo_identity::store::load_from_path(record).unwrap();
         assert_eq!(loaded.group_public_key(), user);
         assert!(!loaded.is_single_device());
         assert!(loaded.sign(b"root-only operation").is_err());
@@ -1282,7 +1282,7 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
     assert_eq!(peers.len(), 1);
     assert_eq!(peers[0].server_node_id, hex::encode([43; 32]));
     let record = identity_record_path(new_identities.path(), root.verifying_key().to_bytes());
-    let identity = runtime_identity::load_from_path(record).unwrap();
+    let identity = tilo_identity::store::load_from_path(record).unwrap();
     assert!(
         identity
             .sign(b"root/admin signing must stay unavailable")
@@ -1322,7 +1322,7 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
     let seed = [31; 32];
     let root = ed25519_dalek::SigningKey::from_bytes(&seed);
     let user = root.verifying_key().to_bytes();
-    let key_holder = runtime_identity::load_from_bytes(
+    let key_holder = tilo_identity::store::load_from_bytes(
         &serde_json::to_vec(&serde_json::json!({
             "display_name": "Key holder", "avatar_color": [1, 2, 3],
             "created_at": "2026-10-22T00:00:00Z", "schema_version": 1,

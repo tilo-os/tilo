@@ -32,7 +32,6 @@ hex.workspace = true
 launcher = { path = "../../packaging/launcher" }
 libc.workspace = true
 rand_core.workspace = true
-runtime-identity = { path = "../../runtime/runtime-identity" }
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
@@ -44,6 +43,7 @@ tilo-files = { path = "../../platform/tilo-files", features = ["json", "watch"] 
 tilo-handoff = { path = "../../platform/tilo-handoff" }
 tilo-identity-ceremony = { path = "../../collab/tilo-identity-ceremony" }
 tilo-identity = { path = "../../runtime/tilo-identity" }
+tilo-identity-client = { path = "../../runtime/tilo-identity-client" }
 tilo-onboarding = { path = "../onboarding" }
 tilo-paths.workspace = true
 tilo-server-protocol = { path = "../../server/tilo-server-protocol" }

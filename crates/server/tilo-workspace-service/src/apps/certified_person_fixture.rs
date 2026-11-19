@@ -116,7 +116,7 @@ pub fn certified_person_fixture_for_seeds(
         device_certificate: serde_json::to_vec(&certificate).unwrap(),
         proof: ed25519_dalek::Signer::sign(
             &device,
-            &runtime_identity::collaboration_join_digest(&workspace_id.to_string()).unwrap(),
+            &tilo_identity_client::collaboration_join_digest(&workspace_id.to_string()).unwrap(),
         )
         .to_bytes()
         .to_vec(),

@@ -255,7 +255,7 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
         "identity-{}.json",
         &hex::encode(root.verifying_key().to_bytes())[..55]
     ));
-    let projected = runtime_identity::load_from_path(record).unwrap();
+    let projected = tilo_identity::store::load_from_path(record).unwrap();
     assert_eq!(
         projected.group_public_key(),
         root.verifying_key().to_bytes()

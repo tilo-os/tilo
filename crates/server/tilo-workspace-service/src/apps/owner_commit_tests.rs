@@ -1195,7 +1195,10 @@ mod owner_commit_tests {
             workspace_id: workspace.to_string(),
             device_certificate: serde_json::to_vec(&cert).unwrap(),
             proof: key
-                .sign(&runtime_identity::collaboration_join_digest(&workspace.to_string()).unwrap())
+                .sign(
+                    &tilo_identity_client::collaboration_join_digest(&workspace.to_string())
+                        .unwrap(),
+                )
                 .to_bytes()
                 .to_vec(),
         }
@@ -1818,7 +1821,9 @@ mod owner_commit_tests {
             proof: f
                 .owner
                 .signing_key()
-                .sign(&runtime_identity::collaboration_join_digest(&f.route.cluster_id).unwrap())
+                .sign(
+                    &tilo_identity_client::collaboration_join_digest(&f.route.cluster_id).unwrap(),
+                )
                 .to_bytes()
                 .to_vec(),
         }
@@ -1846,7 +1851,7 @@ mod owner_commit_tests {
             workspace_id: workspace.clone(),
             device_certificate: serde_json::to_vec(&certificate).unwrap(),
             proof: device
-                .sign(&runtime_identity::collaboration_join_digest(&workspace).unwrap())
+                .sign(&tilo_identity_client::collaboration_join_digest(&workspace).unwrap())
                 .to_bytes()
                 .to_vec(),
         }

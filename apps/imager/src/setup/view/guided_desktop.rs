@@ -176,7 +176,7 @@ mod tests {
         phase guided_desktop_semantic_install_rechecks_canonical_package_flow_and_blocks_back;
         {
             let mut env = tilo_test_env::ScopedEnv::new();
-            env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+            env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
             let root = root();
             let mut app =
                 SetupApp::from_guided_desktop(prepared(root.path()), root.path().join("home")).unwrap();
@@ -234,7 +234,7 @@ mod tests {
     #[test]
     fn guided_desktop_delivers_actual_preparation_after_verified_package_and_keeps_current_files() {
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let root = root();
         let home = root.path().join("home");
         std::fs::create_dir(&home).unwrap();

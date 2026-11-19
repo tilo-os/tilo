@@ -5,7 +5,11 @@
 //! one then overwrote or forked the workspace's own.
 
 use super::*;
-use durable_store::{MemoryStore, WriteOp};
+use std::rc::Rc;
+
+use automerge::transaction::Transactable as _;
+use automerge::{AutoCommit, ROOT};
+use durable_store::{DurableStore as _, MemoryStore, WriteOp};
 
 const PACKAGE: &str = "so.tilo.test";
 const WORKSPACE: &str = "workspace-a";

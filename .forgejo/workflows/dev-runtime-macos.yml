@@ -109,7 +109,6 @@ on:
       - "crates/runtime/os-search/**"
       - "crates/runtime/runtime-collab/**"
       - "crates/runtime/runtime-fs/**"
-      - "crates/runtime/runtime-identity/**"
       - "crates/runtime/runtime-portal/**"
       - "crates/runtime/tilo-fs-client/**"
       - "crates/runtime/tilo-identity/**"

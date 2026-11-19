@@ -32,7 +32,7 @@ tilo_test_env::scenario! {
     phase closed_preparation_reopens_exact_identity_photo_and_public_choices_without_secrets;
     {
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         let path = namespace(&root);
@@ -44,10 +44,10 @@ tilo_test_env::scenario! {
         let prepared = Arc::new(
             PreparedIdentity::create(&ownership, "Ada", [1, 2, 3], IdentityStorage::Files).unwrap(),
         );
-        let photo = runtime_identity::ProfilePhoto::new(1, 1, vec![12, 34, 56, 255]).unwrap();
+        let photo = tilo_identity_client::ProfilePhoto::new(1, 1, vec![12, 34, 56, 255]).unwrap();
         prepared.update_photo(Some(photo.clone())).unwrap();
         prepared.update_name("Ada").unwrap();
-        let before = runtime_identity::load_from_path(ownership.join("primary.json"))
+        let before = tilo_identity::store::load_from_path(ownership.join("primary.json"))
             .unwrap()
             .sign(b"restart-proof")
             .unwrap();
@@ -72,7 +72,7 @@ tilo_test_env::scenario! {
         let prepared = ready.resume().unwrap();
         assert_eq!(prepared.metadata().unwrap().display_name, "Ada");
         assert_eq!(prepared.metadata().unwrap().profile_photo, Some(photo));
-        let after = runtime_identity::load_from_path(ownership.join("primary.json"))
+        let after = tilo_identity::store::load_from_path(ownership.join("primary.json"))
             .unwrap()
             .sign(b"restart-proof")
             .unwrap();
@@ -103,7 +103,7 @@ tilo_test_env::scenario! {
     phase pending_crash_and_changed_or_malformed_pointer_never_mint_replacement_or_repair;
     {
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         let path = namespace(&root);
@@ -132,7 +132,7 @@ tilo_test_env::scenario! {
         assert!(matches!(reopened.review().unwrap(), DraftStatus::Ready(_)));
         assert_eq!(
             recovered.public_key(),
-            runtime_identity::load_metadata_from_path(
+            tilo_identity_client::load_metadata_from_path(
                 &reserved.identity_directory().join("primary.json")
             )
             .unwrap()
@@ -169,7 +169,7 @@ tilo_test_env::scenario! {
     phase authenticated_backup_retains_original_kind_and_outside_namespace_is_never_adopted;
     {
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         let path = namespace(&root);
@@ -228,7 +228,7 @@ tilo_test_env::scenario! {
     phase queued_public_choice_update_is_bound_to_its_original_retained_preparation;
     {
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         let store = DraftStore::open(&namespace(&root)).unwrap();
@@ -291,7 +291,7 @@ tilo_test_env::scenario! {
 fn stale_same_operation_account_checkpoint_cannot_replace_newer_selected_generation() {
     use super::super::accounts::checkpoint::Receipt;
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let store = DraftStore::open(&namespace(&root)).unwrap();
@@ -404,7 +404,7 @@ fn stale_same_operation_account_checkpoint_cannot_replace_newer_selected_generat
 fn committed_account_exclusion_reopens_same_identity_without_declined_checkpoint() {
     use super::super::accounts::{checkpoint, checkpoint_fixture_for_journey};
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     for fresh in [false, true] {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();

@@ -8,7 +8,7 @@ pub(super) struct Resumed {
     pub choices: PublicChoices,
     pub kind: IdentityKind,
     pub draft: ReadyDraft,
-    pub metadata: runtime_identity::IdentityMetadata,
+    pub metadata: tilo_identity_client::IdentityMetadata,
 }
 enum Answer {
     Reviewed(DraftStore, DraftStatus),

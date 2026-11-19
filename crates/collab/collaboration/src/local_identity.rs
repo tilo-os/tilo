@@ -33,7 +33,7 @@ pub trait LocalIdentitySource: Send + Sync {
 
     /// Bounded public presentation, bound to the certified person's root key.
     #[cfg(feature = "local-daemons")]
-    fn public_photo(&self) -> Option<([u8; 32], runtime_identity::ProfilePhoto)> {
+    fn public_photo(&self) -> Option<([u8; 32], tilo_identity_client::ProfilePhoto)> {
         None
     }
 }
@@ -42,7 +42,7 @@ pub trait LocalIdentitySource: Send + Sync {
 /// and email addresses are never interpreted as the local person.
 #[cfg(feature = "local-daemons")]
 #[must_use]
-pub fn photo_for(identity: &str) -> Option<runtime_identity::ProfilePhoto> {
+pub fn photo_for(identity: &str) -> Option<tilo_identity_client::ProfilePhoto> {
     let source = SOURCE.read_recover().clone();
     match source {
         Some(source) => photo_from(source.as_ref(), identity),
@@ -54,7 +54,7 @@ pub fn photo_for(identity: &str) -> Option<runtime_identity::ProfilePhoto> {
 fn photo_from(
     source: &dyn LocalIdentitySource,
     identity: &str,
-) -> Option<runtime_identity::ProfilePhoto> {
+) -> Option<tilo_identity_client::ProfilePhoto> {
     // Reject aliases before asking the authenticated source for any metadata.
     if identity.len() != 64
         || !identity
@@ -72,7 +72,7 @@ fn photo_from(
 /// the person beside what they wrote (their own mail).
 #[cfg(feature = "local-daemons")]
 #[must_use]
-pub fn own_public_photo() -> Option<runtime_identity::ProfilePhoto> {
+pub fn own_public_photo() -> Option<tilo_identity_client::ProfilePhoto> {
     let source = SOURCE.read_recover().clone();
     let (_, photo) = match source {
         Some(source) => source.public_photo(),
@@ -149,8 +149,8 @@ impl LocalIdentitySource for RuntimeIdentity {
         Self::resolve()
     }
 
-    fn public_photo(&self) -> Option<([u8; 32], runtime_identity::ProfilePhoto)> {
-        runtime_identity::bound_profile_photo()
+    fn public_photo(&self) -> Option<([u8; 32], tilo_identity_client::ProfilePhoto)> {
+        tilo_identity_client::bound_profile_photo()
     }
 }
 
@@ -173,8 +173,8 @@ impl RuntimeIdentity {
 }
 
 #[cfg(feature = "local-daemons")]
-fn bound_metadata() -> Option<runtime_identity::IdentityMetadata> {
-    match runtime_identity::load_metadata() {
+fn bound_metadata() -> Option<tilo_identity_client::IdentityMetadata> {
+    match tilo_identity_client::load_metadata() {
         Ok(metadata) => Some(metadata),
         Err(runtime_portal::NotAvailable::ServiceFdMissing) => None,
         Err(error) => {
@@ -240,11 +240,11 @@ mod photo_tests {
         fn load(&self) -> Option<LocalIdentity> {
             None
         }
-        fn public_photo(&self) -> Option<([u8; 32], runtime_identity::ProfilePhoto)> {
+        fn public_photo(&self) -> Option<([u8; 32], tilo_identity_client::ProfilePhoto)> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Some((
                 [0x12; 32],
-                runtime_identity::ProfilePhoto::new(1, 1, vec![20, 90, 210, 255]).ok()?,
+                tilo_identity_client::ProfilePhoto::new(1, 1, vec![20, 90, 210, 255]).ok()?,
             ))
         }
     }

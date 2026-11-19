@@ -37,14 +37,18 @@ tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-actions = { path = "../../collab/actions" }
 # The pairing code every screen of a pairing shows (`certification_ceremony`).
 blake3.workspace = true
-ed25519-dalek = { workspace = true, features = ["rand_core"] }
+ed25519-dalek = { workspace = true, features = ["rand_core", "serde"] }
 getrandom.workspace = true
 hex.workspace = true
 zeroize.workspace = true
 libc.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
+# The public identity protocol the broker and the store share.
+tilo-identity-client = { version = "0.1.0", path = "../tilo-identity-client" }
+# Secret Service / Keychain providers for a secured identity.
+tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets" }
+serde_bytes.workspace = true
 rand_core.workspace = true
-runtime-identity = { path = "../runtime-identity" }
 registry-types = { path = "../../packaging/registry-types" }
 sha2.workspace = true
 serde.workspace = true
@@ -78,6 +82,13 @@ tempfile.workspace = true
 # A commenter's comment, as the change a notes window makes.
 automerge.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
+
+[target.'cfg(unix)'.dev-dependencies]
+tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
+# Reproduces malformed `secret_bytes` records written by an earlier identity
+# ceremony, so the loader rejects those records.
+sha2.workspace = true
+serial_test.workspace = true
 
 [lints]
 workspace = true

@@ -642,7 +642,7 @@ mod unix {
         destination: &Path,
         passphrase: &str,
     ) -> anyhow::Result<()> {
-        runtime_identity::export_portable_backup(
+        tilo_identity::store::export_portable_backup(
             &identity.record_path,
             destination,
             passphrase.as_bytes(),

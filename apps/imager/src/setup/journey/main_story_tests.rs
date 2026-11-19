@@ -580,7 +580,7 @@ fn guided_new_user_migrates_recognized_home_then_reviews_shared_files_storage() 
     env.set("HOME", &home);
     env.set("XDG_CONFIG_HOME", &config);
     env.set("XDG_STATE_HOME", root.join("state"));
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     env.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "1");
     let picture = root.join("avatar.png");
     std::fs::write(&picture, include!("../fixtures/avatar.rs")).unwrap();
@@ -717,7 +717,7 @@ fn prepare_native_portable_story_source(
     env.set("XDG_CONFIG_HOME", &config);
     env.set("XDG_STATE_HOME", home.join(".local/state"));
     env.set("XDG_CACHE_HOME", home.join(".cache"));
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let originals: Vec<_> = [rclone]
         .into_iter()
         .map(|path| {
@@ -880,7 +880,7 @@ fn guided_existing_backup_migrates_this_home_without_creating_another_identity()
     env.set("XDG_CONFIG_HOME", &config);
     env.set("XDG_STATE_HOME", root.join("state"));
     env.set("XDG_CACHE_HOME", root.join("cache"));
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     env.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "1");
     let donor = PreparedIdentity::create(
         &root.join("donor"),
