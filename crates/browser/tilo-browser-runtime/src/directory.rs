@@ -39,9 +39,9 @@ pub(crate) struct PagePerson {
     /// Their root key, hex: the key an entry admits.
     #[serde(rename = "userPublicKey")]
     pub user: String,
-    /// The name a workspace learns of them.
+    /// The name a workspace learns of them; none while they have not chosen one.
     #[serde(default)]
-    pub name: String,
+    pub name: Option<String>,
 }
 
 /// What the page is to the directory: its site, its person, the workspaces it
@@ -126,7 +126,7 @@ impl PageDirectory {
                 let user: [u8; 32] = hex::decode(&person.user).ok()?.try_into().ok()?;
                 Some(Person {
                     user,
-                    name: person.name.clone(),
+                    name: person.name.clone().unwrap_or_default(),
                 })
             });
         let store = Store::default();
