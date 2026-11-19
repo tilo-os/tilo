@@ -831,10 +831,14 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             .host_render
             .then(|| quote!(#krate::__private::HOST_RENDER_TAG))
             .into_iter();
+        // A screen effect offered on rows or items shows the one it names.
+        let place = (options.screen && !options.targets.is_empty() && !fields.is_empty())
+            .then(|| quote!(#krate::__private::SCREEN_PLACE_TAG));
         let screen = options
             .screen
             .then(|| quote!(#krate::__private::SCREEN_TAG))
-            .into_iter();
+            .into_iter()
+            .chain(place);
         let declared = &options.tags;
         let tags = quote!(&[#(#host_render,)* #(#screen,)* #(#declared),*]);
         let outside_with = match &options.outside_with {

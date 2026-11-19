@@ -229,12 +229,13 @@ pub(crate) struct PublishedInvocationRuntime {
 
 /// Refuse `spec` on `resource` for `actor` when only the person at this
 /// device invokes it and `actor` is someone else: a view of their window
-/// ([`view_operation_permitted`]), an effect that opens a form or shows a
-/// place ([`tilo_actions::ActionContract::only_shows`]), or anything on a
+/// ([`view_operation_permitted`]), an effect that only changes this screen
+/// ([`tilo_actions::ActionContract::only_shows`]), or anything on a
 /// control the window draws ([`tilo_actions::kind_is_a_drawn_control`]): a
 /// press, drag or focus stands in for this person's pointer and keyboard.
-/// An agent or another member never moves this person's screen; they invoke
-/// the app's own action that does the work, with its arguments.
+/// An agent or another member never moves this person's screen. An effect
+/// that shows a row is answered against the caller's own view
+/// ([`tilo_actions::SCREEN_PLACE_TAG`]).
 pub(crate) fn check_shown_here(
     actor: &tilo_actions::Actor,
     local_author: &tilo_actions::MemberId,
