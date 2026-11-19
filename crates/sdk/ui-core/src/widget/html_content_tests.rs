@@ -142,6 +142,20 @@ fn a_data_table_composes_as_a_table_with_headers_and_cells() {
             && cells.iter().any(|cell| cell == "Trip plan"),
         "each row's value is a cell: {cells:?}"
     );
+    // Every other row wears the stripe the canvas paints, from the same token.
+    let rows = tagged(root, "tr");
+    let body: Vec<&&Composed> = rows.iter().skip(1).collect();
+    assert_eq!(body.len(), 2, "two body rows: {rows:?}");
+    let stripe = crate::widget::data_table::zebra_on(
+        &Theme::dark(),
+        Theme::dark().tokens.colors.surfaces.content,
+    );
+    assert!(body[0].ground.is_none(), "the first row stands on the page");
+    assert_eq!(
+        body[1].ground.as_ref().and_then(|ground| ground.fill),
+        Some(crate::composition::rgba8(stripe)),
+        "the second wears the stripe"
+    );
 }
 
 /// A trail of folders is a navigation list; the page a person is on says so.
