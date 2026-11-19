@@ -331,7 +331,7 @@ async fn read_resources(
     branched: &mut Branched,
 ) -> Sources {
     let mut sources = Sources::new();
-    let routes = match engine.records(&from.to_string()) {
+    let routes = match engine.documents(&from.to_string()) {
         Ok(routes) => routes,
         Err(error) => {
             branched.missing.push(error);
@@ -1442,7 +1442,7 @@ mod tests {
                     "the branch holds the record's history"
                 );
             }
-            let routes = engine.records(TO).unwrap();
+            let routes = engine.documents(TO).unwrap();
             assert!(routes.contains(&(CHAT.to_owned(), emoji)), "{routes:?}");
             assert!(
                 !routes
@@ -1470,7 +1470,7 @@ mod tests {
             assert_ne!(source.get_heads(), copied.get_heads());
             assert!(
                 engine
-                    .records(FROM)
+                    .documents(FROM)
                     .unwrap()
                     .contains(&(CHAT.to_owned(), "messages".to_owned()))
             );
@@ -1482,7 +1482,7 @@ mod tests {
                 "the branch is this device's after a restart"
             );
             assert_eq!(engine.owner_of(TO), Ok(person));
-            assert_eq!(engine.records(TO).unwrap().len(), 2);
+            assert_eq!(engine.documents(TO).unwrap().len(), 2);
         }
     }
 

@@ -249,7 +249,7 @@ impl WorkspaceDocuments {
 
     /// The records of the workspace not held open.
     pub(crate) fn routes(&self) -> Vec<DocumentRoute> {
-        match self.engine.records(&self.workspace) {
+        match self.engine.documents(&self.workspace) {
             Ok(records) => records
                 .into_iter()
                 .map(|(app_id, record)| DocumentRoute {

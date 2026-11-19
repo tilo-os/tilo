@@ -22835,6 +22835,7 @@ dependencies = [
  "tilo-paths",
  "tilo-peer-state",
  "tilo-reference",
+ "tilo-resource-store",
  "tilo-secrets",
  "tilo-server",
  "tilo-server-client",

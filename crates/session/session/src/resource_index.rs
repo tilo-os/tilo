@@ -57,7 +57,7 @@ impl DocumentSource for crate::engine::Engine {
     }
 
     fn records(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
-        self.records(workspace)
+        self.documents(workspace)
     }
 
     fn record(&self, workspace: &str, app: &str, record: &str) -> Result<Option<Vec<u8>>, String> {

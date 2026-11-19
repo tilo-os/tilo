@@ -182,7 +182,7 @@ impl Workspace {
                     });
                 match reads {
                     Ok(reads) => !reads,
-                    Err(_) => engine.records(&route.cluster_id).is_ok_and(|records| {
+                    Err(_) => engine.documents(&route.cluster_id).is_ok_and(|records| {
                         records
                             .iter()
                             .any(|(app, record)| *app == route.app_id && *record == route.document)

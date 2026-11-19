@@ -80,7 +80,7 @@ impl Workspace {
     pub(super) fn holds(&self, route: &DocumentRoute) -> bool {
         self.peer
             .engine()
-            .records(&route.cluster_id)
+            .documents(&route.cluster_id)
             .is_ok_and(|records| {
                 records
                     .iter()

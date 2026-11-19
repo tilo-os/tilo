@@ -137,7 +137,7 @@ pub struct Written {
 
 /// Where the store reads a document it does not hold in memory: the saved document, or `None`
 /// for one never kept.
-pub type Source = Box<dyn FnMut(&str) -> Option<Vec<u8>>>;
+pub type Source = Box<dyn FnMut(&str) -> Option<Vec<u8>> + Send>;
 
 /// The resource store. See the module docs.
 #[derive(Default)]

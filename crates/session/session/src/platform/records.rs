@@ -975,7 +975,7 @@ impl Records for Held {
 
     fn held(&self, workspace: &str) -> Vec<(String, String)> {
         self.engine
-            .records(workspace)
+            .documents(workspace)
             .inspect_err(|error| tracing::warn!(%error, %workspace, "a workspace is not listed"))
             .unwrap_or_default()
     }
