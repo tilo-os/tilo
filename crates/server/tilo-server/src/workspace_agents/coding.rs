@@ -470,7 +470,7 @@ impl super::HostAgents {
         let from_starter = turn.line.as_ref().is_some_and(|line| line.from_starter);
         // Whether the turn going has a reply of its own: words written to the agent while it
         // works end the reply that stands there under them ([`shows_taken`]).
-        let resumed = shows_taken(turn);
+        let resumed = shows_taken(&turn);
         let began = turn.ask.clone();
         let (outcome, told_job) =
             Box::pin(self.work_coding(scope, &mut turn, &mut reply, going, resumed)).await;

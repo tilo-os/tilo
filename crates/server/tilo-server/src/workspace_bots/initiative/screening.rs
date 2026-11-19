@@ -251,7 +251,10 @@ pub fn format_look_material(
     let body_budget = max_chars.saturating_sub(truncation_reserve);
 
     let push_line = |target_text: &mut String, target_lines: &mut Vec<String>, line: String| {
-        let extra = line.chars().count() + usize::from(!target_text.is_empty());
+        let extra = line
+            .chars()
+            .count()
+            .saturating_add(usize::from(!target_text.is_empty()));
         if target_text.chars().count().saturating_add(extra) > body_budget {
             return false;
         }
@@ -265,7 +268,7 @@ pub fn format_look_material(
 
     for line in relevant.iter().take(max_lines) {
         if push_line(&mut text, &mut lines, line.clone()) {
-            included_changes += 1;
+            included_changes = included_changes.saturating_add(1);
         } else {
             break;
         }
@@ -728,8 +731,7 @@ impl DropLog {
             let preview = entry
                 .summary_lines
                 .first()
-                .map(String::as_str)
-                .unwrap_or("no summary");
+                .map_or("no summary", String::as_str);
             let line = format!(
                 "- [{}] p={:.2} changes={} mail={} due={}: {}",
                 entry.workspace,
@@ -739,9 +741,12 @@ impl DropLog {
                 entry.due_tasks,
                 preview
             );
-            let extra = line.chars().count() + usize::from(!out.is_empty());
+            let extra = line
+                .chars()
+                .count()
+                .saturating_add(usize::from(!out.is_empty()));
             if out.chars().count().saturating_add(extra) > max_chars {
-                omitted += 1;
+                omitted = omitted.saturating_add(1);
                 continue;
             }
             if !out.is_empty() {
@@ -790,7 +795,7 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     if max_chars <= 1 {
         return text.chars().take(max_chars).collect();
     }
-    let mut out: String = text.chars().take(max_chars - 1).collect();
+    let mut out: String = text.chars().take(max_chars.saturating_sub(1)).collect();
     out.push('…');
     out
 }

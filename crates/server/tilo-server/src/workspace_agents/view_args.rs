@@ -8,9 +8,8 @@
 //! apps a view never calls named before the call is made ([`unread_apps`]).
 
 use serde_json::{Map, Value, json};
-use tilo_agent_turn::ToolDefinition;
 
-use super::{ANSWER_WITH_VIEW, Ask, Turn, worked};
+use super::{ANSWER_WITH_VIEW, Ask, ToolDefinition, Turn, worked};
 
 /// Why a view written as `source` and reading `reads` is refused here, when it is: `reads` names
 /// an app the view never calls before a dot. The view is given the apps it lists and no other

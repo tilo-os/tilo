@@ -457,7 +457,8 @@ impl OfferTracker {
         let matching_kinds: Vec<String> = self
             .active
             .iter()
-            .filter_map(|(kind, offer)| (offer.key.app == target_app).then(|| kind.clone()))
+            .filter(|&(_, offer)| offer.key.app == target_app)
+            .map(|(kind, _)| kind.clone())
             .collect();
 
         let mut withdrawn = Vec::with_capacity(matching_kinds.len());
@@ -496,7 +497,8 @@ impl OfferTracker {
         let stopped_kinds: Vec<String> = self
             .active
             .iter()
-            .filter_map(|(kind, offer)| (offer.last_verb_at_ms < cutoff).then(|| kind.clone()))
+            .filter(|&(_, offer)| offer.last_verb_at_ms < cutoff)
+            .map(|(kind, _)| kind.clone())
             .collect();
 
         let mut withdrawn = Vec::with_capacity(stopped_kinds.len());
@@ -782,7 +784,7 @@ mod tests {
         assert_eq!(tracker.active_offers().len(), 1);
 
         // Additional verbs refresh the existing offer; never create a second one.
-        let updated = match tracker.observe(owner_obs(4_000, key.clone())) {
+        let updated = match tracker.observe(owner_obs(4_000, key)) {
             ObserveOutcome::UpdatedActive(offer) => offer,
             other => panic!("expected UpdatedActive, got {other:?}"),
         };

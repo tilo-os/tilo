@@ -2691,9 +2691,10 @@ impl tilo_agent_turn::Doing<offered::Offered> for Answering<'_> {
             if !matches!(self.at.lock().await.1.ask, Ask::Message { .. }) {
                 (
                     format!(
-                        "{ANSWER_WITH_DOCUMENT} is not offered here: it shows a document in a \
+                        "{} is not offered here: it shows a document in a \
                          conversation, and this answer is a comment on an issue. Say in your \
-                         comment where the document is."
+                         comment where the document is.",
+                        shares::ANSWER_WITH_DOCUMENT
                     ),
                     true,
                 )
@@ -2757,9 +2758,7 @@ impl tilo_agent_turn::Doing<offered::Offered> for Answering<'_> {
 
     /// Take into the turn what its person wrote since its last step: the replies the turn leaves
     /// say the answer follows below, and the turn goes on as the newest of it, inside that ask.
-    async fn went_on(
-        &self,
-    ) -> Result<Option<tilo_agent_turn::WentOn<McpServer<WorkspaceActionProvider>>>, String> {
+    async fn went_on(&self) -> Result<Option<tilo_agent_turn::WentOn<offered::Offered>>, String> {
         let came = self.going.take();
         let Some((newest, passed)) = came.split_last() else {
             return Ok(None);

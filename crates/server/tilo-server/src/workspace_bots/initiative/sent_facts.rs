@@ -124,9 +124,7 @@ pub fn strip_authored_text(body: &str) -> StrippedMessage {
     let mut cut_reply_or_forward_block = false;
     let mut cut_signature = false;
 
-    let mut idx = 0usize;
-    while idx < raw_lines.len() {
-        let line = raw_lines[idx];
+    for (idx, &line) in raw_lines.iter().enumerate() {
         let trimmed = line.trim();
 
         // Standard RFC 3676 signature separator ("-- " or bare "--") or mobile footer.
@@ -146,13 +144,11 @@ pub fn strip_authored_text(body: &str) -> StrippedMessage {
 
         // Individual quoted lines (`>`, `>>`, `> >`, etc.).
         if trimmed.starts_with('>') {
-            stripped_quoted_lines += 1;
-            idx += 1;
+            stripped_quoted_lines = stripped_quoted_lines.saturating_add(1);
             continue;
         }
 
         kept_lines.push(line.trim_end());
-        idx += 1;
     }
 
     // Trim leading/trailing blank lines and collapse consecutive blank lines.
@@ -564,13 +560,16 @@ fn is_forward_or_original_divider(trimmed: &str) -> bool {
 }
 
 fn is_unprefixed_header_block(lines: &[&str], idx: usize) -> bool {
-    let trimmed = lines[idx].trim();
+    let Some(trimmed) = lines.get(idx).map(|line| line.trim()) else {
+        return false;
+    };
+    let next_idx = idx.saturating_add(1);
 
     // Long underscore divider (Outlook / Office365) followed by a mail header.
     if trimmed.len() >= 8 && trimmed.chars().all(|c| c == '_') {
         let next_non_blank = lines
             .iter()
-            .skip(idx + 1)
+            .skip(next_idx)
             .find(|line| !line.trim().is_empty())
             .map(|line| line.trim().to_ascii_lowercase());
         if next_non_blank.is_some_and(|line| line.starts_with("from:")) {
@@ -585,7 +584,7 @@ fn is_unprefixed_header_block(lines: &[&str], idx: usize) -> bool {
 
     // Look ahead up to 3 lines for Sent:/Date:/To: headers.
     let mut saw_header = false;
-    for next in lines.iter().skip(idx + 1).take(3) {
+    for next in lines.iter().skip(next_idx).take(3) {
         let next_lower = next.trim().to_ascii_lowercase();
         if next_lower.starts_with("sent:")
             || next_lower.starts_with("date:")
@@ -599,7 +598,9 @@ fn is_unprefixed_header_block(lines: &[&str], idx: usize) -> bool {
 }
 
 fn is_reply_attribution_header(lines: &[&str], idx: usize) -> bool {
-    let trimmed = lines[idx].trim();
+    let Some(trimmed) = lines.get(idx).map(|line| line.trim()) else {
+        return false;
+    };
     if is_single_line_reply_header(trimmed) {
         return true;
     }
@@ -607,7 +608,7 @@ fn is_reply_attribution_header(lines: &[&str], idx: usize) -> bool {
     // Handle wrapped 2-line Gmail / Apple Mail attribution headers:
     //   On Tue, Nov 17, 2026 at 10:15 AM Alice Smith <alice@example.com>
     //   wrote:
-    if let Some(next) = lines.get(idx + 1) {
+    if let Some(next) = lines.get(idx.saturating_add(1)) {
         let next_trimmed = next.trim();
         if !trimmed.is_empty() && !next_trimmed.is_empty() {
             let combined = format!("{trimmed} {next_trimmed}");
@@ -671,7 +672,7 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     if max_chars <= 1 {
         return text.chars().take(max_chars).collect();
     }
-    let mut out: String = text.chars().take(max_chars - 1).collect();
+    let mut out: String = text.chars().take(max_chars.saturating_sub(1)).collect();
     out.push('…');
     out
 }

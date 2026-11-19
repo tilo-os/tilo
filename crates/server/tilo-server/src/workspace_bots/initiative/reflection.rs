@@ -226,7 +226,7 @@ impl ReflectionScheduler {
                 selected.push(case);
             } else {
                 if eligible {
-                    remaining_matching += 1;
+                    remaining_matching = remaining_matching.saturating_add(1);
                 }
                 kept.push(case);
             }
@@ -394,6 +394,11 @@ impl KeptStore {
     }
 
     /// Evaluate and apply `proposal` strictly under `Person > LargeModel > DecisionModel`.
+    #[expect(
+        clippy::too_many_lines,
+        clippy::needless_pass_by_value,
+        reason = "single authority-enforcement entry point keeping the owned ProposedEdit API"
+    )]
     pub fn apply_edit(&mut self, proposal: ProposedEdit) -> AuthorityOutcome {
         let key = one_line(&proposal.key);
         if key.is_empty() {
@@ -471,7 +476,7 @@ impl KeptStore {
                             key: key.clone(),
                             previous_value: Some(previous_value),
                             corrected_value: None,
-                            note: clean_note.clone(),
+                            note: clean_note,
                             at_ms: proposal.at_ms,
                         });
                     }
@@ -1001,7 +1006,7 @@ mod tests {
                 assert_eq!(remaining_queued, 2);
                 assert_eq!(remaining_budget_micros, 100_000);
             }
-            other => panic!("expected Proceed, got {other:?}"),
+            other @ BatchPlan::Deferred(_) => panic!("expected Proceed, got {other:?}"),
         }
 
         // OnUnsureOrCorrected selects only its own case.
@@ -1010,7 +1015,7 @@ mod tests {
                 assert_eq!(cases.len(), 1);
                 assert_eq!(cases[0].id, "unsure-1");
             }
-            other => panic!("expected Proceed, got {other:?}"),
+            other @ BatchPlan::Deferred(_) => panic!("expected Proceed, got {other:?}"),
         }
 
         // ScheduledDaily sweeps remaining cases once per day.
@@ -1019,7 +1024,7 @@ mod tests {
                 assert_eq!(trigger, ReflectionTrigger::ScheduledDaily);
                 assert_eq!(cases.len(), 2);
             }
-            other => panic!("expected Proceed, got {other:?}"),
+            other @ BatchPlan::Deferred(_) => panic!("expected Proceed, got {other:?}"),
         }
 
         // Second ScheduledDaily on the same day is deferred even if new cases arrive.
@@ -1049,7 +1054,9 @@ mod tests {
                 assert_eq!(cases.len(), 1);
                 assert_eq!(cases[0].id, "chg-late");
             }
-            other => panic!("expected Proceed on next day, got {other:?}"),
+            other @ BatchPlan::Deferred(_) => {
+                panic!("expected Proceed on next day, got {other:?}")
+            }
         }
     }
 
@@ -1262,7 +1269,7 @@ mod tests {
         assert!(detector.ingest(ClassificationSample {
             sample_id: "det-9".to_owned(),
             sender: "digest@example.com".to_owned(),
-            basis: ClassificationBasis::Deterministic(pred.clone()),
+            basis: ClassificationBasis::Deterministic(pred),
             classification: "newsletter".to_owned(),
             action_kind: "archive".to_owned(),
             at_ms: 2_100,
@@ -1320,7 +1327,7 @@ mod tests {
         detector.ingest(ClassificationSample {
             sample_id: "c-conflict".to_owned(),
             sender: "bot@alerts.example.com".to_owned(),
-            basis: ClassificationBasis::Deterministic(pred.clone()),
+            basis: ClassificationBasis::Deterministic(pred),
             classification: "incident".to_owned(),
             action_kind: "notify".to_owned(),
             at_ms: 99,

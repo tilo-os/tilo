@@ -153,7 +153,11 @@ impl Item {
                 source,
                 reads,
             } => {
-                let reads: Vec<String> = reads.iter().map(|app| format!("\"{app}\"")).collect();
+                let reads = reads
+                    .iter()
+                    .map(|app| format!("\"{app}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 let called = called(source);
                 let called = if called.is_empty() {
                     String::new()
@@ -308,7 +312,7 @@ fn items_of(id: &str, held: &chat::chat::Message) -> Vec<Item> {
         });
     }
     for attached in &held.attachments {
-        let tilo_reference::Attached::Resource { at, label, .. } = attached else {
+        let chat::tilo_reference::Attached::Resource { at, label, .. } = attached else {
             continue;
         };
         // Chat's own messages are the conversation itself, not something a turn worked on.

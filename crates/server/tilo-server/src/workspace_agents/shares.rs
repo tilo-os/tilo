@@ -97,7 +97,7 @@ pub(super) fn shows_in(turn: &Turn) -> Option<String> {
 
 /// The id of the conversation whose address in the workspace is `address`
 /// ([`chat::summons::conversation_address`]); none for what is no such address.
-fn conversation_id(address: &str) -> Option<String> {
+pub(super) fn conversation_id(address: &str) -> Option<String> {
     let prefix = chat::summons::conversation_address(&tilo_resource::Id::from_raw(String::new()));
     address
         .strip_prefix(&prefix)
