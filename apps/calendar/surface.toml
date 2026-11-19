@@ -215,7 +215,7 @@ params = [
 id = "export-ics-content"
 kind = "read"
 params = [
-  { name = "event", type = { option = "text" }, required = false },
+  { name = "event", type = { option = "text" }, required = false, schema = { type = ["string", "null"], format = "uuid" } },
 ]
 
 [[resources.types]]

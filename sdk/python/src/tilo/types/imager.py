@@ -89,7 +89,7 @@ ClearSourceArgs = TypedDict("ClearSourceArgs", {
 
 class Sources(Resource):
     """Image sources — `imager.sources`."""
-    __surface__ = "so.tilo.imager@c966cede61f39371"
+    __surface__ = "so.tilo.imager@b0b52b4529cafa73"
     @property
     def source(self) -> Source | None:
         """Read only."""

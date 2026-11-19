@@ -198,8 +198,8 @@ params = [
 id = "read-chapter"
 kind = "read"
 params = [
-  { name = "book", type = "text", required = true },
-  { name = "chapter", type = { option = "int" }, required = false },
+  { name = "book", type = "text", required = true, schema = { type = "string" } },
+  { name = "chapter", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], minimum = 0 } },
 ]
 
 [[resources.types]]

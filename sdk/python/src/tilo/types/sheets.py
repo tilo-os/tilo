@@ -250,7 +250,7 @@ DeleteCommentArgs = TypedDict("DeleteCommentArgs", {
 
 class Workbook(Resource):
     """Workbook — `sheets.workbook`."""
-    __surface__ = "so.tilo.sheets@0e9368353ac364bc"
+    __surface__ = "so.tilo.sheets@f729b94191b1093c"
     sheets: list[Entry[Sheet]]
     comments: list[Entry[Comment]]
     settings: DocSettings
@@ -597,7 +597,7 @@ class Workbook(Resource):
 
     def read_file(self,
         *,
-        file: Any,
+        file: str,
         sheet: str | None = None,
         from_: int | None = None,
     ) -> None:

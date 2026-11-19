@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.discord@3d8469c4024dfffb";
+export const SURFACE = "so.tilo.discord@e3c83e7ada110859";
 
 export interface AnswerInteractionOp {
   interaction: string;
@@ -614,7 +614,7 @@ export interface Guild extends tilo.Resource {
   reportVoiceMany(items: ReportVoiceArgs[]): Promise<tilo.ActionAnswer[]>;
   myLink(): Promise<void>;
   linkOffer(args: {
-    token: unknown;
+    token: string;
   }): Promise<void>;
   planEvent(args: {
     event: unknown;

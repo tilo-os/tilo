@@ -60,7 +60,7 @@ RecordScanArgs = TypedDict("RecordScanArgs", {
 
 class Camera(Resource):
     """Camera — `camera`."""
-    __surface__ = "so.tilo.camera@f66037316b6e9646"
+    __surface__ = "so.tilo.camera@9165e90dd077b0bc"
     @property
     def scans(self) -> list[ScanEntry]:
         """Read only."""
@@ -86,8 +86,16 @@ class Camera(Resource):
         """Runs `record-scan` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("record-scan", items)
 
+    def set_grid(self, *, on: bool) -> None:
+        """Runs the app's action."""
+        return self.action("set-grid", on=on)
+
+    def set_level(self, *, on: bool) -> None:
+        """Runs the app's action."""
+        return self.action("set-level", on=on)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"register_capture", "register_capture_many", "record_scan", "record_scan_many"})
+    __actions__ = frozenset({"register_capture", "register_capture_many", "record_scan", "record_scan_many", "set_grid", "set_level"})
 
 

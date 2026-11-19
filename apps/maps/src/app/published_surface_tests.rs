@@ -31,6 +31,11 @@ fn a_places_row_is_an_address_of_the_published_surface() {
         .unwrap_or_else(|| panic!("open-place names the row it acts on: {report}"));
     assert_eq!(place["required"], true, "{report}");
     assert_eq!(place["type"], "text", "{report}");
+    assert_eq!(
+        place["schema"],
+        serde_json::json!({"type": "string"}),
+        "{report}"
+    );
 
     let mut app = TestApp::<MapsShell>::new().unwrap();
     let mut cafe = Place::new(

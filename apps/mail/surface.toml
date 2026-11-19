@@ -174,22 +174,22 @@ params = [
 id = "search-messages"
 kind = "read"
 params = [
-  { name = "query", type = { option = "text" }, required = false },
-  { name = "folder", type = { option = { named = "Folder" } }, required = false },
-  { name = "from", type = { option = "text" }, required = false },
-  { name = "subject", type = { option = "text" }, required = false },
-  { name = "since", type = { option = "text" }, required = false },
-  { name = "until", type = { option = "text" }, required = false },
-  { name = "has_attachment", type = { option = "bool" }, required = false },
+  { name = "query", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "folder", type = { option = { named = "Folder" } }, required = false, schema = { oneOf = [{ type = "null" }, { type = "string", enum = ["inbox", "starred", "sent", "drafts", "archive", "trash", "junk"] }] } },
+  { name = "from", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "subject", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "since", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "until", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "has_attachment", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "export-content"
 kind = "read"
 params = [
-  { name = "format", type = { option = "text" }, required = false },
-  { name = "message", type = { option = "text" }, required = false },
-  { name = "folder", type = { option = { named = "Folder" } }, required = false },
+  { name = "format", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "message", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "folder", type = { option = { named = "Folder" } }, required = false, schema = { oneOf = [{ type = "null" }, { type = "string", enum = ["inbox", "starred", "sent", "drafts", "archive", "trash", "junk"] }] } },
 ]
 
 [[resources.types]]

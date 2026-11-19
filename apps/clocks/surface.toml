@@ -135,7 +135,7 @@ kind = "undoable"
 id = "show"
 kind = "read"
 params = [
-  { name = "section", type = "text", required = true },
+  { name = "section", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]

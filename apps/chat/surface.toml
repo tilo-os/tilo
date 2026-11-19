@@ -287,8 +287,8 @@ params = [
 id = "export-content"
 kind = "read"
 params = [
-  { name = "channel", type = "text", required = true },
-  { name = "format", type = { option = "text" }, required = false },
+  { name = "channel", type = "text", required = true, schema = { type = "string" } },
+  { name = "format", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
@@ -299,8 +299,8 @@ kind = "read"
 id = "select-input"
 kind = "read"
 params = [
-  { name = "channel", type = "text", required = true },
-  { name = "input", type = "text", required = true },
+  { name = "channel", type = "text", required = true, schema = { type = "string" } },
+  { name = "input", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.types]]

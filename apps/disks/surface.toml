@@ -26,13 +26,13 @@ kind = "read"
 id = "select"
 kind = "read"
 params = [
-  { name = "device", type = "text", required = true },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "show-tab"
 kind = "read"
 params = [
-  { name = "tab", type = "text", required = true },
+  { name = "tab", type = "text", required = true, schema = { type = "string" } },
 ]
 

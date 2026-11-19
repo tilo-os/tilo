@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.pdf-viewer@f7a099e9e6b08a4f";
+export const SURFACE = "so.tilo.pdf-viewer@f996e72bd0927ac8";
 
 export interface AdoptedAnnotation {
   id: string;

@@ -45,7 +45,7 @@ RecordModerationCaseArgs = TypedDict("RecordModerationCaseArgs", {
 
 class Catalog(Resource):
     """App Store — `store.catalog`."""
-    __surface__ = "so.tilo.store@d903fd33913efeca"
+    __surface__ = "so.tilo.store@60ff593c275bf1b5"
     reports: dict[str, Report]
 
     def draft_report(self, *, app_id: str) -> None:

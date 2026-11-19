@@ -135,14 +135,9 @@ fn keystrokes_rebuild_nothing(open: Option<fn(&NotebookFixture) -> notes::PageId
             .map(|(_, rect)| rect)
             .expect("a note's editor");
         harness.click_at(editor.x0 + 20.0, editor.y0 + 10.0);
-        // The first key may settle what the click left (focus, the caret),
-        // and into an empty note it builds the note's first block and the
-        // header that dates it, which the key after it measures: let both
-        // land before the keys that are measured.
+        // The first key may settle what the click left (focus, the caret).
         harness.key("x");
-        settle(&mut harness, 8);
-        harness.key("y");
-        settle(&mut harness, 8);
+        settle(&mut harness, 4);
         let rebuilt = harness.rebuilt_frames();
         for key in "typing".chars() {
             // The key's own frame, if it drew one, then those it asks for.

@@ -33,7 +33,7 @@ ClearFiltersArgs = TypedDict("ClearFiltersArgs", {
 
 class Journal(Resource):
     """System journal — `logs.journal`."""
-    __surface__ = "so.tilo.logs@2428af2372c28388"
+    __surface__ = "so.tilo.logs@29ebb0843fc19293"
     severity: Priority
     unit: str
     boot: str

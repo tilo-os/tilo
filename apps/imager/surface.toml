@@ -78,7 +78,7 @@ kind = "read"
 id = "choose-drive"
 kind = "read"
 params = [
-  { name = "drive", type = "text", required = true },
+  { name = "drive", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.types]]

@@ -83,14 +83,14 @@ kind = "read"
 id = "reader-font"
 kind = "read"
 params = [
-  { name = "font", type = "text", required = true },
+  { name = "font", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "reader-paper"
 kind = "read"
 params = [
-  { name = "paper", type = "text", required = true },
+  { name = "paper", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.types]]

@@ -119,6 +119,11 @@ lazy-palettes = []
 # (`jobs::BAND`); until then the band shows nothing. The browser shell uses
 # this to keep it out of its start module.
 lazy-jobs-band = []
+# The code that performs a bound action (`bound_dispatch::ACTIONS`) is not linked into the program:
+# it fetches it as it starts and hands it over; an action asked before then is answered
+# `not_ready`, and a press waits for it. The browser shell uses this to keep it out of its start
+# module.
+lazy-actions = []
 # Push-mode decode in `VideoPlayer` (`feed_frame` / `feed_encoded`) through
 # `media`'s GStreamer real-time decoder. Apps that stream video enable
 # `media/realtime` themselves; this feature exists so the widget's own tests

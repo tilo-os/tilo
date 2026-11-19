@@ -85,7 +85,7 @@ params = [
 id = "open-video"
 kind = "read"
 params = [
-  { name = "path", type = { option = "text" }, required = false },
+  { name = "path", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]

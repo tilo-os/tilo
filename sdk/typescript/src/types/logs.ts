@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.logs@2428af2372c28388";
+export const SURFACE = "so.tilo.logs@29ebb0843fc19293";
 
 /** One of "emerg", "alert", "crit", "err", "warning", "notice", "info", "debug". */
 export type Priority = "emerg" | "alert" | "crit" | "err" | "warning" | "notice" | "info" | "debug";

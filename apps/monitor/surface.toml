@@ -20,28 +20,28 @@ kind = "read"
 id = "show-tab"
 kind = "read"
 params = [
-  { name = "tab", type = "text", required = true },
+  { name = "tab", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "filter"
 kind = "read"
 params = [
-  { name = "query", type = { option = "text" }, required = false },
+  { name = "query", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "inspect"
 kind = "read"
 params = [
-  { name = "process", type = "text", required = true },
+  { name = "process", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "copy-pid"
 kind = "read"
 params = [
-  { name = "process", type = "text", required = true },
+  { name = "process", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.types]]

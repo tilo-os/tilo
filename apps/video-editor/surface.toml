@@ -458,44 +458,44 @@ kind = "read"
 id = "render-timeline"
 kind = "read"
 params = [
-  { name = "start", type = { option = "float" }, required = false },
-  { name = "end", type = { option = "float" }, required = false },
-  { name = "format", type = { option = "text" }, required = false },
-  { name = "size", type = { option = "text" }, required = false },
+  { name = "start", type = { option = "float" }, required = false, schema = { type = ["number", "null"] } },
+  { name = "end", type = { option = "float" }, required = false, schema = { type = ["number", "null"] } },
+  { name = "format", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "size", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "export-video-content"
 kind = "read"
 params = [
-  { name = "format", type = { option = "text" }, required = false },
-  { name = "width", type = { option = "int" }, required = false },
-  { name = "height", type = { option = "int" }, required = false },
-  { name = "fps", type = { option = "int" }, required = false },
-  { name = "wait", type = { option = "int" }, required = false },
+  { name = "format", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "width", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 } },
+  { name = "height", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 } },
+  { name = "fps", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 } },
+  { name = "wait", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 } },
 ]
 
 [[resources.verbs]]
 id = "export-video-status"
 kind = "read"
 params = [
-  { name = "job", type = "text", required = true },
-  { name = "wait", type = { option = "int" }, required = false },
+  { name = "job", type = "text", required = true, schema = { type = "string" } },
+  { name = "wait", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 } },
 ]
 
 [[resources.verbs]]
 id = "cancel-video-export"
 kind = "read"
 params = [
-  { name = "job", type = "text", required = true },
+  { name = "job", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "view-frame-content"
 kind = "read"
 params = [
-  { name = "at", type = "float", required = true },
-  { name = "width", type = { option = "int" }, required = false },
+  { name = "at", type = "float", required = true, schema = { type = "number" } },
+  { name = "width", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 } },
 ]
 
 [[resources.types]]

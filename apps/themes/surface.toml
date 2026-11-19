@@ -101,7 +101,7 @@ params = [
 id = "export"
 kind = "read"
 params = [
-  { name = "theme", type = "text", required = true },
+  { name = "theme", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.types]]
