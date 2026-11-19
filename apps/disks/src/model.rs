@@ -1,6 +1,27 @@
 //! Drives and partitions as the session describes them, and what each kind is for.
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource;
+
+/// A drive on this machine, as Disks publishes it: a row of the `disks.drive`
+/// type, whose device effects are bound to the drive's kernel name.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "disks.drive",
+    label = "Drive",
+    effects = crate::resource::DisksEffect
+)]
+pub struct DriveRow;
+
+/// One partition, as Disks publishes it: a row of the `disks.partition` type,
+/// whose device effects are bound to the partition's kernel name.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "disks.partition",
+    label = "Partition",
+    effects = crate::resource::DisksEffect
+)]
+pub struct PartitionRow;
 
 /// Broad class of a block device, for the list badge and the icon.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

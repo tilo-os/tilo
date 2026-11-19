@@ -7,13 +7,12 @@ use std::rc::Rc;
 
 use ui::framework::{EffectStatus, Fixture, LiveRow, Publishes, ResourceApp, ViewCx};
 use ui::i18n::ArgValue;
-use ui::tilo_actions::ConfirmationPolicy;
-use ui::tilo_resource::{self, Effect, Invoke};
+use ui::tilo_resource::{self, Effect, Invoke, RowBindings};
 use ui::widget::Element;
 
 use crate::app::{ActionKind, DisksApp, Store};
 use crate::locales::CATALOG;
-use crate::model::{Drive, Partition, Topology};
+use crate::model::{Drive, DriveRow, Partition, PartitionRow, Topology};
 use crate::offer::{self, Offer};
 
 pub use disks_model::Disks;
@@ -24,7 +23,7 @@ pub use disks_model::Disks;
 pub enum DisksEffect {
     #[effect(job, returns, kind = "read")]
     Rescan,
-    #[effect(screen)]
+    #[effect(screen, on = DriveRow, on = PartitionRow)]
     Select {
         #[param("Kernel name of a drive or partition, e.g. sda or sda1")]
         device: String,
@@ -34,43 +33,43 @@ pub enum DisksEffect {
         #[param("The tab to show", choices = ["overview", "smart", "partitions"])]
         tab: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DriveRow, on = PartitionRow)]
     #[effect(job, label = "disks-action-mount")]
     Mount {
         #[param("Kernel name of the partition")]
         device: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DriveRow, on = PartitionRow)]
     #[effect(job, label = "disks-action-unmount")]
     Unmount {
         #[param("Kernel name of the partition")]
         device: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DriveRow, on = PartitionRow)]
     #[effect(job, destructive, returns)]
     Format {
         #[param("Kernel name of the drive or partition to erase")]
         device: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DriveRow, on = PartitionRow)]
     #[effect(job, returns, label = "disks-action-benchmark")]
     Benchmark {
         #[param("Kernel name of the drive or partition")]
         device: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DriveRow)]
     #[effect(job, label = "disks-action-eject")]
     Eject {
         #[param("Kernel name of the removable drive")]
         device: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = PartitionRow)]
     #[effect(job, returns, label = "disks-open-in-files")]
     OpenFolder {
         #[param("Kernel name of the mounted partition")]
         device: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = PartitionRow)]
     #[effect(job, returns)]
     DiskUsage {
         #[param("Kernel name of the mounted partition")]
@@ -154,95 +153,111 @@ fn format_loses(drive: &Drive, part: Option<&Partition>) -> String {
     }
 }
 
-/// `kind` on `device`, as a row offers it: unavailable, with the reason, when `offer` says
-/// so.
-fn row_operation(
-    kind: ActionKind,
-    device: &str,
-    offer: Offer,
-    lost: impl FnOnce() -> String,
-) -> ui::tilo_actions::ActionSpec {
-    let mut spec = DisksEffect::operation(kind, device).bound();
-    if kind.is_delete() {
-        spec.type_mut().contract.confirmation = ConfirmationPolicy::Phrase {
-            phrase: device.to_owned(),
-        };
-        spec.type_mut().description = Some(lost());
+/// The drive or partition a published row id names, from the machine as it is now.
+pub(crate) fn row_target<'a>(
+    topology: &'a Topology,
+    id: &str,
+) -> Option<(&'a Drive, Option<&'a Partition>)> {
+    if let Some(leaf) = id.strip_prefix("disk:") {
+        return topology
+            .drives
+            .iter()
+            .find(|drive| drive.name == leaf)
+            .map(|drive| (drive, None));
     }
-    if let Offer::Unavailable(reason) = offer {
-        spec.type_mut().contract.availability = ui::tilo_actions::Availability::Unavailable {
-            code: "disks_target_in_use".into(),
-            reason: reason.into(),
-        };
-    }
-    spec
+    let leaf = id.strip_prefix("partition:")?;
+    topology.drives.iter().find_map(|drive| {
+        drive
+            .partitions
+            .iter()
+            .find(|part| part.name == leaf)
+            .map(|part| (drive, Some(part)))
+    })
 }
 
-/// Each of `actions` that `part` of `drive` shows, as row operations.
-fn operations(
-    mut row: LiveRow,
-    drive: &Drive,
-    part: Option<&Partition>,
-    device: &str,
-    actions: &[ActionKind],
-) -> LiveRow {
-    for &action in actions {
-        let offer = offer::offer(drive, part, action);
-        if offer.is_shown() {
-            row = row.operation(row_operation(action, device, offer, || {
-                format_loses(drive, part)
-            }));
+/// The device operation `kind` as its declared effect, all of them bound to
+/// one kernel name.
+fn effect_of(kind: ActionKind) -> ui::tilo_resource::ActionRef<DisksEffect, String> {
+    match kind {
+        ActionKind::Mount => DisksEffect::MOUNT,
+        ActionKind::Unmount => DisksEffect::UNMOUNT,
+        ActionKind::Format => DisksEffect::FORMAT,
+        ActionKind::Benchmark => DisksEffect::BENCHMARK,
+        ActionKind::Eject => DisksEffect::EJECT,
+    }
+}
+
+/// What the drive `part` of `drive` offers on its row: the device effects
+/// this machine shows for it, each with its kernel name bound, and a mounted
+/// filesystem's ways into its files.
+fn device_bindings(drive: &Drive, part: Option<&Partition>) -> RowBindings {
+    let device = serde_json::Value::String(
+        part.map_or_else(|| drive.name.clone(), |part| part.name.clone()),
+    );
+    let mut bindings = RowBindings::new().bind(DisksEffect::SELECT, [("device", device.clone())]);
+    for kind in [
+        ActionKind::Mount,
+        ActionKind::Unmount,
+        ActionKind::Format,
+        ActionKind::Benchmark,
+        ActionKind::Eject,
+    ] {
+        if kind == ActionKind::Eject && part.is_some() {
+            continue;
+        }
+        if offer::offer(drive, part, kind).is_shown() {
+            bindings = bindings.bind(effect_of(kind), [("device", device.clone())]);
         }
     }
-    row
-}
-
-/// The row of one partition: select it, and the operations it shows, the same ones its
-/// context menu offers.
-fn partition_row(drive: &Drive, part: &Partition) -> LiveRow {
-    let row = LiveRow::new(
-        partition_row_id(&part.name),
-        "disks.partition",
-        part.name.clone(),
-    )
-    .effect(&DisksEffect::Select {
-        device: part.name.clone(),
-    });
-    let row = operations(
-        row,
-        drive,
-        Some(part),
-        &part.name,
-        &[
-            ActionKind::Mount,
-            ActionKind::Unmount,
-            ActionKind::Benchmark,
-            ActionKind::Format,
-        ],
-    );
-    if part.mountpoint.is_none() {
-        return row;
+    if part.is_some_and(|part| part.mountpoint.is_some()) {
+        bindings = bindings
+            .bind(DisksEffect::OPEN_FOLDER, [("device", device.clone())])
+            .bind(DisksEffect::DISK_USAGE, [("device", device)]);
     }
-    row.operation(row_view_operation(
-        &DisksEffect::OpenFolder {
-            device: part.name.clone(),
-        },
-        &CATALOG.t("disks-open-in-files"),
-    ))
-    .operation(row_view_operation(
-        &DisksEffect::DiskUsage {
-            device: part.name.clone(),
-        },
-        &CATALOG.t("disks-space-left"),
-    ))
+    bindings
 }
 
-/// `effect` as a row operation, named `label`: what a row can do that changes nothing on
-/// the machine.
-fn row_view_operation(effect: &DisksEffect, label: &str) -> ui::tilo_actions::ActionSpec {
-    let mut spec = effect.bound();
-    spec.type_mut().label.clone_from(&label.to_owned());
-    spec
+/// What the row `id` offers right now, as this machine stands: an operation
+/// it shows but cannot do says why, and erasing a device says what it loses
+/// and asks for its name.
+pub(crate) fn row_status(topology: &Topology, id: &str) -> Vec<EffectStatus> {
+    let Some((drive, part)) = row_target(topology, id) else {
+        return Vec::new();
+    };
+    let device = part.map_or(drive.name.as_str(), |part| part.name.as_str());
+    // Erasing a device says what it loses and asks for its name, whether or
+    // not this machine allows it.
+    let loses = format_loses(drive, part);
+    let format = match offer::offer(drive, part, ActionKind::Format) {
+        Offer::Unavailable(reason) => {
+            EffectStatus::unavailable(DisksEffect::FORMAT, "disks_target_in_use", reason)
+                .with_description(loses)
+        }
+        _ => EffectStatus::described(DisksEffect::FORMAT, loses),
+    };
+    let mut statuses = vec![format.on(id).with_phrase(device.to_owned())];
+    for kind in [
+        ActionKind::Mount,
+        ActionKind::Unmount,
+        ActionKind::Benchmark,
+    ] {
+        if let Offer::Unavailable(reason) = offer::offer(drive, part, kind) {
+            statuses.push(
+                EffectStatus::unavailable(effect_of(kind), "disks_target_in_use", reason).on(id),
+            );
+        }
+    }
+    statuses
+}
+
+/// The row of one partition: the effects this machine shows for it, its
+/// kernel name bound.
+fn partition_row(drive: &Drive, part: &Partition) -> LiveRow {
+    LiveRow::typed_with::<PartitionRow>(
+        partition_row_id(&part.name),
+        part.name.clone(),
+        &device_bindings(drive, Some(part)),
+    )
 }
 
 /// The row of one drive, with its partitions beneath it.
@@ -253,17 +268,10 @@ pub(crate) fn drive_row(drive: &Drive, names: &BTreeMap<String, String>) -> Live
         .and_then(|serial| names.get(serial))
         .cloned()
         .unwrap_or_else(|| drive.model.clone());
-    let row = LiveRow::new(drive_row_id(&drive.name), "disks.drive", label).effect(
-        &DisksEffect::Select {
-            device: drive.name.clone(),
-        },
-    );
-    let mut row = operations(
-        row,
-        drive,
-        None,
-        &drive.name,
-        &[ActionKind::Format, ActionKind::Benchmark, ActionKind::Eject],
+    let mut row = LiveRow::typed_with::<DriveRow>(
+        drive_row_id(&drive.name),
+        label,
+        &device_bindings(drive, None),
     );
     for part in &drive.partitions {
         row = row.row(partition_row(drive, part));
@@ -365,8 +373,13 @@ fn window(cx: &ViewCx<Disks>, mut store: Store) -> Element {
         let store = Rc::clone(&store);
         cx.on_stage(move |scenario| store.borrow_mut().stage_scenario(scenario));
     }
+    let statuses = Rc::clone(&store);
     cx.publishing(
-        Publishes::new().live_rows(move || store.borrow().drive_rows()),
+        Publishes::new()
+            .live_rows(move || store.borrow().drive_rows())
+            // A filesystem that is mounted opens its files; one that is not
+            // says so instead, and a fixed drive offers no eject.
+            .row_status(move |id| statuses.borrow().device_status(id)),
         Box::new(window),
     )
 }
@@ -396,7 +409,7 @@ fn busy(running: bool) -> Vec<EffectStatus> {
 mod tests {
     use super::*;
     use ui::framework::testing::TestApp;
-    use ui::tilo_actions::OperationKind;
+    use ui::tilo_actions::{ConfirmationPolicy, OperationKind};
     use ui::tilo_resource::Atom;
     use ui::tilo_resource::Resource;
 
