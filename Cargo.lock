@@ -23390,6 +23390,7 @@ dependencies = [
  "tilo-mime",
  "tilo-paint-stream",
  "tilo-paths",
+ "tilo-platform-caps",
  "tilo-presentation",
  "tilo-process",
  "tilo-process-services",

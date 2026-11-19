@@ -215,7 +215,7 @@ impl SettingsDocument {
         match self {
             Self::Session => settings_store::source(),
             // A browser has no profile directory.
-            Self::Profile(_) if cfg!(target_arch = "wasm32") => None,
+            Self::Profile(_) if tilo_platform_caps::WEB => None,
             Self::Profile(root) => Some(settings_store::profile(root)),
         }
     }

@@ -178,6 +178,8 @@ tilo-face = { version = "0.1.0", path = "../../platform/tilo-face" }
 registry-types = { version = "0.1.0", path = "../../packaging/registry-types" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-mime = { version = "0.1.0", path = "../../platform/tilo-mime" }
+# What this target's build offers, for portable code that offers less on the web.
+tilo-platform-caps = { version = "0.1.0", path = "../../platform/tilo-platform-caps" }
 fnv.workspace = true
 # Host services: the clock, background work, clipboard, file choosers,
 # notifications, media sessions, location and screen capture, and their

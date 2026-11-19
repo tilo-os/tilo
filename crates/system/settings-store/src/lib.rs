@@ -137,7 +137,7 @@ pub fn source() -> Option<Arc<dyn SettingsSource>> {
     if let Some(source) = installed_source() {
         return Some(source);
     }
-    if cfg!(target_arch = "wasm32") {
+    if tilo_platform_caps::WEB {
         return None;
     }
     local().map(|store| store as Arc<dyn SettingsSource>)
