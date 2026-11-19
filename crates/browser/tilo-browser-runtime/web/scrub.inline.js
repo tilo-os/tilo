@@ -11,7 +11,10 @@ var hash=location.hash,mark=hash.indexOf('?'),found={},order=['invite','ticket',
 // A sealed invitation's link carries its key alone after the `#`, at the
 // site's `/i/<handle>` (sealed-link.mjs): it is the invitation's `invite`,
 // and leaves the address the same way.
-var sealed=/^\/i\/[A-Za-z0-9_-]{16}$/.test(location.pathname)&&/^#[A-Za-z0-9_-]{43}$/.test(hash);
+var sealedLink=function(pathname,fragment){
+ return /^\/i\/[A-Za-z0-9_-]{16}$/.test(pathname)&&/^#[A-Za-z0-9_-]{43}$/.test(fragment);
+};
+var sealed=sealedLink(location.pathname,hash);
 if(sealed){
  found.invite=hash.slice(1);
  history.replaceState(history.state,'',location.pathname+location.search);
@@ -29,4 +32,20 @@ if(sealed){
 }
 if(bad)found.malformed=true;
 Object.defineProperty(globalThis,'__tiloLinkSecrets',{value:Object.freeze(found),configurable:true});
+// A link followed in a tab already on the site changes only its fragment, and
+// the secrets this load read are read once: the page loads again with them, as
+// opening the link in a tab of its own would.
+var carrying=function(){
+ var now=location.hash,start=now.indexOf('?'),pieces=start<0?[]:now.slice(start+1).split('&');
+ for(var i=0;i<pieces.length;i++){
+  var at=pieces[i].indexOf('=');
+  if(order.indexOf(at<0?pieces[i]:pieces[i].slice(0,at))>=0)return true;
+ }
+ return false;
+};
+if(typeof addEventListener==='function'){
+ var followed=function(){if(carrying()||sealedLink(location.pathname,location.hash))location.reload();};
+ addEventListener('hashchange',followed);
+ addEventListener('popstate',followed);
+}
 })();

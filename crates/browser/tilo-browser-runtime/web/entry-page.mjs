@@ -2072,12 +2072,6 @@ function offerRefusal({messages, language, named, error, workspace, runtime, lin
     problem.textContent = target ? '' : say('arrival-invite-not-a-link', 'That isn’t an invite or pairing link. Paste the whole link.');
     if (target) loadPage(target);
   });
-  // Such a link opened in this tab while it shows the entry (followed from a
-  // mail, or typed into the address bar) changes only the fragment: the page
-  // loads again to follow it.
-  window.addEventListener('hashchange', () => {
-    if (entryLinkTarget(location.href)) location.reload();
-  });
   document.documentElement.dataset.refusal = waitList ? 'wait-list' : 'invite';
 }
 
