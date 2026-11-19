@@ -7,7 +7,8 @@ opens a GPU-rendered app (alacritty, OpenGL), a shared-memory one (foot) and an 
 gives each work that is saved nowhere (a running loop, typed scrollback), restarts the desktop in
 place, and then requires the same processes, their windows back in their own tabs and workspaces
 (the X11 one on the same X server), the loop's output still drawn and typed keys reaching them;
-finally a logout ends every one of them and leaves no keeper behind.
+finally a logout ends every one of them and leaves no keeper behind, and the login after it opens
+each app again in the tab it was left in: a booted desktop reads the layout its last login kept.
 """
 
 from __future__ import annotations
@@ -32,6 +33,9 @@ KEPT_APPS = (ALACRITTY, FOOT, XTERM)
 RESTART_S = 90
 # After the new desktop answers, how long the kept windows may take to show again.
 BACK_S = 30
+# After a login, how long the saved tabs may take to open their apps again: they are asked for
+# one at a time, each waiting for the window before.
+REOPEN_S = 90
 
 # The wrapper (os/usr/libexec/tilo-session) and the compositor it runs, by command line.
 _SESSION_PIDS = ("for d in /proc/[0-9]*; do "
@@ -237,3 +241,28 @@ def kept_through_restart(ctx, res):
     ctx.vm.exec(f'rm -f "$HOME"/acc-{token}-*; true')
     expect(not still, f"a logout ended every kept app and keeper (still running: {still})")
     expect(not dirs, f"a logout left no keeper directory ({dirs})")
+
+    # The login after the logout opens each app again, each in the tab it was left in.
+    def reopened():
+        state = ctx.state()
+        places = {}
+        for label, o in opened.items():
+            window = _window_of(ctx, o["app_id"])
+            place = place_of_surface(state, window["window"]) if window else None
+            if place is None:
+                return None
+            places[label] = place
+        return places
+
+    places = wait_until(reopened, REOPEN_S, 1.0)
+    ctx.shot("A18-after-login")
+    res.metrics["places_after_login"] = places
+    expect(places, f"after a logout and a login every app is open again within {REOPEN_S} s "
+                   f"({[(f.get('app_id'), f.get('rect')) for f in ctx.vm.windows()]})")
+    for label, o in opened.items():
+        stood = o["place"]
+        place = places[label]
+        expect((place["workspace"], place["tab"]) == (stood["workspace"], stood["tab"]),
+               f"after the login {label} is in the tab of the workspace it was left in "
+               f"(was {stood}, is {place})")
+    ctx.close_all_windows()
