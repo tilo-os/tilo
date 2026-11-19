@@ -1678,6 +1678,15 @@ mod tests {
         app.harness()
             .click_named("input.keyboard.shared.fixture-input-1")
             .unwrap();
+        // The button submits the section's action; the window answers it
+        // frame by frame, so keep its frames running until it has.
+        assert!(
+            app.harness()
+                .wait_until(tilo_test_env::hang_bound(), |harness| {
+                    !harness.control_invocations_pending()
+                }),
+            "the window answers the button's invocation"
+        );
         app.settle();
         assert!(
             !app.settings::<InputDevicePrefs>()
