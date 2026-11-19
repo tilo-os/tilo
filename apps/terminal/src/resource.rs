@@ -644,8 +644,7 @@ pub enum TerminalEffect {
     ///
     /// Shows one thing a run's parsers found: a link opens in the browser,
     /// a location or a diagnostic opens its file.
-    #[effect(kind = "outside")]
-    #[effect(row, item = commands)]
+    #[effect(screen, row, item = commands)]
     OpenItem {
         #[param("The run")]
         run: String,

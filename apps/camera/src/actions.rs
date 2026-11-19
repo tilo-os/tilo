@@ -90,15 +90,13 @@ pub enum CameraEffect {
         seconds: String,
     },
     /// Show composition grid
-    #[effect(kind = "outside")]
-    #[effect(label = "camera-a11y-composition-grid")]
+    #[effect(screen, label = "camera-a11y-composition-grid")]
     SetGrid {
         #[param("Whether the grid is shown")]
         on: bool,
     },
     /// Show level guide
-    #[effect(kind = "outside")]
-    #[effect(label = "camera-settings-level")]
+    #[effect(screen, label = "camera-settings-level")]
     SetLevel {
         #[param("Whether the level guide is shown")]
         on: bool,
@@ -155,7 +153,7 @@ pub enum CameraEffect {
     /// Open camera privacy settings
     #[effect(kind = "outside")]
     #[effect(row)]
-    #[effect(label = "camera-a11y-camera-privacy")]
+    #[effect(own_device, label = "camera-a11y-camera-privacy")]
     OpenCameraPrivacy,
     /// Use camera
     #[effect(kind = "outside")]

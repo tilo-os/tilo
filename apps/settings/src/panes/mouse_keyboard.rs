@@ -511,16 +511,13 @@ pub enum InputEffect {
     #[effect(idempotent)]
     SelectConfiguredSource { source: String },
     /// Show or hide the selected source options.
-    #[effect(kind = "outside")]
-    #[effect(idempotent)]
+    #[effect(screen, idempotent)]
     SetSourceOptionsVisible { visible: bool },
     /// Show or hide key and modifier-level inspection.
-    #[effect(kind = "outside")]
-    #[effect(idempotent)]
+    #[effect(screen, idempotent)]
     SetSourceInspectionVisible { visible: bool },
     /// Open the separate installed-source picker.
-    #[effect(kind = "outside")]
-    #[effect(idempotent)]
+    #[effect(screen, idempotent)]
     OpenSourcePicker,
     /// Return to configured sources without adding anything.
     #[effect(kind = "outside")]
@@ -545,8 +542,7 @@ pub enum InputEffect {
     #[effect(job, idempotent)]
     PreviewLayout { source: String },
     /// Show the actual focused keyboard group and modifier state.
-    #[effect(kind = "outside")]
-    #[effect(idempotent)]
+    #[effect(screen, idempotent)]
     ShowLiveKeyboardMap,
     /// Inspect XKB levels 5–8 when the selected layout supplies them.
     #[effect(kind = "outside")]
