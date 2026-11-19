@@ -1740,6 +1740,10 @@ suite = "os/containers/tilo-sh/test-peer-kill-midwrite.sh"
 reason = "needs a whole tilo.sh stack and a FUSE mount, and minutes for the bulk write and its convergence; the peer-kill-midwrite check brings one up when named"
 
 [[unrequired]]
+suite = "os/containers/tilo-sh/test-warm-restart.sh"
+reason = "restarts a stack a person brought up on the build server and reads the bundle it then serves: it needs that stack's TILO_SH_* environment, minutes of the build server's walls and node; it is the local bundle's own loop, run where the bundle is being worked on"
+
+[[unrequired]]
 suite = "os/containers/tilo-lounge/test-wait-list.sh"
 reason = "needs the built web desktop bundle, headless Chromium and the built relay and crypto programs, and a mail sink it runs itself; the wait-list check runs it in its image"
 

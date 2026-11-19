@@ -11,10 +11,11 @@
 //! - the bound module's sections other than its code and data — the
 //!   functions, their names, the split points, the table's slots — and its
 //!   two function counts;
-//! - the linked module's sections other than its code and its relocations:
-//!   its symbols say where each function and data symbol is, its data
-//!   section what the static data is. A relocation entry's offset moves with
-//!   the code it sits in, the edge it holds does not;
+//! - the linked module's sections other than its code, its static data and
+//!   its relocations: its symbols say where each function and data symbol is
+//!   and how large it is, while the bytes a static holds are read when a
+//!   module that carries them is emitted. A relocation entry's offset moves
+//!   with the code it sits in, the edge it holds does not;
 //! - every body's answers: the functions it calls and the addresses it holds
 //!   ([`crate::analysis`]).
 //!
@@ -39,6 +40,10 @@ const MAGIC: &[u8; 8] = b"WSSPLN\0\x04";
 /// The code section's id; its bytes move with a change and are no part of a
 /// plan.
 const CODE_SECTION: u8 = 10;
+
+/// The data sections' last id (the data count): a plan holds the size of each
+/// data symbol, never the bytes it writes.
+const DATA_COUNT_SECTION: u8 = 12;
 
 /// How many plans the directory keeps: a module alternates between a few
 /// states (a change and its revert, two branches).
@@ -104,12 +109,14 @@ pub fn key(structure: &str, linked: &[u8], bodies: &[Body]) -> Result<String> {
     Ok(key.finish())
 }
 
-/// `key` over every section of `linked` that a plan reads: all but the code
-/// and the relocations.
+/// `key` over every section of `linked` that a plan reads: all but the code,
+/// the static data and the relocations.
 fn sections(key: &mut Key, linked: &[u8]) -> Result<()> {
-    // What a plan does not read, as ranges of the module: the code, and the
-    // relocations (`split::hash_sections` also leaves out the local
-    // variables' names, which reach no module's bytes).
+    // What a plan does not read, as ranges of the module: the code, the
+    // static data (a symbol's size is the plan's, from the symbols, and its
+    // bytes are read when a module is emitted) and the relocations
+    // (`split::hash_sections` also leaves out the local variables' names,
+    // which reach no module's bytes).
     let mut skipped = Vec::new();
     let mut at = 8;
     while at < linked.len() {
@@ -119,10 +126,10 @@ fn sections(key: &mut Key, linked: &[u8]) -> Result<()> {
         let size = read_leb(linked, &mut at)?;
         let contents = at;
         at = (at + size).min(linked.len());
-        let moves_with_code = id == CODE_SECTION
+        let not_the_plans = (CODE_SECTION..=DATA_COUNT_SECTION).contains(&id)
             || (id == 0
                 && custom_name(linked, contents)?.is_some_and(|name| name.starts_with("reloc.")));
-        if moves_with_code {
+        if not_the_plans {
             skipped.push(start..at);
         }
     }

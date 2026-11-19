@@ -331,10 +331,128 @@ fn a_split_from_the_cache_writes_what_emitting_writes() -> Result<()> {
     result
 }
 
+/// A change to the code the start module holds alone — a body no split
+/// module holds and whose signature is the same — writes what emitting every
+/// module writes, and reads the modules back: a module's emission reads the
+/// start module's interface, and a body is no part of it.
+#[test]
+fn a_start_module_body_change_reads_the_modules_back() -> Result<()> {
+    let source = include_str!("../fixtures/data_split.rs");
+    // `checksum` is the start module's: the split modules import it and hand
+    // it pointers, and no split module holds its code.
+    let edited = source.replace(
+        "sum.rotate_left(5) ^ u32::from(*byte)",
+        "sum.rotate_left(5).wrapping_add(u32::from(*byte))",
+    );
+    assert_ne!(
+        source, edited,
+        "the fixture no longer mixes a byte with `^`"
+    );
+    let before = build_fixture("start-body")?.linked;
+    let after = build_fixture_from("start-body", &edited)?.linked;
+    let (before_bound, after_bound) = (
+        without_link_sections(&before)?,
+        without_link_sections(&after)?,
+    );
+    let dir = scratch("start-body-cache");
+    std::fs::remove_dir_all(&dir).ok();
+    let result = (|| -> Result<()> {
+        let fresh = |linked: &[u8], bound: &[u8]| -> Result<_> {
+            Ok(written_modules(
+                Splitter::new(linked, bound)?.emit_with(None)?,
+            ))
+        };
+        let cached = |linked: &[u8], bound: &[u8]| -> Result<(_, usize, usize)> {
+            let outputs = Splitter::new(linked, bound)?.emit_with(Some(&EmitCache::at(&dir)?))?;
+            let reused = outputs.reused;
+            let count = outputs.modules.len() + outputs.chunks.len();
+            Ok((written_modules(outputs), reused, count))
+        };
+        let (first, reused, _) = cached(&before, &before_bound)?;
+        assert_eq!(reused, 0, "an empty cache holds no module");
+        assert!(
+            first == fresh(&before, &before_bound)?,
+            "a split filling the cache wrote other modules"
+        );
+        let (changed, reused, count) = cached(&after, &after_bound)?;
+        assert!(
+            changed == fresh(&after, &after_bound)?,
+            "after a start module body change, the cache gave other modules than emitting does"
+        );
+        assert_ne!(
+            changed[0].2, first[0].2,
+            "the change did not reach the start module"
+        );
+        assert_eq!(
+            reused,
+            count,
+            "a start module body change emitted {} of {count} modules again",
+            count - reused
+        );
+        Ok(())
+    })();
+    std::fs::remove_dir_all(&dir).ok();
+    result
+}
+
+/// A split module is never paired with a start module it was not emitted
+/// beside: the start module's interface — an export added, a signature
+/// changed, a table slot moved — is part of every module's key, so a change
+/// to it writes every module again.
+#[test]
+fn a_changed_start_interface_emits_the_modules_again() -> Result<()> {
+    let source = include_str!("../fixtures/data_split.rs");
+    // One export more, which the start module keeps.
+    let edited = source.replace(
+        "/// The start module's own reads:",
+        "#[unsafe(no_mangle)]\npub extern \"C\" fn start_more(i: u32) -> u32 {\n    i.wrapping_add(7)\n}\n\n/// The start module's own reads:",
+    );
+    assert_ne!(source, edited, "the fixture's start exports did not change");
+    let before = build_fixture("start-interface")?.linked;
+    let after = build_fixture_from("start-interface", &edited)?.linked;
+    let (before_bound, after_bound) = (
+        without_link_sections(&before)?,
+        without_link_sections(&after)?,
+    );
+    let dir = scratch("start-interface-cache");
+    std::fs::remove_dir_all(&dir).ok();
+    let result = (|| -> Result<()> {
+        let fresh = |linked: &[u8], bound: &[u8]| -> Result<_> {
+            Ok(written_modules(
+                Splitter::new(linked, bound)?.emit_with(None)?,
+            ))
+        };
+        let cached = |linked: &[u8], bound: &[u8]| -> Result<(_, usize)> {
+            let outputs = Splitter::new(linked, bound)?.emit_with(Some(&EmitCache::at(&dir)?))?;
+            let reused = outputs.reused;
+            Ok((written_modules(outputs), reused))
+        };
+        let (first, reused) = cached(&before, &before_bound)?;
+        assert_eq!(reused, 0, "an empty cache holds no module");
+        assert!(
+            first == fresh(&before, &before_bound)?,
+            "a split filling the cache wrote other modules"
+        );
+        let (changed, reused) = cached(&after, &after_bound)?;
+        assert!(
+            changed == fresh(&after, &after_bound)?,
+            "after a start interface change, the cache gave other modules than emitting does"
+        );
+        assert_eq!(
+            reused, 0,
+            "a changed start interface was paired with {reused} of the modules emitted beside the one before it"
+        );
+        Ok(())
+    })();
+    std::fs::remove_dir_all(&dir).ok();
+    result
+}
+
 /// A split whose input gained a function with a signature of its own writes
 /// exactly what one that emits every module writes, and reads the modules the
 /// function does not reach back: a module's types are the ones its own code
-/// names, so a type added elsewhere moves no module's bytes.
+/// names, so a type added elsewhere moves no module's bytes, and the start
+/// module's interface is the same.
 #[test]
 fn a_new_signature_reaches_no_other_module() -> Result<()> {
     let source = include_str!("../fixtures/data_split.rs");

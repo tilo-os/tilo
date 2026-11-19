@@ -2,13 +2,18 @@
 //! emitted from, so the next split of a module that changed in one place
 //! emits again only the modules that place reaches (`WASM_SPLIT_CACHE`).
 //!
-//! A module's key covers everything its emission reads: the bound module's
-//! sections other than the ones a renumbering rewrites, the bodies the module
-//! keeps (the parse it is emitted from leaves every other body `unreachable`),
-//! what it defines, imports and deletes, the order of the shared functions'
-//! table slots, its entries' slots and the static data it writes. A module
-//! whose key is in the directory is that file, byte for byte what emitting it
-//! again writes.
+//! A module's key covers everything its emission reads: the start module's
+//! interface, which is what it imports and the table's slots it fills (a
+//! module is never paired with a start module it was not emitted beside, and
+//! a start module's code or static data alone is no part of that), the bound
+//! module's sections other than the ones a renumbering rewrites, the bodies
+//! the module keeps (the parse it is emitted from leaves every other body
+//! `unreachable`), what it defines, imports and deletes, the order of the
+//! shared functions' table slots, its entries' slots and the static data it
+//! writes. Every key is made by the splitter's own bytes too
+//! ([`tool_version`]), so an emission a different one made is never read. A
+//! module whose key is in the directory is that file, byte for byte what
+//! emitting it again writes.
 //!
 //! What it reads, it reads by content: a function by its name, a body by what
 //! it does rather than the indices it holds, a data symbol by its name
@@ -21,7 +26,7 @@ use std::collections::{BTreeSet, HashSet};
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Context, Result};
 
@@ -29,8 +34,26 @@ use crate::data::DataPlan;
 use crate::split::read_leb;
 
 /// Raised whenever what the emission writes changes, so a directory a
-/// different splitter filled is never read as this one's.
-const VERSION: &str = "wasm-split emit cache 1";
+/// different splitter filled is never read as this one's. The splitter's own
+/// bytes are keyed too ([`tool_version`]), so a change to its code needs no
+/// bump here.
+const VERSION: &str = "wasm-split emit cache 2";
+
+/// What the splitter itself is, by the bytes of the binary running it: a key
+/// one splitter made is never read by another whose emission may differ,
+/// whatever part of it changed. Read once per build; a binary this cannot read
+/// answers what [`VERSION`] alone says.
+fn tool_version() -> u64 {
+    static TOOL: OnceLock<u64> = OnceLock::new();
+    *TOOL.get_or_init(|| {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        match std::env::current_exe().map(std::fs::read) {
+            Ok(Ok(bytes)) => bytes.hash(&mut hasher),
+            _ => VERSION.hash(&mut hasher),
+        }
+        hasher.finish()
+    })
+}
 
 pub struct EmitCache {
     dir: PathBuf,
@@ -269,7 +292,9 @@ fn remove(path: &Path) -> Result<()> {
 }
 
 /// A 128-bit key built from what an emission reads: two SipHash-1-3 passes
-/// with fixed, different keys.
+/// with fixed, different keys, each starting from the cache's format and the
+/// splitter's own bytes ([`tool_version`]), so no key outlives the splitter
+/// that made it.
 #[derive(Clone)]
 pub struct Key {
     hashers: [std::hash::DefaultHasher; 2],
@@ -284,6 +309,7 @@ impl Key {
         for (salt, hasher) in hashers.iter_mut().enumerate() {
             salt.hash(hasher);
             VERSION.hash(hasher);
+            tool_version().hash(hasher);
         }
         Self { hashers }
     }

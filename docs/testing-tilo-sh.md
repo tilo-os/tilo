@@ -43,6 +43,15 @@ the machine itself, as the stack's user with the `PATH` it was brought up with:
 for a stack that is one person's own machine, such as a development VM whose
 agent edits and rebuilds the stack. Nothing confines those programs.
 
+`os/containers/tilo-sh/test-warm-restart.sh` checks that loop: it changes one
+crate, restarts the web entry, waits for the site to serve the new bundle, and
+then fetches the start module and every split module the site serves and
+instantiates them together the way the page's loader links them. A split
+module the start module does not answer, or answers with another signature —
+the browser's "function signature mismatch" — fails there, and never in the
+page. It prints what the restart cost; `--no-change` measures the same loop
+with nothing changed.
+
 The keys of people's sealed stores (their sign-ins, provider keys and vault
 items on the server) are kept in a folder beside the stack's state, never in
 it: the state's path with `-keys` after it, or the folder `TILO_SH_PEOPLE_KEYS`

@@ -1656,3 +1656,8 @@ paths = [
     "os/containers/tilo-lounge/integration/setup-resume.mjs",
     "os/containers/tilo-lounge/integration/tour.mjs",
 ]
+
+[[allow]]
+reason = "The WebAssembly function table's own slots, which a split module fills with its entries and with the shared functions whose code it carries."
+words = ["slot", "slots"]
+paths = ["tools/web/wasm-split/src/*"]
