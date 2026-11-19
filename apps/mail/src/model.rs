@@ -170,6 +170,10 @@ pub struct Attachment {
     pub kept: bool,
     #[serde(default)]
     pub inline_id: Option<String>,
+    /// Its content is kept apart from the message, in the mailbox's own
+    /// content, and read from there when it is opened.
+    #[serde(default)]
+    pub apart: bool,
 }
 
 impl Attachment {
@@ -183,6 +187,7 @@ impl Attachment {
             content: Vec::new(),
             kept: false,
             inline_id: None,
+            apart: false,
         }
     }
 
@@ -200,11 +205,12 @@ impl Attachment {
             content,
             kept: false,
             inline_id: None,
+            apart: false,
         }
     }
 
     pub fn is_downloadable(&self) -> bool {
-        self.hydrated && (!self.content.is_empty() || self.kept)
+        self.hydrated && (!self.content.is_empty() || self.kept || self.apart)
     }
 
     pub fn size_human(&self) -> String {

@@ -35,6 +35,12 @@ words = ["seat", "run"]
 paths = ["crates/dev/tilo-vm/src/cli.rs"]
 
 [[allow]]
+reason = "`tilo migrate`'s run of one source, as its journal (RunState) names it: the tests' helper that lands a review once."
+words = ["run"]
+identifiers = ["run_once"]
+paths = ["crates/system/tilo-cli/src/migrate/tests.rs"]
+
+[[allow]]
 reason = "The dev app assembly's subprocess helper, `run`, and a test's stand-in for it."
 words = ["run"]
 identifiers = ["run", "fake_run"]
@@ -262,6 +268,7 @@ paths = [
     "apps/mail/*",
     "apps/tl/mail/*",
     "crates/platform/mail-session/*",
+    "crates/platform/mail-parts/*",
     "crates/server/tilo-workspace-service/src/workspaces/mail_watch.rs",
     "crates/server/tilo-workspace-service/src/workspaces/person_settings.rs",
     "crates/server/tilo-workspace-service/src/workspaces/person_settings/sending.rs",

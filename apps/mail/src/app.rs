@@ -4665,6 +4665,22 @@ impl Mailroom {
                 .attachment(&account, message_id, index)
                 .ok_or_else(|| AttachmentUnavailable::NotKept(attachment.filename.clone()))?;
         }
+        if attachment.content.is_empty() && attachment.apart {
+            // Kept apart from the message, in the mailbox's own content.
+            let held = {
+                let shared = self.shared.borrow();
+                let store = ui::tilo_resource::content::current();
+                shared.chain.as_ref().zip(store).and_then(|(chain, store)| {
+                    chain
+                        .parts()
+                        .iter()
+                        .rev()
+                        .find_map(|(_, part)| part.held_attachment(message, index, &store))
+                })
+            };
+            attachment.content =
+                held.ok_or_else(|| AttachmentUnavailable::NotKept(attachment.filename.clone()))?;
+        }
         if attachment.content.len() > MAX_ATTACHMENT_SAVE_BYTES {
             return Err(AttachmentUnavailable::TooLarge(attachment.filename));
         }

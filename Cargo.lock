@@ -10003,6 +10003,7 @@ dependencies = [
  "tilo-document",
  "tilo-files",
  "tilo-mail-engine",
+ "tilo-mail-parts",
  "tilo-mail-session",
  "tilo-mime",
  "tilo-net",
@@ -10254,6 +10255,7 @@ dependencies = [
  "tempfile",
  "test-http",
  "tilo-files",
+ "tilo-mail-parts",
  "tilo-net",
  "tilo-paths",
  "tilo-process",
@@ -17883,6 +17885,7 @@ dependencies = [
  "tilo-fs",
  "tilo-live",
  "tilo-lock",
+ "tilo-mail-parts",
  "tilo-mcp",
  "tilo-model-engine",
  "tilo-model-gateway",
@@ -18875,6 +18878,7 @@ dependencies = [
  "tilo-identity",
  "tilo-identity-client",
  "tilo-lock",
+ "tilo-mail-parts",
  "tilo-mcp",
  "tilo-net",
  "tilo-paths",
@@ -20554,6 +20558,14 @@ dependencies = [
  "mail-builder",
  "mail-parser",
  "runtime-dylib",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-mail-parts"
+version = "0.1.0"
+dependencies = [
+ "mail-parser",
  "workspace-hack",
 ]
 
@@ -29952,6 +29964,7 @@ dependencies = [
  "tilo-locale",
  "tilo-location",
  "tilo-lock",
+ "tilo-mail-parts",
  "tilo-mail-session",
  "tilo-mcp",
  "tilo-media",
