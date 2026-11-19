@@ -47,6 +47,8 @@ use ui::widget::DrawChild;
 mod arrivals;
 mod artwork;
 #[cfg(test)]
+mod carry_tests;
+#[cfg(test)]
 mod close_button_tests;
 #[cfg(test)]
 mod close_motion_tests;
@@ -168,9 +170,10 @@ pub trait TileSource {
         None
     }
 
-    /// The record `tab`'s window shows and the kind of resource it keeps,
-    /// for the windows a person may share ([`ui::window_share`]).
-    fn window_record(&self, _tab: TabId) -> Option<(String, String)> {
+    /// The resource `tab`'s window shows, by its published address, and the kind of resource it
+    /// keeps: what its bar carries when a person picks it up, and what the windows a person may
+    /// share are listed by ([`ui::window_share`]).
+    fn window_resource(&self, _tab: TabId) -> Option<(String, String)> {
         None
     }
 
@@ -1097,6 +1100,15 @@ impl DesktopSurface {
             for group in &mut row.groups {
                 let tabs: Vec<TabId> = group.tabs().iter().map(|tab| tab.id).collect();
                 changed |= group.set_new_tab(shared.opens);
+                // The window's bar carries the resource its place shows, on this device's own
+                // reading: a press that travels then lifts it here and on the device beside this
+                // one.
+                changed |= group.set_carries(
+                    self.tiles
+                        .window_resource(group.active_tab_id())
+                        .map(|(resource, _)| resource)
+                        .filter(|resource| !resource.is_empty()),
+                );
                 for tab in tabs {
                     changed |= group.set_tab_holder(tab, shared.holders.get(&tab).cloned());
                     changed |= group.set_tab_opened_by(tab, shared.opened_by.get(&tab).cloned());
@@ -1644,6 +1656,17 @@ impl DesktopSurface {
         // A window lifted over the shell, or let go back into its strip.
         if let Some(ask) = row.take_pending_float() {
             changed |= floats::carry_out(&mut shared, strip_id, row, ask);
+        }
+        // A window another of the person's devices carried here, let go over one of this strip's
+        // windows: the place showing it joins that window, as a window's bar let go there does.
+        if let Some((into, resource)) = row.take_pending_window_drop() {
+            changed |= window_menu::join_place(
+                &mut shared,
+                self.tiles.as_ref(),
+                strip_id,
+                into,
+                &resource,
+            );
         }
         let mut new_tab = None;
         let mut search_in = None;

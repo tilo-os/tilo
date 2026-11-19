@@ -564,16 +564,13 @@ impl WindowFrame {
             return;
         }
         let title = self.name.clone().unwrap_or_default();
-        crate::widget::drag_bus::publish(crate::widget::drag_bus::InFlight {
-            source: self.key.clone(),
-            payload: crate::dnd::DragPayload::Custom {
-                kind: crate::widget::drag_source::RESOURCE_PAYLOAD.to_owned(),
-                blob: carries.as_bytes().to_vec(),
-            },
-            label: title,
-            pointer: point,
-            runs: vec![(self.key.clone(), self.rect)],
-        });
+        crate::widget::drag_bus::carry(
+            self.key.clone(),
+            carries.as_bytes().to_vec(),
+            title,
+            point,
+            self.rect,
+        );
     }
 
     /// The bar was let go: `Some(true)` when the press travelled and the drag ended here (the

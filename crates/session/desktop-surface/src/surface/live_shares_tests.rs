@@ -295,7 +295,7 @@ impl TileSource for ShareTiles {
         })))
     }
 
-    fn window_record(&self, tab: u64) -> Option<(String, String)> {
+    fn window_resource(&self, tab: u64) -> Option<(String, String)> {
         tab.is_multiple_of(2)
             .then(|| ("plan".into(), "notes.page".into()))
     }

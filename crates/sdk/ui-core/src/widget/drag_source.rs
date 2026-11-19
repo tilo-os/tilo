@@ -165,13 +165,13 @@ impl DragSource {
             return;
         }
         self.dirty = true;
-        crate::widget::drag_bus::publish(crate::widget::drag_bus::InFlight {
-            source: self.key.clone(),
-            payload: self.payload(),
-            label: self.title.clone(),
-            pointer: point,
-            runs: vec![(self.key.clone(), self.rect)],
-        });
+        crate::widget::drag_bus::carry(
+            self.key.clone(),
+            self.resource.as_bytes().to_vec(),
+            self.title.clone(),
+            point,
+            self.rect,
+        );
     }
 
     /// Let go: the drop is recorded for whichever target's extent holds the pointer, and the

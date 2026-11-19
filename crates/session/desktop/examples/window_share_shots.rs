@@ -68,7 +68,7 @@ impl TileSource for Windows {
 
     /// This device's window is on a record, so the sharing app lists it and its menu offers to
     /// post it in a channel too: the two shares are pictured side by side.
-    fn window_record(&self, tab: tilo_desktop_model::TabId) -> Option<(String, String)> {
+    fn window_resource(&self, tab: tilo_desktop_model::TabId) -> Option<(String, String)> {
         (tilo_desktop_model::peer_salt_of(tab) == 7)
             .then(|| ("notes-record".to_owned(), "notes".to_owned()))
     }

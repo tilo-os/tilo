@@ -1631,8 +1631,8 @@ impl crate::TileSource for PeerTiles {
         self.inner.showing(app)
     }
 
-    fn window_record(&self, tab: TabId) -> Option<(String, String)> {
-        self.inner.window_record(tab)
+    fn window_resource(&self, tab: TabId) -> Option<(String, String)> {
+        self.inner.window_resource(tab)
     }
 
     fn carry(&self, tab: TabId, to: WorkspaceId) -> bool {
