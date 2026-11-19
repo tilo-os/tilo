@@ -341,6 +341,7 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                     if held >= SLOW_STATE_FRAME {
                         tracing::info!(
                             kind,
+                            device = %hex::encode(&cx.peer.device_public_key[..4]),
                             held_ms = held.as_millis(),
                             backlog = self.inbound.backlog.len(),
                             "a state frame held its connection"
