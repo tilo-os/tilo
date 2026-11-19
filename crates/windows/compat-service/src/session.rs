@@ -2142,7 +2142,7 @@ mod tests {
                     uid: 1000,
                     runtime_dir: PathBuf::from("/xdg/1000"),
                     wayland_socket: PathBuf::from("/xdg/1000/tilo-ws-test"),
-                    render_node: PathBuf::from("/dev/dri/renderD128"),
+                    render_node: Some(PathBuf::from("/dev/dri/renderD128")),
                 }),
             )
             .unwrap(),

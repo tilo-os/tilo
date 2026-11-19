@@ -197,7 +197,8 @@ impl LaunchResourceBroker for NetResources {
 struct Probe {
     dir: PathBuf,
     tell_display: bool,
-    planned: Arc<Mutex<Option<PathBuf>>>,
+    /// The display the last plan bound, and the plan's whole command line.
+    planned: Arc<Mutex<Option<(PathBuf, Vec<String>)>>>,
     /// Where each launch's private audio graph is prepared, when the program has sound: the
     /// sandbox then starts as the compatibility service starts one with sound, after its graph
     /// ([`audio_step`]).
@@ -218,7 +219,7 @@ impl SandboxExecutor for Probe {
             .find(|bind| bind[0] == "--ro-bind" && bind[2].ends_with("/wayland-0"))
             .map(|bind| PathBuf::from(&bind[1]))
             .expect("the plan binds a display");
-        *self.planned.lock().unwrap() = Some(display.clone());
+        *self.planned.lock().unwrap() = Some((display.clone(), plan.bwrap_argv.clone()));
         let mut args = vec![format!("{PROBE_DIR}={}", self.dir.display())];
         if self.tell_display {
             args.push(format!("WAYLAND_DISPLAY={}", display.display()));
@@ -704,7 +705,9 @@ fn the_windows_apps_manager_starts_a_program_on_the_session_display() {
         .runtime()
         .join(session.compositor().listen().expect("the display binds"));
     apps.set_displays(display.clone(), None, None);
-    apps.set_render_node(Some(PathBuf::from("/dev/dri/renderD128")));
+    // A machine with no GPU: the compositor names its display's primary node, which is no render
+    // node, and the program still starts, drawing in software.
+    apps.set_render_node(Some(PathBuf::from("/dev/dri/card0")));
     let workspace = session
         .handle()
         .read(|tree| tree.active_workspace().map(|held| held.id().to_string()))
@@ -761,7 +764,12 @@ fn the_windows_apps_manager_starts_a_program_on_the_session_display() {
         HANDED_DOWN,
         "the program inherits what its sandbox is handed"
     );
-    assert_eq!(planned.lock().unwrap().as_deref(), Some(display.as_path()));
+    let (bound, argv) = planned.lock().unwrap().clone().expect("a plan was made");
+    assert_eq!(bound, display);
+    assert!(
+        !argv.iter().any(|arg| arg.starts_with("/dev/dri/card")),
+        "a display's primary node is never given to a program: {argv:?}"
+    );
     // The same launch connecting again is refused: each launch hands off once.
     assert!(answers["again"]["refused"].is_string(), "{answers}");
 

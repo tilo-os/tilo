@@ -1877,7 +1877,7 @@ mod presentation_tests {
                     uid: rustix::process::geteuid().as_raw(),
                     runtime_dir: self.dir.clone(),
                     wayland_socket: self.dir.join("wayland-0"),
-                    render_node: PathBuf::from("/dev/dri/renderD128"),
+                    render_node: Some(PathBuf::from("/dev/dri/renderD128")),
                 },
                 recorded: Arc::clone(&self.recorded),
             })))

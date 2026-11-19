@@ -366,7 +366,9 @@ pub struct LaunchDisplay {
     /// display a program is kept behind.
     pub runtime_dir: PathBuf,
     pub wayland_socket: PathBuf,
-    pub render_node: PathBuf,
+    /// The GPU's render node the program draws with, or `None` where the display has no GPU: Wine
+    /// then draws with the software renderer, as the desktop itself does there.
+    pub render_node: Option<PathBuf>,
 }
 
 impl LaunchDisplay {
@@ -376,22 +378,27 @@ impl LaunchDisplay {
         {
             return Err(PlanError::UnsafeWaylandSocket);
         }
-        let render_name = self
-            .render_node
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default();
-        if self.render_node.parent() != Some(Path::new("/dev/dri"))
-            || !render_name.strip_prefix("renderD").is_some_and(|suffix| {
-                !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())
-            })
+        if let Some(node) = &self.render_node
+            && !is_render_node(node)
         {
-            return Err(PlanError::UnsafeRenderNode(
-                self.render_node.display().to_string(),
-            ));
+            return Err(PlanError::UnsafeRenderNode(node.display().to_string()));
         }
         Ok(())
     }
+}
+
+/// Whether `node` is a GPU render node (`/dev/dri/renderD<N>`), the only device a launch binds into
+/// its sandbox.
+#[must_use]
+pub fn is_render_node(node: &Path) -> bool {
+    let name = node
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    node.parent() == Some(Path::new("/dev/dri"))
+        && name
+            .strip_prefix("renderD")
+            .is_some_and(|suffix| !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Where each launch's program shows its windows. The caller of the service
@@ -707,7 +714,11 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
 
         let wayland =
             launcher::sandbox::wayland_bind_for(&self.display.wayland_socket, self.display.uid);
-        let gpu = select_for_node(&self.display.render_node, &self.icd_search);
+        let gpu = self
+            .display
+            .render_node
+            .as_deref()
+            .map(|node| select_for_node(node, &self.icd_search));
         let mut argv = Vec::new();
         launcher::sandbox::push_clean_environment(&mut argv);
         argv.extend(["--unshare-all".to_string()]);
@@ -806,14 +817,26 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
 
         launcher::sandbox::push_wayland_bind(&mut argv, &wayland);
         landlock_write.push(wayland.sandbox_socket.clone());
-        launcher::sandbox::push_gpu_selection(&mut argv, &gpu, true);
-        landlock_write.push(self.display.render_node.clone());
+        if let Some(gpu) = &gpu {
+            launcher::sandbox::push_gpu_selection(&mut argv, gpu, true);
+            landlock_write.push(gpu.node.clone());
+            landlock_read.extend(gpu.manifest_files());
+        } else {
+            // No GPU: no device node in the sandbox, and Wine's OpenGL and Vulkan load the
+            // software renderer the desktop draws with, as a native app's launch does there.
+            launcher::profile::hide_gpu_devices(&mut argv);
+            if let Some(pin) = launcher::gpu::inherited_software_pin()
+                .or_else(|| launcher::gpu::software_pin(&self.icd_search).ok())
+            {
+                launcher::sandbox::push_software_pin(&mut argv, &pin);
+                landlock_read.extend(pin.manifest_files());
+            }
+        }
         if route.runtime.layer == Layer::Proton {
             let ntsync = PathBuf::from("/dev/ntsync");
             bind(&mut argv, "--dev-bind", &ntsync, &ntsync);
             landlock_write.push(ntsync);
         }
-        landlock_read.extend(gpu.manifest_files());
         push_audio(&mut argv, lease, self.display.uid, &mut landlock_write);
         if let Some(proxy) = &lease.egress_proxy {
             launcher::sandbox::push_egress_proxy(&mut argv, proxy);
@@ -1190,9 +1213,8 @@ pub enum PlanError {
     #[error("the program has no display to show its windows on: {0}")]
     NoDisplay(String),
     #[error(
-        "this display has no GPU, and Windows programs need one to draw their windows: its \
-         device {0} is not a GPU render node (/dev/dri/renderD*). Use a display connected to a \
-         GPU (a virtual machine needs 3D acceleration turned on), then open the program again."
+        "the display's GPU device {0} is not a render node (/dev/dri/renderD*), so it is not \
+         given to the program"
     )]
     UnsafeRenderNode(String),
     #[error("capsule does not match resolved route")]
@@ -1272,8 +1294,54 @@ mod tests {
             uid: 1000,
             runtime_dir: PathBuf::from("/xdg/1000"),
             wayland_socket: PathBuf::from("/xdg/1000/tilo-ws-test"),
-            render_node: PathBuf::from("/dev/dri/renderD999"),
+            render_node: Some(PathBuf::from("/dev/dri/renderD999")),
         }
+    }
+
+    /// Wine draws its windows with shared memory or the software renderer, so a display with no
+    /// GPU (a virtual machine without 3D) still starts Windows programs: with no device node in
+    /// the sandbox, never with a display's primary node in place of a render node.
+    #[test]
+    fn a_display_without_a_gpu_starts_the_program_with_no_device_node() {
+        let route = route(Layer::Wine);
+        let (_directory, store, state, program) = setup(&route);
+        let registry = SystemRuntimeRegistry::assuming_provider();
+        let host = LaunchDisplay {
+            render_node: None,
+            ..session()
+        };
+        let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
+        let command = planner
+            .plan(
+                &route,
+                &state,
+                &program,
+                &CapabilityPlan::empty(),
+                "workspace",
+                &LaunchLease::deny_all("lease"),
+            )
+            .unwrap();
+        let argv = &command.bwrap_argv;
+        let hidden = argv
+            .windows(2)
+            .rposition(|args| args == ["--tmpfs", "/dev/dri"])
+            .expect("the GPU's device directory is emptied");
+        assert!(
+            !argv[hidden..]
+                .iter()
+                .any(|arg| arg.starts_with("/dev/dri/")),
+            "no device node is bound over it: {argv:?}"
+        );
+
+        let card = LaunchDisplay {
+            render_node: Some(PathBuf::from("/dev/dri/card0")),
+            ..session()
+        };
+        assert!(matches!(
+            card.validate(),
+            Err(PlanError::UnsafeRenderNode(node)) if node == "/dev/dri/card0"
+        ));
+        assert!(host.validate().is_ok());
     }
 
     #[test]
@@ -1858,10 +1926,10 @@ mod tests {
             uid,
             runtime_dir: runtime,
             wayland_socket: socket.clone(),
-            render_node: PathBuf::from("/dev/dri/renderD128"),
+            render_node: Some(PathBuf::from("/dev/dri/renderD128")),
         };
         assert!(
-            host.render_node.exists(),
+            host.render_node.as_deref().is_some_and(Path::exists),
             "provide a dummy render-node bind source"
         );
         let planner = SandboxPlanner::new(&store, &TEST_REGISTRY, &host).unwrap();

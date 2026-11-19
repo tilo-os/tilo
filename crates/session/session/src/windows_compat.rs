@@ -400,11 +400,9 @@ impl LaunchDisplays for Display {
         };
         let wayland_socket = wayland_socket
             .ok_or_else(|| "this session has not bound its display yet".to_owned())?;
-        let render_node = render_node.ok_or_else(|| {
-            "this display has no GPU, and Windows programs need one to draw their windows: use a \
-             display connected to a GPU, then open the program again"
-                .to_owned()
-        })?;
+        // A display's primary node (`card*`), which the compositor names where the machine has no
+        // render node, is no GPU to give a program: it draws in software then.
+        let render_node = render_node.filter(|node| compat_service::is_render_node(node));
         Ok(LaunchDisplay {
             uid: rustix::process::geteuid().as_raw(),
             runtime_dir: tilo_paths::xdg::runtime_dir_or_default(),
