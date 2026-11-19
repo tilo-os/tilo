@@ -76,6 +76,22 @@ tilo_test_env::scenario! {
         assert!(!frame.holds(None), "a whole repaint needs everything");
     }
 
+    phase a_keep_shrinks_to_the_content_that_shows;
+    {
+        let keep = Keep::scrolled(Affine::IDENTITY, VIEW, Vec2::new(0.0, -20.0), &[]).unwrap();
+        let content = Rect::new(0.0, 0.0, 180.0, 400.0);
+        let narrowed = keep.visible_within(content).unwrap();
+        assert_eq!(narrowed.clip, content);
+        assert_eq!(narrowed.region, Rect::new(0.0, 0.0, 180.0, 380.0));
+        assert!(
+            Keep::scrolled(Affine::IDENTITY, VIEW, Vec2::new(0.0, -20.0), &[])
+                .unwrap()
+                .visible_within(Rect::new(200.0, 0.0, 220.0, 400.0))
+                .is_none(),
+            "content that shows nowhere keeps nothing"
+        );
+    }
+
     phase two_scrolls_at_once_keep_nothing;
     {
         let _frame = Culling::default().begin();
