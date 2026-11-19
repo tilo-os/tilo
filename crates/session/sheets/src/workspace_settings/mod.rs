@@ -144,14 +144,14 @@ pub enum WorkspaceSettingsEffect {
         #[param("The custom role, by its stable key")]
         role: String,
     },
-    /// Set who can view or edit a document
+    /// Set who can view or edit at the workspace, app or document scope
     #[effect(kind = "outside", attended)]
     SetDocumentAccess {
         #[param("everyone, role:<key>, or member:<key>")]
         who: String,
-        #[param("The app that publishes the document")]
+        #[param("The app that publishes the document, or empty to set defaults")]
         app: String,
-        #[param("The document's key")]
+        #[param("The document key, or the app whose default to set when app is empty")]
         document: String,
         #[param("inherit, no-access, view, or edit")]
         access: String,

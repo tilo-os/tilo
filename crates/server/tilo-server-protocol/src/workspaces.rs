@@ -468,11 +468,13 @@ pub enum WorkspacesRequest {
         request_id: [u8; 32],
         change: tilo_action_policy::Change,
     },
-    /// Replace a role or member's rules on a shared document.
+    /// Replace a role or member's rules on a workspace, app, or document.
     SetDocumentAccess {
         workspace: String,
         request_id: [u8; 32],
+        /// The app with an exact document rule. Empty for a default rule.
         app: String,
+        /// The exact document, an app id for its default, or empty for the workspace default.
         document: String,
         recipient: String,
         access: String,

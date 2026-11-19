@@ -246,6 +246,18 @@ fn workspace_settings_assigns_a_custom_role_and_uses_it_for_document_access() {
             assigned: true,
         },
         WorkspaceSettingsEffect::SetDocumentAccess {
+            who: "everyone".into(),
+            app: String::new(),
+            document: String::new(),
+            access: "no-access".into(),
+        },
+        WorkspaceSettingsEffect::SetDocumentAccess {
+            who: format!("role:{role}"),
+            app: String::new(),
+            document: "so.tilo.notes".into(),
+            access: "view".into(),
+        },
+        WorkspaceSettingsEffect::SetDocumentAccess {
             who: format!("role:{role}"),
             app: "so.tilo.notes".into(),
             document: "review".into(),
@@ -279,13 +291,44 @@ fn workspace_settings_assigns_a_custom_role_and_uses_it_for_document_access() {
                 );
             }
         }
-        let rules = collab_types::document_access_rules(
+        let other_note = collab_types::document_node(&id, "so.tilo.notes", "other");
+        let file = collab_types::document_node(&id, "so.tilo.files", "other");
+        let reviewer = workspace.policy.party("ada");
+        assert_eq!(
+            reviewer
+                .decide(&other_note, ActionKind::Read, &context)
+                .answer,
+            Answer::Allow
+        );
+        assert_eq!(
+            reviewer
+                .decide(&other_note, ActionKind::Undoable, &context)
+                .answer,
+            Answer::Deny
+        );
+        assert_eq!(
+            reviewer.decide(&file, ActionKind::Read, &context).answer,
+            Answer::Deny
+        );
+        let targets = collab_types::document_access_scopes(
             &workspace.policy,
             &[("so.tilo.notes".into(), "review".into())],
+            [],
         );
-        assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0].recipient, format!("role:{role}"));
-        assert_eq!(rules[0].access, "edit");
+        let rules = collab_types::document_access_rules(&workspace.policy, &targets);
+        let rule_at = |app: &str, doc: &str| {
+            rules
+                .iter()
+                .find(|rule| rule.app == app && rule.document == doc)
+                .unwrap()
+        };
+        assert_eq!(rule_at("", "").access, "no-access");
+        assert_eq!(rule_at("", "so.tilo.notes").access, "view");
+        assert_eq!(
+            rule_at("so.tilo.notes", "review").recipient,
+            format!("role:{role}")
+        );
+        assert_eq!(rule_at("so.tilo.notes", "review").access, "edit");
     });
 }
 

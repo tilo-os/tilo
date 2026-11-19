@@ -77,8 +77,12 @@ pub fn document_access_pane(
     routes = routes
         .into_iter()
         .filter_map(|(app, document)| {
-            let document = collab_types::document_access_target(&app, &document)?.to_owned();
-            Some((app, document))
+            if app.is_empty() {
+                Some((app, document))
+            } else {
+                let document = collab_types::document_access_target(&app, &document)?.to_owned();
+                Some((app, document))
+            }
         })
         .collect();
     routes.sort();
@@ -86,6 +90,19 @@ pub fn document_access_pane(
     let documents = routes
         .into_iter()
         .map(|(app, document)| {
+            if app.is_empty() {
+                let label = if document.is_empty() {
+                    t("workspace-settings-access-all-apps")
+                } else {
+                    let name = crate::app_names::listed_name(&document)
+                        .unwrap_or_else(|| document.clone());
+                    tilo_desktop_surface::i18n::t_args(
+                        "workspace-settings-access-app-default",
+                        &[("app", name.into())],
+                    )
+                };
+                return ((app, document), label);
+            }
             let name = crate::app_names::listed_name(&app).unwrap_or_else(|| app.clone());
             let label = if document.is_empty()
                 || (app == fs_protocol::tree::FILES_APP

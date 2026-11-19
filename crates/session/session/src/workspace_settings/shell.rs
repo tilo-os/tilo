@@ -1212,14 +1212,17 @@ fn permissions(
                 .collect(),
             grant: t("workspace-settings-grant"),
         },
-        documents: engine.filter(|_| manage).and_then(|engine| {
+        documents: manage.then(|| {
             let workspace = ws.id().to_string();
-            let mut documents = engine.documents(&workspace).ok()?;
-            documents.retain(|(app, document_id)| {
-                collab_types::workspace_document(app, document_id).is_none()
-                    && engine.own_resource(&workspace, app, document_id).is_none()
+            let documents = engine.map_or_else(Vec::new, |engine| {
+                let mut documents = engine.documents(&workspace).unwrap_or_default();
+                documents.retain(|(app, document_id)| {
+                    collab_types::workspace_document(app, document_id).is_none()
+                        && engine.own_resource(&workspace, app, document_id).is_none()
+                });
+                documents
             });
-            (!documents.is_empty()).then(|| document_access(ws, person, apps, documents))
+            document_access(ws, person, apps, documents)
         }),
         sections,
         revoke: t("workspace-settings-revoke"),
@@ -1264,8 +1267,10 @@ fn document_access(
                 })
             }),
     );
-    let rules = collab_types::document_access_rules(&ws.policy, &documents);
-    super::document_access_pane(documents, rules, recipients)
+    let targets =
+        collab_types::document_access_scopes(&ws.policy, &documents, apps.installed_apps());
+    let rules = collab_types::document_access_rules(&ws.policy, &targets);
+    super::document_access_pane(targets, rules, recipients)
 }
 
 /// The Apps & Files tab: which app opens each kind of file and link here,

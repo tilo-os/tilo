@@ -256,6 +256,7 @@ impl Workspaces {
             })
             .collect();
         let documents: Vec<_> = documents.into_iter().collect();
+        let documents = collab_types::document_access_scopes(&member.policy, &documents, []);
         let rules = collab_types::document_access_rules(&member.policy, &documents);
         Ok(DocumentAccess { documents, rules })
     }
