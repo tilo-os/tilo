@@ -26,13 +26,14 @@ impl VirtualRows {
     }
 
     pub(super) fn lift_rect(&self, top: f64, height: f64) -> Rect {
+        let drawn = self.drawn();
         let x1 = if self.rows_beside_bar {
             self.rect.x1 - self.gutter
         } else {
-            self.rect.x1
+            drawn.x1
         };
         let top = self.shown_top(top);
-        Rect::new(self.rect.x0, top, x1, top + height)
+        Rect::new(drawn.x0, top, x1, top + height)
     }
 
     pub(super) fn row_selection(&self, index: usize) -> RowSelection {

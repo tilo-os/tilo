@@ -10,7 +10,7 @@ use vello::peniko::{Brush, Color, Fill, Gradient};
 
 use crate::paint::{PaintCtx, with_alpha};
 use crate::presence::PresenceCtx;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
@@ -518,12 +518,14 @@ impl Chart {
         // The header band holds the title's line plus the smallest step, so
         // at 2× the title no longer clips and the legend clears the top axis
         // label; `HEADER_H` at the default text scale.
+        let title_style = crate::widget::chart_navigation::title_style(theme);
         let header_h = if style.header {
-            text_band(
-                HEADER_H,
-                type_line_height(&tokens.typography, TextRole::Caption),
-                f64::from(tokens.spacing.s1),
-            )
+            let line = if labels.title.is_empty() {
+                type_line_height(&tokens.typography, TextRole::Caption)
+            } else {
+                f64::from(title_style.line_height_px())
+            };
+            text_band(HEADER_H, line, f64::from(tokens.spacing.s1))
         } else {
             0.0
         };
@@ -566,13 +568,8 @@ impl Chart {
         if style.header {
             // Title, legend labels and legend dots share the header band's
             // centre line, each placed by its measured line box.
-            let title_style = tokens.typography.style(TextRole::Caption);
             if !labels.title.is_empty() {
-                let (_, title_h) = text_renderer.measure_style(
-                    labels.title,
-                    None,
-                    &title_style.clone().with_weight(style.title_weight),
-                );
+                let (_, title_h) = text_renderer.measure_style(labels.title, None, &title_style);
                 text_renderer.draw_style(
                     scene,
                     labels.title,
@@ -581,7 +578,7 @@ impl Chart {
                         (rect.x0, centered_text_top(rect.y0, header_h, title_h)).into(),
                     ),
                     None,
-                    &title_style.clone().with_weight(style.title_weight),
+                    &title_style,
                 );
             }
 
@@ -665,7 +662,6 @@ pub struct ChartStyle {
     pub grid_divisions: usize,
     pub grid_color: Option<Color>,
     pub header: bool,
-    pub title_weight: TextWeight,
 }
 
 impl Default for ChartStyle {
@@ -675,7 +671,6 @@ impl Default for ChartStyle {
             grid_divisions: GRID_DIVISIONS,
             grid_color: None,
             header: true,
-            title_weight: TextWeight::Regular,
         }
     }
 }

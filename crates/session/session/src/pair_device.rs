@@ -306,32 +306,38 @@ impl crate::Shared {
     }
 
     /// Take the machine `machine` the person approved into its waiting entry in their Servers
-    /// workspace, through the workspace's holder: the entry becomes the machine's under its device
-    /// key, and the holder hands it over from there. A machine that came with no token is no
-    /// planned machine.
+    /// workspace, through this device's own workspace service: the entry becomes the machine's
+    /// under its device key, and the device that governs the workspace hands it over from there.
+    /// A machine that came with no token is no planned machine.
     fn admit_planned(&self, machine: &crate::enrollment::Waiting) {
         if machine.nonce.is_empty() {
             return;
         }
-        let Some(engine) = self.engine.as_ref() else {
-            return;
-        };
-        let admin = tilo_server_protocol::servers::admin_workspace_id(
-            &engine.identity().device_cert.user_public_key,
-        );
-        let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&admin) else {
+        let Some(engine) = self.engine.clone() else {
             return;
         };
         let mut arguments = serde_json::Map::new();
         arguments.insert("device".to_owned(), machine.device.clone().into());
         arguments.insert("nonce".to_owned(), machine.nonce.clone().into());
-        let Some(asked) = engine.ask_holder(workspace, "machine.admit", arguments) else {
-            tracing::info!(
-                "this device reaches no holder of the Servers workspace, so the machine waits to be taken in there"
-            );
-            return;
-        };
+        let admin = tilo_server_protocol::servers::admin_workspace_id(
+            &engine.identity().device_cert.user_public_key,
+        );
         drop(crate::landing::off_loop(async move {
+            // The device that planned the machine may be another of theirs:
+            // this one holds the Servers workspace from the moment it knows
+            // it, as every one of the person's devices does.
+            if !engine.is_holder(&admin) {
+                #[cfg(target_os = "linux")]
+                if let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&admin) {
+                    engine.found(workspace, "Servers").await;
+                }
+            }
+            let Some(asked) = engine.ask_own_host("machine.admit", arguments) else {
+                tracing::info!(
+                    "this device's workspace service is not open, so the machine waits to be taken in where it is held"
+                );
+                return;
+            };
             match asked.await {
                 Ok(_) => {}
                 Err(error) => tracing::warn!(%error, "a planned machine was not taken in"),
@@ -558,5 +564,147 @@ mod tests {
             assert_eq!(shown, adding.device(Ok(place()), START));
             assert!(shown.link.contains("?pair="));
         }
+    }
+
+    /// The person approves the machine they planned, and the session carries the
+    /// approval into the machine's entry: the entry the plan made under the
+    /// plan's id becomes the machine's, under its device key, in the Servers
+    /// workspace the session's own host holds. Nothing here is a fixture of the
+    /// service: the session asks its own host the same `machine.*` operations a
+    /// window of theirs does.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one test walks an identity, a session, its own workspace service and the person's approval"
+    )]
+    fn the_persons_approval_takes_a_planned_machine_into_its_entry() {
+        let root = tempfile::tempdir().expect("a directory for the identity");
+        let xdg = root.path().join("config");
+        let system = root.path().join("system");
+        let state = root.path().join("state");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", &xdg)
+            .set("TILO_IDENTITY_ROOT", &system)
+            .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+        tilo_identity::provisioning::ensure_collaboration_identity(
+            &xdg.join("tilo/identity"),
+            &tilo_device_identity::IdentityPaths::under(&system),
+            tilo_identity::provisioning::IdentityStorage::Files,
+        )
+        .expect("this computer's identity");
+        let mut session = crate::Session::headless(
+            crate::Options {
+                presentation: ui::headless::fixture_runner_inputs,
+                collab: true,
+                state: Some(state),
+                ..crate::Options::default()
+            },
+            &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
+        )
+        .expect("a session");
+        let engine = session.shared.engine.clone().expect("this device's engine");
+        let person = engine.identity().device_cert.user_public_key;
+        let admin = tilo_server_protocol::servers::admin_workspace_id(&person);
+
+        // The machine's own key, as it enrolled with the token the plan names.
+        let machine = "cd".repeat(32);
+        let nonce = "ab".repeat(16);
+        let plan_id = "0123456789abcdef0123456789abcdef";
+        let plan = serde_json::json!({
+            "schema": 1,
+            "plan": plan_id,
+            "revision": 1,
+            "destination": "tilo-server",
+            "name": "cupboard",
+            "network": { "addressing": "dhcp" },
+            "disk": { "kind": "empty" },
+            "unlock": "tpm",
+            "updates": "stable",
+            "hosting": [],
+            "open": [],
+            "token": { "nonce": nonce, "expires_at_ns": u64::MAX },
+        })
+        .to_string();
+        let runtime = tilo_rt::try_app().expect("the app runtime");
+        let planned = runtime.block_on(
+            engine
+                .ask_own_host(
+                    "machine.plan",
+                    serde_json::Map::from_iter([
+                        ("plan".to_owned(), plan.into()),
+                        ("label".to_owned(), "cupboard".into()),
+                        ("token_file".to_owned(), "/tmp/cupboard.token".into()),
+                        ("installer_url".to_owned(), "https://tilo.sh".into()),
+                    ]),
+                )
+                .expect("this device holds its own Servers workspace"),
+        );
+        assert!(planned.is_ok(), "the plan is written: {planned:?}");
+
+        // The person's approval, as their device keeps it: the machine's ask
+        // carries the plan's nonce, so the session knows which entry it is.
+        let ask = "ef".repeat(16);
+        {
+            let personal = session
+                .shared
+                .sync
+                .as_ref()
+                .and_then(|sync| sync.personal())
+                .expect("the person's own store");
+            crate::enrollment::enter(
+                personal.sync(),
+                &tilo_enrollment::waiting::WaitingMachine {
+                    ask: ask.clone(),
+                    device: machine.clone(),
+                    service: "ef".repeat(32),
+                    label: "cupboard".into(),
+                    hardware: String::new(),
+                    code: "123-456".into(),
+                    nonce,
+                },
+            )
+            .expect("the ask is kept in the person's store");
+        }
+        session.shared.answer_enrolling(&ask, true);
+
+        // The entry is the machine's under its device key once the session
+        // carried the approval out: the plan's own id names the entry before
+        // that, and the machine's key only after.
+        let deadline = tilo_test_env::hang_deadline();
+        while std::time::Instant::now() < deadline {
+            session.step(std::time::Duration::from_millis(1)).ok();
+            let entry = runtime.block_on(
+                engine
+                    .ask_own_host(
+                        "machine.show",
+                        serde_json::Map::from_iter([("plan".to_owned(), machine.clone().into())]),
+                    )
+                    .expect("this device holds its own Servers workspace"),
+            );
+            if entry.is_ok() {
+                assert!(
+                    runtime
+                        .block_on(
+                            engine
+                                .ask_own_host(
+                                    "machine.show",
+                                    serde_json::Map::from_iter([(
+                                        "plan".to_owned(),
+                                        plan_id.into(),
+                                    )]),
+                                )
+                                .expect("this device holds its own Servers workspace"),
+                        )
+                        .is_ok(),
+                    "the plan still reads under its own id: the entry keeps it"
+                );
+                assert_eq!(
+                    admin,
+                    tilo_server_protocol::servers::admin_workspace_id(&person)
+                );
+                return;
+            }
+        }
+        panic!("the approval did not take the machine into its entry");
     }
 }

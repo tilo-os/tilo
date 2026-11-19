@@ -71,11 +71,9 @@ async fn a_server_holds_and_releases_the_workspaces_its_entry_names() {
     )
     .await
     .unwrap();
-    let applied = applied::reconcile(workspaces).await.unwrap();
-    assert!(
-        applied.held.contains(&workspace.workspace),
-        "the owner's device handed it the workspace: {applied:?}"
-    );
+    // Every holder of the Servers workspace applies its document, so the
+    // owner's device hands it over as the change is written.
+    applied::reconcile(workspaces).await.unwrap();
     tilo_test_env::within("the server to hold the workspace", async {
         while retained().await.is_none() {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -107,11 +105,7 @@ async fn a_server_holds_and_releases_the_workspaces_its_entry_names() {
         None,
         "the release took: {nas_entry:?}"
     );
-    let applied = applied::reconcile(workspaces).await.unwrap();
-    assert!(
-        applied.released.contains(&workspace.workspace),
-        "the workspace left its hosts: {applied:?}"
-    );
+    applied::reconcile(workspaces).await.unwrap();
     tilo_test_env::within("the server to let go of the workspace", async {
         while retained().await.is_some() {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -555,4 +549,76 @@ async fn a_device_that_writes_before_the_document_arrives_keeps_every_entry() {
         }
     })
     .await;
+}
+
+/// Two of a person's own devices found their Servers workspace before they see
+/// one another. They found one workspace — the same history, in the person's
+/// name — and each names itself among its holders; the hand-over then merges
+/// the two copies into the one workspace, which names both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_devices_that_found_the_servers_workspace_before_they_meet_hold_one() {
+    let alice = TestUser::fresh("Alice");
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let desktop = alice.enrol("desktop", DeviceCapabilities::primary());
+    let first = serve_on(&alice, &laptop, WorkSetting::own_person()).await;
+    let second = serve_on(&alice, &desktop, WorkSetting::own_person()).await;
+    let admin = admin_workspace_id(&alice.user_pk);
+
+    // Each founds it on its own, before it hears of the other.
+    servers::founded(first.host.workspaces()).await.unwrap();
+    servers::founded(second.host.workspaces()).await.unwrap();
+    for (hosted, device) in [(&first, &laptop), (&second, &desktop)] {
+        let named = hosted.host.workspaces().hosts(&admin).await.unwrap();
+        assert!(
+            named
+                .iter()
+                .any(|hint| hint.host.device_public_key == device.device_pubkey()),
+            "a founding device names itself among the workspace's holders"
+        );
+    }
+
+    // One hands it to the other: the two foundings are one workspace.
+    servers::take_in(
+        first.host.workspaces(),
+        &desktop.cert,
+        &second.host.node_addr(),
+    )
+    .await
+    .unwrap();
+    tilo_test_env::within(
+        "both devices to name both holders of the one workspace",
+        async {
+            loop {
+                let mut named = Vec::new();
+                for hosted in [&first, &second] {
+                    named.push(
+                        hosted
+                            .host
+                            .workspaces()
+                            .hosts(&admin)
+                            .await
+                            .map_or(0, |hosts| hosts.len()),
+                    );
+                }
+                if named == [2, 2] {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        },
+    )
+    .await;
+    for hosted in [&first, &second] {
+        assert_eq!(
+            hosted
+                .host
+                .workspaces()
+                .summary(&admin)
+                .await
+                .unwrap()
+                .workspace,
+            admin,
+            "both devices hold the one workspace"
+        );
+    }
 }

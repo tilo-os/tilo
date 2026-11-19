@@ -14,7 +14,6 @@ fn limits() -> Limits {
         max_memories: 1,
         max_tables: 1,
         max_instances: 1,
-        max_table_elements: 10_000,
     }
 }
 

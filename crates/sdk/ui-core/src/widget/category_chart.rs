@@ -173,6 +173,22 @@ pub struct CategoryMarks {
     style: CategoryChartStyle,
     frame: PlotFrame<(usize, usize)>,
     toggles: chart_legend::SeriesToggles,
+    margins: Margins,
+}
+
+/// What a bar chart keeps around its bars, measured from its words in the theme's type as it is
+/// laid out: the title's band and the legend's rows over them, the value labels' column before
+/// them, and the category labels' line under them.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Margins {
+    /// From the chart's top to its legend's first row.
+    legend: f64,
+    /// From the chart's top to the plot's top rule.
+    top: f64,
+    /// From the chart's leading edge to the plot.
+    left: f64,
+    /// From the plot's bottom rule to the chart's bottom.
+    bottom: f64,
 }
 
 pub type CategoryChart = Plot<CategoryMarks>;
@@ -188,6 +204,7 @@ impl CategoryChart {
             style: CategoryChartStyle::default(),
             frame: PlotFrame::new(340.0, 120.0),
             toggles: chart_legend::SeriesToggles::default(),
+            margins: Margins::default(),
         })
     }
     #[must_use]
@@ -235,30 +252,65 @@ impl CategoryChart {
 
 impl CategoryMarks {
     fn plot_rect(&self) -> Rect {
-        let legend_rows =
-            if self.style.show_legend && self.style.layout != CategoryLayout::Waterfall {
-                chart_legend::rows(
-                    self.series.iter().map(|series| series.name.as_str()),
-                    self.frame.rect.x0 + 58.0,
-                    self.frame.rect.x1 - 12.0,
-                )
-            } else {
-                0
-            };
-        let extra_legend_height =
-            crate::num::f64_of_usize(legend_rows.saturating_sub(1)) * chart_legend::ROW_HEIGHT;
+        let rect = self.frame.rect;
+        let Margins {
+            top, left, bottom, ..
+        } = self.margins;
         Rect::new(
-            self.frame.rect.x0 + 58.0,
-            self.frame.rect.y0
-                + if self.frame.title.is_empty() {
-                    38.0
-                } else {
-                    66.0
-                }
-                + extra_legend_height,
-            self.frame.rect.x1 - 12.0,
-            self.frame.rect.y1 - 42.0,
+            (rect.x0 + left).min(rect.x1),
+            (rect.y0 + top).min(rect.y1),
+            rect.x1,
+            (rect.y1 - bottom).max(rect.y0 + top),
         )
+    }
+
+    fn shows_legend(&self) -> bool {
+        self.style.show_legend && self.style.layout != CategoryLayout::Waterfall
+    }
+
+    /// What the value axis says at `value`.
+    fn axis_label(&self, value: f64) -> String {
+        if self.style.layout == CategoryLayout::Percent {
+            format!("{:.0}%", value * 100.0)
+        } else {
+            format_axis_value(value, self.style.value_format)
+        }
+    }
+
+    /// Measure the margins the chart's words take, in `theme`'s type.
+    fn measure_margins(&self, tr: &mut TextRenderer, theme: &Theme) -> Margins {
+        let rect = self.frame.rect;
+        let caption = theme.text(TextRole::Caption);
+        let line = f64::from(caption.line_height_px());
+        let rhythm = &theme.tokens.spacing.rhythm;
+        let related = f64::from(rhythm.related);
+        let legend = crate::widget::chart_navigation::title_band(theme, &self.frame.title);
+        let legend_rows = if self.shows_legend() {
+            chart_legend::rows(
+                self.series.iter().map(|series| series.name.as_str()),
+                rect.x0,
+                rect.x1,
+            )
+        } else {
+            0
+        };
+        let legend_height = if legend_rows == 0 {
+            0.0
+        } else {
+            crate::num::f64_of_usize(legend_rows) * chart_legend::ROW_HEIGHT + related
+        };
+        let (min, max) = self.range();
+        let widest = crate::charts::nice_ticks(min, max, crate::widget::plot::AXIS_TICKS)
+            .into_iter()
+            .map(|value| f64::from(tr.measure_style(&self.axis_label(value), None, &caption).0))
+            .fold(0.0_f64, f64::max);
+        Margins {
+            legend,
+            // Half a label's line over the top rule, so the top value's label stands whole.
+            top: legend + legend_height + line / 2.0,
+            left: widest + f64::from(theme.tokens.spacing.s2),
+            bottom: f64::from(theme.tokens.spacing.s2) + line,
+        }
     }
 
     fn value(&self, series: usize, category: usize) -> Option<&CategoryValue> {
@@ -495,21 +547,12 @@ fn label_stride(needed: f64, spare: f64) -> usize {
 
 impl CategoryMarks {
     fn legend_area(&self) -> Option<Rect> {
-        if !self.style.show_legend || self.style.layout == CategoryLayout::Waterfall {
+        if !self.shows_legend() {
             return None;
         }
-        let y = self.frame.rect.y0
-            + if self.frame.title.is_empty() {
-                10.0
-            } else {
-                38.0
-            };
-        Some(Rect::new(
-            self.frame.rect.x0 + 58.0,
-            y,
-            self.frame.rect.x1 - 12.0,
-            y,
-        ))
+        let rect = self.frame.rect;
+        let y = rect.y0 + self.margins.legend;
+        Some(Rect::new(rect.x0, y, rect.x1, y))
     }
 
     /// The corners of `bar`: a stack is one bar, rounded only at its ends.
@@ -689,9 +732,7 @@ impl PlotMarks for CategoryMarks {
             .collect()
     }
     fn legend_interactive(&self) -> bool {
-        self.style.show_legend
-            && self.style.layout != CategoryLayout::Waterfall
-            && self.style.interactive_legend
+        self.shows_legend() && self.style.interactive_legend
     }
     fn toggles(&self) -> Option<&chart_legend::SeriesToggles> {
         Some(&self.toggles)
@@ -702,7 +743,8 @@ impl PlotMarks for CategoryMarks {
     fn series_of(&self, &(_, series): &(usize, usize)) -> Option<&str> {
         Some(self.series.get(series)?.id.as_str())
     }
-    fn place(&mut self, _tr: &mut TextRenderer, _theme: &Theme) {
+    fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        self.margins = self.measure_margins(tr, theme);
         self.toggles.place(
             self.series
                 .iter()
@@ -737,13 +779,7 @@ impl PlotMarks for CategoryMarks {
             plot,
             range,
             grid: self.style.show_grid,
-            label: |value| {
-                if self.style.layout == CategoryLayout::Percent {
-                    format!("{:.0}%", value * 100.0)
-                } else {
-                    format_axis_value(value, self.style.value_format)
-                }
-            },
+            label: |value| self.axis_label(value),
         }
         .paint(scene, transform, tr, theme);
         let bars = self.bars();
@@ -792,7 +828,7 @@ impl PlotMarks for CategoryMarks {
                     transform
                         * Affine::translate((
                             bar.rect.center().x - f64::from(width) / 2.0,
-                            bar.rect.y0 + 5.0,
+                            bar.rect.y0 + f64::from(theme.tokens.spacing.s1),
                         )),
                     None,
                     &theme.text(TextRole::Caption),
@@ -826,12 +862,16 @@ impl PlotMarks for CategoryMarks {
                 scene,
                 &category.label,
                 theme.tokens.colors.text_dim,
-                transform * Affine::translate((x - f64::from(width) / 2.0, plot.y1 + 10.0)),
+                transform
+                    * Affine::translate((
+                        x - f64::from(width) / 2.0,
+                        plot.y1 + f64::from(theme.tokens.spacing.s2),
+                    )),
                 Some(crate::num::f32_of_f64(label_width.max(0.0))),
                 &theme.text(TextRole::Caption),
             );
         }
-        if self.style.show_legend && self.style.layout != CategoryLayout::Waterfall {
+        if self.shows_legend() {
             self.toggles.paint(
                 scene,
                 transform,

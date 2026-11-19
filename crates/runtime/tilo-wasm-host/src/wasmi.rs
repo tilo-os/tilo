@@ -40,7 +40,6 @@ pub fn store_limits(limits: &Limits) -> StoreLimits {
         .memories(limits.max_memories)
         .tables(limits.max_tables)
         .instances(limits.max_instances)
-        .table_elements(limits.max_table_elements)
         .trap_on_grow_failure(true)
         .build()
 }

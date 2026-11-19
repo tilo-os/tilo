@@ -316,6 +316,18 @@ pub trait Founder: Send + Sync {
         action: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Option<ServiceAnswer>;
+
+    /// Ask the host itself its own operation `action` (`machine.plan` and the
+    /// rest the person's own device answers, `tilo.host`) with `arguments`;
+    /// `None` when this device has no workspace service open.
+    fn ask_host(
+        &self,
+        action: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Option<ServiceAnswer> {
+        let _ = (action, arguments);
+        None
+    }
 }
 
 /// The sealed resources this device keeps opened, by workspace, app and document id, with the
@@ -2098,7 +2110,20 @@ impl Engine {
         }))
     }
 
-    /// Whether this device holds a workspace whose link still admits someone: a person who
+    /// Ask this device's own workspace service its host operation `action`
+    /// (`machine.plan` and the rest, `tilo.host`) with `arguments`, when it is
+    /// open: what this device's own person plans and reads there, whether or
+    /// not it holds the workspace yet.
+    #[must_use]
+    pub fn ask_own_host(
+        &self,
+        action: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Option<ServiceAnswer> {
+        self.founder.get()?.ask_host(action, arguments)
+    }
+
+    /// Whether this device holds a link into a workspace that still admits someone: a person who
     /// redeems it dials this device, which stays dialable until the link is taken back or lapses.
     #[must_use]
     pub fn invitations_open(&self, now: SystemTime) -> bool {

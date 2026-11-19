@@ -16,6 +16,9 @@ pub use tilo_workspace_service::workspaces::servers::{
     holds_admin, name, plan, read, read_on, take_in,
 };
 
+pub use tilo_workspace_service::workspaces::servers::attach;
+
 pub mod applied;
+pub mod first_install;
 pub mod floor;
 pub mod policy;

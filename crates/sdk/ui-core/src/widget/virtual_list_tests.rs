@@ -1251,7 +1251,7 @@ fn plain_rows(count: u32) -> VirtualList<VecListModel<u32, u32>> {
 tilo_test_env::scenario! {
     fn a_list_places_its_rows_and_its_viewport;
 
-    phase rows_stand_a_bleed_in_and_the_bar_takes_the_shared_gutter;
+    phase rows_start_on_the_lists_edge_and_their_lift_hangs_past_it;
     {
         let mut list = plain_rows(100);
         let _ = lay_out(&mut list, 300.0);
@@ -1259,17 +1259,22 @@ tilo_test_env::scenario! {
         let bleed = crate::chrome::row_bleed(&theme);
         let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
         let row = list.mounted[0].widget.get_rect();
-        assert!((row.x0 - bleed).abs() < 0.5, "a bleed in: {row:?}");
+        assert!(row.x0.abs() < 0.5, "on the list's edge, where the page's words start: {row:?}");
         assert!(
-            (row.x1 - (300.0 - gutter - bleed)).abs() < 0.5,
+            (row.x1 - (300.0 - gutter)).abs() < 0.5,
             "clear of the bar: {row:?}"
+        );
+        let drawn = list.paint_bounds();
+        assert!(
+            (drawn.x0 + bleed).abs() < 0.5 && (drawn.x1 - (300.0 + bleed)).abs() < 0.5,
+            "the lift hangs a bleed past either side: {drawn:?}"
         );
         let track = list.scrollbar_track().unwrap();
         assert!(track.x0 >= 300.0 - gutter && track.x1 <= 300.0);
         let mut short = plain_rows(2);
         let _ = lay_out(&mut short, 300.0);
         let row = short.mounted[0].widget.get_rect();
-        assert!((row.x1 - (300.0 - bleed)).abs() < 0.5);
+        assert!((row.x1 - 300.0).abs() < 0.5);
         assert!(short.scrollbar_track().is_none());
     }
 

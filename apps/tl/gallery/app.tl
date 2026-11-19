@@ -83,7 +83,9 @@ initial action fill(g: Gallery) {
         Item(title: "Screenshots for the docs", notes: RichText(""), stage: "Doing"),
     )
     g.backlog_items.insert(Item(title: "Bump the version", notes: RichText(""), stage: "Done"))
-    g.release_items.insert(Item(title: "Write the release notes", notes: RichText(""), stage: "To do"))
+    g.release_items.insert(
+        Item(title: "Write the release notes", notes: RichText(""), stage: "To do"),
+    )
     g.release_items.insert(
         Item(title: "Translate the onboarding", notes: RichText(""), stage: "To do"),
     )
@@ -157,12 +159,7 @@ initial action fill(g: Gallery) {
         ),
     )
     g.data_changes.insert(
-        Change(
-            title: "Moved to Done",
-            who: "Sam",
-            summary: "Moved to Done",
-            at: 2026-06-30T09:10Z,
-        ),
+        Change(title: "Moved to Done", who: "Sam", summary: "Moved to Done", at: 2026-06-30T09:10Z),
     )
     g.media_photos.insert(Photo(title: "Dawn", place: "Black Forest", picture: photo()))
     g.media_photos.insert(Photo(title: "Blue hour", place: "Lake Constance", picture: photo()))
@@ -391,17 +388,13 @@ view backlog_list(g: Gallery) {
                 }
             }
         }
-        // The list is the column's body, its rows on the column's edge, where the line over it
-        // starts too; the list keeps the column's gutter over its first row itself.
-        stack(gap: .tight, fill) {
-            stack(padding: .group) {
-                ui.Text(
-                    "Rows of a collection: each with a menu, a swipe, a toolbar on hover and its reactions.",
-                    role: .caption,
-                    secondary: true,
-                )
-            }
-            ui.VirtualList(selection_follows_focus: true, in_column: true, fill) {
+        stack(padding: .group, gap: .related, fill) {
+            ui.Text(
+                "Rows of a collection: each with a menu, a swipe, a toolbar on hover and its reactions.",
+                role: .caption,
+                secondary: true,
+            )
+            ui.VirtualList(selection_follows_focus: true, fill) {
                 for x in g.backlog_items {
                     ui.ListItem(item: x, done: x.stage == "Done") {
                         menu: {

@@ -209,13 +209,15 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     if (inFlow) {
       // A flex item of its parent, at the size the shared layout gave it.
       css += `position:relative;flex:none;width:${w}px;height:${h}px;`;
-      // The room it keeps from its siblings, as its layout node keeps it.
+      // The room it keeps from its siblings, as its layout node keeps it, and none of the
+      // browser's own (a figure's, a paragraph's, a list's).
       const margin = /(?:^|;)margin:([^;]*)/.exec(node.layout ?? '')?.[1];
-      if (margin) css += `margin:${margin};`;
+      css += `margin:${margin || '0'};`;
     } else {
       const ox = outer ? outer.rect[0] : 0;
       const oy = outer ? outer.rect[1] - (scrolledBy ?? 0) : 0;
-      css += `position:absolute;left:${x - ox}px;top:${y - oy}px;width:${w}px;height:${h}px;`;
+      // Where the shared layout put it, with none of the browser's own margin moving it off.
+      css += `position:absolute;left:${x - ox}px;top:${y - oy}px;width:${w}px;height:${h}px;margin:0;`;
     }
     if (flows && node.layout) {
       // The container lays its children out itself, from its node's style;

@@ -343,7 +343,7 @@ impl NativeCommittedView {
     /// service takes part in the group with this device's keys.
     #[must_use]
     pub fn founded_here(&self) -> bool {
-        let Some(founder) = self.peer.governance().founder() else {
+        let Some(founder) = self.peer.governance().founding_device() else {
             return false;
         };
         let device = &self.device().device_public_key;

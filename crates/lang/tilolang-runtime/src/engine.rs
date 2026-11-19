@@ -152,7 +152,6 @@ pub const DEFAULT_LIMITS: EngineLimits = EngineLimits {
     max_memories: 10_000,
     max_tables: 10_000,
     max_instances: 10_000,
-    max_table_elements: 10_000,
 };
 
 /// How wasmi turns wasm into what it runs. The compiling engines compile every function when

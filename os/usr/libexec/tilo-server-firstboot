@@ -21,6 +21,9 @@ cert="$identity_root/device/cert.bin"
 home_peer="${TILO_SERVER_HOME_PEER:-/etc/tilo/home-peer.toml}"
 decommissioned="${TILO_SERVER_DECOMMISSIONED:-/var/lib/tilo-server/decommissioned}"
 state_root="${TILO_SERVER_STATE_ROOT:-/var/lib/tilo-server}"
+# The plan this machine installs from is named by the token nonce, kept here
+# when it enrolled: the server reads it and finishes installing what it says.
+install_plan="${TILO_SERVER_INSTALL_PLAN:-$state_root/install-plan.nonce}"
 sibling_dir="${TILO_SERVER_SIBLING_DIR:-/var/lib/tilo/sibling-enrol}"
 sibling_conf="$sibling_dir/enrol.conf"
 sibling_key="$sibling_dir/luks.key"
@@ -177,11 +180,18 @@ if [[ -r /etc/tilo/server.toml ]]; then
         /etc/tilo/server.toml | head -n 1)"
 fi
 enroll_args=(--identity-root "$identity_root"
-    --home-peer-output "$home_peer" --label "$label" --timeout 270)
+    --home-peer-output "$home_peer" --label "$label" --timeout 270
+    --nonce-output "$install_plan")
 [[ -n "$relay" ]] && enroll_args+=(--relay "$relay")
 "$enroll_bin" enroll "${enroll_args[@]}"
 valid_device_certificate \
     || { echo "tilo-server-firstboot: enrollment produced an unsafe device certificate" >&2; exit 1; }
 handoff_home_peer
+# The server reads the plan it must finish installing from this file: it is
+# the server account's to read, and nobody else's.
+if [[ -e "$install_plan" || -L "$install_plan" ]]; then
+    chown --no-dereference tilo-server:tilo-server "$install_plan"
+    chmod 0600 "$install_plan"
+fi
 sibling_enrol
 echo "tilo-server-firstboot: enrollment and full-sync setup complete"

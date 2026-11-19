@@ -34,8 +34,6 @@ pub struct Limits {
     pub max_tables: usize,
     /// Instances one store may hold.
     pub max_instances: usize,
-    /// Elements one table may hold.
-    pub max_table_elements: usize,
 }
 
 /// Which imports a module may name when it is loaded.

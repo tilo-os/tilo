@@ -268,6 +268,35 @@ impl Tube {
     )]
     pub(crate) fn perform(&mut self, effect: TubeEffect) -> Result<(), String> {
         self.structure_dirty = true;
+        // A row names its entity by the id it is published under; the catalogue
+        // knows it by its own.
+        let effect = match effect {
+            TubeEffect::OpenVideo { video } => TubeEffect::OpenVideo {
+                video: crate::rows::row_entity(&video).to_owned(),
+            },
+            TubeEffect::OpenCreator { creator } => TubeEffect::OpenCreator {
+                creator: crate::rows::row_entity(&creator).to_owned(),
+            },
+            TubeEffect::OpenPlaylist { playlist } => TubeEffect::OpenPlaylist {
+                playlist: crate::rows::row_entity(&playlist).to_owned(),
+            },
+            TubeEffect::Share { video } => TubeEffect::Share {
+                video: crate::rows::row_entity(&video).to_owned(),
+            },
+            TubeEffect::MarkWatched { video } => TubeEffect::MarkWatched {
+                video: crate::rows::row_entity(&video).to_owned(),
+            },
+            TubeEffect::ForgetWatched { video } => TubeEffect::ForgetWatched {
+                video: crate::rows::row_entity(&video).to_owned(),
+            },
+            TubeEffect::ApproveDevice { device } => TubeEffect::ApproveDevice {
+                device: crate::rows::row_entity(&device).to_owned(),
+            },
+            TubeEffect::RevokeDevice { device } => TubeEffect::RevokeDevice {
+                device: crate::rows::row_entity(&device).to_owned(),
+            },
+            effect => effect,
+        };
         if let Some(settings) = effect.preferences(&self.model.settings) {
             let settings = settings?;
             if !self.change_preferences(|current| *current = settings) {
@@ -1029,7 +1058,8 @@ pub(crate) fn window(cx: &ViewCx<Library>, mut window: TubeApp) -> Element {
             }
         });
     }
-    let (rows, row, entries, query) = (
+    let (rows, row, entries, query, statuses) = (
+        Rc::clone(&tube),
         Rc::clone(&tube),
         Rc::clone(&tube),
         Rc::clone(&tube),
@@ -1044,6 +1074,12 @@ pub(crate) fn window(cx: &ViewCx<Library>, mut window: TubeApp) -> Element {
             .live_row(move |id| {
                 let tube = row.borrow();
                 crate::rows::live_row(&tube.model, tube.device_sync_view(), id)
+            })
+            // A device with access is not approved again, and nothing syncs
+            // without an active device or a reachable Grayjay.
+            .row_status(move |id| {
+                let tube = statuses.borrow();
+                crate::rows::row_status(tube.device_sync_view(), id)
             })
             .search_entries(move || entries.borrow().search_entries_of_model())
             .search_query(move |asked| query.borrow_mut().follow_palette_query(asked.text()))

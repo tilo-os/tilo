@@ -320,7 +320,7 @@ impl KeyDirectory for Directory {
     fn founds(&self, workspace: WorkspaceId) -> bool {
         lock(&self.states)
             .get(&workspace.to_string())
-            .is_some_and(|state| state.governance().founder() == Some(self.device))
+            .is_some_and(|state| state.governance().founding_device() == Some(self.device))
     }
 }
 
