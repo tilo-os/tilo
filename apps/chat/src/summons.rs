@@ -37,7 +37,7 @@ use ui::tilo_resource::{self, Model};
 pub struct Stopped {
     /// The attempt it stopped: asking again (`retry`) is a later attempt, which it leaves alone.
     pub attempt: u32,
-    /// When, in seconds since the epoch.
+    /// When, in milliseconds since the epoch.
     pub at: i64,
 }
 
@@ -225,7 +225,7 @@ struct Asked<'a> {
     agent: String,
     /// Whether the agent was named rather than taking part.
     mentioned: bool,
-    /// Every message that asks it, answered or not, in the order the part holds them.
+    /// Every message that asks it, answered or not.
     asks: Vec<(&'a Id, &'a Message)>,
 }
 
@@ -313,14 +313,12 @@ pub fn summonses(chat: &Chat, part: &ChatMessages) -> Vec<Summons> {
             .copied()
             .filter(|(id, message)| !stopped_now(message) && unanswered(reply(id, message)))
             .collect();
-        // Of two they wrote within one second the later is the one that stands later in the
-        // part, as a turn is told them ([`crate::recall::told`]): `max_by_key` keeps the last
-        // of equals, and a message's id says nothing of when it was written.
+        // The newest one they wrote, ties by id: the order the conversation shows them in.
         let turn = open
             .iter()
             .copied()
             .filter(|(_, message)| typed(message))
-            .max_by_key(|(_, message)| message.ts)
+            .max_by_key(|(id, message)| (message.ts, *id))
             .or_else(|| {
                 open.iter()
                     .copied()
@@ -734,21 +732,23 @@ mod tests {
         assert_eq!(turn(&part), second);
     }
 
-    /// Of two messages a person wrote within one second the later one is their newest: the one
-    /// that stands later in the part, whichever way the two ids sort.
+    /// Of two messages a person wrote the later one is their newest, whichever way the part
+    /// holds them; two written in the same millisecond read in one order, the same on every
+    /// device.
     #[test]
-    fn of_two_messages_of_one_second_the_later_in_the_part_is_the_newest() {
+    fn of_two_messages_the_later_written_is_the_newest() {
         let chat = Chat::default();
         let direct = Chat::direct_id([MemberId::person(ADA), MemberId::agent("scout")]);
         for (earlier, later) in [("m1", "m2"), ("m2", "m1")] {
+            // The part holds the later one first: the time decides, not the place.
             let mut part = ChatMessages::default();
+            part.messages.push(
+                Id::from_raw(later),
+                said(&direct, MemberId::person(ADA), "also order the cake", 8),
+            );
             part.messages.push(
                 Id::from_raw(earlier),
                 said(&direct, MemberId::person(ADA), "plan the launch", 7),
-            );
-            part.messages.push(
-                Id::from_raw(later),
-                said(&direct, MemberId::person(ADA), "also order the cake", 7),
             );
             let asked = summonses(&chat, &part);
             assert_eq!(asked.len(), 1, "one turn at a time: {asked:?}");
@@ -758,6 +758,24 @@ mod tests {
                 "written as {earlier}, then as {later}"
             );
         }
+        // Two written in the same millisecond: one order, whichever way the part holds them.
+        let same = |first: &str, second: &str| {
+            let mut part = ChatMessages::default();
+            for id in [first, second] {
+                part.messages.push(
+                    Id::from_raw(id),
+                    said(&direct, MemberId::person(ADA), "plan the launch", 7),
+                );
+            }
+            summonses(&chat, &part)
+                .first()
+                .map(|asked| asked.message.clone())
+        };
+        assert_eq!(
+            same("m1", "m2"),
+            same("m2", "m1"),
+            "one order on every device"
+        );
     }
 
     /// A stop ends the ask of the attempt it is in; whoever runs the agent is told to end its

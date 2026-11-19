@@ -124,7 +124,7 @@ pub struct Answered {
     /// The device of the person's it was pressed on, as that device names
     /// itself; empty when it named none.
     pub device: Atom,
-    /// When, in seconds since the epoch.
+    /// When, in milliseconds since the epoch.
     pub at: i64,
     /// What the answer carries beyond the choice, as its kind says, as JSON;
     /// empty when it carries nothing.
@@ -136,7 +136,7 @@ pub struct Answered {
 pub struct Outcome {
     /// [`STARTED`], [`DONE`], [`DROPPED`] or [`FAILED`].
     pub outcome: Atom,
-    /// When, in seconds since the epoch.
+    /// When, in milliseconds since the epoch.
     pub at: i64,
     /// What its person is told about it; empty when the outcome says it all.
     pub detail: String,
@@ -145,7 +145,7 @@ pub struct Outcome {
 /// A question taken back.
 #[derive(Model, Default, Debug, Clone, PartialEq, Eq)]
 pub struct Withdrawn {
-    /// When, in seconds since the epoch.
+    /// When, in milliseconds since the epoch.
     pub at: i64,
     /// Why, in words its person reads; empty when no reason was given.
     pub why: String,

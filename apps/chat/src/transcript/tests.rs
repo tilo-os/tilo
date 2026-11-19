@@ -83,7 +83,7 @@ tilo_test_env::scenario! {
             shown_author(&message, &|id| id.id().to_owned()),
             "Dana from Support"
         );
-        assert_eq!(message.ts, 1_700_000_000);
+        assert_eq!(message.ts, 1_700_000_000_000);
         assert_ne!(
             message.author.id(),
             "Dana from Support",
@@ -208,13 +208,13 @@ tilo_test_env::scenario! {
     phase rfc3339_prints_unix_seconds_in_utc;
     {
         assert_eq!(rfc3339(0), "1970-01-01T00:00:00Z");
-        assert_eq!(rfc3339(1_700_000_000), "2023-11-14T22:13:20Z");
-        assert_eq!(rfc3339(-1), "1969-12-31T23:59:59Z", "before the epoch");
+        assert_eq!(rfc3339(1_700_000_000_000), "2023-11-14T22:13:20Z");
+        assert_eq!(rfc3339(-1_000), "1969-12-31T23:59:59Z", "before the epoch");
         assert_eq!(
-            rfc3339(86_399),
+            rfc3339(86_399_999),
             "1970-01-01T23:59:59Z",
-            "a day's last second"
+            "a day's last millisecond"
         );
-        assert_eq!(rfc3339(951_782_400), "2000-02-29T00:00:00Z", "a leap day");
+        assert_eq!(rfc3339(951_782_400_000), "2000-02-29T00:00:00Z", "a leap day");
     }
 }

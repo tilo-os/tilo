@@ -57,7 +57,8 @@ pub fn shown_author(
 
 /// `ts` (Unix seconds) as RFC 3339 in UTC.
 #[must_use]
-pub fn rfc3339(ts: i64) -> String {
+pub fn rfc3339(at_ms: i64) -> String {
+    let ts = at_ms.div_euclid(1_000);
     let (year, month, day) = ui::date::civil_from_days(ts.div_euclid(86_400));
     let of_day = ts.rem_euclid(86_400);
     ui::format::machine!(

@@ -27,6 +27,7 @@ pub enum TriageUpdate {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TriageEntry {
     pub author: tilo_resource::MemberId,
+    /// When it was triaged, in milliseconds since the epoch.
     pub ts: i64,
     pub update: TriageUpdate,
 }

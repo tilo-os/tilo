@@ -75,14 +75,13 @@ pub fn told(
     }) {
         words.push_str(&known);
     }
-    // The conversation's messages before the turn's, oldest first: by their time, and within one
-    // second in the order the part keeps them.
+    // The conversation's messages before the turn's, oldest first as the conversation shows
+    // them.
     let mut held: Vec<(&Id, &Message)> = part
-        .messages
-        .iter()
+        .in_written_order()
+        .into_iter()
         .filter(|(_, message)| message.channel == *conversation)
         .collect();
-    held.sort_by_key(|(_, message)| message.ts);
     let before = held
         .iter()
         .position(|(id, _)| *id == turn)

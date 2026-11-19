@@ -201,7 +201,7 @@ fn a_posted_view_is_state_of_its_message_and_its_author_is_whoever_invoked() {
     let view = message.view.as_ref().expect("the message carries the view");
     assert_eq!(view.source, PROJECTS);
     assert_eq!(view.reads, ["tasks"], "each app once");
-    assert_eq!((view.version, view.at), (1, 1_001));
+    assert_eq!((view.version, view.at), (1, 1_001_000));
     assert!(view.earlier.is_empty());
     // The words are the message's own: what every reader has.
     assert_eq!(message.text, "The projects, as they stand");

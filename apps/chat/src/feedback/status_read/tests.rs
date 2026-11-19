@@ -67,8 +67,8 @@ fn concurrent_full_triage_histories_still_have_a_bounded_public_status_read() {
     assert_eq!(page.content["earlierEntries"], 128);
     let entries = page.content["triage"].as_array().unwrap();
     assert_eq!(entries.len(), 128);
-    assert_eq!(entries.first().unwrap()["ts"], 65);
-    assert_eq!(entries.last().unwrap()["ts"], 128);
+    assert_eq!(entries.first().unwrap()["ts"], 65_000);
+    assert_eq!(entries.last().unwrap()["ts"], 128_000);
     assert!(
         entries
             .iter()

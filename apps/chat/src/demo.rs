@@ -170,7 +170,7 @@ impl Demo {
     }
 
     fn design_crit_early() -> Vec<(&'static str, NewMessage)> {
-        let m = |off_min: i64| NOW - off_min * 60;
+        let m = |off_min: i64| NOW.saturating_mul(1_000) - off_min * 60_000;
         vec![
             (
                 "m_open",
@@ -225,7 +225,7 @@ impl Demo {
     }
 
     fn design_crit_late() -> Vec<(&'static str, NewMessage)> {
-        let m = |off_min: i64| NOW - off_min * 60;
+        let m = |off_min: i64| NOW.saturating_mul(1_000) - off_min * 60_000;
         vec![
             (
                 "m_devon",
@@ -293,7 +293,7 @@ impl Demo {
     }
 
     fn design_crit_thread(parent_id: &str) -> Vec<NewMessage> {
-        let m = |off_min: i64| NOW - off_min * 60;
+        let m = |off_min: i64| NOW.saturating_mul(1_000) - off_min * 60_000;
         let thread: Vec<NewMessage> = vec![
             NewMessage {
                 author: "u_milo".into(),
@@ -322,7 +322,7 @@ impl Demo {
     }
 
     fn general_welcome() -> NewMessage {
-        let m = |off_min: i64| NOW - off_min * 60;
+        let m = |off_min: i64| NOW.saturating_mul(1_000) - off_min * 60_000;
         NewMessage {
             author: "u_iris".into(),
             ts: m(220),
@@ -416,7 +416,7 @@ pub fn demo_part(me: &str) -> ChatMessages {
                 reactions.insert(ui::tilo_resource::Reaction {
                     emoji: Atom(emoji.clone()),
                     by: ui::tilo_resource::MemberId::person(mine(&user)),
-                    at: message.ts.saturating_mul(1000),
+                    at: message.ts,
                     persona: None,
                     name: None,
                 });
@@ -590,6 +590,8 @@ pub struct Workspace {
     /// The chat resource as the chain's actions read it: refreshed before
     /// each of them.
     base: std::rc::Rc<std::cell::RefCell<std::rc::Rc<Chat>>>,
+    /// The time the last message was written at here.
+    now_ms: i64,
 }
 
 impl Default for Workspace {
@@ -604,6 +606,7 @@ impl Default for Workspace {
                 move || std::rc::Rc::clone(&read.borrow()),
             ),
             base,
+            now_ms: 0,
         }
     }
 }
@@ -715,7 +718,14 @@ impl Workspace {
         author: &ui::tilo_resource::MemberId,
         invoke: Invoke<ChatMessages>,
     ) -> Result<u64, ApiError> {
-        self.apply_part_at(author, ui::tilo_resource::origin_now_ms(), invoke)
+        // The machine's clock, a millisecond past the last message written here: posts made
+        // one after another in a test keep the order they were made in.
+        let now = self
+            .now_ms
+            .max(ui::tilo_resource::origin_now_ms())
+            .saturating_add(1);
+        self.now_ms = now;
+        self.apply_part_at(author, now, invoke)
     }
 
     /// [`Self::apply_part_as`] at `now_ms`, the action's time.

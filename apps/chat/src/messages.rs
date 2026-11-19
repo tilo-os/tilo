@@ -28,7 +28,7 @@ use ui::tilo_resource::{
 use crate::cause::{Cause, Starting};
 use crate::chat::{
     Chat, MAX_AGENT_NAME_BYTES, MAX_MESSAGE_TEXT_BYTES, Message, Posting, ProviderStream, Revision,
-    ShareAccess, Step, Transition, WindowShare, Work, WorkUpdate, author, reply_id_at, seconds,
+    ShareAccess, Step, Transition, WindowShare, Work, WorkUpdate, author, reply_id_at,
 };
 use crate::message_view::View;
 use crate::parts::{self, ChatMessages};
@@ -86,17 +86,36 @@ pub(crate) fn shared_for(acting: Option<&tilo_actions::Acting>) -> Option<&str> 
 /// The longest name a delivered message is shown under.
 const MAX_SHOWN_NAME_BYTES: usize = 128;
 
-/// A post's time: when it was `written` elsewhere, for a message a bot
-/// brings over on someone's behalf (`brought`), never later than now; else
-/// now. A member's own post is always now, so no one backdates theirs.
+/// A post's time in milliseconds: when it was `written` elsewhere (in Unix
+/// seconds, as a bot brings one over on someone's behalf) when `brought`,
+/// never later than now; else now. A member's own post is always now, so no
+/// one backdates theirs.
 fn written_at(cx: &ActionCx, written: Option<i64>, brought: bool) -> i64 {
-    let now = seconds(cx);
+    let now = cx.now_ms();
     written
         .filter(|_| brought)
-        .map_or(now, |written| written.clamp(0, now))
+        .map_or(now, |written| written.saturating_mul(1_000).clamp(0, now))
+}
+
+/// Oldest first: when it was written, ties by id. The time is the one the
+/// action that wrote the message carried, which every replica reads from the
+/// message itself.
+fn written_first((a_id, a): &(&Id, &Message), (b_id, b): &(&Id, &Message)) -> std::cmp::Ordering {
+    (a.ts, *a_id).cmp(&(b.ts, *b_id))
 }
 
 impl ChatMessages {
+    /// The messages of this part as the conversation reads them, oldest first:
+    /// when each was written, ties by id. The part holds them in the place
+    /// each device made for a message against what that device had seen, which
+    /// is not when it was written.
+    #[must_use]
+    pub fn in_written_order(&self) -> Vec<(&Id, &Message)> {
+        let mut held: Vec<(&Id, &Message)> = self.messages.iter().collect();
+        held.sort_by(written_first);
+        held
+    }
+
     /// What search finds in the messages this part keeps: each message's
     /// words, opening the message in the chat it was posted in.
     ///
@@ -134,7 +153,7 @@ impl ChatMessages {
                         .with_icon("message-circle")
                         .showing(vec![sender])
                         .in_place(place)
-                        .at(message.ts)
+                        .at(message.ts.div_euclid(1_000))
                 })
             })
             .collect()
@@ -340,7 +359,7 @@ impl ChatMessages {
         let appearance = cx.appearance();
         // A message moved from elsewhere stands where it was written there.
         let ts = match origin.as_ref().and_then(|origin| origin.created_ms) {
-            Some(created_ms) => (created_ms / 1000).clamp(0, seconds(cx)),
+            Some(created_ms) => created_ms.clamp(0, cx.now_ms()),
             None => written_at(cx, written, appearance.is_some()),
         };
         self.append(
@@ -390,7 +409,7 @@ impl ChatMessages {
             })
             .ok_or("the file is described where it is posted")?;
         let id = cx.id();
-        let ts = seconds(cx);
+        let ts = cx.now_ms();
         self.append(
             cx,
             id,
@@ -433,7 +452,7 @@ impl ChatMessages {
             .filter(|text| !text.trim().is_empty())
             .unwrap_or_else(|| label.clone());
         let id = cx.id();
-        let ts = seconds(cx);
+        let ts = cx.now_ms();
         self.append(
             cx,
             id,
@@ -475,7 +494,7 @@ impl ChatMessages {
         }
         let label = attached.reference.label.clone();
         let id = cx.id();
-        let ts = seconds(cx);
+        let ts = cx.now_ms();
         self.append(
             cx,
             id,
@@ -599,12 +618,12 @@ impl ChatMessages {
         if self.messages.contains(&id) {
             return Ok(());
         }
-        let now = seconds(cx);
+        let now = cx.now_ms();
         self.append(
             cx,
             id,
             &channel,
-            ts.map_or(now, |ts| ts.clamp(0, now)),
+            ts.map_or(now, |ts| ts.saturating_mul(1_000).clamp(0, now)),
             Posting {
                 text: body,
                 appearance: Some(tilo_actions::Appearance {
@@ -635,7 +654,7 @@ impl ChatMessages {
         if text.len() > MAX_MESSAGE_TEXT_BYTES {
             return Err(Refusal::new("the message is too long"));
         }
-        let ts = seconds(cx);
+        let ts = cx.now_ms();
         let body = body.unwrap_or_default();
         let row = self
             .messages
@@ -755,7 +774,7 @@ impl ChatMessages {
         #[param("The reply's words, when it has none yet")] say: Option<String>,
     ) -> Result<(), Refusal> {
         let me = author(cx)?;
-        let since = seconds(cx);
+        let now = cx.now_ms();
         let (state, trace) = crate::model::AgentWork::from_update(&work)
             .map_err(Refusal::new)?
             .into_parts();
@@ -773,7 +792,7 @@ impl ChatMessages {
                 cx,
                 reply.clone(),
                 &channel,
-                since,
+                now,
                 Posting {
                     parent: Some(thread),
                     ..Posting::default()
@@ -793,7 +812,7 @@ impl ChatMessages {
             .as_ref()
             .is_some_and(|transition| transition.state == state);
         if !unchanged {
-            record.state = Some(Transition { state, since });
+            record.state = Some(Transition { state, since: now });
         }
         // The run's working resource of a failure, kept beside the words the
         // reply shows; a later update without one leaves it as it was.
@@ -873,7 +892,7 @@ impl ChatMessages {
         }
         let question = Question::asked(person, kind, answers.unwrap_or_default(), detail)?;
         let id = cx.id();
-        let ts = seconds(cx);
+        let ts = cx.now_ms();
         self.append(
             cx,
             id,
@@ -906,7 +925,7 @@ impl ChatMessages {
         #[param("What the answer carries, as the question's kind says; leave it out")]
         detail: Option<serde_json::Value>,
     ) -> Result<(), Refusal> {
-        let at = seconds(cx);
+        let at = cx.now_ms();
         self.question_of(message)?
             .answer(cx, &answer, device, detail, at)
     }
@@ -922,7 +941,7 @@ impl ChatMessages {
         message: &Id,
         #[param("Why, in words its person reads")] why: Option<String>,
     ) -> Result<(), Refusal> {
-        let at = seconds(cx);
+        let at = cx.now_ms();
         self.asked_by(cx, message)?;
         self.question_of(message)?.withdraw(why, at)
     }
@@ -940,7 +959,7 @@ impl ChatMessages {
         #[param("What came of it: started, done, dropped or failed")] outcome: String,
         #[param("What its person is told about it")] detail: Option<String>,
     ) -> Result<(), Refusal> {
-        let at = seconds(cx);
+        let at = cx.now_ms();
         self.asked_by(cx, message)?;
         self.question_of(message)?.settle(&outcome, detail, at)
     }
@@ -1001,7 +1020,7 @@ impl ChatMessages {
                 ))
             };
         }
-        let ts = seconds(cx);
+        let ts = cx.now_ms();
         self.append(
             cx,
             id,
@@ -1025,7 +1044,7 @@ impl ChatMessages {
     #[action(item = messages)]
     pub fn stop_agent(&mut self, cx: &mut ActionCx, message: &Id) -> Result<(), Refusal> {
         let starter = crate::cause::starter(cx)?;
-        let at = seconds(cx);
+        let at = cx.now_ms();
         // Whoever shows an agent at work holds its reply, where the work is kept: a stop that
         // names the reply is a stop of the message it answers, held to the same check. An
         // answer longer than one message goes on in further messages, and a stop that names
@@ -1073,7 +1092,7 @@ impl ChatMessages {
         #[param("The apps the view reads, each as the view calls it")] reads: Vec<String>,
         #[param("The message it answers in a thread")] parent: Option<Id>,
     ) -> Result<(), Refusal> {
-        let ts = seconds(cx);
+        let ts = cx.now_ms();
         let view = View::written(source, reads, ts)?;
         let id = cx.id();
         self.append(
@@ -1132,7 +1151,7 @@ impl ChatMessages {
         >,
     ) -> Result<(), Refusal> {
         let me = author(cx)?;
-        let at = seconds(cx);
+        let at = cx.now_ms();
         let summons = self
             .messages
             .get(message)
@@ -1190,7 +1209,7 @@ impl ChatMessages {
         #[param("The view: one `view` declaration and the functions it calls")] source: String,
         #[param("The apps the view reads, each as the view calls it")] reads: Vec<String>,
     ) -> Result<(), Refusal> {
-        let at = seconds(cx);
+        let at = cx.now_ms();
         let row = self
             .messages
             .get_mut(message)
@@ -1272,7 +1291,7 @@ impl ChatMessages {
                 cx,
                 id.clone(),
                 &channel,
-                seconds(cx),
+                cx.now_ms(),
                 Posting {
                     parent,
                     appearance: name.map(|name| tilo_actions::Appearance {
@@ -1292,7 +1311,7 @@ impl ChatMessages {
         if work.state.is_none() {
             work.state = Some(Transition {
                 state: crate::model::AgentWorkState::Taken,
-                since: seconds(cx),
+                since: cx.now_ms(),
             });
         }
         let record = work.stream.get_or_insert_with(|| ProviderStream {
@@ -1308,7 +1327,7 @@ impl ChatMessages {
                 record.detail.clone_from(detail);
                 work.state = Some(Transition {
                     state: crate::model::AgentWorkState::ProviderFinished { outcome: *outcome },
-                    since: seconds(cx),
+                    since: cx.now_ms(),
                 });
             }
         }
@@ -1573,13 +1592,13 @@ impl ChatMessages {
 /// The parts of the chat's messages a device holds, read as one timeline:
 /// every message oldest first, whichever part holds it.
 ///
-/// The order is the resources', not a clock's ([`Self::iter`]): the parts by
-/// number, each part's messages in the order the part holds them, which every
-/// device reads the same from the same resources. Two devices that wrote
-/// offline and took each other's posts in the opposite order read the same
-/// conversation in the same order, and so does a device that receives a
-/// message late. A post's whole-second time (`ts`) is only what the window
-/// shows beside a message, never what orders them.
+/// The order is when each message was written ([`Self::iter`]): the time its
+/// writer's action carried in milliseconds, ties by id. Every device reads the
+/// same time from the same message, so two devices that wrote offline and
+/// took each other's posts in the opposite order read one conversation in one
+/// order, and a message reaches a device that was away in its own place.
+/// Nothing is ordered by the place the storage made for a message, which is
+/// what the device writing it had seen.
 #[derive(Clone, Debug, Default)]
 pub struct Messages {
     parts: Vec<(u64, Rc<ChatMessages>)>,
@@ -1611,7 +1630,7 @@ impl Messages {
     pub fn sending(&self) -> impl Iterator<Item = (&Id, &Message)> + '_ {
         self.sending
             .iter()
-            .flat_map(|part| part.messages.iter())
+            .flat_map(|part| part.in_written_order())
             .filter(|(id, _)| self.part_of(id).is_none())
     }
 
@@ -1633,31 +1652,30 @@ impl Messages {
         self.parts.last().map(|(index, _)| *index)
     }
 
-    /// Every message held, oldest first: the parts', each in the order its resource holds it
-    /// (its order key, ties by id). Every device reads the same resources as
-    /// that order, so this is one total order, whatever order the changes
-    /// arrived in.
+    /// Every message held, oldest first: when each was written, ties by id.
+    /// The time is the one the writer's action carried, so every device reads
+    /// one order whatever order the changes arrived in, and a message written
+    /// before another reads before it however late it reaches a device.
     pub fn iter(&self) -> impl DoubleEndedIterator<Item = (&Id, &Message)> + '_ {
-        self.parts.iter().flat_map(|(_, part)| part.messages.iter())
-    }
-
-    /// Every message held, oldest first, with the part holding it.
-    pub fn located(&self) -> impl Iterator<Item = (u64, &Id, &Message)> + '_ {
-        self.parts
+        let mut held: Vec<(&Id, &Message)> = self
+            .parts
             .iter()
-            .flat_map(|(index, part)| part.messages.iter().map(move |(id, m)| (*index, id, m)))
+            .flat_map(|(_, part)| part.in_written_order())
+            .collect();
+        held.sort_by(written_first);
+        held.into_iter()
     }
 
     /// How many messages are held.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.iter().count()
+        self.parts.iter().map(|(_, part)| part.messages.len()).sum()
     }
 
     /// Whether no message is held.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.parts.iter().all(|(_, part)| part.messages.is_empty())
     }
 
     /// The message `id`, in whichever part holds it.
@@ -1728,8 +1746,8 @@ impl Messages {
                 }
                 std::cmp::Ordering::Greater => 0,
             };
-            part.messages
-                .iter()
+            part.in_written_order()
+                .into_iter()
                 .filter(|(_, message)| message.channel == *channel && message.parent.is_none())
                 .nth(skip)
                 .map(|(id, _)| id)
@@ -1831,7 +1849,7 @@ impl Messages {
     /// write: what a direct conversation counts as unread for them. Counted in
     /// the parts this reader holds, as a direct conversation is short and its
     /// reader holds it, in the same order as [`Self::first_unread`]: the
-    /// part's own.
+    /// order they were written in.
     #[must_use]
     pub fn unread_by_others(
         &self,
@@ -1848,11 +1866,11 @@ impl Messages {
             }
             let skip = if *index == from { seen } else { 0 };
             unread += part
-                .messages
-                .values()
-                .filter(|message| message.channel == *channel && message.parent.is_none())
+                .in_written_order()
+                .into_iter()
+                .filter(|(_, message)| message.channel == *channel && message.parent.is_none())
                 .skip(skip)
-                .filter(|message| message.author != *author)
+                .filter(|(_, message)| message.author != *author)
                 .count();
         }
         unread

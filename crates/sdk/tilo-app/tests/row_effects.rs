@@ -287,10 +287,14 @@ impl ResourceApp for RowPublishingApp {
                     vec![
                         LiveRow::typed::<Job>("job:1", "Backup"),
                         LiveRow::typed::<Job>("job:2", "Index"),
+                        // A job whose steps are rows of their own: the status
+                        // of a row nested beneath another reaches it too.
+                        LiveRow::typed::<Job>("job:3", "Sweep")
+                            .row(LiveRow::typed::<Job>("job:3:step", "Sweep step")),
                     ]
                 })
                 .row_status(|id| {
-                    (id == "job:2")
+                    (id == "job:2" || id == "job:3:step")
                         .then(|| {
                             EffectStatus::unavailable(
                                 JobEffect::STOP,
@@ -345,6 +349,21 @@ fn a_row_status_and_an_items_presentation_reach_the_published_tree() {
             reason: "This job is busy and cannot be stopped now".into(),
         },
         "the status is about this row alone"
+    );
+
+    let nested = find(&resources, "job:3:step").expect("a nested row is published");
+    let stop = nested
+        .actions
+        .iter()
+        .find(|action| action.id == "stop")
+        .unwrap();
+    assert_eq!(
+        stop.contract.availability,
+        tilo_actions::Availability::Unavailable {
+            code: "busy".into(),
+            reason: "This job is busy and cannot be stopped now".into(),
+        },
+        "a status reaches the row it is about wherever it is published"
     );
 
     let published = find(&resources, &item).expect("a labelled item is published");
