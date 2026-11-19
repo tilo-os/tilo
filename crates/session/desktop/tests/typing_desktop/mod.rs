@@ -360,6 +360,8 @@ pub struct KeyCost {
     /// How many times a window's app synced its view
     /// ([`COMPONENT_SYNC`]): a window nothing reached rests.
     pub syncs: usize,
+    /// How many frames rebuilt the shell's layout tree.
+    pub rebuilds: usize,
 }
 
 /// The phase an app names while it refreshes the actions its controls look
@@ -376,6 +378,7 @@ impl Demo {
     /// runs ([`tilo_resource::profiling`]).
     pub fn measure_key(&mut self, key: &str) -> KeyCost {
         let started = ui::rt::thread_cpu_time();
+        let rebuilt_before = self.harness.rebuilt_frames();
         let ((), samples) = tilo_resource::profiling::observe(|| self.type_key(key));
         let cpu_us = started
             .zip(ui::rt::thread_cpu_time())
@@ -394,6 +397,8 @@ impl Demo {
             passes: calls(ACTION_PASS),
             declarations: calls(BOUND_DECLARATIONS),
             syncs: calls(COMPONENT_SYNC),
+            rebuilds: usize::try_from(self.harness.rebuilt_frames().saturating_sub(rebuilt_before))
+                .unwrap_or(usize::MAX),
         }
     }
 

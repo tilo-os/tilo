@@ -950,6 +950,15 @@ impl TileHost {
         self.history.is_none()
     }
 
+    /// Whether a change below this tile is carried out under the node it
+    /// keeps: with no History around the app, or a History that is closed and
+    /// lays the live app out in its body.
+    fn carries_children_in_place(&self) -> bool {
+        self.history
+            .as_ref()
+            .is_none_or(|history| history.lays_out_in_place())
+    }
+
     fn composes_live_app(&self) -> bool {
         self.history
             .as_ref()
@@ -2361,7 +2370,7 @@ impl Widget for TileHost {
                 StructureChange::Children
             }
             (true, _) => StructureChange::Rebuild,
-            (false, _) if self.lays_out_in_place() => inner,
+            (false, _) if self.carries_children_in_place() => inner,
             (false, _) => StructureChange::of(inner.rebuilds()),
         }
     }

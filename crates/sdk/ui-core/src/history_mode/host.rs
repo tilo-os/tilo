@@ -2219,6 +2219,13 @@ impl HistoryHost {
         self.built_composition
             .is_some_and(|built| built != self.composition())
     }
+    /// Whether content can be laid out anew under the nodes this chrome keeps. Closed, the chrome
+    /// lays the live app out in its body and changes below it are the app's; open, previewing or
+    /// returning, its own layout holds the app and this chrome composes it.
+    pub(crate) fn lays_out_in_place(&self) -> bool {
+        self.live_interactive() && !self.returning_live && !self.review_is_open()
+    }
+
     pub(crate) fn live_visible(&self) -> bool {
         let external = self
             .registration
@@ -2435,6 +2442,9 @@ pub(crate) trait HistoryChromeApi: Widget {
     fn has_saved_focus(&self) -> bool;
     fn controls_event(&self, event: &WindowEvent, scale: f64) -> bool;
     fn returning_live(&self) -> bool;
+    /// Whether the tile can lay content out anew under the node it keeps while this chrome stands:
+    /// closed, the chrome lays the live app out in its body, and changes below it are the app's.
+    fn lays_out_in_place(&self) -> bool;
     fn present_entries_of(&mut self, live: &dyn Widget);
     fn deliver_opened_entry(&mut self, live: &mut dyn Widget) -> bool;
     fn extend_focus_denials(&self, tree: &TaffyTree<()>, denied: &mut HashSet<NodeId>);
@@ -2746,6 +2756,9 @@ impl HistoryChromeApi for HistoryHost {
     }
     fn returning_live(&self) -> bool {
         HistoryHost::returning_live(self)
+    }
+    fn lays_out_in_place(&self) -> bool {
+        self.lays_out_in_place()
     }
     fn present_entries_of(&mut self, live: &dyn Widget) {
         HistoryHost::present_entries_of(self, live)
