@@ -5,7 +5,7 @@
 //! is addressed to them, and the mailbox then lists what arrived.
 
 use super::api::ISSUER;
-use super::api_on_server::{api_on_server, approved_key};
+use super::api_on_server::{api_on_server, approved_key, headers, json_of};
 use super::*;
 use serde_json::{Value, json};
 
@@ -23,18 +23,19 @@ fn subjects(listing: &Value) -> Vec<String> {
         .collect()
 }
 
-/// Ada's import key on a fresh server, the client `tilo migrate` opens with it, and a new
-/// workspace of hers.
+/// Ada's import key on a fresh server, the client `tilo migrate` opens with it, its token,
+/// and a new workspace of hers.
 async fn importer() -> (
     super::api_on_server::OnServer,
     tilo_api::client::Client,
     String,
     tempfile::TempDir,
+    String,
 ) {
     let on_server = api_on_server(ISSUER).await;
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
-    approved_key(&on_server, &ada, &page, "Ada's import").await;
+    let token = approved_key(&on_server, &ada, &page, "Ada's import").await;
     // The importer acts as a device of hers, as `tilo login` keeps one on her computer.
     let laptop = enrol(&ada, "Ada's laptop", DeviceCapabilities::member());
     let keys = tempfile::tempdir().unwrap();
@@ -62,12 +63,12 @@ async fn importer() -> (
         .await
         .unwrap();
     let workspace = made["id"].as_str().unwrap().to_owned();
-    (on_server, client, workspace, keys)
+    (on_server, client, workspace, keys, token)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_import_delivers_mail_into_a_hosted_workspace_as_tilo_migrate_does() {
-    let (_on_server, client, workspace, _keys) = importer().await;
+    let (_on_server, client, workspace, _keys, _token) = importer().await;
 
     // Each message as the importer sends it: in its folder, read as the account had it, under
     // the import's id and a step id of its own.
@@ -142,15 +143,15 @@ async fn uploaded(client: &tilo_api::client::Client, workspace: &str, bytes: &[u
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_message_of_40_mib_comes_into_a_hosted_workspace_whole_with_its_parts_apart() {
+async fn a_message_of_100_mib_comes_into_a_hosted_workspace_whole_with_its_parts_apart() {
     use tilo_mail_parts::fixture::message_with_attachments;
-    let (_on_server, client, workspace, _keys) = importer().await;
+    let (on_server, client, workspace, _keys, token) = importer().await;
     let files = [
-        ("survey.pdf", 24 * 1024 * 1024),
+        ("survey.pdf", 96 * 1024 * 1024),
         ("plan.png", 6 * 1024 * 1024),
     ];
     let sent = message_with_attachments("survey@example.test", "Site survey", &files);
-    assert!(sent.len() > 40 * 1024 * 1024, "{} bytes", sent.len());
+    assert!(sent.len() > 100 * 1024 * 1024, "{} bytes", sent.len());
 
     // As `tilo migrate` delivers it: the message kept and each large part's pieces, uploaded.
     let split = tilo_mail_parts::split(&sent);
@@ -163,28 +164,28 @@ async fn a_message_of_40_mib_comes_into_a_hosted_workspace_whole_with_its_parts_
         }
         parts.push(json!({"at": part.at, "size": part.size, "pieces": pieces}));
     }
-    let answer = client
-        .act_invoked(
-            &workspace,
-            MESSAGES,
-            DELIVER,
-            &json!({
-                "from": "Grace Hopper <grace@example.net>",
-                "to": "Ada <ada@example.com>",
-                "subject": "Site survey",
-                "body": "The files are attached.",
-                "date": "2026-11-03T10:00:00Z",
-                "folder": "inbox",
-                "message_id": "<survey@example.test>",
-                "original": original,
-                "parts": parts,
-            }),
-            "migrate-thunderbird",
-            "Bring Thunderbird in",
-            "migrate-thunderbird-large",
-        )
-        .await
-        .unwrap_or_else(|error| panic!("{MESSAGES}#{DELIVER}: {error:#}"));
+    let (answer, followed) = delivered_followed(
+        &on_server,
+        &token,
+        &workspace,
+        &json!({
+            "from": "Grace Hopper <grace@example.net>",
+            "to": "Ada <ada@example.com>",
+            "subject": "Site survey",
+            "body": "The files are attached.",
+            "date": "2026-11-03T10:00:00Z",
+            "folder": "inbox",
+            "message_id": "<survey@example.test>",
+            "original": original,
+            "parts": parts,
+        }),
+        "migrate-thunderbird-large",
+    )
+    .await;
+    assert!(
+        followed,
+        "a message of this size is not kept within the answer's wait: {answer}"
+    );
     assert_eq!(answer["status"], "ok", "{answer}");
     let value = answer["result"]
         .get("value")
@@ -250,6 +251,110 @@ async fn a_message_of_40_mib_comes_into_a_hosted_workspace_whole_with_its_parts_
         u64::try_from(sent.len()).ok(),
         "{exported}"
     );
+}
+
+/// How long a step the workspace said it was not ready for is asked again: a device that has
+/// just entered a workspace reaches the document it changes in well under this.
+const READY_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// `message` delivered with the server told to answer as soon as the step is admitted
+/// (`Prefer: wait=1`), and followed at the invocation it names until it settles: keeping a
+/// message of a hundred mebibytes takes longer than the answer waits, so the answer is
+/// `pending`, and the invocation it names answers for it. Whether it was followed that way.
+async fn delivered_followed(
+    on_server: &super::api_on_server::OnServer,
+    token: &str,
+    workspace: &str,
+    message: &Value,
+    step: &str,
+) -> (Value, bool) {
+    let path = format!(
+        "/v1/workspaces/{workspace}/resources/{}/actions/{DELIVER}",
+        tilo_api::client::encode_path(MESSAGES)
+    );
+    let bearer = format!("Bearer {token}");
+    let until = std::time::Instant::now().checked_add(READY_WAIT);
+    let mut pause = std::time::Duration::from_millis(20);
+    let mut followed = false;
+    loop {
+        let reply = on_server
+            .api
+            .dispatch(
+                &hyper::Method::POST,
+                &path,
+                "",
+                &headers(&[
+                    ("authorization", bearer.as_str()),
+                    ("content-type", "application/json"),
+                    (tilo_api::v1::INVOCATION_HEADER, "migrate-thunderbird"),
+                    (
+                        tilo_api::v1::INVOCATION_TITLE_HEADER,
+                        "Bring Thunderbird in",
+                    ),
+                    ("idempotency-key", step),
+                    ("prefer", "wait=1"),
+                ]),
+                message.to_string().as_bytes(),
+            )
+            .await;
+        let (status, mut answer) = json_of(reply).await;
+        if status == 202 {
+            // Answered before the step ended: the invocation answers for it, and the caller
+            // follows that, asking again until it settles.
+            let invocation = answer["invocation"]
+                .as_str()
+                .unwrap_or_else(|| panic!("a pending delivery names its invocation: {answer}"))
+                .to_owned();
+            followed = true;
+            while answer["status"] == "pending" {
+                answer = followed_invocation(on_server, &bearer, workspace, &invocation).await;
+            }
+        }
+        // The workspace was not ready for the document it changes: the same step goes once
+        // more, under the same id, which the workspace makes once.
+        if matches!(
+            answer["error"]["code"].as_str(),
+            Some("not_ready" | "unanswered")
+        ) {
+            assert!(
+                until.is_some_and(|until| std::time::Instant::now() < until),
+                "{MESSAGES}#{DELIVER} was not ready within {READY_WAIT:?}: {answer}"
+            );
+            tokio::time::sleep(pause).await;
+            pause = pause
+                .saturating_mul(2)
+                .min(std::time::Duration::from_millis(500));
+            continue;
+        }
+        return (answer, followed);
+    }
+}
+
+/// The invocation `id` of `workspace`, held while it is pending: the answer to the step that
+/// started it, as the API gives whoever follows one.
+async fn followed_invocation(
+    on_server: &super::api_on_server::OnServer,
+    bearer: &str,
+    workspace: &str,
+    id: &str,
+) -> Value {
+    let path = format!("/v1/workspaces/{workspace}/invocations/{id}");
+    let reply = on_server
+        .api
+        .dispatch(
+            &hyper::Method::GET,
+            &path,
+            "wait=60",
+            &headers(&[("authorization", bearer)]),
+            b"",
+        )
+        .await;
+    let (status, answer) = json_of(reply).await;
+    assert!(
+        status == 200 || status == 202,
+        "following {id} answered {status}: {answer}"
+    );
+    answer
 }
 
 /// The message `sent` delivered as `tilo migrate` delivers it: the message kept and each large
@@ -319,7 +424,7 @@ async fn download(client: &tilo_api::client::Client, workspace: &str, content: &
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_attachment_and_an_export_larger_than_a_part_download_whole() {
     use tilo_mail_parts::fixture::{attachment_bytes, message_with_attachments};
-    let (_on_server, client, workspace, _keys) = importer().await;
+    let (_on_server, client, workspace, _keys, _token) = importer().await;
     let size = 30 * 1024 * 1024;
     let sent = message_with_attachments("scans@example.test", "Scans", &[("scans.pdf", size)]);
     let id = deliver(&client, &workspace, &sent).await;
@@ -390,7 +495,7 @@ async fn timed_download(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_file_over_100_mib_downloads_in_time_flat_in_its_size() {
-    let (_on_server, client, workspace, keys) = importer().await;
+    let (_on_server, client, workspace, keys, _token) = importer().await;
     let small = 8 * 1024 * 1024;
     let large = 110 * 1024 * 1024;
     let small_took = timed_download(&client, &workspace, keys.path(), small).await;

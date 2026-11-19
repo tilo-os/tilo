@@ -13,8 +13,9 @@ fn route(workspace: &str, app: &str, record: &str) -> DocumentRoute {
     }
 }
 
-/// A failure the caller may ask again is not the invocation's answer; one
-/// that is, is, and the same id keeps saying it.
+/// A failure the caller may ask again is the invocation's answer as it stands, so whoever
+/// follows the invocation learns to ask again; one that settles its answer, and the same id
+/// keeps saying that.
 #[test]
 fn a_retryable_failure_leaves_the_id_free_to_run_again() {
     let failure = |retryable| super::ActionFailure {
@@ -33,6 +34,17 @@ fn a_retryable_failure_leaves_the_id_free_to_run_again() {
         super::settles(&failure(false)),
         "a failure of its own is its answer"
     );
+    let invocation = tilo_actions::InvocationId::new();
+    let remembered = tilo_actions::InvocationUpdate::Failed {
+        invocation,
+        error: failure(true),
+    };
+    assert!(remembered.asks_again(), "a follower is told to ask again");
+    let answered = tilo_actions::InvocationUpdate::Failed {
+        invocation,
+        error: failure(false),
+    };
+    assert!(!answered.asks_again(), "a failure of its own is the answer");
 }
 
 /// A read is no invocation of the workspace: a listing leaves it out, while

@@ -123,6 +123,35 @@ pub(crate) fn is_invoking() -> bool {
     INVOKING.with(std::cell::Cell::get)
 }
 
+thread_local! {
+    /// What the workspace said of the sealed content an operation is given
+    /// ([`given`]): the stored form of each reference it keeps already.
+    static GIVEN: std::cell::RefCell<std::collections::HashMap<String, String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Call `build` with the value of the sealed content the workspace keeps already,
+/// in the stored form a [`Bytes`](crate::Bytes) keeps: the hash, the length and
+/// the reference that opens it. An argument naming one of these references
+/// is then taken by reference, and none of its bytes is handed over for it.
+/// The content is read where it is kept; the window never holds what an
+/// operation only names.
+pub fn given<T>(stored: &[(String, String)], build: impl FnOnce() -> T) -> T {
+    let before = GIVEN.with(|given| {
+        std::mem::replace(&mut *given.borrow_mut(), stored.iter().cloned().collect())
+    });
+    let made = build();
+    GIVEN.with(|given| *given.borrow_mut() = before);
+    made
+}
+
+/// The value the sealed content `reference` names, as the service that told
+/// of it keeps it (`blake3:<hash>:<len>:<reference>`): `None`
+/// where it did not.
+pub(crate) fn given_form(reference: &str) -> Option<String> {
+    GIVEN.with(|given| given.borrow().get(reference).cloned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

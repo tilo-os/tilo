@@ -621,12 +621,20 @@ impl WorkspaceActions {
         }
         {
             let mut log = self.log();
-            if let Some(entry) = log.entries.get_mut(&invocation) {
-                if !caller.continues(&entry.caller) || !entry.request.same_invocation(&request) {
-                    return receipt(ReceiptStatus::Rejected {
-                        error: ActionCallError::InvocationConflict,
-                    });
-                }
+            let held = log.entries.get(&invocation);
+            if let Some(entry) = held
+                && (!caller.continues(&entry.caller) || !entry.request.same_invocation(&request))
+            {
+                return receipt(ReceiptStatus::Rejected {
+                    error: ActionCallError::InvocationConflict,
+                });
+            }
+            // A failure the caller was told to ask again about is made once the
+            // same request comes back under its id: the same call makes it,
+            // never a second copy of it.
+            if held.is_some_and(|entry| entry.update.asks_again()) {
+                log.forget(&invocation);
+            } else if let Some(entry) = log.entries.get_mut(&invocation) {
                 // Asked again on the connection that replaced its own: it is this one's now.
                 entry.caller.clone_from(caller);
                 let state = InvocationState::new(invocation, entry.update.clone());
@@ -2327,10 +2335,15 @@ impl Worker {
             Ok((output, left_at)) => (InvocationUpdate::Succeeded { invocation, output }, left_at),
             Err(Outcome::Failed(error)) if !settles(&error) => {
                 // A failure the caller may ask again is not this
-                // invocation's answer: forgotten, the same request under the
-                // same id runs it again rather than being handed the failure
-                // it already has.
-                log.forget(&invocation);
+                // invocation's answer: remembered as the failure it was, so
+                // whoever follows the invocation learns to ask again, and the
+                // same request under the same id makes it again rather than
+                // being handed the failure it already has.
+                let update = InvocationUpdate::Failed {
+                    invocation,
+                    error: error.clone(),
+                };
+                log.answered(invocation, &update, None);
                 return InvocationReceipt {
                     invocation,
                     status: ReceiptStatus::Failed { error },
@@ -2350,6 +2363,19 @@ impl Worker {
                     message: error.to_string(),
                     details: None,
                     retryable: false,
+                };
+                (InvocationUpdate::Failed { invocation, error }, None)
+            }
+            // A refusal the caller may ask again about (the document has not
+            // arrived from the workspace yet) is remembered as failed, so a
+            // caller following the invocation learns to ask again; the same
+            // request under the same id then makes it.
+            Err(Outcome::Rejected(error)) if error.ask_again() => {
+                let error = ActionFailure {
+                    code: error.code().to_owned(),
+                    message: error.to_string(),
+                    details: None,
+                    retryable: true,
                 };
                 (InvocationUpdate::Failed { invocation, error }, None)
             }

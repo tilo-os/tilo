@@ -41,6 +41,17 @@ use ui::permissions::policy::{self, ActionKind, Answer, TreePath};
 /// head, then its first part.
 const UNHELD_ROUNDS: usize = 3;
 
+/// Put into the caller's replica the content its document refers to, before an effect reads
+/// it (a message's parts, an export's pictures). A document operation reads none of it.
+fn put_what_it_reads(held: &BoundedReplica, descriptor: &tilo_actions::ActionDescriptor) {
+    if descriptor.kind == tilo_actions::OperationKind::Document {
+        return;
+    }
+    if let Err(error) = held.held.app.put_held_content() {
+        tracing::warn!(%error, "workspace actions: the content it refers to was not put");
+    }
+}
+
 /// How long the person's answer to one invocation stays good for running it.
 const APPROVAL_LIFETIME: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
@@ -1096,6 +1107,7 @@ impl Worker {
         if descriptor.contract.kind == super::ActionKind::Read {
             self.note_reads(request);
         }
+        put_what_it_reads(&held, &descriptor);
         // What is said in a direct conversation the caller's person takes no part in is not
         // there for an action they are offered either ([`super::direct`]).
         let arguments = withheld.given(descriptor.bind_prompt_text(arguments))?;

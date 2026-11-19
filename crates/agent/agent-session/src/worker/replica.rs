@@ -1,6 +1,6 @@
 //! A record held in a confined app worker, as the supervisor uses it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Mutex;
 
 use automerge::AutoCommit;
@@ -33,6 +33,11 @@ const REFERENCED_CONTENT_BYTES: usize = 256 * 1024 * 1024;
 /// The most values of a record's document read looking for the content it
 /// refers to.
 const MOST_SCANNED_VALUES: usize = 1 << 20;
+
+/// The most values of sealed content a held document's worker is told the stored
+/// form of: what a document keeps of the content it names, remembered so a
+/// second operation over the same content costs no read of it.
+const REMEMBERED_STORED_FORMS: usize = 256;
 
 /// One record of one app, held as a replica of its resource in a confined
 /// app worker ([`crate::worker`]): [`crate::Replica`]'s operations, with the
@@ -109,6 +114,10 @@ struct Inner {
     /// effect, what its change is called), and each answer costs the worker a look at what
     /// the document publishes, which grows with what it holds.
     found: Option<(String, String)>,
+    /// The stored form of sealed content the workspace keeps, by reference: what
+    /// an operation names it by when it takes the content by reference
+    /// ([`ConfinedReplica::stored_form`]).
+    forms: HashMap<String, String>,
 }
 
 /// Whether `document` is one the store asked its workspace for, which this replica may hold
@@ -239,6 +248,7 @@ impl ConfinedReplica {
                 told: BTreeMap::new(),
                 asked: BTreeSet::new(),
                 found: None,
+                forms: HashMap::new(),
             }),
         };
         if fresh {
@@ -792,6 +802,26 @@ impl ConfinedReplica {
             code: "app_worker".into(),
             reason,
         };
+        let mut inner = self.lock();
+        inner.dirty = true;
+        inner.beside_dirty = true;
+        let mut given = Vec::new();
+        if let Some(content) = &self.content {
+            // Content the workspace keeps, sealed, is given as the value the
+            // document keeps it by: the operation takes it by reference, and
+            // none of its bytes is handed over for a reference alone. What
+            // the app actually reads still arrives the way it asks for it.
+            let (by_reference, supplied) = Self::by_reference(&mut inner, content, arguments);
+            given = by_reference;
+            self.supply(&mut inner, content, &supplied)
+                .map_err(|error| unavailable(error.to_string()))?;
+            // What the record refers to is the effect's best effort: the
+            // operation still runs, and asks for what it lacks, without it.
+            if let Err(error) = self.supply_referenced(&mut inner, content, address) {
+                tracing::warn!(app = %self.app_id, %error,
+                    "app worker: the content the record refers to was not put");
+            }
+        }
         let request = Request::Invoke {
             address: serde_json::to_string(address).map_err(|e| unavailable(e.to_string()))?,
             arguments: serde_json::to_string(arguments).map_err(|e| unavailable(e.to_string()))?,
@@ -813,30 +843,27 @@ impl ConfinedReplica {
                 .as_ref()
                 .map(|members| members())
                 .unwrap_or_default(),
+            given: given.clone(),
         };
-        let mut inner = self.lock();
-        inner.dirty = true;
-        inner.beside_dirty = true;
-        if let Some(content) = &self.content {
-            self.supply(&mut inner, content, &named_content(arguments))
-                .map_err(|error| unavailable(error.to_string()))?;
-            // What the record refers to is the effect's best effort: the
-            // operation still runs, and asks for what it lacks, without it.
-            if let Err(error) = self.supply_referenced(&mut inner, content, address) {
-                tracing::warn!(app = %self.app_id, %error,
-                    "app worker: the content the record refers to was not put");
-            }
-        }
         let mut reply = self.call(&mut inner, &request);
         if let Some(content) = &self.content {
             let wanted = self.gather(&mut inner, content);
             let failed = !matches!(reply, Ok(Reply::Output(_)));
-            let missing: Vec<String> = wanted
+            let mut missing: Vec<String> = wanted
                 .into_iter()
                 .filter(|hash| content.has(hash))
                 .collect();
-            // What the app lacked and the workspace has: the operation runs once
-            // more with it there.
+            // The operation read content it was given by reference: the
+            // bytes it asked for, and those of what it named that it lacked,
+            // are put in and it is made once more with them there.
+            if !missing.is_empty() {
+                missing.extend(
+                    given
+                        .iter()
+                        .map(|(reference, _)| reference.clone())
+                        .filter(|reference| !inner.held.contains(reference)),
+                );
+            }
             if failed && !missing.is_empty() {
                 for hash in &missing {
                     inner.held.remove(hash);
@@ -856,6 +883,49 @@ impl ConfinedReplica {
             Ok(_) => Err(unavailable("the worker answered out of turn".into())),
             Err(error) => Err(unavailable(error.to_string())),
         }
+    }
+
+    /// What the arguments name, split by how it reaches the worker: the
+    /// sealed content the workspace keeps already, each with the stored form
+    /// the document keeps it by, and the references that still have to be
+    /// put in. An operation that only names content costs nothing for it.
+    fn by_reference(
+        inner: &mut Inner,
+        content: &ContentStore,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> (Vec<(String, String)>, Vec<String>) {
+        let mut given = Vec::new();
+        let mut supplied = Vec::new();
+        for reference in named_content(arguments) {
+            let sealed = tilo_content::is_sealed(&reference) && content.has(&reference);
+            match sealed
+                .then(|| Self::stored_form(inner, content, &reference))
+                .flatten()
+            {
+                Some(stored) => given.push((reference, stored)),
+                None => supplied.push(reference),
+            }
+        }
+        (given, supplied)
+    }
+
+    /// The value the sealed content `reference` names as a document keeps it
+    /// (`blake3:<hash>:<len>:<reference>`): read from the workspace's store
+    /// once, and remembered while this replica holds its worker.
+    fn stored_form(inner: &mut Inner, content: &ContentStore, reference: &str) -> Option<String> {
+        if let Some(stored) = inner.forms.get(reference) {
+            return Some(stored.clone());
+        }
+        let bytes = content.read(reference)?;
+        let stored = format!(
+            "blake3:{}:{}:{reference}",
+            blake3::hash(&bytes).to_hex(),
+            bytes.len()
+        );
+        if inner.forms.len() < REMEMBERED_STORED_FORMS {
+            inner.forms.insert(reference.to_owned(), stored.clone());
+        }
+        Some(stored)
     }
 
     /// Put the content at `hashes` the workspace has and the worker does not yet
@@ -923,7 +993,41 @@ impl ConfinedReplica {
         if !self.is_effect(inner, address)? {
             return Ok(());
         }
-        let missing: Vec<String> = referenced_content(&inner.mirror)
+        self.supply_held_content(inner, content)
+    }
+
+    /// Put into the worker the content the held document refers to that
+    /// the workspace has and the worker does not hold: what an effect reads of
+    /// the document — a message's parts, an export's pictures — which another
+    /// member may have placed, in another worker. Bounded as
+    /// [`Self::supply_referenced`]; what is left out is logged.
+    ///
+    /// A caller of the workspace's actions reads a document within their own
+    /// bounds, in a replica of their own that already told the worker
+    /// [`Self::supply_referenced`] would ask it: they say what the operation is.
+    pub fn put_held_content(&self) -> Result<(), AppError> {
+        let Some(content) = &self.content else {
+            return Ok(());
+        };
+        let mut inner = self.lock();
+        self.supply_held_content(&mut inner, content)
+    }
+
+    fn supply_held_content(
+        &self,
+        inner: &mut Inner,
+        content: &ContentStore,
+    ) -> Result<(), AppError> {
+        // The document and each of its parts: what an app keeps in a chain is
+        // held beside its own document, and its content is named there.
+        let mut named = referenced_content(&inner.mirror);
+        for part in inner.beside.values_mut() {
+            let part = part
+                .settled()
+                .map_err(|error| AppError::Merge(error.to_string()))?;
+            named.extend(referenced_content(part));
+        }
+        let missing: Vec<String> = named
             .into_iter()
             .filter(|hash| !inner.held.contains(hash) && content.has(hash))
             .collect();
@@ -1538,7 +1642,10 @@ fn put_content(
     }
     let size = bytes.len();
     match process
-        .call(&Request::PutContent(bytes))
+        .call(&Request::PutContent {
+            reference: hash.to_owned(),
+            bytes,
+        })
         .map_err(|stopped| worker_error(stopped.to_string()))?
     {
         Reply::Stored(stored) if stored == hash => Ok(Some(size)),
@@ -1551,19 +1658,59 @@ fn put_content(
     }
 }
 
-/// The content `text` names: itself, when it is a bare hash, and every
-/// content address inside it.
+/// The content `text` names: itself, when it is a bare hash or a kept
+/// value's stored form, and every content reference inside it — with the key
+/// that opens it, when it is sealed.
 fn content_in(text: &str, named: &mut BTreeSet<String>) {
     if tilo_content::valid_hash(text) {
         named.insert(text.to_ascii_lowercase());
     }
-    for after in text.split(tilo_actions::CONTENT_RESOURCE_KIND).skip(1) {
-        if let Some(hash) = after.strip_prefix(':').and_then(|rest| rest.get(..64))
-            && tilo_content::valid_hash(hash)
-        {
-            named.insert(hash.to_ascii_lowercase());
+    // A kept value's stored form: `blake3:<hash>:<len>[:<reference>]`.
+    if let Some(rest) = text.trim().strip_prefix("blake3:") {
+        let mut parts = rest.splitn(3, ':');
+        let hash = parts.next().unwrap_or_default();
+        let kept = parts.next();
+        let reference = parts.next();
+        if kept.is_some() && tilo_content::valid_hash(hash) {
+            let named_by = reference
+                .map(str::trim)
+                .filter(|reference| tilo_content::valid_reference(reference))
+                .map_or_else(|| hash.to_ascii_lowercase(), reference_of);
+            named.insert(named_by);
         }
     }
+    for after in text.split(tilo_actions::CONTENT_RESOURCE_KIND).skip(1) {
+        if let Some(reference) = after
+            .strip_prefix(':')
+            .and_then(|rest| reference_at(rest.get(..64)?, rest.get(64..)))
+        {
+            named.insert(reference);
+        }
+    }
+}
+
+/// The reference `reference` names, its address lower case and the key that
+/// opens it as it is: the key is a case-sensitive ciphertext.
+fn reference_of(reference: &str) -> String {
+    match reference.split_once('.') {
+        Some((address, key)) => format!("{}.{key}", address.to_ascii_lowercase()),
+        None => reference.to_ascii_lowercase(),
+    }
+}
+
+/// The reference an address `hash` and what follows it (`key`'s own text,
+/// when the reference carries a key) name, for a reference `hash` is a valid
+/// address of.
+fn reference_at(hash: &str, after: Option<&str>) -> Option<String> {
+    if !tilo_content::valid_hash(hash) {
+        return None;
+    }
+    let key = after.and_then(|tail| tail.strip_prefix('.'));
+    let sealed = key
+        .and_then(|key| key.get(..43))
+        .map(|key| format!("{}.{key}", hash.to_ascii_lowercase()))
+        .filter(|reference| tilo_content::valid_reference(reference));
+    Some(sealed.unwrap_or_else(|| hash.to_ascii_lowercase()))
 }
 
 /// The content a record's document refers to: every key, string and text

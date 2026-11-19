@@ -158,6 +158,14 @@ impl InvocationUpdate {
         )
     }
 
+    /// Whether it ended in a failure the same call may meet again: whoever
+    /// follows the invocation learns to ask again, and a request under its id
+    /// makes it once more rather than being handed this failure.
+    #[must_use]
+    pub fn asks_again(&self) -> bool {
+        matches!(self, Self::Failed { error, .. } if error.retryable)
+    }
+
     /// The same update, reported under `id`. A host that tracks a job under
     /// its own handle uses this to answer in the caller's invocation id.
     #[must_use]

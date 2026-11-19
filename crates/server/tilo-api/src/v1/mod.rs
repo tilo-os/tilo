@@ -248,9 +248,11 @@ async fn answer(
             let running = idempotency::Running::new(&server.v1.remembered, &holder, key);
             let answered = caller.with_idempotency(key).handle(operation).await;
             // A pending answer is asked about again by a retry, and a refusal
-            // the host may not repeat (busy, unreachable) is not kept. Nor is
-            // a branch that did not take everything: the same call makes it
-            // once what it lacked is there.
+            // the same call may not meet again (busy, unreachable, or one the
+            // service said to ask again about) is not kept: replaying it would
+            // answer a retry with what asking again was meant to leave behind.
+            // Nor is a branch that did not take everything: the same call
+            // makes it once what it lacked is there.
             let kept = match &answered {
                 Ok(Answer::Json {
                     status,
@@ -265,7 +267,8 @@ async fn answer(
                     if !matches!(
                         refused.status,
                         StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE
-                    ) && refused.body.code != crate::account::BRANCH_INCOMPLETE =>
+                    ) && refused.body.code != crate::account::BRANCH_INCOMPLETE
+                        && !asks_again(&refused.body.code) =>
                 {
                     Some(Stored {
                         status: refused.status.as_u16(),
@@ -1695,6 +1698,13 @@ fn action_answer(mut answer: Value, workspace: &str) -> Result<Answer, ApiError>
         });
     }
     Ok(Answer::ok(body))
+}
+
+/// Whether a refusal's code tells the same call to ask again: the workspace was not ready
+/// for what it changes yet. A retry is meant to reach the workspace, so the refusal is not
+/// the answer remembered under its Idempotency-Key.
+fn asks_again(code: &str) -> bool {
+    matches!(code, "not_ready" | "unanswered")
 }
 
 fn reply(answered: Result<Answer, ApiError>) -> Reply {

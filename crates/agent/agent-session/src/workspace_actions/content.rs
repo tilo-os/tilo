@@ -97,7 +97,8 @@ fn piece(
     })
 }
 
-/// Puts into one workspace's store.
+/// Puts into one workspace's store, sealed: the content an action names is
+/// what the document naming it keeps, and a document's content is sealed.
 struct StorePuts(ContentStore);
 
 impl ContentPuts for StorePuts {
@@ -121,22 +122,8 @@ impl ContentPuts for StorePuts {
                 reason: "the store named no content".into(),
             })
         };
-        // A store that seals writes one item at a time; one that does not
-        // keeps the batch in one write (one index update, one flush).
-        if !self.0.seals() {
-            let items: Vec<&[u8]> = files.iter().map(Vec::as_slice).collect();
-            return self
-                .0
-                .put_public_many(&items)
-                .into_iter()
-                .map(|kept| {
-                    let hash = kept.map_err(|error| ActionCallError::Refused {
-                        reason: format!("the workspace could not keep the file: {error}"),
-                    })?;
-                    resource(&hash)
-                })
-                .collect();
-        }
+        // Sealed, one item at a time: each answer names the content by the
+        // reference that opens it.
         let mut contents = Vec::with_capacity(files.len());
         for bytes in files {
             let hash = self
@@ -649,7 +636,9 @@ fn put_into(
     step: ContentPutStep,
 ) -> Result<tilo_actions::remote::ContentPutAnswer, ActionCallError> {
     admitted(shared, workspace_id, caller, check)?;
-    shared.puts.step(&StorePuts(store.clone()), caller, step)
+    shared
+        .puts
+        .step(&StorePuts(store.clone().sealing()), caller, step)
 }
 
 /// [`Worker::content_get`]'s piece, on a content thread.
@@ -729,7 +718,9 @@ impl Worker {
                 .ok_or_else(|| ActionCallError::Unavailable {
                     reason: tilo_actions::remote::CONTENT_PUTS_UNAVAILABLE.into(),
                 })?;
-        self.shared.puts.step(&StorePuts(store), caller, step)
+        self.shared
+            .puts
+            .step(&StorePuts(store.sealing()), caller, step)
     }
 
     /// The piece of `content` `caller` asked of `workspace_id`'s store,

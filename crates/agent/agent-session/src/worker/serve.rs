@@ -178,9 +178,11 @@ impl WorkerContent {
         Self { local, link, store }
     }
 
-    fn put(&self, bytes: &[u8]) -> Reply {
-        match self.local.put(bytes) {
-            Ok(hash) => Reply::Stored(hash),
+    /// Keep `bytes` as `reference` names them: sealed under its key when it
+    /// carries one, so what the app reads is exactly what the workspace keeps.
+    fn put(&self, reference: &str, bytes: &[u8]) -> Reply {
+        match self.local.put_as(reference, bytes) {
+            Ok(()) => Reply::Stored(reference.to_owned()),
             Err(error) => Reply::Failed(error.to_string()),
         }
     }
@@ -226,7 +228,7 @@ impl Worker {
 
     fn handle(&mut self, request: Request) -> Reply {
         match request {
-            Request::PutContent(bytes) => self.content.put(&bytes),
+            Request::PutContent { reference, bytes } => self.content.put(&reference, &bytes),
             Request::TakeContent => self.content.take(),
             Request::Open {
                 app_id,
@@ -333,13 +335,18 @@ impl Worker {
                 context,
                 appearance,
                 members,
+                given,
             } => {
                 ui::tilo_resource::members::know(members);
-                invoked(
-                    replica,
-                    (&address, &arguments, confirm),
-                    (invoker, context, appearance),
-                )
+                // The arguments naming content the workspace keeps already are
+                // taken by reference: no bytes of it crossed for them.
+                ui::tilo_resource::content::given(&given, || {
+                    invoked(
+                        replica,
+                        (&address, &arguments, confirm),
+                        (invoker, context, appearance),
+                    )
+                })
             }
             Request::TakeMutation => taken_mutation(replica),
             Request::Apply { snapshot, bytes } => {

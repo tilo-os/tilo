@@ -835,6 +835,11 @@ impl Bytes {
                 "{text} is read where the action is invoked, never where it replays"
             ));
         }
+        // Content the workspace keeps already is taken as the value the document
+        // keeps, which names it by its reference: the bytes never cross here.
+        if let Some(stored) = crate::content::given_form(reference) {
+            return Self::parse_text(&stored).map_err(|error| error.to_string());
+        }
         let data = crate::content::read_hash(reference).map_err(|refusal| refusal.to_string())?;
         if tilo_content::is_sealed(reference) {
             Ok(Self::kept_as(&data, reference))

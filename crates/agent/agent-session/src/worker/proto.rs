@@ -34,7 +34,7 @@ pub(crate) const CONTENT_BATCH_BYTES: usize = 32 * 1024 * 1024;
 
 /// Bumped whenever a message changes shape. A supervisor and a worker are the
 /// same executable, so a mismatch means a stale binary on disk.
-pub(crate) const PROTOCOL_VERSION: u32 = 9;
+pub(crate) const PROTOCOL_VERSION: u32 = 10;
 
 /// What a worker is started to do, and what each of its slots does. The
 /// process's mode decides what it prepares before it confines itself (a
@@ -140,6 +140,11 @@ pub(crate) enum Request {
         /// The workspace's members, each by what it calls them
         /// ([`ui::tilo_resource::members`]).
         members: Vec<(tilo_actions::MemberId, String)>,
+        /// The value of each sealed content reference the arguments name that
+        /// the workspace keeps already: the reference and the stored form the
+        /// document keeps it by. The operation takes it by reference, and none
+        /// of its bytes crosses for it.
+        given: Vec<(String, String)>,
     },
     /// The holder's own changes since the last call.
     TakeMutation,
@@ -216,9 +221,10 @@ pub(crate) enum Request {
     },
     /// Report what the confinement still lets the worker do at `path`.
     Probe { path: String },
-    /// Keep one content item where the app's code reads it; answered with
+    /// Keep one content item where the app's code reads it, as `reference`
+    /// names it (sealed under its key when it carries one); answered with
     /// [`Reply::Stored`].
-    PutContent(Vec<u8>),
+    PutContent { reference: String, bytes: Vec<u8> },
     /// What the app stored since the last take and what it asked for but
     /// lacked; answered with [`Reply::Content`].
     TakeContent,
@@ -265,7 +271,7 @@ impl Request {
             Self::ReadRegisters => "read-registers",
             Self::ReadInvoke { .. } => "read-invoke",
             Self::Probe { .. } => "probe",
-            Self::PutContent(_) => "put-content",
+            Self::PutContent { .. } => "put-content",
             Self::TakeContent => "take-content",
         }
     }
