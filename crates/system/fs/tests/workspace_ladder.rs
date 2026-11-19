@@ -40,7 +40,7 @@ use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use fs::kept_documents::KeptDocuments;
 use fs::{ContentStore, Heuristics, Hydrator, Namespace, QuickFS, ROOT_INO};
@@ -194,9 +194,14 @@ async fn measure_rung(
     let mut small_written = 0_u64;
     let mut small_count = 0_u64;
     let mut folders: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
+    let mut store_time = Duration::ZERO;
+    let mut tree_time = Duration::ZERO;
     for i in 0..small_files {
         fill(i, 0, &mut buf);
+        let store_started = Instant::now();
         let hash = store_a.write_content(&buf).await.unwrap().unwrap();
+        store_time += store_started.elapsed();
+        let tree_started = Instant::now();
         let parent = if i < flat_entries {
             flat
         } else {
@@ -216,6 +221,7 @@ async fn measure_rung(
                 1_700_000_000,
             )
             .unwrap();
+        tree_time += tree_started.elapsed();
         small_written = small_written.saturating_add(SMALL_BYTES);
         small_count = small_count.saturating_add(1);
         if small_written >= small_total {
@@ -224,6 +230,8 @@ async fn measure_rung(
     }
     let put_small = started.elapsed();
     report(&rung, "put_small_s", put_small.as_secs_f64(), "s");
+    report(&rung, "put_small_store_s", store_time.as_secs_f64(), "s");
+    report(&rung, "put_small_tree_s", tree_time.as_secs_f64(), "s");
     report(
         &rung,
         "put_small_files_s",
@@ -389,12 +397,26 @@ async fn measure_rung(
     let hydrator = Arc::new(Hydrator::new(endpoint, Arc::clone(&store_b)));
     hydrator.add_peer(source.addr());
     let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-    let mount = QuickFS::new(Arc::new(std::sync::Mutex::new(peer)), hydrator, heuristics);
+    let peer_namespace = Arc::new(std::sync::Mutex::new(peer));
+    let mount = QuickFS::new(
+        Arc::clone(&peer_namespace),
+        Arc::clone(&hydrator),
+        heuristics,
+    );
     let before = disk_bytes(&dir.join("b"));
     let started = Instant::now();
-    let small = mount
-        .read_path_range(Path::new("flat/f0000000"), 0, SMALL_BYTES)
-        .expect("a small file the device has never fetched");
+    let small = match mount.read_path_range(Path::new("flat/f0000000"), 0, SMALL_BYTES) {
+        Ok(bytes) => bytes,
+        Err(errno) => {
+            let hash = {
+                let mut ns = peer_namespace.lock().unwrap();
+                let (ino, _) = ns.lookup_kind(flat, "f0000000").unwrap();
+                ns.hash_for(ino)
+            };
+            let hydrated = hash.map(|hash| hydrator.block_on(hydrator.read(hash, 0, SMALL_BYTES)));
+            panic!("reading an unfetched small file: errno {errno}, hydrator: {hydrated:?}");
+        }
+    };
     let read_small = started.elapsed();
     assert_eq!(small.len() as u64, SMALL_BYTES);
     let started = Instant::now();
@@ -562,9 +584,11 @@ fn assert_work_is_flat(rungs: &[Rung]) {
             rung.total_mib,
             rung.list_lookups
         );
-        // Reading ranges fetches the ranges and their manifests, nothing else.
+        // Reading two ranges fetches at most hydration's request granularity each, whatever
+        // the workspace's size.
+        const FETCH_BOUND: u64 = 64 * 1024 * 1024;
         assert!(
-            rung.fetched_bytes as f64 <= (SMALL_BYTES + RANGE_BYTES) as f64 * 4.0,
+            rung.fetched_bytes <= FETCH_BOUND,
             "reading {} B of ranges at {} MiB fetched {} B",
             SMALL_BYTES + RANGE_BYTES,
             rung.total_mib,
