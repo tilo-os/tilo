@@ -1270,3 +1270,12 @@ paths = ["crates/packaging/app-cli/src/model_runtime.rs", "crates/packaging/runt
 reason = "A backup run is the completed attempt one stored snapshot records, and the row it is published as (`backups.run`, `Run`): the app's word for that attempt, not the shell's old name for running a record's action."
 words = ["run"]
 paths = ["apps/backups/src/actions.rs", "apps/backups/src/app.rs"]
+
+[[allow]]
+reason = "The Imager's shared probe-facts type is named `HostFacts`; the word is part of that existing model type name, which the staging probe returns, not a concept these functions introduce."
+words = ["host"]
+identifiers = ["HostFacts"]
+paths = [
+    "crates/platform/imager-backend/src/linux.rs",
+    "apps/imager/src/setup/staging/probe.rs",
+]
