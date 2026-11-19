@@ -110,6 +110,11 @@ class PrimitivesTests(unittest.TestCase):
         baseline.write_text("glyph-join 1 apps/demo/src/view.rs\n", encoding="utf-8")
         self.assertTrue(primitives.lower(root, baseline, ["apps/demo/src/view.rs"]))
         self.assertEqual(baseline.read_text(), "\n")
+        # A source the commit deletes drops its line too.
+        baseline.write_text("glyph-join 1 apps/demo/src/view.rs\n", encoding="utf-8")
+        (root / "apps/demo/src/view.rs").unlink()
+        self.assertTrue(primitives.lower(root, baseline, ["apps/demo/src/view.rs"]))
+        self.assertEqual(baseline.read_text(), "\n")
 
     def test_glyph_patterns(self):
         joins = ["{} · {}", "Enter to save • Esc", "a | b", "Offline — retry", "3 / 10"]

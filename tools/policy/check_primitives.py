@@ -379,10 +379,13 @@ def lower(root: Path, baseline_path: Path, files: list[str]) -> bool:
     raised: a count that grew is a new violation for its author to fix or to
     raise deliberately, which is the judgement the check exists for.
     """
-    found = {
-        file: count_file((root / file).read_text(errors="replace"), file)
-        for file in files
-    }
+    found = {}
+    for file in files:
+        path = root / file
+        # A source a commit deletes has no counts: its allowance drops, as a
+        # lowered one does.
+        found[file] = (count_file(path.read_text(errors="replace"), file)
+                       if path.exists() else {})
     lines = baseline_path.read_text().splitlines()
     lowered = False
     out = []

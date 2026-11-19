@@ -203,7 +203,7 @@ while IFS= read -r f; do
     note "primitives baseline: $f has unstaged edits; stage the whole file and commit again"
     fail=1
   fi
-done < <(git diff --cached --name-only --diff-filter=ACM -- crates/session apps \
+done < <(git diff --cached --name-only --diff-filter=ACMD -- crates/session apps \
            | grep -E '\.rs$' || true)
 if [ -n "$prim_files" ]; then
   if ! GIT_INDEX_FILE="$full_index" git diff --quiet -- tools/policy/primitives_baseline.txt; then
