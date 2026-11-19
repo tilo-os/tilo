@@ -263,8 +263,12 @@ impl QuickFS {
                 .commit_version_at(ino, source, mtime_ms, fence)
                 .map_err(|e| to_errno(&e));
         }
+        let workspace = self.ns().path_for(parent).and_then(|path| {
+            self.hydrator
+                .scoped_workspace(&super::child_path(&path, name))
+        });
         let (hash, byte_len) = self
-            .store_version_blocking(source, None)
+            .store_version_blocking(source, None, workspace)
             .map_err(|e| to_errno(&e))?
             .map_or((None, 0), |(hash, len)| (Some(hash), len));
         let ino = self.create_file_stamped(parent, name, mtime_ms, hash, byte_len)?;
@@ -541,7 +545,10 @@ impl QuickFS {
             return Ok(Vec::new());
         };
         self.hydrator
-            .block_on(self.hydrator.read(hash, offset, len))
+            .block_on(
+                self.hydrator
+                    .read_scoped(hash, offset, len, self.inode_workspace(ino)),
+            )
             .map_err(|_| EIO)
     }
 
