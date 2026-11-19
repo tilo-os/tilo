@@ -508,11 +508,12 @@ fn forgejo() -> Responder {
                     json!([])
                 }
             }
-            "/api/v1/repos/acme/app/issues/1/comments" if first_page => json!([{
+            "/api/v1/repos/acme/app/issues/comments" if first_page => json!([{
                 "id": 900, "body": "I see it too", "user": user("grace", "Grace Hopper"),
                 "original_author": "", "created_at": "2026-05-03T10:00:00Z",
                 "updated_at": "2026-05-03T10:00:00Z",
                 "html_url": "https://forge.example/acme/app/issues/1#issuecomment-900",
+                "issue_url": "https://forge.example/acme/app/issues/1",
             }]),
             "/api/v1/repos/acme/app/issues/2/blocks" if first_page => json!([{
                 "id": 101, "number": 1, "repository": {"full_name": "acme/app"},
