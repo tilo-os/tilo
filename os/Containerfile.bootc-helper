@@ -10,30 +10,35 @@
 #         (os/Containerfile.board, cfs-digest).
 #   0003: with BOOTC_COMPOSEFS_DIGEST_REPO, that computation keeps its
 #         composefs repository there, so known layers are not fetched again.
+#   0004: composefs-rs, the git dependency bootc's Cargo.lock pins, comes
+#         from its source archive: GitHub's git transfers to the image build's
+#         network kept resetting, and cargo's retries ended the build with them.
 # No image ships it.
 ARG BUILD_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
 
 FROM ${BUILD_IMAGE} AS build
 ARG BOOTC_VERSION=1.16.13
 ARG BOOTC_SHA256=99c03054ded60c043a41f73b076b0dc137bc3518579c6cf98cf460556f86f641
+ARG COMPOSEFS_COMMIT=f720d6c79ac6b082fb1e182eed3b291f88e2a7f4
+ARG COMPOSEFS_SHA256=ab52c9b237501aab5a02e36cab313a37efb66374d9a4cd0ac4eed56df15413d3
 COPY os/external-assets/bootc-install-reseal/*.patch /patches/
 COPY os/dev/configure-fedora-mirrors.sh /usr/local/bin/configure-fedora-mirrors
 # Fetches from the internet, so it runs in the build job's own network: podman hands a
 # nested build container public resolvers (the job's /etc/resolv.conf names only its own),
-# and the CI runners' egress serves those unreliably. Cargo asks the git command for
-# bootc's git dependency, and the command aborts a transfer that stays below
-# http.lowSpeedLimit for http.lowSpeedTime instead of waiting on it without end.
+# and the CI runners' egress serves those unreliably.
 RUN --network=host configure-fedora-mirrors \
-    && dnf install -y ostree-devel patch git \
+    && dnf install -y ostree-devel patch \
     && dnf clean all \
-    && git config --global http.lowSpeedLimit 1000 \
-    && git config --global http.lowSpeedTime 20 \
+    && curl -fsSL "https://github.com/composefs/composefs-rs/archive/${COMPOSEFS_COMMIT}.tar.gz" -o /composefs-rs.tar.gz \
+    && echo "${COMPOSEFS_SHA256}  /composefs-rs.tar.gz" | sha256sum -c - \
+    && mkdir /composefs-rs \
+    && tar -xzf /composefs-rs.tar.gz --strip-components=1 -C /composefs-rs \
     && curl -fsSL "https://github.com/bootc-dev/bootc/archive/refs/tags/v${BOOTC_VERSION}.tar.gz" -o /bootc.tar.gz \
     && echo "${BOOTC_SHA256}  /bootc.tar.gz" | sha256sum -c - \
     && tar -xzf /bootc.tar.gz -C / \
     && cd "/bootc-${BOOTC_VERSION}" \
     && for p in /patches/*.patch; do patch -p1 < "$p"; done \
-    && export CARGO_NET_GIT_FETCH_WITH_CLI=true CARGO_NET_RETRY=6 \
+    && export CARGO_NET_RETRY=6 \
     && CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=symbols cargo build --locked --release -p bootc \
     && install -D -m 0755 target/release/bootc /out/bootc \
     && /out/bootc --version

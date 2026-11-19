@@ -18,35 +18,38 @@ FROM ${BOOTC_BUILD_IMAGE} AS bootc-builder
 ARG BOOTC_VERSION=1.16.13
 ARG BOOTC_SOURCE=bootc-fa0d3f9.tar.gz
 ARG BOOTC_SHA256=e75e0d10752aacfcac041d88f0f5099ba60248b046f1eb135ae886a4d58019ac
-ARG BOOTC_BUILD_PACKAGES="ostree-devel patch git"
+# composefs-rs v0.9.2, the git dependency bootc's Cargo.lock pins, from its source
+# archive (0004 points bootc's build at it): GitHub's git transfers to the image
+# build's network kept resetting, and cargo's retries ended the build with them.
+ARG COMPOSEFS_SOURCE=composefs-rs-f720d6c.tar.gz
+ARG COMPOSEFS_SHA256=ab52c9b237501aab5a02e36cab313a37efb66374d9a4cd0ac4eed56df15413d3
+ARG BOOTC_BUILD_PACKAGES="ostree-devel patch"
 COPY os/external-assets/bootc-runtime/0001-select-booted-esp.patch \
     os/external-assets/bootc-runtime/0002-zlink-macros-from-tilo-vendor.patch \
-    os/external-assets/bootc-runtime/0003-space-check-counts-missing-layers.patch /patches/
+    os/external-assets/bootc-runtime/0003-space-check-counts-missing-layers.patch \
+    os/external-assets/bootc-runtime/0004-composefs-rs-from-its-source-archive.patch /patches/
 # zlink-macros with its generated enum variants in a fixed order (0002 patches
 # bootc's build onto it): the release emits them in HashMap order, so no two
 # bootc builds matched and the image was not reproducible.
 COPY vendor/zlink-macros /tilo-vendor/zlink-macros
 COPY os/dev/configure-fedora-mirrors.sh /usr/local/bin/configure-fedora-mirrors
-# Fetches from the internet, so it runs in the build job's own network: podman hands a
-# nested build container public resolvers (the job's /etc/resolv.conf names only its own),
-# and the CI runners' egress serves those unreliably.
-# What it fetches includes a dependency that lives in a git repository, and a connection
-# that stops delivering leaves such a fetch waiting without end: libgit2 has no timeout of
-# its own, so the build then holds its job until it is cancelled. Cargo asks the git
-# command for that dependency, and the command aborts a transfer that stays below
-# http.lowSpeedLimit for http.lowSpeedTime, which cargo retries.
+# Fetches from the internet (the build packages and the crates), so it runs in the
+# build job's own network: podman hands a nested build container public resolvers (the
+# job's /etc/resolv.conf names only its own), and the CI runners' egress serves those
+# unreliably.
 RUN --network=host --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     configure-fedora-mirrors \
     && dnf install -y ${BOOTC_BUILD_PACKAGES} \
     && dnf clean all \
-    && git config --global http.lowSpeedLimit 1000 \
-    && git config --global http.lowSpeedTime 20 \
     && echo "${BOOTC_SHA256}  /tilo-assets/${BOOTC_SOURCE}" | sha256sum -c - \
+    && echo "${COMPOSEFS_SHA256}  /tilo-assets/${COMPOSEFS_SOURCE}" | sha256sum -c - \
+    && mkdir /composefs-rs \
+    && tar -xzf "/tilo-assets/${COMPOSEFS_SOURCE}" --strip-components=1 -C /composefs-rs \
     && mkdir "/bootc-${BOOTC_VERSION}" \
     && tar -xzf "/tilo-assets/${BOOTC_SOURCE}" --strip-components=1 -C "/bootc-${BOOTC_VERSION}" \
     && cd "/bootc-${BOOTC_VERSION}" \
     && for p in /patches/*.patch; do patch -p1 < "$p"; done \
-    && export CARGO_NET_GIT_FETCH_WITH_CLI=true CARGO_NET_RETRY=6 \
+    && export CARGO_NET_RETRY=6 \
     && cargo test --locked -p bootc-internal-blockdev \
     && CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=symbols \
        cargo build --locked --release -p bootc \
@@ -59,4 +62,4 @@ RUN --network=host --mount=type=bind,from=external-assets,source=/,target=/tilo-
       "Source: https://github.com/bootc-dev/bootc/tree/fa0d3f9cb9a0ce3b4d1dc2607a0bf5e31b822f60 (v${BOOTC_VERSION})" \
       'Modified: /usr/bin/bootc is built from the source above with the patches here.' \
       > /out/usr/share/licenses/tilo-bootc/NOTICE \
-    && rm -rf "/bootc-${BOOTC_VERSION}"
+    && rm -rf "/bootc-${BOOTC_VERSION}" /composefs-rs

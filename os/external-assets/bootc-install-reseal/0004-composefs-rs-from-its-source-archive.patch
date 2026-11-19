@@ -1,0 +1,78 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -132,3 +132,9 @@
+ needless_borrow = "allow"
+ needless_borrows_for_generic_args = "allow"
+ 
++
++# Tilo: composefs-rs from its pinned source archive (composefs-rs-f720d6c.tar.gz
++# in Tilo's external assets) rather than a git fetch, which the image build's
++# network resets mid-transfer.
++[patch."https://github.com/composefs/composefs-rs"]
++composefs-ctl = { path = "/composefs-rs/crates/composefs-ctl" }
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -804,7 +804,6 @@
+ [[package]]
+ name = "composefs"
+ version = "0.9.2"
+-source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.2#f720d6c79ac6b082fb1e182eed3b291f88e2a7f4"
+ dependencies = [
+  "anyhow",
+  "composefs-ioctls",
+@@ -831,7 +830,6 @@
+ [[package]]
+ name = "composefs-boot"
+ version = "0.9.2"
+-source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.2#f720d6c79ac6b082fb1e182eed3b291f88e2a7f4"
+ dependencies = [
+  "anyhow",
+  "composefs",
+@@ -847,7 +845,6 @@
+ [[package]]
+ name = "composefs-ctl"
+ version = "0.9.2"
+-source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.2#f720d6c79ac6b082fb1e182eed3b291f88e2a7f4"
+ dependencies = [
+  "anyhow",
+  "cap-std-ext",
+@@ -876,7 +873,6 @@
+ [[package]]
+ name = "composefs-fuse"
+ version = "0.9.2"
+-source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.2#f720d6c79ac6b082fb1e182eed3b291f88e2a7f4"
+ dependencies = [
+  "anyhow",
+  "composefs",
+@@ -891,7 +887,6 @@
+ [[package]]
+ name = "composefs-ioctls"
+ version = "0.9.2"
+-source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.2#f720d6c79ac6b082fb1e182eed3b291f88e2a7f4"
+ dependencies = [
+  "rustix",
+  "thiserror 2.0.20",
+@@ -900,7 +895,6 @@
+ [[package]]
+ name = "composefs-oci"
+ version = "0.9.2"
+-source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.2#f720d6c79ac6b082fb1e182eed3b291f88e2a7f4"
+ dependencies = [
+  "anyhow",
+  "async-compression",
+@@ -933,7 +927,6 @@
+ [[package]]
+ name = "composefs-splitdirfdstream"
+ version = "0.9.2"
+-source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.2#f720d6c79ac6b082fb1e182eed3b291f88e2a7f4"
+ dependencies = [
+  "openssl",
+  "rand 0.10.2",
+@@ -946,7 +939,6 @@
+ [[package]]
+ name = "composefs-storage"
+ version = "0.9.2"
+-source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.2#f720d6c79ac6b082fb1e182eed3b291f88e2a7f4"
+ dependencies = [
+  "anyhow",
+  "base64 0.23.0",
