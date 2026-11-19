@@ -488,3 +488,19 @@ fn an_item_labelled_by_its_id_is_said_as_unnamed() {
     assert_eq!(item_label(&named("c_chat", "chat")), Some("chat"));
     assert_eq!(item_label(&named("ember", "Ember")), Some("Ember"));
 }
+
+/// A step that carried an empty title reads as its action, never as an app's message with a
+/// hole where the title goes.
+#[test]
+fn an_empty_value_leaves_the_message_that_needs_it_to_the_action() {
+    let en = Catalogue::new("en-US", &[SNIPPETS_EN]);
+    let untitled = ActionContext::for_resource("lib", "snippets.library", "Snippets")
+        .with_app("org.tilo.Snippets", "Snippets")
+        .with_described(Described::new(Did::verb(
+            ActionKey::new("org.tilo.Snippets", "snippets.library", "new-snippet"),
+            [("title".to_string(), Scalar::from(""))],
+        )));
+    let reader = Reader::new("en-US").with_app(&en);
+    assert_eq!(reader.sentence(&created()), "Created Deploy script");
+    assert_eq!(reader.sentence(&untitled), "New snippet in Snippets");
+}

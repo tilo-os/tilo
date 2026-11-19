@@ -302,3 +302,31 @@ tilo_test_env::scenario! {
         assert_eq!((focus.author, focus.lens, focus.entry), (None, None, None));
     }
 }
+
+/// An agent's write reaches an app as the agent: its member name and colour, as software, for
+/// the person it acted for.
+#[test]
+fn an_agents_write_is_served_as_the_agent_for_its_person() {
+    let agent = tilo_actions::MemberId::agent("agent-key-1234abcd");
+    let mut authors = ui::AuthorDirectory::new();
+    authors.register_member(
+        &tilo_actions::MemberId::person("ben"),
+        ui::widget::history::HistoryAuthor::new("Ben", 0.0, "ben00000"),
+    );
+    authors.register_member(
+        &agent,
+        ui::history_source::author_coloured("Planner", "agent", (1, 2, 3)),
+    );
+    let invoker = tilo_actions::ActionInvoker::admitted(
+        &tilo_actions::Acting::agent(agent.id())
+            .in_session("s1")
+            .acting_for(tilo_actions::Acting::person("ben")),
+    )
+    .named(Some("Draft the plan for the week".into()));
+    let entry = tilo_actions::ActionContext::default().with_invoker(invoker);
+    let served = super::author(&authors.resolve_entry("00", Some(&entry)));
+    assert_eq!(served.name, "Planner");
+    assert_eq!(served.rgb, [1, 2, 3]);
+    assert_eq!(served.relation, wire::Relation::Software);
+    assert_eq!(served.on_behalf_of.as_deref(), Some("Ben"));
+}

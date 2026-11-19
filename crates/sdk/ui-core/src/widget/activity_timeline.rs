@@ -228,9 +228,9 @@ impl RowGroup {
             .into_iter()
             .chain(self.meta_facts().into_iter().map(|fact| fact.text))
             .chain(self.lead.as_ref().map(|lead| {
-                crate::history_source::sentence::author_spoken(
-                    &crate::history_source::sentence::author_parts(lead),
-                )
+                let (parts, acted_for) = crate::history_source::sentence::lead_parts(lead);
+                let who = crate::history_source::sentence::author_spoken(&parts);
+                acted_for.map_or_else(|| who.clone(), |acted_for| format!("{who} {acted_for}"))
             }))
             .collect::<Vec<_>>()
             .join(", ")
@@ -1878,7 +1878,7 @@ impl ActivityTimeline {
                 .get(g.start..g.end)
                 .and_then(|members| presenter.group_summary(members))
         });
-        let mut facts = g.subtitle_facts_summarised(&self.entries, summary);
+        let mut facts = g.subtitle_facts_summarised(summary);
         // One author is drawn as a row draws theirs, face, name and the agent's chip, never
         // as a line of text naming them.
         let lead = match g.authors.as_slice() {
