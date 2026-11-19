@@ -1435,6 +1435,7 @@ async fn a_workspace_members_role_controls_document_replay_and_open() {
         cluster_id: workspace.clone(),
         document_id: document.to_owned(),
         own: None,
+        readers: None,
     };
     let body = runtime
         .store

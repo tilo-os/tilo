@@ -476,6 +476,7 @@ mod tests {
                 cluster_id: workspace.to_string(),
                 document_id: document.clone(),
                 own: None,
+                readers: None,
             };
             let mut write = SignedOp::new_unsigned(
                 vec![0],
