@@ -73,7 +73,6 @@ impl NativeDocumentReads for Records {
 
     fn resource_read(&self, workspace: &str, app: &str, record: &str) -> ResourceRead {
         if WorkspaceId::parse(workspace).is_none()
-            || !self.engine.holds(workspace)
             || !self.engine.holds_resource(workspace, app, record)
         {
             return ResourceRead::Own;
@@ -366,10 +365,10 @@ mod tests {
     }
 
     /// A workspace this device founded, holding one record of `APP` written under `key`.
-    fn workspace_with_record(engine: &Engine, key: &SigningKey) -> WorkspaceId {
+    fn workspace_with_record(engine: &Arc<Engine>, key: &SigningKey) -> WorkspaceId {
         crate::founding_fixture::serve(engine);
         let workspace = WorkspaceId::new();
-        pollster::block_on(engine.found(workspace, "Shell"));
+        pollster::block_on(engine.found(workspace, "Shell")).expect("the workspace is founded");
         assert!(
             engine.holds(workspace),
             "the shell's workspace is held here"

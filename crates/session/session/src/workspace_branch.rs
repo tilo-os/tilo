@@ -745,8 +745,12 @@ impl crate::Shared {
         let copied = Polled::new(
             Arc::clone(&self.wake_handle),
             async move {
-                if let Some(engine) = &engine {
-                    engine.found(workspace, &founded).await;
+                if let Some(engine) = &engine
+                    && let Err(error) = engine.found(workspace, &founded).await
+                {
+                    // The workspace is the layout's from here either way; a founding that failed
+                    // is asked for again, and the person hears why.
+                    tracing::warn!(%error, %workspace, "the branch's workspace was not founded");
                 }
                 copy(engine.as_deref(), Places::here(), from, workspace, until).await
             },
@@ -1119,8 +1123,8 @@ mod tests {
             let identity = identity();
             let engine = reopened(&state, &identity);
             let (from, to) = ids();
-            pollster::block_on(engine.found(from, "Research"));
-            pollster::block_on(engine.found(to, "Research branch"));
+            pollster::block_on(engine.found(from, "Research")).expect("the source is founded");
+            pollster::block_on(engine.found(to, "Research branch")).expect("the branch is founded");
             let keys = key_group::KeyGroup::create(
                 collab_types::WorkspaceId::parse(&to.to_string()).unwrap(),
                 key_group::MemberKey::generate("owner").unwrap(),
@@ -1204,8 +1208,8 @@ mod tests {
             let identity = identity();
             let engine = reopened(&state, &identity);
             let (from, to) = ids();
-            pollster::block_on(engine.found(from, "Research"));
-            pollster::block_on(engine.found(to, "Research branch"));
+            pollster::block_on(engine.found(from, "Research")).expect("the source is founded");
+            pollster::block_on(engine.found(to, "Research branch")).expect("the branch is founded");
             let keys = key_group::KeyGroup::create(
                 collab_types::WorkspaceId::parse(&to.to_string()).unwrap(),
                 key_group::MemberKey::generate("owner").unwrap(),
@@ -1308,7 +1312,7 @@ mod tests {
                 "7a6b5c4d-0000-4000-8000-000000000005",
             ]
             .map(|id| WorkspaceId::parse(id).unwrap());
-            pollster::block_on(engine.found(from, "Research"));
+            pollster::block_on(engine.found(from, "Research")).expect("the source is founded");
             let channel = collab_types::WorkspaceId::parse(FROM).unwrap();
             let keys =
                 key_group::KeyGroup::create(channel, key_group::MemberKey::generate("owner").unwrap())
@@ -1358,7 +1362,8 @@ mod tests {
             };
 
             for (n, to) in targets.into_iter().enumerate() {
-                pollster::block_on(engine.found(to, &format!("Question {n}")));
+                pollster::block_on(engine.found(to, &format!("Question {n}")))
+                    .expect("the branch is founded");
                 let branched = branch(Some(&engine), places.clone(), from, to);
                 assert!(
                     branched.missing.is_empty(),
@@ -1386,8 +1391,8 @@ mod tests {
             let person = hex::encode(identity.device_cert.user_public_key);
             let engine = reopened(&state, &identity);
             let (from, to) = ids();
-            pollster::block_on(engine.found(from, "Research"));
-            pollster::block_on(engine.found(to, "Research branch"));
+            pollster::block_on(engine.found(from, "Research")).expect("the source is founded");
+            pollster::block_on(engine.found(to, "Research branch")).expect("the branch is founded");
             assert!(engine.holds(from) && engine.holds(to));
             let channel = collab_types::WorkspaceId::parse(&to.to_string()).unwrap();
             let keys =
@@ -1522,14 +1527,16 @@ mod tests {
     fn reopened(
         state: &tempfile::TempDir,
         identity: &tilo_identity::identity_store::DeviceIdentity,
-    ) -> Engine {
-        let engine = Engine::open(
-            identity.clone(),
-            Some(state.path()),
-            Vec::new(),
-            crate::platform::membership_check::of_this_session(),
-        )
-        .expect("this device's engine opens");
+    ) -> Arc<Engine> {
+        let engine = Arc::new(
+            Engine::open(
+                identity.clone(),
+                Some(state.path()),
+                Vec::new(),
+                crate::platform::membership_check::of_this_session(),
+            )
+            .expect("this device's engine opens"),
+        );
         crate::founding_fixture::serve(&engine);
         engine
     }

@@ -46,6 +46,27 @@ pub(super) async fn open(
     endpoint: &iroh::Endpoint,
     reachability: &Reachability,
 ) -> Result<Arc<workspace_service::WorkspaceService>, String> {
+    let groups = DeviceKeyGroups {
+        keys: Arc::new(DeviceGroupKeys {
+            keys: engine.keys(),
+        }),
+        sink: Some(Arc::new(DeviceKeySink {
+            engine: Arc::downgrade(engine),
+        })),
+    };
+    open_with_groups(own, identity, engine, endpoint, reachability, groups).await
+}
+
+/// [`open`] with `groups` keeping the workspaces' keys: keys a test makes itself, where the
+/// session opens no key service of its own.
+pub(crate) async fn open_with_groups(
+    own: &OwnService,
+    identity: &DeviceIdentity,
+    engine: &Arc<Engine>,
+    endpoint: &iroh::Endpoint,
+    reachability: &Reachability,
+    groups: DeviceKeyGroups,
+) -> Result<Arc<workspace_service::WorkspaceService>, String> {
     let root = engine
         .service_root()
         .ok_or("this session keeps no state, so it opens no workspace service")?;
@@ -71,14 +92,7 @@ pub(super) async fn open(
         },
         service_identity,
         endpoint.clone(),
-        Some(DeviceKeyGroups {
-            keys: Arc::new(DeviceGroupKeys {
-                keys: engine.keys(),
-            }),
-            sink: Some(Arc::new(DeviceKeySink {
-                engine: Arc::downgrade(engine),
-            })),
-        }),
+        Some(groups),
     )
     .await
     .map_err(|error| error.to_string())?;
@@ -157,11 +171,23 @@ impl KeySink for DeviceKeySink {
 /// this process reaches; so a desktop with no network keeps its layout through a restart, and
 /// once a session's network comes up it carries what was founded here, with nothing to move.
 pub(crate) fn found_alone(engine: &Arc<Engine>) {
+    serve_alone(engine, None, |founder| founder);
+}
+
+/// [`found_alone`] with the workspaces' keys kept by `groups`, where the session opens no key
+/// service of its own: a test's keys, so its made workspaces seal as a device's do. `wrap` is
+/// handed the founder before it serves, for a caller that founds elsewhere.
+pub(crate) fn serve_alone(
+    engine: &Arc<Engine>,
+    groups: Option<DeviceKeyGroups>,
+    wrap: impl FnOnce(Arc<dyn crate::engine::Founder>) -> Arc<dyn crate::engine::Founder>,
+) {
     if engine.founds() {
         return;
     }
     let identity = engine.identity().clone();
     let (own, _unrouted) = OwnService::deferred();
+    let mut groups = groups;
     let opening = async {
         let secret = identity
             .signer
@@ -173,7 +199,22 @@ pub(crate) fn found_alone(engine: &Arc<Engine>) {
             .await
             .map_err(|error| format!("this device's own endpoint: {error}"))?;
         // Only this process reaches this endpoint, so nothing is held back for a link it makes.
-        open(&own, &identity, engine, &endpoint, &Reachability::default()).await?;
+        match groups.take() {
+            Some(groups) => {
+                open_with_groups(
+                    &own,
+                    &identity,
+                    engine,
+                    &endpoint,
+                    &Reachability::default(),
+                    groups,
+                )
+                .await?;
+            }
+            None => {
+                open(&own, &identity, engine, &endpoint, &Reachability::default()).await?;
+            }
+        }
         Ok::<_, String>(endpoint)
     };
     let opened = tilo_rt::try_app()
@@ -181,7 +222,7 @@ pub(crate) fn found_alone(engine: &Arc<Engine>) {
         .and_then(|runtime| runtime.block_on(opening).map_err(|error| error.to_string()))
         .and_then(|opened| opened);
     match opened {
-        Ok(endpoint) => engine.serve_founding(Arc::new(Founding {
+        Ok(endpoint) => engine.founders().serve(wrap(Arc::new(Founding {
             service: own,
             endpoint,
             link: engine.link(),
@@ -189,7 +230,7 @@ pub(crate) fn found_alone(engine: &Arc<Engine>) {
             engine: Arc::downgrade(engine),
             network: None,
             actions: None,
-        })),
+        }))),
         Err(error) => {
             tracing::warn!(%error, "this device's workspace service did not open, so it founds no workspace");
         }

@@ -77,6 +77,8 @@ pub(crate) use network::Reached;
 use network::{Serving, Wire, run};
 #[cfg(target_os = "linux")]
 pub(crate) use own_service::found_alone;
+#[cfg(test)]
+pub(crate) use own_service::serve_alone;
 
 /// How long the session waits for this device's endpoint to bind before it starts without one: a
 /// desktop with no one else on it, rather than a session that never opens.

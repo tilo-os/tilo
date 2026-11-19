@@ -65,6 +65,8 @@ system-update-went-back-runs-before = the version before
 workspaces-app-name = Workspaces
 workspaces-unreadable-title = Your workspaces could not be read
 workspaces-unreadable-body = The list of your own workspaces that this computer kept could not be read, so it starts the list again. Nothing was removed: your workspaces are still on this computer and on your other devices.
+workspace-not-founded-title = { $name } could not be saved to this computer's workspace service
+workspace-not-founded-body = The workspace is only on this computer for now, and this session will try again. { $reason }
 
 ## The shell this device saved could not be opened: the person's own shell is
 ## still on disk and this session starts empty, so it is never written over.

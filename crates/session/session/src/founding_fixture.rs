@@ -1,62 +1,57 @@
-//! Founding for sessions that open no workspace service: tests whose session takes part in no
-//! network still found the workspaces they make, and hold them as a member, as a desktop holds
-//! the ones its own workspace service places.
-//!
-//! The workspace's governor signs with this device's own key, as the device's own workspace
-//! service does, and admits the device through the signed join protocol.
+//! Founding for sessions a test opens without a peer network: the device's own workspace service,
+//! opened over the session's state as a desktop without a network opens it
+//! ([`crate::sync::serve_alone`]). The service is the real one — a workspace a test makes is
+//! placed on it and held as a member, as a person's made workspace is — with the workspaces' keys
+//! made by the test, since a test session opens no key service of its own.
 
 use std::sync::Arc;
 
-use ed25519_dalek::SigningKey;
 use tilo_desktop_model::WorkspaceId;
-use tilo_peer_state::owner::NativeWorkspaceOwner;
-use tilo_user_identity::DeviceCert;
+use tilo_workspace_service::workspaces::DeviceKeyGroups;
+use tilo_workspace_service::workspaces::fixtures::TestGroupKeys;
 
-use crate::engine::{Engine, Founder};
+use crate::engine::{Engine, Founder, ServiceAnswer};
 
-/// Found what `engine` makes from now on through a governor sharing its device's key, when the
-/// key may leave its store.
-pub(crate) fn serve(engine: &Engine) {
-    let identity = engine.identity();
-    let Some(secret) = identity.signer.endpoint_secret() else {
-        return;
-    };
-    engine.serve_founding(Arc::new(Fixture {
-        owner: engine.owner().clone(),
-        certificate: identity.device_cert.clone(),
-        key: SigningKey::from_bytes(&secret),
-    }));
+/// Open this device's own workspace service for `engine`'s state, and found what it makes there.
+pub(crate) fn serve(engine: &Arc<Engine>) {
+    crate::sync::serve_alone(
+        engine,
+        Some(DeviceKeyGroups {
+            keys: Arc::new(TestGroupKeys::default()),
+            sink: None,
+        }),
+        |founder| Arc::new(OnRuntime(founder)),
+    );
 }
 
-/// Founds a workspace on `owner` as `certificate`'s device.
-struct Fixture {
-    owner: NativeWorkspaceOwner,
-    certificate: DeviceCert,
-    key: SigningKey,
-}
+/// A founder that founds on the app runtime, where a session founds: a test that calls
+/// [`Engine::found`] from its own thread has no peer-network runtime.
+struct OnRuntime(Arc<dyn Founder>);
 
-impl Founder for Fixture {
+impl Founder for OnRuntime {
     fn found(
         &self,
         workspace: WorkspaceId,
-        _name: String,
+        name: String,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>> {
-        let founded = tilo_peer_state::owner::testing::enroll_interactive_governor_in(
-            &self.owner,
-            &self.key,
-            &self.certificate,
-            &workspace.to_string(),
-        )
-        .map(drop);
-        Box::pin(std::future::ready(founded))
+        let inner = Arc::clone(&self.0);
+        Box::pin(async move {
+            let founding = async move { inner.found(workspace, name).await };
+            match tilo_rt::try_app() {
+                Ok(runtime) => runtime
+                    .block_on(founding)
+                    .map_err(|error| error.to_string())?,
+                Err(error) => Err(error.to_string()),
+            }
+        })
     }
 
     fn ask(
         &self,
-        _workspace: WorkspaceId,
-        _action: &str,
-        _arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> Option<crate::engine::ServiceAnswer> {
-        None
+        workspace: WorkspaceId,
+        action: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Option<ServiceAnswer> {
+        self.0.ask(workspace, action, arguments)
     }
 }

@@ -577,6 +577,10 @@ fn serve_device_actions(
 
 /// Bind this device's endpoint, serve the peer actor and its app wire on it, and say where the
 /// session's apps reach this device — or say why it could not, and answer nothing.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one place binds what the network is opened with and serves everything it carries"
+)]
 async fn listening(
     identity: Option<&DeviceIdentity>,
     engine: Option<&Arc<Engine>>,
@@ -675,15 +679,17 @@ async fn listening(
     if let (true, Some(service), Some(identity), Some(engine)) =
         (opened, &own_service, identity, engine)
     {
-        engine.serve_founding(Arc::new(super::own_service::Founding {
-            service: service.clone(),
-            endpoint: endpoint.clone(),
-            identity: identity.clone(),
-            engine: Arc::downgrade(engine),
-            network: Some((actor.clone(), events.clone())),
-            link: founding_link,
-            actions: actions.get().map(DeviceActions::action_service),
-        }));
+        engine
+            .founders()
+            .serve(Arc::new(super::own_service::Founding {
+                service: service.clone(),
+                endpoint: endpoint.clone(),
+                identity: identity.clone(),
+                engine: Arc::downgrade(engine),
+                network: Some((actor.clone(), events.clone())),
+                link: founding_link,
+                actions: actions.get().map(DeviceActions::action_service),
+            }));
     }
     if ready.send(Ok((publisher, addr, reachability))).is_err() {
         return None;

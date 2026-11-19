@@ -192,20 +192,9 @@ enum Going {
     Layout(Box<Laying>),
 }
 
-/// What a record's write is sealed with, where this device can write it.
-enum Sealing {
-    /// Its members' sealed channels: the write is sealed with their keys.
-    Sealed(key_group::ContentKeys),
-}
-
-impl Sealing {
-    /// The record channel's keys, where the write is sealed.
-    fn keys(&self) -> Option<&key_group::ContentKeys> {
-        match self {
-            Self::Sealed(keys) => Some(keys),
-        }
-    }
-}
+/// What a write is sealed with, where this device can write it: the keys of the workspace it is
+/// written in, which its members hold.
+type Sealing = key_group::ContentKeys;
 
 /// A write of a record under way, with what [`Layouts::published`] takes from it.
 struct Publishing {
@@ -389,7 +378,7 @@ impl Save {
                 (DESKTOP_APP, DESKTOP_DOCUMENT),
                 &changes,
                 founding,
-                sealed.keys(),
+                Some(&sealed),
             )
             .await;
         Laid::Wrote(Box::new(Taken {
@@ -1632,7 +1621,7 @@ impl Layouts {
     fn sealed(&self, engine: &Engine, key: &Key) -> Option<Sealing> {
         let (workspace_id, _) = key;
         match engine.seal_keys(*workspace_id) {
-            Ok(SealKeys::Here(keys)) => Some(Sealing::Sealed(keys)),
+            Ok(SealKeys::Here(keys)) => Some(keys),
             // The record's channel keys are not here yet: it is written on the look after they
             // arrive, and this look leaves the workspace unread so that there is one.
             Ok(SealKeys::Waiting) => {
@@ -1698,7 +1687,7 @@ impl Layouts {
                     (route.app, &record),
                     &changes,
                     founding,
-                    sealed.keys(),
+                    Some(&sealed),
                 )
                 .await
         });

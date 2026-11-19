@@ -303,6 +303,7 @@ fn session_task(
             Arc::clone(&signer),
         ),
         Arc::new(crate::membership_check::SessionMembership),
+        Arc::new(crate::engine::Founders::default()),
     ));
     engine.keys().set(Some(workspace_keys.clone()));
     engine.held_writes().lock().extend(key_state.held());
