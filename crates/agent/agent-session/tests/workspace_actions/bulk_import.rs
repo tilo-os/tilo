@@ -39,6 +39,13 @@ fn origin(at: usize) -> Value {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_tracker_of_three_thousand_issues_lands_at_the_cost_of_its_first_lists() {
+    if std::env::var_os("RUST_LOG").is_some() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_timer(tracing_subscriber::fmt::time::uptime())
+            .with_writer(std::io::stderr)
+            .try_init();
+    }
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let server = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());

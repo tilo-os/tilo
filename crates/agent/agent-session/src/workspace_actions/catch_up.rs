@@ -115,6 +115,7 @@ pub(super) fn hold_parts(
             *entry = (index, route);
         }
     }
+    answer_unheld(holder, mounted, state, &newest);
     if newest.is_empty() {
         return Vec::new();
     }
@@ -137,6 +138,42 @@ pub(super) fn hold_parts(
     // again then, though it holds what it held now.
     mounted.wanted_at = missing.is_empty().then(|| holding(mounted));
     missing
+}
+
+/// Tell `mounted` the workspace holds none of each part of its chains it asks for and the
+/// workspace does not hold, and no part at all of a chain whose head it asks for and of which
+/// `newest` names none. Its store asks the workspace for what it does not hold, so a part
+/// nobody holds — the first of a new chain, or the next one a full chain starts — stayed on
+/// its way, and the write that started it waited for it until it gave up.
+fn answer_unheld(
+    holder: &DocumentRoute,
+    mounted: &Mounted,
+    state: &WorkspaceState,
+    newest: &std::collections::HashMap<ui::resource::DocumentId, (u64, &DocumentRoute)>,
+) {
+    for wanted in mounted.app.wanted_resources() {
+        let unheld = if wanted.is_chain_head() {
+            !newest.keys().any(|chain| chain.chain_head() == wanted)
+        } else if wanted.chain_part().is_some() {
+            let route = DocumentRoute {
+                app_id: holder.app_id.clone(),
+                cluster_id: holder.cluster_id.clone(),
+                document: wanted.as_str().to_owned(),
+            };
+            !state.documents.iter().any(|held| held == &route)
+        } else {
+            false
+        };
+        if !unheld {
+            continue;
+        }
+        if let Err(error) = mounted
+            .app
+            .workspace_answered(&wanted, ui::resource::WorkspaceAnswer::HoldsNone)
+        {
+            tracing::debug!(%error, wanted = %wanted.as_str(), "workspace actions: an app was not told the workspace holds none of a part");
+        }
+    }
 }
 
 /// What `mounted` and its parts merged last, as one number: where
