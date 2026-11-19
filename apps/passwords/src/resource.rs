@@ -58,18 +58,11 @@ impl ResourceApp for PasswordsShell {
         answer_effects(cx, &window.vault());
         window.vault().borrow_mut().jobs = Some(cx.window_jobs::<PasswordsWindow>());
         let vault = window.vault();
-        let (rows, row, entries, unlocked, statuses) = (
-            vault.clone(),
-            vault.clone(),
-            vault.clone(),
-            vault.clone(),
-            vault,
-        );
+        let (rows, row, entries, unlocked) = (vault.clone(), vault.clone(), vault.clone(), vault);
         cx.publishing(
             Publishes::new()
                 .live_rows(move || rows.borrow().item_rows())
                 .live_row(move |id| row.borrow().item_row(id))
-                .row_status(move |id| statuses.borrow().row_status(id))
                 .search_entries(move || crate::search::entries(&entries.borrow().items))
                 .secrets_unlocked(move || unlocked.borrow().secrets_unlocked()),
             Box::new(window),
