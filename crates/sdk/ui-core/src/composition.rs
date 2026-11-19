@@ -741,29 +741,6 @@ pub fn keyed_target(namespace: &str, keys: &[u64]) -> String {
     format!("tilo.key-action:{namespace}:{keys}")
 }
 
-/// A widget's semantics as a page reads them: its own words, role and state. Its synthetic
-/// children are not: a widget that names one composes it as a part of its own, and carrying the
-/// subtree nested a copy of every descendant inside each ancestor — Notes' document node alone
-/// repeated its sixty blocks' rows — for a page that never reads them.
-#[expect(
-    clippy::ref_option,
-    reason = "serde's `with` hands the field by reference"
-)]
-fn semantics_without_children<S>(
-    semantics: &Option<crate::a11y::AccessNode>,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    use serde::Serialize as _;
-    let mut own = semantics.clone();
-    if let Some(node) = own.as_mut() {
-        node.children.clear();
-    }
-    own.serialize(serializer)
-}
-
 /// One widget of a composition.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Composed {
@@ -789,10 +766,9 @@ pub struct Composed {
     /// It scrolls vertically: `[offset, content, viewport]`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scroll: Option<[f64; 3]>,
-    #[serde(
-        skip_serializing_if = "Option::is_none",
-        serialize_with = "semantics_without_children"
-    )]
+    /// Its own role, words and state: a page reads a node's own fields, and a
+    /// widget's synthetic children are composed as parts of their own.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub semantics: Option<crate::a11y::AccessNode>,
     /// The ground its element is filled with, under its words and children.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -854,6 +830,19 @@ impl Composed {
 }
 
 impl Composed {
+    /// Keep only each node's own fields: the page reads a widget's role, words
+    /// and state, and a widget that names a synthetic child composed it as a
+    /// part of its own. A page that never reads a subtree would otherwise take
+    /// a copy of every descendant, on every frame.
+    pub(crate) fn forget_semantics_children(&mut self) {
+        if let Some(node) = self.semantics.as_mut() {
+            node.children.clear();
+        }
+        for child in &mut self.children {
+            child.forget_semantics_children();
+        }
+    }
+
     /// A part of it keyed `key` under its path, at `rect` in the window: a widget that
     /// lays out and paints its own content composes it from parts of its own.
     pub fn part(&mut self, key: &str, widget: &str, rect: vello::kurbo::Rect) -> &mut Composed {
@@ -931,6 +920,7 @@ pub fn compose_alone(
         compose_children: &mut none,
     };
     widget.html(&mut cx);
+    cx.composed.forget_semantics_children();
     cx.composed
 }
 
@@ -944,6 +934,17 @@ pub struct Composition {
     /// What sits over the window (an open menu, the palette), in order.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub layers: Vec<Composed>,
+}
+
+impl Composition {
+    /// Keep only each node's own fields
+    /// ([`Composed::forget_semantics_children`]).
+    pub(crate) fn forget_semantics_children(&mut self) {
+        self.root.forget_semantics_children();
+        for layer in &mut self.layers {
+            layer.forget_semantics_children();
+        }
+    }
 }
 
 /// What a widget's [`html`](crate::widget::Widget::html) renders into: the element it is, what it shows
