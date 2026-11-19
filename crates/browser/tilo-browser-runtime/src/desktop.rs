@@ -368,12 +368,6 @@ pub(crate) struct Shared {
     /// The agent run that opened each window an agent opened, by tab, as the
     /// workspace's shell last said.
     pub opened_by: Rc<RefCell<BTreeMap<TabId, tilo_desktop_model::ownership::OpenedBy>>>,
-    /// The name this page last asked its host to give the workspace, until the workspace's
-    /// governance takes it: a rename it asked for is no news to it.
-    pub asked_name: Rc<RefCell<Option<String>>>,
-    /// The name the workspace's governance recorded when this page last projected it onto the
-    /// shell: a different one since is a rename.
-    pub projected_name: Rc<RefCell<Option<String>>>,
     /// The governance's revision and the shell's when the page last projected the governance onto
     /// it: a projection is due when either moved.
     pub projected_at: Rc<std::cell::Cell<Option<(u64, u64)>>>,

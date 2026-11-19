@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {DECLINED_KEY, badgeText, createTabAttention, shouldOffer, tabTitle} from './tab-attention.mjs';
+import {OFFERED_KEY, TURN_ON_ACTION, badgeText, createTabAttention, shouldOffer, tabTitle} from './tab-attention.mjs';
 
 test('the title leads with what needs the person, then the workspace', () => {
   assert.equal(tabTitle({workspace: 'Garden'}), 'Tilo · Garden');
@@ -9,9 +9,6 @@ test('the title leads with what needs the person, then the workspace', () => {
   assert.equal(tabTitle({workspace: 'Garden', unread: 250}), '(99+) Tilo · Garden');
   assert.equal(tabTitle({workspace: 'Garden', waiting: ['Claude Code']}), 'Claude Code needs you · Tilo · Garden');
   assert.equal(tabTitle({workspace: 'Garden', waiting: ['Claude Code', 'Codex']}), 'Claude Code and Codex need you · Tilo · Garden');
-  assert.equal(tabTitle({workspace: 'Garden', unread: 1, finished: ['Claude Code']}), '(1) Claude Code finished · Tilo · Garden');
-  assert.equal(tabTitle({workspace: 'Garden', waiting: ['Codex'], finished: ['Claude Code', 'Codex']}),
-    'Codex needs you · Claude Code finished · Tilo · Garden', 'an agent waiting again is not also finished');
 });
 
 test('the icon is badged only while something needs the person', () => {
@@ -19,88 +16,71 @@ test('the icon is badged only while something needs the person', () => {
   assert.equal(badgeText({unread: 4}), '4');
   assert.equal(badgeText({unread: 12}), '9+');
   assert.equal(badgeText({waiting: ['Claude Code']}), '!');
-  assert.equal(badgeText({finished: ['Claude Code']}), '!');
 });
 
-test('notifications are offered once there is news, never at load, and never after Not now', () => {
-  const news = {unread: 0, waiting: ['Claude Code'], finished: []};
-  assert.equal(shouldOffer({permission: 'default', declined: false, attention: {unread: 0, waiting: [], finished: []}}), false,
+test('notifications are offered once there is news, never at load, and never twice', () => {
+  const news = {unread: 0, waiting: ['Claude Code']};
+  assert.equal(shouldOffer({permission: 'default', offered: false, attention: {unread: 0, waiting: []}}), false,
     'nothing to have been told of yet');
-  assert.equal(shouldOffer({permission: 'default', declined: false, attention: news}), true);
-  assert.equal(shouldOffer({permission: 'default', declined: true, attention: news}), false);
-  assert.equal(shouldOffer({permission: 'granted', declined: false, attention: news}), false);
-  assert.equal(shouldOffer({permission: 'denied', declined: false, attention: news}), false);
-  assert.equal(shouldOffer({permission: 'unavailable', declined: false, attention: news}), false);
+  assert.equal(shouldOffer({permission: 'default', offered: false, attention: news}), true);
+  assert.equal(shouldOffer({permission: 'default', offered: true, attention: news}), false);
+  assert.equal(shouldOffer({permission: 'granted', offered: false, attention: news}), false);
+  assert.equal(shouldOffer({permission: 'denied', offered: false, attention: news}), false);
+  assert.equal(shouldOffer({permission: 'unavailable', offered: false, attention: news}), false);
 });
 
 function fakePage({visibility = 'visible', permission = 'default'} = {}) {
   const listeners = new Map();
-  const body = {children: [], append(node) { this.children.push(node); node.parent = this; }};
-  const element = () => {
-    const node = {dataset: {}, style: {}, children: [], listeners: {},
-      setAttribute() {}, append(...nodes) { this.children.push(...nodes); },
-      addEventListener(type, fn) { this.listeners[type] = fn; },
-      remove() { body.children = body.children.filter(child => child !== node); }};
-    return node;
-  };
-  const document = {title: 'Tilo', visibilityState: visibility, body, createElement: element,
-    querySelector: () => null, addEventListener: (type, fn) => listeners.set(type, fn)};
+  const document = {title: 'Tilo', visibilityState: visibility, querySelector: () => null,
+    addEventListener: (type, fn) => listeners.set(type, fn)};
   const asked = [];
   const stored = new Map();
   const window = {document, Notification: Object.assign(function Notification() {}, {permission, requestPermission: async () => { asked.push(true); return 'granted'; }}),
     localStorage: {getItem: key => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, value)}};
-  return {window, document, asked, stored, show: state => { document.visibilityState = state; listeners.get('visibilitychange')?.(); }};
+  const offers = [];
+  const mount = {offerHostAction: offer => offers.push(offer)};
+  return {window, document, asked, stored, offers, mount, show: state => { document.visibilityState = state; listeners.get('visibilitychange')?.(); }};
 }
 
-test('an agent that finished while the person was away stays in the title until they look', () => {
-  const page = fakePage({visibility: 'hidden', permission: 'granted'});
-  const tab = createTabAttention({window: page.window});
-  tab.setWorkspace('Garden');
-  tab.update({unread: 1, waiting: [], finished: [{id: 7, agent: 'Claude Code'}]});
-  assert.equal(page.document.title, '(1) Claude Code finished · Tilo · Garden');
-  page.show('visible');
-  assert.equal(page.document.title, '(1) Tilo · Garden', 'seen on the shell once the tab is in view');
-  tab.update({unread: 1, waiting: [], finished: [{id: 7, agent: 'Claude Code'}]});
-  assert.equal(page.document.title, '(1) Tilo · Garden');
-});
-
-test('the offer appears with the first news in view, and Not now is kept', async () => {
+test('the offer is a notification on the shell with the first news in view, asked once', () => {
   const page = fakePage();
   const tab = createTabAttention({window: page.window});
-  tab.update({unread: 0, waiting: [], finished: []});
-  assert.equal(page.document.body.children.length, 0, 'never at load');
-  tab.update({unread: 0, waiting: ['Claude Code'], finished: []});
-  const [card] = page.document.body.children;
-  assert.ok(card, 'offered once there is news');
-  const [, row] = card.children;
-  const [notNow] = row.children;
-  notNow.listeners.click();
-  assert.equal(page.stored.get(DECLINED_KEY), '1');
-  assert.equal(page.document.body.children.length, 0);
+  tab.attach(page.mount);
+  tab.update({unread: 0, waiting: []});
+  assert.equal(page.offers.length, 0, 'never at load');
+  tab.update({unread: 0, waiting: ['Claude Code']});
+  assert.equal(page.offers.length, 1, 'offered once there is news');
+  const [offer] = page.offers;
+  assert.equal(offer.action.id, TURN_ON_ACTION);
+  assert.match(offer.title, /agent needs you/);
+  tab.update({unread: 1, waiting: ['Claude Code']});
+  assert.equal(page.offers.length, 1, 'one ask: put off, it waits in the notification centre');
+  assert.equal(page.stored.get(OFFERED_KEY), '1');
   const again = fakePage();
-  again.stored.set(DECLINED_KEY, '1');
   again.window.localStorage = page.window.localStorage;
-  createTabAttention({window: again.window}).update({unread: 2, waiting: [], finished: []});
-  assert.equal(again.document.body.children.length, 0, 'a later page does not ask again');
+  const later = createTabAttention({window: again.window});
+  later.attach(again.mount);
+  later.update({unread: 2, waiting: []});
+  assert.equal(again.offers.length, 0, 'a later page does not ask again');
   assert.deepEqual(page.asked, []);
 });
 
-test('the offer stands clear of the shell\'s floating column', () => {
-  const page = fakePage();
-  createTabAttention({window: page.window}).update({unread: 1, waiting: [], finished: []});
-  const [card] = page.document.body.children;
-  // The shell stands a person's call and its controls in the work area's
-  // bottom right: page chrome there would take the presses they are for.
-  assert.equal(card.style.right, undefined, 'not the shell\'s floating column');
-  assert.equal(card.style.left, '16px', 'the bottom left is the shell\'s own to leave free');
-  assert.equal(card.style.bottom, '16px');
+test('a hidden tab offers nothing until it is looked at', () => {
+  const page = fakePage({visibility: 'hidden'});
+  const tab = createTabAttention({window: page.window});
+  tab.attach(page.mount);
+  tab.update({unread: 1, waiting: []});
+  assert.equal(page.offers.length, 0);
+  page.show('visible');
+  assert.equal(page.offers.length, 1);
 });
 
-test('Turn on asks the browser inside the click', () => {
+test('Turn on asks the browser', async () => {
   const page = fakePage();
-  createTabAttention({window: page.window}).update({unread: 1, waiting: [], finished: []});
-  const [card] = page.document.body.children;
-  const [, turnOn] = card.children[1].children;
-  turnOn.listeners.click();
+  const tab = createTabAttention({window: page.window});
+  assert.ok(tab.handles(TURN_ON_ACTION));
+  assert.ok(!tab.handles('something-else'));
+  tab.perform(TURN_ON_ACTION);
+  await Promise.resolve();
   assert.deepEqual(page.asked, [true]);
 });

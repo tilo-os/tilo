@@ -454,9 +454,12 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
       ...(entry.about ? {about: entry.about} : {}),
       ...(entry.layout ? {layout: entry.layout} : {}),
       ...(linkOffer ? {linkOffer} : {}),
-      ...(invite ? {invite} : {}), ...diagnostics},
+      ...(invite ? {invite} : {}), ...diagnostics,
+      // The offer of the browser's notifications is the tab's own ask on the shell.
+      onHostAction: (id, value) => (tab.handles(id) ? tab.perform(id) : diagnostics.onHostAction?.(id, value))},
     onStatus: titled(tab, guard, diagnostics.onStatus),
     onAttention: attention => { tab.update(attention); guard.update({jobs: attention.working ?? []}); }});
+  tab.attach(shown.mount);
   // `show` reads the router it was given, so the address can name what a
   // link opened once it is shown.
   let router;

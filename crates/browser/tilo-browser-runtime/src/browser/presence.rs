@@ -322,7 +322,6 @@ impl Mount {
             members || note
         };
         if changed {
-            desktop.announce_arrivals();
             // The bar reads the strips' counts in its update pass, which a
             // bare redraw skips: without the wake it would paint them only on
             // its next other change, such as the clock's minute.

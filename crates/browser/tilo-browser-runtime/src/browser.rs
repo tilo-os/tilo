@@ -632,18 +632,6 @@ pub(crate) struct Desktop {
     permissions: SharedPermissions,
     /// The workspace the session serves.
     workspace: String,
-    /// Agents that finished, waiting for the history's read of what their run did before their
-    /// notice: each with the read asked and when, Unix milliseconds.
-    finishing: RefCell<
-        Vec<(
-            tilo_desktop::here::AgentFinished,
-            tilo_actions::InvocationId,
-            u64,
-        )>,
-    >,
-    /// The runs a finished notice already told, by the history's id: an agent's sessions that
-    /// worked one run are told of once.
-    told_runs: RefCell<std::collections::BTreeSet<String>>,
     /// The page's own rows on the shell, and whether the upload rows stand with them.
     offered: uploads::Offered,
     /// The workspace's files, as the page copies dropped and uploaded files into them; `None`
@@ -740,37 +728,9 @@ impl Desktop {
         self.shared.wake();
     }
 
-    /// Tell this person, in a banner that retires to the notification
-    /// centre, about something someone else did in the workspace.
-    fn notify(&self, title: &str) {
-        self.post(tilo_desktop_surface::notifications::Notification::new(
-            title, "",
-        ));
-    }
-
-    fn post(&self, notice: tilo_desktop_surface::notifications::Notification) {
-        self.persistence.notifications.post(notice);
-        self.shared.wake();
-    }
-
-    /// Someone arriving is the one roster change worth a notice: this
-    /// person did not cause it, and it changes who sees their work. Who was
-    /// here already, and who leaves, stay quiet.
-    fn announce_arrivals(&self) {
-        let arrivals = self.here.borrow_mut().take_arrivals(crate::shell::now_ms());
-        for name in arrivals {
-            self.notify(&tilo_desktop_surface::i18n::t_args(
-                "workspace-notice-joined",
-                &[("name", name.into())],
-            ));
-        }
-    }
-
     /// Project the workspace's governance onto the shell, as every device does: its one name and
     /// its people (who is in it, in what part, admitted when, and the grants it makes). The shell
-    /// keeps none of these of its own. A name the governance took since the last projection, which
-    /// this page did not ask for, is someone else's rename, and the person hears it. Whether the
-    /// shell changed.
+    /// keeps none of these of its own. Whether the shell changed.
     fn project_governance(&self, peer: Option<u32>) -> bool {
         let Some(peer) = peer else {
             return false;
@@ -785,18 +745,6 @@ impl Desktop {
             return false;
         }
         let name = crate::replication::governance_name(peer, workspace);
-        if let Some(name) = &name {
-            let before = self.shared.projected_name.replace(Some(name.clone()));
-            let asked = self.shared.asked_name.borrow().clone();
-            if asked.as_deref() == Some(name.as_str()) {
-                self.shared.asked_name.replace(None);
-            } else if before.is_some_and(|before| before != *name) {
-                self.notify(&tilo_desktop_surface::i18n::t_args(
-                    "workspace-notice-renamed",
-                    &[("workspace", name.clone().into())],
-                ));
-            }
-        }
         let policy = crate::replication::governance_policy(peer, workspace);
         let mut tree = self.handle.read(Clone::clone);
         let changed = tree
@@ -1628,8 +1576,6 @@ fn present_desktop(
 
             permissions: opening_permissions,
             workspace: config.workspace.clone(),
-            finishing: RefCell::default(),
-            told_runs: RefCell::default(),
             offered: uploads::Offered::default(),
             files,
             carrying,
@@ -3456,7 +3402,6 @@ impl Mount {
 /// # Errors
 ///
 /// Rejects an unknown kind or a closed mount.
-mod agent_notices;
 mod app_window;
 mod attention;
 mod carry_out;

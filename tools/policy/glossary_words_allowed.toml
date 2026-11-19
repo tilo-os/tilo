@@ -1338,3 +1338,13 @@ paths = [
     "crates/session/session/src/pair_device.rs",
     "crates/session/session/src/sync/client/own_service.rs",
 ]
+
+[[allow]]
+reason = "The web desktop's mount calls for what only the page can do, `offerHostAction` and its answer `onHostAction`, which the tab's browser-notification offer uses; their uses elsewhere are counted until that page interface is renamed as a whole."
+words = ["host"]
+identifiers = ["offerHostAction", "onHostAction"]
+paths = [
+    "crates/browser/tilo-browser-runtime/web/entry.mjs",
+    "crates/browser/tilo-browser-runtime/web/tab-attention.mjs",
+    "crates/browser/tilo-browser-runtime/web/tab-attention.test.mjs",
+]
