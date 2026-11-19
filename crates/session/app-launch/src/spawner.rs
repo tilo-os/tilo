@@ -27,6 +27,8 @@
 
 use std::collections::BTreeMap;
 use std::os::fd::AsFd as _;
+#[cfg(target_os = "linux")]
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
@@ -496,6 +498,7 @@ impl Spawner {
     ) -> Result<(Started, Option<HeldLink>), SpawnError> {
         crate::name_surface(planned);
         let mut command = Command::new(&planned.program);
+        close_inherited(&mut command);
         command
             .args(&planned.args)
             .env_clear()
@@ -1208,6 +1211,48 @@ impl Spawner {
         }
     }
 }
+
+/// Mark every descriptor this session holds beyond its standard streams close-on-exec in the
+/// process `command` starts, before it becomes the app: a launch gets only the descriptors it is
+/// deliberately handed (`launcher::inherit::hand_down` clears the flag on each of those).
+///
+/// The session's own descriptors are not the app's: a compositor's GPU node reached through a
+/// driver that left its descriptor open, a saved document, a socket — every one of them would otherwise
+/// reach every app the session starts, as an inherited handle on what the session holds. Added
+/// before the launcher's own `pre_exec` steps, which hand the app what it is given after this.
+#[cfg(target_os = "linux")]
+fn close_inherited(command: &mut Command) {
+    // SAFETY: only async-signal-safe calls happen between fork and exec: close_range, fcntl and
+    // sysconf; nothing is allocated.
+    unsafe {
+        command.pre_exec(|| {
+            let closed = libc::syscall(
+                libc::SYS_close_range,
+                3,
+                libc::c_uint::MAX,
+                libc::CLOSE_RANGE_CLOEXEC,
+            );
+            if closed == 0 {
+                return Ok(());
+            }
+            // A kernel without close_range: the same flag, one descriptor at a time.
+            let limit = libc::sysconf(libc::_SC_OPEN_MAX);
+            let limit = i32::try_from(limit).unwrap_or(1024).max(3);
+            for fd in 3..limit {
+                if libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) == -1 {
+                    let error = std::io::Error::last_os_error();
+                    if error.raw_os_error() != Some(libc::EBADF) {
+                        return Err(error);
+                    }
+                }
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn close_inherited(_: &mut Command) {}
 
 /// Tell the launcher `command` starts to start `keeper` in `dir`, keeping `launch`.
 #[cfg(target_os = "linux")]

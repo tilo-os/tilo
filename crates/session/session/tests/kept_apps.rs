@@ -9,8 +9,10 @@
 #![cfg(target_os = "linux")]
 
 use std::cell::Cell;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::Write as _;
+use std::os::fd::AsRawFd as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -67,6 +69,25 @@ fn kept_app() {
         .lines()
         .map(str::to_owned)
         .collect();
+    // What this process holds beyond its own standard streams: a launch gets only the descriptors
+    // it is handed, so a test reads this and looks for what the desktop holds.
+    let mut fds = String::new();
+    let mut listed: Vec<(i32, String)> = fs::read_dir("/proc/self/fd")
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let fd: i32 = entry.file_name().to_string_lossy().parse().ok()?;
+            let target = fs::read_link(entry.path()).ok()?;
+            Some((fd, target.to_string_lossy().into_owned()))
+        })
+        .collect();
+    listed.sort();
+    for (fd, target) in listed {
+        let _ = writeln!(fds, "{fd} {target}");
+    }
+    fs::write(dir.join("fds"), fds).expect("the open descriptors");
     let mut started = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -514,6 +535,38 @@ fn kept_windows_show_without_waiting_for_a_relay_that_never_answers() {
         "the kept window came after {waited:?}: it waited on the network"
     );
     second.end(Teardown::Logout);
+}
+
+/// A launch gets only the descriptors it is handed: a file the desktop holds without close-on-exec
+/// — a GPU node a driver opened, a saved document — does not reach the app behind its keeper.
+#[test]
+fn a_launched_app_inherits_no_descriptor_it_was_not_handed() {
+    let _settled = ui::motion::testing::settled();
+    let rig = Rig::new(&["Only"]);
+    // The desktop's own descriptor, left without close-on-exec as a driver's own is.
+    let leaked = rig.app.join("the-desktops-own");
+    let held = fs::File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&leaked)
+        .expect("a file the desktop holds");
+    // SAFETY: the descriptor is this process's, open until `held` is dropped.
+    unsafe {
+        assert_eq!(libc::fcntl(held.as_raw_fd(), libc::F_SETFD, 0), 0);
+    }
+    let mut pass = rig.desktop(false);
+    rig.launch(&pass);
+    shown_and_told(&rig, &mut pass, &["Only"]);
+    let descriptors = fs::read_to_string(rig.app.join("fds")).expect("the app's descriptors");
+    assert!(
+        !descriptors.lines().any(|line| line
+            .split_once(' ')
+            .is_some_and(|(_, target)| target == leaked.to_string_lossy())),
+        "the app inherited a descriptor it was not handed:\n{descriptors}"
+    );
+    pass.end(Teardown::Logout);
 }
 
 /// A kept program's second window closes while it has the keyboard, the way Wine closes a dialog
