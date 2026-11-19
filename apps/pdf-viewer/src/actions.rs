@@ -4,7 +4,7 @@
 //! agent invoke. The outline and the find hits are live rows with view operations only.
 
 use ui::framework::LiveRow;
-use ui::tilo_resource;
+use ui::tilo_resource::{self, RowBindings};
 use ui::tilo_resource::{Edit, Effect, Id, Invoke};
 
 use crate::markup::{PagePlanEntry, PdfMarkup};
@@ -15,6 +15,25 @@ pub const CONTEXTUAL_CHILD_LIMIT: usize = 32;
 /// The first page of matches: resources are consumed by search, agents and history,
 /// so a pathological PDF must not become an unbounded action directory.
 pub const SEARCH_RESULT_RESOURCE_LIMIT: usize = 32;
+
+/// One outline entry, as the reader publishes it: a row of the
+/// `pdf.outline-item` type, whose `go-to` opens the page it is on.
+#[derive(tilo_resource::Row)]
+#[row(kind = "pdf.outline-item", label = "Outline entry", effects = PdfEffect)]
+pub struct OutlineItem;
+
+/// One find result, as the reader publishes it: a row of the
+/// `pdf.search-result` type, carrying the bounded query `go-to-match`
+/// restores.
+#[derive(tilo_resource::Row)]
+#[row(kind = "pdf.search-result", label = "Find result", effects = PdfEffect)]
+pub struct SearchResult;
+
+/// The find results of a document, as the reader publishes them: one row
+/// holding an entry per match.
+#[derive(tilo_resource::Row)]
+#[row(kind = "pdf.search", label = "Find results")]
+pub struct FindResults;
 
 pub fn search_result_token(query: &str, whole_word: bool, case_sensitive: bool) -> String {
     let mut hasher = fnv::FnvHasher::default();
@@ -119,7 +138,7 @@ pub enum PdfEffect {
     /// Go to
     ///
     /// Shows the page an item is on.
-    #[effect(view, row, idempotent)]
+    #[effect(view, row, idempotent, on = OutlineItem)]
     GoTo {
         #[param("1-based page")]
         page: usize,
@@ -127,7 +146,7 @@ pub enum PdfEffect {
     /// Go to match
     ///
     /// A bounded find result, carrying its query so the exact result is restored.
-    #[effect(view, row, idempotent)]
+    #[effect(view, row, idempotent, on = SearchResult)]
     GoToMatch {
         #[param("the find query")]
         query: String,
@@ -572,37 +591,44 @@ pub struct PdfResourceCtx {
 fn outline_row(ctx: &PdfResourceCtx, index: usize) -> Option<LiveRow> {
     let (title, page, _) = ctx.outline.get(index)?;
     let id = outline_resource_id(ctx, index)?;
-    Some(
-        LiveRow::new(id, "pdf.outline-item", title.as_str())
-            .effect(&PdfEffect::GoTo { page: *page }),
-    )
+    let bindings = RowBindings::new().bind(PdfEffect::GO_TO, [("page", serde_json::json!(*page))]);
+    Some(LiveRow::typed_with::<OutlineItem>(
+        id,
+        title.as_str(),
+        &bindings,
+    ))
 }
 
 fn search_result_row(ctx: &PdfResourceCtx, index: usize, page: usize) -> LiveRow {
-    LiveRow::new(
+    let bindings = RowBindings::new().bind(
+        PdfEffect::GO_TO_MATCH,
+        [
+            ("query", serde_json::Value::String(ctx.search_query.clone())),
+            ("whole_word", serde_json::Value::Bool(ctx.search_whole_word)),
+            (
+                "case_sensitive",
+                serde_json::Value::Bool(ctx.search_case_sensitive),
+            ),
+            ("index", serde_json::json!(index)),
+            ("page", serde_json::json!(page)),
+        ],
+    );
+    LiveRow::typed_with::<SearchResult>(
         format!(
             "pdf.search-result:{}:{}:{index}:{page}",
             ctx.doc_id, ctx.search_token
         ),
-        "pdf.search-result",
         format!("Match {} on page {page}", index + 1),
+        &bindings,
     )
-    .effect(&PdfEffect::GoToMatch {
-        query: ctx.search_query.clone(),
-        whole_word: ctx.search_whole_word,
-        case_sensitive: ctx.search_case_sensitive,
-        index,
-        page,
-    })
 }
 
 fn find_result_row(ctx: &PdfResourceCtx) -> Option<LiveRow> {
     if ctx.search_query.trim().is_empty() {
         return None;
     }
-    let mut search = LiveRow::new(
+    let mut search = LiveRow::typed::<FindResults>(
         format!("pdf.search:{}", ctx.doc_id),
-        "pdf.search",
         format!("Find results for “{}”", ctx.search_query),
     );
     for (index, page) in ctx

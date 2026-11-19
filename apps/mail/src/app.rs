@@ -49,7 +49,7 @@ use crate::account::AccountStore;
 use crate::actions::{DraftData, Outgoing};
 use crate::i18n::CATALOG;
 #[path = "contact_recipients.rs"]
-mod contact_recipients;
+pub(crate) mod contact_recipients;
 #[path = "peer_copies.rs"]
 mod peer_copies;
 use peer_copies::kept_baseline;
@@ -4929,9 +4929,8 @@ impl Mailroom {
         }
         if let Some(stable) = id.strip_prefix("mail.thread:") {
             let (subject, messages) = self.resource_thread_rows(stable)?;
-            let mut thread = ui::framework::LiveRow::new(
+            let mut thread = ui::framework::LiveRow::typed::<crate::actions::ThreadItem>(
                 id,
-                "mail.thread",
                 if subject.is_empty() {
                     crate::i18n::untitled()
                 } else {

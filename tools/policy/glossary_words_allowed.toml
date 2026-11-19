@@ -1353,3 +1353,8 @@ paths = [
 reason = "The test's own name says a made workspace reaches the workspace service before the session writes its first document there: `record` is the name the service's own record API keeps for a document."
 words = ["record"]
 paths = ["crates/session/session/tests/invitations.rs"]
+
+[[allow]]
+reason = "SSH's own host vocabulary: the network host a saved connection reaches, the host key it presents on first contact, and the decisions a session offers on that key."
+words = ["host"]
+paths = ["apps/remote/src/*"]

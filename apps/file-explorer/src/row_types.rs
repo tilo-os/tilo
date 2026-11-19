@@ -2,67 +2,40 @@
 //! type's noun and the app's name — so search and an agent name it as they
 //! name a resource.
 
-use ui::tilo_resource::words::RowType;
+use ui::tilo_resource;
 
+#[derive(ui::tilo_resource::Row)]
+#[row(kind = "files.retry", label = "Retry")]
 pub(crate) struct Retry;
 
-impl RowType for Retry {
-    const KIND: &'static str = "files.retry";
-    const LABEL: &'static str = "Retry";
-}
-
+#[derive(ui::tilo_resource::Row)]
+#[row(kind = "files.place", label = "Place")]
 pub(crate) struct Place;
 
-impl RowType for Place {
-    const KIND: &'static str = "files.place";
-    const LABEL: &'static str = "Place";
-}
-
+#[derive(ui::tilo_resource::Row)]
+#[row(kind = "files.template", label = "Template")]
 pub(crate) struct Template;
 
-impl RowType for Template {
-    const KIND: &'static str = "files.template";
-    const LABEL: &'static str = "Template";
-}
-
+#[derive(ui::tilo_resource::Row)]
+#[row(kind = "files.nearby-transfer", label = "Nearby transfer")]
 pub(crate) struct NearbyTransfer;
 
-impl RowType for NearbyTransfer {
-    const KIND: &'static str = "files.nearby-transfer";
-    const LABEL: &'static str = "Nearby transfer";
-}
-
+#[derive(ui::tilo_resource::Row)]
+#[row(kind = "files.remote-account", label = "Remote account")]
 pub(crate) struct RemoteAccount;
 
-impl RowType for RemoteAccount {
-    const KIND: &'static str = "files.remote-account";
-    const LABEL: &'static str = "Remote account";
-}
-
+#[derive(ui::tilo_resource::Row)]
+#[row(kind = "files.cloud-entry", label = "Cloud entry")]
 pub(crate) struct CloudEntry;
 
-impl RowType for CloudEntry {
-    const KIND: &'static str = "files.cloud-entry";
-    const LABEL: &'static str = "Cloud entry";
-}
-
+#[derive(ui::tilo_resource::Row)]
+#[row(kind = "files.drive", label = "Drive")]
 pub(crate) struct Drive;
 
-impl RowType for Drive {
-    const KIND: &'static str = "files.drive";
-    const LABEL: &'static str = "Drive";
-}
-
+#[derive(ui::tilo_resource::Row)]
+#[row(kind = "files.record", label = "Document")]
 pub(crate) struct Document;
 
-impl RowType for Document {
-    const KIND: &'static str = "files.record";
-    const LABEL: &'static str = "Document";
-}
-
+#[derive(ui::tilo_resource::Row)]
+#[row(kind = "files.entry", label = "File")]
 pub(crate) struct Entry;
-
-impl RowType for Entry {
-    const KIND: &'static str = "files.entry";
-    const LABEL: &'static str = "File";
-}

@@ -877,8 +877,13 @@ pub(crate) fn window(cx: &ViewCx<Remote>, mut window: RemoteApp) -> Element {
             store.borrow_mut().staged = Some(Staged(scenario.map(str::to_owned)));
         });
     }
+    let statuses = Rc::clone(&store);
     cx.publishing(
-        Publishes::new().live_rows(move || store.borrow().live_connection_rows()),
+        Publishes::new()
+            .live_rows(move || store.borrow().live_connection_rows())
+            // Whether this device can open a connection, and what the open
+            // session offers beside disconnecting.
+            .row_status(move |id| statuses.borrow().row_status(id)),
         Box::new(window),
     )
 }
