@@ -122,6 +122,7 @@ impl DocumentKeys {
         let operator_rebuilt = rebuilt.is_some();
         let drafted = candidate.publication().draft_sealed_compaction(
             (app, record),
+            None,
             rebuilt,
             &mut open,
             &mut seal,
@@ -134,6 +135,7 @@ impl DocumentKeys {
             Err(strict) => match self.without_unsent(candidate, (app, record))? {
                 Some(read) => candidate.publication().draft_sealed_compaction(
                     (app, record),
+                    None,
                     Some(read),
                     &mut open,
                     &mut seal,
@@ -148,7 +150,7 @@ impl DocumentKeys {
         }
         candidate
             .publication_mut()
-            .admit_sealed_compaction(app, record, ops, now)
+            .admit_sealed_compaction(app, record, None, ops, now)
     }
 }
 
@@ -647,12 +649,13 @@ impl crate::compaction::GroupKeys for Workspaces {
         route: &'a crate::compaction::Route,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ContentKeys>> + Send + 'a>> {
         Box::pin(async move {
-            self.own_route_keys(
+            self.own_route_keys_read_by(
                 &tilo_peer_state::document_frame::DocumentRoute {
                     cluster_id: route.cluster_id.clone(),
                     app_id: route.app_id.clone(),
                     document: route.document_id.clone(),
                 },
+                route.readers.as_deref(),
                 false,
             )
             .await?
@@ -695,7 +698,21 @@ impl Workspaces {
         route: &tilo_peer_state::document_frame::DocumentRoute,
         create: bool,
     ) -> super::GroupKeysAnswer {
+        self.own_route_keys_read_by(route, None, create).await
+    }
+
+    async fn own_route_keys_read_by(
+        &self,
+        route: &tilo_peer_state::document_frame::DocumentRoute,
+        readers: Option<&str>,
+        create: bool,
+    ) -> super::GroupKeysAnswer {
         let device = self.device_keys()?;
+        let scope = match route.key_scope_for(readers) {
+            Ok(scope) => scope,
+            Err(reason) => return Some(Err(reason.to_string())),
+        };
+        let readers = readers.unwrap_or(collab_types::EVERY_MEMBER);
         let peer = self.state(&route.cluster_id).await?;
         let isolated =
             match peer.requires_document_keys(&route.app_id, &route.document, tilo_clock::wall()) {
@@ -703,25 +720,16 @@ impl Workspaces {
                 Err(error) => return Some(Err(error)),
             };
         if !isolated {
-            return device
-                .group_keys(&route.cluster_id, collab_types::EVERY_MEMBER, create)
-                .await;
+            return device.group_keys(&route.cluster_id, readers, create).await;
         }
-        let scope = match route.key_scope() {
-            Ok(scope) => scope.to_string(),
-            Err(reason) => return Some(Err(reason.to_string())),
-        };
         let keys = match device
-            .group_keys(&scope, collab_types::EVERY_MEMBER, create)
+            .group_keys(&scope.to_string(), readers, create)
             .await?
         {
             Ok(keys) => keys,
             Err(reason) => return Some(Err(reason)),
         };
-        let keys = match device
-            .group_keys(&route.cluster_id, collab_types::EVERY_MEMBER, false)
-            .await
-        {
+        let keys = match device.group_keys(&route.cluster_id, readers, false).await {
             Some(Ok(history)) => keys.with_workspace_history(history),
             _ => keys,
         };

@@ -42,11 +42,17 @@ impl DocumentRead {
             workspace,
             app,
             document,
+            readers,
         }) = key_scope(body)
         {
             let now = tilo_clock::wall();
             let node = collab_types::document_node(access.workspace(), &app, &document);
             return workspace.to_string() == access.workspace()
+                && readers.as_deref().is_none_or(|readers| {
+                    access
+                        .person_id()
+                        .is_some_and(|person| readers.split(',').any(|reader| reader == person))
+                })
                 && access.allows(&node, tilo_action_policy::ActionKind::Read, now);
         }
         let Some((route, _)) = store.payloads().open_document(body) else {

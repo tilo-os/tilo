@@ -2380,14 +2380,14 @@ impl Task {
         metadata: collab_types::EncryptionMetadata,
     ) -> Option<key_group::ContentKeys> {
         let workspace = route.workspace_id().ok()?;
-        let group = metadata.key_group(workspace);
-        let keys = if group == workspace {
-            self.engine.seal_keys(workspace).ok()?
-        } else if route.key_scope().ok()?.group() == group {
-            self.engine.exact_document_keys(route).ok()?
-        } else {
-            return None;
-        };
+        let readers = self
+            .engine
+            .named_document_readers(workspace, &route.document)
+            .ok()?;
+        let readers = readers.as_deref().unwrap_or(collab_types::EVERY_MEMBER);
+        let original = collab_types::reader_group(workspace, readers)?;
+        let group = metadata.key_group(original);
+        let keys = self.engine.document_content_keys(route, group).ok()?;
         match keys {
             crate::engine::SealKeys::Here(keys) => Some(keys),
             _ => None,

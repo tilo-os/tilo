@@ -59,11 +59,21 @@ impl DocumentRoute {
 
     /// The independent group for sealing this document.
     pub fn key_scope(&self) -> Result<neighbour_wire::KeyScope, DocumentError> {
-        Ok(neighbour_wire::KeyScope::Document {
-            workspace: self.workspace_id()?,
-            app: self.app_id.clone(),
-            document: self.document.clone(),
-        })
+        self.key_scope_for(None)
+    }
+
+    /// The independent key group for this route and its declared readers.
+    pub fn key_scope_for(
+        &self,
+        readers: Option<&str>,
+    ) -> Result<neighbour_wire::KeyScope, DocumentError> {
+        neighbour_wire::KeyScope::document(
+            self.workspace_id()?,
+            &self.app_id,
+            &self.document,
+            readers,
+        )
+        .ok_or_else(|| DocumentError::Route("readers do not match the document".into()))
     }
 }
 

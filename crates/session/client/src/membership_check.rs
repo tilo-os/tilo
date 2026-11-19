@@ -656,6 +656,7 @@ mod tests {
             workspace,
             app: "so.tilo.notes".into(),
             document: "note".into(),
+            readers: None,
         };
         let stored = StoredKeys::load(&store);
         stored.hold(held.clone());

@@ -237,6 +237,31 @@ impl Engine {
         })
     }
 
+    fn store_write_keys(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        document: &str,
+        readers: &str,
+    ) -> Result<SealKeys, String> {
+        if readers == collab_types::EVERY_MEMBER {
+            return self.resource_write_keys(workspace, (app, document));
+        }
+        let isolated = self.owner.with_current(workspace, |view| {
+            view.peer()
+                .requires_document_keys(app, document, tilo_clock::wall())
+        })?;
+        if !isolated {
+            return self.reader_keys(workspace, readers);
+        }
+        let route = tilo_peer_state::document_frame::DocumentRoute {
+            app_id: app.to_owned(),
+            cluster_id: workspace.to_string(),
+            document: document.to_owned(),
+        };
+        self.scoped_keys(&route, Some(readers))
+    }
+
     /// Publishes each change the store made as this device's write of its document, sealed for
     /// the document's reader set.
     async fn publish_written(
@@ -247,11 +272,7 @@ impl Engine {
     ) -> Result<Vec<AppWrite>, WriteRefusal> {
         let mut writes = Vec::with_capacity(written.len());
         for (write, founding) in written {
-            let keys = if write.readers == collab_types::EVERY_MEMBER {
-                self.resource_write_keys(workspace, (app, &write.doc))
-            } else {
-                self.reader_keys(workspace, &write.readers)
-            };
+            let keys = self.store_write_keys(workspace, app, &write.doc, &write.readers);
             let sealed = match keys.map_err(WriteRefusal::Refused)? {
                 SealKeys::Here(keys) => keys,
                 SealKeys::Waiting | SealKeys::NoSecretStore => {

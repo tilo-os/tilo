@@ -422,16 +422,33 @@ fn document_group_refusal(
     {
         let names_group =
             collab_types::WorkspaceId::parse(&route.cluster_id).is_some_and(|workspace| {
-                let scope = neighbour_wire::KeyScope::Document {
+                neighbour_wire::KeyScope::document(
                     workspace,
-                    app: route.app_id.clone(),
-                    document: route.document_id.clone(),
-                };
-                scope.group() == group
+                    &route.app_id,
+                    &route.document_id,
+                    route.readers.as_deref(),
+                )
+                .is_some_and(|scope| scope.group() == group)
             });
         return (!names_group).then(|| {
             Refusal::NotAllowed("the encryption group belongs to another document".into())
         });
+    }
+    if neighbour_wire::KeyScope::has_named_readers(&route.document_id) || route.readers.is_some() {
+        let valid = collab_types::WorkspaceId::parse(&route.cluster_id).is_some_and(|workspace| {
+            neighbour_wire::KeyScope::document(
+                workspace,
+                &route.app_id,
+                &route.document_id,
+                route.readers.as_deref(),
+            )
+            .is_some()
+        });
+        if !valid || envelope.encryption.is_none() {
+            return Some(Refusal::NotAllowed(
+                "a document's named readers must match its encrypted write".into(),
+            ));
+        }
     }
     if collab_types::validator::requires_independent_document_keys(
         &route.app_id,
@@ -494,6 +511,7 @@ mod tests {
                 workspace,
                 app: app.into(),
                 document,
+                readers: None,
             }
             .group();
             write.encryption = Some(EncryptionMetadata::content_group(

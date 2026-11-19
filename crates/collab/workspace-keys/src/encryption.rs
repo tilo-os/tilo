@@ -1379,17 +1379,7 @@ impl WorkspaceKeys {
         sender: Ed25519PublicKey,
         wall: u64,
     ) -> Option<WorkspaceId> {
-        let neighbour_wire::KeyScope::Document {
-            workspace,
-            app,
-            document,
-        } = &scope
-        else {
-            return None;
-        };
-        let readers = self
-            .directory
-            .document_devices(*workspace, app, document, wall)?;
+        let readers = self.directory.scope_devices(&scope, wall)?;
         if !readers.contains(&self.device()?) || !readers.contains(&sender) {
             return None;
         }
@@ -2175,6 +2165,16 @@ impl SharedKeys {
         self.inner.lock().ok()?.reader_group(workspace, readers)
     }
 
+    /// Find the declared reader set from this device's retained group routes.
+    #[must_use]
+    pub fn named_readers(&self, workspace: WorkspaceId, document: &str) -> Option<String> {
+        self.inner
+            .try_lock()
+            .ok()?
+            .directory
+            .named_readers(workspace, document)
+    }
+
     /// Set the exact route for a group. The directory supplies the scope's
     /// current access when the group is used.
     pub fn register_scope(&self, scope: neighbour_wire::KeyScope) -> Option<WorkspaceId> {
@@ -2492,7 +2492,9 @@ impl KeyProvider {
         let scope = KeyScope::parse(workspace)?;
         let workspace = match scope {
             KeyScope::Workspace(workspace) => service.reader_group(workspace, readers)?,
-            scope @ KeyScope::Document { .. } if readers == collab_types::EVERY_MEMBER => {
+            KeyScope::Document {
+                readers: ref named, ..
+            } if readers == named.as_deref().unwrap_or(collab_types::EVERY_MEMBER) => {
                 service.register_scope(scope)?
             }
             KeyScope::Document { .. } => return None,
@@ -2593,18 +2595,26 @@ impl tilo_identity::sources::GroupKeySource for KeyProvider {
         else {
             return wire_keys(KeyAccess::Waiting, groups.generation(), known_generation);
         };
-        if !scoped {
-            return self.access(workspace, known_generation);
-        }
-        let scope = neighbour_wire::KeyScope::Document {
-            workspace,
-            app: app.to_owned(),
-            document: document.to_owned(),
+        let named = if KeyScope::has_named_readers(document) {
+            let Some(readers) = groups.named_readers(workspace, document) else {
+                return wire_keys(KeyAccess::Waiting, groups.generation(), known_generation);
+            };
+            Some(readers)
+        } else {
+            None
         };
+        let original = match &named {
+            Some(readers) => groups.reader_group(workspace, readers)?,
+            None => workspace,
+        };
+        if !scoped {
+            return self.access(original, known_generation);
+        }
+        let scope = KeyScope::document(workspace, app, document, named.as_deref())?;
         let group = groups.register_scope(scope)?;
         let (mut access, _) = groups.access(group);
         if let KeyAccess::Ready(keys) = &mut access
-            && let (KeyAccess::Ready(history), _) = groups.access(workspace)
+            && let (KeyAccess::Ready(history), _) = groups.access(original)
         {
             *keys = keys.clone().with_workspace_history(history);
         }

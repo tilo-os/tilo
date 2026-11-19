@@ -1350,6 +1350,7 @@ impl DirectSync {
                 app_id,
                 document_id,
                 own,
+                readers,
                 ..
             } => {
                 let replica = link.0.replica.lock();
@@ -1368,7 +1369,19 @@ impl DirectSync {
                             && certificate.user_public_key == owner
                     })
                 });
+                let named_matches = readers.as_deref().is_none_or(|readers| {
+                    let Some(collab_types::Readers::People(people)) =
+                        collab_types::Readers::parse(readers)
+                    else {
+                        return false;
+                    };
+                    replica.certificates().iter().any(|certificate| {
+                        certificate.device_public_key == device
+                            && people.contains(&certificate.user_public_key)
+                    })
+                });
                 person_matches
+                    && named_matches
                     && (!replica.has_governance()
                         || replica
                             .check_document_read(device, app_id, document_id, tilo_clock::wall())
@@ -1377,12 +1390,28 @@ impl DirectSync {
             NeighbourMsg::MlsGovernance { workspace, .. }
             | NeighbourMsg::MlsAccessRequest { workspace, .. } => {
                 match neighbour_wire::KeyScope::parse(workspace) {
-                    Some(neighbour_wire::KeyScope::Document { app, document, .. }) => link
-                        .0
-                        .replica
-                        .lock()
-                        .check_document_read(device, &app, &document, tilo_clock::wall())
-                        .is_ok(),
+                    Some(neighbour_wire::KeyScope::Document {
+                        app,
+                        document,
+                        readers,
+                        ..
+                    }) => {
+                        let replica = link.0.replica.lock();
+                        let now = tilo_clock::wall();
+                        readers.as_deref().is_none_or(|readers| {
+                            let Some(collab_types::Readers::People(people)) =
+                                collab_types::Readers::parse(readers)
+                            else {
+                                return false;
+                            };
+                            replica.certificates().iter().any(|certificate| {
+                                certificate.device_public_key == device
+                                    && people.contains(&certificate.user_public_key)
+                            })
+                        }) && replica
+                            .check_document_read(device, &app, &document, now)
+                            .is_ok()
+                    }
                     _ => true,
                 }
             }
