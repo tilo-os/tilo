@@ -182,7 +182,7 @@ can press controls by id and read the published actions. Prefer semantic
 assertions (roles, names, state) over pixels. In the Tilo checkout:
 
 ```sh
-cargo test --locked -p example-counter
+t cargo test --locked -p example-counter    # on the build server
 ```
 
 `tilo-app check` also fails on actions that read a clock, randomness, files or
