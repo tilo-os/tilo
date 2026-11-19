@@ -4623,6 +4623,9 @@ requires = ["/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/server-installer-smoke/**"]
 timeout_secs = 3600
+# It boots the medium in a KVM guest of its own; a shrunken host leaves the
+# guest's installer with too little memory to come up.
+heavy = true
 default = false
 
 [[check]]
