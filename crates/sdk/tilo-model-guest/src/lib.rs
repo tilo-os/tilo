@@ -452,7 +452,7 @@ unsafe extern "Rust" fn __getrandom_v03_custom(
     Ok(())
 }
 
-/// [`__getrandom_v03_custom`] for getrandom 0.2, which rand_core 0.6 asks: the
+/// [`__getrandom_v03_custom`] for getrandom 0.2, which `rand_core` 0.6 asks: the
 /// same zeros, for the same reason.
 #[cfg(target_arch = "wasm32")]
 #[allow(

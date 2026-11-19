@@ -315,17 +315,54 @@ fn profile_issue(kind: ConnectionKind, host: &str, auth: AuthMethod) -> Option<&
 /// as lowercase hex or unpadded base32, as iroh writes and reads one) whose
 /// point is on the curve: exactly what `iroh_base::EndpointId` accepts.
 fn is_endpoint_id(text: &str) -> bool {
-    let mut bytes = [0u8; 32];
     let decoded = if text.len() == 64 {
-        data_encoding::HEXLOWER.decode_mut(text.as_bytes(), &mut bytes)
+        decode_hex(text)
     } else {
-        let upper = text.to_ascii_uppercase();
-        if data_encoding::BASE32_NOPAD.decode_len(upper.len()) != Ok(bytes.len()) {
-            return false;
-        }
-        data_encoding::BASE32_NOPAD.decode_mut(upper.as_bytes(), &mut bytes)
+        decode_base32(text)
     };
-    decoded == Ok(32) && ed25519_dalek::VerifyingKey::from_bytes(&bytes).is_ok()
+    decoded.is_some_and(|bytes| ed25519_dalek::VerifyingKey::from_bytes(&bytes).is_ok())
+}
+
+/// 32 bytes from 64 lowercase hex digits.
+fn decode_hex(text: &str) -> Option<[u8; 32]> {
+    if !text
+        .bytes()
+        .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return None;
+    }
+    let mut bytes = [0u8; 32];
+    let pairs = text.as_bytes().chunks_exact(2);
+    if pairs.len() != bytes.len() {
+        return None;
+    }
+    for (out, pair) in bytes.iter_mut().zip(pairs) {
+        *out = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(bytes)
+}
+
+/// 32 bytes from RFC 4648 base32 without padding, in either case: 52
+/// characters, 260 bits, the last four of which must be zero.
+fn decode_base32(text: &str) -> Option<[u8; 32]> {
+    const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    if text.len() != 52 {
+        return None;
+    }
+    let mut bits = Vec::with_capacity(260);
+    for byte in text.bytes() {
+        let upper = byte.to_ascii_uppercase();
+        let value = u8::try_from(ALPHABET.iter().position(|&letter| letter == upper)?).ok()?;
+        bits.extend([16u8, 8, 4, 2, 1].map(|mask| value & mask != 0));
+    }
+    let mut bytes = [0u8; 32];
+    let mut octets = bits.chunks_exact(8);
+    for (out, octet) in bytes.iter_mut().zip(&mut octets) {
+        *out = octet
+            .iter()
+            .fold(0u8, |byte, &bit| byte.wrapping_mul(2) | u8::from(bit));
+    }
+    octets.remainder().iter().all(|&bit| !bit).then_some(bytes)
 }
 
 /// A draft of the add/edit form, private to the editor until Save.
@@ -552,9 +589,14 @@ mod tests {
             // 32 bytes that are not a point on the curve.
             let off_curve = data_encoding::HEXLOWER.encode(&[0xff; 32]);
             let short: String = hex.chars().skip(1).collect();
+            // The last character holds four bits past the key's 256, zero in
+            // a valid id ('a' or 'q'); 'b' sets one of them.
+            let trailing_bits: String = base32.chars().take(51).chain(['b']).collect();
             for text in [
                 hex.as_str(),
                 base32.as_str(),
+                &base32.to_ascii_uppercase(),
+                trailing_bits.as_str(),
                 &hex.to_ascii_uppercase(),
                 short.as_str(),
                 off_curve.as_str(),
