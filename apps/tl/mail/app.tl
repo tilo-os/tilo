@@ -134,7 +134,6 @@ type Mail {
     recovered_signatures: Set<Text>
     /// Previously imported drafts, including ones subsequently deleted.
     recovered_drafts: Set<Text>
-
     /// How many seconds members have to undo a send. The default is ten seconds.
     hold: Int = 10
 
@@ -210,23 +209,25 @@ action recover_previous(
     labels: List<Text> = [],
     conversations: List<List<List<Text>>> = [],
     signatures: List<List<Text>> = [],
-) -> Int (
-    icon: .archive,
-    label: "Recover previous mail",
-) {
-    let before = m.drafts.len() + m.labels.len() + m.recovered_mail.len() + m.recovered_signatures.len()
+) -> Int (icon: .archive, label: "Recover previous mail") {
+    let before = m.drafts.len()
+        + m.labels.len()
+        + m.recovered_mail.len()
+        + m.recovered_signatures.len()
     for row in drafts {
         let key = row.at(0) ?? ""
         if row.len() == 8 and key != "" and not m.recovered_drafts.contains(key) {
-            m.drafts.insert(Draft(
-                from: row.at(1) ?? "",
-                to: row.at(2) ?? "",
-                cc: row.at(3) ?? "",
-                subject: row.at(4) ?? "",
-                body: row.at(5) ?? "",
-                in_reply_to: row.at(6) ?? "",
-                references: row.at(7) ?? "",
-            ))
+            m.drafts.insert(
+                Draft(
+                    from: row.at(1) ?? "",
+                    to: row.at(2) ?? "",
+                    cc: row.at(3) ?? "",
+                    subject: row.at(4) ?? "",
+                    body: row.at(5) ?? "",
+                    in_reply_to: row.at(6) ?? "",
+                    references: row.at(7) ?? "",
+                ),
+            )
             m.recovered_drafts.add(key)
         }
     }
@@ -239,48 +240,48 @@ action recover_previous(
         let header = rows.at(0) ?? []
         let key = header.at(0) ?? ""
         if header.len() == 10 and key != "" and not m.recovered_conversations.contains(key) {
-            let t = m.recovered_mail.insert(Thread(
-                key: key,
-                account: header.at(1) ?? "",
-                subject: header.at(2) ?? "",
-                latest: recovered_time(header.at(3) ?? ""),
-                snippet: header.at(4) ?? "",
-                senders: header.at(5) ?? "",
-                count: rows.len() - 3,
-                unread: header.at(6) == .some("true"),
-                flagged: header.at(7) == .some("true"),
-                snoozed_until: recovered_time(header.at(8) ?? ""),
-                muted: header.at(9) == .some("true"),
-            ))
+            let t = m.recovered_mail.insert(
+                Thread(
+                    key: key,
+                    account: header.at(1) ?? "",
+                    subject: header.at(2) ?? "",
+                    latest: recovered_time(header.at(3) ?? ""),
+                    snippet: header.at(4) ?? "",
+                    senders: header.at(5) ?? "",
+                    count: rows.len() - 3,
+                    unread: header.at(6) == .some("true"),
+                    flagged: header.at(7) == .some("true"),
+                    snoozed_until: recovered_time(header.at(8) ?? ""),
+                    muted: header.at(9) == .some("true"),
+                ),
+            )
             for name in rows.at(1) ?? [] {
-                if name != "" {
-                    t.labels.add(name)
-                }
+                if name != "" { t.labels.add(name) }
             }
             for name in rows.at(2) ?? [] {
-                if name != "" {
-                    t.boxes.add(name)
-                }
+                if name != "" { t.boxes.add(name) }
             }
             for row in rows {
                 if row.len() == 15 and row.at(0) == .some("message") {
-                    t.messages.insert(Message(
-                        account: t.account,
-                        subject: row.at(1) ?? "",
-                        from: row.at(2) ?? "",
-                        from_name: row.at(3) ?? "",
-                        to: row.at(4) ?? "",
-                        cc: row.at(5) ?? "",
-                        received: recovered_time(row.at(6) ?? ""),
-                        snippet: row.at(7) ?? "",
-                        body: row.at(8) ?? "",
-                        message_id: row.at(9) ?? "",
-                        references: row.at(10) ?? "",
-                        attachments: row.at(11) ?? "",
-                        unread: row.at(12) == .some("true"),
-                        flagged: row.at(13) == .some("true"),
-                        mailbox: row.at(14) ?? "",
-                    ))
+                    t.messages.insert(
+                        Message(
+                            account: t.account,
+                            subject: row.at(1) ?? "",
+                            from: row.at(2) ?? "",
+                            from_name: row.at(3) ?? "",
+                            to: row.at(4) ?? "",
+                            cc: row.at(5) ?? "",
+                            received: recovered_time(row.at(6) ?? ""),
+                            snippet: row.at(7) ?? "",
+                            body: row.at(8) ?? "",
+                            message_id: row.at(9) ?? "",
+                            references: row.at(10) ?? "",
+                            attachments: row.at(11) ?? "",
+                            unread: row.at(12) == .some("true"),
+                            flagged: row.at(13) == .some("true"),
+                            mailbox: row.at(14) ?? "",
+                        ),
+                    )
                 }
             }
             m.recovered_conversations.add(key)
@@ -290,7 +291,11 @@ action recover_previous(
         let stamp = row.at(0) ?? ""
         let key = row.at(1) ?? ""
         let signature = row.at(2) ?? ""
-        if row.len() == 3 and stamp != "" and key != "" and signature != "" and not m.recovered_signatures.contains(stamp) {
+        if row.len() == 3
+            and stamp != ""
+            and key != ""
+            and signature != ""
+            and not m.recovered_signatures.contains(stamp) {
             if let account = m.accounts.find(a -> a.key == key and a.signature == "") {
                 account.signature = signature
                 m.recovered_signatures.add(stamp)
@@ -805,7 +810,9 @@ view unified(m: Mail) {
             content_kind: .document,
             sidebar_title: "All accounts",
             overview_title: if query == "recovered" { "Recovered mail" } else { title },
-            overview_count: if query == "recovered" { m.recovered_mail.len() } else { shown.len() },
+            overview_count: if query == "recovered" {
+                m.recovered_mail.len()
+            } else { shown.len() },
         ) {
             sidebar_actions: {
                 // The accounts whose server does not stand well, beside the name of the accounts

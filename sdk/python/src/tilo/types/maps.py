@@ -30,9 +30,7 @@ __all__ = [
     "TransitLeg",
     "TransitMode",
     "TravelMode",
-    "DownloadedRegion",
     "Workspace",
-    "OfflineAreas",
     "AcceptPlacesArgs",
     "CommitSearchArgs",
     "ClearRecentsArgs",
@@ -40,9 +38,6 @@ __all__ = [
     "ClearRouteArgs",
     "AcceptTransitArgs",
     "ClearTransitArgs",
-    "RememberArgs",
-    "ForgetArgs",
-    "ClearArgs",
 ]
 
 Category = Literal["landmark", "cafe", "restaurant", "bar", "museum", "park", "transit", "hotel", "shop", "hospital", "other"]
@@ -103,15 +98,6 @@ TransitMode = Literal["Walk", "Bus", "Tram", "Subway", "Rail", "Ferry"]
 
 TravelMode = Literal["car", "transit", "bike", "foot"]
 
-class DownloadedRegion(TypedDict):
-    id: str
-    name: str
-    min: LatLon
-    max: LatLon
-    z0: int
-    z1: int
-    tiles: int
-
 AcceptPlacesArgs = TypedDict("AcceptPlacesArgs", {
     "places": "list[Place]",
 })
@@ -153,26 +139,9 @@ ClearTransitArgs = TypedDict("ClearTransitArgs", {
 })
 """The arguments of `clear-transit`."""
 
-RememberArgs = TypedDict("RememberArgs", {
-    "device": "str",
-    "region": "DownloadedRegion",
-})
-"""The arguments of `remember`."""
-
-ForgetArgs = TypedDict("ForgetArgs", {
-    "device": "str",
-    "area": "str",
-})
-"""The arguments of `forget`."""
-
-ClearArgs = TypedDict("ClearArgs", {
-    "device": "str",
-})
-"""The arguments of `clear`."""
-
 class Workspace(Resource):
     """Maps — `maps.workspace`."""
-    __surface__ = "so.tilo.maps@9382d7197649df17"
+    __surface__ = "so.tilo.maps@b3f04d0355bb4009"
     places: list[Entry[Place]]
     @property
     def recents(self) -> Any:
@@ -324,47 +293,5 @@ class Workspace(Resource):
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
     __actions__ = frozenset({"accept_places", "accept_places_many", "commit_search", "commit_search_many", "clear_recents", "clear_recents_many", "accept_route", "accept_route_many", "clear_route", "clear_route_many", "accept_transit", "accept_transit_many", "clear_transit", "clear_transit_many", "search", "locate", "toggle_traffic", "open_place", "directions", "open_poi", "poi_directions", "show_point", "delete_offline_area", "clear_offline_areas"})
-
-
-class OfflineAreas(Resource):
-    """Offline areas — `maps.offline-areas`."""
-    __surface__ = "so.tilo.maps@9382d7197649df17"
-    devices: dict[str, Any]
-
-    def remember(self,
-        *,
-        device: str,
-        region: DownloadedRegion,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("remember", device=device, region=region)
-
-    def remember_many(self, items: list[RememberArgs]) -> list[dict[str, Any]]:
-        """Runs `remember` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("remember", items)
-
-    def forget(self,
-        *,
-        device: str,
-        area: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("forget", device=device, area=area)
-
-    def forget_many(self, items: list[ForgetArgs]) -> list[dict[str, Any]]:
-        """Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("forget", items)
-
-    def clear(self, *, device: str) -> None:
-        """Runs the app's action."""
-        return self.action("clear", device=device)
-
-    def clear_many(self, items: list[ClearArgs]) -> list[dict[str, Any]]:
-        """Runs `clear` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("clear", items)
-
-    # The actions a call reaches before the resource is read: `await tracker.create(...)`
-    # needs no `load()` first.
-    __actions__ = frozenset({"remember", "remember_many", "forget", "forget_many", "clear", "clear_many"})
 
 

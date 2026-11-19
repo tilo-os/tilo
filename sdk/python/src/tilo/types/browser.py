@@ -24,18 +24,18 @@ __all__ = [
     "RememberedForm",
     "RememberedQuestion",
     "Settings",
-    "Added",
+    "AddressProfile",
     "ImportedVisit",
     "Visit",
     "Answer",
     "PageAction",
     "Tab",
-    "AddressProfile",
+    "Added",
     "Application",
-    "PersonalBookmarks",
+    "AddressBook",
     "BrowsingHistory",
     "PageRecord",
-    "AddressBook",
+    "PersonalBookmarks",
     "AddBookmarkArgs",
     "RemoveBookmarkArgs",
     "SetSiteProtectionArgs",
@@ -43,15 +43,15 @@ __all__ = [
     "ForgetFormArgs",
     "ForgetSiteFormsArgs",
     "ForgetAllFormsArgs",
-    "PersonalBookmarksAddBookmarkArgs",
-    "PersonalBookmarksRemoveBookmarkArgs",
-    "ImportBookmarksArgs",
-    "RemoveImportedNodeArgs",
     "VisitArgs",
     "ImportHistoryBundleArgs",
     "NameVisitArgs",
     "ForgetArgs",
     "ClearHistoryArgs",
+    "PersonalBookmarksAddBookmarkArgs",
+    "PersonalBookmarksRemoveBookmarkArgs",
+    "ImportBookmarksArgs",
+    "RemoveImportedNodeArgs",
 ]
 
 class Bookmark(TypedDict):
@@ -81,9 +81,17 @@ class Settings(TypedDict):
     search_engine: str
     homepage: str
 
-class Added(TypedDict):
-    url: str
-    title: str
+class AddressProfile(TypedDict):
+    id: str
+    label: str
+    full_name: str
+    given_name: str
+    family_name: str
+    street: str
+    city: str
+    region: str
+    postal_code: str
+    country: str
 
 class ImportedVisit(TypedDict):
     url: str
@@ -130,17 +138,9 @@ class Tab(TypedDict):
     at: int
     device: str
 
-class AddressProfile(TypedDict):
-    id: str
-    label: str
-    full_name: str
-    given_name: str
-    family_name: str
-    street: str
-    city: str
-    region: str
-    postal_code: str
-    country: str
+class Added(TypedDict):
+    url: str
+    title: str
 
 AddBookmarkArgs = TypedDict("AddBookmarkArgs", {
     "url": "str",
@@ -183,29 +183,6 @@ ForgetAllFormsArgs = TypedDict("ForgetAllFormsArgs", {
 })
 """The arguments of `forget-all-forms`."""
 
-PersonalBookmarksAddBookmarkArgs = TypedDict("PersonalBookmarksAddBookmarkArgs", {
-    "url": "str",
-    "title": "str",
-})
-"""The arguments of `add-bookmark`."""
-
-PersonalBookmarksRemoveBookmarkArgs = TypedDict("PersonalBookmarksRemoveBookmarkArgs", {
-    "url": "str",
-    "observed_tags": "list[str]",
-})
-"""The arguments of `remove-bookmark`."""
-
-ImportBookmarksArgs = TypedDict("ImportBookmarksArgs", {
-    "bundle": "str",
-})
-"""The arguments of `import-bookmarks`."""
-
-RemoveImportedNodeArgs = TypedDict("RemoveImportedNodeArgs", {
-    "source": "str",
-    "id": "str",
-})
-"""The arguments of `remove-imported-node`."""
-
 VisitArgs = TypedDict("VisitArgs", {
     "url": "str",
     "title": "str",
@@ -233,9 +210,32 @@ ClearHistoryArgs = TypedDict("ClearHistoryArgs", {
 })
 """The arguments of `clear-history`."""
 
+PersonalBookmarksAddBookmarkArgs = TypedDict("PersonalBookmarksAddBookmarkArgs", {
+    "url": "str",
+    "title": "str",
+})
+"""The arguments of `add-bookmark`."""
+
+PersonalBookmarksRemoveBookmarkArgs = TypedDict("PersonalBookmarksRemoveBookmarkArgs", {
+    "url": "str",
+    "observed_tags": "list[str]",
+})
+"""The arguments of `remove-bookmark`."""
+
+ImportBookmarksArgs = TypedDict("ImportBookmarksArgs", {
+    "bundle": "str",
+})
+"""The arguments of `import-bookmarks`."""
+
+RemoveImportedNodeArgs = TypedDict("RemoveImportedNodeArgs", {
+    "source": "str",
+    "id": "str",
+})
+"""The arguments of `remove-imported-node`."""
+
 class Application(Resource):
     """Browser — `browser.application`."""
-    __surface__ = "so.tilo.browser@ac13c2dca3e7ec9e"
+    __surface__ = "so.tilo.browser@5ce4f84dae1cec11"
     bookmarks: list[Entry[Bookmark]]
     preferences: Settings
     @property
@@ -331,82 +331,20 @@ class Application(Resource):
     __actions__ = frozenset({"add_bookmark", "add_bookmark_many", "remove_bookmark", "remove_bookmark_many", "set_site_protection", "set_site_protection_many", "remember_forms", "remember_forms_many", "forget_form", "forget_form_many", "forget_site_forms", "forget_site_forms_many", "forget_all_forms", "forget_all_forms_many"})
 
 
-class PersonalBookmarks(Resource):
-    """Personal bookmarks — `browser.personal-bookmarks`."""
-    __surface__ = "so.tilo.browser@ac13c2dca3e7ec9e"
+class AddressBook(Resource):
+    """Address book — `browser.address-book`."""
+    __surface__ = "so.tilo.browser@5ce4f84dae1cec11"
+    enabled: bool
+    profiles: list[Entry[AddressProfile]]
     @property
-    def added(self) -> dict[str, Added]:
+    def restored_previous(self) -> bool:
         """Read only."""
-        return self.fields["added"]
-    @property
-    def removed(self) -> list[str]:
-        """Read only."""
-        return self.fields["removed"]
-    @property
-    def receipts(self) -> dict[str, str]:
-        """Read only."""
-        return self.fields["receipts"]
-    @property
-    def trees(self) -> dict[str, Any]:
-        """Read only."""
-        return self.fields["trees"]
-    @property
-    def hidden(self) -> list[str]:
-        """Read only."""
-        return self.fields["hidden"]
-
-    def add_bookmark(self,
-        *,
-        url: str,
-        title: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("add-bookmark", url=url, title=title)
-
-    def add_bookmark_many(self, items: list[PersonalBookmarksAddBookmarkArgs]) -> list[dict[str, Any]]:
-        """Runs `add-bookmark` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("add-bookmark", items)
-
-    def remove_bookmark(self,
-        *,
-        url: str,
-        observed_tags: list[str],
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("remove-bookmark", url=url, observed_tags=observed_tags)
-
-    def remove_bookmark_many(self, items: list[PersonalBookmarksRemoveBookmarkArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-bookmark` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("remove-bookmark", items)
-
-    def import_bookmarks(self, *, bundle: str) -> None:
-        """Runs the app's action."""
-        return self.action("import-bookmarks", bundle=bundle)
-
-    def import_bookmarks_many(self, items: list[ImportBookmarksArgs]) -> list[dict[str, Any]]:
-        """Runs `import-bookmarks` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("import-bookmarks", items)
-
-    def remove_imported_node(self,
-        *,
-        source: str,
-        id: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("remove-imported-node", source=source, id=id)
-
-    def remove_imported_node_many(self, items: list[RemoveImportedNodeArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-imported-node` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("remove-imported-node", items)
-
-    # The actions a call reaches before the resource is read: `await tracker.create(...)`
-    # needs no `load()` first.
-    __actions__ = frozenset({"add_bookmark", "add_bookmark_many", "remove_bookmark", "remove_bookmark_many", "import_bookmarks", "import_bookmarks_many", "remove_imported_node", "remove_imported_node_many"})
+        return self.fields["restored_previous"]
 
 
 class BrowsingHistory(Resource):
     """Browsing history — `browser.browsing-history`."""
-    __surface__ = "so.tilo.browser@ac13c2dca3e7ec9e"
+    __surface__ = "so.tilo.browser@5ce4f84dae1cec11"
     @property
     def visits(self) -> dict[str, Visit]:
         """Read only."""
@@ -423,6 +361,10 @@ class BrowsingHistory(Resource):
     def forgotten_imports(self) -> list[str]:
         """Read only."""
         return self.fields["forgotten_imports"]
+    @property
+    def restored_previous(self) -> bool:
+        """Read only."""
+        return self.fields["restored_previous"]
 
     def visit(self,
         *,
@@ -480,7 +422,7 @@ class BrowsingHistory(Resource):
 
 class PageRecord(Resource):
     """Page resource — `browser.page-record`."""
-    __surface__ = "so.tilo.browser@ac13c2dca3e7ec9e"
+    __surface__ = "so.tilo.browser@5ce4f84dae1cec11"
     @property
     def actions(self) -> dict[str, PageAction]:
         """Read only."""
@@ -489,12 +431,86 @@ class PageRecord(Resource):
     def tabs(self) -> dict[str, Tab]:
         """Read only."""
         return self.fields["tabs"]
+    @property
+    def restored_previous(self) -> bool:
+        """Read only."""
+        return self.fields["restored_previous"]
 
 
-class AddressBook(Resource):
-    """Address book — `browser.address-book`."""
-    __surface__ = "so.tilo.browser@ac13c2dca3e7ec9e"
-    enabled: bool
-    profiles: list[Entry[AddressProfile]]
+class PersonalBookmarks(Resource):
+    """Personal bookmarks — `browser.personal-bookmarks`."""
+    __surface__ = "so.tilo.browser@5ce4f84dae1cec11"
+    @property
+    def added(self) -> dict[str, Added]:
+        """Read only."""
+        return self.fields["added"]
+    @property
+    def removed(self) -> list[str]:
+        """Read only."""
+        return self.fields["removed"]
+    @property
+    def receipts(self) -> dict[str, str]:
+        """Read only."""
+        return self.fields["receipts"]
+    @property
+    def trees(self) -> dict[str, Any]:
+        """Read only."""
+        return self.fields["trees"]
+    @property
+    def hidden(self) -> list[str]:
+        """Read only."""
+        return self.fields["hidden"]
+    @property
+    def restored_previous(self) -> bool:
+        """Read only."""
+        return self.fields["restored_previous"]
+
+    def add_bookmark(self,
+        *,
+        url: str,
+        title: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("add-bookmark", url=url, title=title)
+
+    def add_bookmark_many(self, items: list[PersonalBookmarksAddBookmarkArgs]) -> list[dict[str, Any]]:
+        """Runs `add-bookmark` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("add-bookmark", items)
+
+    def remove_bookmark(self,
+        *,
+        url: str,
+        observed_tags: list[str],
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("remove-bookmark", url=url, observed_tags=observed_tags)
+
+    def remove_bookmark_many(self, items: list[PersonalBookmarksRemoveBookmarkArgs]) -> list[dict[str, Any]]:
+        """Runs `remove-bookmark` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("remove-bookmark", items)
+
+    def import_bookmarks(self, *, bundle: str) -> None:
+        """Runs the app's action."""
+        return self.action("import-bookmarks", bundle=bundle)
+
+    def import_bookmarks_many(self, items: list[ImportBookmarksArgs]) -> list[dict[str, Any]]:
+        """Runs `import-bookmarks` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("import-bookmarks", items)
+
+    def remove_imported_node(self,
+        *,
+        source: str,
+        id: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("remove-imported-node", source=source, id=id)
+
+    def remove_imported_node_many(self, items: list[RemoveImportedNodeArgs]) -> list[dict[str, Any]]:
+        """Runs `remove-imported-node` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("remove-imported-node", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"add_bookmark", "add_bookmark_many", "remove_bookmark", "remove_bookmark_many", "import_bookmarks", "import_bookmarks_many", "remove_imported_node", "remove_imported_node_many"})
 
 

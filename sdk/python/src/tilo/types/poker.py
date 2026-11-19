@@ -122,7 +122,7 @@ RebuyArgs = TypedDict("RebuyArgs", {
 
 class Table(Resource):
     """Poker table — `so.tilo.poker.table`."""
-    __surface__ = "so.tilo.poker@967369c20d6a9c6f"
+    __surface__ = "so.tilo.poker@21ecee3d62517889"
     players: dict[str, Player]
     hand: Hand
     button_seat: int

@@ -26,7 +26,6 @@ __all__ = [
     "WeekdayKey",
     "WorldClock",
     "Collection",
-    "OnDevices",
     "AddWorldClockArgs",
     "RemoveWorldClockArgs",
     "AddAlarmArgs",
@@ -42,7 +41,6 @@ __all__ = [
     "PauseStopwatchArgs",
     "LapArgs",
     "ResetStopwatchArgs",
-    "KeepArgs",
 ]
 
 class Alarm(TypedDict):
@@ -151,15 +149,9 @@ ResetStopwatchArgs = TypedDict("ResetStopwatchArgs", {
 })
 """The arguments of `reset-stopwatch`."""
 
-KeepArgs = TypedDict("KeepArgs", {
-    "device": "str",
-    "kept": "Any",
-})
-"""The arguments of `keep`."""
-
 class Collection(Resource):
     """Clocks — `clocks.collection`."""
-    __surface__ = "so.tilo.clocks@9852f71e51ca4a4d"
+    __surface__ = "so.tilo.clocks@43e52d1090e872f9"
     world_clocks: list[Entry[WorldClock]]
     alarms: list[Entry[Alarm]]
     timers: list[Entry[Timer]]
@@ -332,27 +324,5 @@ class Collection(Resource):
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
     __actions__ = frozenset({"add_world_clock", "add_world_clock_many", "remove_world_clock", "remove_world_clock_many", "add_alarm", "add_alarm_many", "set_alarm_enabled", "set_alarm_enabled_many", "edit_alarm", "edit_alarm_many", "remove_alarm", "remove_alarm_many", "add_timer", "add_timer_many", "pause_timer", "pause_timer_many", "resume_timer", "resume_timer_many", "add_minute", "add_minute_many", "remove_timer", "remove_timer_many", "start_stopwatch", "start_stopwatch_many", "pause_stopwatch", "pause_stopwatch_many", "lap", "lap_many", "reset_stopwatch", "reset_stopwatch_many", "show", "dismiss_notice", "float_stopwatch", "unfloat_stopwatch"})
-
-
-class OnDevices(Resource):
-    """Clocks on each device — `clocks.on-devices`."""
-    __surface__ = "so.tilo.clocks@9852f71e51ca4a4d"
-    devices: dict[str, Any]
-
-    def keep(self,
-        *,
-        device: str,
-        kept: Any,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("keep", device=device, kept=kept)
-
-    def keep_many(self, items: list[KeepArgs]) -> list[dict[str, Any]]:
-        """Runs `keep` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("keep", items)
-
-    # The actions a call reaches before the resource is read: `await tracker.create(...)`
-    # needs no `load()` first.
-    __actions__ = frozenset({"keep", "keep_many"})
 
 

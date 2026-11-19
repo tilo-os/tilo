@@ -66,7 +66,7 @@ MarkUsedArgs = TypedDict("MarkUsedArgs", {
 
 class ConnectionList(Resource):
     """Remote connections — `remote.connection-list`."""
-    __surface__ = "so.tilo.remote@401fdb67cc96b89f"
+    __surface__ = "so.tilo.remote@1c2786cc760e20d8"
     connections: list[Entry[Connection]]
 
     def add_connection(self,

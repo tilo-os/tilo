@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.firewall@d4e5e1b79ae77004";
+export const SURFACE = "so.tilo.firewall@79278c5e2f6f2928";
 
 /** One of "allow", "deny". */
 export type Action = "allow" | "deny";
@@ -82,12 +82,6 @@ export interface ImportArgs {
   config: unknown;
 }
 
-/** The arguments of `applied`. */
-export interface AppliedArgs {
-  device: string;
-  config: string;
-}
-
 /** Firewall — `firewall.config`. */
 export interface Config extends tilo.Resource {
   readonly enabled: boolean;
@@ -127,25 +121,5 @@ export const CONFIG_ACTIONS = ["start", "startMany", "stop", "stopMany", "enterP
 /** The `firewall.config` kind at `path`. */
 export function config(ws: tilo.Workspace, path: string): Config {
   return resourceProxy(ws, path, SURFACE, CONFIG_ACTIONS) as unknown as Config;
-}
-
-/** Applied configuration — `firewall.applied`. */
-export interface Applied extends tilo.Resource {
-  devices: Record<string, string>;
-  applied(args: {
-    device: string;
-    config: string;
-  }): Promise<void>;
-  /** Runs `applied` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  appliedMany(items: AppliedArgs[]): Promise<tilo.ActionAnswer[]>;
-}
-
-/** The actions `Applied` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const APPLIED_ACTIONS = ["applied", "appliedMany"] as const;
-
-/** The `firewall.applied` kind at `path`. */
-export function applied(ws: tilo.Workspace, path: string): Applied {
-  return resourceProxy(ws, path, SURFACE, APPLIED_ACTIONS) as unknown as Applied;
 }
 

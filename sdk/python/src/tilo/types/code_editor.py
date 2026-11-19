@@ -205,7 +205,7 @@ RecordCommandArgs = TypedDict("RecordCommandArgs", {
 
 class Project(Resource):
     """Code Editor — `code_editor.project`."""
-    __surface__ = "so.tilo.code-editor@bd2b2ca013353dfa"
+    __surface__ = "so.tilo.code-editor@d5aaa5f2add16f26"
     files: list[Entry[Entry]]
     buffers: dict[str, Any]
     @property

@@ -90,7 +90,6 @@ __all__ = [
     "Withdrawn",
     "Work",
     "WorkUpdate",
-    "Fact",
     "Emoji",
     "Agent",
     "AgentState",
@@ -109,7 +108,6 @@ __all__ = [
     "Workspace",
     "Messages",
     "Drafts",
-    "Learned",
     "WorkspaceEmoji",
     "ChatAgent",
     "BeginChatArgs",
@@ -161,9 +159,7 @@ __all__ = [
     "CarryCountsArgs",
     "StreamOutputArgs",
     "StartDraftArgs",
-    "LearnArgs",
-    "CorrectArgs",
-    "ForgetArgs",
+    "ImportPreviousArgs",
     "AddEmojiArgs",
     "RemoveEmojiArgs",
     "RemoveAnyEmojiArgs",
@@ -586,12 +582,6 @@ class WorkUpdate(TypedDict):
     about: str | None
     trace: list[StepUpdate]
     detail: str | None
-
-class Fact(TypedDict):
-    text: str
-    source: str
-    at: int
-    by: str | None
 
 class Emoji(TypedDict):
     image: Any
@@ -1042,23 +1032,12 @@ StartDraftArgs = TypedDict("StartDraftArgs", {
 })
 """The arguments of `start-draft`."""
 
-LearnArgs = TypedDict("LearnArgs", {
-    "text": "str",
-    "source": "str",
+ImportPreviousArgs = TypedDict("ImportPreviousArgs", {
+    "receipt": "str",
+    "key": "str",
+    "markdown": "str",
 })
-"""The arguments of `learn`."""
-
-CorrectArgs = TypedDict("CorrectArgs", {
-    "fact": "str",
-    "text": "str",
-    "source": NotRequired["str | None"],
-})
-"""The arguments of `correct`."""
-
-ForgetArgs = TypedDict("ForgetArgs", {
-    "fact": "str",
-})
-"""The arguments of `forget`."""
+"""The arguments of `import-previous`."""
 
 AddEmojiArgs = TypedDict("AddEmojiArgs", {
     "name": "str",
@@ -1191,7 +1170,7 @@ SetSubAgentLimitsArgs = TypedDict("SetSubAgentLimitsArgs", {
 
 class Workspace(Resource):
     """Chat — `chat.workspace`."""
-    __surface__ = "so.tilo.chat@76b61dcfa066393c"
+    __surface__ = "so.tilo.chat@29329f9ba5f656e6"
     @property
     def categories(self) -> list[Entry[Category]]:
         """Read only."""
@@ -1526,7 +1505,7 @@ class Workspace(Resource):
 
 class Messages(Resource):
     """Messages — `chat.messages`."""
-    __surface__ = "so.tilo.chat@76b61dcfa066393c"
+    __surface__ = "so.tilo.chat@29329f9ba5f656e6"
     @property
     def messages(self) -> list[Entry[Message]]:
         """Read only."""
@@ -2003,8 +1982,12 @@ class Messages(Resource):
 
 class Drafts(Resource):
     """Chat drafts — `chat.drafts`."""
-    __surface__ = "so.tilo.chat@76b61dcfa066393c"
+    __surface__ = "so.tilo.chat@29329f9ba5f656e6"
     drafts: dict[str, str]
+    @property
+    def imported(self) -> list[str]:
+        """Read only."""
+        return self.fields["imported"]
 
     def start_draft(self, *, key: str) -> None:
         """Runs the app's action."""
@@ -2014,65 +1997,27 @@ class Drafts(Resource):
         """Runs `start-draft` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("start-draft", items)
 
-    # The actions a call reaches before the resource is read: `await tracker.create(...)`
-    # needs no `load()` first.
-    __actions__ = frozenset({"start_draft", "start_draft_many"})
-
-
-class Learned(Resource):
-    """What your agents learned — `chat.learned`."""
-    __surface__ = "so.tilo.chat@76b61dcfa066393c"
-    @property
-    def facts(self) -> list[Entry[Fact]]:
-        """Read only."""
-        return self.fields["facts"]
-
-    def learn(self,
+    def import_previous(self,
         *,
-        text: str,
-        source: str,
+        receipt: str,
+        key: str,
+        markdown: str,
     ) -> None:
         """Runs the app's action."""
-        return self.action("learn", text=text, source=source)
+        return self.action("import-previous", receipt=receipt, key=key, markdown=markdown)
 
-    def learn_many(self, items: list[LearnArgs]) -> list[dict[str, Any]]:
-        """Runs `learn` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("learn", items)
-
-    def correct(self,
-        *,
-        fact: str,
-        text: str,
-        source: str | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["fact"] = fact
-        args["text"] = text
-        if source is not None:
-            args["source"] = source
-        return self.action("correct", **args)
-
-    def correct_many(self, items: list[CorrectArgs]) -> list[dict[str, Any]]:
-        """Runs `correct` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("correct", items)
-
-    def forget(self, *, fact: str) -> None:
-        """Runs the app's action."""
-        return self.action("forget", fact=fact)
-
-    def forget_many(self, items: list[ForgetArgs]) -> list[dict[str, Any]]:
-        """Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("forget", items)
+    def import_previous_many(self, items: list[ImportPreviousArgs]) -> list[dict[str, Any]]:
+        """Runs `import-previous` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("import-previous", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"learn", "learn_many", "correct", "correct_many", "forget", "forget_many"})
+    __actions__ = frozenset({"start_draft", "start_draft_many", "import_previous", "import_previous_many"})
 
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@76b61dcfa066393c"
+    __surface__ = "so.tilo.chat@29329f9ba5f656e6"
     emoji: dict[str, Emoji]
 
     def add_emoji(self,
@@ -2110,7 +2055,7 @@ class WorkspaceEmoji(Resource):
 
 class ChatAgent(Resource):
     """Agents — `chat.agent`."""
-    __surface__ = "so.tilo.chat@76b61dcfa066393c"
+    __surface__ = "so.tilo.chat@29329f9ba5f656e6"
     agents: list[Entry[Agent]]
 
     def create_agent(self,

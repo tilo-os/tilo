@@ -29,14 +29,13 @@ __all__ = [
     "Remembered",
     "Session",
     "History",
-    "RecentEnvironments",
     "StopArgs",
     "RecordCommandArgs",
     "RecordTargetArgs",
     "RecordRelaySessionArgs",
     "ClaimPaneArgs",
     "RememberArgs",
-    "UsedArgs",
+    "ImportRunArgs",
 ]
 
 class Command(TypedDict):
@@ -154,15 +153,21 @@ RememberArgs = TypedDict("RememberArgs", {
 })
 """The arguments of `remember`."""
 
-UsedArgs = TypedDict("UsedArgs", {
-    "device": "str",
-    "target": "str",
+ImportRunArgs = TypedDict("ImportRunArgs", {
+    "command": "str",
+    "cwd": "str",
+    "environment": NotRequired["str | None"],
+    "exit": "int",
+    "ended_ms": "int",
+    "actor": NotRequired["Any | None"],
+    "session": "str",
+    "run": "str",
 })
-"""The arguments of `used`."""
+"""The arguments of `import-run`."""
 
 class Session(Resource):
     """Terminal — `terminal.session`."""
-    __surface__ = "so.tilo.terminal@fde430ea4dee57fc"
+    __surface__ = "so.tilo.terminal@0294d320fd92b088"
     @property
     def target(self) -> str | None:
         """Read only."""
@@ -338,7 +343,7 @@ class Session(Resource):
 
 class History(Resource):
     """Command history — `terminal.history`."""
-    __surface__ = "so.tilo.terminal@fde430ea4dee57fc"
+    __surface__ = "so.tilo.terminal@0294d320fd92b088"
     @property
     def remembered(self) -> list[Entry[Remembered]]:
         """Read only."""
@@ -373,30 +378,37 @@ class History(Resource):
         """Runs `remember` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remember", items)
 
-    # The actions a call reaches before the resource is read: `await tracker.create(...)`
-    # needs no `load()` first.
-    __actions__ = frozenset({"remember", "remember_many"})
-
-
-class RecentEnvironments(Resource):
-    """Recent environments — `terminal.recent-environments`."""
-    __surface__ = "so.tilo.terminal@fde430ea4dee57fc"
-    devices: dict[str, str]
-
-    def used(self,
+    def import_run(self,
         *,
-        device: str,
-        target: str,
+        command: str,
+        cwd: str,
+        exit: int,
+        ended_ms: int,
+        session: str,
+        run: str,
+        environment: str | None = None,
+        actor: Any | None = None,
     ) -> None:
         """Runs the app's action."""
-        return self.action("used", device=device, target=target)
+        args: dict[str, Any] = {}
+        args["command"] = command
+        args["cwd"] = cwd
+        if environment is not None:
+            args["environment"] = environment
+        args["exit"] = exit
+        args["ended_ms"] = ended_ms
+        if actor is not None:
+            args["actor"] = actor
+        args["session"] = session
+        args["run"] = run
+        return self.action("import-run", **args)
 
-    def used_many(self, items: list[UsedArgs]) -> list[dict[str, Any]]:
-        """Runs `used` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("used", items)
+    def import_run_many(self, items: list[ImportRunArgs]) -> list[dict[str, Any]]:
+        """Runs `import-run` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("import-run", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"used", "used_many"})
+    __actions__ = frozenset({"remember", "remember_many", "import_run", "import_run_many"})
 
 

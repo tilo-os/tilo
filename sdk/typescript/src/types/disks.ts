@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.disks@ffbe70038c92814e";
+export const SURFACE = "so.tilo.disks@16aeb729799dc193";
 
 /** The arguments of `name-drive`. */
 export interface NameDriveArgs {

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.file-explorer@f952b0008d9de267";
+export const SURFACE = "so.tilo.file-explorer@48745a32c6881e37";
 
 export interface Bookmark {
   place: string;
@@ -40,9 +40,6 @@ export interface Receipt {
   restore: boolean;
   error: string | null;
 }
-
-/** One of "opened", "changed". */
-export type RecentUse = "opened" | "changed";
 
 /** The arguments of `add-bookmark`. */
 export interface AddBookmarkArgs {
@@ -96,27 +93,6 @@ export interface RestoreArgs {
 /** The arguments of `list-chunk`. */
 export interface ListChunkArgs {
   chunk: unknown;
-}
-
-/** The arguments of `note`. */
-export interface NoteArgs {
-  device: string;
-  path: string;
-  last_use: RecentUse;
-  at_ms: number;
-}
-
-/** The arguments of `moved`. */
-export interface MovedArgs {
-  device: string;
-  from: string;
-  to: string;
-}
-
-/** The arguments of `forget`. */
-export interface ForgetArgs {
-  device: string;
-  path: string;
 }
 
 /** Folder — `files.folder`. */
@@ -282,41 +258,6 @@ export const TREE_ACTIONS = ["newFolder", "newFolderMany", "newFile", "newFileMa
 /** The `files.tree` kind at `path`. */
 export function tree(ws: tilo.Workspace, path: string): Tree {
   return resourceProxy(ws, path, SURFACE, TREE_ACTIONS) as unknown as Tree;
-}
-
-/** Recent files — `files.recent`. */
-export interface Recent extends tilo.Resource {
-  devices: Record<string, unknown>;
-  note(args: {
-    device: string;
-    path: string;
-    last_use: RecentUse;
-    at_ms: number;
-  }): Promise<void>;
-  /** Runs `note` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  noteMany(items: NoteArgs[]): Promise<tilo.ActionAnswer[]>;
-  moved(args: {
-    device: string;
-    from: string;
-    to: string;
-  }): Promise<void>;
-  /** Runs `moved` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  movedMany(items: MovedArgs[]): Promise<tilo.ActionAnswer[]>;
-  forget(args: {
-    device: string;
-    path: string;
-  }): Promise<void>;
-  /** Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  forgetMany(items: ForgetArgs[]): Promise<tilo.ActionAnswer[]>;
-}
-
-/** The actions `Recent` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const RECENT_ACTIONS = ["note", "noteMany", "moved", "movedMany", "forget", "forgetMany"] as const;
-
-/** The `files.recent` kind at `path`. */
-export function recent(ws: tilo.Workspace, path: string): Recent {
-  return resourceProxy(ws, path, SURFACE, RECENT_ACTIONS) as unknown as Recent;
 }
 
 /** Files window — `files.workspace`. */

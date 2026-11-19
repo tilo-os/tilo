@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.canvas@3bdabc6586889ec5";
+export const SURFACE = "so.tilo.canvas@6690ea648a6b5cb5";
 
 export interface AddLayer {
   id: string | null;
@@ -386,15 +386,6 @@ export interface UseSelection {
   cleaned: string[][] | null;
 }
 
-export interface Recent {
-  path: string;
-  title: string;
-  width: number;
-  height: number;
-  at_ms: number;
-  thumbnail: string | null;
-}
-
 /** The arguments of `edit-marks`. */
 export interface EditMarksArgs {
   ids: string[];
@@ -550,18 +541,6 @@ export interface OpenArtworkArgs {
 export interface CombineArgs {
   ids: string[];
   op: string;
-}
-
-/** The arguments of `remember`. */
-export interface RememberArgs {
-  device: string;
-  recent: Recent;
-}
-
-/** The arguments of `forget`. */
-export interface ForgetArgs {
-  device: string;
-  path: string;
 }
 
 /** Artwork — `canvas.artwork`. */
@@ -829,31 +808,5 @@ export const ARTWORK_ACTIONS = ["paint", "draw", "chart", "editMarks", "editMark
 /** The `canvas.artwork` kind at `path`. */
 export function artwork(ws: tilo.Workspace, path: string): Artwork {
   return resourceProxy(ws, path, SURFACE, ARTWORK_ACTIONS) as unknown as Artwork;
-}
-
-/** Recent artworks — `canvas.recent-artworks`. */
-export interface RecentArtworks extends tilo.Resource {
-  devices: Record<string, unknown>;
-  remember(args: {
-    device: string;
-    recent: Recent;
-  }): Promise<void>;
-  /** Runs `remember` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  rememberMany(items: RememberArgs[]): Promise<tilo.ActionAnswer[]>;
-  forget(args: {
-    device: string;
-    path: string;
-  }): Promise<void>;
-  /** Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  forgetMany(items: ForgetArgs[]): Promise<tilo.ActionAnswer[]>;
-}
-
-/** The actions `RecentArtworks` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const RECENTARTWORKS_ACTIONS = ["remember", "rememberMany", "forget", "forgetMany"] as const;
-
-/** The `canvas.recent-artworks` kind at `path`. */
-export function recentArtworks(ws: tilo.Workspace, path: string): RecentArtworks {
-  return resourceProxy(ws, path, SURFACE, RECENTARTWORKS_ACTIONS) as unknown as RecentArtworks;
 }
 

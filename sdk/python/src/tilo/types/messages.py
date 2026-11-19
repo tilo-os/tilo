@@ -46,6 +46,8 @@ __all__ = [
     "ForgetEndpointArgs",
     "KeepDraftArgs",
     "DropDraftArgs",
+    "ImportPreviousArgs",
+    "SentArgs",
 ]
 
 Conversation = TypedDict("Conversation", {
@@ -203,9 +205,21 @@ DropDraftArgs = TypedDict("DropDraftArgs", {
 })
 """The arguments of `drop-draft`."""
 
+ImportPreviousArgs = TypedDict("ImportPreviousArgs", {
+    "conversation": "str",
+    "body": "str",
+})
+"""The arguments of `import-previous`."""
+
+SentArgs = TypedDict("SentArgs", {
+    "conversation": "str",
+    "delivered": "str",
+})
+"""The arguments of `sent`."""
+
 class Messages(Resource):
     """Messages — `tilo.messages`."""
-    __surface__ = "so.tilo.messages@72a4057592be1cdc"
+    __surface__ = "so.tilo.messages@693ad7c3ef9da7d3"
     @property
     def conversations(self) -> list[Entry[Conversation]]:
         """Read only."""
@@ -311,7 +325,7 @@ class Messages(Resource):
 
 class Accounts(Resource):
     """Accounts — `tilo.accounts`."""
-    __surface__ = "so.tilo.messages@72a4057592be1cdc"
+    __surface__ = "so.tilo.messages@693ad7c3ef9da7d3"
     accounts: list[Entry[PersonAccount]]
     active: dict[str, str]
 
@@ -367,7 +381,7 @@ class Accounts(Resource):
 
 class Identities(Resource):
     """Contact identities — `tilo.contacts.identities`."""
-    __surface__ = "so.tilo.messages@72a4057592be1cdc"
+    __surface__ = "so.tilo.messages@693ad7c3ef9da7d3"
     people: list[Entry[Person]]
 
     def project_contact(self,
@@ -507,8 +521,12 @@ class Identities(Resource):
 
 class Drafts(Resource):
     """Message drafts — `messages.drafts`."""
-    __surface__ = "so.tilo.messages@72a4057592be1cdc"
+    __surface__ = "so.tilo.messages@693ad7c3ef9da7d3"
     drafts: dict[str, str]
+    @property
+    def handled(self) -> dict[str, bool]:
+        """Read only."""
+        return self.fields["handled"]
 
     def keep_draft(self,
         *,
@@ -530,8 +548,32 @@ class Drafts(Resource):
         """Runs `drop-draft` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("drop-draft", items)
 
+    def import_previous(self,
+        *,
+        conversation: str,
+        body: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("import-previous", conversation=conversation, body=body)
+
+    def import_previous_many(self, items: list[ImportPreviousArgs]) -> list[dict[str, Any]]:
+        """Runs `import-previous` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("import-previous", items)
+
+    def sent(self,
+        *,
+        conversation: str,
+        delivered: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("sent", conversation=conversation, delivered=delivered)
+
+    def sent_many(self, items: list[SentArgs]) -> list[dict[str, Any]]:
+        """Runs `sent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("sent", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"keep_draft", "keep_draft_many", "drop_draft", "drop_draft_many"})
+    __actions__ = frozenset({"keep_draft", "keep_draft_many", "drop_draft", "drop_draft_many", "import_previous", "import_previous_many", "sent", "sent_many"})
 
 
