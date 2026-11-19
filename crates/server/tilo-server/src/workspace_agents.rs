@@ -2319,7 +2319,9 @@ async fn work(
         );
     };
     let turns = Arc::new(Mutex::new(asking::again(turns, going.stop_flag())));
-    let mut server = match McpServer::for_turn(scope.provider.clone(), reply.caller.clone()) {
+    let mut server = match McpServer::for_turn(scope.provider.clone(), reply.caller.clone())
+        .map(|server| server.with_observation(steps::observed()))
+    {
         Ok(server) => server,
         Err(error) => return (Outcome::Failed(error.to_string()), 0),
     };
@@ -2438,6 +2440,7 @@ async fn go_on(
     *reply = scope.reply(turn);
     reply.taken().await;
     McpServer::for_turn(scope.provider.clone(), reply.caller.clone())
+        .map(|server| server.with_observation(steps::observed()))
         .map(Some)
         .map_err(|error| error.to_string())
 }

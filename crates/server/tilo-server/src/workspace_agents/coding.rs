@@ -305,6 +305,7 @@ fn agents_document() -> String {
 /// action service and the reply's own caller.
 fn tools_of(scope: &TurnScope, reply: &Reply) -> Result<Tools, String> {
     McpServer::for_turn(scope.provider.clone(), reply.caller.clone())
+        .map(|server| server.with_observation(super::steps::observed()))
         .map(Arc::new)
         .map_err(|error| error.to_string())
 }
