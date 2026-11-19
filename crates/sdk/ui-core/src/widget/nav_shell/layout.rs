@@ -824,19 +824,16 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         g.toggle_column = None;
     }
 
-    // 10. Dragging the docked sidebar's trailing edge resizes it.
+    // 10. Dragging the docked sidebar's trailing edge resizes it. The grip stands just past the
+    // edge, over the gutter the column beside it leaves: the sidebar's rows reach the edge, and a
+    // press or a hover on them is theirs, never the edge's.
     if g.sidebar == SidebarPlacement::Docked
         && inputs.mode != NavMode::Docked
         && sidebar_open
         && g.sidebar_column.width() > 0.0
     {
         let x = g.sidebar_column.x1;
-        g.resize_handle = Rect::new(
-            x - m.resize_grip,
-            row_of(Column::Sidebar),
-            x + m.resize_grip,
-            h,
-        );
+        g.resize_handle = Rect::new(x, row_of(Column::Sidebar), x + 2.0 * m.resize_grip, h);
     }
     g
 }

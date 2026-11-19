@@ -72,6 +72,22 @@ const NAMED = `((name) => {
   return JSON.stringify(best);
 })`;
 
+// Whether an element of the mount other than the pressed row, `y` its middle, reads `name`: the
+// page's title once the press showed the page.
+const SHOWN = `((name, y) => {
+  const root = document.getElementById('app');
+  const dom = Boolean(root.querySelector('[data-path]'));
+  for (const element of root.querySelectorAll('*')) {
+    if (dom && !element.closest('[data-path]')) continue;
+    const said = (element.getAttribute('aria-label') ?? element.textContent ?? '').trim();
+    if (said !== name) continue;
+    const box = element.getBoundingClientRect();
+    if (box.width < 4 || box.height < 4) continue;
+    if (Math.abs(box.top + box.height / 2 - y) > 4) return 'true';
+  }
+  return 'false';
+})`;
+
 async function settle(tab) {
   for (let i = 0, last = -1; i < 40; i++) {
     await sleep(250);
@@ -102,16 +118,14 @@ try {
           await tab.navigate(`${server.url}/app.html?package=${encodeURIComponent(pkg)}&scenario=${scenario}&render=${render}&theme=${theme}`);
           await tab.waitFor('window.renderMarks.presented.length > 0', {timeout: 120000});
           await settle(tab);
-          // The place is pressed until its page shows: a press that lands
-          // while the window is still settling can go unanswered.
-          for (let tries = 0; tries < 3; tries++) {
-            const at = JSON.parse(await tab.evaluate(`${NAMED}(${JSON.stringify(page)})`));
-            if (!at || (result.opened && tries && Math.abs(at.y - result.opened.y) > 1)) break;
+          // One press on the place shows its page: the window's title reads the place's name
+          // somewhere other than the row that was pressed.
+          const at = JSON.parse(await tab.evaluate(`${NAMED}(${JSON.stringify(page)})`));
+          if (at) {
             result.opened = at;
-            result.presses = tries + 1;
-            await sleep(500);
             await press(tab, at);
             await settle(tab);
+            result.shown = JSON.parse(await tab.evaluate(`${SHOWN}(${JSON.stringify(page)}, ${at.y})`));
           }
           // Choosing a place in the gallery never reports a page it could not open.
           result.error_taught = await tab.evaluate(

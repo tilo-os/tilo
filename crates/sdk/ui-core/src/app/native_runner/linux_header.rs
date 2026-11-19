@@ -218,7 +218,11 @@ impl LiveHeader {
         match event {
             WindowEvent::CursorMoved { .. } if edge.is_some() => {
                 if let Some(edge) = edge {
-                    window.set_cursor(winit::window::CursorIcon::from(edge));
+                    // The window's own pointer shape is the edge's now: the app reads it to put
+                    // its own back once the pointer leaves the edge, which it never saw arrive.
+                    let shape = winit::window::CursorIcon::from(edge);
+                    window.set_cursor(shape);
+                    app.input.current_cursor = shape;
                 }
                 routed.consumed = true;
                 return routed;
