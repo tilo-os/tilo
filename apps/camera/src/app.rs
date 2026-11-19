@@ -5085,10 +5085,31 @@ mod tests {
                 .find(|row| row.id.as_str() == id)
                 .unwrap_or_else(|| panic!("{id} is a row"))
         };
+        // The row offers every effect its type declares on it, in the type's
+        // order, with the handoff to the app that owns the library last; the
+        // ones that do not apply to a working camera say so instead of
+        // leaving the row, as the palette hides them there (see `actions`).
+        let capture_row = row(crate::actions::CAPTURE_ROW);
         assert_eq!(
-            ids(row(crate::actions::CAPTURE_ROW)),
-            ["open-photos", "capture", "record"]
+            ids(capture_row),
+            [
+                "capture",
+                "record",
+                "retry-camera",
+                "open-camera-privacy",
+                "open-photos",
+            ]
         );
+        for action in &capture_row.actions {
+            let applies = matches!(action.id.as_str(), "capture" | "open-photos");
+            let availability = &action.contract.availability;
+            assert_eq!(
+                availability.is_available(),
+                applies,
+                "{} on a working camera in photo mode: {availability:?}",
+                action.id
+            );
+        }
         assert_eq!(ids(row(crate::actions::SCANNER_ROW)), ["import-image"]);
         assert_eq!(
             ids(row(crate::actions::DOCUMENT_ROW)),
