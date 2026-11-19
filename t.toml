@@ -6350,6 +6350,33 @@ outputs = ["/target/peer-kill-midwrite/state/logs/*.log", "/target/peer-kill-mid
 evidence = ["/target/peer-kill-midwrite/state/logs/**"]
 timeout_secs = 1800
 
+# A git checkout of this repository into a mounted folder runs at the files a second it must
+# and survives its holder ending halfway: on a fresh stack from tilo-sh-programs' one build
+# (test-peer-kill-midwrite.sh git), the whole checkout is timed from git's progress, then
+# checkouts of part of it are under way when the holder gets SIGKILL, is asked to step down by a
+# newer program's holder, and gets SIGTERM; each time the folder is shown again, never stale, and
+# `git fsck --full` finds the repository whole, and a holder with nothing kept reads the server's
+# whole tree back. The figures are in throughput.txt among its outputs.
+[[check]]
+name = "peer-git-midwrite"
+# Not a default check: a checkout of twenty thousand files and its convergence take minutes.
+default = false
+# No egress: the holders and the stack meet on loopback alone.
+run = "bash os/containers/tilo-sh/test-peer-kill-midwrite.sh /target/peer-git-midwrite git"
+needs = ["tilo-sh-programs", "lounge-fonts", "tilo-sh-caddy"]
+# Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
+# changes as updates land, from mirrors no fixed list names.
+setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl git-core && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
+env = { TILO_SH_PROGRAMS = "/target/publish/tilo-sh-programs", TILO_SH_FONTS = "/target/publish/lounge/fonts", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy" }
+requires = ["arch=x86_64", "/dev/fuse"]
+isolation = "nested"
+# The repository it checks out is this one, from its history.
+git = true
+outputs = ["/target/peer-git-midwrite/state/logs/*.log", "/target/peer-git-midwrite/state/logs/kill-midwrite/*"]
+# What a failure keeps of why: every service's log and the checkout's.
+evidence = ["/target/peer-git-midwrite/state/logs/**"]
+timeout_secs = 3600
+
 # Production's Caddy, which serves the local stack's server and site as its tls container and web
 # entry image do: the one pinned release (os/containers/tilo-sh/caddy.env), fetched and checked
 # here, so a check's bring-up downloads nothing.
