@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.clocks@bd8154a789309372";
+export const SURFACE = "so.tilo.clocks@931161d584af886b";
 
 export interface Alarm {
   label: string;
@@ -224,25 +224,15 @@ export interface Collection extends tilo.Resource {
   resetStopwatch(): Promise<void>;
   /** Runs `reset-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   resetStopwatchMany(items: ResetStopwatchArgs[]): Promise<tilo.ActionAnswer[]>;
-  openAlarm(args: {
-    alarm: string;
-  }): Promise<void>;
   show(args: {
     section: string;
   }): Promise<void>;
   dismissNotice(): Promise<void>;
-  floatTimer(args: {
-    timer: string;
-    floating: boolean;
-  }): Promise<void>;
-  floatStopwatch(args: {
-    floating: boolean;
-  }): Promise<void>;
 }
 
 /** The actions `Collection` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const COLLECTION_ACTIONS = ["addWorldClock", "addWorldClockMany", "removeWorldClock", "removeWorldClockMany", "addAlarm", "addAlarmMany", "setAlarmEnabled", "setAlarmEnabledMany", "editAlarm", "editAlarmMany", "removeAlarm", "removeAlarmMany", "addTimer", "addTimerMany", "pauseTimer", "pauseTimerMany", "resumeTimer", "resumeTimerMany", "addMinute", "addMinuteMany", "removeTimer", "removeTimerMany", "startStopwatch", "startStopwatchMany", "pauseStopwatch", "pauseStopwatchMany", "lap", "lapMany", "resetStopwatch", "resetStopwatchMany", "openAlarm", "show", "dismissNotice", "floatTimer", "floatStopwatch"] as const;
+export const COLLECTION_ACTIONS = ["addWorldClock", "addWorldClockMany", "removeWorldClock", "removeWorldClockMany", "addAlarm", "addAlarmMany", "setAlarmEnabled", "setAlarmEnabledMany", "editAlarm", "editAlarmMany", "removeAlarm", "removeAlarmMany", "addTimer", "addTimerMany", "pauseTimer", "pauseTimerMany", "resumeTimer", "resumeTimerMany", "addMinute", "addMinuteMany", "removeTimer", "removeTimerMany", "startStopwatch", "startStopwatchMany", "pauseStopwatch", "pauseStopwatchMany", "lap", "lapMany", "resetStopwatch", "resetStopwatchMany", "show", "dismissNotice"] as const;
 
 /** The `clocks.collection` kind at `path`. */
 export function collection(ws: tilo.Workspace, path: string): Collection {

@@ -73,13 +73,6 @@ id = "clear-transit"
 kind = "undoable"
 
 [[resources.verbs]]
-id = "search"
-kind = "read"
-params = [
-  { name = "query", type = "text", required = true },
-]
-
-[[resources.verbs]]
 id = "locate"
 kind = "read"
 
@@ -88,47 +81,11 @@ id = "toggle-traffic"
 kind = "read"
 
 [[resources.verbs]]
-id = "open-place"
-kind = "read"
-params = [
-  { name = "place", type = "text", required = true },
-]
-
-[[resources.verbs]]
-id = "directions"
-kind = "read"
-params = [
-  { name = "place", type = "text", required = true },
-]
-
-[[resources.verbs]]
-id = "open-poi"
-kind = "read"
-params = [
-  { name = "poi", type = "text", required = true },
-]
-
-[[resources.verbs]]
-id = "poi-directions"
-kind = "read"
-params = [
-  { name = "poi", type = "text", required = true },
-]
-
-[[resources.verbs]]
 id = "show-point"
 kind = "read"
 params = [
   { name = "lat", type = "float", required = true },
   { name = "lon", type = "float", required = true },
-]
-
-[[resources.verbs]]
-id = "delete-offline-area"
-destructive = true
-kind = "read"
-params = [
-  { name = "area", type = "text", required = true },
 ]
 
 [[resources.verbs]]

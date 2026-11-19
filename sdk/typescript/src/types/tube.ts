@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.tube@4b888c16305c5f19";
+export const SURFACE = "so.tilo.tube@a76b54e24761b7aa";
 
 export interface Reply {
   comment: string;
@@ -85,15 +85,6 @@ export interface Library extends tilo.Resource {
   }): Promise<void>;
   /** Runs `retract` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   retractMany(items: RetractArgs[]): Promise<tilo.ActionAnswer[]>;
-  openVideo(args: {
-    video: string;
-  }): Promise<void>;
-  openCreator(args: {
-    creator: string;
-  }): Promise<void>;
-  openPlaylist(args: {
-    playlist: string;
-  }): Promise<void>;
   search(args: {
     query: string;
   }): Promise<void>;
@@ -102,16 +93,6 @@ export interface Library extends tilo.Resource {
     seconds: number;
   }): Promise<void>;
   skipSegment(): Promise<void>;
-  share(args: {
-    video: string;
-  }): Promise<void>;
-  markWatched(args: {
-    video: string;
-  }): Promise<void>;
-  forgetWatched(args: {
-    video: string;
-  }): Promise<void>;
-  clearHistory(): Promise<void>;
   setPreference(args: {
     preference: string;
     enabled: boolean;
@@ -127,7 +108,7 @@ export interface Library extends tilo.Resource {
 
 /** The actions `Library` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const LIBRARY_ACTIONS = ["replyToComment", "replyToCommentMany", "retract", "retractMany", "openVideo", "openCreator", "openPlaylist", "search", "togglePlayback", "seek", "skipSegment", "share", "markWatched", "forgetWatched", "clearHistory", "setPreference", "setPreferredQuality", "setSegmentHandling"] as const;
+export const LIBRARY_ACTIONS = ["replyToComment", "replyToCommentMany", "retract", "retractMany", "search", "togglePlayback", "seek", "skipSegment", "setPreference", "setPreferredQuality", "setSegmentHandling"] as const;
 
 /** The `tube.library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {

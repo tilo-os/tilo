@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.backups@53a286be78746938";
+export const SURFACE = "so.tilo.backups@8c234e612d7e2a4f";
 
 export interface RetentionPolicy {
   hourly: number;
@@ -34,14 +34,11 @@ export interface RetentionPolicy {
 /** Backups — `backups.workspace`. */
 export interface Workspace extends tilo.Resource {
   policy: RetentionPolicy;
-  verify(args: {
-    snapshot_id: string;
-  }): Promise<void>;
 }
 
 /** The actions `Workspace` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const WORKSPACE_ACTIONS = ["verify"] as const;
+export const WORKSPACE_ACTIONS = [] as const;
 
 /** The `backups.workspace` kind at `path`. */
 export function workspace(ws: tilo.Workspace, path: string): Workspace {

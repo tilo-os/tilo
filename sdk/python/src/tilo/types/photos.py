@@ -171,7 +171,7 @@ RemoveAlbumArgs = TypedDict("RemoveAlbumArgs", {
 
 class Library(Resource):
     """Library — `photos.library`."""
-    __surface__ = "so.tilo.photos@6cb6ad27e57a7938"
+    __surface__ = "so.tilo.photos@3816dac5e6298353"
     photos: list[Entry[LibraryPhoto]]
     albums: list[Entry[Album]]
 

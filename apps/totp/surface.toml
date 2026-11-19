@@ -42,27 +42,6 @@ params = [
 id = "add-account"
 kind = "read"
 
-[[resources.verbs]]
-id = "open-account"
-kind = "read"
-params = [
-  { name = "account", type = "text", required = true },
-]
-
-[[resources.verbs]]
-id = "copy-code"
-kind = "read"
-params = [
-  { name = "account", type = "text", required = true },
-]
-
-[[resources.verbs]]
-id = "set-up-local"
-kind = "read"
-params = [
-  { name = "account", type = "text", required = true },
-]
-
 [[resources.types]]
 name = "Algorithm"
 cases = [
