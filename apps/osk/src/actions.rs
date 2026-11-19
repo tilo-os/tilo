@@ -4,7 +4,6 @@
 //! content: they follow the person to their devices and are never undone.
 use serde::{Deserialize, Serialize};
 use ui::framework::LiveRow;
-use ui::tilo_actions::ActionSpec;
 use ui::tilo_resource::{self, Effect};
 
 use crate::dict::Language;
@@ -20,6 +19,37 @@ pub use tilo_keyboard_map::touch::LAYOUT_NAMES;
 pub const KEYBOARD_SIZES: [&str; 3] = KeyboardSize::NAMES;
 
 pub const TYPING_LANGUAGES: [&str; 3] = ["layout", "en", "fr"];
+
+/// The letter layout text fields open in, as a row of this person's
+/// preferences.
+#[derive(tilo_resource::Row)]
+#[row(kind = "osk.layout", label = "Keyboard layout", effects = OskEffect)]
+pub struct OskLayout;
+
+/// How tall the key rows are.
+#[derive(tilo_resource::Row)]
+#[row(kind = "osk.size", label = "Keyboard size", effects = OskEffect)]
+pub struct OskSize;
+
+/// The language the dictionary and autocorrection use.
+#[derive(tilo_resource::Row)]
+#[row(kind = "osk.language", label = "Typing language", effects = OskEffect)]
+pub struct OskLanguage;
+
+/// Whether a finished word may be corrected.
+#[derive(tilo_resource::Row)]
+#[row(kind = "osk.autocorrect", label = "Autocorrect", effects = OskEffect)]
+pub struct OskAutocorrect;
+
+/// The suggestion bar and what the keyboard learns.
+#[derive(tilo_resource::Row)]
+#[row(kind = "osk.suggestions", label = "Suggestions and privacy", effects = OskEffect)]
+pub struct OskSuggestions;
+
+/// This person's recently picked emoji.
+#[derive(tilo_resource::Row)]
+#[row(kind = "osk.emoji", label = "Recent emoji")]
+pub struct OskEmoji;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SetPreference {
@@ -139,8 +169,50 @@ pub enum OskEffect {
     ///
     /// Learned word rankings, tap positions, kept words and recent emoji;
     /// the personalization preference stays as it is.
-    #[effect(row, kind = "read", destructive)]
+    #[effect(row, on = OskSuggestions, kind = "read", destructive)]
     ClearPersonal,
+    /// Use the QWERTY letter layout.
+    #[effect(row, on = OskLayout, kind = "read")]
+    Qwerty,
+    /// Use the AZERTY letter layout.
+    #[effect(row, on = OskLayout, kind = "read")]
+    Azerty,
+    /// Use the compact keyboard.
+    #[effect(row, on = OskSize, kind = "read")]
+    Compact,
+    /// Use the standard keyboard.
+    #[effect(row, on = OskSize, kind = "read")]
+    Standard,
+    /// Use the large keyboard.
+    #[effect(row, on = OskSize, kind = "read")]
+    Large,
+    /// Match the key layout.
+    #[effect(row, on = OskLanguage, kind = "read")]
+    MatchLayout,
+    /// Type in English.
+    #[effect(row, on = OskLanguage, kind = "read")]
+    English,
+    /// Type in French.
+    #[effect(row, on = OskLanguage, kind = "read")]
+    French,
+    /// Correct words.
+    #[effect(row, on = OskAutocorrect, kind = "read")]
+    EnableAutocorrect,
+    /// Never correct words.
+    #[effect(row, on = OskAutocorrect, kind = "read")]
+    DisableAutocorrect,
+    /// Turn on suggestions.
+    #[effect(row, on = OskSuggestions, kind = "read")]
+    EnableSuggestions,
+    /// Turn off suggestions.
+    #[effect(row, on = OskSuggestions, kind = "read")]
+    DisableSuggestions,
+    /// Turn on personalized suggestions.
+    #[effect(row, on = OskSuggestions, kind = "read")]
+    EnablePersonalization,
+    /// Turn off personalized suggestions.
+    #[effect(row, on = OskSuggestions, kind = "read")]
+    DisablePersonalization,
 }
 
 impl OskEffect {
@@ -155,196 +227,49 @@ impl OskEffect {
             Self::SetPersonalization { value } => SetPreference::Personalization(*value),
             Self::SetEmojiRecents { value } => SetPreference::EmojiRecents(value.clone()),
             Self::ClearPersonal => return None,
+            Self::Qwerty => SetPreference::Layout("qwerty".into()),
+            Self::Azerty => SetPreference::Layout("azerty".into()),
+            Self::Compact => SetPreference::Size("compact".into()),
+            Self::Standard => SetPreference::Size("standard".into()),
+            Self::Large => SetPreference::Size("large".into()),
+            Self::MatchLayout => SetPreference::TypingLanguage("layout".into()),
+            Self::English => SetPreference::TypingLanguage("en".into()),
+            Self::French => SetPreference::TypingLanguage("fr".into()),
+            Self::EnableAutocorrect => SetPreference::Autocorrect(true),
+            Self::DisableAutocorrect => SetPreference::Autocorrect(false),
+            Self::EnableSuggestions => SetPreference::Suggestions(true),
+            Self::DisableSuggestions => SetPreference::Suggestions(false),
+            Self::EnablePersonalization => SetPreference::Personalization(true),
+            Self::DisablePersonalization => SetPreference::Personalization(false),
         })
     }
-}
-
-fn offer(id: &str, label: &str, effect: &OskEffect) -> ActionSpec {
-    let mut spec = effect.bound();
-    id.clone_into(&mut spec.type_mut().id);
-    label.clone_into(&mut spec.type_mut().label);
-    spec
-}
-
-fn asking(id: &str, effect: &OskEffect) -> ActionSpec {
-    let mut spec = effect.bound_asking(&["value"]);
-    id.clone_into(&mut spec.type_mut().id);
-    spec
 }
 
 /// The layout, the suggestions and the recent emoji as they stand, each with
 /// the changes it offers.
 pub(crate) fn preference_rows(preferences: &OskPreferences) -> Vec<LiveRow> {
-    vec![
-        layout_row(preferences),
-        size_row(preferences),
-        language_row(preferences),
-        autocorrect_row(preferences),
-        suggestions_row(preferences),
-        emoji_row(preferences),
-    ]
-}
-
-fn layout_row(preferences: &OskPreferences) -> LiveRow {
-    let mut layout = LiveRow::new(
-        "osk.keyboard.layout",
-        "osk.layout",
-        format!("Keyboard layout ({})", preferences.layout.to_uppercase()),
-    )
-    .operation(asking(
-        "set",
-        &OskEffect::SetLayout {
-            value: preferences.layout.clone(),
-        },
-    ));
-    for (id, label) in LETTER_LAYOUTS {
-        layout = layout.operation(offer(
-            id,
-            label,
-            &OskEffect::SetLayout {
-                value: id.to_owned(),
-            },
-        ));
-    }
-    layout
-}
-
-fn size_row(preferences: &OskPreferences) -> LiveRow {
-    let mut size = LiveRow::new(
-        "osk.keyboard.size",
-        "osk.size",
-        format!("Keyboard size ({})", preferences.size.name()),
-    )
-    .operation(asking(
-        "set",
-        &OskEffect::SetSize {
-            value: preferences.size.name().to_owned(),
-        },
-    ));
-    for size_name in KeyboardSize::ALL {
-        size = size.operation(offer(
-            size_name.name(),
-            size_name.name(),
-            &OskEffect::SetSize {
-                value: size_name.name().to_owned(),
-            },
-        ));
-    }
-    size
-}
-
-/// The dictionary language need not match the layout.
-fn language_row(preferences: &OskPreferences) -> LiveRow {
     let language_name = preferences
         .typing_language
         .as_deref()
         .and_then(Language::from_code)
         .map_or("Match layout", Language::code);
-    LiveRow::new(
-        "osk.keyboard.language",
-        "osk.language",
-        format!("Typing language ({language_name})"),
-    )
-    .operation(asking(
-        "set",
-        &OskEffect::SetTypingLanguage {
-            value: preferences
-                .typing_language
-                .clone()
-                .unwrap_or_else(|| "layout".to_owned()),
-        },
-    ))
-    .operation(offer(
-        "match-layout",
-        "Match the key layout",
-        &OskEffect::SetTypingLanguage {
-            value: "layout".to_owned(),
-        },
-    ))
-    .operation(offer(
-        "english",
-        "English",
-        &OskEffect::SetTypingLanguage {
-            value: "en".to_owned(),
-        },
-    ))
-    .operation(offer(
-        "french",
-        "French",
-        &OskEffect::SetTypingLanguage {
-            value: "fr".to_owned(),
-        },
-    ))
-}
-
-fn autocorrect_row(preferences: &OskPreferences) -> LiveRow {
-    LiveRow::new("osk.keyboard.autocorrect", "osk.autocorrect", "Autocorrect")
-        .operation(asking(
-            "set",
-            &OskEffect::SetAutocorrect {
-                value: preferences.autocorrect,
-            },
-        ))
-        .operation(offer(
-            "enable",
-            "Correct words",
-            &OskEffect::SetAutocorrect { value: true },
-        ))
-        .operation(offer(
-            "disable",
-            "Never correct words",
-            &OskEffect::SetAutocorrect { value: false },
-        ))
-}
-
-fn suggestions_row(preferences: &OskPreferences) -> LiveRow {
-    LiveRow::new(
-        "osk.keyboard.suggestions",
-        "osk.suggestions",
-        "Suggestions and privacy",
-    )
-    .operation(asking(
-        "set",
-        &OskEffect::SetSuggestions {
-            value: preferences.suggestions,
-        },
-    ))
-    .operation(asking(
-        "set-personal",
-        &OskEffect::SetPersonalization {
-            value: preferences.personalization,
-        },
-    ))
-    .operation(offer(
-        "enable",
-        "Turn on suggestions",
-        &OskEffect::SetSuggestions { value: true },
-    ))
-    .operation(offer(
-        "disable",
-        "Turn off suggestions",
-        &OskEffect::SetSuggestions { value: false },
-    ))
-    .operation(offer(
-        "enable-personal",
-        "Turn on personalized suggestions",
-        &OskEffect::SetPersonalization { value: true },
-    ))
-    .operation(offer(
-        "disable-personal",
-        "Turn off personalized suggestions",
-        &OskEffect::SetPersonalization { value: false },
-    ))
-    .operation(OskEffect::ClearPersonal.bound())
-}
-
-fn emoji_row(preferences: &OskPreferences) -> LiveRow {
-    LiveRow::new("osk.keyboard.emoji", "osk.emoji", "Recent emoji").operation(asking(
-        "set-recents",
-        &OskEffect::SetEmojiRecents {
-            value: preferences.emoji_recents.clone(),
-        },
-    ))
+    vec![
+        LiveRow::typed::<OskLayout>(
+            "osk.keyboard.layout",
+            format!("Keyboard layout ({})", preferences.layout.to_uppercase()),
+        ),
+        LiveRow::typed::<OskSize>(
+            "osk.keyboard.size",
+            format!("Keyboard size ({})", preferences.size.name()),
+        ),
+        LiveRow::typed::<OskLanguage>(
+            "osk.keyboard.language",
+            format!("Typing language ({language_name})"),
+        ),
+        LiveRow::typed::<OskAutocorrect>("osk.keyboard.autocorrect", "Autocorrect"),
+        LiveRow::typed::<OskSuggestions>("osk.keyboard.suggestions", "Suggestions and privacy"),
+        LiveRow::typed::<OskEmoji>("osk.keyboard.emoji", "Recent emoji"),
+    ]
 }
 
 #[cfg(test)]

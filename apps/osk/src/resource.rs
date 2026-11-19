@@ -259,7 +259,6 @@ mod tests {
             "osk.keyboard.language",
             "osk.keyboard.autocorrect",
             "osk.keyboard.suggestions",
-            "osk.keyboard.emoji",
             "clear-personal",
             "set-layout",
             "English (QWERTY)",
@@ -303,12 +302,8 @@ mod tests {
         assert_eq!(prefs(&app).layout, "azerty");
         assert!(!prefs(&app).suggestions);
         assert!(
-            app.call_on(
-                "osk.keyboard.layout",
-                "set",
-                serde_json::json!({ "value": "dvorak" })
-            )
-            .is_err(),
+            app.call("set-layout", serde_json::json!({ "value": "dvorak" }))
+                .is_err(),
             "only a layout the keyboard carries"
         );
 
