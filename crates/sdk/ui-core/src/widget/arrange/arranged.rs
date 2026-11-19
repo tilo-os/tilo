@@ -702,6 +702,9 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         self.resolved = Resolved::of(theme).with_target(self.interaction.minimum_target());
         self.layout.items(self.parts.len());
         self.relaid = false;
+        // A part changed while the parts below build belongs to this build, not to the node the
+        // container had in the tree it was last laid out in.
+        self.node = None;
         let mut wrappers = Vec::with_capacity(self.parts.len());
         for index in 0..self.parts.len() {
             let Some(part) = self.parts.get_mut(index) else {
