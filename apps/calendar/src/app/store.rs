@@ -170,13 +170,6 @@ impl Store {
                     ToastKind::Info,
                 ));
             }
-            CalendarEffect::SetVisibility { id, visible } => {
-                self.set_visibility(&id, visible)?;
-                self.asks.push(Ask::Say(
-                    CalendarApp::visibility_status(visible),
-                    ToastKind::Info,
-                ));
-            }
         }
         Ok(Effected::done())
     }

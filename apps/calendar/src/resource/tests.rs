@@ -820,7 +820,6 @@ fn agents_reach_every_item_verb_and_the_calendars() {
         "set-color",
         "calendar.collection",
         "read-calendar",
-        "set-visibility",
     ] {
         assert!(surface.contains(needle), "missing {needle} in {surface}");
     }
