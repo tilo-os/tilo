@@ -91,16 +91,8 @@ fn words_style(theme: &Theme) -> TextStyle {
     theme.text(TextRole::Body).with_weight(TextWeight::Semibold)
 }
 
-const BAR_PAD_X: f64 = 12.0;
-const BAR_PAD_Y: f64 = 3.0;
-
-/// The card's size for `contents`: a card in the bar is the bar's pill.
-pub(super) fn size(
-    contents: &Contents<'_>,
-    text: &mut TextRenderer,
-    theme: &Theme,
-    in_bar: bool,
-) -> (f64, f64) {
+/// The card's size for `contents`.
+pub(super) fn size(contents: &Contents<'_>, text: &mut TextRenderer, theme: &Theme) -> (f64, f64) {
     let (words_w, _) = text.measure_style(contents.words, None, &words_style(theme));
     let keys_w = if contents.keys.is_empty() {
         0.0
@@ -108,27 +100,18 @@ pub(super) fn size(
         GAP + InputHint::measure_keycap_labels(contents.keys, text, theme)
     };
     let words = f64::from(words_w).ceil() + keys_w;
-    if in_bar {
-        return (
-            words + 2.0 * BAR_PAD_X,
-            InputHint::keycap_height(theme) + 2.0 * BAR_PAD_Y,
-        );
-    }
     (PAD + TILE_W + GAP + words + END, TILE_H + 2.0 * PAD)
 }
 
-/// The corner a card of `rect` is drawn with: the card, but never more than half its height
-/// (a card a line tall is a pill), nor than half its width.
+/// The corner a card of `rect` is drawn with: the card, but never more than half its height nor
+/// than half its width.
 pub(super) fn radius(rect: Rect) -> f64 {
     RADIUS.min(rect.width() / 2.0).min(rect.height() / 2.0)
 }
 
 /// The point a done card folds into its dot at: where the card's check stood.
-pub(super) fn dot_centre(rect: Rect, in_bar: bool) -> Point {
-    Point::new(
-        rect.x0 + if in_bar { radius(rect) } else { PAD + 30.0 },
-        rect.center().y,
-    )
+pub(super) fn dot_centre(rect: Rect) -> Point {
+    Point::new(rect.x0 + PAD + 30.0, rect.center().y)
 }
 
 /// One painted frame of a card.
@@ -139,8 +122,6 @@ pub(super) struct Frame<'a> {
     pub notch: Option<(PopoverSide, f64)>,
     pub look: Look,
     pub contents: Contents<'a>,
-    /// The card is in the bar beside its clock: a pill holding the words and keys alone.
-    pub in_bar: bool,
     /// Where the picture is in its loop.
     pub phase: f64,
     /// How much of the check is drawn (`0` while it teaches).
@@ -224,22 +205,22 @@ pub(super) fn paint(
         transform,
         &rect.inflate(80.0, 80.0),
     );
-    if !frame.in_bar {
-        scene.draw_blurred_rounded_rect(
-            transform,
-            rect.inflate(2.0, 2.0),
-            look.glow,
-            radius + 2.0,
-            crate::surface::std_dev_for(GLOW_BLUR),
-        );
-        crate::surface::shadow(
-            scene,
-            transform,
-            rect,
-            radius,
-            &theme.tokens.elevation.contact,
-        );
-    }
+    // The halo in the person's colour, and a contact shadow at the foot that holds the card off
+    // light grounds.
+    scene.draw_blurred_rounded_rect(
+        transform,
+        rect.inflate(2.0, 2.0),
+        look.glow,
+        radius + 2.0,
+        crate::surface::std_dev_for(GLOW_BLUR),
+    );
+    crate::surface::shadow(
+        scene,
+        transform,
+        rect,
+        radius,
+        &theme.tokens.elevation.contact,
+    );
     if let Some((spread, strength)) = frame.pulse {
         pulse(
             scene,
@@ -293,59 +274,55 @@ fn paint_contents(
 ) {
     let rect = frame.rect;
     let look = frame.look;
-    let x = if frame.in_bar {
-        rect.x0 + BAR_PAD_X
-    } else {
-        let tile = Rect::new(
-            rect.x0 + PAD,
-            rect.center().y - TILE_H / 2.0,
-            rect.x0 + PAD + TILE_W,
-            rect.center().y + TILE_H / 2.0,
-        );
-        let morph = stage(frame.check, 0.0, 0.55);
-        let disc = Rect::from_center_size(tile.center(), (TILE_H - 4.0, TILE_H - 4.0));
-        let shown_tile = Rect::new(
-            tile.x0 + (disc.x0 - tile.x0) * morph,
-            tile.y0 + (disc.y0 - tile.y0) * morph,
-            tile.x1 + (disc.x1 - tile.x1) * morph,
-            tile.y1 + (disc.y1 - tile.y1) * morph,
-        );
-        let radius = TILE_RADIUS + (disc.height() / 2.0 - TILE_RADIUS) * morph;
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "an opacity is drawn at f32 precision"
-        )]
-        let well = (0.13 + 0.87 * morph) as f32;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            look.ink.multiply_alpha(well),
-            None,
-            &RoundedRect::from_rect(shown_tile, radius),
-        );
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "an opacity is drawn at f32 precision"
-        )]
-        let picture = (1.0 - stage(frame.check, 0.0, 0.3)) as f32;
-        art::paint(
-            scene,
-            transform,
-            tile,
-            &frame.contents,
-            frame.phase,
-            Ink {
-                line: look.ink,
-                ground: look.fill,
-            },
-            picture,
-        );
-        let drawn = stage(frame.check, 0.3, 1.0);
-        if drawn > 0.0 {
-            check(scene, transform, disc, drawn, look.fill);
-        }
-        tile.x1 + GAP
-    };
+    let tile = Rect::new(
+        rect.x0 + PAD,
+        rect.center().y - TILE_H / 2.0,
+        rect.x0 + PAD + TILE_W,
+        rect.center().y + TILE_H / 2.0,
+    );
+    let morph = stage(frame.check, 0.0, 0.55);
+    let disc = Rect::from_center_size(tile.center(), (TILE_H - 4.0, TILE_H - 4.0));
+    let shown_tile = Rect::new(
+        tile.x0 + (disc.x0 - tile.x0) * morph,
+        tile.y0 + (disc.y0 - tile.y0) * morph,
+        tile.x1 + (disc.x1 - tile.x1) * morph,
+        tile.y1 + (disc.y1 - tile.y1) * morph,
+    );
+    let radius = TILE_RADIUS + (disc.height() / 2.0 - TILE_RADIUS) * morph;
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "an opacity is drawn at f32 precision"
+    )]
+    let well = (0.13 + 0.87 * morph) as f32;
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        look.ink.multiply_alpha(well),
+        None,
+        &RoundedRect::from_rect(shown_tile, radius),
+    );
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "an opacity is drawn at f32 precision"
+    )]
+    let picture = (1.0 - stage(frame.check, 0.0, 0.3)) as f32;
+    art::paint(
+        scene,
+        transform,
+        tile,
+        &frame.contents,
+        frame.phase,
+        Ink {
+            line: look.ink,
+            ground: look.fill,
+        },
+        picture,
+    );
+    let drawn = stage(frame.check, 0.3, 1.0);
+    if drawn > 0.0 {
+        check(scene, transform, disc, drawn, look.fill);
+    }
+    let x = tile.x1 + GAP;
     let style = words_style(theme);
     let (words_w, words_h) = text.measure_style(frame.contents.words, None, &style);
     text.draw_style(

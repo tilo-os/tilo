@@ -391,7 +391,6 @@ impl DesktopChrome {
                 self.handle.hint_places()
             },
             area,
-            hint_room: self.bar.hint_room(),
             search_keys,
             avatar: (!avatar.is_zero_area()).then_some(avatar),
             colour: self.bar.own_chip().map(|own| own.rgb),

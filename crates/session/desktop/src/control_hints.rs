@@ -1,6 +1,5 @@
 //! The desktop's control hints: how to open a window from search, move a window, resize one and
-//! move the view, each taught once at the moment it is useful — beside the control where it is
-//! done, or in the top bar beside its clock where no control on screen does it
+//! move the view, each taught once at the moment it is useful, beside where it is done
 //! ([`ui::control_hints`]).
 //! The set is data ([`HINTS`]); both hosts drive the same [`ControlHints`] with what their frame
 //! shows ([`HintFrame`]) and draw it above the windows, as they do the strip navigator. What the
@@ -12,9 +11,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use ui::control_hints::performed::{self, Performed};
-use ui::control_hints::{
-    Cue, Gesture, HintLayer, HintLook, HintPlace, HintSpec, Learned, Quiet, Stand,
-};
+use ui::control_hints::{Cue, Gesture, HintLayer, HintLook, HintPlace, HintSpec, Learned, Quiet};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::{Duration, Instant};
@@ -22,7 +19,7 @@ use ui::tokens::EffectiveMotion;
 use ui::widget::floating_surface::PopoverSide;
 use ui::widget::{HintPlaces, WindowEdge};
 use vello::Scene;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::{Affine, Point, Rect};
 
 /// What the desktop's hints are cued and taught by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,6 +86,9 @@ pub static HINTS: &[HintSpec<Signal>] = &[
 /// How long after the last typed key the person counts as typing.
 const TYPING_PAUSE: Duration = Duration::from_secs(3);
 
+/// How far below the bar the search hint is.
+const SEARCH_DROP: f64 = 24.0;
+
 /// How far inside the desktop's edge the edge the view moves toward lights.
 const EDGE_INSET: f64 = 3.0;
 
@@ -114,25 +114,6 @@ pub struct HintFrame {
     /// ([`ui::PointerPrecision::Coarse`]), as it does after a touch on the screen. Hints then name
     /// what a finger does.
     pub touch: bool,
-    /// The room the top bar keeps beside its clock ([`crate::topbar::TopBarChrome::hint_room`]):
-    /// where a hint for a gesture with no control on screen stands. `None` while the bar is
-    /// hidden, or keeps no room there: the hint does not show rather than stand over the bar's
-    /// own controls.
-    pub hint_room: Option<Rect>,
-}
-
-impl HintFrame {
-    /// The cards a hint keeps clear of, from what the strip's row knows: those over the
-    /// shell, and the corners a window's app stands its own activity cards in. An app's card and the
-    /// hint share one place rule, so neither covers the other.
-    #[must_use]
-    pub fn cards_over(row: &HintPlaces) -> Vec<Rect> {
-        row.over
-            .iter()
-            .chain(row.app_cards.iter())
-            .copied()
-            .collect()
-    }
 }
 
 /// What a host lends the desktop's control hints: the person's record as their settings hold it,
@@ -372,11 +353,9 @@ impl ControlHints {
     }
 }
 
-/// How hint `spec` shows over `frame` , if its anchor is on screen and no card over the
-/// shell covers it.
+/// How hint `spec` shows over `frame`, if its anchor is on screen.
 fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
     let area = frame.area;
-    let over = HintFrame::cards_over(&frame.row);
     if area.is_zero_area() {
         return None;
     }
@@ -392,124 +371,66 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
             .unwrap_or(spec.words),
     );
     let row = &frame.row;
-    let (stand, edge, keys) = match spec.gesture {
-        // Search opens from no control on screen: its hint stands in the bar beside the clock,
-        // saying the chord, pointing at nothing.
-        Gesture::OpenFromSearch => (
-            Stand::InBar {
-                band: frame.hint_room?,
-            },
-            None,
-            frame.search_keys.clone(),
-        ),
-        // The bar the person holds, lit along its underside where it meets the window's body while
-        // the hint shows: below the bar is the window's own content, and no hint stands over that.
-        Gesture::MoveWindow => {
-            let bar = row.hovered_bar.or(row.focused_bar)?;
+    let (anchor, side, edge, keys) = match spec.gesture {
+        // Search comes down at the top of the desktop, at its middle: the card is where search will
+        // open, pointing at nothing, since no control on screen opens it.
+        Gesture::OpenFromSearch => {
+            let at = Point::new(area.center().x, area.y0 + SEARCH_DROP);
             (
-                Stand::Beside {
-                    anchor: bar,
-                    side: PopoverSide::Below,
-                    points: true,
-                },
-                Some(vello::kurbo::Line::new((bar.x0, bar.y1), (bar.x1, bar.y1))),
-                Vec::new(),
+                Rect::from_points(at, at),
+                PopoverSide::Below,
+                None,
+                frame.search_keys.clone(),
             )
         }
+        Gesture::MoveWindow => (
+            row.hovered_bar.or(row.focused_bar)?,
+            PopoverSide::Below,
+            None,
+            Vec::new(),
+        ),
         Gesture::ResizeEdge => {
             let (line, edge) = row.focused_edge?;
+            let side = match edge {
+                WindowEdge::Leading => PopoverSide::Left,
+                WindowEdge::Trailing => PopoverSide::Right,
+            };
             (
-                Stand::Beside {
-                    anchor: Rect::from_points(line.p0, line.p1),
-                    side: match edge {
-                        WindowEdge::Leading => PopoverSide::Left,
-                        WindowEdge::Trailing => PopoverSide::Right,
-                    },
-                    points: true,
-                },
+                Rect::from_points(line.p0, line.p1),
+                side,
                 Some(line),
                 Vec::new(),
             )
         }
-        // What moves the view is no control on the shell either: the hint stands in the bar while
-        // the strip's own edge, the side the windows hide past, lights along its length.
         Gesture::PanView => {
-            let (x, inward) = match row.beyond {
-                (_, true) => (area.x1, -EDGE_INSET),
-                (true, false) => (area.x0, EDGE_INSET),
+            let y = area.center().y;
+            let (x, side, inward) = match row.beyond {
+                (_, true) => (area.x1, PopoverSide::Left, -EDGE_INSET),
+                (true, false) => (area.x0, PopoverSide::Right, EDGE_INSET),
                 (false, false) => return None,
             };
+            // The side the windows hide past lights along its length.
+            let edge = vello::kurbo::Line::new(
+                (x + inward, area.y0 + EDGE_INSET),
+                (x + inward, area.y1 - EDGE_INSET),
+            );
             (
-                Stand::InBar {
-                    band: frame.hint_room?,
-                },
-                Some(vello::kurbo::Line::new(
-                    (x + inward, area.y0 + EDGE_INSET),
-                    (x + inward, area.y1 - EDGE_INSET),
-                )),
+                Rect::from_points(Point::new(x, y), Point::new(x, y)),
+                side,
+                Some(edge),
                 Vec::new(),
             )
         }
     };
-    // A card over the shell hides the control a hint points at: nothing is taught where
-    // there is nothing to take, and the hint's card would stand over the card's content.
-    let covered = |rect: Rect| over.iter().any(|card| card.overlaps(rect));
-    if stand.anchor().is_some_and(covered)
-        || edge.is_some_and(|line| covered(Rect::from_points(line.p0, line.p1)))
-    {
-        return None;
-    }
-    // Moving a window is taught where the person holds it, never by a pill in the
-    // bar: a window whose drag spot leaves no room beside the card is taught on
-    // the handle itself, or not at all. A resize edge between two windows has no
-    // clear side at all, so its hint keeps the bar's room with the edge itself lit
-    // where the person drags it.
-    let bar = frame
-        .hint_room
-        .filter(|_| matches!(spec.gesture, Gesture::ResizeEdge));
-    // A window's drag bar has its own body under it and another window beside
-    // it, so it has no clear side at all: its hint stands on the handle it
-    // teaches, in the widest stretch of bar the drag takes there — between the
-    // tabs and the buttons — whole inside it, so it never covers the window's
-    // controls beside the title. The title grab is the spot the person points
-    // at; the room the drag takes around it is what the pill must fit. A drag
-    // spot that is not on screen has nothing to point at.
-    let at = match spec.gesture {
-        Gesture::MoveWindow => {
-            let bar = row.hovered_bar.or(row.focused_bar)?;
-            let room = row.bar_room.unwrap_or(bar);
-            let shown = room.intersect(frame.area);
-            (!shown.is_zero_area()).then_some(shown)
-        }
-        _ => None,
-    };
-    let clear = clear_of(frame, &over);
     Some(HintPlace {
-        stand,
+        anchor,
+        side,
         edge,
         words,
         keys,
+        points: spec.gesture != Gesture::OpenFromSearch,
         touch: frame.touch,
-        clear,
-        at,
-        bar,
     })
-}
-
-/// The content no hint may stand over: the cards over the shell, an app's activity cards
-/// in a window's corner, and every window's body — the one whose bar or edge a hint teaches
-/// included, since a hint below that bar would stand over the window itself.
-fn clear_of(frame: &HintFrame, over: &[Rect]) -> Vec<Rect> {
-    over.iter()
-        .copied()
-        .chain(
-            frame
-                .row
-                .windows_on_strip
-                .iter()
-                .map(|(_, content)| *content),
-        )
-        .collect()
 }
 
 #[cfg(test)]
@@ -525,18 +446,13 @@ mod tests {
                 beyond: (false, true),
                 hovered_bar: None,
                 focused_bar: Some(Rect::new(100.0, 48.0, 700.0, 84.0)),
-                bar_room: Some(Rect::new(100.0, 48.0, 700.0, 84.0)),
                 focused_edge: Some((
                     Line::new((700.0, 96.0), (700.0, 880.0)),
                     WindowEdge::Trailing,
                 )),
                 asking: false,
-                over: Vec::new(),
-                app_cards: Vec::new(),
-                windows_on_strip: Vec::new(),
             },
             area: Rect::new(0.0, 40.0, 1440.0, 900.0),
-            hint_room: Some(Rect::new(768.0, 0.0, 1040.0, 40.0)),
             search_keys: vec!["Ctrl".into(), "K".into()],
             presented: true,
             ..HintFrame::default()
@@ -570,96 +486,31 @@ mod tests {
             };
             let open = at(Gesture::OpenFromSearch);
             assert_eq!(
-                open.stand,
-                Stand::InBar {
-                    band: frame
-                        .hint_room
-                        .expect("the bar keeps room beside its clock")
-                },
-                "no control opens it: it stands in the bar beside the clock"
+                (open.anchor.center(), open.side, open.points),
+                (Point::new(720.0, 40.0 + SEARCH_DROP), PopoverSide::Below, false),
+                "under the bar, at the desktop's middle, pointing at nothing"
             );
+            assert_eq!(open.keys, vec!["Ctrl".to_owned(), "K".to_owned()]);
+            let moving = at(Gesture::MoveWindow);
             assert_eq!(
-                open.keys,
-                vec!["Ctrl".to_owned(), "K".to_owned()],
-                "it says the chord that opens search"
-            );
-            assert_eq!(
-                at(Gesture::MoveWindow).stand.anchor(),
-                Some(Rect::new(100.0, 48.0, 700.0, 84.0)),
+                (moving.anchor, moving.side),
+                (Rect::new(100.0, 48.0, 700.0, 84.0), PopoverSide::Below),
                 "at the window's title"
             );
-            assert_eq!(
-                at(Gesture::MoveWindow).edge,
-                Some(Line::new((100.0, 84.0), (700.0, 84.0))),
-                "the bar lights along its underside where the person holds it"
-            );
-            let line = Line::new((700.0, 96.0), (700.0, 880.0));
             let resize = at(Gesture::ResizeEdge);
+            assert_eq!(resize.side, PopoverSide::Right);
             assert_eq!(
-                (resize.stand, resize.edge),
-                (
-                    Stand::Beside {
-                        anchor: Rect::from_points(line.p0, line.p1),
-                        side: PopoverSide::Right,
-                        points: true,
-                    },
-                    Some(line),
-                ),
-                "beside the edge it takes, which it lights"
+                resize.edge,
+                Some(Line::new((700.0, 96.0), (700.0, 880.0))),
+                "the edge it takes is lit"
             );
-            // The view moves from no control on the shell either: the bar, and the edge the windows
-            // hide past lights.
-            for (by, at_x) in [
-                ((false, true), 1440.0 - EDGE_INSET),
-                ((true, false), EDGE_INSET),
-            ] {
-                let frame = HintFrame {
-                    row: HintPlaces {
-                        beyond: by,
-                        ..frame.row.clone()
-                    },
-                    ..frame.clone()
-                };
-                let spec = HINTS
-                    .iter()
-                    .find(|s| s.gesture == Gesture::PanView)
-                    .unwrap();
-                let hint = place(spec, &frame).expect("windows hide past an edge");
-                assert_eq!(
-                    hint.stand,
-                    Stand::InBar {
-                        band: frame
-                            .hint_room
-                            .expect("the bar keeps room beside its clock")
-                    }
-                );
-                assert_eq!(
-                    hint.edge.map(|edge| edge.p0.x),
-                    Some(at_x),
-                    "the edge the windows hide past"
-                );
-            }
-        }
-
-        phase a_bar_with_no_room_beside_its_clock_teaches_no_shortcut;
-        // Search and moving the view are taught in the bar, beside its clock: a bar that keeps no room
-        // there — hidden behind a window the person filled, or crowded by its own controls — teaches
-        // nothing, rather than over the clock or a control beside it.
-        {
-            let mut frame = frame();
-            frame.hint_room = None;
-            for gesture in [Gesture::OpenFromSearch, Gesture::PanView] {
-                let spec = HINTS.iter().find(|s| s.gesture == gesture).unwrap();
-                assert!(place(spec, &frame).is_none(), "{gesture:?}");
-            }
-            // The hints anchored to a window's own controls are not the bar's to keep: they stand
-            // beside their spot, and only fall back to the bar's room when no side of it is clear.
-            for gesture in [Gesture::MoveWindow, Gesture::ResizeEdge] {
-                let spec = HINTS.iter().find(|s| s.gesture == gesture).unwrap();
-                let hint = place(spec, &frame).unwrap_or_else(|| panic!("{gesture:?}"));
-                assert!(hint.stand.anchor().is_some(), "{gesture:?}");
-                assert_eq!(hint.bar, None, "{gesture:?} has no room to fall back to");
-            }
+            let pan = at(Gesture::PanView);
+            assert_eq!(
+                (pan.anchor.center().x, pan.side),
+                (1440.0, PopoverSide::Left),
+                "at the edge the windows hide past, toward them"
+            );
+            assert_eq!(pan.edge.map(|edge| edge.p0.x), Some(1440.0 - EDGE_INSET));
         }
 
         phase moving_the_view_is_told_in_the_input_the_person_uses;
@@ -700,95 +551,12 @@ mod tests {
         {
             let mut frame = frame();
             frame.row.focused_bar = None;
-            frame.row.bar_room = None;
             frame.row.focused_edge = None;
             frame.row.beyond = (false, false);
             for gesture in [Gesture::MoveWindow, Gesture::ResizeEdge, Gesture::PanView] {
                 let spec = HINTS.iter().find(|s| s.gesture == gesture).unwrap();
                 assert!(place(spec, &frame).is_none(), "{gesture:?}");
             }
-        }
-
-        phase a_card_over_the_handle_keeps_the_hint_away;
-        // A card over the shell is another surface: a hint points at a control the card does
-        // not cover, and its own card keeps clear of the card's content.
-        {
-            let mut frame = frame();
-            // A conversation card over the strip's edge and the focused window's bar: the handle is
-            // not there to take.
-            frame.row.over = vec![Rect::new(640.0, 40.0, 900.0, 620.0)];
-            for gesture in [Gesture::ResizeEdge, Gesture::MoveWindow] {
-                let spec = HINTS.iter().find(|s| s.gesture == gesture).unwrap();
-                assert!(place(spec, &frame).is_none(), "{gesture:?} under the card");
-            }
-            // The hint pointing at nothing on the shell still shows: the card keeps it, not the search.
-            let open = HINTS
-                .iter()
-                .find(|s| s.gesture == Gesture::OpenFromSearch)
-                .unwrap();
-            assert!(place(open, &frame).is_some());
-            // Clear of the handle: the hint says which cards it keeps off.
-            let clear = HintFrame {
-                row: HintPlaces {
-                    over: vec![Rect::new(40.0, 600.0, 400.0, 880.0)],
-                    ..frame.row.clone()
-                },
-                ..frame
-            };
-            let resize = HINTS
-                .iter()
-                .find(|s| s.gesture == Gesture::ResizeEdge)
-                .unwrap();
-            let hint = place(resize, &clear).expect("its handle is on screen");
-            assert_eq!(hint.clear, clear.row.over, "the cards it keeps clear of");
-        }
-
-        phase a_hint_at_a_window_covers_no_windows_content_its_own_included;
-        // The move and resize hints cover no window's content, the one whose bar or edge they teach
-        // included (the resize hint hid the label of the theme Settings showed chosen, and the move
-        // hint hung into the window it held): both keep clear of every window's body. Moving a window
-        // is taught at its handle or not at all, never from the bar; a resize edge between two windows
-        // has no clear side, so it stands in the bar's room with the edge lit.
-        {
-            let mut frame = frame();
-            let left = (
-                Rect::new(32.0, 40.0, 700.0, 888.0),
-                Rect::new(32.0, 80.0, 700.0, 888.0),
-            );
-            let right = (
-                Rect::new(720.0, 40.0, 1408.0, 888.0),
-                Rect::new(720.0, 80.0, 1408.0, 888.0),
-            );
-            frame.row.windows_on_strip = vec![left, right];
-            let spec = |gesture| HINTS.iter().find(|s| s.gesture == gesture).unwrap();
-            for gesture in [Gesture::ResizeEdge, Gesture::MoveWindow] {
-                let hint = place(spec(gesture), &frame).expect("its spot is on screen");
-                assert!(
-                    hint.clear.contains(&left.1) && hint.clear.contains(&right.1),
-                    "{gesture:?} keeps clear of both windows: {:?}",
-                    hint.clear
-                );
-                assert!(
-                    hint.edge.is_some(),
-                    "{gesture:?} lights the spot where the gesture is done"
-                );
-            }
-            let resize = place(spec(Gesture::ResizeEdge), &frame).unwrap();
-            assert_eq!(
-                resize.bar, frame.hint_room,
-                "a resize edge stands in the bar's room where no side of it is clear"
-            );
-            assert_eq!(resize.at, None, "a resize edge points from beside its line");
-            let moving = place(spec(Gesture::MoveWindow), &frame).unwrap();
-            assert_eq!(
-                moving.bar, None,
-                "moving a window is never taught from the bar"
-            );
-            assert_eq!(
-                moving.at,
-                Some(Rect::new(100.0, 48.0, 700.0, 84.0)),
-                "it stands on the drag handle it teaches"
-            );
         }
 
         phase the_wait_for_search_counts_from_when_the_desktop_is_seen;
