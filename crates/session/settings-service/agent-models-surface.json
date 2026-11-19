@@ -14,11 +14,17 @@
             {
               "name": "provider",
               "required": true,
+              "schema": {
+                "type": "string"
+              },
               "type": "text"
             },
             {
               "name": "model",
               "required": true,
+              "schema": {
+                "type": "string"
+              },
               "type": "text"
             }
           ]
