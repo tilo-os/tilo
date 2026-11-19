@@ -136,6 +136,58 @@ pub fn insets(top: f32, right: f32, bottom: f32, left: f32) -> taffy::Rect<Lengt
     }
 }
 
+/// The width [`natural_shape`] reads its height from while no width is known yet: a reading
+/// column's.
+const NATURAL_WIDTH: f32 = 640.0;
+
+/// The size of a view that takes the width it is given and a height from `aspect` (width over
+/// height) where nothing else gives it one: a player or a page in a column that grows with what
+/// it holds, which would otherwise stand zero tall there and paint over what follows.
+#[must_use]
+pub fn natural_shape(
+    known: taffy::Size<Option<f32>>,
+    available: taffy::Size<taffy::AvailableSpace>,
+    aspect: f32,
+) -> taffy::Size<f32> {
+    let width = known.width.or(match available.width {
+        taffy::AvailableSpace::Definite(width) => Some(width),
+        taffy::AvailableSpace::MinContent | taffy::AvailableSpace::MaxContent => None,
+    });
+    // A pass that sizes the parent by its content asks before any width is known: the view asks
+    // for no width of its own there, and the height of a typical column's width.
+    let across = width.unwrap_or(NATURAL_WIDTH);
+    let height = known
+        .height
+        .unwrap_or(if aspect > 0.0 { across / aspect } else { 0.0 });
+    taffy::Size {
+        width: width.unwrap_or(0.0),
+        height,
+    }
+}
+
+/// The style of a view that fills what its parent gives it and, where its parent gives it no
+/// height, stands at the size its `measure` names (a player's or a page's [`natural_shape`]).
+///
+/// It is as wide as its parent, and its height is its own until a parent stretches, grows or
+/// shrinks it: a percentage height would resolve against a parent that grows with its content,
+/// and stand taller than that parent grew for it.
+#[must_use]
+pub fn natural_filling() -> taffy::Style {
+    taffy::Style {
+        size: taffy::Size {
+            width: taffy::Dimension::percent(1.0),
+            height: taffy::Dimension::auto(),
+        },
+        min_size: taffy::Size {
+            width: taffy::Dimension::length(0.0),
+            height: taffy::Dimension::length(0.0),
+        },
+        flex_grow: 1.0,
+        flex_shrink: 1.0,
+        ..Default::default()
+    }
+}
+
 /// `style` as a flex item that fills its share of what its parent's main axis leaves:
 /// grown by `weight` from a zero basis, and measured at that share rather than at its content's
 /// min-content size.

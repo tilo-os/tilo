@@ -4,7 +4,7 @@ use crate::num::f32_of_f64;
 use crate::widget::{AppModel, ModelPath};
 use std::sync::Arc;
 
-use taffy::{NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Blob, Fill, ImageData as PenikoImage};
@@ -898,12 +898,18 @@ impl Widget for WebView {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.field_line_height = Some(ControlSize::Regular.height(theme));
-        let style = Style {
-            size: Size::from_percent(1.0, 1.0),
-            flex_grow: 1.0,
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
+        taffy.widget_leaf(crate::widget::layout::natural_filling(), node_map, self)
+    }
+
+    /// Where nothing gives it a height (a column that grows with what it holds), the page stands
+    /// at a laptop screen's 16:10 across the width it has, so the column grows to hold it.
+    fn measure(
+        &mut self,
+        known: taffy::Size<Option<f32>>,
+        available: taffy::Size<taffy::AvailableSpace>,
+        _text_renderer: &mut TextRenderer,
+    ) -> taffy::Size<f32> {
+        crate::widget::layout::natural_shape(known, available, 16.0 / 10.0)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -1853,20 +1859,35 @@ mod tests {
 
     pub(super) fn laid_out(engine: SharedEngine) -> (WebView, TaffyTree<()>, NodeId) {
         let mut w = WebView::new(engine);
+        let (tree, node) = place_in_column(&mut w);
+        (w, tree, node)
+    }
+
+    /// Lay `view` out filling the 400 x 300 a window's column gives it.
+    fn place_in_column(view: &mut WebView) -> (TaffyTree<()>, NodeId) {
         let mut tree = TaffyTree::<()>::new();
         let mut node_map = std::collections::HashMap::new();
-        let theme = Theme::dark();
-        let node = w.build_layout(&mut tree, &theme, &mut node_map);
+        let node = view.build_layout(&mut tree, &Theme::dark(), &mut node_map);
+        let column = tree
+            .new_with_children(
+                taffy::Style {
+                    flex_direction: taffy::FlexDirection::Column,
+                    size: taffy::Size::from_lengths(400.0, 300.0),
+                    ..Default::default()
+                },
+                &[node],
+            )
+            .unwrap();
         tree.compute_layout(
-            node,
+            column,
             taffy::Size {
                 width: taffy::AvailableSpace::Definite(400.0),
                 height: taffy::AvailableSpace::Definite(300.0),
             },
         )
         .unwrap();
-        w.apply_layout(&tree, node, Point::ZERO);
-        (w, tree, node)
+        view.apply_layout(&tree, node, Point::ZERO);
+        (tree, node)
     }
 
     tilo_test_env::scenario! {
@@ -1982,19 +2003,7 @@ mod tests {
             {
                 let engine = TestEngine::new();
                 let mut view = WebView::new(engine.clone()).with_scale_factor(2.0);
-                let mut taffy = TaffyTree::new();
-                let mut node_map = std::collections::HashMap::new();
-                let node = view.build_layout(&mut taffy, &Theme::default(), &mut node_map);
-                taffy
-                    .compute_layout(
-                        node,
-                        taffy::Size {
-                            width: taffy::AvailableSpace::Definite(400.0),
-                            height: taffy::AvailableSpace::Definite(300.0),
-                        },
-                    )
-                    .unwrap();
-                view.apply_layout(&taffy, node, Point::ORIGIN);
+                place_in_column(&mut view);
                 let before_mount = engine.commands().len();
                 crate::widget::mount_native_views(
                     &mut view,
@@ -2033,19 +2042,7 @@ mod tests {
             {
                 let engine = TestEngine::new();
                 let mut view = WebView::new(engine.clone()).with_scale_factor(2.0);
-                let mut taffy = TaffyTree::new();
-                let mut node_map = std::collections::HashMap::new();
-                let node = view.build_layout(&mut taffy, &Theme::default(), &mut node_map);
-                taffy
-                    .compute_layout(
-                        node,
-                        taffy::Size {
-                            width: taffy::AvailableSpace::Definite(400.0),
-                            height: taffy::AvailableSpace::Definite(300.0),
-                        },
-                    )
-                    .unwrap();
-                view.apply_layout(&taffy, node, Point::ORIGIN);
+                place_in_column(&mut view);
                 crate::widget::mount_native_views(
                     &mut view,
                     &crate::widget::NativeViewHost::headless(

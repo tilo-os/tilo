@@ -393,6 +393,37 @@ impl PageSidebar {
         std::mem::take(&mut self.pending)
     }
 
+    /// The width a rail stands at where its container leaves it the choice: thumbnails a glance
+    /// reads, beside a viewer that takes the rest.
+    pub(crate) const NATURAL_WIDTH: f64 = 192.0;
+
+    /// Take the geometry from `theme` for the next layout, before the frame that draws it.
+    pub(crate) fn adopt_theme(&mut self, theme: &Theme) {
+        self.m = RailMetrics::from_theme(theme);
+    }
+
+    /// How tall the rail stands at `width` to show `count` pages with nothing to scroll: its
+    /// header, the pages and the add button, as [`Self::begin_frame`] lays them out.
+    pub(crate) fn natural_height(&self, width: f64, count: usize) -> f64 {
+        let header = if self.draw_panel {
+            self.m.header_h
+        } else {
+            0.0
+        };
+        let add = if self.show_add {
+            self.m.add_h + 2.0 * self.m.add_margin
+        } else {
+            0.0
+        };
+        let thumb_w = (width - 2.0 * self.m.pad - self.m.num_gutter - SCROLLBAR_W).max(1.0);
+        let pages = if count == 0 {
+            0.0
+        } else {
+            f64_of_usize(count) * thumb_w * self.aspect + (f64_of_usize(count) - 1.0) * self.m.gap
+        };
+        header + 2.0 * self.m.pad + pages + add
+    }
+
     /// [`Self::begin_frame`] with the geometry read from `theme`
     /// ([`RailMetrics::from_theme`]) rather than the restated scale — the
     /// variant for a host whose layout pass has a `Theme` in hand.

@@ -191,7 +191,20 @@ impl crate::widget::Widget for DeclaredVideo {
         theme: &crate::theme::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
     ) -> taffy::NodeId {
-        self.player.build_layout(taffy, theme, node_map)
+        // The player's own leaf, measured as the player is: a view's player is the leaf the
+        // layout asks for its size, so a column that grows with what it holds grows to hold it.
+        let node = self.player.build_layout(taffy, theme, node_map);
+        node_map.insert(node, std::ptr::from_mut::<dyn crate::widget::Widget>(self));
+        node
+    }
+
+    fn measure(
+        &mut self,
+        known: taffy::Size<Option<f32>>,
+        available: taffy::Size<taffy::AvailableSpace>,
+        text_renderer: &mut crate::text_render::TextRenderer,
+    ) -> taffy::Size<f32> {
+        crate::widget::Widget::measure(&mut self.player, known, available, text_renderer)
     }
 
     fn apply_layout(

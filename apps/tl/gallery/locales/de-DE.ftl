@@ -137,6 +137,19 @@ d-uuewf2cr = Angeheftet
 
 d-ciwf3kva = Titel
 
+d-5tfi5mod = Art
+
+d-uuewf2cr-filter-kind = Art
+
+d-iidmszju = Art
+    .doc = Was eine angeheftete App ist, und das Bild, das sie auf einem Dock zeigt.
+
+d-7o3hv26g = Notizen
+
+d-7koxgqe5 = Aufgaben
+
+d-ptzwi3be = Mail
+
 d-shklew6c = Dringlichkeit
     .doc = Wie bald ein Bericht fällig ist, als Fall, den der Bericht hält.
 
