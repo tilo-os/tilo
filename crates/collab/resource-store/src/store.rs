@@ -39,27 +39,29 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use automerge::transaction::Transactable as _;
+use automerge::transaction::{CommitOptions, Transactable as _};
 use automerge::{
     Automerge, Change as AmChange, ChangeHash, ObjId, ObjType, PatchLog, Prop, ROOT, ReadDoc,
     ScalarValue, Value as AmValue,
 };
 
+use crate::admit::{Admit, Proposal, Received, Refusal, Stamp};
 use crate::index::{Change, Commit, CommitHook as _, Index, Indexed};
 use crate::query::{Filter, Page, Query};
+use crate::schema::Schema;
 use crate::value::{Cell, Value};
 
 /// The most resources one document holds before the next one starts.
 pub const DOCUMENT_LIMIT: usize = 4096;
 
 const READERS: &str = "w";
-const HELD: &str = "r";
+/// What a resource's key at the document's root starts with: each resource is a key of the root
+/// of its own, so two devices starting one document both keep what they wrote.
+const HELD: &str = "r:";
 const KIND: &str = "k";
 const PARENT: &str = "p";
 const ORDER: &str = "o";
 const FIELDS: &str = "f";
-/// The root of what a content document holds.
-const CONTENT: &str = "c";
 
 /// The name a document id gives the reader set `readers`: `*` for the whole group, a digest of
 /// any other set, so a long list of people is in no id.
@@ -148,6 +150,13 @@ pub struct Store {
     /// Kinds an open query watches, by its watch.
     watches: BTreeMap<u64, String>,
     changed: BTreeSet<u64>,
+    /// The resource types every app declared: what a peer's change is checked against.
+    schema: Schema,
+    /// Per document, the changes it refused: kept beside it, never applied, and refusing
+    /// every change built on them.
+    refused: HashMap<String, BTreeSet<ChangeHash>>,
+    /// Per document, changes received before the ones they are built on.
+    waiting: HashMap<String, Vec<Received>>,
 }
 
 impl Store {
@@ -297,6 +306,7 @@ impl Store {
         kind: &str,
         id: &str,
         resource: Resource,
+        stamp: &Stamp,
     ) -> Result<Vec<Written>, StoreError> {
         let mut written = Vec::with_capacity(1);
         let held = self.index.get(kind, id).map(|held| held.doc.clone());
@@ -304,8 +314,8 @@ impl Store {
             Some(doc) if self.index.readers(&doc) == Some(resource.readers.as_str()) => doc,
             Some(doc) => {
                 let earlier = self.index.readers(&doc).unwrap_or_default().to_owned();
-                written.push(self.remove(kind, id)?);
-                written.extend(self.move_content(kind, id, &earlier, &resource.readers)?);
+                written.push(self.remove(kind, id, stamp)?);
+                written.extend(self.move_content(kind, id, &earlier, &resource.readers, stamp)?);
                 self.place(kind, resource.parent.as_deref(), &resource.readers)
             }
             None => self.place(kind, resource.parent.as_deref(), &resource.readers),
@@ -315,10 +325,9 @@ impl Store {
         if text_at(&tx, &ROOT, READERS).as_deref() != Some(resource.readers.as_str()) {
             tx.put(ROOT, READERS, resource.readers.as_str())?;
         }
-        let held = map_in(&mut tx, &ROOT, HELD)?;
         // Field by field, so two devices changing different fields of one resource both keep
         // their change.
-        let map = map_in(&mut tx, &held, id)?;
+        let map = map_in(&mut tx, &ROOT, &held_key(id))?;
         if text_at(&tx, &map, KIND).as_deref() != Some(kind) {
             tx.put(&map, KIND, kind)?;
         }
@@ -365,7 +374,7 @@ impl Store {
                 }
             }
         }
-        tx.commit();
+        tx.commit_with(CommitOptions::default().with_message(stamp.message()));
         let change = doc
             .get_last_local_change()
             .ok_or(StoreError::Document(automerge::AutomergeError::Fail))?;
@@ -395,7 +404,7 @@ impl Store {
     ///
     /// # Errors
     /// When there is no such resource, or its document refuses the change.
-    pub fn remove(&mut self, kind: &str, id: &str) -> Result<Written, StoreError> {
+    pub fn remove(&mut self, kind: &str, id: &str, stamp: &Stamp) -> Result<Written, StoreError> {
         let missing = || StoreError::Missing {
             kind: kind.to_owned(),
             id: id.to_owned(),
@@ -404,10 +413,10 @@ impl Store {
         let readers = self.index.readers(&doc_id).unwrap_or_default().to_owned();
         let doc = self.doc(&doc_id)?;
         let mut tx = doc.transaction();
-        if let Some((AmValue::Object(ObjType::Map), held)) = tx.get(ROOT, HELD)? {
-            tx.delete(&held, id)?;
+        if tx.get(ROOT, held_key(id))?.is_some() {
+            tx.delete(ROOT, held_key(id))?;
         }
-        tx.commit();
+        tx.commit_with(CommitOptions::default().with_message(stamp.message()));
         let change = doc
             .get_last_local_change()
             .ok_or(StoreError::Document(automerge::AutomergeError::Fail))?;
@@ -468,10 +477,7 @@ impl Store {
             return Ok(None);
         };
         let doc: &Automerge = doc;
-        Ok(match doc.get(ROOT, CONTENT)? {
-            Some((AmValue::Object(ObjType::Map), root)) => Some((doc, root)),
-            _ => None,
-        })
+        Ok((doc.length(ROOT) > 0).then_some((doc, ROOT)))
     }
 
     /// Edits the content of the resource `id` of `kind` in one change: `edit` is given the map
@@ -484,6 +490,7 @@ impl Store {
         &mut self,
         kind: &str,
         id: &str,
+        stamp: &Stamp,
         edit: impl FnOnce(
             &mut automerge::transaction::Transaction<'_>,
             &ObjId,
@@ -493,7 +500,7 @@ impl Store {
         let doc = self.doc(&doc_id)?;
         let before = doc.get_heads();
         let mut tx = doc.transaction();
-        let answer = map_in(&mut tx, &ROOT, CONTENT).and_then(|root| edit(&mut tx, &root));
+        let answer = edit(&mut tx, &ROOT);
         let answer = match answer {
             Ok(answer) => answer,
             Err(error) => {
@@ -501,7 +508,7 @@ impl Store {
                 return Err(error.into());
             }
         };
-        tx.commit();
+        tx.commit_with(CommitOptions::default().with_message(stamp.message()));
         if doc.get_heads() == before {
             return Ok((answer, None));
         }
@@ -534,27 +541,30 @@ impl Store {
         id: &str,
         from: &str,
         to: &str,
+        stamp: &Stamp,
     ) -> Result<Vec<Written>, StoreError> {
         let old_id = content_id(from, kind, id);
         let Some(old) = self.existing(&old_id)? else {
             return Ok(Vec::new());
         };
-        let Some((AmValue::Object(ObjType::Map), old_root)) = old.get(ROOT, CONTENT)? else {
+        if old.length(ROOT) == 0 {
             return Ok(Vec::new());
-        };
+        }
         let copy = old.fork();
         let mut tx = old.transaction();
-        tx.delete(ROOT, CONTENT)?;
-        tx.commit();
+        let keys: Vec<String> = tx.keys(ROOT).collect();
+        for key in keys {
+            tx.delete(ROOT, key.as_str())?;
+        }
+        tx.commit_with(CommitOptions::default().with_message(stamp.message()));
         let emptied = old
             .get_last_local_change()
             .ok_or(StoreError::Document(automerge::AutomergeError::Fail))?;
         let new_id = content_id(to, kind, id);
         let new = self.doc(&new_id)?;
         let mut tx = new.transaction();
-        let root = map_in(&mut tx, &ROOT, CONTENT)?;
-        copy_object(&copy, &old_root, &mut tx, &root)?;
-        tx.commit();
+        copy_object(&copy, &ROOT, &mut tx, &ROOT)?;
+        tx.commit_with(CommitOptions::default().with_message(stamp.message()));
         let copied = new
             .get_last_local_change()
             .ok_or(StoreError::Document(automerge::AutomergeError::Fail))?;
@@ -576,40 +586,148 @@ impl Store {
     /// the resources they touched.
     ///
     /// # Errors
-    /// When the document refuses the changes.
+    /// When the document cannot be read, or refuses a change admitted to it.
     pub fn receive(
         &mut self,
         doc_id: &str,
         readers: &str,
-        changes: Vec<AmChange>,
-    ) -> Result<(), StoreError> {
+        changes: Vec<Received>,
+        admit: &dyn Admit,
+    ) -> Result<Vec<(ChangeHash, Refusal)>, StoreError> {
+        let mut pending: Vec<Received> = self.waiting.remove(doc_id).unwrap_or_default();
+        pending.extend(changes);
+        let mut refusals = Vec::new();
+        // Each pass takes every change whose earlier changes are here; it ends when one takes
+        // none.
+        loop {
+            let mut waiting = Vec::new();
+            let mut took = false;
+            for received in pending {
+                let hash = received.change.hash();
+                let refused = self.refused.entry(doc_id.to_owned()).or_default();
+                if refused.contains(&hash) {
+                    continue;
+                }
+                if received
+                    .change
+                    .deps()
+                    .iter()
+                    .any(|dep| refused.contains(dep))
+                {
+                    refused.insert(hash);
+                    refusals.push((hash, Refusal::OnRefused));
+                    took = true;
+                    continue;
+                }
+                let doc = self.doc(doc_id)?;
+                if doc.get_change_by_hash(&hash).is_some() {
+                    continue;
+                }
+                if received
+                    .change
+                    .deps()
+                    .iter()
+                    .any(|dep| doc.get_change_by_hash(dep).is_none())
+                {
+                    waiting.push(received);
+                    continue;
+                }
+                took = true;
+                if let Err(refusal) = self.judge(doc_id, readers, &received, admit) {
+                    self.refused
+                        .entry(doc_id.to_owned())
+                        .or_default()
+                        .insert(hash);
+                    refusals.push((hash, refusal));
+                    continue;
+                }
+                self.apply(doc_id, readers, received.change)?;
+            }
+            pending = waiting;
+            if !took || pending.is_empty() {
+                break;
+            }
+        }
+        if !pending.is_empty() {
+            self.waiting.insert(doc_id.to_owned(), pending);
+        }
+        Ok(refusals)
+    }
+
+    /// The changes `doc` refused: kept beside it, without effect.
+    pub fn refused(&self, doc: &str) -> impl Iterator<Item = &ChangeHash> {
+        self.refused.get(doc).into_iter().flatten()
+    }
+
+    /// Takes the types `schema` declares into those a peer's change is checked against.
+    pub fn declare(&mut self, schema: Schema) {
+        for ty in schema.types {
+            self.schema.types.retain(|held| held.name != ty.name);
+            self.schema.types.push(ty);
+        }
+    }
+
+    /// Whether `received` may take effect in `doc_id` as it stands.
+    fn judge(
+        &mut self,
+        doc_id: &str,
+        readers: &str,
+        received: &Received,
+        admit: &dyn Admit,
+    ) -> Result<(), Refusal> {
+        let doc = self.doc(doc_id).map_err(|_| Refusal::Unplaced)?;
+        let (touched, writes) =
+            crate::admit::touched(doc, doc_id, &received.change).ok_or(Refusal::Unplaced)?;
+        // A document's reader set is the one it was placed by, whoever writes it.
+        if touched
+            .readers
+            .as_ref()
+            .is_some_and(|written| written != readers)
+        {
+            return Err(Refusal::Unplaced);
+        }
+        let index = &self.index;
+        crate::admit::declared(&self.schema, &touched, &writes, &|id| {
+            index.kind_anywhere(id)
+        })
+        .map_err(Refusal::Undeclared)?;
+        let stamp = Stamp::of(&received.change);
+        let admitted = admit.admit(&Proposal {
+            doc: doc_id,
+            readers,
+            author: &received.author,
+            stamp: stamp.as_ref(),
+            touched: &touched,
+        });
+        if admitted {
+            Ok(())
+        } else {
+            Err(Refusal::NotPermitted)
+        }
+    }
+
+    /// Applies `change`, admitted, to `doc_id`, and indexes the resources it touched.
+    fn apply(&mut self, doc_id: &str, readers: &str, change: AmChange) -> Result<(), StoreError> {
         let doc = self.doc(doc_id)?;
         let mut log = PatchLog::active();
-        doc.apply_changes_log_patches(changes, &mut log)?;
+        doc.apply_changes_log_patches(vec![change], &mut log)?;
         let patches = doc.make_patches(&mut log);
         let mut touched = BTreeSet::new();
-        let mut every = false;
         for patch in &patches {
-            let mut keys = patch.path.iter().map(|(_, prop)| match prop {
-                Prop::Map(key) => Some(key.as_str()),
-                Prop::Seq(_) => None,
-            });
-            let own = match &patch.action {
-                automerge::PatchAction::PutMap { key, .. }
-                | automerge::PatchAction::DeleteMap { key } => Some(key.as_str()),
+            let top = match (patch.path.first(), &patch.action) {
+                (Some((_, Prop::Map(key))), _)
+                | (
+                    None,
+                    automerge::PatchAction::PutMap { key, .. }
+                    | automerge::PatchAction::DeleteMap { key },
+                ) => Some(key.as_str()),
                 _ => None,
             };
-            let top = keys.next().flatten();
-            // The document's resources arrived whole.
-            every |= patch.path.is_empty() && own == Some(HELD);
-            let id = keys.next().flatten().or_else(|| top.and(own));
-            if top == Some(HELD)
-                && let Some(id) = id
-            {
+            if let Some(id) = top.and_then(|key| key.strip_prefix(HELD)) {
                 touched.insert(id.to_owned());
             }
         }
-        self.index_resources(doc_id, readers, (!every).then_some(touched))
+        self.index_resources(doc_id, readers, Some(touched))
     }
 
     /// Reads from `doc` the resources `only` names (all of them when `None`) and commits what
@@ -621,26 +739,22 @@ impl Store {
         only: Option<BTreeSet<String>>,
     ) -> Result<(), StoreError> {
         let doc = self.doc(doc_id)?;
-        let held = match doc.get(ROOT, HELD)? {
-            Some((AmValue::Object(ObjType::Map), held)) => Some(held),
-            _ => None,
-        };
         let ids: BTreeSet<String> = match only {
             Some(ids) => ids,
-            None => held
-                .as_ref()
-                .map(|held| doc.keys(held).collect())
-                .unwrap_or_default(),
+            None => doc
+                .keys(ROOT)
+                .filter_map(|key| key.strip_prefix(HELD).map(str::to_owned))
+                .collect(),
         };
         let reads: Vec<(String, Option<(String, Resource)>)> = ids
             .into_iter()
             .map(|id| {
-                let found = held.as_ref().and_then(|held| read(doc, held, &id));
+                let found = read(doc, &id);
                 (id, found)
             })
             .collect();
         let heads = doc.get_heads();
-        let count = held.as_ref().map_or(0, |held| doc.length(held));
+        let count = doc.keys(ROOT).filter(|key| key.starts_with(HELD)).count();
         let mut changes = Vec::with_capacity(reads.len());
         for (id, found) in reads {
             match found {
@@ -867,8 +981,13 @@ fn text_at(doc: &impl ReadDoc, obj: &ObjId, key: &str) -> Option<String> {
 }
 
 /// The resource `id` of the document `doc` as the store wrote it: its kind and the resource.
-fn read(doc: &Automerge, held: &ObjId, id: &str) -> Option<(String, Resource)> {
-    let (AmValue::Object(ObjType::Map), map) = doc.get(held, id).ok()?? else {
+/// The key of the resource `id` at its document's root.
+fn held_key(id: &str) -> String {
+    format!("{HELD}{id}")
+}
+
+fn read(doc: &Automerge, id: &str) -> Option<(String, Resource)> {
+    let (AmValue::Object(ObjType::Map), map) = doc.get(ROOT, held_key(id)).ok()?? else {
         return None;
     };
     let kind = text_at(doc, &map, KIND)?;

@@ -23,6 +23,7 @@
 //! the kind's size per field it indexes, and a page costs what it shows plus what its filters
 //! skip, so both stay flat as a kind grows.
 
+pub mod admit;
 mod index;
 mod query;
 mod ranked;
@@ -31,8 +32,9 @@ mod snapshot;
 pub mod store;
 mod value;
 
+pub use admit::{Admit, Proposal, Received, Refusal, Stamp, Touch, Touched};
 pub use index::{Change, Commit, CommitHook, Index, Indexed, PARENT};
 pub use query::{Absent, Cursor, Filter, Order, Page, Query, Sort};
-pub use schema::{Field, FieldKind, Schema, Type};
+pub use schema::{Expected, Field, FieldKind, Schema, Type};
 pub use store::{Resource, Source, Store, StoreError, Written};
 pub use value::{Cell, Value};

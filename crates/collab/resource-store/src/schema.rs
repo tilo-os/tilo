@@ -25,6 +25,43 @@ pub struct Type {
 pub struct Field {
     pub name: String,
     pub kind: FieldKind,
+    /// The values it may hold.
+    pub value: Expected,
+    /// It may hold nothing.
+    pub optional: bool,
+}
+
+/// The values a field may hold, as a holder checks each change it receives.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Expected {
+    Any,
+    Text,
+    Int,
+    Float,
+    Bool,
+    /// One of these cases of an enum.
+    OneOf(Vec<String>),
+}
+
+impl Expected {
+    /// The values a field of type `ty` holds, scalar or member of a set, and whether it is
+    /// optional.
+    fn of(ty: &FieldType, cases: &dyn Fn(&str) -> Option<Vec<String>>) -> (Self, bool) {
+        match ty {
+            FieldType::Option(inner) | FieldType::Set(inner) => (Self::of(inner, cases).0, true),
+            FieldType::Text
+            | FieldType::Date
+            | FieldType::Time
+            | FieldType::Identifier
+            | FieldType::Actor
+            | FieldType::Resource(_) => (Self::Text, false),
+            FieldType::Int => (Self::Int, false),
+            FieldType::Float => (Self::Float, false),
+            FieldType::Bool => (Self::Bool, false),
+            FieldType::Named(name) => (cases(name).map_or(Self::Any, Self::OneOf), false),
+            _ => (Self::Any, false),
+        }
+    }
 }
 
 /// How the index holds a field.
@@ -82,11 +119,18 @@ impl Schema {
                     && ty.cases.iter().all(|case| case.fields.is_empty())
             })
         };
+        let cases = |name: &str| {
+            surface
+                .types
+                .iter()
+                .find(|ty| ty.name == name && ty.is_enum())
+                .map(|ty| ty.cases.iter().map(|case| case.name.clone()).collect())
+        };
         let types = surface
             .types
             .iter()
             .filter(|ty| !ty.is_enum())
-            .map(|ty| Type::of(ty, &enums))
+            .map(|ty| Type::of(ty, &enums, &cases))
             .collect();
         Self { types }
     }
@@ -99,7 +143,11 @@ impl Schema {
 }
 
 impl Type {
-    fn of(declared: &NamedType, enums: &dyn Fn(&str) -> bool) -> Self {
+    fn of(
+        declared: &NamedType,
+        enums: &dyn Fn(&str) -> bool,
+        cases: &dyn Fn(&str) -> Option<Vec<String>>,
+    ) -> Self {
         let mut fields = Vec::new();
         let mut nested = Vec::new();
         for field in &declared.fields {
@@ -111,9 +159,12 @@ impl Type {
                 }
                 ty => {
                     if let Some(kind) = FieldKind::of(ty, enums) {
+                        let (value, optional) = Expected::of(ty, cases);
                         fields.push(Field {
                             name: field.name.clone(),
                             kind,
+                            value,
+                            optional,
                         });
                     }
                 }

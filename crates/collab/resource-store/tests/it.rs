@@ -513,7 +513,7 @@ fn toml_like(value: serde_json::Value) -> tilo_actions::surface::Surface {
 mod store {
     use super::*;
     use tilo_resource_store::store::DOCUMENT_LIMIT;
-    use tilo_resource_store::{Resource, Store, Written};
+    use tilo_resource_store::{Proposal, Received, Resource, Stamp, Store, Written};
 
     const MEMBERS: &str = "*";
 
@@ -542,14 +542,24 @@ mod store {
     }
 
     fn put(store: &mut Store, id: &str, resource: Resource) -> Vec<Written> {
-        store.put(ISSUE, id, resource).unwrap()
+        store.put(ISSUE, id, resource, &Stamp::default()).unwrap()
     }
 
     /// Carries every change written to `to`, as sync does.
     fn send(written: &[Written], to: &mut Store) {
         for write in written {
-            to.receive(&write.doc, &write.readers, vec![write.change.clone()])
+            let refused = to
+                .receive(
+                    &write.doc,
+                    &write.readers,
+                    vec![Received {
+                        change: write.change.clone(),
+                        author: [0; 32],
+                    }],
+                    &|_: &Proposal<'_>| true,
+                )
                 .unwrap();
+            assert!(refused.is_empty(), "{refused:?}");
         }
     }
 
@@ -605,7 +615,7 @@ mod store {
         let mut here = Store::new();
         let mut there = Store::new();
         let made = put(&mut here, "a", resource("board", "a0", "First", "open"));
-        let gone = here.remove(ISSUE, "a").unwrap();
+        let gone = here.remove(ISSUE, "a", &Stamp::default()).unwrap();
         send(&made, &mut there);
         assert_eq!(there.count(ISSUE, &[], &anyone), 1);
         send(&[gone], &mut there);
@@ -685,7 +695,7 @@ mod store {
         let mut there = Store::new();
         let mut written = put(&mut here, "a", resource("board", "a0", "Draft", "open"));
         let ((), body) = here
-            .edit_content(ISSUE, "a", |tx, root| {
+            .edit_content(ISSUE, "a", &Stamp::default(), |tx, root| {
                 let text = tx.put_object(root, "body", ObjType::Text)?;
                 tx.splice_text(&text, 0, 0, "Hello world")?;
                 tx.mark(
@@ -710,7 +720,9 @@ mod store {
         );
         written.push(body);
         // An edit that changes nothing writes nothing.
-        let ((), none) = here.edit_content(ISSUE, "a", |_, _| Ok(())).unwrap();
+        let ((), none) = here
+            .edit_content(ISSUE, "a", &Stamp::default(), |_, _| Ok(()))
+            .unwrap();
         assert!(none.is_none());
 
         send(&written, &mut there);
@@ -743,7 +755,207 @@ mod store {
         send(&moved, &mut there);
         assert_eq!(text_of(&mut there), Some(("Hello world".to_owned(), 1)));
         let old = there.document(&emptied.doc).unwrap();
-        assert!(old.get(automerge::ROOT, "c").unwrap().is_none());
+        assert_eq!(old.length(automerge::ROOT), 0, "the old content is emptied");
+    }
+
+    /// Carries `written` to `to` as sync does, judged by `admit`; answers why each refused one
+    /// was refused.
+    fn deliver(
+        written: &[Written],
+        to: &mut Store,
+        admit: &dyn tilo_resource_store::Admit,
+    ) -> Vec<tilo_resource_store::Refusal> {
+        let mut refused = Vec::new();
+        for write in written {
+            refused.extend(
+                to.receive(
+                    &write.doc,
+                    &write.readers,
+                    vec![Received {
+                        change: write.change.clone(),
+                        author: [7; 32],
+                    }],
+                    admit,
+                )
+                .unwrap()
+                .into_iter()
+                .map(|(_, why)| why),
+            );
+        }
+        refused
+    }
+
+    fn stamp(verb: &str, invocation: &str) -> Stamp {
+        Stamp {
+            verb: verb.to_owned(),
+            invoker: "ada".to_owned(),
+            invocation: invocation.to_owned(),
+            membership: vec!["m1".to_owned()],
+        }
+    }
+
+    #[test]
+    fn a_refused_change_has_no_effect_and_neither_has_one_built_on_it() {
+        use tilo_resource_store::Refusal;
+        let mut here = Store::new();
+        let mut there = Store::new();
+        // The author may add and edit, never close.
+        let admit = |proposal: &Proposal<'_>| {
+            assert_eq!(proposal.author, &[7; 32]);
+            proposal
+                .stamp
+                .is_some_and(|stamp| stamp.verb != "close" && stamp.membership == ["m1"])
+        };
+        let made = here
+            .put(
+                ISSUE,
+                "a",
+                resource("board", "a0", "First", "open"),
+                &stamp("add", "i1"),
+            )
+            .unwrap();
+        assert!(deliver(&made, &mut there, &admit).is_empty());
+        let closed = here
+            .put(
+                ISSUE,
+                "a",
+                resource("board", "a0", "First", "done"),
+                &stamp("close", "i2"),
+            )
+            .unwrap();
+        assert_eq!(
+            deliver(&closed, &mut there, &admit),
+            [Refusal::NotPermitted]
+        );
+        let renamed = here
+            .put(
+                ISSUE,
+                "a",
+                resource("board", "a0", "Second", "done"),
+                &stamp("edit", "i3"),
+            )
+            .unwrap();
+        assert_eq!(deliver(&renamed, &mut there, &admit), [Refusal::OnRefused]);
+        let held = there.index().get(ISSUE, "a").unwrap();
+        assert_eq!(held.scalar("state"), Value::from("open"));
+        assert_eq!(held.scalar("title"), Value::from("First"));
+        assert_eq!(there.refused(&made[0].doc).count(), 2);
+        // A refused change sent again stays refused, and changes nothing.
+        assert!(deliver(&closed, &mut there, &admit).is_empty());
+        assert_eq!(
+            there.index().get(ISSUE, "a").unwrap().scalar("state"),
+            Value::from("open")
+        );
+    }
+
+    #[test]
+    fn a_change_the_declared_types_do_not_allow_is_refused() {
+        use tilo_resource_store::{Expected, Field, FieldKind, Refusal, Schema, Type};
+        let field = |name: &str, kind, value, optional| Field {
+            name: name.to_owned(),
+            kind,
+            value,
+            optional,
+        };
+        let schema = Schema {
+            types: vec![Type {
+                name: ISSUE.to_owned(),
+                fields: vec![
+                    field("title", FieldKind::Scalar, Expected::Text, false),
+                    field(
+                        "state",
+                        FieldKind::Scalar,
+                        Expected::OneOf(vec!["open".into(), "done".into()]),
+                        false,
+                    ),
+                    field("labels", FieldKind::Set, Expected::Text, true),
+                ],
+                nested: Vec::new(),
+            }],
+        };
+        let mut here = Store::new();
+        let mut there = Store::new();
+        there.declare(schema);
+        let anyone = |_: &Proposal<'_>| true;
+        let made = put(&mut here, "a", resource("board", "a0", "First", "open"));
+        assert!(deliver(&made, &mut there, &anyone).is_empty());
+        // Each written by another device, each into a document of its own, so neither is built
+        // on the other's refusal.
+        let lost = put(
+            &mut Store::new(),
+            "b",
+            resource("sprint", "a1", "Second", "lost"),
+        );
+        assert!(matches!(
+            deliver(&lost, &mut there, &anyone).as_slice(),
+            [Refusal::Undeclared(why)] if why.contains("state")
+        ));
+        let mut secret = resource("column", "a2", "Third", "open");
+        secret
+            .fields
+            .insert("secret".to_owned(), Cell::One(1.into()));
+        let secret = put(&mut Store::new(), "c", secret);
+        assert!(matches!(
+            deliver(&secret, &mut there, &anyone).as_slice(),
+            [Refusal::Undeclared(why)] if why.contains("secret")
+        ));
+        assert_eq!(there.count(ISSUE, &[], &|_| true), 1);
+    }
+
+    #[test]
+    fn two_devices_starting_one_document_at_once_both_keep_what_they_wrote() {
+        let mut here = Store::new();
+        let mut there = Store::new();
+        let mine = put(&mut here, "a", resource("board", "a0", "Mine", "open"));
+        let theirs = put(&mut there, "b", resource("board", "a1", "Theirs", "open"));
+        assert_eq!(mine[0].doc, theirs[0].doc, "one document, started twice");
+        send(&theirs, &mut here);
+        send(&mine, &mut there);
+        for store in [&here, &there] {
+            assert_eq!(listed(store, &Query::of(ISSUE, 10), &anyone), ["a", "b"]);
+        }
+    }
+
+    #[test]
+    fn a_change_that_arrives_before_the_one_it_is_built_on_waits_for_it() {
+        let mut here = Store::new();
+        let mut there = Store::new();
+        let anyone = |_: &Proposal<'_>| true;
+        let first = put(&mut here, "a", resource("board", "a0", "First", "open"));
+        let second = put(&mut here, "a", resource("board", "a0", "First", "done"));
+        assert!(deliver(&second, &mut there, &anyone).is_empty());
+        assert_eq!(there.count(ISSUE, &[], &|_| true), 0, "it waits");
+        assert!(deliver(&first, &mut there, &anyone).is_empty());
+        assert_eq!(
+            there.index().get(ISSUE, "a").unwrap().scalar("state"),
+            Value::from("done")
+        );
+    }
+
+    #[test]
+    fn a_content_edit_is_judged_as_one_of_its_resource() {
+        use automerge::transaction::Transactable as _;
+        let mut here = Store::new();
+        let mut there = Store::new();
+        let made = put(&mut here, "a", resource("board", "a0", "Draft", "open"));
+        let anyone = |_: &Proposal<'_>| true;
+        assert!(deliver(&made, &mut there, &anyone).is_empty());
+        let ((), body) = here
+            .edit_content(ISSUE, "a", &stamp("write", "i9"), |tx, root| {
+                tx.put(root, "note", "hello")?;
+                Ok(())
+            })
+            .unwrap();
+        let seen = std::cell::RefCell::new(None);
+        let watch = |proposal: &Proposal<'_>| {
+            *seen.borrow_mut() = Some(proposal.touched.clone());
+            proposal.stamp.is_some_and(|stamp| stamp.invocation == "i9")
+        };
+        assert!(deliver(&[body.unwrap()], &mut there, &watch).is_empty());
+        let touched = seen.into_inner().unwrap();
+        let touch = touched.resources.get("a").unwrap();
+        assert!(touch.content && touch.fields.is_empty());
+        assert_eq!(touch.kind.as_deref(), Some(ISSUE));
     }
 
     #[test]

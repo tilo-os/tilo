@@ -22,7 +22,8 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use tilo_resource_store::{
-    Cell, Change, Commit, CommitHook as _, Filter, Index, Order, Query, Resource, Store,
+    Cell, Change, Commit, CommitHook as _, Filter, Index, Order, Proposal, Query, Received,
+    Resource, Stamp, Store,
 };
 
 const KIND: &str = "Issue";
@@ -91,7 +92,10 @@ fn store(size: usize) {
     let mut docs = std::collections::BTreeSet::new();
     for n in 0..size {
         let (id, resource) = resource(n);
-        for written in store.put(KIND, &id, resource).expect("a write") {
+        for written in store
+            .put(KIND, &id, resource, &Stamp::default())
+            .expect("a write")
+        {
             docs.insert(written.doc);
         }
     }
@@ -99,7 +103,11 @@ fn store(size: usize) {
     let start = Instant::now();
     for n in size..size + WRITES {
         let (id, resource) = resource(n);
-        written.extend(store.put(KIND, &id, resource).expect("a write"));
+        written.extend(
+            store
+                .put(KIND, &id, resource, &Stamp::default())
+                .expect("a write"),
+        );
     }
     let writes = WRITES as f64 / start.elapsed().as_secs_f64();
 
@@ -107,8 +115,18 @@ fn store(size: usize) {
     let start = Instant::now();
     for write in written {
         docs.insert(write.doc.clone());
-        peer.receive(&write.doc, &write.readers, vec![write.change])
+        let admitted = peer
+            .receive(
+                &write.doc,
+                &write.readers,
+                vec![Received {
+                    change: write.change,
+                    author: [0; 32],
+                }],
+                &|_: &Proposal<'_>| true,
+            )
             .expect("a peer's change");
+        assert!(admitted.is_empty(), "every change admitted");
     }
     let received = WRITES as f64 / start.elapsed().as_secs_f64();
 
