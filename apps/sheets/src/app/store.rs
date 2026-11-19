@@ -125,7 +125,11 @@ impl Store {
                 })
             }
             E::ImportXlsxContent { content, title } => {
-                self.import_xlsx_content(&content, title, cx)
+                self.import_content(Interchange::Xlsx, &content, title.as_deref(), cx)
+            }
+            E::ImportCsvContent { content, title } => {
+                let format = SheetsApp::table_format(title.as_deref());
+                self.import_content(format, &content, title.as_deref(), cx)
             }
             E::ExportXlsxContent => self.export_xlsx_content(&cx.live().get()),
             E::ExportCsvContent { sheet } => {
@@ -296,7 +300,7 @@ impl Store {
             .filter(|id| workbook.sheet(id).is_some());
         let sheets: Vec<SheetSnapshot> = match format {
             Interchange::Notion => Vec::new(),
-            Interchange::Csv => active
+            Interchange::Csv | Interchange::Tsv => active
                 .as_ref()
                 .and_then(|id| workbook.snapshot_of(id))
                 .into_iter()
@@ -364,10 +368,12 @@ impl Store {
         Err(error)
     }
 
-    fn import_xlsx_content(
+    /// Add the sheets of the `format` file the workspace holds as `content`, once.
+    fn import_content(
         &mut self,
+        format: Interchange,
         content: &str,
-        title: Option<String>,
+        title: Option<&str>,
         cx: &EffectCx<Workbook>,
     ) -> EffectAnswer {
         let hash = ui::tilo_actions::named_reference(content).ok_or_else(|| {
@@ -395,19 +401,19 @@ impl Store {
             .ok_or_else(|| format!("content `{hash}` is not on this device"))?;
         if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_IMPORT_FILE_BYTES {
             return self.failed(format!(
-                "the workbook is larger than the {} import limit",
+                "the file is larger than the {} import limit",
                 ui::format::memory(MAX_IMPORT_FILE_BYTES)
             ));
         }
-        let tables = SheetsApp::read_tables(Interchange::Xlsx, &bytes, "")
-            .map_err(|error| format!("content `{hash}` is not an Excel workbook: {error}"))?;
+        let tables = SheetsApp::read_tables(format, &bytes, &SheetsApp::table_name(title))
+            .map_err(|error| {
+                format!("content `{hash}` is not a .{} file: {error}", format.ext())
+            })?;
         let sheets: Vec<serde_json::Value> = tables
             .iter()
             .map(|table| serde_json::json!({ "name": table.name, "hidden": table.hidden }))
             .collect();
-        let title = title
-            .map(|title| title.trim().trim_end_matches(".xlsx").trim().to_owned())
-            .filter(|title| !title.is_empty());
+        let title = SheetsApp::titled(title, format);
         let (invoke, total) =
             SheetsApp::import_action(tables, Some(source.clone()), title, self.currency)?;
         cx.submit(invoke);

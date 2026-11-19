@@ -1,4 +1,5 @@
-//! Minimal RFC-4180-ish CSV import/export.
+//! Minimal RFC-4180-ish CSV import/export, and the same for a table whose
+//! fields are separated by tabs (TSV).
 //!
 //! Import maps each field to a raw cell input at `(col, row)` so formulas
 //! survive a round-trip if they were written verbatim. Export renders the
@@ -10,6 +11,11 @@ use std::collections::HashMap;
 use crate::model::Addr;
 
 pub fn parse_csv(text: &str) -> HashMap<Addr, String> {
+    parse_separated(text, ',')
+}
+
+/// [`parse_csv`] of a table whose fields `separator` parts (`'\t'` for TSV).
+pub fn parse_separated(text: &str, separator: char) -> HashMap<Addr, String> {
     let mut out = HashMap::new();
     let mut row = 0u32;
     let mut col = 0u32;
@@ -49,7 +55,7 @@ pub fn parse_csv(text: &str) -> HashMap<Addr, String> {
                 in_quotes = true;
                 field_started = true;
             }
-            ',' => {
+            c if c == separator => {
                 commit_field(&mut field, row, col, &mut out, field_started);
                 col += 1;
                 field_started = false;
@@ -72,8 +78,8 @@ pub fn parse_csv(text: &str) -> HashMap<Addr, String> {
     out
 }
 
-fn quote_field(s: &str) -> String {
-    if s.contains([',', '"', '\n', '\r']) {
+fn quote_field(s: &str, separator: char) -> String {
+    if s.contains([separator, '"', '\n', '\r']) {
         format!("\"{}\"", s.replace('"', "\"\""))
     } else {
         s.to_string()
@@ -81,10 +87,15 @@ fn quote_field(s: &str) -> String {
 }
 
 pub fn to_csv(rows: &[Vec<String>]) -> String {
+    to_separated(rows, ',')
+}
+
+/// [`to_csv`] with its fields parted by `separator`.
+pub fn to_separated(rows: &[Vec<String>], separator: char) -> String {
     let mut out = String::new();
     for row in rows {
-        let line: Vec<String> = row.iter().map(|f| quote_field(f)).collect();
-        out.push_str(&line.join(","));
+        let line: Vec<String> = row.iter().map(|f| quote_field(f, separator)).collect();
+        out.push_str(&line.join(&separator.to_string()));
         out.push('\n');
     }
     out

@@ -40,16 +40,20 @@ pub(crate) fn opened_file(
     .ok_or_else(gone)?;
     let (extension, media_type) = tilo_content::opened_as(&bytes);
     // Bytes say a file is text, not which: its name says it is notes, and plain text reads as
-    // the Markdown it is. An empty file named so is a note not yet written.
-    let written = name
+    // the Markdown it is, or a table kept as text. An empty file named so is one not yet written.
+    let named = name
         .and_then(|name| name.rsplit_once('.'))
-        .is_some_and(|(_, extension)| {
-            ["md", "markdown", "txt", "text"].contains(&extension.to_ascii_lowercase().as_str())
-        });
-    let media_type = if (media_type == "text/plain" || bytes.is_empty()) && written {
-        "text/markdown"
-    } else {
-        media_type
+        .and_then(
+            |(_, extension)| match extension.to_ascii_lowercase().as_str() {
+                "md" | "markdown" | "txt" | "text" => Some("text/markdown"),
+                "csv" => Some("text/csv"),
+                "tsv" => Some("text/tab-separated-values"),
+                _ => None,
+            },
+        );
+    let media_type = match named {
+        Some(named) if media_type == "text/plain" || bytes.is_empty() => named,
+        _ => media_type,
     };
     let name = name.map_or_else(|| format!("{hash}.{extension}"), str::to_owned);
     OpenFile::new(&name, media_type, bytes)
@@ -118,5 +122,11 @@ mod tests {
         assert_eq!(file.name(), "plan.txt");
         assert_eq!(file.media_type(), "text/markdown");
         assert!(file.bytes().is_empty());
+        // A table kept as text is what its name says, for the app that opens tables.
+        let table = content.put(b"name,amount\nTea,4\n").unwrap();
+        let (file, _) = opened_file(&table, &content, Some("data.csv")).unwrap();
+        assert_eq!(file.media_type(), "text/csv");
+        let (file, _) = opened_file(&table, &content, Some("data.TSV")).unwrap();
+        assert_eq!(file.media_type(), "text/tab-separated-values");
     }
 }

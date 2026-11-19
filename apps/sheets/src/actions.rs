@@ -83,6 +83,19 @@ pub enum SheetsEffect {
         #[param("The workbook's title, e.g. the file's name, when it has none yet")]
         title: Option<String>,
     },
+    /// Import CSV from content
+    ///
+    /// Adds a table kept as text, a `.csv` file or, by its title's ending, a `.tsv` one, that the
+    /// workspace holds as content, as a new sheet; the same content is not added twice.
+    #[effect(returns, kind = "undoable", audience = "agents")]
+    ImportCsvContent {
+        #[param(content, "The table's content address, `tilo.content:<hash>`")]
+        content: String,
+        #[param(
+            "The workbook's title, e.g. the file's name (`leads.tsv` reads tabs), when it has none yet"
+        )]
+        title: Option<String>,
+    },
     /// Export Excel workbook as content
     ///
     /// Keeps every sheet as an `.xlsx` workbook in the content store, with no file to write.

@@ -7,9 +7,8 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "samples")]
 use ui::framework::Fixture;
-use ui::framework::{ResourceApp, ViewCx};
+use ui::framework::{LaunchInput, ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
-#[cfg(feature = "samples")]
 use ui::tilo_resource::Invoke;
 use ui::tilo_resource::{
     self, ActionCx, Atom, Derived, Id, JsonSchema, NonBlank, Refusal, SearchEntry, resource,
@@ -1750,6 +1749,14 @@ impl ResourceApp for SheetsShell {
     const TITLE: &'static str = "Sheets";
     const TITLE_KEY: &'static str = "sheets-app-title";
     const ICON: Option<&'static str> = Some("sheets");
+    /// A workbook, or a table kept as text, handed over to open
+    /// ([`SheetsApp::handed_import`]).
+    const OPENS: &'static [&'static str] = &[
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.oasis.opendocument.spreadsheet",
+        "text/csv",
+        "text/tab-separated-values",
+    ];
 
     fn commands() -> &'static [ui::framework::Command] {
         COMMANDS
@@ -1824,6 +1831,26 @@ impl ResourceApp for SheetsShell {
             _ => {}
         }
         Ok(())
+    }
+
+    /// A spreadsheet another window handed over (Files opening `leads.csv`, a file dropped on
+    /// the desktop) fills the new workbook it opens: its sheets, and its name as the title. A
+    /// workbook opened before keeps the edits made to it since.
+    fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<Workbook>> {
+        let Some(file) = input.file().filter(|_| created) else {
+            return Vec::new();
+        };
+        let source = input
+            .content()
+            .and_then(|content| content.put(file.bytes()).ok())
+            .map(|reference| format!("tilo.content:{reference}"));
+        match SheetsApp::handed_import(file, source, tilo_locale::Locale::default().currency) {
+            Ok(import) => vec![import],
+            Err(error) => {
+                tracing::warn!(%error, file = file.name(), "sheets: the handed file cannot be read");
+                Vec::new()
+            }
+        }
     }
 
     fn view(cx: &mut ViewCx<Workbook>) -> Element {

@@ -129,6 +129,7 @@ sheets-effect-export-csv = Export CSV
 sheets-effect-export-xlsx = Export Excel workbook
 sheets-effect-export-ods = Export OpenDocument spreadsheet
 sheets-effect-import-xlsx-content = Import workbook content
+sheets-effect-import-csv-content = Import CSV from content
 sheets-effect-export-xlsx-content = Export workbook content
 sheets-effect-export-csv-content = Export sheet as CSV content
 sheets-effect-read-file = Read a spreadsheet file

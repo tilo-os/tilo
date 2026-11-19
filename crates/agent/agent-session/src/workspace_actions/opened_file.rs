@@ -97,19 +97,17 @@ impl Worker {
             Err(_) => store.read(&file.hash).ok_or_else(missing)?,
         };
         let landed = tilo_content_types::landing(&head, &file.name);
-        let landing = landed
-            .filter(|landing| tilo_content_types::landing_in(app) == Some(*landing))
-            .ok_or_else(|| {
-                let (extension, _) = tilo_content_types::opened_as(&head);
-                let opens = landed.map_or_else(
-                    || "no app here opens it".to_owned(),
-                    |landing| format!("{} opens it", landing.app),
-                );
-                refused(format!(
-                    "{} is a {extension} file, which {app} does not open: {opens}",
-                    file.name
-                ))
-            })?;
+        let landing = landed.filter(|landing| landing.is_in(app)).ok_or_else(|| {
+            let (extension, _) = tilo_content_types::opened_as(&head);
+            let opens = landed.map_or_else(
+                || "no app here opens it".to_owned(),
+                |landing| format!("{} opens it", landing.app),
+            );
+            refused(format!(
+                "{} is a {extension} file, which {app} does not open: {opens}",
+                file.name
+            ))
+        })?;
         let mut arguments = Map::new();
         match landing.takes {
             Takes::ContentNamed => {

@@ -105,6 +105,8 @@ const MAX_CSV_MATERIALIZED_SLOTS: usize = crate::xlsx::MAX_MATERIALIZED_SLOTS;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Interchange {
     Csv,
+    /// A table whose fields tabs part.
+    Tsv,
     Xlsx,
     Ods,
     Notion,
@@ -114,15 +116,26 @@ impl Interchange {
     fn ext(self) -> &'static str {
         match self {
             Self::Csv => "csv",
+            Self::Tsv => "tsv",
             Self::Xlsx => "xlsx",
             Self::Ods => "ods",
             Self::Notion => "zip",
         }
     }
 
+    /// What parts the fields of a table kept as text: `None` for any other format.
+    fn separator(self) -> Option<char> {
+        match self {
+            Self::Csv => Some(','),
+            Self::Tsv => Some('\t'),
+            Self::Xlsx | Self::Ods | Self::Notion => None,
+        }
+    }
+
     fn filter(self) -> FileFilter {
         match self {
             Self::Csv => FileFilter::new("CSV").glob("*.csv"),
+            Self::Tsv => FileFilter::new("TSV").glob("*.tsv"),
             Self::Xlsx => FileFilter::new("Excel workbook").glob("*.xlsx"),
             Self::Ods => FileFilter::new("Calc spreadsheet").glob("*.ods"),
             Self::Notion => FileFilter::new(&CATALOG.t("sheets-notion-files"))

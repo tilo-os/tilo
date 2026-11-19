@@ -34,13 +34,30 @@ pub enum Takes {
 }
 
 /// The landing of the app `app` (`pdf-viewer`, or its package id
-/// `so.tilo.pdf-viewer`): which of its actions takes a file, and how.
+/// `so.tilo.pdf-viewer`): which of its actions takes a file, and how. An app
+/// that takes files of more than one kind (Sheets: a workbook, or a table as
+/// text) answers its first; [`Landing::is_in`] asks whether a file's landing
+/// is in it.
 #[must_use]
 pub fn landing_in(app: &str) -> Option<Landing> {
-    let short = app.rsplit('.').next().unwrap_or(app);
+    let short = short_app(app);
     [PDF, WRITER, SHEETS, SLIDES, PHOTOS, NOTES]
         .into_iter()
         .find(|landing| landing.app == short)
+}
+
+/// `app` as a landing names it: `sheets` for `so.tilo.sheets`.
+fn short_app(app: &str) -> &str {
+    app.rsplit('.').next().unwrap_or(app)
+}
+
+impl Landing {
+    /// Whether this landing is in the app `app` (`sheets`, or its package id
+    /// `so.tilo.sheets`).
+    #[must_use]
+    pub fn is_in(&self, app: &str) -> bool {
+        self.app == short_app(app)
+    }
 }
 
 /// The most of a file read to tell what it is: every format here is known
@@ -62,6 +79,13 @@ const WRITER: Landing = Landing {
 const SHEETS: Landing = Landing {
     app: "sheets",
     action: "import-xlsx-content",
+    own_resource: true,
+    takes: Takes::ContentTitled,
+};
+/// A table kept as text (`.csv`, `.tsv`): its words are its cells.
+const SHEETS_TABLE: Landing = Landing {
+    app: "sheets",
+    action: "import-csv-content",
     own_resource: true,
     takes: Takes::ContentTitled,
 };
@@ -87,9 +111,10 @@ const NOTES: Landing = Landing {
 /// The app `name` lands in, for a file whose first bytes are `head`.
 ///
 /// A word-processing document is landable as any of the formats the Writer
-/// opens, and a spreadsheet only as a workbook; a text file is a note. The
-/// name decides nothing but text against everything else: a picture, a PDF
-/// or a workbook is what its bytes say, however it was called.
+/// opens, and a spreadsheet as a workbook; a text file is a note, and a
+/// table kept as text (`.csv`, `.tsv`) a spreadsheet. The name decides
+/// nothing but which text a file is: a picture, a PDF or a workbook is what
+/// its bytes say, however it was called.
 #[must_use]
 pub fn landing(head: &[u8], name: &str) -> Option<Landing> {
     if crate::image_format(head).is_some() {
@@ -106,18 +131,20 @@ pub fn landing(head: &[u8], name: &str) -> Option<Landing> {
         return Some(landing);
     }
     // Text is the one the name decides: a markdown or plain-text file is a
-    // note, and a file nothing else lands is not made one by its name. An
-    // empty file has no bytes to say otherwise, so its name decides: a new
-    // text file opens as a note to be written.
+    // note, a table kept as text a spreadsheet, and a file nothing else
+    // lands is not made one by its name. An empty file has no bytes to say
+    // otherwise, so its name decides: a new text file opens as a note to be
+    // written.
     let extension = std::path::Path::new(name)
         .extension()
         .and_then(|extension| extension.to_str())
         .map(str::to_ascii_lowercase);
-    let textual = matches!(
-        extension.as_deref(),
-        Some("md" | "markdown" | "txt" | "text")
-    );
-    (textual && (head.is_empty() || crate::is_text(head))).then_some(NOTES)
+    let landing = match extension.as_deref() {
+        Some("md" | "markdown" | "txt" | "text") => NOTES,
+        Some("csv" | "tsv") => SHEETS_TABLE,
+        _ => return None,
+    };
+    (head.is_empty() || crate::is_text(head)).then_some(landing)
 }
 
 #[cfg(test)]
@@ -136,6 +163,16 @@ mod tests {
         assert_eq!(landing(b"", "empty.pdf"), None);
         assert_eq!(landing(b"", "New file.txt"), Some(NOTES));
         assert_eq!(landing(b"", "empty"), None);
+        // A table kept as text is a spreadsheet, by its name; bytes that are no text are not.
+        assert_eq!(
+            landing(b"name,amount\nTea,4\n", "data.csv"),
+            Some(SHEETS_TABLE)
+        );
+        assert_eq!(landing(b"name\tamount\n", "DATA.TSV"), Some(SHEETS_TABLE));
+        assert_eq!(landing(&[0_u8, 1, 2, 3], "data.csv"), None);
+        assert!(SHEETS_TABLE.is_in("so.tilo.sheets"));
+        assert!(SHEETS.is_in("sheets"));
+        assert!(!SHEETS_TABLE.is_in("so.tilo.notes"));
     }
 
     #[test]

@@ -57,7 +57,7 @@ fn file_page(
         let mut line = vec![serde_json::Value::Null; width];
         for (column, (slot, cell)) in line.iter_mut().zip(row).enumerate() {
             let Some(cell) = cell else { continue };
-            *slot = if format == Interchange::Csv {
+            *slot = if format.separator().is_some() {
                 serde_json::Value::String(cell.raw.clone())
             } else {
                 crate::cell_actions::json_value(
@@ -111,12 +111,81 @@ impl SheetsApp {
             .extension()
             .map(|ending| ending.to_string_lossy().to_ascii_lowercase())
             .unwrap_or_default();
-        [Interchange::Xlsx, Interchange::Ods, Interchange::Csv]
-            .into_iter()
-            .find(|format| format.ext() == ending)
-            .ok_or_else(|| {
-                format!("{name} is not a spreadsheet Sheets reads: an .xlsx, .ods or .csv file")
-            })
+        [
+            Interchange::Xlsx,
+            Interchange::Ods,
+            Interchange::Csv,
+            Interchange::Tsv,
+        ]
+        .into_iter()
+        .find(|format| format.ext() == ending)
+        .ok_or_else(|| {
+            format!("{name} is not a spreadsheet Sheets reads: an .xlsx, .ods, .csv or .tsv file")
+        })
+    }
+
+    /// The format of a table kept as text whose file is called `name`: tabs part a `.tsv`
+    /// file's fields, commas any other's.
+    pub(super) fn table_format(name: Option<&str>) -> Interchange {
+        match name.map(Self::spreadsheet_format) {
+            Some(Ok(Interchange::Tsv)) => Interchange::Tsv,
+            _ => Interchange::Csv,
+        }
+    }
+
+    /// The sheet a table kept as text, in the file called `name`, becomes: the file's name
+    /// without its ending.
+    pub(super) fn table_name(name: Option<&str>) -> String {
+        name.map(|name| sheet_name_from_path(std::path::Path::new(name)))
+            .unwrap_or_default()
+    }
+
+    /// The title a workbook imported from the `format` file called `name` takes: the name
+    /// without its ending, `None` for none.
+    pub(super) fn titled(name: Option<&str>, format: Interchange) -> Option<String> {
+        let name = name?.trim();
+        let ending = format!(".{}", format.ext());
+        let bare = match name.len().checked_sub(ending.len()) {
+            Some(at)
+                if name
+                    .get(at..)
+                    .is_some_and(|it| it.eq_ignore_ascii_case(&ending)) =>
+            {
+                name.get(..at).unwrap_or(name)
+            }
+            _ => name,
+        };
+        Some(bare.trim().to_owned()).filter(|title| !title.is_empty())
+    }
+
+    /// What a file handed to a new workbook adds to it: its sheets, kept as the content `source`
+    /// names where the window keeps content, and its name as the workbook's title. `None` for a
+    /// file that is no spreadsheet Sheets reads, by its name, else by its media type.
+    pub(crate) fn handed_import(
+        file: &ui::application::OpenFile,
+        source: Option<String>,
+        currency: Currency,
+    ) -> Result<Invoke<Workbook>, String> {
+        let format =
+            Self::spreadsheet_format(file.name()).or_else(|refused| match file.media_type() {
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => {
+                    Ok(Interchange::Xlsx)
+                }
+                "application/vnd.oasis.opendocument.spreadsheet" => Ok(Interchange::Ods),
+                "text/csv" => Ok(Interchange::Csv),
+                "text/tab-separated-values" => Ok(Interchange::Tsv),
+                _ => Err(refused),
+            })?;
+        if u64::try_from(file.bytes().len()).unwrap_or(u64::MAX) > MAX_IMPORT_FILE_BYTES {
+            return Err(format!(
+                "{} is larger than the {} import limit",
+                file.name(),
+                ui::format::memory(MAX_IMPORT_FILE_BYTES)
+            ));
+        }
+        let tables = Self::read_tables(format, file.bytes(), &Self::table_name(Some(file.name())))?;
+        let title = Self::titled(Some(file.name()), format);
+        Self::import_action(tables, source, title, currency).map(|(invoke, _)| invoke)
     }
 
     /// What the spreadsheet file at `path` holds, read without adding it to a workbook: its
@@ -258,10 +327,12 @@ impl SheetsApp {
             Interchange::Notion => Self::read_notion_tables(bytes),
             Interchange::Xlsx => crate::xlsx::parse_xlsx(bytes).map_err(|error| error.to_string()),
             Interchange::Ods => crate::ods::parse_ods(bytes).map_err(|error| error.to_string()),
-            Interchange::Csv => {
+            Interchange::Csv | Interchange::Tsv => {
                 let text = std::str::from_utf8(bytes)
-                    .map_err(|_| "the CSV file is not UTF-8 text".to_string())?;
-                let cells = crate::csv::parse_csv(text);
+                    .map_err(|_| "the table is not UTF-8 text".to_string())?;
+                let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+                let separator = format.separator().unwrap_or(',');
+                let cells = crate::csv::parse_separated(text, separator);
                 if cells.len() > MAX_IMPORT_CELLS {
                     return Err(format!("more than {MAX_IMPORT_CELLS} populated cells"));
                 }
@@ -335,7 +406,7 @@ impl SheetsApp {
                 crate::xlsx::xlsx_bytes(&tables).map_err(|error| error.to_string())
             }
             Interchange::Ods => crate::ods::ods_bytes(&tables).map_err(|error| error.to_string()),
-            Interchange::Csv => {
+            Interchange::Csv | Interchange::Tsv => {
                 let table = tables
                     .first()
                     .ok_or_else(|| "there is no active sheet to export".to_string())?;
@@ -351,7 +422,7 @@ impl SheetsApp {
                             .collect()
                     })
                     .collect::<Vec<Vec<String>>>();
-                Ok(crate::csv::to_csv(&rows).into_bytes())
+                Ok(crate::csv::to_separated(&rows, format.separator().unwrap_or(',')).into_bytes())
             }
         }
     }

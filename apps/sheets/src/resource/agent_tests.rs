@@ -381,6 +381,83 @@ fn an_xlsx_kept_as_content_imports_with_formats_and_hidden_sheets() {
 }
 
 #[test]
+fn a_table_kept_as_content_imports_as_a_sheet_once() {
+    let mut app = app();
+    let hash = app
+        .content()
+        .put(b"name,amount\nTea,4\n\"Cake, sliced\",7\n")
+        .unwrap();
+    let address = format!("tilo.content:{hash}");
+    let answer = call(
+        &mut app,
+        "import-csv-content",
+        json!({"content": address, "title": "Prices.csv"}),
+    );
+    assert_eq!(answer["imported"], true);
+    app.settle();
+    assert_eq!(
+        sheet_names(&app),
+        ["Prices"],
+        "the table replaces the blank sheet"
+    );
+    assert_eq!(app.state().title.as_deref(), Some("Prices"));
+    let cake = read(&mut app, "Prices", "A3:B3");
+    assert_eq!(cake["rows"][0][0], "Cake, sliced");
+    assert_eq!(cake["rows"][0][1], 7.0);
+    let again = call(&mut app, "import-csv-content", json!({"content": address}));
+    assert_eq!(
+        again["imported"], false,
+        "the same content is not added twice"
+    );
+
+    // A title ending in .tsv says tabs part its fields.
+    let tabs = app.content().put(b"who\tstage\nAda\tWon\n").unwrap();
+    call(
+        &mut app,
+        "import-csv-content",
+        json!({"content": format!("tilo.content:{tabs}"), "title": "leads.tsv"}),
+    );
+    app.settle();
+    let ada = read(&mut app, "leads", "A2:B2");
+    assert_eq!(ada["rows"][0][0], "Ada");
+    assert_eq!(ada["rows"][0][1], "Won");
+}
+
+/// A spreadsheet another window hands over (Files opening it, a drop) opens as the new
+/// workbook it is: its cells, and its name as the title.
+#[test]
+fn a_handed_table_opens_as_a_new_workbook() {
+    for (name, media_type, bytes) in [
+        ("data.csv", "text/csv", b"name,amount\nTea,4\n".as_slice()),
+        (
+            "data.tsv",
+            "text/tab-separated-values",
+            b"name\tamount\nTea\t4\n".as_slice(),
+        ),
+    ] {
+        let (file, _) = ui::application::OpenFile::new(name, media_type, bytes.to_vec()).unwrap();
+        let mut app = TestApp::<SheetsShell>::handed(file).unwrap();
+        app.settle();
+        assert_eq!(sheet_names(&app), ["data"], "{name}");
+        assert_eq!(app.state().title.as_deref(), Some("data"), "{name}");
+        let tea = read(&mut app, "data", "A2:B2");
+        assert_eq!(tea["rows"][0][0], "Tea", "{name}");
+        assert_eq!(tea["rows"][0][1], 4.0, "{name}");
+    }
+    let workbook = crate::interchange_tests::excel_like_xlsx_hiding_notes();
+    let (file, _) = ui::application::OpenFile::new(
+        "Budget 2026.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        workbook,
+    )
+    .unwrap();
+    let mut app = TestApp::<SheetsShell>::handed(file).unwrap();
+    app.settle();
+    assert_eq!(sheet_names(&app), ["Budget", "Notes & Data"]);
+    assert_eq!(app.state().title.as_deref(), Some("Budget 2026"));
+}
+
+#[test]
 fn the_workbook_exports_as_xlsx_content_that_imports_back() {
     let mut app = app();
     call(

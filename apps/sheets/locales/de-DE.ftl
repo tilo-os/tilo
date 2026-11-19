@@ -129,6 +129,7 @@ sheets-effect-export-csv = CSV exportieren
 sheets-effect-export-xlsx = Excel-Arbeitsmappe exportieren
 sheets-effect-export-ods = OpenDocument-Tabelle exportieren
 sheets-effect-import-xlsx-content = Arbeitsmappeninhalt importieren
+sheets-effect-import-csv-content = CSV aus Inhalt importieren
 sheets-effect-export-xlsx-content = Arbeitsmappeninhalt exportieren
 sheets-effect-export-csv-content = Blatt als CSV-Inhalt exportieren
 sheets-effect-read-file = Tabellendatei lesen

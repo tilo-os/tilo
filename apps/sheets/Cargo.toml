@@ -43,6 +43,7 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 anyhow.workspace = true
+tracing.workspace = true
 # Spreadsheet interchange (.xlsx/.ods) through tilo-doc's bounded, XXE-hardened
 # codecs, and its A1 reference helpers.
 tilo-doc = { path = "../../crates/doc/tilo-doc" }
