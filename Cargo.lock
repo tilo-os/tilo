@@ -19218,6 +19218,7 @@ dependencies = [
  "tilo-files",
  "tilo-formats",
  "tilo-paths",
+ "tilo-resource",
  "tilo-service",
  "tilo-test-env",
  "tilo-ui",
