@@ -84,7 +84,7 @@ impl Mount {
         let host = self.peer.and_then(crate::peer_sync::local_person);
         let offered =
             |person: &str| host.as_deref() != Some(person) || own.as_deref() == Some(person);
-        let named = &self.presence.named;
+        let last_named = &self.presence.named;
         self.frame.update_presence(|presence| {
             // Who the workspace says is in it: its windows offer exactly these as its people,
             // and a device that named someone it never admitted is nobody's row.
@@ -100,7 +100,7 @@ impl Mount {
             // a window shows them as themselves after a reload too, not only once the board
             // says who is here.
             if let Some(own) = own.as_deref() {
-                let name = named
+                let name = last_named
                     .get(own)
                     .cloned()
                     .or_else(|| own_label.clone())
@@ -112,7 +112,7 @@ impl Mount {
             // Everyone the workspace lists is named as its governance calls them, here or not:
             // a change someone made while away reads as theirs, never as their key. Who is here
             // is then named as their presence says, as everywhere else.
-            for (person, name) in named {
+            for (person, name) in last_named {
                 if own.as_deref() != Some(person.as_str())
                     && offered(person)
                     && let Some(member) = MemberId::parsed_person(person)
