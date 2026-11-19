@@ -544,3 +544,8 @@ reason = "the verbs that read and kept a provider key on this computer go: a com
 file = "crates/agent/provider-config/src/management.rs"
 enum = "CredentialStatus"
 reason = "said whether this computer kept a provider key, which it no longer does; it was only ever an answer on the gateway's local socket, never stored"
+
+[[break]]
+file = "crates/system/fs/src/eviction.rs"
+enum = "EvictionRequestState"
+reason = "the eviction queue's schema version moves to 3 in the same change: a file written by an older build is dropped at open rather than read, and no other bytes carry this state"

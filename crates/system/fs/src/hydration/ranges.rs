@@ -475,12 +475,7 @@ impl Hydrator {
                     continue;
                 }
             }
-            if let Ok(bytes) = self
-                .store
-                .store()
-                .blobs()
-                .get_bytes(Hash::from(chunk.hash))
-                .await
+            if let Some(bytes) = self.store.local(Hash::from(chunk.hash)).await
                 && bytes.len() as u64 == u64::from(chunk.len)
                 && let Ok((dest, generation)) = files.file_in_generation(&key)
                 && *dest_generation.get_or_insert(generation) == generation

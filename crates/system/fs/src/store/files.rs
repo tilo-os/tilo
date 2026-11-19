@@ -9,28 +9,27 @@
 //! materialised tree shares extents with the store instead of doubling the
 //! bytes. Other filesystems get a plain copy.
 
+use std::fs::{File, OpenOptions};
+use std::io::Write as _;
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use iroh_blobs::api::blobs::{AddPathOptions, BlobStatus, ImportMode};
-use iroh_blobs::{BlobFormat, Hash};
+use iroh_blobs::Hash;
 
-use super::{ContentStore, owned_blob_tag};
+use super::ContentStore;
 
 impl ContentStore {
     /// Import the file at `path` and return its BLAKE3 content hash.
     ///
-    /// The blob is protected by the same service-owned tag as
-    /// [`ContentStore::ingest`], so it survives until it is explicitly
-    /// evicted. The source file is left untouched. Like `ingest`, the import
-    /// is durable when this returns or, inside a deferred-durability group
-    /// ([`ContentStore::defer_sync`]), when the group ends: importing a tree
-    /// of files then costs one database sync rather than one per file.
+    /// The blob is stored like [`ContentStore::ingest`], so it survives until it is explicitly
+    /// evicted. The source file is left untouched. Like `ingest`, the import is durable when this
+    /// returns or, inside a deferred-durability group ([`ContentStore::defer_sync`]), when the group
+    /// ends: importing a tree of files then costs one database sync rather than one per file.
     ///
     /// # Errors
     ///
-    /// Returns an error if `path` is not absolute, cannot be read, or the
-    /// store rejects the import.
+    /// Returns an error if `path` is not absolute, cannot be read, or the store rejects the import.
     pub async fn ingest_file(&self, path: &Path) -> Result<Hash> {
         anyhow::ensure!(
             path.is_absolute(),
@@ -38,28 +37,25 @@ impl ContentStore {
             path.display()
         );
         let _mutation = self.mutation.lock().await;
-        let _owned_tags = self.owned_tags.lock().await;
-        let temporary = self
-            .store()
-            .blobs()
-            .add_path_with_opts(AddPathOptions {
-                path: path.to_path_buf(),
-                format: BlobFormat::Raw,
-                mode: ImportMode::Copy,
-            })
-            .temp_tag()
-            .await
-            .with_context(|| format!("import {}", path.display()))?;
-        let hash = temporary.hash();
-        self.store()
-            .tags()
-            .set(
-                owned_blob_tag(hash, temporary.format()),
-                temporary.hash_and_format(),
-            )
-            .await?;
+        let files = Arc::clone(&self.files);
+        let source_path = path.to_owned();
+        let hash = tokio::task::spawn_blocking(move || -> std::io::Result<Hash> {
+            let source = File::open(&source_path)?;
+            let len = source.metadata()?.len();
+            let digest = crate::store::area::hash_file(&source_path)?;
+            if len <= super::INLINE_MAX as u64 {
+                let bytes = std::fs::read(&source_path)?;
+                files.put_inline([(digest, bytes::Bytes::from(bytes))])?;
+            } else {
+                let mut reader = File::open(&source_path)?;
+                let outboard = super::outboard_of_reader(&mut reader, len)?;
+                files.adopt_blob_clone(&digest, &source, len, &outboard)?;
+            }
+            Ok(Hash::from(digest))
+        })
+        .await
+        .with_context(|| format!("import {}", path.display()))??;
         self.sync_unless_deferred().await?;
-        drop(temporary);
         Ok(hash)
     }
 
@@ -80,11 +76,39 @@ impl ContentStore {
             "refusing to overwrite {}",
             target.display()
         );
-        self.store()
-            .blobs()
-            .export(hash, target)
-            .await
-            .with_context(|| format!("export {hash} to {}", target.display()))
+        let files = Arc::clone(&self.files);
+        let path = target.to_owned();
+        let len = tokio::task::spawn_blocking(move || -> std::io::Result<u64> {
+            let key = *hash.as_bytes();
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut dest = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)?;
+            if let Some(bytes) = files.get_inline(&key) {
+                dest.write_all(&bytes)?;
+                return Ok(bytes.len() as u64);
+            }
+            if let Some(location) = files.find_chunk(&key) {
+                let bytes =
+                    files.read_at(&location.key, location.offset, u64::from(location.len))?;
+                dest.write_all(&bytes)?;
+                return Ok(bytes.len() as u64);
+            }
+            let entry = files
+                .entry(&key)
+                .filter(super::area::EntryInfo::complete)
+                .ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "no complete such blob")
+                })?;
+            files.copy_to(&key, &(0..entry.size), &dest)?;
+            Ok(entry.size)
+        })
+        .await
+        .with_context(|| format!("export {hash} to {}", target.display()))??;
+        Ok(len)
     }
 
     /// Size of the complete blob `hash`, or `None` when the store holds no
@@ -94,19 +118,35 @@ impl ContentStore {
     ///
     /// Returns an error if the store cannot answer.
     pub async fn complete_len(&self, hash: Hash) -> Result<Option<u64>> {
-        match self.store().blobs().status(hash).await? {
-            BlobStatus::Complete { size } => Ok(Some(size)),
-            BlobStatus::NotFound | BlobStatus::Partial { .. } => Ok(None),
-        }
+        Ok(match self.blob_status(hash).await? {
+            iroh_blobs::api::blobs::BlobStatus::Complete { size } => Some(size),
+            iroh_blobs::api::blobs::BlobStatus::NotFound
+            | iroh_blobs::api::blobs::BlobStatus::Partial { .. } => None,
+        })
     }
 
-    /// Every blob the store currently holds, complete or partial.
+    /// Every blob the store currently holds: inline blobs, whole blobs and the chunks of
+    /// file-backed versions.
     ///
     /// # Errors
     ///
     /// Returns an error if the store cannot enumerate its contents.
     pub async fn blob_hashes(&self) -> Result<Vec<Hash>> {
-        Ok(self.store().blobs().list().hashes().await?)
+        let files = Arc::clone(&self.files);
+        let hashes = tokio::task::spawn_blocking(move || {
+            let mut hashes: Vec<Hash> = files
+                .inline_keys()
+                .into_iter()
+                .chain(files.blob_keys())
+                .chain(files.chunk_hashes())
+                .map(Hash::from)
+                .collect();
+            hashes.sort_unstable_by_key(|hash| *hash.as_bytes());
+            hashes.dedup();
+            hashes
+        })
+        .await?;
+        Ok(hashes)
     }
 }
 
@@ -159,12 +199,15 @@ mod tests {
             let root = dir.path().join("store");
             let store = ContentStore::open(&root).await.unwrap();
             let source = dir.path().join("f");
-            std::fs::write(&source, vec![7u8; 70_000]).unwrap();
+            std::fs::write(&source, vec![7u8; 3 * 1024 * 1024]).unwrap();
             let hash = store.ingest_file(&source).await.unwrap();
             store.close().await.unwrap();
 
             let reopened = ContentStore::open(&root).await.unwrap();
-            assert_eq!(reopened.complete_len(hash).await.unwrap(), Some(70_000));
+            assert_eq!(
+                reopened.complete_len(hash).await.unwrap(),
+                Some(3 * 1024 * 1024)
+            );
             assert_eq!(
                 reopened.complete_len(Hash::new(b"absent")).await.unwrap(),
                 None

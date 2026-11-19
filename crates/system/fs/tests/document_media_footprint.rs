@@ -309,7 +309,7 @@ async fn cold_reads_hold_one_range_of_the_largest_attachment(attachment: &[u8]) 
         let store = Arc::new(ContentStore::open(dir.path()).await.unwrap());
         let media = DocumentMedia::new(Arc::clone(&store));
         let hash = media.store(&photos, data).await.unwrap();
-        store.store().shutdown().await.unwrap();
+        store.shutdown().await.unwrap();
         hash
     };
     let store = Arc::new(ContentStore::open(dir.path()).await.unwrap());
@@ -384,7 +384,7 @@ async fn cold_reads_hold_one_range_of_the_largest_attachment(attachment: &[u8]) 
         "a whole-blob load of {len} B registered {whole_peak} B: either the heap probe cannot \
          observe the reads it bounds, or a read above left the blob in the cache"
     );
-    store.store().shutdown().await.unwrap();
+    store.shutdown().await.unwrap();
 }
 
 async fn storing_and_uploading_hold_no_whole_attachment(attachment: &Arc<[u8]>) {
@@ -460,7 +460,7 @@ async fn storing_and_uploading_hold_no_whole_attachment(attachment: &Arc<[u8]>) 
         "an upload gathered whole registered {gathered_peak} B for {len} B: the heap probe \
          cannot observe the buffering the upload bound is there to catch"
     );
-    store.store().shutdown().await.unwrap();
+    store.shutdown().await.unwrap();
 }
 
 async fn many_large_reads_leave_no_more_than_the_cache_budget() {
@@ -482,7 +482,7 @@ async fn many_large_reads_leave_no_more_than_the_cache_budget() {
         for index in small..small + large {
             hashes.push(store.ingest(blob(index, large_len)).await.unwrap());
         }
-        store.store().shutdown().await.unwrap();
+        store.shutdown().await.unwrap();
         hashes
     };
     let store = ContentStore::open(dir.path()).await.unwrap();
@@ -518,5 +518,5 @@ async fn many_large_reads_leave_no_more_than_the_cache_budget() {
         "{retained} B left behind by reads that fill a {BLOB_CACHE_BYTES} B cache: the heap probe \
          cannot observe what the cache keeps"
     );
-    store.store().shutdown().await.unwrap();
+    store.shutdown().await.unwrap();
 }

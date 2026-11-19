@@ -1,13 +1,18 @@
-//! The file-backed half of the content store.
+//! The content store's one physical store.
 //!
 //! Content larger than a few chunks lives in one file per entry, at the entry's own byte offsets,
-//! sparse until its ranges arrive. An entry is keyed by 32 bytes (a content id, or a caller's key
-//! such as a cloud account's revision); its residency is a [`RangeSet`] of the bytes present,
-//! persisted, so partial content survives restarts and a transfer resumes where it stopped; a chunk
-//! index maps every chunk hash to where it lives, so a chunk is served and deduplicated without a
+//! sparse until its ranges arrive. An entry is keyed by 32 bytes (a content id, a whole blob's hash,
+//! or a caller's key such as a cloud account's revision); its residency is a [`RangeSet`] of the bytes
+//! present, persisted, so partial content survives restarts and a transfer resumes where it stopped; a
+//! chunk index maps every chunk hash to where it lives, so a chunk is served and deduplicated without a
 //! second copy; a retention class decides eviction, in which [`Retention::Cached`] and
 //! [`Retention::Fetchable`] entries go by budget, least recently used first, and
 //! [`Retention::LocalOnly`] and [`Retention::Pinned`] entries never do.
+//!
+//! Small blobs (manifests, the chunks of small files, thumbnails) are inline: their bytes are rows of
+//! the index database, which the budget never evicts. A whole blob too large to inline is a
+//! [`Kind::Blob`] entry with its BAO outboard persisted beside it, so peers are served ranges from the
+//! outboard rather than by hashing the file again.
 //!
 //! Nothing here verifies content: callers write only verified bytes, and chunks are re-verified
 //! against their hash before being served.
@@ -18,15 +23,25 @@ use std::io::{self, Read};
 use std::ops::Range;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use bytes::Bytes;
 use fs_content::RangeSet;
 use redb::{Database, MultimapTableDefinition, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
 const ENTRIES: TableDefinition<[u8; 32], &[u8]> = TableDefinition::new("area_entries");
+/// Small blobs, keyed by their own hash, their bytes the value: manifests, the chunks of small
+/// files, thumbnails. They are inside the index database rather than files of their own.
+const INLINE: TableDefinition<[u8; 32], &[u8]> = TableDefinition::new("area_inline");
+/// Whole blobs' BAO outboards, post order without a length suffix, keyed by the blob's hash, so a
+/// peer's range request is answered from the outboard instead of hashing the file again.
+const OUTBOARDS: TableDefinition<[u8; 32], &[u8]> = TableDefinition::new("area_outboards");
+/// A caller's own names for blobs (document media's per-workspace references, a legacy import's
+/// journal), read only by exact name and never scanned or evicted.
+const REFERENCE_TAGS: TableDefinition<&str, [u8; 32]> = TableDefinition::new("area_reference_tags");
 /// Chunk hash to `key ‖ offset (u64 LE) ‖ len (u32 LE)`.
 const CHUNKS: MultimapTableDefinition<[u8; 32], [u8; 44]> =
     MultimapTableDefinition::new("area_chunks");
@@ -36,11 +51,32 @@ const ORIGINS: TableDefinition<[u8; 32], &str> = TableDefinition::new("area_orig
 
 const OPEN_FILES: usize = 256;
 const COPY_BUFFER: usize = 1024 * 1024;
+/// Pages of the index database kept in memory, read and written. Small blobs live inside those pages,
+/// so redb's own default (1 GiB) would let the process that keeps a synced folder grow toward a
+/// gigabyte of cached pages; the hot blob cache in front of it and the OS page cache serve repeats.
+pub const META_CACHE_BYTES: usize = 32 * 1024 * 1024;
 /// Newly resident bytes of one entry that may be recorded in memory only: a crash loses at most this
 /// much of a transfer's progress.
 const SYNC_BATCH: u64 = 256 * 1024 * 1024;
 
 pub type AreaKey = [u8; 32];
+
+/// What an entry holds: a file version's content, keyed by its content id, or a whole blob imported
+/// or fetched by its own hash.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Kind {
+    #[default]
+    Content,
+    Blob,
+}
+
+/// What an installed entry holds beyond its bytes: its kind, the BLAKE3 of its complete bytes (for
+/// sharing extents between entries with the same content), and the chunk index of a content entry.
+struct Shape<'a> {
+    kind: Kind,
+    digest: Option<[u8; 32]>,
+    chunks: &'a [([u8; 32], u64, u32)],
+}
 
 /// The most recently used cached entries, which the budget keeps even when an always-on device holds
 /// them: the file being read and the ones predicted next.
@@ -147,6 +183,7 @@ struct Stored {
     /// BLAKE3 of the complete bytes of a keyed entry, for sharing extents between entries with the
     /// same bytes.
     digest: Option<[u8; 32]>,
+    kind: Kind,
 }
 
 struct Entry {
@@ -155,6 +192,7 @@ struct Entry {
     retention: Retention,
     last_use: u64,
     digest: Option<[u8; 32]>,
+    kind: Kind,
     /// Bytes recorded resident in memory since the last durable record.
     unsynced: u64,
     durable: RangeSet,
@@ -175,6 +213,7 @@ impl Entry {
             retention: self.retention,
             last_use: self.last_use,
             digest: self.digest,
+            kind: self.kind,
         }
     }
 
@@ -225,6 +264,9 @@ pub struct FileArea {
     /// Whether data is synced and the index is on disk. An ephemeral area is gone with its process, so
     /// syncing it would only cost a disk flush per write.
     durable: bool,
+    /// Whether each write's commit waits for the disk; a deferred-durability group clears this and
+    /// syncs once at its end.
+    sync_writes: AtomicBool,
 }
 
 fn db_error(error: impl std::fmt::Display) -> io::Error {
@@ -265,7 +307,10 @@ impl FileArea {
     /// entries.
     pub fn open(dir: &Path, budget: u64) -> io::Result<Self> {
         std::fs::create_dir_all(dir)?;
-        let db = Database::create(dir.join("area.redb")).map_err(db_error)?;
+        let db = Database::builder()
+            .set_cache_size(META_CACHE_BYTES)
+            .create(dir.join("area.redb"))
+            .map_err(db_error)?;
         Self::open_with(dir, db, budget, true)
     }
 
@@ -284,6 +329,9 @@ impl FileArea {
         {
             let txn = db.begin_write().map_err(db_error)?;
             txn.open_table(ENTRIES).map_err(db_error)?;
+            txn.open_table(INLINE).map_err(db_error)?;
+            txn.open_table(OUTBOARDS).map_err(db_error)?;
+            txn.open_table(REFERENCE_TAGS).map_err(db_error)?;
             txn.open_multimap_table(CHUNKS).map_err(db_error)?;
             txn.open_table(MEMBERS).map_err(db_error)?;
             txn.open_table(ORIGINS).map_err(db_error)?;
@@ -300,6 +348,7 @@ impl FileArea {
             read_bytes: AtomicU64::new(0),
             held_elsewhere: std::sync::RwLock::new(None),
             durable,
+            sync_writes: AtomicBool::new(true),
         };
         area.load()?;
         Ok(area)
@@ -327,6 +376,7 @@ impl FileArea {
                         retention: stored.retention,
                         last_use: stored.last_use,
                         digest: stored.digest,
+                        kind: stored.kind,
                         unsynced: 0,
                         durable: range_set(&stored.resident),
                         generation: 0,
@@ -372,6 +422,30 @@ impl FileArea {
         self.state.lock_recover()
     }
 
+    /// A write transaction at the area's current durability: a deferred-durability group lets it
+    /// commit without waiting for the disk, and the group's end flushes once.
+    fn write_txn(&self) -> io::Result<redb::WriteTransaction> {
+        let mut txn = self.database()?.begin_write().map_err(db_error)?;
+        if !self.sync_writes.load(Ordering::Relaxed) {
+            txn.set_durability(redb::Durability::None)
+                .map_err(db_error)?;
+        }
+        Ok(txn)
+    }
+
+    /// Makes the commits made since [`Self::set_sync_writes`]`(false)` durable with one flush.
+    pub fn sync_db(&self) -> io::Result<()> {
+        let mut txn = self.database()?.begin_write().map_err(db_error)?;
+        txn.set_durability(redb::Durability::Immediate)
+            .map_err(db_error)?;
+        txn.commit().map_err(db_error)
+    }
+
+    /// Whether each commit waits for the disk; see [`Self::sync_db`] for the deferred group's end.
+    pub fn set_sync_writes(&self, sync: bool) {
+        self.sync_writes.store(sync, Ordering::Relaxed);
+    }
+
     pub fn path_of(&self, key: &AreaKey) -> PathBuf {
         self.data.join(hex::encode(key))
     }
@@ -408,6 +482,160 @@ impl FileArea {
     /// Every entry key.
     pub fn keys(&self) -> Vec<AreaKey> {
         self.lock().entries.keys().copied().collect()
+    }
+
+    /// Whether `key` is a whole blob rather than a file version's content.
+    pub fn is_blob(&self, key: &AreaKey) -> bool {
+        self.lock()
+            .entries
+            .get(key)
+            .is_some_and(|entry| entry.kind == Kind::Blob)
+    }
+
+    /// Every whole-blob entry key.
+    pub fn blob_keys(&self) -> Vec<AreaKey> {
+        self.lock()
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.kind == Kind::Blob)
+            .map(|(key, _)| *key)
+            .collect()
+    }
+
+    /// Every hash in the chunk index: a chunk is a blob wherever it lives.
+    pub fn chunk_hashes(&self) -> Vec<[u8; 32]> {
+        let Ok(db) = self.database() else {
+            return Vec::new();
+        };
+        let Ok(txn) = db.begin_read() else {
+            return Vec::new();
+        };
+        let Ok(members) = txn.open_table(MEMBERS) else {
+            return Vec::new();
+        };
+        let mut hashes = Vec::new();
+        for row in members.iter().ok().into_iter().flatten() {
+            let Ok((_, list)) = row else { continue };
+            for member in list.value().chunks_exact(76) {
+                if let Some(hash) = member
+                    .get(..32)
+                    .and_then(|hash| <[u8; 32]>::try_from(hash).ok())
+                {
+                    hashes.push(hash);
+                }
+            }
+        }
+        hashes.sort_unstable();
+        hashes.dedup();
+        hashes
+    }
+
+    /// Stores `blobs` inline under their hashes, in one commit. Inline content is inside the index
+    /// database, so the budget never evicts it: a manifest or a chunk an entry needs stays readable
+    /// while the entry does.
+    pub fn put_inline(&self, blobs: impl IntoIterator<Item = (AreaKey, Bytes)>) -> io::Result<()> {
+        let txn = self.write_txn()?;
+        {
+            let mut table = txn.open_table(INLINE).map_err(db_error)?;
+            for (key, bytes) in blobs {
+                table.insert(key, bytes.as_ref()).map_err(db_error)?;
+            }
+        }
+        txn.commit().map_err(db_error)
+    }
+
+    /// The inline bytes of `key`.
+    pub fn get_inline(&self, key: &AreaKey) -> Option<Vec<u8>> {
+        let txn = self.database().ok()?.begin_read().ok()?;
+        let table = txn.open_table(INLINE).ok()?;
+        table.get(*key).ok()?.map(|bytes| bytes.value().to_vec())
+    }
+
+    pub fn has_inline(&self, key: &AreaKey) -> bool {
+        let Ok(db) = self.database() else {
+            return false;
+        };
+        let Ok(txn) = db.begin_read() else {
+            return false;
+        };
+        let Ok(table) = txn.open_table(INLINE) else {
+            return false;
+        };
+        table.get(*key).ok().flatten().is_some()
+    }
+
+    /// Every inline blob's hash.
+    pub fn inline_keys(&self) -> Vec<AreaKey> {
+        let Ok(db) = self.database() else {
+            return Vec::new();
+        };
+        let Ok(txn) = db.begin_read() else {
+            return Vec::new();
+        };
+        let Ok(table) = txn.open_table(INLINE) else {
+            return Vec::new();
+        };
+        table
+            .iter()
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(|row| row.ok().map(|(key, _)| key.value()))
+            .collect()
+    }
+
+    /// Removes `key`'s inline bytes. Returns whether it held any.
+    pub fn remove_inline(&self, key: &AreaKey) -> io::Result<bool> {
+        let txn = self.write_txn()?;
+        let removed = {
+            let mut table = txn.open_table(INLINE).map_err(db_error)?;
+            table.remove(*key).map_err(db_error)?.is_some()
+        };
+        txn.commit().map_err(db_error)?;
+        Ok(removed)
+    }
+
+    /// The persisted BAO outboard of whole blob `key`.
+    pub fn outboard(&self, key: &AreaKey) -> Option<Vec<u8>> {
+        let txn = self.database().ok()?.begin_read().ok()?;
+        let table = txn.open_table(OUTBOARDS).ok()?;
+        table.get(*key).ok()?.map(|data| data.value().to_vec())
+    }
+
+    fn put_outboard(&self, key: &AreaKey, data: &[u8]) -> io::Result<()> {
+        let txn = self.write_txn()?;
+        {
+            let mut table = txn.open_table(OUTBOARDS).map_err(db_error)?;
+            table.insert(*key, data).map_err(db_error)?;
+        }
+        txn.commit().map_err(db_error)
+    }
+
+    /// The blob `tag` names, if any.
+    pub fn reference(&self, tag: &str) -> Option<AreaKey> {
+        let txn = self.database().ok()?.begin_read().ok()?;
+        let table = txn.open_table(REFERENCE_TAGS).ok()?;
+        Some(table.get(tag).ok()??.value())
+    }
+
+    /// Makes `tag` a name for blob `hash`.
+    pub fn set_reference(&self, tag: &str, hash: &AreaKey) -> io::Result<()> {
+        let txn = self.write_txn()?;
+        {
+            let mut table = txn.open_table(REFERENCE_TAGS).map_err(db_error)?;
+            table.insert(tag, *hash).map_err(db_error)?;
+        }
+        txn.commit().map_err(db_error)
+    }
+
+    /// `key`'s size and the ranges of it that are resident.
+    pub fn resident(&self, key: &AreaKey) -> Option<(u64, Vec<Range<u64>>)> {
+        self.lock().entries.get(key).map(|entry| {
+            (
+                entry.size,
+                entry.resident.iter().cloned().collect::<Vec<Range<u64>>>(),
+            )
+        })
     }
 
     /// Resident bytes of cached entries (what the budget limits) and of all
@@ -516,6 +744,7 @@ impl FileArea {
                     retention,
                     last_use: now,
                     digest: None,
+                    kind: Kind::Content,
                     unsynced: 0,
                     durable: RangeSet::new(),
                     generation,
@@ -533,7 +762,7 @@ impl FileArea {
         }
         let _commit = self.commit.lock_recover();
         let mut members = Vec::with_capacity(chunks.len().saturating_mul(76));
-        let txn = self.database()?.begin_write().map_err(db_error)?;
+        let txn = self.write_txn()?;
         {
             let mut index = txn.open_multimap_table(CHUNKS).map_err(db_error)?;
             for (hash, offset, len) in chunks {
@@ -827,7 +1056,18 @@ impl FileArea {
                 return Err(error);
             }
         };
-        self.install(key, &staging, target, len, retention, None, chunks)
+        self.install(
+            key,
+            &staging,
+            target,
+            len,
+            retention,
+            &Shape {
+                kind: Kind::Content,
+                digest: None,
+                chunks,
+            },
+        )
     }
 
     pub fn adopt_bytes(
@@ -862,8 +1102,11 @@ impl FileArea {
             target,
             bytes.len() as u64,
             retention,
-            None,
-            chunks,
+            &Shape {
+                kind: Kind::Content,
+                digest: None,
+                chunks,
+            },
         )
     }
 
@@ -886,8 +1129,95 @@ impl FileArea {
         self.sync(&target)?;
         let len = target.metadata()?.len();
         self.share_extents(&digest, &target, len);
-        self.install(key, &staging, target, len, retention, Some(digest), &[])?;
+        self.install(
+            key,
+            &staging,
+            target,
+            len,
+            retention,
+            &Shape {
+                kind: Kind::Content,
+                digest: Some(digest),
+                chunks: &[],
+            },
+        )?;
         Ok(digest)
+    }
+
+    /// Makes `key` a complete whole-blob entry holding `bytes`, with `outboard` its BAO outboard.
+    pub fn adopt_blob_bytes(&self, key: &AreaKey, bytes: &[u8], outboard: &[u8]) -> io::Result<()> {
+        self.adopt_bytes(key, bytes, Retention::LocalOnly, &[])?;
+        let mut state = self.lock();
+        if let Some(entry) = state.entries.get_mut(key) {
+            entry.kind = Kind::Blob;
+            entry.digest = Some(*key);
+        }
+        state.digests.insert(*key, *key);
+        drop(state);
+        self.persist(key)?;
+        self.put_outboard(key, outboard)
+    }
+
+    /// Makes `key` a complete whole-blob entry holding the first `len` bytes of `source`, cloned
+    /// where the filesystem shares extents and copied otherwise, with `outboard` its BAO outboard.
+    pub fn adopt_blob_clone(
+        &self,
+        key: &AreaKey,
+        source: &File,
+        len: u64,
+        outboard: &[u8],
+    ) -> io::Result<()> {
+        self.adopt_clone(key, source, len, Retention::LocalOnly, &[])?;
+        let mut state = self.lock();
+        if let Some(entry) = state.entries.get_mut(key) {
+            entry.kind = Kind::Blob;
+            entry.digest = Some(*key);
+        }
+        state.digests.insert(*key, *key);
+        drop(state);
+        self.persist(key)?;
+        self.put_outboard(key, outboard)
+    }
+
+    /// A fresh staging file under the area's data directory, for content that is hashed as it
+    /// arrives: [`Self::install_staged_blob`] makes it a entry, and a caller that abandons the
+    /// import removes the path.
+    pub fn staging_file(&self) -> io::Result<(PathBuf, File)> {
+        let n = self.staging.fetch_add(1, Ordering::Relaxed);
+        let path = self.data.join(format!(".{n}.staging"));
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&path)?;
+        Ok((path, file))
+    }
+
+    /// Makes `staging` (readable in full, `len` bytes long) the whole-blob entry `key`, whose BLAKE3
+    /// is `key`, with `outboard` its BAO outboard.
+    pub fn install_staged_blob(
+        &self,
+        key: &AreaKey,
+        staging: &Path,
+        len: u64,
+        outboard: &[u8],
+    ) -> io::Result<()> {
+        let target = OpenOptions::new().read(true).write(true).open(staging)?;
+        self.sync(&target)?;
+        self.install(
+            key,
+            staging,
+            target,
+            len,
+            Retention::LocalOnly,
+            &Shape {
+                kind: Kind::Blob,
+                digest: Some(*key),
+                chunks: &[],
+            },
+        )?;
+        self.put_outboard(key, outboard)
     }
 
     fn staging_path(&self, key: &AreaKey) -> PathBuf {
@@ -902,9 +1232,9 @@ impl FileArea {
         file: File,
         len: u64,
         retention: Retention,
-        digest: Option<[u8; 32]>,
-        chunks: &[([u8; 32], u64, u32)],
+        shape: &Shape<'_>,
     ) -> io::Result<()> {
+        let (kind, digest, chunks) = (shape.kind, shape.digest, shape.chunks);
         let _create = self.create.lock_recover();
         if self.entry(key).is_some() {
             self.remove(key)?;
@@ -922,6 +1252,7 @@ impl FileArea {
                     retention,
                     last_use: now,
                     digest,
+                    kind,
                     unsynced: 0,
                     durable: RangeSet::full(len),
                     generation,
@@ -1023,7 +1354,7 @@ impl FileArea {
     pub fn adopt_fetched(&self, key: &AreaKey, bytes: &[u8], origin: &str) -> io::Result<()> {
         self.adopt_bytes(key, bytes, Retention::Fetchable, &[])?;
         let _commit = self.commit.lock_recover();
-        let txn = self.database()?.begin_write().map_err(db_error)?;
+        let txn = self.write_txn()?;
         txn.open_table(ORIGINS)
             .map_err(db_error)?
             .insert(*key, origin)
@@ -1162,7 +1493,7 @@ impl FileArea {
             return Ok(());
         }
         let bytes = postcard::to_allocvec(stored).map_err(db_error)?;
-        let txn = self.database()?.begin_write().map_err(db_error)?;
+        let txn = self.write_txn()?;
         txn.open_table(ENTRIES)
             .map_err(db_error)?
             .insert(*key, bytes.as_slice())
@@ -1172,9 +1503,13 @@ impl FileArea {
 
     fn unpersist(&self, key: &AreaKey) -> io::Result<()> {
         let _commit = self.commit.lock_recover();
-        let txn = self.database()?.begin_write().map_err(db_error)?;
+        let txn = self.write_txn()?;
         {
             txn.open_table(ENTRIES)
+                .map_err(db_error)?
+                .remove(*key)
+                .map_err(db_error)?;
+            txn.open_table(OUTBOARDS)
                 .map_err(db_error)?
                 .remove(*key)
                 .map_err(db_error)?;
@@ -1430,6 +1765,108 @@ mod tests {
 
     fn key(n: u8) -> AreaKey {
         [n; 32]
+    }
+
+    #[test]
+    fn inline_blobs_round_trip_and_survive_reopening() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let area = FileArea::open(dir.path(), u64::MAX).unwrap();
+            area.put_inline([
+                (key(1), Bytes::from_static(b"a manifest")),
+                (key(2), Bytes::from(vec![7u8; 300_000])),
+            ])
+            .unwrap();
+            assert_eq!(
+                area.get_inline(&key(1)).unwrap(),
+                b"a manifest".to_vec(),
+                "inline bytes read back what was written"
+            );
+            assert!(area.has_inline(&key(2)));
+            assert!(!area.has_inline(&key(3)));
+            let keys = {
+                let mut keys = area.inline_keys();
+                keys.sort_unstable();
+                keys
+            };
+            assert_eq!(keys, vec![key(1), key(2)]);
+            assert!(
+                area.entry(&key(1)).is_none(),
+                "inline blobs are not file entries"
+            );
+            assert!(area.remove_inline(&key(1)).unwrap());
+            assert!(!area.remove_inline(&key(1)).unwrap());
+            area.flush().unwrap();
+        }
+        let area = FileArea::open(dir.path(), u64::MAX).unwrap();
+        assert!(area.get_inline(&key(1)).is_none());
+        assert_eq!(area.get_inline(&key(2)).unwrap().len(), 300_000);
+    }
+
+    #[test]
+    fn the_budget_never_evicts_inline_blobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let area = FileArea::open(dir.path(), 0).unwrap();
+        area.put_inline([(key(1), Bytes::from(vec![1u8; 4096]))])
+            .unwrap();
+        area.adopt_bytes(&key(2), &[2u8; 4096], Retention::Cached, &[])
+            .unwrap();
+        assert_eq!(
+            area.evict_to_budget(&[]),
+            4096,
+            "the cached entry goes, the inline blob stays"
+        );
+        assert!(area.entry(&key(2)).is_none());
+        assert_eq!(area.get_inline(&key(1)).unwrap().len(), 4096);
+    }
+
+    #[test]
+    fn whole_blobs_keep_their_outboard_and_are_listed_as_blobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let area = FileArea::open(dir.path(), u64::MAX).unwrap();
+        let bytes: Vec<u8> = (0..70_000_u32).map(|n| (n % 251) as u8).collect();
+        area.adopt_blob_bytes(&key(1), &bytes, b"outboard").unwrap();
+        assert_eq!(area.get_inline(&key(1)), None);
+        assert!(area.is_blob(&key(1)));
+        assert_eq!(area.blob_keys(), vec![key(1)]);
+        assert_eq!(area.read_at(&key(1), 4096, 16).unwrap(), bytes[4096..4112]);
+        assert_eq!(area.outboard(&key(1)).unwrap(), b"outboard");
+        assert_eq!(
+            area.entry(&key(1)).unwrap(),
+            EntryInfo {
+                size: 70_000,
+                resident: 70_000,
+                retention: Retention::LocalOnly,
+            }
+        );
+        area.flush().unwrap();
+        drop(area);
+
+        let area = FileArea::open(dir.path(), u64::MAX).unwrap();
+        assert!(area.is_blob(&key(1)));
+        assert_eq!(area.outboard(&key(1)).unwrap(), b"outboard");
+        area.remove(&key(1)).unwrap();
+        assert!(
+            area.outboard(&key(1)).is_none(),
+            "removal drops the outboard"
+        );
+        assert!(area.blob_keys().is_empty());
+    }
+
+    #[test]
+    fn a_staged_import_becomes_a_whole_blob_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let area = FileArea::open(dir.path(), u64::MAX).unwrap();
+        let bytes: Vec<u8> = (0..50_000_u32).map(|n| (n % 251) as u8).collect();
+        let hash = *blake3::hash(&bytes).as_bytes();
+        let (path, mut file) = area.staging_file().unwrap();
+        std::io::Write::write_all(&mut file, &bytes).unwrap();
+        drop(file);
+        area.install_staged_blob(&hash, &path, bytes.len() as u64, b"outboard")
+            .unwrap();
+        assert!(!path.exists(), "the staging file became the entry");
+        assert_eq!(area.read_at(&hash, 0, 16).unwrap(), bytes[..16]);
+        assert_eq!(area.entry(&hash).unwrap().retention, Retention::LocalOnly);
     }
 
     #[test]

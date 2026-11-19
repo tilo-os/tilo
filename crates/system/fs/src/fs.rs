@@ -2575,7 +2575,7 @@ impl QuickFS {
     }
 
     /// Queue a policy-authorized removal of this file's local payload. Residency remains
-    /// local until an exact backend observation proves every requested blob absent.
+    /// local until an exact store observation proves every requested blob absent.
     fn free_local_space(&self, ino: u64, mode: EvictionMode) -> Result<(), i32> {
         self.check_access(ino, Access::Read)?;
         let document_id = self.ns().document_id_for(ino).ok_or(ENOENT)?;
@@ -2640,7 +2640,7 @@ impl QuickFS {
                 }
                 continue;
             }
-            // Settings persists an intent before asking the backend GC to collect it.
+            // Settings persists an intent before the blobs are removed from the store.
             // Availability and history can lag a newly applied namespace revision, so a later
             // restart must not turn an old intent into authority for the current file.
             if !self.eviction_request_matches_live_namespace(&request) {

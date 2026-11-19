@@ -131,9 +131,9 @@ pub use peer_auth::{
 };
 #[cfg(feature = "filesystem")]
 pub use smart::Heuristics;
+pub use store::ContentStore;
 #[cfg(feature = "filesystem")]
-pub use store::{BackendGcRelease, StoreEvictionError};
-pub use store::{ContentStore, DEFAULT_BLOB_GC_INTERVAL};
+pub use store::StoreEvictionError;
 #[cfg(feature = "filesystem")]
 pub use sync::{FsTransportIdentity, Ticket, Workspace};
 #[cfg(feature = "filesystem")]

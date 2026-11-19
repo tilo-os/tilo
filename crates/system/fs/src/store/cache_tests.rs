@@ -89,17 +89,10 @@ async fn streamed_ingest_stores_whole_content_and_caches_none_of_it() {
     assert_eq!(len, content.len() as u64);
     assert!(!store.is_cached(hash));
     assert_eq!(store.local(hash).await.unwrap().as_ref(), content);
-    let mut tags = tests_tag_names(store.store()).await;
-    tags.sort();
-    assert_eq!(
-        tags,
-        [owned_blob_tag(hash, BlobFormat::Raw).into_bytes()],
-        "the import is owned like any ingest, with no temporary tag left"
-    );
 }
 
 #[tokio::test]
-async fn an_abandoned_streamed_ingest_stores_nothing_and_leaves_no_spill() {
+async fn an_abandoned_streamed_ingest_stores_nothing_and_leaves_no_staging_file() {
     let directory = tempfile::tempdir().unwrap();
     let content = vec![5_u8; 64 * 64 * 1024];
     {
@@ -109,43 +102,16 @@ async fn an_abandoned_streamed_ingest_stores_nothing_and_leaves_no_spill() {
         )]));
         assert!(store.ingest_stream(pieces).await.is_err());
         assert!(!store.has(Hash::new(&content)).await);
-        assert!(tests_tag_names(store.store()).await.is_empty());
         assert!(
-            store
-                .store()
-                .blobs()
-                .list()
-                .hashes()
-                .await
-                .unwrap()
-                .is_empty(),
+            store.blob_hashes().await.unwrap().is_empty(),
             "nothing of the abandoned import was stored"
         );
-        let spilled = std::fs::read_dir(directory.path().join("temp"))
+        let staging = std::fs::read_dir(directory.path().join("files/data"))
             .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".staging"))
             .count();
-        assert!(
-            spilled > 0,
-            "the store no longer leaves a spill behind; drop remove_import_spills"
-        );
+        assert_eq!(staging, 0, "the abandoned import left its staging file");
         store.shutdown().await.unwrap();
     }
-    let store = ContentStore::open(directory.path()).await.unwrap();
-    assert_eq!(
-        std::fs::read_dir(directory.path().join("temp"))
-            .unwrap()
-            .count(),
-        0,
-        "reopening the store removes earlier runs' spills"
-    );
-    store.shutdown().await.unwrap();
-}
-
-async fn tests_tag_names(store: &Store) -> Vec<Vec<u8>> {
-    let mut tags = store.tags().list().await.unwrap();
-    let mut names = Vec::new();
-    while let Some(tag) = tags.next().await {
-        names.push(tag.unwrap().name.as_ref().to_vec());
-    }
-    names
 }

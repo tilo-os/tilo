@@ -17,7 +17,6 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result};
 use bytes::Bytes;
 use iroh_blobs::Hash;
-use iroh_blobs::api::blobs::BlobStatus;
 
 use super::{ContentStore, Retention};
 use crate::content::{self, ChunkTier, Manifest};
@@ -216,24 +215,7 @@ impl ContentStore {
         true
     }
 
-    /// The status of blob `hash` in either backing: a chunk resident in the
-    /// area counts as complete.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the loose store cannot answer.
-    pub async fn blob_status(&self, hash: Hash) -> Result<BlobStatus> {
-        if let Some(location) = self.files.find_chunk(hash.as_bytes()) {
-            return Ok(BlobStatus::Complete {
-                size: u64::from(location.len),
-            });
-        }
-        Ok(self.store().blobs().status(hash).await?)
-    }
-
-    /// Keeps `content` offline (or lets it be evicted again). Only
-    /// file-backed content has a retention; loose blobs are kept by their
-    /// tags.
+    /// Keeps `content` offline (or lets it be evicted again).
     ///
     /// # Errors
     ///
