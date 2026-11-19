@@ -39,6 +39,15 @@ const PROGRAM_WINDOW: &str = "org.example.WindowsProbe";
 /// entry from and writes the service's answers to.
 const MANAGER_DIR: &str = "TILO_TEST_WINDOWS_MANAGER";
 
+/// Write the manager's `answers` where the test waits for them: the file appears whole, so a
+/// wait that sees it never reads a file the write has not filled yet.
+fn write_answers(dir: &Path, answers: &Value) {
+    let path = dir.join("answers");
+    let staging = dir.join("answers.writing");
+    fs::write(&staging, answers.to_string()).expect("the answers written");
+    fs::rename(&staging, &path).expect("the answers put in place");
+}
+
 /// The answer to `request` on `client`, as JSON, or the error that ended the connection.
 fn ask(client: &mut SessionClient, request: &ProtocolRequest) -> Value {
     match client.request(request) {
@@ -127,18 +136,16 @@ fn manager_process() {
             version: PROTOCOL_VERSION,
         },
     );
-    fs::write(
-        dir.join("answers"),
-        json!({
+    write_answers(
+        &dir,
+        &json!({
             "listed": listed,
             "launched": launched,
             "running": running,
             "ended": ended,
             "again": again
-        })
-        .to_string(),
-    )
-    .expect("the answers written");
+        }),
+    );
 }
 
 /// Grants nothing beyond what the plan carries.
@@ -873,7 +880,7 @@ fn manager_steps() {
         };
         answers.push(answer);
     }
-    fs::write(dir.join("answers"), Value::from(answers).to_string()).expect("the answers");
+    write_answers(&dir, &Value::from(answers));
 }
 
 /// A session whose Windows programs are kept behind keepers, through restarts of the desktop.
