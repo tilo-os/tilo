@@ -1715,6 +1715,8 @@ native_preflight() {
   fi
   command -v bwrap >/dev/null \
     || die 'needs bwrap (bubblewrap: dnf install bubblewrap), which gives the server and the API server the local trust bundle'
+  command -v openssl >/dev/null \
+    || die 'needs openssl (dnf install openssl), which makes the key the stack signs its releases of the tilo command with'
   [[ -f $ca_path ]] || die "this machine has no trust bundle at $ca_path, the one path Tilo's programs read"
 }
 
