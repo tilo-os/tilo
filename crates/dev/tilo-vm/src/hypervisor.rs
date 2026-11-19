@@ -879,8 +879,13 @@ pub struct Qemu;
 
 impl Qemu {
     fn script(vm: &Vm<'_>, args: &[&str]) -> CommandLine {
+        // The preflight checked QEMU, its modules and firmware on this computer, so
+        // the VM starts with those. vm.sh would otherwise enter its default
+        // distrobox, whose older QEMU may lack the GL display module and crashed at
+        // device setup instead of saying so.
         CommandLine::new("bash", &["os/dev/vm.sh"])
             .args_from(args)
+            .env("TILO_DISTROBOX", "")
             .env("TILO_SSH_PORT", vm.ssh_port().to_string())
     }
 }
@@ -1008,6 +1013,7 @@ impl Hypervisor for Qemu {
                 ],
             )
             .arg(out.display().to_string())
+            .env("TILO_DISTROBOX", "")
             .env("TILO_SSH_PORT", vm.ssh_port().to_string()),
         )
     }
@@ -2061,7 +2067,7 @@ mod tests {
             let start = |entry: &VmEntry| Qemu.start(&Vm { name: "dev", entry })[0].display();
             assert_eq!(
                 start(&entry),
-                "TILO_SSH_PORT=2223 TILO_MEM=3072 TILO_SMP=3 TILO_ACCEL=tcg TILO_VM_ARCH=aarch64 TILO_XRES=1920 TILO_YRES=1080 bash os/dev/vm.sh boot --2d --disk /vms/dev.qcow2"
+                "TILO_DISTROBOX='' TILO_SSH_PORT=2223 TILO_MEM=3072 TILO_SMP=3 TILO_ACCEL=tcg TILO_VM_ARCH=aarch64 TILO_XRES=1920 TILO_YRES=1080 bash os/dev/vm.sh boot --2d --disk /vms/dev.qcow2"
             );
             entry.gl = true;
             assert!(start(&entry).contains("boot --gl --disk"));
@@ -2082,7 +2088,7 @@ mod tests {
                     entry: &entry
                 })[0]
                     .display(),
-                "TILO_SSH_PORT=2223 bash os/dev/vm.sh cmd system_powerdown"
+                "TILO_DISTROBOX='' TILO_SSH_PORT=2223 bash os/dev/vm.sh cmd system_powerdown"
             );
         }
 
@@ -2102,7 +2108,7 @@ mod tests {
                 assert_eq!(Qemu.running(&vm, &mut runner), expected);
                 assert_eq!(
                     runner.0[0].display(),
-                    "TILO_SSH_PORT=2223 bash os/dev/vm.sh status"
+                    "TILO_DISTROBOX='' TILO_SSH_PORT=2223 bash os/dev/vm.sh status"
                 );
             }
             let mut runner = fake("stopped");
@@ -2110,7 +2116,7 @@ mod tests {
             assert_eq!(Qemu.running(&vm, &mut runner), None);
             assert_eq!(
                 Qemu.stop(&vm)[0].display(),
-                "TILO_SSH_PORT=2223 bash os/dev/vm.sh cmd system_powerdown"
+                "TILO_DISTROBOX='' TILO_SSH_PORT=2223 bash os/dev/vm.sh cmd system_powerdown"
             );
         }
 
@@ -2153,7 +2159,13 @@ mod tests {
             );
             assert_eq!(command.args[2], "tilo-vm-shot");
             assert_eq!(command.args[3], destination.display().to_string());
-            assert_eq!(command.env, vec![("TILO_SSH_PORT".into(), "2223".into())]);
+            assert_eq!(
+                command.env,
+                vec![
+                    ("TILO_DISTROBOX".into(), String::new()),
+                    ("TILO_SSH_PORT".into(), "2223".into())
+                ]
+            );
         }
     }
 
@@ -2650,22 +2662,22 @@ mod tests {
             };
             assert_eq!(
                 Qemu.start(&vm)[0].display(),
-                "TILO_SSH_PORT=2223 TILO_MEM=4096 TILO_SMP=2 bash os/dev/vm.sh boot --2d --disk /vms/dev.qcow2"
+                "TILO_DISTROBOX='' TILO_SSH_PORT=2223 TILO_MEM=4096 TILO_SMP=2 bash os/dev/vm.sh boot --2d --disk /vms/dev.qcow2"
             );
             assert_eq!(
                 Qemu.reset(&vm).unwrap().display(),
-                "TILO_SSH_PORT=2223 bash os/dev/vm.sh cmd system_reset"
+                "TILO_DISTROBOX='' TILO_SSH_PORT=2223 bash os/dev/vm.sh cmd system_reset"
             );
             assert_eq!(
                 Qemu.screenshot(&vm, Path::new("/tmp/out/boot.png"))
                     .unwrap()
                     .display(),
-                "TILO_SSH_PORT=2223 bash -c 'image=$(bash os/dev/vm.sh shot \"tilo-vm-shot-$$\") && mv -- \"$image\" \"$1\"' tilo-vm-shot /tmp/out/boot.png"
+                "TILO_DISTROBOX='' TILO_SSH_PORT=2223 bash -c 'image=$(bash os/dev/vm.sh shot \"tilo-vm-shot-$$\") && mv -- \"$image\" \"$1\"' tilo-vm-shot /tmp/out/boot.png"
             );
             assert!(Qemu.destroy(&vm).is_empty());
             assert_eq!(
                 Qemu.power_off(&vm).unwrap().display(),
-                "TILO_SSH_PORT=2223 bash os/dev/vm.sh stop"
+                "TILO_DISTROBOX='' TILO_SSH_PORT=2223 bash os/dev/vm.sh stop"
             );
         }
 
