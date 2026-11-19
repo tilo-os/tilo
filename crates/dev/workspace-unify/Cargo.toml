@@ -1498,7 +1498,7 @@ doc = false
 "typst-eval-0_15_1" = { package = "typst-eval", version = "^0.15.1", default-features = false, features = [] }
 "typst-html-0_15_1" = { package = "typst-html", version = "^0.15.1", default-features = false, features = [] }
 "typst-layout-0_15_1" = { package = "typst-layout", version = "^0.15.1", default-features = false, features = [] }
-"typst-library-0_15_1" = { package = "typst-library", version = "^0.15.1", default-features = false, features = [] }
+"typst-library-0_15_1" = { package = "typst-library", path = "../../../vendor/typst-library", default-features = false, features = [] }
 "typst-pdf-0_15_1" = { package = "typst-pdf", version = "^0.15.1", default-features = false, features = [] }
 "typst-realize-0_15_1" = { package = "typst-realize", version = "^0.15.1", default-features = false, features = [] }
 "typst-render-0_15_1" = { package = "typst-render", version = "^0.15.1", default-features = false, features = [] }
@@ -4119,7 +4119,7 @@ doc = false
 "typst-eval-0_15_1" = { package = "typst-eval", version = "^0.15.1", default-features = false, features = [] }
 "typst-html-0_15_1" = { package = "typst-html", version = "^0.15.1", default-features = false, features = [] }
 "typst-layout-0_15_1" = { package = "typst-layout", version = "^0.15.1", default-features = false, features = [] }
-"typst-library-0_15_1" = { package = "typst-library", version = "^0.15.1", default-features = false, features = [] }
+"typst-library-0_15_1" = { package = "typst-library", path = "../../../vendor/typst-library", default-features = false, features = [] }
 "typst-pdf-0_15_1" = { package = "typst-pdf", version = "^0.15.1", default-features = false, features = [] }
 "typst-realize-0_15_1" = { package = "typst-realize", version = "^0.15.1", default-features = false, features = [] }
 "typst-render-0_15_1" = { package = "typst-render", version = "^0.15.1", default-features = false, features = [] }

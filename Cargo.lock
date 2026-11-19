@@ -25368,6 +25368,7 @@ dependencies = [
  "typst-layout",
  "typst-pdf",
  "typst-render",
+ "wat",
  "workspace-hack",
 ]
 
@@ -25453,8 +25454,6 @@ dependencies = [
 [[package]]
 name = "typst-library"
 version = "0.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12becd02464849f1507f3c4ef3f401a4d28d5938cc74b6acc6f1d703458bf393"
 dependencies = [
  "arrayvec",
  "az",
@@ -25497,6 +25496,7 @@ dependencies = [
  "siphasher",
  "smallvec",
  "syntect",
+ "tilo-wasm-host",
  "time",
  "toml 0.8.23",
  "ttf-parser",
@@ -28538,7 +28538,6 @@ dependencies = [
  "vte",
  "wasm-encoder 0.252.0",
  "wasmi",
- "wasmi_collections",
  "wasmi_core",
  "wasmi_ir",
  "wasmparser 0.239.0",
