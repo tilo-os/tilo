@@ -1,0 +1,95 @@
+{
+  "about": "Every budget the user stories are held to, in one place, so whoever owns a part tightens its number here. `web` are the targets every story that uses the web page is measured against (recorder.mjs's `story.web`): a measurement over its target makes the story red, as a step over its budget does. `measures` are a story's own costs with their targets (a target with `atLeast` is a floor, such as a rate). `steps` are each story's step budgets, in ms, by the step's own words. Numbers are what a person would accept on the local stack.",
+  "web": {
+    "cold-load-ms": {
+      "target": 2000,
+      "what": "A browser that has never seen the site opening it, to first content (first-contentful-paint)."
+    },
+    "warm-load-ms": {
+      "target": 500,
+      "what": "The same browser opening it again, to first content."
+    },
+    "sign-in-ms": {
+      "target": 2000,
+      "what": "Signing in to a workspace: from the press that asks to join to the workspace on screen."
+    },
+    "open-app-ms": {
+      "target": 1000,
+      "what": "Opening an app: from Enter on it to its window on screen."
+    },
+    "action-ms": {
+      "target": 100,
+      "what": "An action's round trip, such as creating a note: from the press until the change shows."
+    },
+    "key-to-paint-p50-ms": {
+      "target": 16,
+      "what": "Typing: from a key to the frame that shows it, the median over a typed line."
+    },
+    "key-to-paint-p90-ms": {
+      "target": 33,
+      "what": "Typing: from a key to the frame that shows it, the 90th percentile."
+    },
+    "script-kb": {
+      "target": 100,
+      "what": "The page's script, in compressed kilobytes transferred on a cold load (JavaScript; WebAssembly is reported beside it)."
+    }
+  },
+  "steps": {
+    "invite-live": {
+      "Ada opens Tilo": 15000,
+      "Ada opens Tilo again": 15000,
+      "Ada gives their name": 10000,
+      "Ada makes a new workspace, “Garden club”": 15000,
+      "Ada makes an invitation link": 10000,
+      "Grace opens the invitation in a fresh browser": 10000,
+      "Grace joins Garden club": 15000,
+      "Ada and Grace see each other in their people lists": 2000,
+      "Grace follows Ada": 5000,
+      "Ada opens Notes and starts a note": 10000,
+      "Ada types a line in the note": 10000,
+      "Grace sees Ada’s words": 1000
+    },
+    "large-workspace": {
+      "The workspace is filled": 3600000
+    },
+    "big-folder": {
+      "Ada copies the folder into their workspace folder": 120000,
+      "Ada browses the big folder": 50,
+      "Ada’s second computer joins and shows the workspace": 5000,
+      "Ada opens a photo the second computer never fetched": 150,
+      "Ada starts a video on the second computer": 200,
+      "Ada restarts the first computer": 5000,
+      "Every file is still there, on both computers": 60000
+    }
+  },
+  "measures": {
+    "big-folder": {
+      "copy-files-per-s": {
+        "target": 500,
+        "atLeast": true,
+        "what": "Photos copied into the workspace folder per second: a 10,000-photo library in 20 seconds."
+      },
+      "copy-video-mib-per-s": {
+        "target": 200,
+        "atLeast": true,
+        "what": "A video copied in, MiB per second: about what a laptop's disk writes."
+      },
+      "store-per-content": {
+        "target": 1.1,
+        "what": "The first computer's store against the bytes copied in: about one copy, not two."
+      },
+      "join-fetched-mib": {
+        "target": 64,
+        "what": "MiB the second computer fetched to show the workspace, before opening any file."
+      },
+      "files-lost": {
+        "target": 0,
+        "what": "Files missing or not as copied on the first computer after its restart."
+      },
+      "files-lost-on-second": {
+        "target": 0,
+        "what": "Files missing or not as copied on the second computer."
+      }
+    }
+  }
+}

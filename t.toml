@@ -6315,6 +6315,59 @@ outputs = ["/target/page-tour/tour/**", "/target/page-tour/*.log"]
 timeout_secs = 1800
 default = false
 
+# The user stories (os/containers/tilo-lounge/stories/stories.json): what people set out to do with
+# Tilo, each walked end to end by its people in fresh browser profiles on a fresh tilo.sh stack of
+# its own, every step recorded (screenshots, each person's video), timed and held to its budget,
+# and the recording judged by a model that has seen none of the code, as a picky first-time user.
+# A story is green only when it finished within budget and the judge accepted it; each story is
+# its own item, so a red one is named on `t main`. Its page, recordings and verdict:
+# `t outputs user-stories/<story> --to DIR`, DIR/<story>/index.html; the stories' page together:
+# `python3 -I os/containers/tilo-lounge/stories/page.py DIR DIR/*/<story>`.
+#
+# Nested, because the stack's services are sandboxed with bwrap (stack.sh), which needs
+# namespaces of its own.
+[[check]]
+name = "user-stories/{story}"
+on = ["schedule:0 6 * * *", "dispatch"]
+# The judge's model, at Anthropic's API; the stack itself meets its people on loopback.
+egress = { to = ["api.anthropic.com:443"] }
+run = "bash os/containers/tilo-lounge/test-user-stories.sh /target/user-stories/{story} {story}"
+needs = ["lounge-check-cli", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
+# Its setup is not pinned: dnf installs the newest builds Fedora's updates repository holds, and pip
+# the newest Anthropic SDK, from hosts no fixed list names.
+setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx python3-pip openssl ffmpeg-free && dnf clean all && python3 -m pip install --no-cache-dir anthropic", egress = { to = ["0.0.0.0/0", "::/0"] } }
+secrets = ["ANTHROPIC_API_KEY"]
+env = { TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_VM_HOST = "0" }
+requires = ["arch=x86_64"]
+isolation = "nested"
+cache = false
+# The story's page, its recording and verdict, and the stack's logs. A red story keeps them too:
+# the recording is what says why.
+outputs = ["/target/user-stories/{story}/index.html", "/target/user-stories/{story}/{story}/**"]
+evidence = ["/target/user-stories/{story}/index.html", "/target/user-stories/{story}/{story}/**"]
+timeout_secs = 1800
+[check.matrix]
+story = ["invite-live"]
+
+# The big-folder user story: a person copies a photo library and a few long videos into their
+# workspace through its mounted folder, browses it, joins from a second computer and restarts the
+# first, on the fs daemons and their FUSE mounts, each step held to a person's budget
+# (stories/big-folder.mjs). Its page is the same as every story's.
+[[check]]
+name = "user-stories/big-folder"
+on = ["schedule:0 7 * * *", "dispatch"]
+# The second computer joins the first over iroh, as the fs-workspace-scale check's does.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "exec unshare --user --map-root-user --mount -- bash os/containers/tilo-lounge/test-user-stories.sh /target/user-stories/big-folder big-folder"
+env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
+requires = ["/dev/fuse", "disk-100g"]
+isolation = "nested"
+heavy = true
+cache = false
+outputs = ["/target/user-stories/big-folder/index.html", "/target/user-stories/big-folder/big-folder/**"]
+evidence = ["/target/user-stories/big-folder/index.html", "/target/user-stories/big-folder/big-folder/**"]
+timeout_secs = 7200
+
 # The two programs the tilo.sh stack's checks run as a release's: tilo-enroll makes the VM host's
 # member device, and tilo-approve answers for the person the startup page made. Built here, once,
 # and handed to the checks that use them, so the micro-VM that runs the stack only runs it: the

@@ -1758,3 +1758,8 @@ paths = [
     "crates/server/tilo-workspace-service/src/workspaces/person_settings/person_mail.rs",
     "crates/server/tilo-workspace-service/src/workspaces/actions/host/mail_sign_in_tests.rs",
 ]
+
+[[allow]]
+reason = "The user-story suite's harness: a run of the suite and of its commands, a step's entry in the recording, the browser's MessageChannel, CSS's white-space and the Space Grotesk font, and the page drivers' recordLoading, which keeps what a page said as it loaded."
+words = ["run", "record", "channel", "space"]
+paths = ["os/containers/tilo-lounge/stories/*", "os/containers/tilo-lounge/integration/shell.mjs", "os/containers/tilo-lounge/integration/people.mjs"]

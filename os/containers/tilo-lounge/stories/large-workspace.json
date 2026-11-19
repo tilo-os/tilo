@@ -1,0 +1,20 @@
+{
+  "about": "The large-workspace story, filled in by whoever owns what it measures (files and sync at scale; the resource store's records). The generator makes one workspace of each size and prints its id as its last line; every step then runs at every size, its budget in budgets.json under `large-workspace` by its title. A step is red when its time grows with the workspace instead of with what it touches: when its time at the largest size over its time at the smallest exceeds `growth.allowed`. Once `generator.command` is set, add `\"driver\": \"large-workspace.mjs\"` to the story in stories.json and `large-workspace` to t.toml's user-stories matrix.",
+  "generator": {
+    "command": null,
+    "what": "A shell command run in this checkout with the stack's environment (stack.sh env: TILO_API_URL, TILO_API_KEY of the stack's owner) and STORY_SIZE (the size's label) and STORY_SIZE_PARAMS (its params as JSON). It makes a workspace of that size and prints the workspace's id as its last line."
+  },
+  "sizes": [
+    {"label": "small", "total": 1000, "params": {"files": 1000, "notes": 200, "tasks": 200}},
+    {"label": "large", "total": 100000, "params": {"files": 100000, "notes": 20000, "tasks": 20000}}
+  ],
+  "steps": [],
+  "stepShape": {
+    "command": "{\"title\": \"Ada lists a folder of 5,000 files\", \"command\": \"tilo ls -w \\\"$STORY_WORKSPACE\\\" big-folder\"}: timed from start to exit, with STORY_WORKSPACE, STORY_SIZE and the stack's environment",
+    "module": "{\"title\": \"Ada opens the workspace\", \"module\": \"large-steps.mjs\", \"export\": \"open\"}: called with {story, site, workspace, size, person} where person is a recorder person in a fresh browser; resolves when the person sees what the step is for"
+  },
+  "growth": {
+    "allowed": 2,
+    "about": "How much a step's time may grow from the smallest size to the largest. The steps here touch the same amount at every size, so their time should not follow the workspace's size."
+  }
+}

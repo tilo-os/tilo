@@ -21,6 +21,7 @@ import {mkdirSync, writeFileSync} from 'node:fs';
 import {launch, nextChange, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import {stepLimit, machine} from './waits.mjs';
+import {TREE_TEXT} from './shell.mjs';
 
 const [site, origin, workspace, out] = process.argv.slice(2);
 if (!site || !origin || !workspace || !out) {
@@ -103,15 +104,6 @@ const until = async (tab, expression, what, timeout = stepLimit(4)) => {
   await failed(`${what} never happened: ${shown}`);
 };
 
-/** Every name and value in the page's semantic tree, as one text. */
-const TREE_TEXT = `(() => {
-  const out = [];
-  const node = n => { for (const part of [n.name, n.value]) if (part) out.push(part); (n.children || []).forEach(node); };
-  const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
-  const root = globalThis.tiloMount?.state()?.semantics?.root;
-  if (root) walk(root);
-  return out.join('\\n');
-})()`;
 const shownText = tab => tab.evaluate(TREE_TEXT).catch(() => '');
 
 /** Wait until `tab` shows `text`; resolves to how long that took. The tree the

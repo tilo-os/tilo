@@ -1187,10 +1187,23 @@ fn a_workspace_of_files_on_a_size_ladder() {
         } else {
             m1.join(format!("small/d{:03}", i / 1000))
         };
-        std::fs::create_dir_all(&dir).unwrap();
+        if let Err(error) = std::fs::create_dir_all(&dir) {
+            panic!(
+                "making {} before file {i} of {small_files}: {error} (the folder is {:?}); writer's log:\n{}",
+                dir.display(),
+                std::fs::metadata(&dir).map(|meta| meta.file_type()),
+                pair.host.dump()
+            );
+        }
         fill(i, 0, &mut buf);
         let path = dir.join(format!("f{i:07}"));
-        std::fs::write(&path, &buf).unwrap();
+        if let Err(error) = std::fs::write(&path, &buf) {
+            panic!(
+                "writing file {i} of {small_files}, {}: {error}; writer's log:\n{}",
+                path.display(),
+                pair.host.dump()
+            );
+        }
         // A file written and acknowledged is readable at once, or the write was lost where the
         // application could not see it.
         if i % 25 == 0 {
@@ -1214,15 +1227,19 @@ fn a_workspace_of_files_on_a_size_ladder() {
         }
     }
     let small_s = small_started.elapsed();
+    let small_count = small_written / small_bytes.max(1);
     mark("every small file is written on the host");
     let huge_started = Instant::now();
     let mut huge_written = 0_u64;
+    let mut huge = Vec::new();
     for i in 0..huge_files {
         if huge_written >= huge_total {
             break;
         }
         let size = huge_size.min(huge_total.saturating_sub(huge_written));
-        write_big(&m1.join(format!("huge{i:02}.bin")), 100 + i, size);
+        let name = format!("huge{i:02}.bin");
+        write_big(&m1.join(&name), 100 + i, size);
+        huge.push((name, 100 + i, size));
         huge_written = huge_written.saturating_add(size);
         mark("a huge file is written on the host");
     }
@@ -1254,7 +1271,9 @@ fn a_workspace_of_files_on_a_size_ladder() {
     host_disk_after_fill = disk_bytes(&pair.dir.join("host-cache"));
 
     // What the writing device itself sees: a person browsing the folder they just filled.
+    let started = Instant::now();
     let host_flat = list_directory(&m1.join("flat"));
+    let host_list = started.elapsed();
     let host_root = list_directory(&m1);
     let host_small = read_range(&m1.join("flat").join("f0000000"), 0, 4096);
     if host_flat < flat_entries as usize || host_root < 3 {
@@ -1283,6 +1302,12 @@ fn a_workspace_of_files_on_a_size_ladder() {
         "host_flat_entries",
         host_flat as f64,
         "entries",
+    );
+    report(
+        rung.as_str(),
+        "host_list_flat_s",
+        host_list.as_secs_f64(),
+        "s",
     );
     report(
         rung.as_str(),
@@ -1353,6 +1378,13 @@ fn a_workspace_of_files_on_a_size_ladder() {
     // Opening one small file the device has never fetched, and one huge file:
     // the manifest and the first range, not the content.
     let peer_disk_before_reads = disk_bytes(&pair.dir.join("peer-cache"));
+    // What joining cost the device: everything it holds once the tree shows, before it opens a file.
+    report(
+        rung.as_str(),
+        "peer_join_fetched_bytes",
+        peer_disk_before_reads as f64,
+        "B",
+    );
     let small_target = m2.join("flat").join("f0000000");
     let started = Instant::now();
     let small = read_range(&small_target, 0, 4096).unwrap_or_else(|error| {
@@ -1496,6 +1528,105 @@ fn a_workspace_of_files_on_a_size_ladder() {
         peer_first_read.as_secs_f64(),
         "s",
     );
+    // Every file written, present and as written on both devices after both restarted
+    // (`TILO_FS_LADDER_VERIFY_ALL=1`): it reads every small file and the ends and middle of each
+    // huge one, so the joining device fetches them.
+    if std::env::var("TILO_FS_LADDER_VERIFY_ALL").as_deref() == Ok("1") {
+        let small = (small_count, flat_entries, small_bytes);
+        for (side, root) in [
+            ("host", pair.host.mount.clone()),
+            ("peer", pair.peer_mount()),
+        ] {
+            let (missing, wrong) = verify_written(&root, small, &huge);
+            report(
+                rung.as_str(),
+                &format!("{side}_files_checked"),
+                (small_count + huge.len() as u64) as f64,
+                "files",
+            );
+            report(
+                rung.as_str(),
+                &format!("{side}_missing_after_restart"),
+                missing as f64,
+                "files",
+            );
+            report(
+                rung.as_str(),
+                &format!("{side}_wrong_after_restart"),
+                wrong as f64,
+                "files",
+            );
+        }
+    }
     mark("the ladder rung is measured");
     drop(pair);
+}
+
+/// How many of the ladder's files under `root` are missing or unreadable, and how many read back
+/// other than written: each small file in full, and each huge file's size, first and last MiB and
+/// a MiB from its middle.
+fn verify_written(
+    root: &Path,
+    (count, flat_entries, bytes): (u64, u64, u64),
+    huge: &[(String, u64, u64)],
+) -> (u64, u64) {
+    let (mut missing, mut wrong) = (0_u64, 0_u64);
+    let mut want = vec![0_u8; usize::try_from(bytes).unwrap_or(4096)];
+    for i in 0..count {
+        let path = if i < flat_entries {
+            root.join("flat").join(format!("f{i:07}"))
+        } else {
+            root.join(format!("small/d{:03}", i / 1000))
+                .join(format!("f{i:07}"))
+        };
+        fill(i, 0, &mut want);
+        match std::fs::read(&path) {
+            Ok(got) if got == want => {}
+            Ok(_) => {
+                wrong += 1;
+                if wrong <= 10 {
+                    eprintln!("{}: reads back other than written", path.display());
+                }
+            }
+            Err(error) => {
+                missing += 1;
+                if missing <= 10 {
+                    eprintln!("{}: {error}", path.display());
+                }
+            }
+        }
+    }
+    for (name, seed, size) in huge {
+        let path = root.join(name);
+        let len = std::fs::metadata(&path).map(|meta| meta.len());
+        if len.as_ref().ok() != Some(size) {
+            eprintln!("{}: {len:?} instead of {size} B", path.display());
+            missing += 1;
+            continue;
+        }
+        let span = (1024 * 1024).min(*size);
+        let mut right = true;
+        // The content is generated in 8-byte words, so a range starts on one.
+        for offset in [
+            0,
+            (size / 2).saturating_sub(span / 2) & !7,
+            (size - span) & !7,
+        ] {
+            let mut expected = vec![0_u8; usize::try_from(span).unwrap_or(0)];
+            fill(*seed, offset, &mut expected);
+            match read_range(&path, offset, expected.len()) {
+                Ok(got) if got == expected => {}
+                Ok(_) => right = false,
+                Err(error) => {
+                    eprintln!("{} at {offset}: {error}", path.display());
+                    right = false;
+                }
+            }
+        }
+        if !right {
+            eprintln!("{}: reads back other than written", path.display());
+            wrong += 1;
+        }
+    }
+    (missing, wrong)
 }
