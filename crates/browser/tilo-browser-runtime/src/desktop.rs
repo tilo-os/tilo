@@ -1948,12 +1948,14 @@ fn shared_with_its_host(inputs: &Inputs, notify: &Arc<dyn Fn() + Send + Sync>) -
     }
     shared.linked = linked_accounts(&shared, notify);
     if inputs.peer.is_some() {
-        shared.agents = crate::page_agents::open(
-            &inputs.owners,
-            &shared.stores,
-            &inputs.workspace,
-            inputs.author.clone(),
-        );
+        shared.agents = crate::page_agents::PAGE_AGENTS.get().and_then(|agents| {
+            agents.make(
+                &inputs.owners,
+                &shared.stores,
+                &inputs.workspace,
+                inputs.author.clone(),
+            )
+        });
     }
     shared
 }

@@ -136,7 +136,7 @@ impl Mount {
             // as the windows' own resources are opened again when they arrive.
             let shared = &mut desktop.shared;
             let opened = shared.owners.as_ref().and_then(|owners| {
-                crate::page_agents::open(
+                crate::page_agents::PAGE_AGENTS.get()?.make(
                     owners,
                     &shared.stores,
                     &shared.workspace,
