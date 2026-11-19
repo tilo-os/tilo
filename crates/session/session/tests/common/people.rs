@@ -2114,9 +2114,9 @@ impl Chat<'_> {
         self.wait_for_texts_ordered(peer, texts, true);
     }
 
-    /// Wait until the conversation with `peer` shows `texts` , and nothing else, in whatever order:
-    /// for messages written at the same time on devices that had not seen each other's, whose order
-    /// is the records' and not the writers'.
+    /// Wait until the conversation with `peer` shows `texts`, and nothing else, in whatever order:
+    /// for a conversation two devices wrote apart, which reads in the order the messages were
+    /// written rather than the order a test names them in.
     pub fn wait_for_texts_in_any_order(&self, peer: &str, texts: &[&str]) {
         self.wait_for_texts_ordered(peer, texts, false);
     }
