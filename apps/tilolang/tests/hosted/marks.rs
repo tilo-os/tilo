@@ -1,8 +1,9 @@
 //! What an agent's task run did, marked where the person sees it (task-legibility.md §3), in
 //! the Notes window as a person uses it: the run goes through the API as the broker sends it,
 //! stamped with its run; the rows it made carry the agent's face and colour at their own
-//! height, the window's header counts them, the field it renamed takes its colour, all drawn
-//! in pixels; and pressing a mark asks the shell to show the run.
+//! height, the window's header counts them, the field it renamed keeps none of their colour and
+//! says on hover who changed it and what it held, all drawn in pixels; and pressing a mark asks
+//! the shell to show the run.
 //!
 //! With `TILO_LEGIBILITY_SHOTS=<dir>` the tests write the window, light and dark, with the
 //! marks.
@@ -94,12 +95,18 @@ fn the_window_shows_what_the_run_did_in_its_colour_and_opens_the_run() {
 }
 
 #[test]
-fn the_field_the_run_renamed_takes_its_colour() {
+fn the_field_the_run_renamed_keeps_no_colour_and_says_what_it_held() {
+    let _settled = ui::motion::testing::settled();
     let (mut app, notebook) = notes_after_a_run();
     let ground = chroma_in(&mut app, [0.0, 0.0, 8.0, 8.0]);
-    let (agent, ambient) = run();
     let item = published_with(&mut app, &notebook, "Rename…");
     let retitle = action_id(&mut app, &item, "Rename…");
+    // The person names their note themselves: what the run changes it from.
+    let mut hers = Map::new();
+    hers.insert("title".to_owned(), "Groceries".into());
+    app.invoke(None, None, &item, &retitle, &hers).unwrap();
+    settle(&mut app);
+    let (agent, ambient) = run();
     let mut title = Map::new();
     title.insert("title".to_owned(), "Meeting notes".into());
     app.invoke(Some(agent), Some(&ambient), &item, &retitle, &title)
@@ -110,7 +117,8 @@ fn the_field_the_run_renamed_takes_its_colour() {
         .click_at(row[0] + row[2] / 4.0, row[1] + row[3] / 2.0);
     settle(&mut app);
     let field = text_field(&mut app, "Meeting notes");
-    // Its far end, clear of the text and the caret.
+    // Its far end, clear of the text and the caret: the field another member changed draws as
+    // the field it was, not in their colour.
     let end = [
         field[0] + field[2] - 12.0,
         field[1] + 2.0,
@@ -118,8 +126,32 @@ fn the_field_the_run_renamed_takes_its_colour() {
         field[3] - 4.0,
     ];
     assert!(
-        chroma_in(&mut app, end) > ground.saturating_add(8),
-        "the field the run changed is tinted in its colour"
+        chroma_in(&mut app, end) <= ground.saturating_add(8),
+        "the field the run changed keeps no colour of theirs"
     );
     shoot(&mut app, "note-field");
+
+    // What it says instead, when the pointer rests on it: who changed it, and what it held.
+    app.harness()
+        .send_host_event(&ui::synthetic_input::cursor_moved(
+            f64::midpoint(field[0], field[0] + field[2]),
+            f64::midpoint(field[1], field[1] + field[3]),
+        ));
+    let _ = app.harness().poll_frame();
+    let reveal = app
+        .harness()
+        .frame_schedule()
+        .next_wake_deadline
+        .expect("the host is woken when the dwell over the field runs out");
+    let said = ui::time::testing::with_monotonic_time(reveal, || {
+        app.harness().poll_frame().expect("the frame lays out");
+        app.harness()
+            .drawn_tooltip()
+            .map(|(text, _)| text.to_owned())
+    });
+    assert_eq!(
+        said.as_deref(),
+        Some("Changed by Helper. Before: Groceries"),
+        "resting on the field says who changed it, and what it held"
+    );
 }
