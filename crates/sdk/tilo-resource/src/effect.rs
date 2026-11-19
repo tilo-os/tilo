@@ -1930,6 +1930,55 @@ mod tests {
         },
     }
 
+    /// The ids a device mints: a desktop id carries its salt in the high 16
+    /// bits, so more than half of them outgrow an `i64`.
+    #[derive(Clone, Debug, PartialEq, Effect)]
+    #[effect(operation = "test.ids", catalogue = "tests/locales")]
+    enum Ids {
+        /// Stand a resource in a strip.
+        #[effect(kind = "undoable")]
+        Place {
+            #[param("The strip it stands in")]
+            strip: u64,
+            #[param("The place's own id; a new one when left out")]
+            place: Option<u64>,
+            #[param(resource = "", "The resource it shows")]
+            resource: String,
+        },
+    }
+
+    /// A caller encodes an invocation through the published spec and its
+    /// handler decodes it there: one declaration writes both sides, so what a
+    /// caller gives — an id past `i64::MAX` included — is what the effect reads.
+    #[test]
+    fn an_effects_named_arguments_round_trip_through_its_spec() {
+        let spec = Ids::specs().remove(0);
+        let salted = 0xB3A1_0000_0000_0001_u64;
+        let arguments = serde_json::json!({
+            "strip": salted,
+            "place": salted,
+            "resource": "notes:1",
+        })
+        .as_object()
+        .expect("arguments")
+        .clone();
+        let encoded = spec.build_json(&arguments).expect("the place encodes");
+        assert_eq!(
+            encoded.type_id,
+            Ids::OPERATION,
+            "the place is encoded as its own operation, not a refusal: {:?}",
+            String::from_utf8_lossy(&encoded.payload)
+        );
+        assert_eq!(
+            Ids::from_payload(&encoded.payload).expect("the place decodes"),
+            Ids::Place {
+                strip: salted,
+                place: Some(salted),
+                resource: "notes:1".into(),
+            }
+        );
+    }
+
     /// A content transform whose inputs are the bytes themselves.
     #[derive(Clone, Debug, PartialEq, Effect)]
     #[effect(operation = "test.readers", catalogue = "tests/locales")]
