@@ -78,7 +78,7 @@ impl ImageLoads {
             self.entries.insert(key.clone(), entry);
         }
         match self.entries.get_mut(&key) {
-            Some(Entry::Ready(image)) => Some(image),
+            Some(Entry::Ready(image)) => Some(&mut **image),
             _ => None,
         }
     }
