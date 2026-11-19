@@ -243,7 +243,7 @@ fn a_refusal_is_quiet_but_a_protocol_failure_is_counted() {
 #[tokio::test]
 async fn the_governor_takes_commits_in_the_order_they_were_admitted() {
     let fixture = Fixture::new();
-    let (tap, mut notices) = mpsc::channel(8);
+    let (tap, mut notices) = crate::workspace::governor_tap(8);
     fixture.workspace.lock().await.governor_tap = Some(tap);
     let session = fixture.ctx(Side::Source, None);
     let body = |kind: u8| governor_notice(&fixture.envelope(kind)).unwrap();

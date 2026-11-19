@@ -481,7 +481,7 @@ impl NativeWorkspaceOwner {
                 "native local publication signer differs from selected device".into(),
             ));
         }
-        let store = self.0.store.as_ref();
+        let runs = self.ownership(workspace);
         let mut full = None;
         let mut waiting: Option<WriteRefusal> = None;
         let changed = candidate.change(|live, stored| {
@@ -502,7 +502,7 @@ impl NativeWorkspaceOwner {
                 };
                 match live.lookup_exact_local_document(app, document, envelope, now) {
                     Ok(Some(_)) => {
-                        if !publication::has_exact(stored, &outgoing, store)?
+                        if !publication::has_exact(stored, &outgoing, runs)?
                             && !publication::retry_covered(live, stored, &outgoing)?
                         {
                             return Err(

@@ -219,6 +219,83 @@ impl GovernedWorkspace {
         }
     }
 
+    /// [`Self::follow`], taking besides a member's compaction of a sealed document the copy
+    /// refused for the writes it covers, where this server holds the document's keys and the
+    /// compaction holds every change of the writes it replaces here
+    /// ([`tilo_peer_state::PeerPublicationMut::take_compaction_behind`]). The copy's history
+    /// differs from what the members hold once this server folded it, as that fold is never
+    /// published, or once the copy passed a write over: then no member's compaction covers
+    /// exactly what the copy holds, and the copy refused every one.
+    pub(super) async fn follow_kept(
+        &self,
+        author: [u8; 32],
+        message: neighbour_wire::NeighbourMsg,
+    ) -> Followed {
+        let followed = self.follow(author, message.clone());
+        if followed.refused.is_none() {
+            return followed;
+        }
+        match self.take_behind(&message, None).await {
+            Some(taken) => Followed {
+                changed: taken,
+                ..Followed::default()
+            },
+            None => followed,
+        }
+    }
+
+    /// Whether the copy takes `message`, a write [`Self::refuses`] refused, as
+    /// [`Self::follow_kept`] would.
+    pub(super) async fn takes_behind(&self, message: &neighbour_wire::NeighbourMsg) -> bool {
+        let mut decided = self.peer().clone();
+        self.take_behind(message, Some(&mut decided))
+            .await
+            .is_some()
+    }
+
+    /// Take `message`, when it is a compaction of a sealed document whose keys this server
+    /// holds, into `peer` (the copy itself when `None`) as one the copy is behind. `None` when
+    /// it is not taken; whether it was whole otherwise.
+    async fn take_behind(
+        &self,
+        message: &neighbour_wire::NeighbourMsg,
+        peer: Option<&mut tilo_peer_state::StatePeer>,
+    ) -> Option<bool> {
+        let neighbour_wire::NeighbourMsg::AppDocument {
+            app_id,
+            document_id,
+            envelope,
+            ..
+        } = message
+        else {
+            return None;
+        };
+        if envelope.kind != collab_types::OpKind::Compaction {
+            return None;
+        }
+        let keys = self.document_keys(app_id, document_id).await.ok()??;
+        let mut copy = None;
+        let peer = match peer {
+            Some(peer) => peer,
+            None => &mut **copy.insert(self.peer()),
+        };
+        let taken = peer.publication_mut().take_compaction_behind(
+            (app_id, document_id),
+            envelope.as_ref().clone(),
+            &mut keys.open(),
+            tilo_clock::wall(),
+        );
+        drop(copy);
+        match taken {
+            Ok(taken) => Some(taken.is_some()),
+            Err(error) => {
+                tracing::debug!(workspace = %self.workspace(), %error,
+                    "a member's compaction does not hold every change the copy holds");
+                None
+            }
+        }
+    }
+
     /// The verdict [`Self::follow`] would give `message`, `author`'s write,
     /// without taking it in: why the workspace refuses the write, or `None`
     /// when it takes it. The server asks before it keeps the write, so a
@@ -332,7 +409,11 @@ impl Workspaces {
             return None;
         }
         let state = self.workspace(workspace).await.ok()?;
-        state.lock().await.refuses(author, &message)
+        let governed = state.lock().await;
+        let refused = governed.refuses(author, &message)?;
+        let taken = governed.takes_behind(&message).await;
+        drop(governed);
+        (!taken).then_some(refused)
     }
 }
 

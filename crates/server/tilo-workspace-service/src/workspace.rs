@@ -137,6 +137,31 @@ pub(crate) struct GovernorNotice {
     pub(crate) taken: tokio::sync::oneshot::Sender<()>,
 }
 
+impl GovernorNotice {
+    /// `author`'s write `body`, and what answers once the governor's copy took it in.
+    pub(crate) fn new(
+        author: [u8; 32],
+        body: Vec<u8>,
+    ) -> (Self, tokio::sync::oneshot::Receiver<()>) {
+        let (taken, answer) = tokio::sync::oneshot::channel();
+        (
+            Self {
+                author,
+                body,
+                taken,
+            },
+            answer,
+        )
+    }
+}
+
+/// The queue the workspace's governor is told through, `capacity` notices deep.
+pub(crate) fn governor_tap(
+    capacity: usize,
+) -> (mpsc::Sender<GovernorNotice>, mpsc::Receiver<GovernorNotice>) {
+    mpsc::channel(capacity)
+}
+
 /// Per-workspace runtime.
 pub struct WorkspaceRuntime {
     /// The in-process workspace authority governing this workspace, told of each
@@ -359,6 +384,18 @@ pub(crate) fn is_automerge_chunk(bytes: &[u8]) -> bool {
 }
 
 impl WorkspaceRuntime {
+    /// The next commit's turn to tell the governor: what answers once the commit admitted
+    /// before it was told, and what it drops once it was told.
+    pub(crate) fn next_governor_turn(
+        &mut self,
+    ) -> (
+        Option<tokio::sync::oneshot::Receiver<()>>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (told, turn) = tokio::sync::oneshot::channel();
+        (self.governor_turn.replace(turn), told)
+    }
+
     /// Whether the person whose root is `user` is admitted to this workspace as
     /// a member its governance names. What [`crate::workspace_access`] admits
     /// their devices by.

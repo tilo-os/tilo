@@ -11,6 +11,7 @@
 //! [`enroll`] redeems an invitation with the host that issued it, and
 //! [`session`] holds the server co-edit session with that host.
 mod answers;
+mod backlog;
 mod behind;
 mod certified;
 mod document_read;
@@ -232,6 +233,10 @@ struct SharedOwner {
     /// The records a compaction of which drafted nothing, each resting a
     /// while before it is tried again.
     resting: publication::Resting,
+    /// What this device read of the ownership kept beside its workspaces
+    /// ([`backlog::Backlog`]): every question about what ownership still holds
+    /// reads it, and none of it changes once kept.
+    backlogs: backlog::Backlog,
 }
 #[derive(Default)]
 struct Current {
@@ -517,6 +522,14 @@ impl SharedOwner {
         policy: bool,
         install: &mut dyn FnMut(),
     ) -> Result<(), String> {
+        // What the published state no longer names is nothing this session reads again.
+        self.backlogs.retain(
+            &next
+                .workspaces
+                .values()
+                .flat_map(publication::kept_hashes)
+                .collect(),
+        );
         let result = self.store.publish(next, change, install);
         if result.is_err() && !self.store.healthy() {
             self.fence_all();
@@ -551,6 +564,7 @@ impl NativeWorkspaceOwner {
             listeners: Mutex::new(Vec::new()),
             history_keys: Mutex::new(None),
             resting: publication::Resting::default(),
+            backlogs: backlog::Backlog::default(),
         }))
     }
     /// Restore every enrolled workspace of `authority`, the record `store` last
@@ -584,6 +598,7 @@ impl NativeWorkspaceOwner {
             listeners: Mutex::new(Vec::new()),
             history_keys: Mutex::new(None),
             resting: publication::Resting::default(),
+            backlogs: backlog::Backlog::default(),
         })))
     }
     #[must_use]
@@ -686,6 +701,11 @@ impl NativeWorkspaceOwner {
     /// The workspace is not held here, or the owner is fenced.
     pub fn replica(&self, workspace: WorkspaceId) -> Result<Replica, String> {
         Ok(self.view(workspace)?.replica.clone())
+    }
+
+    /// `workspace`'s store, for the ownership it keeps beside the workspace.
+    fn ownership(&self, workspace: WorkspaceId) -> backlog::Ownership<'_> {
+        (self.0.store.as_ref(), workspace, &self.0.backlogs)
     }
 
     /// The workspace's committed view, fenced workspaces included in the check.
@@ -847,7 +867,7 @@ impl NativeWorkspaceOwner {
         let snapshot = {
             let live = replica.lock();
             publication::retire(&live, &mut record)?;
-            publication::settle(&mut record, self.0.store.as_ref())?;
+            publication::settle(&mut record, self.ownership(workspace))?;
             publication::retire_member_changes(&live, &mut record, &governed)?;
             publication::refresh_governance_checkpoint(&live, &mut record)?;
             let durable = stored::DurablePeer::from(live.durable_layout()?);
@@ -989,7 +1009,7 @@ impl NativeWorkspaceOwner {
         // link admitted after it.
         let snapshot = {
             let live = replica.lock();
-            publication::settle(&mut record, self.0.store.as_ref())?;
+            publication::settle(&mut record, self.ownership(workspace))?;
             publication::refresh_governance_checkpoint(&live, &mut record)?;
             record.peer = live.durable_layout()?.into();
             Self::snapshot(&live, &mut record)?

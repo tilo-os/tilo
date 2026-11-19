@@ -279,13 +279,29 @@ fn verb(action: &ActionSpec, declared: Option<Declared>, types: &mut TypeSet) ->
     }
 }
 
-fn entry((spec, declared): &(ResourceSpec, Option<Declared>), instances: bool) -> Entry {
+/// `described`: the kinds the package describes per thing ([`instances`]).
+fn entry(
+    (spec, declared): &(ResourceSpec, Option<Declared>),
+    instances: bool,
+    described: &[&str],
+) -> Entry {
     let id = spec.id.as_str();
     let mut types = TypeSet::new();
     let verbs = spec
         .actions
         .iter()
         .filter(|action| !LEFT_OUT.contains(&(id, action.id.as_str())))
+        // An action that acts on an item of a kind the package describes is that kind's own,
+        // bound to the item: `session.size(place: p, …)` is the place's `size`. Its unbound
+        // copy, published here for a caller that names the item, is no second verb of the
+        // package.
+        .filter(|action| {
+            action
+                .contract
+                .item
+                .as_deref()
+                .is_none_or(|item| !described.contains(&item))
+        })
         .map(|action| verb(action, *declared, &mut types))
         .collect();
     Entry {
@@ -312,10 +328,15 @@ fn entry((spec, declared): &(ResourceSpec, Option<Declared>), instances: bool) -
 /// field, or a field named as another parameter is. Never otherwise: the resources serialize.
 #[must_use]
 pub fn description() -> String {
+    let instances = instances();
+    let described: Vec<&str> = instances
+        .iter()
+        .map(|(spec, _)| spec.kind.as_str())
+        .collect();
     let resources = singletons()
         .iter()
-        .map(|spec| entry(spec, false))
-        .chain(instances().iter().map(|spec| entry(spec, true)))
+        .map(|spec| entry(spec, false, &described))
+        .chain(instances.iter().map(|spec| entry(spec, true, &described)))
         .collect();
     let body = toml::to_string(&File { resources }).unwrap_or_else(|error| {
         // A description that does not serialize is a defect to read in the file it generates, not a

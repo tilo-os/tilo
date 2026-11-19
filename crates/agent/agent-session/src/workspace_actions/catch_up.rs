@@ -99,22 +99,8 @@ pub(super) fn hold_parts(
     mounted: &mut Mounted,
     state: &WorkspaceState,
 ) -> Vec<DocumentRoute> {
-    let mut newest: std::collections::HashMap<ui::resource::DocumentId, (u64, &DocumentRoute)> =
-        std::collections::HashMap::new();
-    for route in state.documents.iter() {
-        if route.app_id != holder.app_id || route.cluster_id != holder.cluster_id {
-            continue;
-        }
-        let Some((chain, index)) =
-            ui::resource::DocumentId::parse(&route.document).and_then(|id| id.chain_part())
-        else {
-            continue;
-        };
-        let entry = newest.entry(chain).or_insert((index, route));
-        if index > entry.0 {
-            *entry = (index, route);
-        }
-    }
+    let newest = newest_parts(holder, state);
+    answer_unheld(holder, mounted, state, &newest);
     if newest.is_empty() {
         return Vec::new();
     }
@@ -137,6 +123,80 @@ pub(super) fn hold_parts(
     // again then, though it holds what it held now.
     mounted.wanted_at = missing.is_empty().then(|| holding(mounted));
     missing
+}
+
+/// The newest part the workspace holds of each chain kept beside `holder`, by chain.
+fn newest_parts<'s>(
+    holder: &DocumentRoute,
+    state: &'s WorkspaceState,
+) -> std::collections::HashMap<ui::resource::DocumentId, (u64, &'s DocumentRoute)> {
+    let mut newest: std::collections::HashMap<ui::resource::DocumentId, (u64, &DocumentRoute)> =
+        std::collections::HashMap::new();
+    for route in state.documents.iter() {
+        if route.app_id != holder.app_id || route.cluster_id != holder.cluster_id {
+            continue;
+        }
+        let Some((chain, index)) =
+            ui::resource::DocumentId::parse(&route.document).and_then(|id| id.chain_part())
+        else {
+            continue;
+        };
+        let entry = newest.entry(chain).or_insert((index, route));
+        if index > entry.0 {
+            *entry = (index, route);
+        }
+    }
+    newest
+}
+
+/// [`answer_unheld`] for what `mounted` asks for now: a write refused because a part it
+/// changes has not arrived names that part as it is refused, and is asked again once the
+/// app was told the workspace holds none of it.
+pub(super) fn answer_unheld_parts(
+    holder: &DocumentRoute,
+    mounted: &Mounted,
+    state: &WorkspaceState,
+) {
+    answer_unheld(holder, mounted, state, &newest_parts(holder, state));
+}
+
+/// Tell `mounted` the workspace holds none of each part of its chains it asks for past the
+/// newest the workspace lists, and no part at all of a chain whose head it asks for and of which
+/// `newest` names none. Its store asks the workspace for what it does not hold, so a part
+/// nobody holds — the first of a new chain, or the next one a full chain starts — stayed on
+/// its way, and the write that started it waited for it until it gave up.
+fn answer_unheld(
+    holder: &DocumentRoute,
+    mounted: &Mounted,
+    state: &WorkspaceState,
+    newest: &std::collections::HashMap<ui::resource::DocumentId, (u64, &DocumentRoute)>,
+) {
+    for wanted in mounted.app.wanted_resources() {
+        let unheld = if wanted.is_chain_head() {
+            !newest.keys().any(|chain| chain.chain_head() == wanted)
+        } else if let Some((chain, index)) = wanted.chain_part() {
+            // A part before the newest the workspace lists is the workspace's, asked for
+            // where this service does not hold it yet ([`hold_wanted`]); one past it is the
+            // part a write starts.
+            let route = DocumentRoute {
+                app_id: holder.app_id.clone(),
+                cluster_id: holder.cluster_id.clone(),
+                document: wanted.as_str().to_owned(),
+            };
+            !state.holds(&route) && newest.get(&chain).is_none_or(|(at, _)| index > *at)
+        } else {
+            false
+        };
+        if !unheld {
+            continue;
+        }
+        if let Err(error) = mounted
+            .app
+            .workspace_answered(&wanted, ui::resource::WorkspaceAnswer::HoldsNone)
+        {
+            tracing::debug!(%error, wanted = %wanted.as_str(), "workspace actions: an app was not told the workspace holds none of a part");
+        }
+    }
 }
 
 /// What `mounted` and its parts merged last, as one number: where

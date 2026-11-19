@@ -11,15 +11,14 @@
 //! through the same ordered persistence owner device peers use.
 //!
 //! Anti-entropy (`SyncRequest`, answered with the changes the requester's
-//! materialized heads lack) runs when the session starts, again for as long
-//! as an answer still brings something new, whenever the upstream says it
-//! withheld a change from this device, and on a slow tick besides. The tick is
-//! what makes a change this device missed a delay and not a loss: a live offer
-//! can go missing while its subscription is being registered, or sit behind a
-//! queue that has not drained, and neither side would write again until
-//! something else changed. An upstream does not forward a change another
-//! device attached to it sent it back to a third (that would loop), so a
-//! change crossing two hops reaches the far device this way.
+//! materialized heads lack) happens on events only: once when the session
+//! starts, again for as long as an answer still brings something new,
+//! whenever the upstream says it withheld a change from this device, and
+//! when the owner refuses a change the upstream sent. An upstream does not
+//! forward a change another device attached to it sent it back to a third
+//! (that would loop), so a change crossing two hops reaches the far device
+//! this way. A converged session does nothing until a change arrives: no
+//! timer is set while it is connected.
 //!
 //! A session carries changes one way, from the host dialed to the host
 //! dialing: every holder of a workspace dials every other.
@@ -46,12 +45,6 @@ use crate::metrics::Metrics;
 use crate::peer::WorkspaceRegistry;
 use crate::transport::Envelope;
 use tilo_server_protocol::WorkspaceId;
-
-/// How often the dialing device asks the upstream for what its copies lack
-/// besides the events it hears: the interval that turns a live offer it
-/// missed into a delayed change rather than a lost one. A converged session's
-/// ask brings nothing back and costs the upstream one prepared turn.
-const SYNC_TICK: Duration = Duration::from_secs(5);
 
 /// How long the session waits for a change it took in to be kept before it
 /// reads the next one. The owner keeps changes in order and bounds how many
@@ -430,6 +423,37 @@ async fn negotiate_intersection(
     }
 }
 
+/// A change the session handed the owner, until the owner kept or refused
+/// it, with what follows once it is kept.
+struct Admitted {
+    workspace_id: WorkspaceId,
+    workspace: crate::workspace::SharedWorkspace,
+    /// Whether the owner kept the change.
+    kept: std::pin::Pin<Box<dyn Future<Output = bool> + Send>>,
+    then: Then,
+}
+
+/// What a change the session took in leads to once it is kept.
+enum Then {
+    /// A live change: the governor, when one follows the workspace, is told
+    /// of it once the owner is done with it, never before it is kept.
+    Tell(Option<(GovernorTap, [u8; 32], Vec<u8>)>),
+    /// History the upstream backfilled: what the governor held back for lack
+    /// of it is taken in.
+    History,
+}
+
+type GovernorTap = tokio::sync::mpsc::Sender<crate::workspace::GovernorNotice>;
+
+/// Whether the oldest of `admitted` was kept, once the owner says so.
+/// Pending for as long as nothing is admitted.
+async fn oldest(admitted: &mut std::collections::VecDeque<Admitted>) -> bool {
+    match admitted.front_mut() {
+        Some(change) => change.kept.as_mut().await,
+        None => std::future::pending().await,
+    }
+}
+
 /// A connected attach session.
 struct Session<'a> {
     client: &'a ServerClient,
@@ -445,7 +469,11 @@ struct Session<'a> {
 impl Session<'_> {
     /// Follow the upstream for the life of the connection: ask once for what
     /// each shared workspace lacks, then admit what arrives, asking again
-    /// on an event and on a slow tick (see the module documentation).
+    /// only on an event (see the module documentation).
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "each change admitted is moved into the queue, which lives as long as the session; the lint counts the workspace each holds as a guard"
+    )]
     async fn follow(&self, intersection: &[WorkspaceId]) -> Result<(), String> {
         for id in intersection {
             self.ask(*id).await?;
@@ -454,22 +482,18 @@ impl Session<'_> {
         // brought nothing this host could take in, and asking again would
         // only repeat it.
         let mut answered: HashMap<WorkspaceId, blake3::Hash> = HashMap::new();
-        let mut tick = tokio::time::interval(SYNC_TICK);
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        // The interval's first tick is due at once; the one that asks is a
-        // whole period after the asks above.
-        tick.tick().await;
+        // The changes handed the owner and not yet kept, oldest first: each
+        // is followed up in the order they were taken in.
+        let mut admitted = std::collections::VecDeque::new();
         loop {
             let envelope = tokio::select! {
                 envelope = self.client.recv() => match envelope {
                     Some(envelope) => envelope,
                     None => break,
                 },
-                // A change this device missed is picked up on the next ask:
-                // what the live offer did not bring, anti-entropy does.
-                _ = tick.tick() => {
-                    for id in intersection {
-                        self.ask(*id).await?;
+                kept = oldest(&mut admitted), if !admitted.is_empty() => {
+                    if let Some(change) = admitted.pop_front() {
+                        self.settled(change, kept, intersection).await?;
                     }
                     continue;
                 }
@@ -490,7 +514,8 @@ impl Session<'_> {
                         continue;
                     }
                     (self.stands)(Link::CatchingUp);
-                    self.backfill(workspace_id, delta_since).await?;
+                    let change = self.backfill(workspace_id, delta_since).await?;
+                    self.settle(&mut admitted, change, intersection).await?;
                     if intersection.contains(&workspace_id) {
                         self.ask(workspace_id).await?;
                     }
@@ -502,7 +527,74 @@ impl Session<'_> {
                         self.ask(workspace_id).await?;
                     }
                 }
-                other => self.admit(other).await?,
+                other => {
+                    let change = self.admit(other).await?;
+                    self.settle(&mut admitted, change, intersection).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Add `change`, when there is one, to the changes handed the owner, and
+    /// follow up the ones it keeps, oldest first, for up to
+    /// [`ADMIT_WAIT`]: an upstream replays all it retains of a workspace at
+    /// once, faster than this device keeps it, and taking each change once
+    /// the one before it is kept fills no queue. A durable write slower than
+    /// that is left to the owner's order rather than stopping the reads behind
+    /// it; what it leads to follows once it is kept.
+    async fn settle(
+        &self,
+        admitted: &mut std::collections::VecDeque<Admitted>,
+        change: Option<Admitted>,
+        intersection: &[WorkspaceId],
+    ) -> Result<(), String> {
+        admitted.extend(change);
+        let waited = tokio::time::sleep(ADMIT_WAIT);
+        tokio::pin!(waited);
+        while !admitted.is_empty() {
+            let kept = tokio::select! {
+                kept = oldest(admitted) => kept,
+                () = &mut waited => break,
+            };
+            if let Some(change) = admitted.pop_front() {
+                self.settled(change, kept, intersection).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The owner is done with `change`: it leads on to what follows it, and
+    /// a live change the owner refused (it came before the history it builds
+    /// on, say) is asked for again.
+    async fn settled(
+        &self,
+        change: Admitted,
+        kept: bool,
+        intersection: &[WorkspaceId],
+    ) -> Result<(), String> {
+        let Admitted {
+            workspace_id,
+            workspace,
+            then,
+            ..
+        } = change;
+        match then {
+            Then::Tell(notice) => {
+                if let Some((tap, author, body)) = notice {
+                    drop(crate::peer::tell_governor(&workspace, &tap, author, body).await);
+                }
+                if !kept && intersection.contains(&workspace_id) {
+                    self.ask(workspace_id).await?;
+                }
+            }
+            Then::History => {
+                let authority = workspace.lock().await.workspace_authority.clone();
+                if let Some(authority) = authority
+                    && let Some(workspaces) = authority.workspaces()
+                {
+                    workspaces.history_arrived(authority.workspace());
+                }
             }
         }
         Ok(())
@@ -514,8 +606,10 @@ impl Session<'_> {
 
     /// Admit one inbound envelope: a change through the ordered state owner
     /// (and to the workspace's follower, when one listens), presence to local
-    /// subscribers, and the session's housekeeping.
-    async fn admit(&self, envelope: Envelope) -> Result<(), String> {
+    /// subscribers, and the session's housekeeping. A change answers what
+    /// it was handed to the owner as.
+    async fn admit(&self, envelope: Envelope) -> Result<Option<Admitted>, String> {
+        let mut admitted = None;
         match &envelope {
             Envelope::Delta {
                 workspace_id,
@@ -523,20 +617,15 @@ impl Session<'_> {
                 delta,
                 ..
             } => {
-                let Some(workspace) = self.workspace(*workspace_id).await else {
-                    return Ok(());
+                let workspace_id = *workspace_id;
+                let Some(workspace) = self.workspace(workspace_id).await else {
+                    return Ok(None);
                 };
                 let tap = workspace.lock().await.governor_tap.clone();
                 let notice = tap.and_then(|tap| {
                     let (_, _, body) = crate::coedit::retention_view(delta)?;
                     Some((tap, *author_device_public_key, body.to_vec()))
                 });
-                // An upstream replays all it retains of the workspace at once,
-                // faster than this host keeps it: each change is kept before the
-                // next is taken, and the owner's admission bounds how many wait,
-                // so a workspace with a long history fills no queue. A durable
-                // write slower than that bound is left to the owner's order
-                // rather than stopping the reads behind it.
                 let kept = crate::peer::enqueue_from_host(
                     &workspace,
                     envelope,
@@ -546,10 +635,12 @@ impl Session<'_> {
                 )
                 .await
                 .map_err(|error| error.to_string())?;
-                let _kept = tokio::time::timeout(ADMIT_WAIT, kept.kept()).await;
-                if let Some((tap, author, body)) = notice {
-                    drop(crate::peer::tell_governor(&workspace, &tap, author, body).await);
-                }
+                admitted = Some(Admitted {
+                    workspace_id,
+                    workspace,
+                    kept: Box::pin(kept.kept()),
+                    then: Then::Tell(notice),
+                });
             }
             Envelope::Presence {
                 workspace_id,
@@ -577,7 +668,7 @@ impl Session<'_> {
             }
             _ => {}
         }
-        Ok(())
+        Ok(admitted)
     }
 
     /// Answer the other holder's own ask for content this server keeps of a
@@ -621,9 +712,9 @@ impl Session<'_> {
         &self,
         workspace_id: WorkspaceId,
         delta_since: Vec<u8>,
-    ) -> Result<(), String> {
+    ) -> Result<Option<Admitted>, String> {
         let Some(workspace) = self.workspace(workspace_id).await else {
-            return Ok(());
+            return Ok(None);
         };
         let envelope = Envelope::Delta {
             workspace_id,
@@ -641,16 +732,12 @@ impl Session<'_> {
         )
         .await
         .map_err(|error| error.to_string())?;
-        let _kept = tokio::time::timeout(ADMIT_WAIT, kept.kept()).await;
-        // What the governor held back for lack of this history is taken in
-        // with it.
-        let authority = workspace.lock().await.workspace_authority.clone();
-        if let Some(authority) = authority
-            && let Some(workspaces) = authority.workspaces()
-        {
-            workspaces.history_arrived(authority.workspace());
-        }
-        Ok(())
+        Ok(Some(Admitted {
+            workspace_id,
+            workspace,
+            kept: Box::pin(kept.kept()),
+            then: Then::History,
+        }))
     }
 
     /// Ask the upstream for what `workspace_id` lacks: send its materialized

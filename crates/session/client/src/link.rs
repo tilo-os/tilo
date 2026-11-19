@@ -4,7 +4,7 @@
 //! it alone.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
@@ -833,15 +833,7 @@ impl From<&Link> for Arc<dyn tilo_session_actions::RemoteSession> {
             outbox: Arc::clone(&link.outbox),
             reports: Arc::clone(&link.reports),
             events: link.events_where(|event| matches!(event, Event::Remote(_))),
-            presence: link.events_where(|event| {
-                matches!(
-                    event,
-                    Event::LiveSession {
-                        track: tilo_live::live::Track::Presence,
-                        ..
-                    }
-                )
-            }),
+            presence: OnceLock::new(),
             boards: Mutex::new(BTreeMap::new()),
             publisher: link.engine.identity().device_cert.device_public_key,
         })
@@ -853,8 +845,10 @@ struct Asking {
     outbox: Arc<dyn Outbox + Send + Sync>,
     reports: Arc<Reports>,
     events: Events,
-    /// What the members of the session's workspaces say of themselves, as it arrives.
-    presence: Events,
+    /// What the members of the session's workspaces say of themselves, read once something asks
+    /// who is here: an asker that shows nobody, such as an agent's bridge, reads none of it, and
+    /// the live sessions read no presence for it.
+    presence: OnceLock<Events>,
     /// Who is in each workspace, as their presence was heard: the board a page keeps too.
     boards: Mutex<BTreeMap<WorkspaceId, tilo_live::presence::Board>>,
     /// This device, which hears its own presence as nobody else's.
@@ -897,12 +891,23 @@ impl tilo_session_actions::RemoteSession for Asking {
         self.reports.read(|status| status.connections)
     }
 
-    /// Who is in `workspace_id`, as their presence reached this session, and the window each
-    /// works in.
+    /// Who is in `workspace_id`, as their presence reached this session since something first
+    /// asked, and the window each works in.
     fn here(&self, workspace_id: WorkspaceId) -> Option<Vec<tilo_actions::remote::Here>> {
         let now = crate::presence::now_ms();
+        let presence = self.presence.get_or_init(|| {
+            self.reports.events(|event| {
+                matches!(
+                    event,
+                    Event::LiveSession {
+                        track: tilo_live::live::Track::Presence,
+                        ..
+                    }
+                )
+            })
+        });
         let mut boards = self.boards.lock_recover();
-        for event in self.presence.drain() {
+        for event in presence.drain() {
             if let Event::LiveSession { ws, from, body, .. } = event {
                 boards
                     .entry(ws)

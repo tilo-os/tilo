@@ -76,17 +76,30 @@ impl RowBindings {
     /// answers to: the arguments its declaration takes, named as it names
     /// them. Names the effect does not take are dropped.
     #[must_use]
-    pub fn bind_id<I, K>(mut self, effect: &'static str, arguments: I) -> Self
+    pub fn bind_id<I, K>(self, effect: &'static str, arguments: I) -> Self
     where
         I: IntoIterator<Item = (K, serde_json::Value)>,
         K: Into<String>,
     {
-        self.arguments.entry(effect).or_default().push(
-            arguments
-                .into_iter()
-                .map(|(name, value)| (name.into(), value))
-                .collect(),
-        );
+        let mut arguments = arguments
+            .into_iter()
+            .map(|(name, value)| (name.into(), value));
+        self.offer_arguments(effect, &mut arguments)
+    }
+
+    /// [`Self::bind_id`] once the arguments are names and values. Not generic
+    /// over the effect or the iterator a caller passes, so an app builds it
+    /// once instead of once per effect and argument type it binds.
+    #[inline(never)]
+    fn offer_arguments(
+        mut self,
+        effect: &'static str,
+        arguments: &mut dyn Iterator<Item = (String, serde_json::Value)>,
+    ) -> Self {
+        self.arguments
+            .entry(effect)
+            .or_default()
+            .push(arguments.collect());
         self
     }
 
@@ -113,7 +126,7 @@ impl RowBindings {
     /// id.
     #[must_use]
     pub fn bind_asking_id<I, K>(
-        mut self,
+        self,
         effect: &'static str,
         arguments: I,
         asking: &[&'static str],
@@ -122,7 +135,13 @@ impl RowBindings {
         I: IntoIterator<Item = (K, serde_json::Value)>,
         K: Into<String>,
     {
-        self = self.bind_id(effect, arguments);
+        self.bind_id(effect, arguments).ask_defaults(effect, asking)
+    }
+
+    /// Offer `effect` with the parameters `asking` as their bound value's default,
+    /// still asked. Not generic, so every effect that asks one shares it.
+    #[inline(never)]
+    fn ask_defaults(mut self, effect: &'static str, asking: &[&'static str]) -> Self {
         let asked = self.defaults.entry(effect).or_default();
         for name in asking {
             if !asked.contains(name) {
@@ -160,12 +179,7 @@ impl RowBindings {
                 .extend(arguments.iter().cloned());
         }
         for (effect, asking) in &other.defaults {
-            let asked = self.defaults.entry(effect).or_default();
-            for name in asking {
-                if !asked.contains(name) {
-                    asked.push(*name);
-                }
-            }
+            self = self.ask_defaults(effect, asking);
         }
         self.choices.extend(other.choices.clone());
         self.specs.extend(other.specs.iter().cloned());
@@ -177,13 +191,24 @@ impl RowBindings {
     /// scales it supports): what a control or the palette lists.
     #[must_use]
     pub fn choices<R, A>(
-        mut self,
+        self,
         effect: crate::ActionRef<R, A>,
         param: &'static str,
         choices: impl IntoIterator<Item = String>,
     ) -> Self {
-        self.choices
-            .insert((effect.id, param), choices.into_iter().collect());
+        self.chosen_by(effect.id, param, choices.into_iter().collect())
+    }
+
+    /// [`Self::choices`] once the values are read. Not generic, so every
+    /// effect a row offers values for shares it.
+    #[inline(never)]
+    fn chosen_by(
+        mut self,
+        effect: &'static str,
+        param: &'static str,
+        choices: Vec<String>,
+    ) -> Self {
+        self.choices.insert((effect, param), choices);
         self
     }
 
@@ -301,9 +326,7 @@ impl LiveRow {
         id: impl Into<String>,
         label: impl Into<String>,
     ) -> Self {
-        let id = id.into();
-        let operations = R::effects(&crate::Id::from_raw(id.clone()));
-        Self::from_operations(id, label.into(), R::KIND, R::words(), operations)
+        typed_row(&RowTypeTable::of::<R>(), id.into(), label.into(), None)
     }
 
     /// A row of the declared type `R`, offering the effects `bindings`
@@ -318,28 +341,12 @@ impl LiveRow {
         label: impl Into<String>,
         bindings: &RowBindings,
     ) -> Self {
-        let id = id.into();
-        let mut operations = R::effects_with(&crate::Id::from_raw(id.clone()), bindings);
-        operations.extend(bindings.declared().iter().cloned());
-        Self::from_operations(id, label.into(), R::KIND, R::words(), operations)
-    }
-
-    /// [`Self::typed_with`] once the type's words and effects are read, so the
-    /// row is built by one function rather than one per type every app uses.
-    fn from_operations(
-        id: String,
-        label: String,
-        kind: &'static str,
-        words: tilo_actions::ResourceType,
-        operations: Vec<tilo_actions::ActionSpec>,
-    ) -> Self {
-        let mut row = Self {
-            resource: std::rc::Rc::new(ResourceSpec::new(id, kind, label).with_type(words)),
-        };
-        for operation in operations {
-            row = row.operation(operation);
-        }
-        row
+        typed_row(
+            &RowTypeTable::of::<R>(),
+            id.into(),
+            label.into(),
+            Some(bindings),
+        )
     }
 
     /// Attach the stable source-domain identity used to find this row across
@@ -562,6 +569,56 @@ impl LiveRow {
     pub fn same_row(&self, other: &Self) -> bool {
         std::rc::Rc::ptr_eq(&self.resource, &other.resource)
     }
+}
+
+/// What a declared row type answers about its rows, as plain data: the
+/// compiled-once [`typed_row`] takes it so the row builders are one function
+/// rather than one per type every app publishes.
+struct RowTypeTable {
+    kind: &'static str,
+    words: fn() -> tilo_actions::ResourceType,
+    effects: fn(&crate::Id) -> Vec<ActionSpec>,
+    effects_with: fn(&crate::Id, &RowBindings) -> Vec<ActionSpec>,
+}
+
+impl RowTypeTable {
+    fn of<R: crate::words::RowType>() -> Self {
+        Self {
+            kind: R::KIND,
+            words: R::words,
+            effects: R::effects,
+            effects_with: R::effects_with,
+        }
+    }
+}
+
+/// The row of the type `kind` is, built by one function for every type: the
+/// type answers what it is and which effects its rows offer, and nothing here
+/// is compiled per type.
+#[inline(never)]
+fn typed_row(
+    kind: &RowTypeTable,
+    id: String,
+    label: String,
+    bindings: Option<&RowBindings>,
+) -> LiveRow {
+    let named = crate::Id::from_raw(id.clone());
+    let operations = match bindings {
+        Some(bindings) => {
+            let mut operations = (kind.effects_with)(&named, bindings);
+            operations.extend(bindings.declared().iter().cloned());
+            operations
+        }
+        None => (kind.effects)(&named),
+    };
+    let resource = ResourceSpec::new(id, kind.kind, label).with_type((kind.words)());
+    let mut row = LiveRow {
+        resource: std::rc::Rc::new(resource),
+    };
+    for operation in operations {
+        row = row.operation(operation);
+    }
+    row
 }
 
 /// A control binds to the row it shows: `ActionBinding::unit_for(&row, effect.id())`.

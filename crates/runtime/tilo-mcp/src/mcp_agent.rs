@@ -1411,7 +1411,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 // ([`Self::pick_action_in`]): `notes#create-page` is the notebook's, and
                 // reading every note to find it would grow with the notebook.
                 let mut root = if list {
-                    self.app_children(&provider, &mut levels).await?
+                    self.app_children_listed(&provider, &mut levels).await?
                 } else {
                     self.level(&provider, "", &mut levels).await?
                 };

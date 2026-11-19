@@ -327,7 +327,7 @@ impl Workspaces {
             .records
             .retained(workspace.workspace_id())
             .await?;
-        self.recall_retained(workspace, retained);
+        self.recall_retained(workspace, retained).await;
         Ok(())
     }
 
@@ -339,7 +339,7 @@ impl Workspaces {
     /// all: they are replayed again, in the order their authors wrote them,
     /// once the surface arrives ([`Self::follow`]) or something they waited
     /// for lands ([`Followed::replay_wanted`]).
-    pub(super) fn recall_retained(
+    pub(super) async fn recall_retained(
         &self,
         workspace: &mut GovernedWorkspace,
         retained: Vec<crate::workspace_documents::RetainedBody>,
@@ -375,7 +375,9 @@ impl Workspaces {
             if own && !written_by_a_session(&message) {
                 continue;
             }
-            let followed = workspace.follow(retained.author, message.clone());
+            let followed = workspace
+                .follow_kept(retained.author, message.clone())
+                .await;
             // The link keeps what the workspace holds from before a device
             // joins it, this start's replay included: a device that joins now
             // reads the history the workspace was founded with.

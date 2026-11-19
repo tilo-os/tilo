@@ -46,7 +46,7 @@ pub(super) async fn set_title(
         .await;
 }
 
-async fn readable(workspaces: &Workspaces, workspace: &str) -> Option<String> {
+pub(super) async fn readable(workspaces: &Workspaces, workspace: &str) -> Option<String> {
     title(
         &workspaces
             .resource_document(workspace, APP, RECORD)
@@ -57,7 +57,7 @@ async fn readable(workspaces: &Workspaces, workspace: &str) -> Option<String> {
 
 /// Wait until the node reads `wanted` as [`RECORD`]'s title: every write that got there is
 /// followed.
-async fn follows(workspaces: &Workspaces, workspace: &str, wanted: &str) {
+pub(super) async fn follows(workspaces: &Workspaces, workspace: &str, wanted: &str) {
     tilo_test_env::within("the node follows the record's writes", async {
         while readable(workspaces, workspace).await.as_deref() != Some(wanted) {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -173,7 +173,7 @@ async fn lounge_reading_with_client(capacity: usize) -> (Lounge, crate::ServerCl
 }
 
 /// A node governs a workspace whose record its members write sealed. It reads
-/// the record through the channel keys it holds as a member and resets it
+/// the document through the workspace's keys it holds as a member and resets it
 /// with a write of its own, sealed like theirs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_node_reads_and_resets_a_record_its_members_seal() {
@@ -325,7 +325,7 @@ pub(super) async fn subscribed_member(
     client
 }
 
-/// Send `delta`, `member`'s write, to the host `client` reaches.
+/// Send `delta`, `member`'s write, to the server `client` reaches.
 fn send_members_delta(
     client: &crate::ServerClient,
     workspace_id: WorkspaceId,
@@ -343,7 +343,7 @@ fn send_members_delta(
         .unwrap();
 }
 
-/// Send `message`, a sealed write of the member `key` signs, to the host `client` reaches,
+/// Send `message`, a sealed write of the member `key` signs, to the server `client` reaches,
 /// as the member's own writes travel.
 fn send_sealed(
     client: &crate::ServerClient,
@@ -363,7 +363,7 @@ fn send_sealed(
     );
 }
 
-/// `member` writes `line` as the record's title and sends it to the host
+/// `member` writes `line` as the document's title and sends it to the server
 /// sealed, as the member's own writes travel.
 pub(super) fn seal_and_send_title(
     member: &SealingMember,
@@ -397,7 +397,7 @@ fn newcomer_reads(member: &SealingMember, held: &[SignedOp]) -> Option<String> {
 /// The workspace's retained writes, once what a newcomer opens from them is
 /// `wanted`: a write the node follows is retained a moment after it, so a
 /// read made in between is short of it.
-async fn retained_until(
+pub(super) async fn retained_until(
     server: &crate::workspaces::fixtures::TestHost,
     workspace_id: WorkspaceId,
     member: &SealingMember,

@@ -616,6 +616,11 @@ mod tests {
                 "Ada",
                 "a change a lent member wrote reads as theirs"
             );
+            assert_eq!(
+                people.registry().resolve_handle(ada.id()).name,
+                "Ada",
+                "the person an agent acted for reads by name"
+            );
             tilo_resource::members::know([]);
             assert_eq!(
                 people.name(&ada),
