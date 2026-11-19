@@ -963,10 +963,6 @@ fn refused_for(answer: &Result<Value, ActionCallError>, why: &str) -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one story: turned down twice, refused a third time, and who lifts it"
-)]
 async fn a_kind_its_person_turned_down_twice_is_not_proposed_a_third_time() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
