@@ -18,9 +18,9 @@ use std::sync::{Arc, Mutex};
 
 use tilo_lock::MutexRecover as _;
 
-/// How many surfaces one host keeps. A surface is a few kilobytes of
-/// `surface.toml`, and a host that met more versions than this asks for the
-/// rest again rather than keep an unbounded map.
+/// How many surfaces one host keeps. A surface is a few kilobytes, and a host
+/// that met more versions than this asks for the rest again rather than keep
+/// an unbounded map.
 const MAX_SURFACES: usize = 4096;
 
 /// The surfaces this host has, by BLAKE3 hash: what it runs an app with, and
@@ -151,15 +151,17 @@ const fn signed_surface(_: &str) -> Option<[u8; 32]> {
     None
 }
 
-/// The surfaces this build publishes for the history the apps' older versions
-/// wrote: one file per version of a built-in app's `surface.toml`, laid out by
-/// the image's build beside its programs (`TILO_SURFACES` names another).
+/// The surfaces this build publishes for the versions of the built-in apps it
+/// does not run itself: one file per version of an app's `surface.toml`, laid
+/// out by the image's build beside its programs (`TILO_SURFACES` names
+/// another).
 const BUILT_SURFACES: &str = "/usr/local/share/tilo/surfaces";
 
-/// Publish the surfaces this build carries into the content store `dir`, by
-/// their hash: a change written by an older version of an app than this build
-/// runs is decided here even when no member still has that version. Files
-/// already in the content store are left as they are, so a start publishes once.
+/// Publish the surfaces this build carries into the content store `dir`, in
+/// the form they are kept by
+/// ([`collab_types::surface::canonical`]): a change naming one of them is
+/// decided here even when no member still has that version. Files already in
+/// the content store are left as they are, so a start publishes once.
 fn publish_built(dir: &Path) {
     let built = std::env::var_os("TILO_SURFACES")
         .map_or_else(|| PathBuf::from(BUILT_SURFACES), PathBuf::from);
@@ -171,17 +173,24 @@ fn publish_from(built: &Path, dir: &Path) {
     let Ok(entries) = std::fs::read_dir(built) else {
         return;
     };
-    let (mut published, mut kept) = (0u64, 0u64);
+    let (mut published, mut already) = (0u64, 0u64);
     for entry in entries.flatten() {
         let Ok(bytes) = std::fs::read(entry.path()) else {
             continue;
         };
-        let hash = hex::encode(blake3::hash(&bytes).as_bytes());
+        let Ok((_, surface)) = collab_types::surface::SurfaceFile::kept(&bytes) else {
+            tracing::warn!(
+                file = %entry.path().display(),
+                "a surface this build carries does not parse; it is not published"
+            );
+            continue;
+        };
+        let hash = hex::encode(blake3::hash(surface.as_bytes()).as_bytes());
         if dir.join(&hash).exists() {
-            kept = kept.saturating_add(1);
+            already = already.saturating_add(1);
             continue;
         }
-        match write(dir, &hash, &bytes) {
+        match write(dir, &hash, surface.as_bytes()) {
             Ok(()) => published = published.saturating_add(1),
             Err(error) => {
                 tracing::warn!(%error, %hash, "a surface this build carries was not published");
@@ -191,7 +200,7 @@ fn publish_from(built: &Path, dir: &Path) {
     if published > 0 {
         tracing::info!(
             published,
-            kept,
+            already,
             "the surfaces this build carries are in the content content store"
         );
     }
@@ -413,8 +422,8 @@ mod tests {
         let built = scratch.path().join("built");
         let content_store = scratch.path().join("surfaces");
         std::fs::create_dir_all(&built).unwrap();
-        let old = b"kind = \"chat.workspace\"\nversion = 1\n";
-        let older = b"kind = \"chat.workspace\"\nversion = 2\n";
+        let old = b"[[resources]]\nkind = \"chat.workspace\"\nlabel = \"Chat\"\nversion = 1\n";
+        let older = b"[[resources]]\nkind = \"chat.workspace\"\nlabel = \"Chat\"\nversion = 2\n";
         std::fs::write(built.join("chat.9102a1.toml"), old).unwrap();
         std::fs::write(built.join("chat.4c1e77.toml"), older).unwrap();
         std::fs::write(built.join("slides.9102a1.toml"), old).unwrap();
@@ -422,11 +431,12 @@ mod tests {
         publish_from(&built, &content_store);
 
         for (version, bytes) in [("chat v1", old.as_slice()), ("chat v2", older.as_slice())] {
-            let hash = hex::encode(blake3::hash(bytes).as_bytes());
+            let (_, surface) = collab_types::surface::SurfaceFile::kept(bytes).unwrap();
+            let hash = hex::encode(blake3::hash(surface.as_bytes()).as_bytes());
             assert_eq!(
                 std::fs::read(content_store.join(&hash)).unwrap(),
-                bytes,
-                "{version} is in the content store, by its hash"
+                surface.as_bytes(),
+                "{version} is in the content store, by its hash, in the form it is kept by"
             );
         }
         assert_eq!(
@@ -436,18 +446,11 @@ mod tests {
         );
 
         // A start after this one publishes nothing new.
-        let kept = std::fs::metadata(content_store.join(hex::encode(blake3::hash(old).as_bytes())))
-            .unwrap()
-            .modified()
-            .unwrap();
+        let (_, surface) = collab_types::surface::SurfaceFile::kept(old).unwrap();
+        let path = content_store.join(hex::encode(blake3::hash(surface.as_bytes()).as_bytes()));
+        let kept = std::fs::metadata(&path).unwrap().modified().unwrap();
         publish_from(&built, &content_store);
         assert_eq!(std::fs::read_dir(&content_store).unwrap().count(), 2);
-        assert_eq!(
-            std::fs::metadata(content_store.join(hex::encode(blake3::hash(old).as_bytes())))
-                .unwrap()
-                .modified()
-                .unwrap(),
-            kept
-        );
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), kept);
     }
 }
