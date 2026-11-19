@@ -23,8 +23,10 @@ This refuses, in production Rust under `apps/` and `crates/session/`:
 * `untyped-live-row`: `LiveRow::new`, a row that names no declared type;
 * `row-operation`: `.operation(...)` or `.effect(...)` chained onto a
   `LiveRow` construction (including `LiveRow::typed::<…>`) or added to a row
-  a variable holds (`let row = …; row = row.operation(spec)`) — an effect
-  offered on a row the app built rather than one its type declares;
+  a variable holds, whether the variable is the construction itself or what a
+  helper that returns a row built (`item.kind.row(…)`, a `…_row` function) —
+  an effect offered on a row the app shaped rather than one its type
+  declares;
 * `hand-built-tree`: `ResourceSpec::new`, a resource tree an app built;
 * `hand-bound-action`: `ActionSpec::typed`, an action an app bound itself.
 
@@ -62,11 +64,13 @@ ROW = re.compile(
     r"\s*(?:::?<[^()]*>)?\s*\("
 )
 ROW_METHODS = {"operation", "effect"}
-# A row handed to a variable and given operations there (`let row =
-# LiveRow::typed::<…>(…); row = row.operation(spec)`): a control-binding row
-# still hand-built, in a form the chain above does not see.
-LET_ROW = re.compile(
-    r"\blet\s+(?:mut\s+)?(\w+)\s*(?::[^=;]+)?=[^;]*?\bLiveRow\s*::"
+# One `let name = <initializer>;` binding, initializer and all. Read as a
+# row's variable when the initializer builds one: `LiveRow::…` itself, or a
+# helper that returns a row (a function or method named `row` or `…_row`,
+# `item.kind.row(…)`), which the chain above cannot follow to its definition.
+LET_BINDING = re.compile(r"\blet\s+(?:mut\s+)?(\w+)\s*(?::[^=;]+)?=([^;]*?);")
+ROW_BUILDER = re.compile(
+    r"\bLiveRow\s*::|(?:\b|\.)(?:\w*_row|row)\s*\("
 )
 
 ADVICE = {
@@ -131,7 +135,12 @@ def row_operations(code: str) -> int:
                 count += 1
             if index < len(code) and code[index] == "(":
                 index = rust_source.matching(code, index)
-    for ident in {match.group(1) for match in LET_ROW.finditer(code)}:
+    rows = {
+        match.group(1)
+        for match in LET_BINDING.finditer(code)
+        if ROW_BUILDER.search(match.group(2))
+    }
+    for ident in rows:
         count += len(re.findall(
             rf"\b{re.escape(ident)}\s*\.\s*(?:{'|'.join(sorted(ROW_METHODS))})\s*\(",
             code,
