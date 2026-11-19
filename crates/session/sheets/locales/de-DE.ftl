@@ -527,6 +527,19 @@ keyboard-shortcuts-resource = Tastenkürzel
 keyboard-shortcuts-list = Kürzel auflisten
 keyboard-shortcuts-list-description = Jedes Kürzel des Desktops mit seinen aktuellen und voreingestellten Tasten.
 
+## Ein Agent fragt seine Person etwas in eigenen Worten: eine Entscheidung
+## oder etwas, das nur sie weiß.
+agent-ask-title = { $agent } fragt dich
+agent-ask-workspace = Arbeitsbereich
+agent-ask-send = Senden
+agent-ask-not-now = Nicht jetzt
+agent-ask-pick-or-type = Wähle eine Antwort oder tippe eine.
+agent-question-more-label = Außerdem offen
+agent-question-more = { $count ->
+    [one] 1 weitere Frage
+   *[other] { $count } weitere Fragen
+}
+
 ## Die Fragen des Zusammenarbeitsnetzes: ein Agent auf dem Rechner eines
 ## Arbeitsbereichs fragt seine Person um Erlaubnis für eine Aktion, und ein
 ## Gerät bittet sein Geschwistergerät um den Schlüssel, mit dem es startet.

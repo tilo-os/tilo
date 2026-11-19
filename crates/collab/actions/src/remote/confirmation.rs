@@ -116,15 +116,129 @@ pub struct ConfirmationQuestion {
     /// Whether Undo takes it back
     /// ([`ActionContract::can_be_undone`](crate::ActionContract::can_be_undone)).
     pub undoable: bool,
+    /// What the agent asks in its own words, where it asks the person
+    /// something rather than to allow an action ([`ASK`]): the action fields
+    /// above are empty then, and the person answers with a reply.
+    #[serde(default)]
+    pub ask: Option<PersonAsk>,
 }
 
 /// The person's answer to a [`ConfirmationQuestion`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConfirmationReply {
     /// Run this one invocation.
     AllowOnce,
-    /// Do not run it.
+    /// Do not carry it out; for a [`PersonAsk`], the person chose not to answer.
     Deny,
+    /// The person's answer to a [`PersonAsk`]: one of its choices, or what
+    /// they typed.
+    Replied(String),
+}
+
+/// The provider an agent asks its person under: its [`ASK`] puts a
+/// [`PersonAsk`] to the person the agent acts for, on their own devices, and
+/// succeeds with their answer ([`PersonAnswer`]).
+pub const ASK_PROVIDER: &str = "tilo.person";
+/// The resource [`ASK`] is an action of: the person the caller acts for.
+pub const ASK_RESOURCE: &str = "person";
+/// Ask the person a question and wait for their answer.
+pub const ASK: &str = "ask";
+/// The longest question, in characters.
+pub const MAX_ASK_CHARS: usize = 2_000;
+/// The most choices a question offers.
+pub const MAX_ASK_CHOICES: usize = 8;
+/// The longest choice, in characters.
+pub const MAX_CHOICE_CHARS: usize = 80;
+/// The longest typed answer, in characters.
+pub const MAX_REPLY_CHARS: usize = 4_000;
+
+/// What [`ASK`] is invoked on.
+#[must_use]
+pub fn ask_target() -> super::RemoteActionTarget {
+    super::RemoteActionTarget {
+        provider: ASK_PROVIDER.to_owned(),
+        address: super::ActionAddress::new(ASK_RESOURCE, ASK),
+    }
+}
+
+/// Whether `target` asks the person.
+#[must_use]
+pub fn is_ask(target: &super::RemoteActionTarget) -> bool {
+    target.provider == ASK_PROVIDER
+        && target.address.resource == ASK_RESOURCE
+        && target.address.action == ASK
+}
+
+/// A question an agent puts to its person in its own words: a decision, or
+/// something only they know. It waits on their devices until they answer.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PersonAsk {
+    /// The question, as the agent words it.
+    pub question: String,
+    /// The answers the person picks from, in order; none for a question
+    /// answered by typing.
+    pub choices: Vec<String>,
+    /// Whether the person may type an answer of their own: always where it
+    /// offers no choices.
+    pub typed: bool,
+}
+
+impl PersonAsk {
+    /// The question as it is put: trimmed, typed where it offers no choices.
+    ///
+    /// # Errors
+    /// What makes it no question to put: empty, too long, or choices that
+    /// are empty, repeated, too long or too many.
+    pub fn checked(mut self) -> Result<Self, String> {
+        let question = self.question.trim().to_owned();
+        self.question = question;
+        if self.question.is_empty() || self.question.chars().count() > MAX_ASK_CHARS {
+            return Err(format!("question: 1 to {MAX_ASK_CHARS} characters"));
+        }
+        if self.choices.len() > MAX_ASK_CHOICES {
+            return Err(format!("choices: at most {MAX_ASK_CHOICES}"));
+        }
+        for choice in &mut self.choices {
+            *choice = choice.trim().to_owned();
+        }
+        if self.choices.iter().any(|choice| {
+            choice.is_empty()
+                || choice.chars().count() > MAX_CHOICE_CHARS
+                || choice.chars().any(char::is_control)
+        }) {
+            return Err(format!(
+                "choices: each 1 to {MAX_CHOICE_CHARS} characters on one line"
+            ));
+        }
+        let mut seen = std::collections::HashSet::new();
+        if !self.choices.iter().all(|choice| seen.insert(choice)) {
+            return Err("choices: each once".to_owned());
+        }
+        self.typed |= self.choices.is_empty();
+        Ok(self)
+    }
+
+    /// Whether `reply` answers it: one of its choices, or, where it takes a
+    /// typed answer, any text of at most [`MAX_REPLY_CHARS`].
+    #[must_use]
+    pub fn answered_by(&self, reply: &str) -> bool {
+        let reply = reply.trim();
+        if self.choices.iter().any(|choice| choice == reply) {
+            return true;
+        }
+        self.typed && !reply.is_empty() && reply.chars().count() <= MAX_REPLY_CHARS
+    }
+}
+
+/// What [`ASK`] succeeds with.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PersonAnswer {
+    /// The person's answer: one of the choices, or what they typed.
+    Answered { answer: String },
+    /// The person chose not to answer.
+    Declined,
 }
 
 /// The answer a provider that cannot ask has for a [`RemoteActionMessage::ConfirmationRequest`].

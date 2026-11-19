@@ -610,6 +610,18 @@ words = ["run"]
 paths = ["crates/runtime/tilo-mcp/src/mcp_put_tests.rs"]
 
 [[allow]]
+reason = "tokio's mpsc constructor, the queue a test's stand-in page answers through."
+words = ["channel"]
+identifiers = ["unbounded_channel"]
+paths = ["crates/agent/agent-session/tests/workspace_actions/api_asks.rs"]
+
+[[allow]]
+reason = "The MCP server's accessor for its action provider (`McpServer::host`)."
+words = ["host"]
+identifiers = ["host"]
+paths = ["crates/runtime/tilo-mcp/src/mcp_ask.rs"]
+
+[[allow]]
 reason = "tokio's LocalSet method that drives a future to completion."
 words = ["run"]
 identifiers = ["run_until"]

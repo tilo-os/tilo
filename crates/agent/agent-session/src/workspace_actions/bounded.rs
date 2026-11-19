@@ -390,6 +390,7 @@ pub(super) fn question(
         risk: contract.risk.name().to_owned(),
         kind: contract.kind.to_string(),
         undoable: draft.undoable,
+        ask: None,
     })
 }
 
@@ -1292,7 +1293,10 @@ impl super::Shared {
                 }
                 Err(error) => failed(&error),
             },
-            Some(Ok(ConfirmationReply::Deny)) => failed("the person did not allow it"),
+            // A reply answers an agent's own question, never an action's.
+            Some(Ok(ConfirmationReply::Deny | ConfirmationReply::Replied(_))) => {
+                failed("the person did not allow it")
+            }
             Some(Err(_)) | None => failed("the person did not answer in time"),
         };
         if let Some(entry) = self.log.lock_recover().entries.get_mut(&invocation)

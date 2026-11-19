@@ -81,6 +81,7 @@ mod opened_file;
 mod outcome;
 mod packaged;
 mod part_wait;
+mod person_ask;
 mod placed;
 mod publish;
 mod reads;
@@ -346,7 +347,10 @@ impl WorkspaceActions {
         // what it changed in front of the people there.
         let shows = application_provider(&request.target.provider).is_some()
             && request.target.address.action == APPLICATION_OPEN_ACTION;
-        let member_request = (on_resource || on_workspace || shows) && speaks_for_a_member(caller);
+        // An agent asking the person it works for something in its own words.
+        let asks = tilo_actions::remote::is_ask(&request.target);
+        let member_request =
+            (on_resource || on_workspace || shows || asks) && speaks_for_a_member(caller);
         link_request || member_request || self.authorized(caller)
     }
 
@@ -2184,6 +2188,11 @@ impl Worker {
             Ok(claimed) => claimed,
             Err(receipt) => return receipt,
         };
+        // A question to the person changes nothing, so it applies nothing where
+        // the agent is seen working: it waits on the person's devices.
+        if let Some(receipt) = self.ask_in_words(workspace_id, &caller, &request) {
+            return receipt;
+        }
         self.voice(
             workspace_id,
             &caller,

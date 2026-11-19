@@ -16,7 +16,7 @@ use tilo_server_client::Approver;
 use tilo_server_client::questions::{Answered, QuestionSheet, answer_questions};
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_service::{Question, Questions};
-use tilo_sheets::portal::AgentQuestion;
+use tilo_sheets::portal::{AgentAsk, AgentQuestion};
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
@@ -150,14 +150,29 @@ impl QuestionSheet for SessionSheet {
                 workspace: question.workspace.clone(),
                 page: question.page_origin(),
                 picture: question.page.as_ref().and_then(|page| page.picture.clone()),
+                ask: question.ask.as_ref().map(|ask| AgentAsk {
+                    question: ask.question.clone(),
+                    choices: ask.choices.clone(),
+                    typed: ask.typed,
+                }),
             })
             .unwrap_or_default(),
         });
         let answered = self.answered.clone();
+        let ask = question.ask.as_ref().map(|ask| AgentAsk {
+            question: ask.question.clone(),
+            choices: ask.choices.clone(),
+            typed: ask.typed,
+        });
         let task = tokio::spawn(async move {
-            let answer = match asked.await {
-                Some(_) => ConfirmationAnswer::AllowOnce,
-                None => ConfirmationAnswer::Deny,
+            let answer = match (asked.await, ask) {
+                (Some(given), Some(ask)) => {
+                    let typed = given.values.first().map_or("", |typed| typed.as_str());
+                    ask.reply(given.choice, typed)
+                        .map_or(ConfirmationAnswer::Deny, ConfirmationAnswer::Reply)
+                }
+                (Some(_), None) => ConfirmationAnswer::AllowOnce,
+                (None, _) => ConfirmationAnswer::Deny,
             };
             let _ = answered.send((id, answer));
         });

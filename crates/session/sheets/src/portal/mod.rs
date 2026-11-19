@@ -38,7 +38,7 @@ mod fixtures;
 mod keys;
 mod view;
 
-pub use agent::{AgentQuestion, risk_words};
+pub use agent::{AgentAsk, AgentQuestion, risk_words};
 
 /// Where the sheet's presses go.
 pub type Ask = Rc<dyn Fn(&PortalEffect)>;

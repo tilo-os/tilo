@@ -159,6 +159,7 @@ impl Shown {
             workspace: String::new(),
             expires_at_ns: tilo_clock::unix_now_ns().saturating_add(WAIT_NS),
             page: None,
+            ask: None,
         }
     }
 }

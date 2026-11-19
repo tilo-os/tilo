@@ -527,6 +527,19 @@ keyboard-shortcuts-resource = Keyboard shortcuts
 keyboard-shortcuts-list = List shortcuts
 keyboard-shortcuts-list-description = Every desktop shortcut with its current and default keys.
 
+## An agent asks its person something in its own words: a decision, or
+## something only they know.
+agent-ask-title = { $agent } asks you
+agent-ask-workspace = Workspace
+agent-ask-send = Send
+agent-ask-not-now = Not now
+agent-ask-pick-or-type = Pick an answer or type one.
+agent-question-more-label = Also waiting
+agent-question-more = { $count ->
+    [one] 1 more question
+   *[other] { $count } more questions
+}
+
 ## The collaboration network's own questions: an agent on a workspace host
 ## asks its person to allow one action, and a device asks its sibling for the
 ## disk key it boots with.

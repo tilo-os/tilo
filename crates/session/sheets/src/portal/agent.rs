@@ -1,7 +1,9 @@
 //! An agent's question on a workspace host: who asks, in which group, exactly
 //! what would happen and where, and the person's answer for that one
-//! invocation. A native session and a page show it on the same sheet, in the
-//! same words.
+//! invocation. Or a question the agent words itself ([`AgentAsk`]): a decision
+//! or something only the person knows, answered with one of its choices or
+//! in their own words. A native session and a page show it on the same sheet,
+//! in the same words.
 
 use serde::{Deserialize, Serialize};
 
@@ -41,6 +43,68 @@ pub struct AgentQuestion {
     /// kept one: what the person sees before they allow it.
     #[serde(default)]
     pub picture: Option<String>,
+    /// What the agent asks in its own words, where it asks something rather
+    /// than to allow an action: the action fields are empty then.
+    #[serde(default)]
+    pub ask: Option<AgentAsk>,
+}
+
+/// A question an agent words itself, as the sheet asks it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct AgentAsk {
+    /// The question, in the agent's words.
+    pub question: String,
+    /// The answers the person picks from, in order.
+    #[serde(default)]
+    pub choices: Vec<String>,
+    /// Whether the person may type an answer of their own.
+    #[serde(default)]
+    pub typed: bool,
+}
+
+impl AgentAsk {
+    /// The sheet asking it: each choice a button of its own where nothing is
+    /// typed, else a field to type in under the choices, and Send. Not now
+    /// leaves it unanswered.
+    fn dialog(&self, handle: &str, asked: &AgentQuestion) -> Dialog {
+        let body = if self.typed {
+            Body::Entry {
+                masked: false,
+                required: self.choices.is_empty(),
+                choices: self.choices.clone(),
+            }
+        } else {
+            Body::Answers {
+                choices: self.choices.clone(),
+                suggested: usize::MAX,
+                remember: None,
+            }
+        };
+        Dialog {
+            handle: handle.to_owned(),
+            title: words("agent-ask-title", &[("agent", &asked.agent)]),
+            heading: asked.title.clone(),
+            detail: self.question.clone(),
+            facts: vec![(word("agent-ask-workspace"), asked.workspace.clone())],
+            body,
+            confirm_label: word("agent-ask-send"),
+            cancel_label: word("agent-ask-not-now"),
+            // Nothing is picked until the person picks it.
+            selected: usize::MAX,
+            ..Dialog::default()
+        }
+    }
+
+    /// The answer the sheet gives: the choice `chosen` names, else what was
+    /// `typed`, where it takes typing. `None` while it holds neither.
+    #[must_use]
+    pub fn reply(&self, chosen: Option<usize>, typed: &str) -> Option<String> {
+        let typed = typed.trim();
+        if self.typed && !typed.is_empty() {
+            return Some(typed.to_owned());
+        }
+        chosen.and_then(|at| self.choices.get(at)).cloned()
+    }
 }
 
 impl AgentQuestion {
@@ -49,6 +113,9 @@ impl AgentQuestion {
     /// and what it risks follow, and the picture of the page it leaves from.
     #[must_use]
     pub fn dialog(&self, handle: &str) -> Dialog {
+        if let Some(ask) = &self.ask {
+            return ask.dialog(handle, self);
+        }
         let mut facts = self.arguments.clone();
         if let Some(page) = self.page.as_ref().filter(|page| !page.is_empty()) {
             facts.insert(0, (word("network-agent-question-page"), page.clone()));

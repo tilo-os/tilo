@@ -30,6 +30,8 @@ use tilo_lock::MutexRecover as _;
 
 #[path = "mcp_answer.rs"]
 mod answer;
+#[path = "mcp_ask.rs"]
+mod ask;
 #[path = "mcp_agent_find.rs"]
 mod find;
 #[path = "mcp_agent_launch.rs"]
@@ -1615,6 +1617,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             },
             "tilo" => match parse(args) {
                 Ok(args) => Box::pin(self.agent_tilo(args, structured)).await,
+                Err(error) => Err(error.into()),
+            },
+            "tilo_ask" => match parse(args) {
+                Ok(args) => self.agent_ask(args, structured).await,
                 Err(error) => Err(error.into()),
             },
             "tilo_watch" => match parse(args) {
