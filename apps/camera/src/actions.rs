@@ -251,6 +251,7 @@ fn capture_handoff(is_video: bool, content_hash: Option<&str>) -> Option<ActionS
 pub(crate) fn handoff_spec(is_video: bool, bindings: &RowBindings) -> Option<ActionSpec> {
     let hash = bindings
         .arguments(HANDOFF_ACTION)?
+        .first()?
         .get("content_hash")?
         .as_str()?;
     capture_handoff(is_video, Some(hash))
