@@ -7,6 +7,7 @@
 //! the package's `index.js` turns into an async iterable. The Automerge bytes
 //! the host sends are decoded in sandboxed workers, started as the
 //! `tilo-automerge-worker` program beside the addon.
+#![recursion_limit = "256"]
 
 // The direct API's futures nest deeply enough (the network actor's netlink types among
 // them) that proving them `Send` passes the default limit of 128.
