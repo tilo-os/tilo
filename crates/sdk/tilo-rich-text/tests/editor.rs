@@ -145,7 +145,13 @@ fn a_paste_of_the_whole_limit_is_kept() {
     let kept = "é".repeat(ui::tilo_actions::MAX_TEXT_BYTES / 2);
     app.harness().commit_text(&kept);
     assert_eq!(paragraphs(&app), [kept], "the paragraph holds the paste");
-    assert_eq!(notice(), None, "the bar is quiet");
+    // Nothing refuses it. Saving 8 MB in a debug build can outlast the save
+    // stall on a busy machine, and the bar then confirms it with "Saved".
+    assert!(
+        notice().is_none_or(|said| said == "Saved"),
+        "the bar says only that it was kept: {:?}",
+        notice()
+    );
 }
 
 #[test]
