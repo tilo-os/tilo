@@ -393,6 +393,19 @@ fn by_app_conflict(options: &ActionOptions) -> Option<&'static str> {
 #[cfg(test)]
 mod tests;
 
+/// `text` where the build publishes it, and nothing where the crate is built
+/// into a model module: a device applying an action reads no words, so an
+/// app's module carries none of what a surface says about one.
+fn declared_text(text: &str) -> Tokens {
+    quote! {{
+        #[cfg(tilo_model_guest)]
+        const TEXT: &::core::primitive::str = "";
+        #[cfg(not(tilo_model_guest))]
+        const TEXT: &::core::primitive::str = #text;
+        TEXT
+    }}
+}
+
 /// `#[param("description", name = "public", example = expr)]`, each part
 /// optional. `resource = "kind"` has a person pick an existing resource of
 /// that kind, the parameter a reference to it (`ResourceAt`).
@@ -753,7 +766,7 @@ fn read_verb(method: &mut syn::ImplItemFn, attr: &Attribute) -> syn::Result<Verb
 fn param_decl(param: &Param, krate: &Tokens) -> Tokens {
     let name = &param.public;
     let ty = &param.ty;
-    let description = &param.description;
+    let description = &declared_text(&param.description);
     let flat = param.role == Role::Flatten;
     let flat_types = if flat {
         quote!(::core::option::Option::Some(
@@ -1669,7 +1682,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             .find(|param| param.role == Role::Content && only_content)
         {
             Some(param) => {
-                let description = &param.description;
+                let description = &declared_text(&param.description);
                 let public = &param.public;
                 (
                     quote!(::core::option::Option::Some(#description)),
@@ -1689,7 +1702,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 quote!(::core::option::Option::None),
             ),
         };
-        let description = &verb.description;
+        let description = &declared_text(&verb.description);
         let keywords = &verb.options.keywords;
         let icon = crate::optional_str(verb.options.icon.as_deref());
         let did = crate::optional_str(verb.options.did.as_deref());
