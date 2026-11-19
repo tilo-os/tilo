@@ -16,10 +16,8 @@
 use automerge::AutoCommit;
 use console_control::{Request, catalog, wire};
 use serde_json::{Value, json};
-use ui::tilo_actions::{
-    ActionArgs, ActionParam, ActionSpec, Availability, EncodedAction, OperationKind, ParamType,
-    ResourceSpec,
-};
+use tilo_resource::Effect as _;
+use ui::tilo_actions::{ActionSpec, Availability, EncodedAction, ResourceSpec};
 use zeroize::{Zeroize, Zeroizing};
 
 use super::{AuthPhase, GreeterApp};
@@ -29,9 +27,9 @@ use ui::a11y::AccessibilityRequest;
 /// `provider` in `tilo-control` terms.
 pub const PROVIDER: &str = "greeter";
 
-/// The operation type every greeter action travels under. The greeter
-/// declares it as a locally handled type, so the host publishes its actions.
-pub const OPERATION: &str = "greeter.console/v1";
+/// The operation type every greeter action travels under: the declared
+/// vocabulary's, which the greeter answers itself.
+pub const OPERATION: &str = "greeter.console";
 
 /// Why an operation was refused: a stable code and a sentence.
 pub(super) type Refused = (&'static str, String);
@@ -112,19 +110,11 @@ impl GreeterApp {
                 format!("not a greeter operation: {}", encoded.type_id),
             ));
         }
-        let Ok(Value::Object(mut invocation)) = serde_json::from_slice::<Value>(&encoded.payload)
-        else {
-            return Err(refused("invalid_arguments", "Malformed greeter operation"));
-        };
-        let Some(Value::String(action)) = invocation.remove("action") else {
-            return Err(refused("invalid_arguments", "Malformed greeter operation"));
-        };
-        let mut args = match invocation.remove("args") {
-            Some(Value::Object(args)) => args,
-            None => serde_json::Map::new(),
-            Some(_) => return Err(refused("invalid_arguments", "Malformed greeter operation")),
-        };
-        self.run_action(&action, &mut args)
+        let effect = GreeterConsole::from_payload(&encoded.payload)
+            .map_err(|error| refused("invalid_arguments", error.to_string()))?;
+        let action = effect.id();
+        let mut args = effect.arguments();
+        self.run_action(action, &mut args)
     }
 
     fn run_action(
@@ -357,109 +347,155 @@ impl GreeterApp {
     }
 }
 
+/// What the sign-in screen offers: every action of the console, declared
+/// once. All of them reach the session through the one operation
+/// [`OPERATION`], which the greeter answers itself.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "greeter.console")]
+pub enum GreeterConsole {
+    /// Sign in with a password.
+    #[effect(kind = "outside", label = "greeter-sign-in")]
+    SignIn {
+        #[param(secret, "Password; transient authentication input only")]
+        password: String,
+    },
+    /// Choose the session to start.
+    #[effect(kind = "outside", label = "greeter-session")]
+    ChooseSession {
+        #[param("Available session")]
+        session: String,
+    },
+    /// Choose the account to sign in as.
+    #[effect(kind = "outside", label = "greeter-accounts")]
+    ChooseAccount {
+        #[param("Account on this computer")]
+        username: String,
+    },
+    /// Name the account to sign in as.
+    #[effect(kind = "outside", label = "greeter-username")]
+    SetUsername {
+        #[param("Username to authenticate")]
+        username: String,
+    },
+    /// Use the fingerprint reader.
+    #[effect(kind = "outside", label = "greeter-use-fingerprint")]
+    Fingerprint,
+    /// Respond to authentication challenge.
+    #[effect(kind = "outside", label = "greeter-auth-respond")]
+    RespondChallenge {
+        #[param("Current authentication challenge identity")]
+        challenge: String,
+        #[param(secret, "Private transient authentication response")]
+        response: String,
+    },
+    /// Cancel the authentication attempt.
+    #[effect(kind = "outside", label = "greeter-auth-cancel")]
+    CancelAuthentication,
+    /// Keep content-free timings of this sign-in.
+    #[effect(kind = "outside", label = "greeter-session-diagnostics")]
+    ConfigureSessionDiagnostics {
+        #[param("Content-free timing for this sign-in")]
+        presentation: bool,
+        #[param("Content-free timing for this sign-in")]
+        gpu_stages: bool,
+        #[param("Content-free timing for this sign-in")]
+        gpu_timestamps: bool,
+        #[param("Content-free timing for this sign-in")]
+        gpu_dispatch_timestamps: bool,
+    },
+    /// Suspend the computer.
+    #[effect(kind = "outside", label = "greeter-suspend")]
+    Suspend,
+    /// Restart the computer.
+    #[effect(kind = "outside", label = "greeter-restart")]
+    Reboot,
+    /// Shut the computer down.
+    #[effect(kind = "outside", label = "greeter-shut-down")]
+    PowerOff,
+    /// Show larger text.
+    #[effect(kind = "outside", label = "greeter-larger-text")]
+    LargerText {
+        #[param("Turn this on or off")]
+        enabled: bool,
+    },
+    /// Use high contrast.
+    #[effect(kind = "outside", label = "greeter-high-contrast")]
+    HighContrast {
+        #[param("Turn this on or off")]
+        enabled: bool,
+    },
+    /// Speak what is on the screen.
+    #[effect(kind = "outside", label = "greeter-screen-reader")]
+    ScreenReader {
+        #[param("Turn this on or off")]
+        enabled: bool,
+    },
+}
+
+/// The sign-in screen itself, as a declared type: its actions are
+/// [`GreeterConsole`]'s.
+#[derive(tilo_resource::Row)]
+#[row(kind = "greeter.sign-in", label = "Sign in")]
+pub struct GreeterConsoleRoot;
+
+/// The declared spec of `effect`, with the values this instance offers.
+fn console_spec<R, A>(effect: tilo_resource::ActionRef<R, A>) -> Option<ActionSpec> {
+    GreeterConsole::spec(effect.id)
+}
+
 fn conversation_actions(challenge: Option<crate::auth::Challenge>) -> Vec<ActionSpec> {
     let mut specs = Vec::new();
-    let mut response_param = ActionParam::required(
-        "challenge",
-        ParamType::Text,
-        "Current authentication challenge identity",
+    specs.extend(
+        console_spec(GreeterConsole::RESPOND_CHALLENGE).map(|respond| match challenge {
+            Some(challenge) => {
+                respond.with_param_choices("challenge", [challenge.id.to_string().into()])
+            }
+            None => respond,
+        }),
     );
-    if let Some(challenge) = challenge {
-        response_param = response_param.with_choices([challenge.id.to_string()]);
-    }
-    specs.push(console_action(
-        "respond-challenge",
-        "greeter-auth-respond",
-        vec![
-            response_param,
-            ActionParam::required(
-                "response",
-                ParamType::Secret,
-                "Private transient authentication response",
-            ),
-        ],
-    ));
-    specs.push(console_action(
-        "cancel-authentication",
-        "greeter-auth-cancel",
-        Vec::new(),
-    ));
+    specs.extend(console_spec(GreeterConsole::CANCEL_AUTHENTICATION));
     specs
 }
 
-fn diagnostics_action() -> ActionSpec {
-    console_action(
-        "configure-session-diagnostics",
-        "greeter-session-diagnostics",
-        super::SESSION_DIAGNOSTICS
-            .iter()
-            .map(|(param, _)| {
-                ActionParam::required(
-                    param,
-                    ParamType::Boolean,
-                    "Content-free timing for this sign-in",
-                )
-            })
-            .collect(),
-    )
+fn diagnostics_action() -> Option<ActionSpec> {
+    console_spec(GreeterConsole::CONFIGURE_SESSION_DIAGNOSTICS)
 }
 
 impl ui::resources::PublishesResources for GreeterApp {
     fn resources(&self, _doc: &AutoCommit) -> Vec<ResourceSpec> {
-        let mut resource =
-            ResourceSpec::new(PROVIDER, "greeter.sign-in", super::t("greeter-sign-in"));
-        let mut specs = vec![
-            diagnostics_action(),
-            console_action(
-                "sign-in",
-                "greeter-sign-in",
-                vec![ActionParam::required(
-                    "password",
-                    ParamType::Secret,
-                    "Password; transient authentication input only",
-                )],
-            ),
-            console_action(
-                "choose-session",
-                "greeter-session",
-                vec![
-                    ActionParam::required("session", ParamType::Text, "Available session")
-                        .with_choices(self.sessions.iter().map(|session| session.name.clone())),
-                ],
-            ),
-        ];
+        let mut resource = tilo_resource::typed_resource::<GreeterConsoleRoot>(
+            PROVIDER,
+            super::t("greeter-sign-in"),
+        );
+        let mut specs = Vec::new();
+        specs.extend(diagnostics_action());
+        specs.extend(console_spec(GreeterConsole::SIGN_IN));
+        specs.extend(console_spec(GreeterConsole::CHOOSE_SESSION).map(|spec| {
+            spec.with_param_choices(
+                "session",
+                self.sessions
+                    .iter()
+                    .map(|session| session.name.clone().into()),
+            )
+        }));
         let challenge = self
             .auth_session
             .as_ref()
             .and_then(crate::auth::AuthSession::challenge);
         specs.extend(conversation_actions(challenge));
         if self.users.len() > 1 {
-            specs.push(console_action(
-                "choose-account",
-                "greeter-accounts",
-                vec![
-                    ActionParam::required("username", ParamType::Text, "Account on this computer")
-                        .with_choices(self.users.iter().map(|user| user.username.clone())),
-                ],
-            ));
+            specs.extend(console_spec(GreeterConsole::CHOOSE_ACCOUNT).map(|spec| {
+                spec.with_param_choices(
+                    "username",
+                    self.users.iter().map(|user| user.username.clone().into()),
+                )
+            }));
         }
         if self.login_user.is_none() {
-            specs.push(console_action(
-                "set-username",
-                "greeter-username",
-                vec![ActionParam::required(
-                    "username",
-                    ParamType::Text,
-                    "Username to authenticate",
-                )],
-            ));
+            specs.extend(console_spec(GreeterConsole::SET_USERNAME));
         }
         if self.fingerprint_available_for(&self.attempt_username()) {
-            specs.push(console_action(
-                "fingerprint",
-                "greeter-use-fingerprint",
-                Vec::new(),
-            ));
+            specs.extend(console_spec(GreeterConsole::FINGERPRINT));
         }
         for mut spec in specs {
             if spec.id == "respond-challenge" {
@@ -509,63 +545,24 @@ impl ui::resources::PublishesResources for GreeterApp {
 /// The footer's power menu and accessibility toggles: what a person can do
 /// from the sign-in screen before anyone is signed in.
 fn screen_actions() -> Vec<ActionSpec> {
-    let mut specs: Vec<ActionSpec> = [
-        ("suspend", "greeter-suspend"),
-        ("reboot", "greeter-restart"),
-        ("power-off", "greeter-shut-down"),
+    [
+        console_spec(GreeterConsole::SUSPEND),
+        console_spec(GreeterConsole::REBOOT),
+        console_spec(GreeterConsole::POWER_OFF),
+        console_spec(GreeterConsole::LARGER_TEXT),
+        console_spec(GreeterConsole::HIGH_CONTRAST),
+        console_spec(GreeterConsole::SCREEN_READER),
     ]
     .into_iter()
-    .map(|(id, label)| console_action(id, label, Vec::new()))
-    .collect();
-    specs.extend(
-        [
-            ("larger-text", "greeter-larger-text"),
-            ("high-contrast", "greeter-high-contrast"),
-            ("screen-reader", "greeter-screen-reader"),
-        ]
-        .into_iter()
-        .map(|(id, label)| {
-            console_action(
-                id,
-                label,
-                vec![ActionParam::required(
-                    "enabled",
-                    ParamType::Boolean,
-                    "Turn this on or off",
-                )],
-            )
-        }),
-    );
-    specs
-}
-
-fn console_action(id: &'static str, label: &'static str, params: Vec<ActionParam>) -> ActionSpec {
-    ActionSpec::typed_operation(
-        id,
-        super::t(label),
-        "",
-        OperationKind::Effect,
-        OPERATION,
-        params,
-        move |args| encode(id, args),
-    )
-}
-
-/// The operation `action` with the arguments the action API bound strictly against
-/// its parameters. A secret argument rides along to the in-process handler
-/// only; it is never published or logged (the host redacts `Secret` params).
-fn encode(action: &str, args: &ActionArgs) -> EncodedAction {
-    EncodedAction {
-        type_id: OPERATION.into(),
-        payload: serde_json::to_vec(&json!({"action": action, "args": args.to_json()}))
-            .unwrap_or_default(),
-    }
+    .flatten()
+    .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::greeter_app::AuthScenario;
+    use ui::tilo_actions::OperationKind;
 
     fn ask(app: &mut GreeterApp, line: &str) -> Value {
         serde_json::from_str(&app.answer_console(line, &AutoCommit::new())).unwrap()
@@ -767,6 +764,7 @@ mod authentication_tests {
     use std::io::{Read, Write};
     use std::os::unix::net::{UnixListener, UnixStream};
     use tilo_test_env::SpawnUnderEnvLock as _;
+    use ui::tilo_actions::OperationKind;
 
     const SECRET: &str = "console-test-secret-never-published";
 

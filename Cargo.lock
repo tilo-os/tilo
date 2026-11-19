@@ -6524,6 +6524,7 @@ dependencies = [
  "tilo-lock",
  "tilo-paths",
  "tilo-power-mgmt",
+ "tilo-resource",
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-tts",
