@@ -1521,6 +1521,97 @@ mod tests {
             );
         }
 
+        phase a_min_content_size_its_content_lays_out_to_answers_that_width_without_a_solve;
+        {
+            use std::cell::Cell;
+            use taffy::geometry::Size;
+            use taffy::style::AvailableSpace;
+            use taffy::style_helpers::length;
+            // A paragraph whose narrowest wrapping is 40 px wide and three lines tall, and two
+            // lines at 80 px: what it measures under a min-content constraint is what it lays
+            // out to at 40 px.
+            let measured = Cell::new(0_u32);
+            let mut measure = |known: Size<Option<f32>>,
+                               available: Size<AvailableSpace>,
+                               _: taffy::NodeId,
+                               _: Option<&mut ()>,
+                               _: &taffy::Style| {
+                measured.set(measured.get().saturating_add(1));
+                let width = known.width.unwrap_or(match available.width {
+                    AvailableSpace::Definite(width) => width.clamp(40.0, 120.0),
+                    AvailableSpace::MinContent => 40.0,
+                    AvailableSpace::MaxContent => 120.0,
+                });
+                let lines = if width < 80.0 { 3.0 } else if width < 120.0 { 2.0 } else { 1.0 };
+                Size {
+                    width,
+                    height: lines * 20.0,
+                }
+            };
+            let mut tree: TaffyTree<()> = TaffyTree::new();
+            let paragraph = tree.new_leaf(taffy::Style::default()).expect("a leaf");
+            let card = tree
+                .new_with_children(
+                    taffy::Style {
+                        flex_direction: taffy::FlexDirection::Column,
+                        padding: taffy::Rect::length(4.0_f32),
+                        ..taffy::Style::default()
+                    },
+                    &[paragraph],
+                )
+                .expect("the card");
+            let column = tree
+                .new_with_children(
+                    taffy::Style {
+                        flex_direction: taffy::FlexDirection::Column,
+                        ..taffy::Style::default()
+                    },
+                    &[card],
+                )
+                .expect("the column");
+            let narrowest = Size {
+                width: AvailableSpace::MinContent,
+                height: AvailableSpace::MaxContent,
+            };
+            tree.compute_layout_with_measure(column, narrowest, &mut measure)
+                .expect("solves");
+            assert_eq!(
+                tree.layout(card).expect("laid out").size,
+                Size {
+                    width: 48.0,
+                    height: 68.0
+                }
+            );
+            // The column now stands at the card's own width: the card is asked for that width,
+            // and its min-content answer is the answer.
+            tree.set_style(
+                column,
+                taffy::Style {
+                    flex_direction: taffy::FlexDirection::Column,
+                    size: Size {
+                        width: length(48.0_f32),
+                        height: taffy::Dimension::auto(),
+                    },
+                    ..taffy::Style::default()
+                },
+            )
+            .expect("restyled");
+            measured.set(0);
+            tree.compute_layout_with_measure(column, narrowest, &mut measure)
+                .expect("solves");
+            assert_eq!(
+                (measured.get(), tree.layout(card).expect("laid out").size),
+                (
+                    0,
+                    Size {
+                        width: 48.0,
+                        height: 68.0
+                    }
+                ),
+                "the card at its own width is what its min-content solve came to"
+            );
+        }
+
         phase authored_extents_and_rounding_resolve_by_sizing;
         {
             fn authored_extents_resolve_by_their_sizing() {

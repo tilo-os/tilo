@@ -45,7 +45,7 @@ ultrawide window).
 
 Remove this part once upstream clamps the known cross size there.
 
-## A measurement answers only the constraint it was taken under
+## A measurement answers another constraint only when its content gives it back
 
 `Cache::get` answered a query that knows a dimension with any entry that came to
 that same size, whatever space the entry was measured under. Under a min-content
@@ -56,8 +56,25 @@ asks for the card at 400 px wide and is handed the min-content height: the card
 stood 393 px tall in the 87 px row of a transcript that centres it, its content
 87 px at its top and the rest past both edges of the row.
 
-- `src/tree/cache.rs`: `answers` filters both the final-layout and the measure
-  paths; where the query knows a dimension an entry left out, the entry answers
-  only if it was measured under the space the query offers.
+Answering only the space an entry was measured under fixes that, and costs every
+nested grid or flex container a fresh solve of its subtree for each constraint
+its parents probe it under: a page of forms solved its tree thousands of times
+over. So each entry records, per axis, whether laying the node out at the size it
+came to would give it back (`Taint`), and an untainted entry answers as upstream:
+
+- width: a leaf measured with its width open is measured again at the width it
+  came to (that answer is cached too); another height there taints it. A
+  container that came to a minimum width of its own above zero is tainted, and a
+  width taint travels to every node solved from the tainted one.
+- height: a container that came to a minimum height of its own above zero, or
+  that holds a child whose height, minimum, maximum or basis is relative, is
+  tainted (laid out at a height, it spreads free space or resolves the child
+  against it).
+
+- `src/tree/cache.rs`: `Taint`, `Cache::get_tainted`, `Cache::store_tainted`;
+  `answers` relaxes an axis only for an untainted entry. `Cache::store` (other
+  trees) stores fully tainted entries, which answer only their own space.
+- `src/tree/taffy_tree.rs`: `TaffyView::compute_child_layout` caches with the
+  taint it works out and passes width taints up.
 
 Remove this part once upstream compares the available space there too.

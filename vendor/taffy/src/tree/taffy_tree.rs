@@ -8,17 +8,19 @@ use slotmap::{DefaultKey, SlotMap};
 #[cfg(feature = "block_layout")]
 use crate::block::BlockContext;
 use crate::geometry::Size;
-use crate::style::{AvailableSpace, Display, Style};
+use crate::style::{AvailableSpace, BoxSizing, Dimension, Display, Style};
+use crate::tree::cache::Taint;
+use crate::util::MaybeResolve;
 use crate::sys::DefaultCheapStr;
 use crate::tree::{
     Cache, ClearState, Layout, LayoutInput, LayoutOutput, LayoutPartialTree, NodeId, PrintTree, RoundTree, RunMode,
     TraversePartialTree, TraverseTree,
 };
-use crate::util::debug::{debug_log, debug_log_node};
+use crate::util::debug::debug_log;
 use crate::util::sys::{new_vec_with_capacity, ChildrenVec, Vec};
 
 use crate::compute::{
-    compute_cached_layout, compute_hidden_layout, compute_leaf_layout, compute_root_layout, round_layout_to_grid,
+    compute_hidden_layout, compute_leaf_layout, compute_root_layout, round_layout_to_grid,
 };
 use crate::CacheTree;
 
@@ -274,6 +276,9 @@ where
     pub(crate) taffy: &'t mut TaffyTree<NodeContext>,
     /// The context provided for passing to measure functions if layout is run over this struct
     pub(crate) measure_function: MeasureFunction,
+    /// For each node being solved, whether anything its result came from is tainted (see
+    /// `Cache::get_tainted`)
+    pub(crate) taints: Vec<bool>,
 }
 
 impl<NodeContext, MeasureFunction> TaffyView<'_, NodeContext, MeasureFunction>
@@ -297,40 +302,130 @@ where
             return compute_hidden_layout(self, node_id);
         }
 
-        // We run the following wrapped in "compute_cached_layout", which will check the cache for an entry matching the node and inputs and:
-        //   - Return that entry if exists
-        //   - Else call the passed closure (below) to compute the result
-        //
-        // If there was no cache match and a new result needs to be computed then that result will be added to the cache
-        compute_cached_layout(self, node_id, inputs, |tree, node_id, inputs| {
-            let display_mode = tree.taffy.nodes[node_id.into()].style.display;
-            let has_children = tree.child_count(node_id) > 0;
+        // A cached entry answers when it matches the inputs; otherwise the node is solved and its
+        // result cached with its taint (see `Cache::get_tainted`). A width taint travels up: a
+        // node is as wide as what it holds, so a measurement that stood wider than its content's
+        // wrapping stands every node sized from it so. A height taint is the node's own.
+        let node_key = node_id.into();
+        if let Some((output, tainted)) = self.taffy.nodes[node_key].cache.get_tainted(&inputs) {
+            self.taint_parent(tainted.width);
+            return output;
+        }
+        self.taints.push(false);
+        let display_mode = self.taffy.nodes[node_key].style.display;
+        let has_children = self.child_count(node_id) > 0;
+        let width_open = inputs.known_dimensions.width.is_none();
 
-            debug_log!(display_mode);
-            debug_log_node!(inputs);
-
-            // Dispatch to a layout algorithm based on the node's display style and whether the node has children or not.
-            match (display_mode, has_children) {
-                (Display::None, _) => compute_hidden_layout(tree, node_id),
-                #[cfg(feature = "block_layout")]
-                (Display::Block, true) => compute_block_layout(tree, node_id, inputs, block_ctx),
-                #[cfg(feature = "flexbox")]
-                (Display::Flex, true) => compute_flexbox_layout(tree, node_id, inputs),
-                #[cfg(feature = "grid")]
-                (Display::Grid, true) => compute_grid_layout(tree, node_id, inputs),
-                (_, false) => {
-                    let node_key = node_id.into();
-                    let style = &tree.taffy.nodes[node_key].style;
-                    let has_context = tree.taffy.nodes[node_key].has_context;
-                    let node_context = has_context.then(|| tree.taffy.node_context_data.get_mut(node_key)).flatten();
-                    let measure_function = |known_dimensions, available_space| {
-                        (tree.measure_function)(known_dimensions, available_space, node_id, node_context, style)
-                    };
-                    compute_leaf_layout(inputs, style, |_, _| 0.0, measure_function)
-                }
+        // Dispatch to a layout algorithm based on the node's display style and whether the node has children or not.
+        let (output, own_width_taint) = match (display_mode, has_children) {
+            (Display::None, _) => (compute_hidden_layout(self, node_id), false),
+            #[cfg(feature = "block_layout")]
+            (Display::Block, true) => (compute_block_layout(self, node_id, inputs, block_ctx), false),
+            #[cfg(feature = "flexbox")]
+            (Display::Flex, true) => (compute_flexbox_layout(self, node_id, inputs), false),
+            #[cfg(feature = "grid")]
+            (Display::Grid, true) => (compute_grid_layout(self, node_id, inputs), false),
+            (_, false) => {
+                let output = self.measure_leaf(node_id, inputs);
+                (output, width_open && self.leaf_wider_than_its_wrapping(node_id, inputs, output))
             }
+            #[allow(unreachable_patterns)]
+            _ => (compute_hidden_layout(self, node_id), true),
+        };
+        let below = self.taints.pop().unwrap_or(true);
+        let tainted = Taint {
+            width: width_open && (below || own_width_taint || (has_children && self.held_at_min_width(node_id, inputs, output))),
+            height: inputs.known_dimensions.height.is_none()
+                && has_children
+                && self.height_not_from_content(node_id, inputs, output),
+        };
+        self.taffy.nodes[node_key].cache.store_tainted(&inputs, output, tainted);
+        self.taint_parent(tainted.width);
+        output
+    }
+
+    /// Mark the node being solved around this one as tainted in width when this one is.
+    #[inline(always)]
+    fn taint_parent(&mut self, tainted: bool) {
+        if let Some(parent) = self.taints.last_mut() {
+            *parent |= tainted;
+        }
+    }
+
+    /// Whether a leaf measured with its width open comes to another height laid out at the width
+    /// it came to: a measurement that stood wider than its content's wrapping. That layout is
+    /// cached too, as the solve usually asks for it next.
+    fn leaf_wider_than_its_wrapping(&mut self, node_id: NodeId, inputs: LayoutInput, output: LayoutOutput) -> bool {
+        let width = output.size.width;
+        if inputs.available_space.width == AvailableSpace::Definite(width) {
+            return false;
+        }
+        let at_width = LayoutInput {
+            known_dimensions: Size { width: Some(width), ..inputs.known_dimensions },
+            available_space: Size { width: AvailableSpace::Definite(width), ..inputs.available_space },
+            run_mode: RunMode::ComputeSize,
+            ..inputs
+        };
+        let laid = self.measure_leaf(node_id, at_width);
+        self.taffy.nodes[node_id.into()].cache.store_tainted(&at_width, laid, Taint::default());
+        (laid.size.height - output.size.height).abs() > 0.01
+    }
+
+    /// Whether a container came to its own minimum width, which can stand it wider than its
+    /// content's wrapping.
+    #[inline(always)]
+    fn held_at_min_width(&self, node_id: NodeId, inputs: LayoutInput, output: LayoutOutput) -> bool {
+        let style = &self.taffy.nodes[node_id.into()].style;
+        held_at_min(style.min_size.width, style.box_sizing, inputs.parent_size.width, output.size.width)
+    }
+
+    /// Whether a container solved with its height open came to a height other than its
+    /// content's, or holds a child whose height resolves against its own: laid out at that
+    /// height, the first spreads free space over what it holds and the second sizes the child
+    /// another way.
+    fn height_not_from_content(&self, node_id: NodeId, inputs: LayoutInput, output: LayoutOutput) -> bool {
+        let style = &self.taffy.nodes[node_id.into()].style;
+        if held_at_min(style.min_size.height, style.box_sizing, inputs.parent_size.height, output.size.height) {
+            return true;
+        }
+        let relative = |dimension: Dimension| {
+            !dimension.is_auto() && dimension.tag() != crate::style::CompactLength::LENGTH_TAG
+        };
+        self.taffy.children[node_id.into()].iter().any(|child| {
+            let style = &self.taffy.nodes[(*child).into()].style;
+            relative(style.size.height)
+                || relative(style.min_size.height)
+                || relative(style.max_size.height)
+                || relative(style.flex_basis)
         })
     }
+
+    /// A leaf's size from its measure function.
+    #[inline(always)]
+    fn measure_leaf(&mut self, node_id: NodeId, inputs: LayoutInput) -> LayoutOutput {
+        let node_key = node_id.into();
+        let style = &self.taffy.nodes[node_key].style;
+        let has_context = self.taffy.nodes[node_key].has_context;
+        let node_context = has_context.then(|| self.taffy.node_context_data.get_mut(node_key)).flatten();
+        let measure_function = &mut self.measure_function;
+        let measure = |known_dimensions, available_space| {
+            (measure_function)(known_dimensions, available_space, node_id, node_context, style)
+        };
+        compute_leaf_layout(inputs, style, |_, _| 0.0, measure)
+    }
+}
+
+/// Whether a node with `min` as its minimum size on an axis came to it at `size`.
+#[inline(always)]
+fn held_at_min(min: Dimension, box_sizing: BoxSizing, parent: Option<f32>, size: f32) -> bool {
+    if min.is_auto() {
+        return false;
+    }
+    if box_sizing != BoxSizing::BorderBox {
+        return true;
+    }
+    // A minimum of nothing stands no box past its content.
+    min.maybe_resolve(parent, |_, _| 0.0).is_none_or(|min| min > 0.01 && size <= min + 0.01)
 }
 
 // TraversePartialTree impl for TaffyView
@@ -932,7 +1027,7 @@ impl<NodeContext> TaffyTree<NodeContext> {
     {
         let use_rounding = self.config.use_rounding;
         let rounding_scale = self.config.rounding_scale;
-        let mut taffy_view = TaffyView { taffy: self, measure_function };
+        let mut taffy_view = TaffyView { taffy: self, measure_function, taints: Vec::new() };
         compute_root_layout(&mut taffy_view, node_id, available_space);
         if use_rounding {
             round_layout_to_grid(&mut taffy_view, node_id, rounding_scale);
@@ -954,7 +1049,7 @@ impl<NodeContext> TaffyTree<NodeContext> {
     /// Returns an instance of LayoutTree representing the TaffyTree
     #[cfg(test)]
     pub(crate) fn as_layout_tree(&mut self) -> impl LayoutPartialTree + CacheTree + '_ {
-        TaffyView { taffy: self, measure_function: |_, _, _, _, _| Size::ZERO }
+        TaffyView { taffy: self, measure_function: |_, _, _, _, _| Size::ZERO, taints: Vec::new() }
     }
 }
 

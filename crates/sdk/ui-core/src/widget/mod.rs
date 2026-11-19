@@ -1449,13 +1449,14 @@ thread_local! {
     static VIEW_ONLY_PAN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Tell the host that the wheel event being dispatched was consumed only to
-/// move a scroll container's view: every widget under the pointer refused
-/// it, and the container took it as a pan of its own offset. The host then
-/// keeps the published resource tree and skips the full sync, exactly as
-/// for a root that declares [`Widget::view_only_scroll`], provided the
-/// dispatch changed no document, focus or declared presentation. A scroll
-/// container that does anything else with the wheel must not call this.
+/// Tell the host that the event being dispatched was consumed only to move
+/// what is laid out: a wheel every widget under the pointer refused that a
+/// scroll container took as a pan of its own offset, or a drag step that
+/// moved a pane's edge. The host then keeps the published resource tree and
+/// skips the full sync, exactly as for a root that declares
+/// [`Widget::view_only_scroll`], provided the dispatch changed no document,
+/// focus or declared presentation. A widget that does anything else with
+/// the event must not call this.
 pub fn note_view_only_pan() {
     VIEW_ONLY_PAN.with(|pan| pan.set(true));
 }
