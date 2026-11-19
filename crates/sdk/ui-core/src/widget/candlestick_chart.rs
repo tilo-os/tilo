@@ -10,10 +10,11 @@ use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
 use crate::color_compat::ColorCompat;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_navigation::draw_title;
+use crate::widget::chart_readout::{Highlight, Readout};
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks, ValueAxis};
 
 #[derive(Clone, Debug)]
@@ -217,94 +218,6 @@ impl CandlestickMarks {
                 .unwrap_or(theme.tokens.colors.semantic.danger)
         }
     }
-
-    fn draw_inspector(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let Some(index) = self.frame.inspection.hovered.filter(|_| self.style.tooltip) else {
-            return;
-        };
-        let Some(candle) = self.candles.get(index) else {
-            return;
-        };
-        if self.style.show_crosshair {
-            let x = self.center_x(index);
-            let price = self.price_rect();
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                Color::from_rgba8(
-                    theme.tokens.colors.text_dim.r(),
-                    theme.tokens.colors.text_dim.g(),
-                    theme.tokens.colors.text_dim.b(),
-                    110,
-                ),
-                None,
-                &Line::new((x, price.y0), (x, price.y1)),
-            );
-        }
-        let delta = candle.close - candle.open;
-        let detail = if candle.detail.is_empty() {
-            let percent = if candle.open.abs() > f64::EPSILON {
-                delta / candle.open * 100.0
-            } else {
-                0.0
-            };
-            format!(
-                "O {:.*}   H {:.*}   L {:.*}   C {:.*}  ·  {percent:+.2}%",
-                self.style.price_decimals,
-                candle.open,
-                self.style.price_decimals,
-                candle.high,
-                self.style.price_decimals,
-                candle.low,
-                self.style.price_decimals,
-                candle.close,
-            )
-        } else {
-            candle.detail.clone()
-        };
-        let (detail_width, _) = tr.measure_style(&detail, None, &theme.text(TextRole::Caption));
-        let width = f64::from(detail_width).max(236.0) + 28.0;
-        let mut x = self.frame.inspection.pointer.x + 16.0;
-        let mut y = self.frame.inspection.pointer.y + 16.0;
-        if x + width > self.frame.rect.x1 {
-            x = self.frame.inspection.pointer.x - width - 16.0;
-        }
-        if y + 72.0 > self.frame.rect.y1 {
-            y = self.frame.inspection.pointer.y - 82.0;
-        }
-        let tooltip = Rect::new(x, y, x + width, y + 70.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.overlay,
-            None,
-            &RoundedRect::from_rect(tooltip, f64::from(theme.tokens.radii.control)),
-        );
-        tr.draw_style(
-            scene,
-            &candle.label,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((x + 14.0, y + 11.0)),
-            None,
-            &theme
-                .text(TextRole::Label)
-                .with_weight(TextWeight::Semibold),
-        );
-        tr.draw_style(
-            scene,
-            &detail,
-            theme.tokens.colors.text_dim,
-            transform * Affine::translate((x + 14.0, y + 39.0)),
-            None,
-            &theme.text(TextRole::Caption),
-        );
-    }
 }
 
 impl PlotMarks for CandlestickMarks {
@@ -312,6 +225,47 @@ impl PlotMarks for CandlestickMarks {
     type Activated = String;
     const NAME: &'static str = "CandlestickChart";
     const LABEL: &'static str = "Candlestick chart";
+
+    fn readout(&self, _theme: &Theme) -> Option<Readout> {
+        let index = self
+            .frame
+            .inspection
+            .hovered
+            .filter(|_| self.style.tooltip)?;
+        let candle = self.candles.get(index)?;
+        let detail = if candle.detail.is_empty() {
+            let percent = if candle.open.abs() > f64::EPSILON {
+                (candle.close - candle.open) / candle.open * 100.0
+            } else {
+                0.0
+            };
+            let price = |value: f64| format!("{:.*}", self.style.price_decimals, value);
+            format!(
+                "O {}   H {}   L {}   C {}   {percent:+.2}%",
+                price(candle.open),
+                price(candle.high),
+                price(candle.low),
+                price(candle.close),
+            )
+        } else {
+            candle.detail.clone()
+        };
+        let mut readout = Readout::of_mark(
+            &candle.label,
+            &detail,
+            self.frame.inspection.pointer,
+            self.frame.rect,
+        );
+        if self.style.show_crosshair {
+            let price = self.price_rect();
+            readout.mark(Highlight::Guide {
+                x: self.center_x(index),
+                y0: price.y0,
+                y1: price.y1,
+            });
+        }
+        Some(readout)
+    }
 
     fn frame(&self) -> &PlotFrame<usize> {
         &self.frame
@@ -491,7 +445,6 @@ impl PlotMarks for CandlestickMarks {
                 &theme.text(TextRole::Caption),
             );
         }
-        self.draw_inspector(scene, transform, tr, theme);
     }
 }
 

@@ -8,13 +8,16 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke};
 use vello::peniko::{Brush, Color, Fill, Gradient};
 
-use crate::paint::{PaintCtx, with_alpha};
+use crate::paint::with_alpha;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::chart_legend::SeriesToggles;
+use crate::widget::chart_readout::{Highlight, Readout};
+use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
 
 /// Alpha (0–255) of the translucent area fill under a series line. Matches
 /// the concept's `bg-<color>/18` area treatment.
@@ -381,215 +384,356 @@ fn paint_trend(
     }
 }
 
-pub struct Chart {
+/// The lines of a [`Chart`] over a shared scale, under its title and legend, with the grid and the
+/// labels of its scale. Pointing anywhere over the lines reads every line at the nearest reading:
+/// a guide across the plot, a dot on each line and one card naming the position and each value.
+pub struct TrendMarks {
     series: Vec<Series>,
+    /// Each line's id in the legend: its place among the lines.
+    ids: Vec<String>,
     /// The theme's inks its lines are drawn in, when it was described with them: each line's
     /// colour follows the theme it is drawn with.
     inks: Vec<crate::widget::drawing::Ink>,
     max: Option<f32>,
     area: bool,
-    title: String,
     axis_hi: String,
     axis_lo: String,
-    height: f32,
+    /// What each reading is at, oldest first: the position a readout names.
+    labels: Vec<String>,
+    /// What a reading counts, written after it in a readout.
+    unit: String,
     style: ChartStyle,
-    rect: Rect,
-
-    dirty: bool,
+    frame: PlotFrame<usize>,
+    toggles: SeriesToggles,
+    /// Where the lines are drawn, as the layout placed it.
+    plot: Rect,
 }
 
+/// A titled line or area chart of one or more series; see [`TrendMarks`].
+pub type Chart = Plot<TrendMarks>;
+
 impl Chart {
-    /// Construct a chart from a set of series. Defaults: no area fill, a
-    /// data-derived max, an intrinsic height of 160 px.
+    /// A chart of `series`: no area fill, a scale up to the highest reading, 160 px tall.
     pub fn new(series: Vec<Series>) -> Self {
-        Self {
-            dirty: true,
-            series,
+        let mut chart = Plot::from_marks(TrendMarks {
+            series: Vec::new(),
+            ids: Vec::new(),
             inks: Vec::new(),
             max: None,
             area: false,
-            title: String::new(),
             axis_hi: String::new(),
             axis_lo: String::new(),
-            height: 160.0,
+            labels: Vec::new(),
+            unit: String::new(),
             style: ChartStyle::default(),
-            rect: Rect::ZERO,
-        }
+            frame: PlotFrame::new(160.0, 48.0),
+            toggles: SeriesToggles::default(),
+            plot: Rect::ZERO,
+        });
+        chart.set_series(series);
+        chart
     }
 
-    /// Builder: drop a translucent area fill under each series line.
+    /// A translucent area fill under each line.
     #[must_use]
     pub fn with_area(mut self, on: bool) -> Self {
-        self.area = on;
+        self.marks.area = on;
         self
     }
 
-    /// Builder: pin the vertical-axis maximum (so multiple charts share a
-    /// scale). Without this the max is derived from the largest sample.
+    /// The top of the scale, so several charts share one; the highest reading otherwise.
     #[must_use]
     pub fn with_max(mut self, max: f32) -> Self {
-        self.max = Some(max);
+        self.marks.max = Some(max);
         self
     }
 
-    #[must_use]
-    pub fn with_title(mut self, title: impl Into<String>) -> Self {
-        self.title = title.into();
-        self
-    }
-
-    /// Builder: the high / low axis tick labels (drawn right-aligned at the
-    /// top and bottom of the plot, e.g. `"100%"` / `"0%"`).
+    /// The labels at the top and the foot of the scale (`"100%"`, `"0%"`), at the plot's trailing
+    /// edge.
     #[must_use]
     pub fn with_axis_labels(mut self, hi: impl Into<String>, lo: impl Into<String>) -> Self {
-        self.axis_hi = hi.into();
-        self.axis_lo = lo.into();
+        self.marks.axis_hi = hi.into();
+        self.marks.axis_lo = lo.into();
         self
     }
 
+    /// What each reading is at, oldest first (`"9:51"`, `"Monday"`): what a readout names.
     #[must_use]
-    pub fn with_height(mut self, height: f32) -> Self {
-        self.height = height;
+    pub fn with_labels(mut self, labels: Vec<String>) -> Self {
+        self.marks.labels = labels;
         self
-    }
-
-    pub fn set_series(&mut self, series: Vec<Series>) {
-        self.dirty = true;
-        self.series = series;
-    }
-
-    /// The resolved vertical-axis ceiling, floored away from zero so the
-    /// projection never divides by ~0.
-    fn ceiling(&self) -> f32 {
-        let derived = self
-            .series
-            .iter()
-            .flat_map(|s| s.data.iter().copied())
-            .fold(0.0_f32, f32::max);
-        self.max.unwrap_or(derived).max(1e-3)
     }
 
     #[must_use]
     pub fn with_style(mut self, style: ChartStyle) -> Self {
-        self.style = style;
+        self.marks.style = style;
         self
     }
 
-    pub fn draw_at(
-        ctx: &mut PaintCtx<'_>,
-        rect: Rect,
-        series: &[Series],
-        max: f32,
-        area: bool,
-        labels: ChartLabels<'_>,
-    ) {
-        let style = if area {
-            ChartStyle::default()
-        } else {
-            ChartStyle::default().with_trend(TrendStyle::CHART.with_fill(TrendFill::None))
-        };
-        Self::draw_styled(
-            ctx,
-            rect,
-            series,
-            TrendRange::up_to(f64::from(max)),
-            labels,
-            &style,
-        );
+    pub fn set_series(&mut self, series: Vec<Series>) {
+        self.mark_dirty();
+        let marks = &mut self.marks;
+        marks.ids = (0..series.len()).map(|at| at.to_string()).collect();
+        marks.series = series;
+        let ids = &marks.ids;
+        marks
+            .toggles
+            .retain(|id| ids.iter().any(|known| known == id));
+        let longest = marks.longest();
+        if marks
+            .frame
+            .inspection
+            .hovered
+            .is_some_and(|at| at >= longest)
+        {
+            marks.frame.inspection.hovered = None;
+        }
+    }
+}
+
+impl TrendMarks {
+    /// The lines shown, with their place: those the legend has not hidden.
+    fn shown(&self) -> impl Iterator<Item = (usize, &Series)> {
+        self.series.iter().enumerate().filter(|(at, _)| {
+            !self
+                .ids
+                .get(*at)
+                .is_some_and(|id| self.toggles.is_hidden(id))
+        })
     }
 
-    pub fn draw_styled(
-        ctx: &mut PaintCtx<'_>,
-        rect: Rect,
-        series: &[Series],
-        range: TrendRange,
-        labels: ChartLabels<'_>,
-        style: &ChartStyle,
-    ) {
-        let PaintCtx {
-            scene,
-            transform,
-            text: text_renderer,
-            theme,
-        } = ctx.reborrow();
-        let tokens = &theme.tokens;
-        // The title, then the series' legend under it, as every chart writes them.
-        let named: Vec<&Series> = series.iter().filter(|s| !s.legend.is_empty()).collect();
-        let header = if style.header {
-            let rows = crate::widget::chart_legend::rows(
-                named.iter().map(|s| s.legend.as_str()),
-                rect.x0,
-                rect.x1,
-            );
-            crate::widget::plot::Margins::header(theme, labels.title, rows)
-        } else {
-            crate::widget::plot::Margins::default()
-        };
-        if rect.width() <= 0.0 || rect.height() <= header.top {
-            return;
+    /// How many readings the longest line shown has.
+    fn longest(&self) -> usize {
+        self.shown().map(|(_, s)| s.data.len()).max().unwrap_or(0)
+    }
+
+    /// The top of the scale, floored away from zero so the projection never divides by ~0.
+    fn ceiling(&self) -> f32 {
+        let derived = self
+            .shown()
+            .flat_map(|(_, s)| s.data.iter().copied())
+            .fold(0.0_f32, f32::max);
+        self.max.unwrap_or(derived).max(1e-3)
+    }
+
+    fn range(&self) -> TrendRange {
+        TrendRange::up_to(f64::from(self.ceiling()))
+    }
+
+    fn colour(&self, at: usize, theme: &Theme) -> Color {
+        self.inks.get(at).map_or_else(
+            || self.series.get(at).map_or(Color::TRANSPARENT, |s| s.color),
+            |ink| ink.colour(theme),
+        )
+    }
+
+    /// The lines the legend names, as `(id, name)`.
+    fn named(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.ids
+            .iter()
+            .zip(&self.series)
+            .filter(|(_, s)| !s.legend.is_empty())
+            .map(|(id, s)| (id.as_str(), s.legend.as_str()))
+    }
+
+    /// Where reading `at` of a line of `len` readings stands across the plot.
+    fn x_at(&self, at: usize, len: usize) -> f64 {
+        map_point(self.plot, at, len, 0.0, TrendRange::up_to(1.0)).x
+    }
+
+    /// The reading of a line of `len` readings nearest to `x`.
+    fn nearest(&self, x: f64, len: usize) -> usize {
+        if len < 2 || self.plot.width() <= 0.0 {
+            return 0;
         }
-        let legend_style = tokens.typography.style(TextRole::Caption);
-        // The axis labels sit in a gutter at the plot's trailing edge, each
-        // centred on its gridline, never over a series. The plot keeps half
-        // a label line clear above its top rule and below its bottom rule,
-        // so the labels stay whole.
-        let label_w = [labels.axis_hi, labels.axis_lo]
+        let step = self.plot.width() / (f64_of_usize(len) - 1.0);
+        crate::num::usize_of_f64(((x - self.plot.x0) / step).round()).min(len - 1)
+    }
+
+    /// Each shown line's reading at position `at` of the longest line: its place, its reading's
+    /// index and value, and where it stands.
+    fn read_at(&self, at: usize) -> Vec<(usize, f32, Point)> {
+        let longest = self.longest();
+        let x = self.x_at(at, longest);
+        let range = self.range();
+        self.shown()
+            .filter_map(|(line, s)| {
+                let index = self.nearest(x, s.data.len());
+                let value = *s.data.get(index)?;
+                let point = map_point(self.plot, index, s.data.len(), f64::from(value), range);
+                Some((line, value, point))
+            })
+            .collect()
+    }
+}
+
+impl PlotMarks for TrendMarks {
+    type Hover = usize;
+    type Activated = usize;
+    const NAME: &'static str = "Chart";
+    const LABEL: &'static str = "Chart";
+
+    fn frame(&self) -> &PlotFrame<usize> {
+        &self.frame
+    }
+    fn frame_mut(&mut self) -> &mut PlotFrame<usize> {
+        &mut self.frame
+    }
+    /// The reading nearest the pointer anywhere over the plot, to the height of the chart's box.
+    fn hit(&self, point: Point) -> Option<usize> {
+        // A little past the plot's sides still reads the end readings.
+        let slop = 8.0;
+        let over = point.x >= self.plot.x0 - slop
+            && point.x <= self.plot.x1 + slop
+            && point.y >= self.frame.rect.y0.max(self.plot.y0 - slop)
+            && point.y <= self.plot.y1 + slop;
+        let len = self.longest();
+        (over && len > 0).then(|| self.nearest(point.x, len))
+    }
+    fn keyboard_items(&self) -> Vec<usize> {
+        (0..self.longest()).collect()
+    }
+    /// The highest of the lines at the reading.
+    fn anchor(&self, &at: &usize) -> Option<Point> {
+        self.read_at(at)
+            .into_iter()
+            .map(|(_, _, point)| point)
+            .min_by(|a, b| a.y.total_cmp(&b.y))
+    }
+    /// The guide, the dots and the card are all that show the inspection.
+    fn shown_inspection(&self) -> u64 {
+        0
+    }
+    fn activation(&self, _at: &usize) -> Option<usize> {
+        None
+    }
+    /// Each position, named by its label, reading every line there.
+    fn items(&self) -> Vec<PlotItem<usize>> {
+        (0..self.longest())
+            .map(|at| {
+                let readings = self
+                    .read_at(at)
+                    .into_iter()
+                    .map(|(line, value, _)| {
+                        let value =
+                            crate::widget::chart_readout::number(f64::from(value), &self.unit);
+                        match self.series.get(line).map(|s| s.legend.as_str()) {
+                            Some(name) if !name.is_empty() => format!("{name} {value}"),
+                            _ => value,
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                PlotItem {
+                    target: format!("reading:{at}"),
+                    name: self
+                        .labels
+                        .get(at)
+                        .cloned()
+                        .unwrap_or_else(|| (at + 1).to_string()),
+                    description: readings,
+                    activates: None,
+                }
+            })
+            .collect()
+    }
+    fn series(&self) -> Vec<(&str, &str)> {
+        self.named().collect()
+    }
+    fn legend_interactive(&self) -> bool {
+        self.style.header
+    }
+    fn toggles(&self) -> Option<&SeriesToggles> {
+        Some(&self.toggles)
+    }
+    fn toggles_mut(&mut self) -> Option<&mut SeriesToggles> {
+        Some(&mut self.toggles)
+    }
+    fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        let rect = self.frame.rect;
+        let header = if self.style.header {
+            Margins::header(
+                theme,
+                &self.frame.title,
+                self.frame.legend_rows(self.named().map(|(_, name)| name)),
+            )
+        } else {
+            Margins::default()
+        };
+        self.frame.margins = header;
+        // The scale's labels sit in a gutter at the plot's trailing edge, each centred on its
+        // rule, never over a line; the plot keeps half a label's line clear over its top rule and
+        // under its bottom one, so the labels stand whole.
+        let caption = theme.text(TextRole::Caption);
+        let label_w = [&self.axis_hi, &self.axis_lo]
             .into_iter()
             .filter(|label| !label.is_empty())
-            .map(|label| f64::from(text_renderer.measure_style(label, None, &legend_style).0))
+            .map(|label| f64::from(tr.measure_style(label, None, &caption).0))
             .fold(0.0, f64::max);
-        let has_axis = label_w > 0.0;
-        let gutter = if has_axis {
-            label_w + f64::from(tokens.spacing.s2)
+        let (gutter, half_line) = if label_w > 0.0 {
+            (
+                label_w + f64::from(theme.tokens.spacing.s2),
+                f64::from(tr.measure_style("0", None, &caption).1) / 2.0,
+            )
         } else {
-            0.0
-        };
-        let half_line = if has_axis {
-            f64::from(text_renderer.measure_style("0", None, &legend_style).1) / 2.0
-        } else {
-            0.0
+            (0.0, 0.0)
         };
         let top = rect.y0 + header.top + half_line;
-        let plot = Rect::new(
+        self.plot = Rect::new(
             rect.x0,
             top,
             (rect.x1 - gutter).max(rect.x0 + 1.0),
             (rect.y1 - half_line).max(top + 1.0),
         );
-
-        if style.header {
+        let legend = self.style.header.then(|| self.frame.legend_area());
+        let named: Vec<(String, String)> = self
+            .named()
+            .map(|(id, name)| (id.to_owned(), name.to_owned()))
+            .collect();
+        self.toggles.place(
+            named.iter().map(|(id, name)| (id.as_str(), name.as_str())),
+            legend,
+        );
+    }
+    fn paint(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.follow_keyboard_anchor();
+        let (rect, plot) = (self.frame.rect, self.plot);
+        if rect.width() <= 0.0 || plot.height() <= 1.0 {
+            return;
+        }
+        let tokens = &theme.tokens;
+        if self.style.header {
             crate::widget::chart_navigation::draw_title(
                 scene,
                 transform,
-                text_renderer,
+                tr,
                 theme,
                 rect,
-                labels.title,
+                &self.frame.title,
             );
-            let entries = crate::widget::chart_legend::layout(
-                named.iter().map(|s| s.legend.as_str()),
-                rect.x0,
-                rect.x1,
-                rect.y0 + header.legend,
-            );
-            for (item, s) in entries.into_iter().zip(&named) {
-                crate::widget::chart_legend::paint_series(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    item,
-                    (&s.legend, s.color, false),
-                );
-            }
+            let named: Vec<(&str, &str, Color)> = self
+                .ids
+                .iter()
+                .zip(&self.series)
+                .enumerate()
+                .filter(|(_, (_, s))| !s.legend.is_empty())
+                .map(|(at, (id, s))| (id.as_str(), s.legend.as_str(), self.colour(at, theme)))
+                .collect();
+            self.toggles.paint(scene, transform, tr, theme, named);
         }
-
-        // Horizontal grid rules, derived from the surface the chart sits on
-        // (HIG §9.5) unless the style names its own.
-        let grid = style
+        // Horizontal rules, derived from the surface the chart sits on (HIG §9.5) unless the style
+        // names its own.
+        let grid = self
+            .style
             .grid_color
             .unwrap_or_else(|| crate::surface::edge_on(tokens.colors.surfaces.raised));
-        let divisions = style.grid_divisions.max(1);
+        let divisions = self.style.grid_divisions.max(1);
         for i in 0..=divisions {
             let y = plot.y0 + plot.height() * (f64_of_usize(i) / f64_of_usize(divisions));
             scene.stroke(
@@ -600,37 +744,73 @@ impl Chart {
                 &Line::new((plot.x0, y), (plot.x1, y)),
             );
         }
-
-        for (label, y) in [(labels.axis_hi, plot.y0), (labels.axis_lo, plot.y1)] {
+        let caption = theme.text(TextRole::Caption);
+        for (label, y) in [(&self.axis_hi, plot.y0), (&self.axis_lo, plot.y1)] {
             if label.is_empty() {
                 continue;
             }
-            let (tw, th) = text_renderer.measure_style(label, None, &legend_style);
-            text_renderer.draw_style(
+            let (tw, th) = tr.measure_style(label, None, &caption);
+            tr.draw_style(
                 scene,
                 label,
                 tokens.colors.text_dim,
                 transform.pre_translate((rect.x1 - f64::from(tw), y - f64::from(th) / 2.0).into()),
                 None,
-                &legend_style,
+                &caption,
             );
         }
-
-        for s in series {
+        let trend = if self.area {
+            self.style.trend
+        } else {
+            self.style.trend.with_fill(TrendFill::None)
+        };
+        let range = self.range();
+        for (at, s) in self.shown() {
+            let colour = self.colour(at, theme);
+            let colour = self
+                .ids
+                .get(at)
+                .map_or(colour, |id| self.toggles.ink(id, colour));
             let points = Sparkline::points(plot, &s.data, range);
-            paint_trend(scene, transform, plot, &points, s.color, &style.trend);
+            paint_trend(scene, transform, plot, &points, colour, &trend);
         }
     }
-}
-
-/// The text a [`Chart`] paints around its plot. Any of them may be empty.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ChartLabels<'a> {
-    pub title: &'a str,
-    /// Right-aligned at the top of the plot, e.g. `"100%"`.
-    pub axis_hi: &'a str,
-    /// Right-aligned at the bottom of the plot, e.g. `"0%"`.
-    pub axis_lo: &'a str,
+    fn readout(&self, theme: &Theme) -> Option<Readout> {
+        let at = self.frame.inspection.hovered?;
+        let x = self.x_at(at, self.longest());
+        let plot = self.plot;
+        let pointer = self.frame.inspection.pointer;
+        let mut readout = Readout::new(
+            self.labels.get(at).cloned().unwrap_or_default(),
+            Point::new(x, pointer.y.clamp(plot.y0, plot.y1)),
+            self.frame.rect,
+        );
+        readout.mark(Highlight::Guide {
+            x,
+            y0: plot.y0,
+            y1: plot.y1,
+        });
+        for (line, value, point) in self.read_at(at) {
+            let colour = self.colour(line, theme);
+            let name = self.series.get(line).map_or("", |s| s.legend.as_str());
+            let focused = self
+                .ids
+                .get(line)
+                .is_some_and(|id| self.toggles.focus() == Some(id.as_str()));
+            readout
+                .mark(Highlight::Dot {
+                    at: point,
+                    color: colour,
+                })
+                .value(
+                    Some(colour),
+                    name,
+                    crate::widget::chart_readout::number(f64::from(value), &self.unit),
+                    focused,
+                );
+        }
+        Some(readout)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -671,83 +851,6 @@ impl ChartStyle {
     pub fn without_header(mut self) -> Self {
         self.header = false;
         self
-    }
-}
-
-impl Widget for Chart {
-    crate::described!();
-
-    /// Its lines and grid: a picture, named by its title.
-    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("figure");
-        if !self.title.is_empty() {
-            cx.attr("aria-label", self.title.clone());
-        }
-        cx.picture();
-    }
-
-    crate::widget::chart_navigation::chart_leaf!();
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-        crate::scene_parts::picture();
-        for (series, ink) in self.series.iter_mut().zip(&self.inks) {
-            series.color = ink.colour(theme);
-        }
-        let style = if self.area {
-            self.style
-        } else {
-            self.style
-                .with_trend(self.style.trend.with_fill(TrendFill::None))
-        };
-        Chart::draw_styled(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            self.rect,
-            &self.series,
-            TrendRange::up_to(f64::from(self.ceiling())),
-            ChartLabels {
-                title: &self.title,
-                axis_hi: &self.axis_hi,
-                axis_lo: &self.axis_lo,
-            },
-            &style,
-        );
-    }
-
-    fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
-    }
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
-    }
-
-    fn name(&self) -> &'static str {
-        "Chart"
-    }
-
-    /// Named by its title, else by what its legend says of each series.
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        let name = if self.title.is_empty() {
-            self.series
-                .iter()
-                .map(|series| series.legend.as_str())
-                .filter(|legend| !legend.is_empty())
-                .collect::<Vec<_>>()
-                .join(", ")
-        } else {
-            self.title.clone()
-        };
-        Some(
-            crate::a11y::AccessNode::new(crate::a11y::Role::Image)
-                .with_optional_name((!name.is_empty()).then_some(name)),
-        )
     }
 }
 
@@ -977,6 +1080,72 @@ mod tests {
             .count()
     }
 
+    /// `chart` placed in `rect` as the layout places it, and its marks painted.
+    fn painted_in(mut chart: Chart, theme: &Theme, rect: Rect) -> Scene {
+        chart.marks.frame.rect = rect;
+        crate::text_render::with_layout_renderer(theme, |tr| chart.marks.place(tr, theme));
+        let mut scene = Scene::new();
+        chart.marks.paint(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            theme,
+        );
+        scene
+    }
+
+    fn painted(chart: Chart, theme: &Theme) -> Scene {
+        painted_in(chart, theme, Rect::new(0.0, 0.0, 200.0, 120.0))
+    }
+
+    /// Pointing anywhere over the lines reads every line at the nearest reading: the guide on its
+    /// position, a dot on each line, and the card naming the position and each value; a line the
+    /// legend hides is not read, and the keyboard steps through the positions.
+    #[test]
+    fn a_chart_reads_every_line_at_the_nearest_reading() {
+        use crate::widget::chart_navigation::InteractiveChart as _;
+        let theme = Theme::light();
+        let mut chart = Chart::new(vec![
+            Series::new(vec![10.0, 20.0, 30.0, 40.0, 50.0], Color::WHITE).with_legend("Requests"),
+            Series::new(vec![1.0, 2.0, 3.5, 4.0, 5.0], Color::BLACK).with_legend("Errors"),
+        ])
+        .with_labels(
+            ["9:51", "9:52", "9:53", "9:54", "9:55"]
+                .map(str::to_owned)
+                .to_vec(),
+        )
+        .titled("Traffic");
+        chart.marks.frame.rect = Rect::new(0.0, 0.0, 400.0, 200.0);
+        crate::text_render::with_layout_renderer(&theme, |tr| chart.marks.place(tr, &theme));
+        let plot = chart.marks.plot;
+        // Just past the middle reading, high over the lines: still the middle one.
+        let point = Point::new(plot.x0 + plot.width() * 0.55, plot.y0 + 2.0);
+        assert_eq!(chart.marks.hit(point), Some(2));
+        chart.marks.frame.inspection.pointer = point;
+        chart.update_hover();
+        let readout = chart.marks.readout(&theme).expect("a readout");
+        assert_eq!(readout.words(), "9:53: Requests 30, Errors 3.5");
+        let guide = plot.x0 + plot.width() / 2.0;
+        assert!(matches!(readout.marks[0], Highlight::Guide { x, .. } if (x - guide).abs() < 1e-9));
+        assert_eq!(readout.marks.len(), 3, "a guide and a dot on each line");
+        assert!(chart.toggle_series("1"));
+        assert_eq!(
+            chart.marks.readout(&theme).expect("a readout").words(),
+            "9:53: Requests 30"
+        );
+        chart.clear_inspection();
+        assert!(
+            chart.move_keyboard_inspection(crate::widget::chart_navigation::ChartNavAction::Last)
+        );
+        assert_eq!(chart.marks.frame.inspection.hovered, Some(4));
+        assert!(
+            chart
+                .marks
+                .hit(Point::new(plot.x0, plot.y1 + 40.0))
+                .is_none()
+        );
+    }
+
     tilo_test_env::scenario! {
         /// The chart's own arithmetic: projection, the rolling series, the fitted range and the spline.
         /// Each phase was a test of its own and builds its own fixture.
@@ -1013,9 +1182,9 @@ mod tests {
             /// by ~0 in the projection.
             fn chart_ceiling_floors_away_from_zero() {
                 let chart = Chart::new(vec![Series::new(vec![0.0, 0.0], Color::WHITE)]);
-                assert!(chart.ceiling() >= 1e-3);
+                assert!(chart.marks.ceiling() >= 1e-3);
                 let pinned = Chart::new(vec![]).with_max(42.0);
-                assert_eq!(pinned.ceiling(), 42.0);
+                assert_eq!(pinned.marks.ceiling(), 42.0);
             }
 
             map_point_projects_value_to_pixels();
@@ -1075,28 +1244,14 @@ mod tests {
         {
             fn area_fill_adds_a_color_tag() {
                 let theme = Theme::dark();
-                let mut tr = TextRenderer::new();
-                let data = vec![1.0_f32, 3.0, 2.0, 5.0, 4.0];
-                let series = vec![Series::new(data, theme.tokens.colors.intent.accent)];
-
-                let mut plain = Scene::new();
-                Chart::draw_at(
-                    &mut PaintCtx::new(&mut plain, Affine::IDENTITY, &mut tr, &theme),
-                    Rect::new(0.0, 0.0, 200.0, 120.0),
-                    &series,
-                    5.0,
-                    false,
-                    ChartLabels::default(),
-                );
-                let mut filled = Scene::new();
-                Chart::draw_at(
-                    &mut PaintCtx::new(&mut filled, Affine::IDENTITY, &mut tr, &theme),
-                    Rect::new(0.0, 0.0, 200.0, 120.0),
-                    &series,
-                    5.0,
-                    true,
-                    ChartLabels::default(),
-                );
+                let series = || {
+                    vec![Series::new(
+                        vec![1.0_f32, 3.0, 2.0, 5.0, 4.0],
+                        theme.tokens.colors.intent.accent,
+                    )]
+                };
+                let plain = painted(Chart::new(series()).with_max(5.0), &theme);
+                let filled = painted(Chart::new(series()).with_max(5.0).with_area(true), &theme);
                 assert!(
                     count_color_tags(&filled) > count_color_tags(&plain),
                     "area fill must add at least one COLOR fill (plain={}, filled={})",
@@ -1105,38 +1260,18 @@ mod tests {
                 );
             }
 
-            /// The grid emits exactly `GRID_DIVISIONS + 1` stroke rules, so a chart
-            /// with no series still paints its grid (proves grid is independent of
-            /// the data path). We assert the chart paints *something* and a
-            /// data-bearing chart paints strictly more.
+            /// A chart with no series still paints its grid (the grid is independent of the
+            /// data), and a data-bearing chart paints strictly more.
             fn chart_paints_grid_then_series() {
                 let theme = Theme::dark();
-                let mut tr = TextRenderer::new();
-                let empty: Vec<Series> = vec![];
-                let mut grid_only = Scene::new();
-                Chart::draw_at(
-                    &mut PaintCtx::new(&mut grid_only, Affine::IDENTITY, &mut tr, &theme),
-                    Rect::new(0.0, 0.0, 200.0, 120.0),
-                    &empty,
-                    1.0,
-                    false,
-                    ChartLabels::default(),
-                );
-                let grid_tags = count_color_tags(&grid_only);
+                let grid_tags = count_color_tags(&painted(Chart::new(Vec::new()), &theme));
                 assert!(grid_tags > GRID_DIVISIONS, "grid rules must paint");
-
-                let series = vec![Series::new(
-                    vec![1.0, 2.0, 3.0],
-                    theme.tokens.colors.intent.accent,
-                )];
-                let mut with_line = Scene::new();
-                Chart::draw_at(
-                    &mut PaintCtx::new(&mut with_line, Affine::IDENTITY, &mut tr, &theme),
-                    Rect::new(0.0, 0.0, 200.0, 120.0),
-                    &series,
-                    3.0,
-                    false,
-                    ChartLabels::default(),
+                let with_line = painted(
+                    Chart::new(vec![Series::new(
+                        vec![1.0, 2.0, 3.0],
+                        theme.tokens.colors.intent.accent,
+                    )]),
+                    &theme,
                 );
                 assert!(
                     count_color_tags(&with_line) > grid_tags,
@@ -1217,16 +1352,11 @@ mod tests {
         phase headerless_chart_paints_grid_for_empty_series;
         {
             let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let mut scene = Scene::new();
             let style = ChartStyle::default().without_header().with_grid(3, None);
-            Chart::draw_styled(
-                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
+            let scene = painted_in(
+                Chart::new(Vec::new()).with_style(style),
+                &theme,
                 Rect::new(0.0, 0.0, 200.0, 10.0),
-                &[],
-                TrendRange::up_to(1.0),
-                ChartLabels::default(),
-                &style,
             );
             assert_eq!(count_color_tags(&scene), 4, "three divisions, four rules");
         }

@@ -13,6 +13,7 @@ use crate::tokens::TextRole;
 use crate::widget::chart_data::ChartItem;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::draw_title;
+use crate::widget::chart_readout::Readout;
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -407,6 +408,9 @@ impl PlotMarks for FunnelMarks {
                 );
             }
         }
+    }
+
+    fn readout(&self, _theme: &Theme) -> Option<Readout> {
         if let Some(index) = self.frame.inspection.hovered.filter(|_| self.style.tooltip)
             && let Some(stage) = self.stages.get(index)
         {
@@ -415,17 +419,14 @@ impl PlotMarks for FunnelMarks {
             } else {
                 stage.detail.clone()
             };
-            crate::widget::chart_labels::draw_tooltip(
-                scene,
-                transform,
-                tr,
-                theme,
+            return Some(Readout::of_mark(
+                &stage.label,
+                &detail,
                 self.frame.inspection.pointer,
                 self.frame.rect,
-                140.0,
-                (&stage.label, &detail),
-            );
+            ));
         }
+        None
     }
 }
 

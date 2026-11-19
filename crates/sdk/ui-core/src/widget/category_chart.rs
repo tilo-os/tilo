@@ -6,7 +6,7 @@
 )]
 
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, RoundedRectRadii, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, RoundedRectRadii};
 use vello::peniko::{Color, Fill};
 
 use crate::text_render::TextRenderer;
@@ -15,6 +15,7 @@ use crate::tokens::TextRole;
 use crate::widget::cartesian_plot::{AxisLabelFormat, format_axis_value};
 use crate::widget::chart_legend;
 use crate::widget::chart_navigation::draw_title;
+use crate::widget::chart_readout::{Highlight, Readout};
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks, ValueAxis};
 
 #[derive(Clone, Debug)]
@@ -140,6 +141,8 @@ pub struct CategoryChartStyle {
     pub show_values: bool,
     pub tooltip: bool,
     pub value_format: AxisLabelFormat,
+    /// What a value counts, written after it where the chart reads it out ("GB", "ms", "/s").
+    pub unit: String,
 }
 
 impl Default for CategoryChartStyle {
@@ -155,6 +158,7 @@ impl Default for CategoryChartStyle {
             show_values: false,
             tooltip: true,
             value_format: AxisLabelFormat::Compact,
+            unit: String::new(),
         }
     }
 }
@@ -236,6 +240,41 @@ impl CategoryChart {
 impl CategoryMarks {
     fn plot_rect(&self) -> Rect {
         self.frame.inside()
+    }
+
+    /// The column category `index` stands in, across the plot's height.
+    fn column(&self, index: usize) -> Rect {
+        let plot = self.plot_rect();
+        let width = plot.width() / crate::num::f64_of_usize(self.categories.len().max(1));
+        let x0 = plot.x0 + crate::num::f64_of_usize(index) * width;
+        Rect::new(x0, plot.y0, x0 + width, plot.y1)
+    }
+
+    /// The category whose column `point` is over.
+    fn column_at(&self, point: Point) -> Option<usize> {
+        let plot = self.plot_rect();
+        if self.categories.is_empty() || !plot.contains(point) || plot.width() <= 0.0 {
+            return None;
+        }
+        let width = plot.width() / crate::num::f64_of_usize(self.categories.len());
+        Some(crate::num::usize_of_f64((point.x - plot.x0) / width).min(self.categories.len() - 1))
+    }
+
+    /// `value` as the chart reads it out: its own detail, else in the chart's format and unit.
+    fn spoken(&self, value: &CategoryValue) -> String {
+        if !value.detail.is_empty() {
+            return value.detail.clone();
+        }
+        let number = if self.style.value_format == AxisLabelFormat::Compact {
+            crate::widget::chart_readout::number(value.value, "")
+        } else {
+            format_axis_value(value.value, self.style.value_format)
+        };
+        if self.style.unit.is_empty() {
+            number
+        } else {
+            format!("{number} {}", self.style.unit)
+        }
     }
 
     fn shows_legend(&self) -> bool {
@@ -629,17 +668,36 @@ impl PlotMarks for CategoryMarks {
     fn frame_mut(&mut self) -> &mut PlotFrame<(usize, usize)> {
         &mut self.frame
     }
+    /// The bar under the pointer, else the nearest bar of the category whose column it is over:
+    /// a category reads out anywhere over its column.
     fn hit(&self, point: Point) -> Option<(usize, usize)> {
-        self.bars()
-            .into_iter()
+        let bars = self.bars();
+        if let Some(bar) = bars
+            .iter()
             .rev()
             .find(|bar| bar.rect.inflate(2.0, 2.0).contains(point))
+        {
+            return Some((bar.category, bar.series));
+        }
+        let category = self.column_at(point)?;
+        let distance = |bar: &&Bar| {
+            let dx = (point.x - point.x.clamp(bar.rect.x0, bar.rect.x1)).abs();
+            let dy = (point.y - point.y.clamp(bar.rect.y0, bar.rect.y1)).abs();
+            dx.hypot(dy)
+        };
+        bars.iter()
+            .filter(|bar| bar.category == category)
+            .min_by(|a, b| distance(a).total_cmp(&distance(b)))
             .map(|bar| (bar.category, bar.series))
     }
     fn activation(&self, &(category, series): &(usize, usize)) -> Option<(String, String)> {
         let category = self.categories.get(category)?;
         let series = self.series.get(series)?;
         Some((series.id.clone(), category.id.clone()))
+    }
+    /// The column's wash, the bar's ring and the card are all that show the inspection.
+    fn shown_inspection(&self) -> u64 {
+        0
     }
     fn keyboard_items(&self) -> Vec<(usize, usize)> {
         let bars = self.bars();
@@ -749,17 +807,9 @@ impl PlotMarks for CategoryMarks {
             } else {
                 series.color_in(theme)
             };
+            let color = self.toggles.ink(&series.id, color);
             let shape = RoundedRect::from_rect(bar.rect, self.radii(&bars, bar));
             scene.fill(Fill::NonZero, transform, color, None, &shape);
-            if self.frame.inspection.hovered == Some((bar.category, bar.series)) {
-                scene.stroke(
-                    &Stroke::new(2.0),
-                    transform,
-                    theme.tokens.colors.border_focus,
-                    None,
-                    &shape,
-                );
-            }
             if self.style.show_values && bar.rect.height() >= 22.0 {
                 let label = if self.style.layout == CategoryLayout::Percent {
                     format!("{:.0}%", bar.display_value * 100.0)
@@ -836,41 +886,125 @@ impl PlotMarks for CategoryMarks {
                 }),
             );
         }
-        if let Some((category_index, series_index)) =
-            self.frame.inspection.hovered.filter(|_| self.style.tooltip)
-            && let (Some(category), Some(series), Some(value)) = (
-                self.categories.get(category_index),
-                self.series.get(series_index),
-                self.value(series_index, category_index),
-            )
+    }
+
+    /// The category's name over each series' value in it, the pointed one first in weight, and a
+    /// stack's total under them; the column washed and the pointed bar ringed.
+    fn readout(&self, theme: &Theme) -> Option<Readout> {
+        let (category_index, series_index) = self
+            .frame
+            .inspection
+            .hovered
+            .filter(|_| self.style.tooltip)?;
+        let category = self.categories.get(category_index)?;
+        let bars = self.bars();
+        let pointed = bars
+            .iter()
+            .find(|bar| (bar.category, bar.series) == (category_index, series_index))?;
+        let mut readout = Readout::new(
+            category.label.clone(),
+            self.frame.inspection.pointer,
+            self.frame.rect,
+        );
+        let column = self.column(category_index);
+        let inset = f64::from(theme.tokens.spacing.s1);
+        readout
+            .mark(Highlight::Band(Rect::new(
+                column.x0 + inset,
+                column.y0,
+                column.x1 - inset,
+                column.y1,
+            )))
+            .mark(Highlight::Ring {
+                rect: pointed.rect,
+                radius: self.style.corner_radius.min(pointed.rect.width() / 3.0),
+            });
+        let mut total = 0.0;
+        let mut listed = 0_usize;
+        for (index, series) in self.series.iter().enumerate() {
+            let Some(value) = self.value(index, category_index) else {
+                continue;
+            };
+            if self.style.layout == CategoryLayout::Waterfall && index > 0 {
+                continue;
+            }
+            total += value.value;
+            listed += 1;
+            let mut words = self.spoken(value);
+            if self.style.layout == CategoryLayout::Percent
+                && let Some(bar) = bars
+                    .iter()
+                    .find(|bar| (bar.category, bar.series) == (category_index, index))
+            {
+                words = format!("{words} ({:.0}%)", bar.display_value.abs() * 100.0);
+            }
+            let swatch =
+                (self.style.layout != CategoryLayout::Waterfall).then(|| series.color_in(theme));
+            let name = if self.style.layout == CategoryLayout::Waterfall {
+                ""
+            } else {
+                series.name.as_str()
+            };
+            readout.value(swatch, name, words, index == series_index && listed > 1);
+        }
+        if matches!(
+            self.style.layout,
+            CategoryLayout::Stacked | CategoryLayout::Percent
+        ) && listed > 1
         {
-            let title = if self.style.layout == CategoryLayout::Waterfall {
-                category.label.clone()
-            } else {
-                format!("{} · {}", category.label, series.name)
-            };
-            let detail = if value.detail.is_empty() {
-                format_axis_value(value.value, self.style.value_format)
-            } else {
-                value.detail.clone()
-            };
-            crate::widget::chart_labels::draw_tooltip(
-                scene,
-                transform,
-                tr,
-                theme,
-                self.frame.inspection.pointer,
-                self.frame.rect,
-                130.0,
-                (&title, &detail),
+            readout.value(
+                None,
+                crate::i18n::widget_text("widget-chart-total"),
+                self.spoken(&CategoryValue::new(total)),
+                false,
             );
         }
+        // Several series read out together: the one pointed at stands out by weight alone.
+        if listed <= 1
+            && let Some(row) = readout.rows.first_mut()
+        {
+            row.strong = false;
+        }
+        Some(readout)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pointing anywhere over a category's column reads every series in it, the bar under the
+    /// pointer (or the nearest) ringed and named first in weight, and a stack's total under them.
+    #[test]
+    fn a_category_reads_out_anywhere_over_its_column() {
+        use crate::widget::chart_navigation::InteractiveChart as _;
+        let theme = Theme::light();
+        let mut chart = CategoryChart::new(
+            vec![Category::new("1", "Week 1"), Category::new("2", "Week 2")],
+            vec![
+                CategorySeries::new("closed", "Closed", Color::WHITE, [4.0, 6.0]),
+                CategorySeries::new("opened", "Opened", Color::BLACK, [2.0, 1.0]),
+            ],
+        )
+        .layout(CategoryLayout::Stacked);
+        chart.marks.frame.rect = Rect::new(0.0, 0.0, 400.0, 300.0);
+        crate::text_render::with_layout_renderer(&theme, |tr| chart.marks.place(tr, &theme));
+        let column = chart.marks.column(1);
+        // High over the stack, where no bar stands: the nearest bar, the top one.
+        chart.marks.frame.inspection.pointer = Point::new(column.center().x, column.y0 + 2.0);
+        chart.update_hover();
+        assert_eq!(chart.marks.frame.inspection.hovered, Some((1, 1)));
+        let readout = chart.marks.readout(&theme).expect("a readout");
+        assert_eq!(readout.words(), "Week 2: Closed 6, Opened 1, Total 7");
+        assert!(readout.rows[1].strong && !readout.rows[0].strong);
+        assert!(
+            matches!(readout.marks[0], crate::widget::chart_readout::Highlight::Band(band) if band.x0 >= column.x0 && band.x1 <= column.x1)
+        );
+        // Under the plot, outside every column, nothing is read.
+        chart.marks.frame.inspection.pointer = Point::new(column.center().x, 299.0);
+        chart.update_hover();
+        assert!(chart.marks.readout(&theme).is_none());
+    }
     #[test]
     fn category_ranges_follow_waterfalls_and_hidden_series() {
         fn waterfall_range_tracks_cumulative_values() {

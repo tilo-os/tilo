@@ -107,7 +107,7 @@ impl ChartLink {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum GraphSelection {
     Node(String),
     Link(String),

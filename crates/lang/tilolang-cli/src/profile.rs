@@ -46,14 +46,16 @@ pub enum Interaction {
     Press(String),
     /// A pointer drag from one point to another, in logical pixels: `drag:260,400,420,400`.
     Drag((f64, f64), (f64, f64)),
+    /// The pointer moved to a point with no button held, in logical pixels: `hover:640,980`.
+    Hover(f64, f64),
 }
 
 impl Interaction {
     /// The interaction `spec` spells, as `--then` takes it: `key:Tab`, `click:120,300`,
-    /// `type:Shopping`, `scroll:0,480`, `press:NAME`, `drag:260,400,420,400`.
+    /// `type:Shopping`, `scroll:0,480`, `press:NAME`, `drag:260,400,420,400`, `hover:640,980`.
     pub fn parse(spec: &str) -> Result<Self, String> {
         let (what, rest) = spec.split_once(':').ok_or_else(|| {
-            format!("--then {spec}: expected key:, click:, type:, scroll:, press: or drag:")
+            format!("--then {spec}: expected key:, click:, type:, scroll:, press:, drag: or hover:")
         })?;
         let pair = || -> Result<(f64, f64), String> {
             let (a, b) = rest
@@ -93,8 +95,12 @@ impl Interaction {
                 let (dx, dy) = pair()?;
                 Ok(Self::Scroll(dx, dy))
             }
+            "hover" => {
+                let (x, y) = pair()?;
+                Ok(Self::Hover(x, y))
+            }
             _ => Err(format!(
-                "--then {spec}: {what:?} is not an interaction (key, click, type, scroll, press, drag)"
+                "--then {spec}: {what:?} is not an interaction (key, click, type, scroll, press, drag, hover)"
             )),
         }
     }
@@ -108,6 +114,7 @@ impl Interaction {
             Self::Scroll(dx, dy) => format!("scroll:{dx},{dy}"),
             Self::Press(name) => format!("press:{name}"),
             Self::Drag((x0, y0), (x1, y1)) => format!("drag:{x0},{y0},{x1},{y1}"),
+            Self::Hover(x, y) => format!("hover:{x},{y}"),
         }
     }
 }
@@ -234,6 +241,7 @@ fn perform(staged: &mut stage::Staged, interaction: &Interaction) -> Result<(), 
             })?;
         }
         Interaction::Drag(from, to) => staged.harness_mut().drag_at(*from, *to),
+        Interaction::Hover(x, y) => staged.hover(*x, *y),
     }
     Ok(())
 }

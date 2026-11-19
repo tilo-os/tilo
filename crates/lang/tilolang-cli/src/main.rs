@@ -43,8 +43,9 @@ usage:
       `tilolang bench` seeds one); --scenario stages that scenario of the app (the app's first
       by default); --then runs an interaction after the app is open and counts that alone:
       key:Tab, click:X,Y, type:TEXT, scroll:DX,DY, press:NAME (a click on the widget the window
-      names so) or drag:X0,Y0,X1,Y1, in logical pixels. --size is the window's size (default
-      1280x800), --root the layer of a package with more than one root. The counts are the same
+      names so), drag:X0,Y0,X1,Y1 or hover:X,Y (the pointer moved there), in logical pixels.
+      --size is the window's size (default 1280x800), --root the layer of a package with more
+      than one root. The counts are the same
       on any machine at any load; --times adds what each step took in the framework's named
       scopes, which depends on the machine.
   tilolang describe [DIR] [--search DIR]...
@@ -60,7 +61,7 @@ usage:
       directory or control socket). Each entry is a program
       run as one step: lets are kept, refs (n3) name what answers showed, a bulk change
       previews until `confirm`, `undo` takes a step back.
-  tilolang layout-check [DIR]... [--search DIR]... [--allow FILE] [--strict] [--json] [--root NAME] [--state NAME=VALUE]... [--key KEY]... [--press LABEL]... [--dump|--dump-findings WxH [--shots DIR [--theme NAME]... [--bar-at-rest] [--shot-height H]]] [--locale TAG]
+  tilolang layout-check [DIR]... [--search DIR]... [--allow FILE] [--strict] [--json] [--root NAME] [--state NAME=VALUE]... [--key KEY]... [--hover X,Y]... [--press LABEL]... [--dump|--dump-findings WxH [--shots DIR [--theme NAME]... [--bar-at-rest] [--shot-height H]]] [--locale TAG]
       lay out every view of each app headlessly, staged from each of its scenarios, at window
       sizes from 320x568 to 3440x1440, display scales 1 and 2 and text scales 1 and 1.5, and
       report overflow, clipped text, overlapping siblings, hit targets below the minimum and
@@ -85,8 +86,10 @@ usage:
       window stands on when nobody has picked one, as a scenario that laid it out would.
       --key sends a key press (`Tab`, `Down`, `Space`) to each window before it is read, in the
       order given, at the `--dump` size, so a shot and a dump show the layout a person reaches
-      by keyboard. --locale lays every window out for a person reading in that language
-      (`en-US`, `de-DE`; default en-US), whatever locale this machine runs in.
+      by keyboard. --hover rests the pointer at X,Y (logical pixels of the window) once the keys
+      are sent, so a shot shows what pointing there shows. --locale lays every window out for a
+      person reading in that language (`en-US`, `de-DE`; default en-US), whatever locale this
+      machine runs in.
   tilolang check|fmt|ids ...
       the compiler's commands (tilolangc --help); `use` also finds native apps in --path";
 
@@ -240,6 +243,7 @@ fn layout_check_command(args: &[String]) -> ExitCode {
                 "--root" => options.root = Some(value(&mut iter, arg)?),
                 "--state" => options.states.push(value(&mut iter, arg)?),
                 "--key" => options.keys.push(value(&mut iter, arg)?),
+                "--hover" => options.hovers.push(value(&mut iter, arg)?),
                 "--press" => options.presses.push(value(&mut iter, arg)?),
                 "--locale" => options.locale = value(&mut iter, arg)?,
                 "--dump" | "--dump-findings" => {

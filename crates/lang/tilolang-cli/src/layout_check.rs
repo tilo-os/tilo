@@ -139,6 +139,9 @@ pub struct Options {
     /// holds its modifiers for the press, `Shift+F10`): the layout a person reaches by keyboard,
     /// for its shot and its semantics.
     pub keys: Vec<String>,
+    /// Where the pointer rests once the keys are sent, `X,Y` in logical pixels of the window:
+    /// what pointing there shows (a chart's readout, a row's hover), for its shot.
+    pub hovers: Vec<String>,
     /// The language the person the windows are laid out for reads and types
     /// in, as a POSIX or BCP 47 tag (`en-US`, `de_DE.UTF-8`): what every
     /// window's language is chosen against, whatever locale the machine runs
@@ -161,6 +164,7 @@ impl Default for Options {
             states: Vec::new(),
             presses: Vec::new(),
             keys: Vec::new(),
+            hovers: Vec::new(),
             locale: DEFAULT_LOCALE.to_owned(),
         }
     }
@@ -1158,6 +1162,7 @@ impl Worker<'_> {
             themes: &self.options.themes,
             states: &self.options.states,
             keys: &self.options.keys,
+            hovers: &self.options.hovers,
             presses: &self.options.presses,
             gathered: BTreeMap::new(),
             text: &mut self.text,
@@ -1499,6 +1504,7 @@ struct AppCheck<'a> {
     themes: &'a [String],
     states: &'a [String],
     keys: &'a [String],
+    hovers: &'a [String],
     presses: &'a [String],
     gathered: BTreeMap<Identity, Finding>,
     text: &'a mut ui::TextRenderer,
@@ -2020,7 +2026,7 @@ impl AppCheck<'_> {
             )?;
             if !pressed
                 && Some(viewport) == read_at
-                && (!self.keys.is_empty() || !self.presses.is_empty())
+                && (!self.keys.is_empty() || !self.presses.is_empty() || !self.hovers.is_empty())
             {
                 // What the person sees before they touch it, where the run takes shots: a press
                 // leaves the window as it opened something, and both are what a person reads.
@@ -2029,7 +2035,7 @@ impl AppCheck<'_> {
                     && (layout.display_scale - 1.0).abs() < f64::EPSILON
                     && (layout.text_scale - 1.0).abs() < f32::EPSILON
                 {
-                    self.shoot(staged, layout, label, dir)?;
+                    self.shoot(staged, layout, label, dir, false)?;
                 }
                 // What a person opens first, then what they reach by keyboard: the window is laid
                 // out as they leave it, with a popover hanging and a control wearing its ring.
@@ -2071,6 +2077,7 @@ impl AppCheck<'_> {
                 for key in self.keys {
                     staged.key(key);
                 }
+                self.rest_pointer(staged)?;
                 staged.lay_out(
                     viewport,
                     layout.theme(),
@@ -2126,7 +2133,7 @@ impl AppCheck<'_> {
             && (layout.display_scale - 1.0).abs() < f64::EPSILON
             && (layout.text_scale - 1.0).abs() < f32::EPSILON
         {
-            self.shoot(staged, layout, label, dir)?;
+            self.shoot(staged, layout, label, dir, true)?;
         }
         Ok(())
     }
@@ -2314,12 +2321,27 @@ impl AppCheck<'_> {
     /// Write the window as `label` leaves it at `layout` to
     /// `dir`, light and dark, and lay it out again as it
     /// was.
+    /// Rest the pointer where `--hover` puts it, in the window as it is laid out now.
+    fn rest_pointer(&self, staged: &mut stage::Staged) -> Result<(), String> {
+        for hover in self.hovers {
+            let (x, y) = hover
+                .split_once(',')
+                .and_then(|(x, y)| Some((x.trim().parse().ok()?, y.trim().parse().ok()?)))
+                .ok_or_else(|| format!("--hover {hover}: a point such as 640,480"))?;
+            staged.hover(x, y);
+        }
+        Ok(())
+    }
+
+    /// Shoot the window as it stands, in each theme; `hovering` rests the pointer where `--hover`
+    /// puts it in the window at the shot's size, which may be taller than the one it was read at.
     fn shoot(
         &self,
         staged: &mut stage::Staged,
         layout: Layout,
         label: &str,
         dir: &Path,
+        hovering: bool,
     ) -> Result<(), String> {
         let slug: String = label
             .chars()
@@ -2351,6 +2373,9 @@ impl AppCheck<'_> {
             };
             for (name, theme) in pair {
                 staged.lay_out(shot, theme, layout.input(), 1.0)?;
+                if hovering {
+                    self.rest_pointer(staged)?;
+                }
                 if self.bar_at_rest {
                     staged.harness_mut().present_window_bar_at_rest();
                 }

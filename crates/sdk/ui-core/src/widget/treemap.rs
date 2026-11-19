@@ -16,6 +16,7 @@ use crate::tokens::TextRole;
 use crate::widget::chart_data::ChartItem;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::draw_title;
+use crate::widget::chart_readout::Readout;
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Debug)]
@@ -305,6 +306,9 @@ impl PlotMarks for TreemapMarks {
                 }
             }
         }
+    }
+
+    fn readout(&self, _theme: &Theme) -> Option<Readout> {
         if let Some(index) = self.frame.inspection.hovered.filter(|_| self.style.tooltip)
             && let Some(item) = self.items.get(index)
         {
@@ -313,17 +317,14 @@ impl PlotMarks for TreemapMarks {
             } else {
                 item.detail.clone()
             };
-            crate::widget::chart_labels::draw_tooltip(
-                scene,
-                transform,
-                tr,
-                theme,
+            return Some(Readout::of_mark(
+                &item.label,
+                &detail,
                 self.frame.inspection.pointer,
                 self.frame.rect,
-                130.0,
-                (&item.label, &detail),
-            );
+            ));
         }
+        None
     }
 }
 

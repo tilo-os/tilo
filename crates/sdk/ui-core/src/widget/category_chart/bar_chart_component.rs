@@ -91,6 +91,9 @@ pub struct BarChartProps {
     pub layout: Option<CategoryLayout>,
     /// Each bar's reading written at it.
     pub readings: bool,
+    /// What a reading counts, written after each value a person pointing at a category reads
+    /// ("GB", "ms", "/s").
+    pub unit: Option<String>,
 }
 
 /// What `props` plot: a category for each name, and for each measured thing its bars in the
@@ -146,6 +149,7 @@ impl Described for CategoryChart {
         marks.frame.title = props.title.unwrap_or_default();
         marks.style.layout = props.layout.unwrap_or(CategoryLayout::Grouped);
         marks.style.show_values = props.readings;
+        marks.style.unit = props.unit.unwrap_or_default();
         marks.style.show_legend = props.bars.iter().any(|bars| !bars.label.is_empty());
         self.mark_dirty();
         true

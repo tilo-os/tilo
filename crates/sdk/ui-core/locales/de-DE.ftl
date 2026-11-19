@@ -1216,6 +1216,7 @@ widget-shortcut-none = Keins
 widget-shortcut-prompt = Tastenkürzel drücken
 widget-shortcut-reset = Auf Standard zurücksetzen
 widget-chart-series = { $name } Datenreihe
+widget-chart-total = Gesamt
 widget-step-of = Schritt { $step } von { $total }
 widget-steps-count = { $count ->
     [one] { $count } Schritt

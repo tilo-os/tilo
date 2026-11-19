@@ -13,6 +13,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_navigation::draw_title;
+use crate::widget::chart_readout::Readout;
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Debug)]
@@ -342,6 +343,9 @@ impl PlotMarks for HeatmapMarks {
                 );
             }
         }
+    }
+
+    fn readout(&self, _theme: &Theme) -> Option<Readout> {
         if let Some(index) = self.frame.inspection.hovered.filter(|_| self.style.tooltip)
             && let Some(cell) = self.cells.get(index)
         {
@@ -357,17 +361,14 @@ impl PlotMarks for HeatmapMarks {
             } else {
                 cell.detail.clone()
             };
-            crate::widget::chart_labels::draw_tooltip(
-                scene,
-                transform,
-                tr,
-                theme,
+            return Some(Readout::of_mark(
+                &title,
+                &detail,
                 self.frame.inspection.pointer,
                 self.frame.rect,
-                130.0,
-                (&title, &detail),
-            );
+            ));
         }
+        None
     }
 }
 

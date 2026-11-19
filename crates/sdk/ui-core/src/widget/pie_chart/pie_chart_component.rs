@@ -73,6 +73,9 @@ pub struct PieChartProps {
     pub ring: bool,
     /// What a ring reads at its centre: the whole, as it reads ("128 issues").
     pub total: Option<String>,
+    /// What a part's value counts, written after it where a person pointing at it reads it
+    /// ("GB", "h").
+    pub unit: Option<String>,
 }
 
 /// The slices `parts` are drawn as, each in the theme's palette colour of its place, so the
@@ -101,6 +104,7 @@ impl PieChart {
             0.0
         };
         self.marks.frame.title = props.title.unwrap_or_default();
+        self.marks.unit = props.unit.unwrap_or_default();
         let total = props.total.filter(|_| props.ring).unwrap_or_default();
         self.set_center(total, String::new());
     }

@@ -13,6 +13,7 @@ use crate::widget::chart_legend::SeriesToggles;
 use crate::widget::chart_navigation::{
     ChartInspection, InteractiveChart, activated_key, chart_nav_action, handle_chart_event,
 };
+use crate::widget::chart_readout::Readout;
 use crate::widget::{ModelPath, Widget};
 
 /// Where a chart kind's marks sit and what is inspected: the shell lays the
@@ -192,7 +193,7 @@ impl<A> PlotItem<A> {
 
 /// What a chart kind supplies to [`Plot`].
 pub trait PlotMarks: 'static {
-    type Hover: Clone + PartialEq;
+    type Hover: Clone + PartialEq + std::hash::Hash;
     /// What activating a mark reports through [`Plot::take_activated`].
     type Activated: Clone;
     const NAME: &'static str;
@@ -229,6 +230,20 @@ pub trait PlotMarks: 'static {
     }
     fn is_animating(&self) -> bool {
         false
+    }
+    /// What the chart reads at the inspected mark: painted over the marks in a window and composed
+    /// as the page's own elements on the web. `None` while nothing is inspected.
+    fn readout(&self, _theme: &Theme) -> Option<Readout> {
+        None
+    }
+    /// What of the inspection the marks show themselves (a slice lifted out of its pie, a mark
+    /// outlined), so the web's picture of them is drawn again when it changes: the inspected mark
+    /// unless the readout's own highlights are all that shows it.
+    fn shown_inspection(&self) -> u64 {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        self.frame().inspection.hovered.hash(&mut hash);
+        hash.finish()
     }
     /// The height the chart lays out at; `None` fills the parent.
     fn layout_height(&self) -> Option<f32> {
@@ -389,6 +404,28 @@ impl<M: PlotMarks> Plot<M> {
         let visible = self.is_series_visible(id);
         self.set_series_visible(id, !visible)
     }
+    /// The series the person is on: the one whose legend entry the pointer is over, which the
+    /// chart brings forward, else the one of the inspected mark, whose entry it names.
+    fn refresh_focus(&mut self) {
+        let inspection = &self.marks.frame().inspection;
+        let on_legend = (!inspection.keyboard && self.marks.legend_interactive())
+            .then(|| {
+                self.marks
+                    .toggles()
+                    .and_then(|toggles| toggles.hit(inspection.pointer))
+            })
+            .flatten();
+        let focus = on_legend.map(|id| (id, true)).or_else(|| {
+            inspection
+                .hovered
+                .as_ref()
+                .and_then(|item| self.marks.series_of(item))
+                .map(|id| (id.to_owned(), false))
+        });
+        if let Some(toggles) = self.marks.toggles_mut() {
+            toggles.set_focus(focus);
+        }
+    }
 }
 
 impl<M: PlotMarks> InteractiveChart for Plot<M> {
@@ -405,6 +442,12 @@ impl<M: PlotMarks> InteractiveChart for Plot<M> {
     fn update_hover(&mut self) {
         let hovered = self.marks.hit(self.marks.frame().inspection.pointer);
         self.marks.frame_mut().inspection.hovered = hovered;
+    }
+    fn clear_hover(&mut self) {
+        self.marks.frame_mut().inspection.hovered = None;
+        if let Some(toggles) = self.marks.toggles_mut() {
+            toggles.set_focus(None);
+        }
     }
     fn activate_hovered(&mut self) -> bool {
         let Some(activated) = self
@@ -435,10 +478,27 @@ impl<M: PlotMarks> InteractiveChart for Plot<M> {
 impl<M: PlotMarks> Widget for Plot<M> {
     crate::described!();
 
-    /// Its frame and marks: a picture, named by its title and its items.
+    /// Its frame and marks: a picture, named by its title and its items, under what it reads at
+    /// the inspected mark as the page's own elements. The picture is drawn again when what it
+    /// shows changes, not as the pointer moves over it.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.element("figure");
-        cx.picture();
+        let theme = cx.theme();
+        let shown = (
+            cx.semantics()
+                .map(|node| serde_json::to_string(node).unwrap_or_default())
+                .unwrap_or_default(),
+            self.marks.shown_inspection(),
+            self.marks
+                .toggles()
+                .and_then(|toggles| toggles.focus())
+                .map(str::to_owned),
+        );
+        let rect = self.marks.frame().rect;
+        cx.part("marks", "ChartMarks", rect).painted_of(&shown);
+        if let Some(readout) = self.marks.readout(theme) {
+            readout.compose(cx.node(), theme);
+        }
     }
 
     fn build_layout(
@@ -515,6 +575,11 @@ impl<M: PlotMarks> Widget for Plot<M> {
     ) {
         crate::scene_parts::picture();
         self.marks.paint(scene, transform, tr, theme);
+        if !crate::widget::chart_readout::readouts_left_out()
+            && let Some(readout) = self.marks.readout(theme)
+        {
+            readout.paint(scene, transform, tr, theme);
+        }
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         self.dirty = true;
@@ -526,6 +591,7 @@ impl<M: PlotMarks> Widget for Plot<M> {
         // belong to whatever does.
         if self.focused || chart_nav_action(event).is_none() {
             handle_chart_event(self, event, ctx);
+            self.refresh_focus();
         }
     }
     fn wants_pointer_capture(&self) -> bool {

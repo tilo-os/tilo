@@ -15,6 +15,7 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::draw_title;
+use crate::widget::chart_readout::Readout;
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Debug)]
@@ -427,6 +428,9 @@ impl PlotMarks for RangeMarks {
             self.hits.push((bar.id.clone(), rect));
         }
         self.follow_keyboard_anchor();
+    }
+
+    fn readout(&self, _theme: &Theme) -> Option<Readout> {
         let hovered = self
             .frame
             .inspection
@@ -444,17 +448,14 @@ impl PlotMarks for RangeMarks {
             } else {
                 format!("{interval} · {}", bar.detail)
             };
-            crate::widget::chart_labels::draw_tooltip(
-                scene,
-                transform,
-                tr,
-                theme,
+            return Some(Readout::of_mark(
+                &bar.label,
+                &detail,
                 self.frame.inspection.pointer,
                 self.frame.rect,
-                150.0,
-                (&bar.label, &detail),
-            );
+            ));
         }
+        None
     }
 }
 

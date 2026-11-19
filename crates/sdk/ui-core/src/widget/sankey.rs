@@ -19,6 +19,7 @@ use crate::tokens::TextRole;
 use crate::widget::chart_data::{ChartLink, ChartNode, graph_items};
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::draw_title;
+use crate::widget::chart_readout::Readout;
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Debug)]
@@ -66,7 +67,7 @@ struct LinkBand {
     thickness: f64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Hit {
     Node(usize),
     Link(usize),
@@ -585,12 +586,14 @@ impl PlotMarks for SankeyMarks {
             }
         }
         self.draw_node_labels(scene, transform, tr, theme, &nodes);
+    }
+
+    fn readout(&self, _theme: &Theme) -> Option<Readout> {
+        let (nodes, _) = self.geometry();
         if let Some(hit) = self.frame.inspection.hovered.filter(|_| self.style.tooltip) {
             let (title, detail) = match hit {
                 Hit::Node(index) => {
-                    let Some(node) = self.nodes.get(index) else {
-                        return;
-                    };
+                    let node = self.nodes.get(index)?;
                     let value = nodes
                         .iter()
                         .find(|geometry| geometry.index == index)
@@ -605,9 +608,7 @@ impl PlotMarks for SankeyMarks {
                     )
                 }
                 Hit::Link(index) => {
-                    let Some(link) = self.links.get(index) else {
-                        return;
-                    };
+                    let link = self.links.get(index)?;
                     let source = self
                         .nodes
                         .iter()
@@ -628,17 +629,14 @@ impl PlotMarks for SankeyMarks {
                     )
                 }
             };
-            crate::widget::chart_labels::draw_tooltip(
-                scene,
-                transform,
-                tr,
-                theme,
+            return Some(Readout::of_mark(
+                &title,
+                &detail,
                 self.frame.inspection.pointer,
                 self.frame.rect,
-                150.0,
-                (&title, &detail),
-            );
+            ));
         }
+        None
     }
 }
 

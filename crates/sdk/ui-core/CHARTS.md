@@ -178,11 +178,15 @@ with `with_detail()`. Read their stable id with `take_annotation_activated()`,
 focus one from application state with `inspect_annotation()`, or opt decorative
 ink out of interaction with `.interactive(false)`.
 
-Cartesian inspectors can follow the pointer or remain anchored to the datum
-with `tooltip_anchor`. `tooltip_width`, `tooltip_min_width`, `tooltip_offset`,
-and `tooltip_padding` control geometry, while `tooltip_show_coordinates`
-appends values formatted by each axis. Auto placement flips and clamps against
-all chart edges, including very narrow cards.
+Pointing anywhere over a cartesian plot reads every line, area, step and bar
+series at the nearest x position: a guide across the plot, a dot on each
+series and one card naming the position and each value with its series'
+swatch (`tooltip.shared`); scatter and bubble series read the point under the
+pointer. The card follows the pointer or stays anchored to the datum with
+`tooltip.anchor`, and `tooltip.show_coordinates` adds a datum's coordinates
+to its own detail. Every chart kind reads out through one card that flips and
+clamps to stay inside the chart, painted in a window and composed as the
+page's own elements on the web.
 
 `set_series()` smoothly interpolates matching series and datum ids by default,
 so live updates preserve visual identity and hit testing follows the painted
@@ -340,7 +344,6 @@ hand-rolling paths:
 
 | Painter | Draws |
 |---|---|
-| `Chart::draw_styled` | Rolling line/area series with grid, header/legend and axis labels |
 | `Sparkline::paint` | One trend of `f32` or `f64` samples; `Sparkline::points` returns where each sample lands |
 | `ProgressRingFace::paint` / `BarGauge::draw_at` | A fraction as a ring or labelled bar |
 | `BarGauge::draw_span` | A `from..=to` span on a track, e.g. a day's low–high on the week's range |

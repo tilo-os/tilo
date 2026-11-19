@@ -282,12 +282,14 @@ fn a_chart_is_a_named_picture() {
         vec![1.0, 4.0, 2.0],
         vello::peniko::Color::WHITE,
     )])
-    .with_title("Weekly revenue");
+    .titled("Weekly revenue");
     let composition = composed(Box::new(chart), (400, 200));
     let root = shown(&composition);
     assert_eq!(root.tag, Some("figure"), "a figure: {root:?}");
     assert!(
-        matches!(root.own, Some(Own::Painted { .. })),
+        root.children
+            .iter()
+            .any(|part| matches!(part.own, Some(Own::Painted { .. }))),
         "its paint is the picture: {root:?}"
     );
     assert!(
@@ -299,6 +301,84 @@ fn a_chart_is_a_named_picture() {
                 .is_some(),
         "the figure says what it shows: {root:?}"
     );
+}
+
+/// Pointing at a chart reads it out as the page's own elements over its picture: a tooltip with
+/// the position and each value, the guide and the dots as shapes; the picture stays the one it
+/// was, and the readout leaves with the pointer.
+#[test]
+fn a_chart_reads_out_as_elements_over_its_picture() {
+    let chart = crate::widget::Chart::new(vec![
+        crate::widget::Series::new(vec![1.0, 4.0, 2.0], vello::peniko::Color::WHITE)
+            .with_legend("Sales"),
+    ])
+    .with_labels(vec!["May".to_owned(), "June".to_owned(), "July".to_owned()])
+    .titled("Revenue");
+    let theme = Theme::dark();
+    let mut harness =
+        FrameHarness::new_with_theme(State::new(), Box::new(chart), (400, 200), theme);
+    harness.relayout();
+    let picture = |composition: &Composition| {
+        let mut nodes = Vec::new();
+        all(&composition.root, &mut nodes);
+        nodes
+            .into_iter()
+            .find(|node| node.widget == "ChartMarks")
+            .and_then(|node| node.own.clone())
+    };
+    let before = harness.composition();
+    let figure = shown(&before).rect;
+    harness.hover_at(figure[0] + figure[2] / 2.0, figure[1] + figure[3] * 0.7);
+    harness.relayout();
+    let hovered = harness.composition();
+    let mut nodes = Vec::new();
+    all(&hovered.root, &mut nodes);
+    let tooltip = nodes
+        .iter()
+        .find(|node| {
+            node.semantics
+                .as_ref()
+                .is_some_and(|semantics| semantics.role == crate::a11y::Role::Tooltip)
+        })
+        .expect("a tooltip over the chart");
+    assert_eq!(
+        tooltip.semantics.as_ref().and_then(|s| s.name.as_deref()),
+        Some("June: Sales 4")
+    );
+    let words: Vec<&str> = tooltip
+        .children
+        .iter()
+        .filter_map(|part| match &part.own {
+            Some(Own::Text(look)) => Some(look.text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        words,
+        ["June", "Sales", "4"],
+        "its words are the page's own"
+    );
+    assert!(
+        nodes
+            .iter()
+            .filter(|node| node.widget == "ChartHighlight")
+            .count()
+            >= 3,
+        "the guide and the dot are shapes over the picture"
+    );
+    assert_eq!(
+        picture(&before),
+        picture(&hovered),
+        "the picture is not drawn again"
+    );
+    harness.send(&winit::event::WindowEvent::CursorLeft {
+        device_id: winit::event::DeviceId::dummy(),
+    });
+    harness.relayout();
+    let mut left = Vec::new();
+    let gone = harness.composition();
+    all(&gone.root, &mut left);
+    assert!(left.iter().all(|node| node.widget != "ChartReadout"));
 }
 
 /// A divider is a rule, and a skeleton stands for content without words.

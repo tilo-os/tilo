@@ -16,6 +16,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::chart_geometry;
 use crate::widget::chart_labels::format_compact;
+use crate::widget::chart_readout::Readout;
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Debug)]
@@ -437,6 +438,9 @@ impl PlotMarks for SunburstMarks {
             &self.center_title,
             &self.center_subtitle,
         );
+    }
+
+    fn readout(&self, _theme: &Theme) -> Option<Readout> {
         if let Some(id) = self
             .frame
             .inspection
@@ -450,17 +454,14 @@ impl PlotMarks for SunburstMarks {
             } else {
                 format!("{}  ·  {}", format_compact(segment.value), segment.detail)
             };
-            crate::widget::chart_labels::draw_tooltip(
-                scene,
-                transform,
-                tr,
-                theme,
+            return Some(Readout::of_mark(
+                &segment.path,
+                &detail,
                 self.frame.inspection.pointer,
                 self.frame.rect,
-                170.0,
-                (&segment.path, &detail),
-            );
+            ));
         }
+        None
     }
 }
 

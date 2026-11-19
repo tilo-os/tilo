@@ -545,7 +545,7 @@ fn charts() -> Element {
         Series::new(vec![1.0, 1.5, 1.2, 2.0, 1.8, 2.2, 2.0], palette.series(1))
             .with_legend("Upload"),
     ])
-    .with_title("Throughput")
+    .titled("Throughput")
     .with_axis_labels("8 Mb/s", "0")
     .with_height(220.0);
     Box::new(

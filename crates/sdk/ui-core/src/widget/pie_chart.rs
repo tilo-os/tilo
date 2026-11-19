@@ -11,13 +11,14 @@ use crate::time::{Duration, Instant};
 use std::f64::consts::{FRAC_PI_2, TAU};
 
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::{Color, Fill};
 
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_geometry;
+use crate::widget::chart_readout::Readout;
 use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
 
 /// A stable, labelled radial datum. Negative and non-finite values are treated
@@ -99,17 +100,9 @@ pub struct PieStyle {
     pub start_angle: f64,
     pub hover_offset: f64,
     pub padding: f64,
-    pub tooltip_min_width: f64,
-    /// Fixed tooltip width. `None` sizes to content within available bounds.
-    pub tooltip_width: Option<f64>,
     pub tooltip_anchor: PieTooltipAnchor,
-    pub tooltip_offset: f64,
-    pub tooltip_padding: f64,
     pub tooltip: bool,
     pub tooltip_show_percent: bool,
-    /// Space at the chart's right edge reserved for an external legend or
-    /// adjacent controls. The automatic inspector never enters this area.
-    pub tooltip_right_inset: f64,
     /// Move matching stable slice ids to their new values after
     /// `set_slices`, on the standard list change (`motion::ListChange`).
     pub animate_changes: bool,
@@ -123,14 +116,9 @@ impl Default for PieStyle {
             start_angle: -FRAC_PI_2,
             hover_offset: 7.0,
             padding: 14.0,
-            tooltip_min_width: 176.0,
-            tooltip_width: None,
             tooltip_anchor: PieTooltipAnchor::Pointer,
-            tooltip_offset: 18.0,
-            tooltip_padding: 14.0,
             tooltip: true,
             tooltip_show_percent: true,
-            tooltip_right_inset: 0.0,
             animate_changes: true,
         }
     }
@@ -165,6 +153,8 @@ pub struct PieMarks {
     transition_started: Instant,
     reduce_motion: bool,
     legend: bool,
+    /// What a slice's value counts, written after it in the readout ("GB", "h").
+    unit: String,
 }
 
 pub type PieChart = Plot<PieMarks>;
@@ -187,6 +177,7 @@ impl PieChart {
             transition_started: crate::time::now(),
             reduce_motion: false,
             legend: false,
+            unit: String::new(),
         })
     }
 
@@ -507,137 +498,42 @@ impl PieMarks {
             .map(|s| s.index)
     }
 
-    fn draw_tooltip(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let Some(slice) = self.hovered().filter(|_| self.style.tooltip) else {
-            return;
-        };
-        let total = self.total();
-        let slice_anchor = || {
-            self.sectors_at(crate::motion::frame_now())
-                .into_iter()
-                .find(|sector| self.frame.inspection.hovered == Some(sector.index))
-                .map_or_else(
-                    || self.frame.rect.center(),
-                    |sector| {
-                        let (center, outer, inner) = self.geometry();
-                        let angle = sector.start.midpoint(sector.end);
-                        let radius = inner.midpoint(outer);
-                        Point::new(
-                            center.x + radius * angle.cos(),
-                            center.y + radius * angle.sin(),
-                        )
-                    },
-                )
-        };
-        let anchor = match self.style.tooltip_anchor {
-            PieTooltipAnchor::Pointer
-                if self.frame.rect.contains(self.frame.inspection.pointer) =>
-            {
-                self.frame.inspection.pointer
-            }
-            PieTooltipAnchor::Pointer | PieTooltipAnchor::Slice => slice_anchor(),
-        };
-        let title_style = theme.text(TextRole::Caption);
-        let body_style = theme.text(TextRole::Caption);
-        let detail = self.tooltip_detail(slice, total);
-        let (tw, _) = tr.measure_style(&slice.label, None, &title_style);
-        let (dw, _) = tr.measure_style(&detail, None, &body_style);
-        let padding = self.style.tooltip_padding.clamp(8.0, 32.0);
-        let available_width =
-            (self.frame.rect.width() - self.style.tooltip_right_inset.max(0.0) - 16.0).max(80.0);
-        let width = self
-            .style
-            .tooltip_width
-            .unwrap_or_else(|| {
-                f64::from(tw.max(dw)).max(self.style.tooltip_min_width) + padding * 2.0
-            })
-            .clamp(80.0, available_width);
-        let height = 38.0 + padding * 2.0;
-        let safe_right = (self.frame.rect.x1 - self.style.tooltip_right_inset.max(0.0))
-            .max(self.frame.rect.x0 + width + 8.0);
-        let offset = self.style.tooltip_offset.max(4.0);
-        let mut x = anchor.x + offset;
-        let mut y = anchor.y + offset;
-        if x + width > safe_right {
-            x = safe_right - width - 8.0;
-        }
-        x = x.max(self.frame.rect.x0 + 8.0);
-        if y + height > self.frame.rect.y1 {
-            y = anchor.y - height - offset;
-        }
-        let (center, _, inner) = self.geometry();
-        let protected = inner * 0.58;
-        if x < center.x + protected
-            && x + width > center.x - protected
-            && y < center.y + protected
-            && y + height > center.y - protected
-        {
-            y = (center.y - protected - height - 8.0).max(self.frame.rect.y0 + 8.0);
-        }
-        y = y.clamp(
-            self.frame.rect.y0 + 8.0,
-            (self.frame.rect.y1 - height - 8.0).max(self.frame.rect.y0 + 8.0),
-        );
-        // Never over the legend: try the other side of the anchor, then
-        // above it, then above and to the other side.
-        let covers = |r: Rect| {
-            self.legend_entries
-                .iter()
-                .any(|(_, legend)| r.intersect(*legend).area() > 0.0)
-        };
-        let mut rect = Rect::new(x, y, x + width, y + height);
-        if covers(rect) {
-            let left = (anchor.x - offset - width).max(self.frame.rect.x0 + 8.0);
-            let above = (anchor.y - offset - height).max(self.frame.rect.y0 + 8.0);
-            if let Some(free) = [
-                Rect::new(left, y, left + width, y + height),
-                Rect::new(x, above, x + width, above + height),
-                Rect::new(left, above, left + width, above + height),
-            ]
+    /// Where slice `index` reads out from: the middle of its ring.
+    fn slice_anchor(&self, index: usize) -> Option<Point> {
+        let sector = self
+            .sectors_at(crate::motion::frame_now())
             .into_iter()
-            .find(|candidate| !covers(*candidate))
-            {
-                rect = free;
-            }
-        }
-        let (x, y) = (rect.x0, rect.y0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.overlay,
-            None,
-            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
-        );
-        tr.draw_style(
-            scene,
-            &slice.label,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((x + padding, y + padding - 2.0)),
-            Some(crate::num::f32_of_f64((width - padding * 2.0).max(1.0))),
-            &title_style.clone().with_weight(TextWeight::Semibold),
-        );
-        tr.draw_style(
-            scene,
-            &detail,
-            theme.tokens.colors.text_dim,
-            transform * Affine::translate((x + padding, y + padding + 24.0)),
-            Some(crate::num::f32_of_f64((width - padding * 2.0).max(1.0))),
-            &body_style,
-        );
+            .find(|sector| sector.index == index)?;
+        let (center, outer, inner) = self.geometry();
+        let angle = sector.start.midpoint(sector.end);
+        let radius = inner.midpoint(outer);
+        Some(Point::new(
+            center.x + radius * angle.cos(),
+            center.y + radius * angle.sin(),
+        ))
     }
 
+    /// The slice whose legend entry `point` is on.
+    fn legend_hit(&self, point: Point) -> Option<usize> {
+        self.legend_entries
+            .iter()
+            .find(|(_, rect)| rect.contains(point))
+            .map(|(index, _)| *index)
+            .filter(|index| {
+                self.slices
+                    .get(*index)
+                    .is_some_and(|s| Self::value(s) > 0.0)
+            })
+    }
+
+    /// A slice's value as the readout says it: the value in its unit, then its share of the
+    /// whole.
     fn tooltip_detail(&self, slice: &PieSlice, total: f64) -> String {
-        let share = share_text(Self::value(slice), total);
-        match (slice.detail.is_empty(), self.style.tooltip_show_percent) {
-            (true, true) => share,
-            (false, true) => format!("{}, {share}", slice.detail),
-            (_, false) => slice.detail.clone(),
+        let value = crate::widget::chart_readout::number(slice.value, &self.unit);
+        if self.style.tooltip_show_percent {
+            format!("{value} ({})", share_text(Self::value(slice), total))
+        } else {
+            value
         }
     }
 }
@@ -660,8 +556,9 @@ impl PlotMarks for PieMarks {
     fn place(&mut self, text: &mut TextRenderer, theme: &Theme) {
         self.place(text, theme);
     }
+    /// The slice under the pointer, or the one whose legend entry it is on.
     fn hit(&self, point: Point) -> Option<usize> {
-        self.hit_test(point)
+        self.hit_test(point).or_else(|| self.legend_hit(point))
     }
     fn activation(&self, &index: &usize) -> Option<String> {
         let slice = self.slices.get(index)?;
@@ -699,6 +596,32 @@ impl PlotMarks for PieMarks {
     }
     fn is_animating(&self) -> bool {
         self.is_animating()
+    }
+    /// The slice's name, its value and its share, beside the pointer on the slice, or beside
+    /// the slice when the keyboard or its legend entry chose it, clear of the legend.
+    fn readout(&self, theme: &Theme) -> Option<Readout> {
+        let index = self
+            .frame
+            .inspection
+            .hovered
+            .filter(|_| self.style.tooltip)?;
+        let slice = self.slices.get(index)?;
+        let pointer = self.frame.inspection.pointer;
+        let on_slice = self.hit_test(pointer) == Some(index);
+        let anchor = match self.style.tooltip_anchor {
+            PieTooltipAnchor::Pointer if on_slice && !self.frame.inspection.keyboard => pointer,
+            PieTooltipAnchor::Pointer | PieTooltipAnchor::Slice => self.slice_anchor(index)?,
+        };
+        let mut readout = Readout::new("", anchor, self.frame.rect);
+        readout.avoid = self.legend_entries.iter().map(|(_, rect)| *rect).collect();
+        readout.value(
+            Some(slice.color_in(theme)),
+            slice.label.clone(),
+            self.tooltip_detail(slice, self.total()),
+            false,
+        );
+        readout.note(slice.detail.clone());
+        Some(readout)
     }
 
     #[allow(
@@ -771,7 +694,7 @@ impl PlotMarks for PieMarks {
                     continue;
                 };
                 let label_rect = Rect::new(rect.x0, rect.y0, rect.x1 - detail_w, rect.y1);
-                crate::widget::chart_legend::paint_entry(
+                crate::widget::chart_legend::paint_entry_emphasised(
                     scene,
                     transform,
                     tr,
@@ -779,6 +702,7 @@ impl PlotMarks for PieMarks {
                     label_rect,
                     slice.color_in(theme),
                     &legend_label(slice, total),
+                    self.frame.inspection.hovered == Some(*index),
                 );
                 if detail_w > 0.0 && !slice.legend_detail.is_empty() {
                     let (w, h) = tr.measure_style(&slice.legend_detail, None, &detail_style);
@@ -826,7 +750,6 @@ impl PlotMarks for PieMarks {
             None,
             &sub_style,
         );
-        self.draw_tooltip(scene, transform, tr, theme);
     }
 }
 
@@ -940,19 +863,12 @@ mod tests {
                 let style = PieStyle {
                     tooltip: false,
                     tooltip_anchor: PieTooltipAnchor::Slice,
-                    tooltip_width: Some(240.0),
-                    tooltip_min_width: 120.0,
-                    tooltip_offset: 8.0,
-                    tooltip_padding: 20.0,
                     tooltip_show_percent: false,
-                    tooltip_right_inset: 180.0,
                     ..PieStyle::default()
                 };
                 assert!(!style.tooltip);
                 assert_eq!(style.tooltip_anchor, PieTooltipAnchor::Slice);
-                assert_eq!(style.tooltip_width, Some(240.0));
                 assert!(!style.tooltip_show_percent);
-                assert_eq!(style.tooltip_right_inset, 180.0);
             }
         }
 
@@ -1017,7 +933,7 @@ mod tests {
             let tooltip = chart
                 .marks
                 .tooltip_detail(&chart.marks.slices[0].clone(), 100.0);
-            assert_eq!(tooltip, "1,204 files, 42%");
+            assert_eq!(tooltip, "42.4 (42%)");
             assert!(!tooltip.contains('\u{b7}'), "no dot chains");
             let rect = Rect::new(0.0, 0.0, 640.0, 300.0);
             chart.marks.frame.rect = rect;
@@ -1042,10 +958,21 @@ mod tests {
             let theme = Theme::dark();
             let chart = placed_pie(&theme);
 
-            let legend = chart.marks.legend_entries[0].1;
+            // A legend entry is no wedge, and pointing at it inspects its slice.
+            let (entry, legend) = chart.marks.legend_entries[0];
             assert!(
-                chart.marks.hit(legend.center()).is_none(),
+                chart.marks.hit_test(legend.center()).is_none(),
                 "{legend:?} is the legend, not a wedge"
+            );
+            assert_eq!(chart.marks.hit(legend.center()), Some(entry));
+            let mut inspected = placed_pie(&theme);
+            inspected.marks.frame.inspection.pointer = legend.center();
+            crate::widget::chart_navigation::InteractiveChart::update_hover(&mut inspected);
+            let readout = inspected.marks.readout(&theme).expect("its slice reads out");
+            assert!(
+                readout.anchor != legend.center()
+                    && readout.avoid.contains(&legend),
+                "it reads out at its slice, clear of the legend: {readout:?}"
             );
 
             let (center, outer, inner) = chart.marks.geometry();
@@ -1092,7 +1019,7 @@ mod tests {
                 "the wider entry takes more area: {before:?} then {after:?}"
             );
             assert!(
-                chart.marks.hit(after.center()).is_none(),
+                chart.marks.hit_test(after.center()).is_none(),
                 "the area the wider legend takes holds no wedge"
             );
         }

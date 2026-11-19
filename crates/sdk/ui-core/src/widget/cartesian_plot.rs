@@ -20,6 +20,7 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_legend;
+use crate::widget::chart_readout::{Highlight, Readout};
 use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -443,11 +444,10 @@ pub struct CartesianBrushSelection {
 pub struct CartesianTooltipStyle {
     pub enabled: bool,
     pub anchor: CartesianTooltipAnchor,
-    pub width: Option<f64>,
-    pub min_width: f64,
-    pub offset: f64,
-    pub padding: f64,
     pub show_coordinates: bool,
+    /// Pointing anywhere over the plot reads every line, area, step or bar series at the nearest
+    /// x position, in one card; scatter and bubble series read the point under the pointer.
+    pub shared: bool,
 }
 
 impl Default for CartesianTooltipStyle {
@@ -455,11 +455,8 @@ impl Default for CartesianTooltipStyle {
         Self {
             enabled: true,
             anchor: CartesianTooltipAnchor::Pointer,
-            width: None,
-            min_width: 140.0,
-            offset: 18.0,
-            padding: 14.0,
             show_coordinates: false,
+            shared: true,
         }
     }
 }
@@ -620,7 +617,7 @@ impl Domain {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CartesianHover {
     Datum { series: usize, datum: usize },
     Annotation(usize),
@@ -1427,6 +1424,27 @@ impl CartesianMarks {
         let xd = self.domain(&self.style.x_axis, true);
         let yd = self.domain(&self.style.y_axis, false);
         let now = crate::time::now();
+        // A line or a band stands over the plot's reading only where the pointer is on it.
+        let annotation = self
+            .annotation_at(pointer, plot, xd, yd)
+            .filter(|&index| {
+                self.annotations.get(index).is_some_and(|annotation| {
+                    !matches!(
+                        annotation.kind,
+                        CartesianAnnotationKind::XBand { .. }
+                            | CartesianAnnotationKind::YBand { .. }
+                    )
+                })
+            })
+            .map(CartesianHover::Annotation);
+        if self.style.tooltip.shared && plot.contains(pointer) {
+            if annotation.is_some() {
+                return annotation;
+            }
+            if let Some(hover) = self.nearest_x(pointer, plot, xd, yd, now) {
+                return Some(hover);
+            }
+        }
         let mut nearest: Option<(f64, CartesianHover)> = None;
         for (series, values) in self.series.iter().enumerate() {
             if self.toggles.is_hidden(&values.id) {
@@ -1448,6 +1466,70 @@ impl CartesianMarks {
             self.annotation_at(pointer, plot, xd, yd)
                 .map(CartesianHover::Annotation)
         })
+    }
+
+    /// Whether `series` is read with the others at an x position: a line, an area, a step or
+    /// bars, not a cloud of points.
+    fn reads_across(series: &PlotSeries) -> bool {
+        !matches!(series.kind, SeriesKind::Scatter | SeriesKind::Bubble)
+    }
+
+    /// The datum of a series read across whose x stands nearest the pointer's, the nearer one in
+    /// height where two share it.
+    fn nearest_x(
+        &self,
+        pointer: Point,
+        plot: Rect,
+        xd: Domain,
+        yd: Domain,
+        now: Instant,
+    ) -> Option<CartesianHover> {
+        let mut nearest: Option<((f64, f64), CartesianHover)> = None;
+        for (series, values) in self.series.iter().enumerate() {
+            if self.toggles.is_hidden(&values.id) || !Self::reads_across(values) {
+                continue;
+            }
+            let range = self.hover_range(values, plot, xd);
+            let range = if range.is_empty() {
+                0..values.data.len()
+            } else {
+                range
+            };
+            for datum in range {
+                let Some(point) = self.map_animated_datum(series, datum, plot, xd, yd, now) else {
+                    continue;
+                };
+                let key = ((point.x - pointer.x).abs(), (point.y - pointer.y).abs());
+                if nearest.is_none_or(|(best, _)| key < best) {
+                    nearest = Some((key, CartesianHover::Datum { series, datum }));
+                }
+            }
+        }
+        nearest.map(|(_, hover)| hover)
+    }
+
+    /// Each shown series read across at `x`: its place, its datum there and where it stands.
+    fn read_across(
+        &self,
+        x: f64,
+        plot: Rect,
+        xd: Domain,
+        yd: Domain,
+    ) -> Vec<(usize, usize, Point)> {
+        let now = crate::time::now();
+        self.series
+            .iter()
+            .enumerate()
+            .filter(|(_, values)| !self.toggles.is_hidden(&values.id) && Self::reads_across(values))
+            .filter_map(|(series, values)| {
+                let datum = values
+                    .data
+                    .iter()
+                    .position(|datum| (datum.x - x).abs() <= f64::EPSILON * x.abs().max(1.0))?;
+                let point = self.map_animated_datum(series, datum, plot, xd, yd, now)?;
+                Some((series, datum, point))
+            })
+            .collect()
     }
 
     fn hover_range(
@@ -2327,79 +2409,110 @@ impl CartesianMarks {
         );
     }
 
-    fn draw_inspector(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        if !self.style.tooltip.enabled {
-            return;
-        }
-        let Some(hover) = self.frame.inspection.hovered else {
-            return;
-        };
-        let (title, detail, anchor, offset, outline) = match hover {
+    /// What the plot reads at the inspected datum or annotation.
+    fn readout_of(&self) -> Option<Readout> {
+        let hover = self
+            .frame
+            .inspection
+            .hovered
+            .filter(|_| self.style.tooltip.enabled)?;
+        let pointer = self.frame.inspection.pointer;
+        let (x_format, y_format) = (
+            self.style.x_axis.label_format,
+            self.style.y_axis.label_format,
+        );
+        match hover {
             CartesianHover::Datum { series, datum } => {
-                let Some(values) = self.series.get(series) else {
-                    return;
+                let values = self.series.get(series)?;
+                let datum = values.data.get(datum)?;
+                let point = self.anchor(&hover)?;
+                let anchor = match self.style.tooltip.anchor {
+                    CartesianTooltipAnchor::Pointer if self.frame.rect.contains(pointer) => pointer,
+                    CartesianTooltipAnchor::Pointer | CartesianTooltipAnchor::Datum => point,
                 };
-                let Some(datum) = values.data.get(datum) else {
-                    return;
-                };
-                let Some(point) = self.anchor(&hover) else {
-                    return;
-                };
-                if self.style.rendering.show_crosshair {
-                    let plot = self.plot_rect();
-                    let crosshair = with_alpha(theme.tokens.colors.text_dim, 110);
-                    scene.stroke(
-                        &Stroke::new(1.0),
-                        transform,
-                        crosshair,
-                        None,
-                        &Line::new((point.x, plot.y0), (point.x, plot.y1)),
+                let plot = self.plot_rect();
+                if self.style.tooltip.shared && Self::reads_across(values) {
+                    let title = if datum.label.is_empty() {
+                        format_axis_value(datum.x, x_format)
+                    } else {
+                        datum.label.clone()
+                    };
+                    let mut readout = Readout::new(
+                        title,
+                        Point::new(point.x, anchor.y.clamp(plot.y0, plot.y1)),
+                        self.frame.rect,
                     );
-                    scene.stroke(
-                        &Stroke::new(1.0),
-                        transform,
-                        crosshair,
-                        None,
-                        &Line::new((plot.x0, point.y), (plot.x1, point.y)),
-                    );
+                    if self.style.rendering.show_crosshair {
+                        readout.mark(Highlight::Guide {
+                            x: point.x,
+                            y0: plot.y0,
+                            y1: plot.y1,
+                        });
+                    }
+                    let xd = self.domain(&self.style.x_axis, true);
+                    let yd = self.domain(&self.style.y_axis, false);
+                    for (line, index, at) in self.read_across(datum.x, plot, xd, yd) {
+                        let (Some(read), Some(reading)) = (
+                            self.series.get(line),
+                            self.series.get(line).and_then(|s| s.data.get(index)),
+                        ) else {
+                            continue;
+                        };
+                        let value = if reading.detail.is_empty() {
+                            format_axis_value(reading.y, y_format)
+                        } else {
+                            reading.detail.clone()
+                        };
+                        readout
+                            .mark(Highlight::Dot {
+                                at,
+                                color: read.color,
+                            })
+                            .value(Some(read.color), read.name.clone(), value, line == series);
+                    }
+                    // A band the pointer is in is named under the values it holds.
+                    if let Some(band) = self
+                        .annotation_at(pointer, plot, xd, yd)
+                        .and_then(|index| self.annotations.get(index))
+                        .filter(|annotation| {
+                            matches!(
+                                annotation.kind,
+                                CartesianAnnotationKind::XBand { .. }
+                                    | CartesianAnnotationKind::YBand { .. }
+                            )
+                        })
+                    {
+                        readout.note(if band.label.is_empty() {
+                            band.id.clone()
+                        } else {
+                            band.label.clone()
+                        });
+                    }
+                    return Some(readout);
                 }
                 let title = if datum.label.is_empty() {
                     values.name.clone()
                 } else {
                     datum.label.clone()
                 };
-                let coordinates = format!(
-                    "x {}  ·  y {}",
-                    format_axis_value(datum.x, self.style.x_axis.label_format),
-                    format_axis_value(datum.y, self.style.y_axis.label_format)
-                );
-                let detail = if datum.detail.is_empty() {
-                    coordinates
-                } else if self.style.tooltip.show_coordinates {
-                    format!("{}  ·  {coordinates}", datum.detail)
-                } else {
-                    datum.detail.clone()
-                };
-                let anchor = match self.style.tooltip.anchor {
-                    CartesianTooltipAnchor::Pointer
-                        if self.frame.rect.contains(self.frame.inspection.pointer) =>
-                    {
-                        self.frame.inspection.pointer
-                    }
-                    CartesianTooltipAnchor::Pointer | CartesianTooltipAnchor::Datum => point,
-                };
-                (title, detail, anchor, 0.0, None)
+                let mut readout = Readout::new(title, anchor, self.frame.rect);
+                readout.mark(Highlight::Dot {
+                    at: point,
+                    color: values.color,
+                });
+                if datum.detail.is_empty() || self.style.tooltip.show_coordinates {
+                    readout.value(
+                        Some(values.color),
+                        format_axis_value(datum.x, x_format),
+                        format_axis_value(datum.y, y_format),
+                        false,
+                    );
+                }
+                readout.note(datum.detail.clone());
+                Some(readout)
             }
             CartesianHover::Annotation(index) => {
-                let Some(annotation) = self.annotations.get(index) else {
-                    return;
-                };
+                let annotation = self.annotations.get(index)?;
                 let title = if annotation.label.is_empty() {
                     annotation.id.clone()
                 } else {
@@ -2410,72 +2523,9 @@ impl CartesianMarks {
                 } else {
                     annotation.detail.clone()
                 };
-                (
-                    title,
-                    detail,
-                    self.frame.inspection.pointer,
-                    4.0,
-                    Some(annotation.color),
-                )
+                Some(Readout::of_mark(&title, &detail, pointer, self.frame.rect))
             }
-        };
-        let caption = theme.text(TextRole::Caption);
-        let (title_width, _) = tr.measure_style(&title, None, &caption);
-        let (detail_width, _) = tr.measure_style(&detail, None, &caption);
-        let padding = self.style.tooltip.padding.clamp(8.0, 32.0);
-        let available_width = (self.frame.rect.width() - 16.0).max(1.0);
-        let width = self
-            .style
-            .tooltip
-            .width
-            .unwrap_or_else(|| {
-                f64::from(title_width.max(detail_width)).max(self.style.tooltip.min_width)
-                    + padding * 2.0
-            })
-            .clamp(80.0_f64.min(available_width), available_width);
-        let height = 38.0 + padding * 2.0;
-        let rect = Self::tooltip_rect(
-            anchor,
-            (width, height),
-            self.frame.rect,
-            self.style.tooltip.offset.max(offset),
-        );
-        let rounded = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.overlay,
-            None,
-            &rounded,
-        );
-        if let Some(color) = outline {
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                with_alpha(color, 180),
-                None,
-                &rounded,
-            );
         }
-        let wrap = Some(crate::num::f32_of_f64((width - padding * 2.0).max(1.0)));
-        tr.draw_style(
-            scene,
-            &title,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((rect.x0 + padding, rect.y0 + padding - 2.0)),
-            wrap,
-            &theme
-                .text(TextRole::Label)
-                .with_weight(TextWeight::Semibold),
-        );
-        tr.draw_style(
-            scene,
-            &detail,
-            theme.tokens.colors.text_dim,
-            transform * Affine::translate((rect.x0 + padding, rect.y0 + padding + 24.0)),
-            wrap,
-            &caption,
-        );
     }
 
     fn begin_pointer_gesture(&mut self, modifiers: winit::event::Modifiers) -> bool {
@@ -2520,21 +2570,6 @@ impl CartesianMarks {
         }
         self.frame.inspection.clear();
         true
-    }
-
-    fn tooltip_rect(anchor: Point, size: (f64, f64), bounds: Rect, offset: f64) -> Rect {
-        let (width, height) = size;
-        let mut x = anchor.x + offset;
-        let mut y = anchor.y + offset;
-        if x + width > bounds.x1 {
-            x = anchor.x - width - offset;
-        }
-        if y + height > bounds.y1 {
-            y = anchor.y - height - offset;
-        }
-        x = x.clamp(bounds.x0, (bounds.x1 - width).max(bounds.x0));
-        y = y.clamp(bounds.y0, (bounds.y1 - height).max(bounds.y0));
-        Rect::new(x, y, x + width, y + height)
     }
 }
 
@@ -2885,7 +2920,9 @@ impl PlotMarks for CartesianMarks {
         }
         scene.pop_layer();
         self.draw_legend(scene, transform, tr, theme);
-        self.draw_inspector(scene, transform, tr, theme);
+    }
+    fn readout(&self, _theme: &Theme) -> Option<Readout> {
+        self.readout_of()
     }
 }
 
@@ -2957,12 +2994,16 @@ mod tests {
 
             let plot = painted.marks.plot_rect();
             let middle = Point::new(plot.center().x, plot.center().y);
-            assert_eq!(
-                laid_out.marks.hit(middle),
-                Some(CartesianHover::Annotation(0)),
-                "the band drawn across the middle is what a hover there names"
-            );
+            // Over the band drawn across the middle, the plot reads every series at the nearest
+            // x position and names the band under them.
+            let hovered = laid_out.marks.hit(middle);
+            assert!(matches!(hovered, Some(CartesianHover::Datum { .. })), "{hovered:?}");
             assert_eq!(laid_out.marks.hit(middle), painted.marks.hit(middle));
+            laid_out.marks.frame.inspection.pointer = middle;
+            laid_out.marks.frame.inspection.hovered = hovered;
+            let readout = laid_out.marks.readout_of().expect("a readout");
+            assert_eq!(readout.rows.len(), 4, "three series and the band: {readout:?}");
+            assert_eq!(readout.rows[3].label, "middle");
 
             let legend = laid_out.marks.frame.rect.y0 + laid_out.marks.bands.legend_top + 4.0;
             assert_eq!(
@@ -3169,20 +3210,9 @@ mod tests {
                 assert_eq!(format_compact(1_500_000.0), "1.5M");
             }
 
-            fn tooltip_placement_flips_and_clamps_to_chart_bounds() {
-                let bounds = Rect::new(0.0, 0.0, 300.0, 200.0);
-                let rect =
-                    CartesianMarks::tooltip_rect(Point::new(290.0, 190.0), (120.0, 60.0), bounds, 16.0);
-                assert_eq!(rect, Rect::new(154.0, 114.0, 274.0, 174.0));
-                let oversized =
-                    CartesianMarks::tooltip_rect(Point::new(10.0, 10.0), (300.0, 200.0), bounds, 16.0);
-                assert_eq!(oversized, bounds);
-            }
-
             axis_titles_fit_responsive_space_with_unicode_safe_ellipsis();
             built_in_axis_formats_cover_units();
             compact_number_format_uses_suffixes();
-            tooltip_placement_flips_and_clamps_to_chart_bounds();
         }
 
         phase logarithmic_axes_project_tick_zoom_and_reject_non_positive;

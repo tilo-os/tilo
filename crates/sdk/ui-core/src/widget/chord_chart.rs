@@ -20,6 +20,7 @@ use crate::widget::chart_data::{ChartLink, ChartNode, graph_items};
 use crate::widget::chart_geometry::{annulus, append_arc, polar};
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::draw_title;
+use crate::widget::chart_readout::Readout;
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Debug)]
@@ -460,6 +461,9 @@ impl PlotMarks for ChordMarks {
             self.draw_labels(scene, transform, tr, theme, center, outer);
         }
         self.follow_keyboard_anchor();
+    }
+
+    fn readout(&self, _theme: &Theme) -> Option<Readout> {
         if let Some(selection) = self
             .frame
             .inspection
@@ -493,17 +497,14 @@ impl PlotMarks for ChordMarks {
                 }),
             }
             .unwrap_or_default();
-            crate::widget::chart_labels::draw_tooltip(
-                scene,
-                transform,
-                tr,
-                theme,
+            return Some(Readout::of_mark(
+                &label,
+                &detail,
                 self.frame.inspection.pointer,
                 self.frame.rect,
-                150.0,
-                (&label, &detail),
-            );
+            ));
         }
+        None
     }
 }
 

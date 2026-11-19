@@ -93,6 +93,11 @@ pub struct ChartProps {
     pub top_label: Option<String>,
     /// The label at the foot of its scale: "0%".
     pub bottom_label: Option<String>,
+    /// What each reading is at, oldest first ("9:51", "Monday"): the position a person pointing
+    /// at the chart reads the lines at.
+    pub labels: Vec<String>,
+    /// What a reading counts, written after each value read ("ms", "/s").
+    pub unit: Option<String>,
     /// Its height in logical pixels: 160 unless said.
     pub height: Option<f64>,
 }
@@ -129,17 +134,16 @@ impl Described for Chart {
     )]
     fn set_props(&mut self, props: ChartProps) -> bool {
         self.set_series(lines(&props.series));
-        self.inks = props.series.iter().map(|line| line.ink).collect();
-        self.max = props.max.map(|max| max as f32);
-        self.area = props.area;
-        self.title = props.title.unwrap_or_default();
-        self.axis_hi = props.top_label.unwrap_or_default();
-        self.axis_lo = props.bottom_label.unwrap_or_default();
-        let height = props.height.unwrap_or(160.0) as f32;
-        if (height - self.height).abs() > f32::EPSILON {
-            self.height = height;
-            self.rect = vello::kurbo::Rect::ZERO;
-        }
+        let marks = &mut self.marks;
+        marks.inks = props.series.iter().map(|line| line.ink).collect();
+        marks.max = props.max.map(|max| max as f32);
+        marks.area = props.area;
+        marks.frame.title = props.title.unwrap_or_default();
+        marks.axis_hi = props.top_label.unwrap_or_default();
+        marks.axis_lo = props.bottom_label.unwrap_or_default();
+        marks.labels = props.labels;
+        marks.unit = props.unit.unwrap_or_default();
+        marks.frame.height = Some(props.height.unwrap_or(160.0) as f32);
         true
     }
 }

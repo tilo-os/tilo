@@ -19,6 +19,7 @@ use crate::widget::chart_data::ChartItem;
 use crate::widget::chart_geometry::annulus;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::draw_title;
+use crate::widget::chart_readout::Readout;
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Debug)]
@@ -387,6 +388,9 @@ impl PlotMarks for PolarAreaMarks {
             &self.center_subtitle,
         );
         self.follow_keyboard_anchor();
+    }
+
+    fn readout(&self, _theme: &Theme) -> Option<Readout> {
         if let Some(datum) = self
             .frame
             .inspection
@@ -400,17 +404,14 @@ impl PlotMarks for PolarAreaMarks {
             } else {
                 format!("{} · {}", format_compact(datum.value), datum.detail)
             };
-            crate::widget::chart_labels::draw_tooltip(
-                scene,
-                transform,
-                tr,
-                theme,
+            return Some(Readout::of_mark(
+                &datum.label,
+                &detail,
                 self.frame.inspection.pointer,
                 self.frame.rect,
-                140.0,
-                (&datum.label, &detail),
-            );
+            ));
         }
+        None
     }
 }
 

@@ -16,6 +16,7 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::draw_title;
+use crate::widget::chart_readout::Readout;
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks, ValueAxis};
 
 #[derive(Clone, Debug)]
@@ -538,6 +539,10 @@ impl PlotMarks for DistributionMarks {
                 &theme.text(TextRole::Caption),
             );
         }
+    }
+
+    fn readout(&self, _theme: &Theme) -> Option<Readout> {
+        let summaries = self.summaries();
         if let Some(index) = self.frame.inspection.hovered.filter(|_| self.style.tooltip)
             && let (Some(series), Some(Some(summary))) =
                 (self.series.get(index), summaries.get(index))
@@ -553,17 +558,14 @@ impl PlotMarks for DistributionMarks {
             } else {
                 series.detail.clone()
             };
-            crate::widget::chart_labels::draw_tooltip(
-                scene,
-                transform,
-                tr,
-                theme,
+            return Some(Readout::of_mark(
+                &series.label,
+                &detail,
                 self.frame.inspection.pointer,
                 self.frame.rect,
-                210.0,
-                (&series.label, &detail),
-            );
+            ));
         }
+        None
     }
 }
 

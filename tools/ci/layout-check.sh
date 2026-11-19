@@ -14,6 +14,8 @@
 #           from (default: false)
 #   shot_height  takes the shots in a window this tall at the size's width, so the lower part
 #           of a long page shows (default: the size's own height)
+#   hover   `X,Y`: the pointer rests there once the press is made, so the shots show what
+#           pointing there shows, a chart's readout (default: nowhere)
 #
 #   t test layout-check/390x844 --input app=apps/tl/tasks \
 #       --input press="Mark Buy oat milk and eggs done" --input dump=true
@@ -48,6 +50,7 @@ app=${T_INPUT_APP:-}
 press=${T_INPUT_PRESS:-}
 dump=${T_INPUT_DUMP:-false}
 shot_height=${T_INPUT_SHOT_HEIGHT:-}
+hover=${T_INPUT_HOVER:-}
 case $dump in true|false) ;; *) echo "dump must be true or false, not $dump" >&2; exit 2 ;; esac
 
 # Every app in `apps/tl`: a package directory with an `app.tl`, as the library's own tests find
@@ -70,6 +73,8 @@ presses=()
 [[ -z $press ]] || presses=(--press "$press")
 tall=()
 [[ -z $shot_height ]] || tall=(--shot-height "$shot_height")
+pointing=()
+[[ -z $hover ]] || pointing=(--hover "$hover")
 # A narrowing input reads its own layouts: `dump` prints every frame laid out, where the whole
 # tree's run prints the frames its findings came from.
 read_frames=(--dump-findings "$size")
@@ -79,12 +84,12 @@ read_frames=(--dump-findings "$size")
 # scenario reaches), so it is the run that names no app and no press; a narrowed run still fails
 # on a finding the allow-list does not name.
 verdict=(--strict)
-[[ -z $app && -z $press ]] || verdict=()
+[[ -z $app && -z $press && -z $hover ]] || verdict=()
 
 status=0
 "$target/debug/tilolang" layout-check "${apps[@]}" \
     --allow crates/lang/tilolang-cli/tests/layout_check/allowed \
-    "${verdict[@]}" "${read_frames[@]}" "${presses[@]}" "${tall[@]}" --shots "$out" >"$out/report.txt" 2>"$out/dump.txt" || status=$?
+    "${verdict[@]}" "${read_frames[@]}" "${presses[@]}" "${pointing[@]}" "${tall[@]}" --shots "$out" >"$out/report.txt" 2>"$out/dump.txt" || status=$?
 cat -- "$out/report.txt"
 if [[ ! -s $out/report.txt ]]; then
     echo "layout-check: laying the apps out at $size wrote no report; it said:" >&2

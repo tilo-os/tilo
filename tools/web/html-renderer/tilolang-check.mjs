@@ -8,6 +8,7 @@
 //                                                       [--width N] [--height N]
 //                                                       [--pages ROW,ROW,...] [--zone ZONE]
 //                                                       [--press NAME,...]
+//                                                       [--hover NAME@FX:FY;...]
 // With --pages, each named place in the window's sidebar is chosen, and its page shot in both
 // themes and both renderers as `<render>-<theme>-<place>.png`, before the interaction checks.
 // The gallery's pages are its sidebar's places, so by default every one of them is walked.
@@ -17,6 +18,9 @@
 // With --press, on each page the control or row reading each name (a table row, a tree row, a
 // card) is pointed at and shot as `<render>-<theme>-<place>-hovered-<name>.png`, then pressed
 // and shot as `...-pressed-<name>.png`: the states a pointer and a choice give it.
+// With --hover, on each page the pointer rests on the element reading each NAME (a chart by its
+// title) at FX, FY of its box (fractions, 0 to 1), and the page is shot as
+// `<render>-<theme>-<place>-hover-<name>-<n>.png`: what pointing there reads out.
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join, resolve} from 'node:path';
 import {serve} from '../chrome.mjs';
@@ -39,6 +43,11 @@ const pages = (option('--pages') ?? (pkg === GALLERY ? GALLERY_PLACES.join(',') 
   .split(',').filter(Boolean);
 const zone = option('--zone') ?? 'UTC';
 const presses = (option('--press') ?? '').split(',').filter(Boolean);
+const hovers = (option('--hover') ?? '').split(';').filter(Boolean).map(spec => {
+  const [name, at = '0.5:0.5'] = spec.split('@');
+  const [fx, fy] = at.split(':').map(Number);
+  return {name, fx, fy};
+});
 const TEXT = 'Hello web';
 mkdirSync(out, {recursive: true});
 
@@ -79,6 +88,20 @@ const NAMED = `((name) => {
     const box = element.getBoundingClientRect();
     if (box.width < 4 || box.height < 4) continue;
     if (!best || box.width * box.height < best.area) best = {x: box.left + box.width / 2, y: box.top + box.height / 2, area: box.width * box.height};
+  }
+  return JSON.stringify(best);
+})`;
+
+// The box of the largest element of the mount that reads `name`: a chart, by its title.
+const BOX = `((name) => {
+  let best = null;
+  const root = document.getElementById('app');
+  const dom = Boolean(root.querySelector('[data-path]'));
+  for (const element of root.querySelectorAll('*')) {
+    if (dom && !element.closest('[data-path]')) continue;
+    if ((element.getAttribute('aria-label') ?? '').trim() !== name) continue;
+    const box = element.getBoundingClientRect();
+    if (!best || box.width * box.height > best.width * best.height) best = {x: box.left, y: box.top, width: box.width, height: box.height};
   }
   return JSON.stringify(best);
 })`;
@@ -156,6 +179,28 @@ try {
             await press(tab, named);
             await settle(tab);
             writeFileSync(shot('pressed'), await tab.screenshot());
+          }
+          for (const [index, hover] of hovers.entries()) {
+            let box = JSON.parse(await tab.evaluate(`${BOX}(${JSON.stringify(hover.name)})`));
+            (result.hovers ??= []).push({...hover, box});
+            if (!box) continue;
+            // The chart is scrolled into the window first, then pointed at where it now stands.
+            if (box.y + box.height > height || box.y < 0) {
+              await tab.mouse.move(width / 2, height / 2);
+              await tab.mouse.wheel({x: width / 2, y: height / 2, dx: 0, dy: box.y + box.height / 2 - height / 2});
+              await settle(tab);
+              box = JSON.parse(await tab.evaluate(`${BOX}(${JSON.stringify(hover.name)})`));
+              if (!box) continue;
+            }
+            const point = {x: box.x + box.width * hover.fx, y: box.y + box.height * hover.fy};
+            await tab.mouse.move(point.x, point.y);
+            await settle(tab);
+            if (render === 'dom' && theme === 'light') {
+              result.hovers[result.hovers.length - 1].readout = await tab.evaluate(
+                `[...document.querySelectorAll('#app [role=tooltip]')].map(e => e.getAttribute('aria-label')).join(' | ')`);
+            }
+            const slug = hover.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+            writeFileSync(join(out, `${render}-${theme}-${page.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-hover-${slug}-${index}.png`), await tab.screenshot());
           }
           // Words typed into the page's first field for them reach it, on both renders.
           const field = theme === 'light' ? JSON.parse(await tab.evaluate(`${FIND}('words')`)) : null;

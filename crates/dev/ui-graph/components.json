@@ -720,6 +720,13 @@
           "name": "readings",
           "doc": "Each bar's reading written at it.",
           "type": "bool"
+        },
+        {
+          "name": "unit",
+          "doc": "What a reading counts, written after each value a person pointing at a category reads (\"GB\", \"ms\", \"/s\").",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "semantics": {
@@ -876,6 +883,20 @@
         {
           "name": "bottom_label",
           "doc": "The label at the foot of its scale: \"0%\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "labels",
+          "doc": "What each reading is at, oldest first (\"9:51\", \"Monday\"): the position a person pointing at the chart reads the lines at.",
+          "type": {
+            "list": "text"
+          }
+        },
+        {
+          "name": "unit",
+          "doc": "What a reading counts, written after each value read (\"ms\", \"/s\").",
           "type": {
             "option": "text"
           }
@@ -3802,6 +3823,13 @@
         {
           "name": "total",
           "doc": "What a ring reads at its centre: the whole, as it reads (\"128 issues\").",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "unit",
+          "doc": "What a part's value counts, written after it where a person pointing at it reads it (\"GB\", \"h\").",
           "type": {
             "option": "text"
           }

@@ -315,7 +315,7 @@ fn chart() -> Element {
             )
             .with_legend("Errors"),
         ])
-        .with_title("Sessions over time")
+        .titled("Sessions over time")
         .with_axis_labels("6.0", "0")
         .with_height(180.0),
     )

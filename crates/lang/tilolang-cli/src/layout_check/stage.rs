@@ -403,6 +403,11 @@ impl Staged {
         self.harness.key(key);
     }
 
+    /// Rest the pointer at `x`, `y`, as a person pointing at what stands there does.
+    pub fn hover(&mut self, x: f64, y: f64) {
+        self.harness.hover_at(x, y);
+    }
+
     /// What the app's units ran since the last [`Self::reset_costs`], by unit
     /// ([`tilolang_tilo::runtime::cost`]), when the costs are being counted.
     pub fn costs(&self) -> Option<tilolang_tilo::runtime::Costs> {

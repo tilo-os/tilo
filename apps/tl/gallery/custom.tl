@@ -80,6 +80,19 @@ view custom(g: Gallery) {
                     ),
                 ],
                 title: .some("The last ten minutes"),
+                labels: [
+                    "9 minutes ago",
+                    "8 minutes ago",
+                    "7 minutes ago",
+                    "6 minutes ago",
+                    "5 minutes ago",
+                    "4 minutes ago",
+                    "3 minutes ago",
+                    "2 minutes ago",
+                    "A minute ago",
+                    "Now",
+                ],
+                unit: .some("/s"),
                 area: true,
                 max: .some(48.0),
                 top_label: .some("48"),
@@ -102,6 +115,7 @@ view custom(g: Gallery) {
                 ],
                 title: .some("Hours by team"),
                 ring: true,
+                unit: .some("h"),
                 total: .some("88 hours"),
             )
             ui.GraphCanvas(

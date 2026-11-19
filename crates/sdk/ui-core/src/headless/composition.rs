@@ -403,11 +403,14 @@ impl FrameHarness {
                             widget, &mut scene, transform, text, theme, presence,
                         );
                     };
-                    if words_on_top {
-                        crate::text_render::without_words(paint);
-                    } else {
-                        paint();
-                    }
+                    // A chart's readout is the page's own elements over its picture.
+                    crate::widget::chart_readout::without_readouts(|| {
+                        if words_on_top {
+                            crate::text_render::without_words(paint);
+                        } else {
+                            paint();
+                        }
+                    });
                     (scene, [rect.x0, rect.y0, rect.width(), rect.height()])
                 },
             )

@@ -18,6 +18,7 @@ use crate::tokens::TextRole;
 use crate::widget::chart_geometry;
 use crate::widget::chart_legend;
 use crate::widget::chart_navigation::draw_title;
+use crate::widget::chart_readout::Readout;
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Debug)]
@@ -111,7 +112,7 @@ impl Default for RadarStyle {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Hovered {
     series: usize,
     axis: usize,
@@ -499,6 +500,9 @@ impl PlotMarks for RadarMarks {
                     .map(|series| (series.id.as_str(), series.name.as_str(), series.color)),
             );
         }
+    }
+
+    fn readout(&self, _theme: &Theme) -> Option<Readout> {
         if let Some(hovered) = self.frame.inspection.hovered.filter(|_| self.style.tooltip)
             && let (Some(series), Some(axis)) =
                 (self.series.get(hovered.series), self.axes.get(hovered.axis))
@@ -506,17 +510,14 @@ impl PlotMarks for RadarMarks {
             let value = series.values.get(hovered.axis).copied().unwrap_or_default();
             let title = format!("{} · {}", series.name, axis.label);
             let detail = format!("{value:.2} of {:.2}", axis.max);
-            crate::widget::chart_labels::draw_tooltip(
-                scene,
-                transform,
-                tr,
-                theme,
+            return Some(Readout::of_mark(
+                &title,
+                &detail,
                 self.frame.inspection.pointer,
                 self.frame.rect,
-                150.0,
-                (&title, &detail),
-            );
+            ));
         }
+        None
     }
 }
 

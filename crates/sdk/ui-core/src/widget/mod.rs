@@ -2492,12 +2492,13 @@ pub mod drawing;
 pub use drawing::{Drawing, DrawingProps, Ink, Meaning, Shape, Weight};
 pub mod chart;
 pub use chart::{
-    Chart, ChartLabels, ChartStyle, RollingSeries, Series, Sparkline, TrendCurve, TrendFill,
+    Chart, ChartStyle, RollingSeries, Series, Sparkline, TrendCurve, TrendFill, TrendMarks,
     TrendRange, TrendStyle,
 };
 pub(crate) mod chart_data;
 pub(crate) mod chart_geometry;
 pub(crate) mod chart_labels;
+pub mod chart_readout;
 pub use chart_data::{ChartItem, ChartLink, ChartNode, GraphSelection};
 pub mod chart_legend;
 pub mod chart_navigation;

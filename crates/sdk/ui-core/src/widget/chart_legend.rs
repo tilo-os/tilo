@@ -122,6 +122,9 @@ pub struct SeriesToggles {
     /// Each entry's place, by series id, in the order the legend lays them out.
     placed: Vec<(String, Rect)>,
     changed: Option<(String, bool)>,
+    /// The series the person is on, and whether they are on its legend entry (which brings the
+    /// series forward) rather than on one of its marks (which names it in the legend).
+    focus: Option<(String, bool)>,
 }
 
 impl SeriesToggles {
@@ -147,6 +150,31 @@ impl SeriesToggles {
 
     pub(crate) fn take_changed(&mut self) -> Option<(String, bool)> {
         self.changed.take()
+    }
+
+    pub(crate) fn set_focus(&mut self, focus: Option<(String, bool)>) {
+        self.focus = focus;
+    }
+
+    /// The series the person is on, by its legend entry or by one of its marks.
+    pub(crate) fn focus(&self) -> Option<&str> {
+        self.focus.as_ref().map(|(id, _)| id.as_str())
+    }
+
+    /// Whether series `id` stands back while the person points at another's legend entry.
+    pub(crate) fn dims(&self, id: &str) -> bool {
+        self.focus
+            .as_ref()
+            .is_some_and(|(focus, on_legend)| *on_legend && focus != id)
+    }
+
+    /// `colour` as series `id` wears it now: faded while another's legend entry is pointed at.
+    pub(crate) fn ink(&self, id: &str, colour: Color) -> Color {
+        if self.dims(id) {
+            crate::paint::with_alpha(colour, 56)
+        } else {
+            colour
+        }
     }
 
     /// Place each `(id, name)` entry across `area` from its top, in the order
@@ -199,6 +227,7 @@ impl SeriesToggles {
                     theme,
                     item,
                     (name, colour, self.is_hidden(id)),
+                    self.focus() == Some(id),
                 );
             }
         }
@@ -248,6 +277,7 @@ pub(crate) fn paint_series(
     theme: &Theme,
     item: Rect,
     (name, colour, hidden): (&str, Color, bool),
+    emphasised: bool,
 ) {
     let fade = |colour: Color, alpha: u8| {
         if hidden {
@@ -267,10 +297,15 @@ pub(crate) fn paint_series(
     );
     let style = theme.text(TextRole::Caption);
     let h = f64::from(text.measure_style(name, None, &style).1);
+    let ink = if emphasised {
+        theme.tokens.colors.text_primary
+    } else {
+        theme.tokens.colors.text_dim
+    };
     text.draw_style(
         scene,
         name,
-        fade(theme.tokens.colors.text_dim, 90),
+        fade(ink, 90),
         transform * Affine::translate((item.x0 + 14.0, cy - h / 2.0)),
         Some(crate::num::f32_of_f64((item.width() - 18.0).max(1.0))),
         &style,
