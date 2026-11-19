@@ -814,12 +814,24 @@ pub(crate) fn add_member_changes(
             joined.push(change);
         }
     }
+    // A change names the changes it was written on. The rows this device
+    // wrote between two membership changes are its own and reach no other
+    // device but here: a delta that leaves them out names changes its
+    // receivers do not hold, and they hold the whole delta back. It carries
+    // every change this device made that the entry does not.
+    let own = live.workspace_actor_for(&view.device.device_public_key);
+    for bytes in live.workspace_changes_since(&[]) {
+        let change =
+            automerge::Change::try_from(bytes.as_slice()).map_err(|error| error.to_string())?;
+        if change.actor_id() == &own && !joined.contains(&bytes) {
+            joined.push(bytes);
+        }
+    }
     let message = NeighbourMsg::SyncResp {
         changes: joined,
         workspace: view.workspace.to_string(),
     };
     let bytes = encode(&message, MAX_BYTES)?;
-    let _ = live;
     let old = state_of(view)?
         .governance
         .first()
