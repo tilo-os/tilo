@@ -66,6 +66,10 @@ impl<'a> LiveFrame<'a> {
             _ => false,
         };
         let (reach, readers) = record_reach(runtime, envelope);
+        // A read grant may expire without a new projection. Document frames
+        // are rechecked against the recipient's policy by their writer.
+        let fanned = fanned
+            .filter(|_| super::records::document_policy_body(&runtime.store, envelope).is_none());
         Self {
             envelope,
             budget,

@@ -27,15 +27,15 @@ impl StatePeer {
         envelope: collab_types::SignedOp,
         now: SystemTime,
     ) -> Result<ReceiveOutcome, String> {
-        self.admit_local(app, record, envelope, now)
+        self.admit_local((app, record), None, envelope, now)
             .map(|report| report.summary)
             .map_err(Into::into)
     }
 
     pub(super) fn admit_local(
         &mut self,
-        app: &str,
-        record: &str,
+        (app, record): (&str, &str),
+        readers: Option<&str>,
         envelope: collab_types::SignedOp,
         now: SystemTime,
     ) -> Result<AdmissionReport, crate::NotAdmitted> {
@@ -75,7 +75,7 @@ impl StatePeer {
                 document_id: record.into(),
                 envelope: Box::new(envelope),
                 own: self.core.own_write(app, record, &source),
-                readers: None,
+                readers: readers.map(str::to_owned),
             },
             now,
             true,
@@ -120,6 +120,13 @@ impl StatePeer {
             return Err("transport author or document workspace mismatch".into());
         }
         self.core.learn_own(&app_id, &document_id, own.as_ref());
+        self.check_document_key_scope(
+            (&app_id, &document_id),
+            readers.as_deref(),
+            envelope.encryption,
+            now,
+            retained_replay,
+        )?;
         // A piece of a compaction that spans several ops changes nothing on its
         // own: it is gathered, and the compaction is admitted once it is whole.
         let envelope = if collab_types::is_compaction_piece(&envelope)

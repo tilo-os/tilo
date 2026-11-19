@@ -1571,6 +1571,12 @@ identifiers = ["Channel", "channel_id"]
 paths = ["apps/tube/src/rows.rs", "apps/tube/src/actions.rs"]
 
 [[allow]]
+reason = "The JSON field and variant in older filesystem capability lists, read in place so upgrading preserves the device's existing permissions."
+words = ["principal", "subject"]
+identifiers = ["Principal", "subject"]
+paths = ["crates/system/fs/src/caps_file.rs", "crates/system/fs/src/caps_file/legacy.rs"]
+
+[[allow]]
 reason = "A test drives the workspace service through the fixture named `test_host` and the `host` field of the service every embedder reads; neither is prose."
 words = ["host"]
 identifiers = ["host", "test_host"]

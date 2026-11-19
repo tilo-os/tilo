@@ -347,6 +347,7 @@ fn mint_pieces(
     let mut ops = peer.publication().draft_sealed_compaction(
         (APP, RECORD),
         None,
+        None,
         &mut |op| open(keys, op),
         &mut |plaintext| {
             keys.seal_content(artifact(), ContentRetention::of_frame(plaintext), plaintext)
@@ -359,7 +360,7 @@ fn mint_pieces(
         collab_types::sign_op(op, key).map_err(|error| error.to_string())?;
     }
     peer.publication_mut()
-        .admit_sealed_compaction(APP, RECORD, ops, now)
+        .admit_sealed_compaction(APP, RECORD, None, ops, now)
 }
 
 /// A compaction of `superseded`, sealed with `keys` but not signed.
@@ -563,6 +564,7 @@ tilo_test_env::scenario! {
                     .publication()
                     .draft_sealed_compaction(
                         (APP, RECORD),
+                        None,
                         None,
                         &mut *open,
                         &mut *seal,

@@ -3077,8 +3077,8 @@ fn describe_capability(cap: &CapOverride) -> String {
         Access::Write => "write",
     };
     let effect = match cap.effect {
-        Effect::Grant => "grant",
-        Effect::Restrict => "restrict",
+        Effect::Grant | Effect::WorkspaceFileAccess => "grant",
+        Effect::Restrict | Effect::WorkspaceFileBoundary => "restrict",
     };
     t_args(
         "activity-capability",
@@ -3116,6 +3116,7 @@ fn describe_grantee(grantee: &Grantee, app: Option<&tilo_app_id::AppId>) -> Stri
             t_args("activity-capability-bot", &[("bot", bot.into())])
         }
         Grantee::Role(_) => t("activity-capability-this-workspace"),
+        Grantee::CustomRole(id) => id.clone(),
         Grantee::App(app) => app.clone(),
     };
     match app {

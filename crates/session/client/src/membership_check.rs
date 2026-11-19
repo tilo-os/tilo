@@ -242,8 +242,14 @@ pub(crate) struct StoredKeys(Arc<Stored>);
 
 #[derive(Debug, Default)]
 struct Stored {
-    saved: Mutex<SavedKeys>,
+    saved: Mutex<KeySnapshot>,
     changed: AtomicBool,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct KeySnapshot {
+    keys: SavedKeys,
+    scopes: BTreeMap<WorkspaceId, String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -255,14 +261,25 @@ struct SavedKeys {
 
 /// Tags stored channel state of this format: state of an earlier format does not open, and the
 /// device asks for its channels again.
-const SAVED_CHANNELS_TAG: &[u8] = b"tilo.browser-channels.v7";
+const SAVED_KEYS_TAG: &[u8] = b"tilo.browser-keys.v8";
+const SAVED_KEYS_WITHOUT_SCOPES: &[u8] = b"tilo.browser-channels.v7";
 
 impl StoredKeys {
     /// What `store` kept.
     pub(crate) fn load(store: &dyn PeerStore) -> Self {
         let saved = store
             .load_channels()
-            .and_then(|bytes| postcard::from_bytes(bytes.strip_prefix(SAVED_CHANNELS_TAG)?).ok())
+            .and_then(|bytes| {
+                if let Some(current) = bytes.strip_prefix(SAVED_KEYS_TAG) {
+                    return postcard::from_bytes(current).ok();
+                }
+                let keys =
+                    postcard::from_bytes(bytes.strip_prefix(SAVED_KEYS_WITHOUT_SCOPES)?).ok()?;
+                Some(KeySnapshot {
+                    keys,
+                    scopes: BTreeMap::new(),
+                })
+            })
             .unwrap_or_default();
         Self(Arc::new(Stored {
             saved: Mutex::new(saved),
@@ -272,12 +289,12 @@ impl StoredKeys {
 
     /// The writes held for their keys when the state was kept.
     pub(crate) fn held(&self) -> Vec<(DocumentRoute, Vec<Vec<u8>>)> {
-        self.0.saved.lock_recover().held.clone()
+        self.0.saved.lock_recover().keys.held.clone()
     }
 
     /// Keep `held` as the writes waiting for their keys.
     pub(crate) fn hold(&self, held: Vec<(DocumentRoute, Vec<Vec<u8>>)>) {
-        self.change(|saved| saved.held = held);
+        self.change(|saved| saved.keys.held = held);
     }
 
     /// Write what changed since the last save to `store`.
@@ -285,7 +302,7 @@ impl StoredKeys {
         if !self.0.changed.swap(false, Ordering::AcqRel) {
             return Ok(());
         }
-        let mut bytes = SAVED_CHANNELS_TAG.to_vec();
+        let mut bytes = SAVED_KEYS_TAG.to_vec();
         postcard::to_io(&*self.0.saved.lock_recover(), &mut bytes)
             .map_err(|error| error.to_string())?;
         store.save_channels(&bytes).inspect_err(|_| {
@@ -293,7 +310,7 @@ impl StoredKeys {
         })
     }
 
-    fn change(&self, change: impl FnOnce(&mut SavedKeys)) {
+    fn change(&self, change: impl FnOnce(&mut KeySnapshot)) {
         change(&mut self.0.saved.lock_recover());
         self.0.changed.store(true, Ordering::Release);
     }
@@ -305,25 +322,60 @@ impl tilo_workspace_keys::KeyStorage for StoredKeys {
     }
 
     fn held(&self) -> Vec<WorkspaceId> {
-        self.0.saved.lock_recover().peers.keys().copied().collect()
+        self.0
+            .saved
+            .lock_recover()
+            .keys
+            .peers
+            .keys()
+            .copied()
+            .collect()
+    }
+
+    fn scopes(&self) -> Vec<neighbour_wire::KeyScope> {
+        self.0
+            .saved
+            .lock_recover()
+            .scopes
+            .iter()
+            .filter_map(|(group, route)| {
+                let scope = neighbour_wire::KeyScope::parse(route)?;
+                (scope.group() == *group).then_some(scope)
+            })
+            .collect()
+    }
+
+    fn keep_scope(&self, scope: &neighbour_wire::KeyScope) -> Result<(), String> {
+        self.change(|saved| {
+            saved.scopes.insert(scope.group(), scope.to_string());
+        });
+        Ok(())
     }
 }
 
 impl key_group::PeerStates for StoredKeys {
     fn read(&self, workspace: WorkspaceId) -> key_group::Result<Option<Vec<u8>>> {
-        Ok(self.0.saved.lock_recover().peers.get(&workspace).cloned())
+        Ok(self
+            .0
+            .saved
+            .lock_recover()
+            .keys
+            .peers
+            .get(&workspace)
+            .cloned())
     }
 
     fn write(&self, workspace: WorkspaceId, sealed: &[u8]) -> key_group::Result<()> {
         self.change(|saved| {
-            saved.peers.insert(workspace, sealed.to_vec());
+            saved.keys.peers.insert(workspace, sealed.to_vec());
         });
         Ok(())
     }
 
     fn forget(&self, workspace: WorkspaceId) -> key_group::Result<()> {
         self.change(|saved| {
-            saved.peers.remove(&workspace);
+            saved.keys.peers.remove(&workspace);
+            saved.scopes.remove(&workspace);
         });
         Ok(())
     }
@@ -569,6 +621,28 @@ mod tests {
     }
 
     #[test]
+    fn saved_keys_without_document_routes_still_open() -> Result<(), Box<dyn std::error::Error>> {
+        let store = MemoryPeerStore::default();
+        let workspace = WorkspaceId::new();
+        let mut encoded = SAVED_KEYS_WITHOUT_SCOPES.to_vec();
+        postcard::to_io(
+            &SavedKeys {
+                peers: BTreeMap::from([(workspace, b"old sealed keys".to_vec())]),
+                held: Vec::new(),
+            },
+            &mut encoded,
+        )?;
+        store.save_channels(&encoded)?;
+        let reopened = StoredKeys::load(&store);
+        assert_eq!(
+            tilo_workspace_keys::KeyStorage::peers(&reopened).read(workspace)?,
+            Some(b"old sealed keys".to_vec()),
+        );
+        assert!(tilo_workspace_keys::KeyStorage::scopes(&reopened).is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn channel_state_and_held_edits_survive_reopen() -> Result<(), Box<dyn std::error::Error>> {
         let store = MemoryPeerStore::default();
         let route = DocumentRoute {
@@ -578,9 +652,16 @@ mod tests {
         };
         let workspace = WorkspaceId::new();
         let held = vec![(route, vec![b"before the reload".to_vec()])];
+        let scope = neighbour_wire::KeyScope::Document {
+            workspace,
+            app: "so.tilo.notes".into(),
+            document: "note".into(),
+            readers: None,
+        };
         let stored = StoredKeys::load(&store);
         stored.hold(held.clone());
-        tilo_workspace_keys::KeyStorage::peers(&stored).write(workspace, b"sealed")?;
+        tilo_workspace_keys::KeyStorage::keep_scope(&stored, &scope)?;
+        tilo_workspace_keys::KeyStorage::peers(&stored).write(scope.group(), b"sealed")?;
         stored.save(&store)?;
 
         let reopened = StoredKeys::load(&store);
@@ -588,15 +669,19 @@ mod tests {
             return Err("the held edit changed on reopen".into());
         }
         if tilo_workspace_keys::KeyStorage::peers(&reopened)
-            .read(workspace)?
+            .read(scope.group())?
             .as_deref()
             != Some(&b"sealed"[..])
         {
             return Err("the channel's state changed on reopen".into());
         }
-        if tilo_workspace_keys::KeyStorage::held(&reopened) != vec![workspace] {
+        if tilo_workspace_keys::KeyStorage::held(&reopened) != vec![scope.group()] {
             return Err("the reopened state does not list its channel".into());
         }
+        assert_eq!(
+            tilo_workspace_keys::KeyStorage::scopes(&reopened),
+            vec![scope]
+        );
         Ok(())
     }
 }
