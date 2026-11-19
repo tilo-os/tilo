@@ -514,7 +514,7 @@ mod tests {
                     ]
                 );
                 assert!(
-                    !argv.iter().any(|arg| arg.contains("/documents")),
+                    !argv.iter().any(|arg| arg.contains("so.tilo.settings-")),
                     "the settings document reaches Settings through the shell's settings service, \
                  never a bind: {argv:?}"
                 );

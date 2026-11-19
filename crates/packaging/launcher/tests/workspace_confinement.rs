@@ -326,9 +326,9 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
     let attestors = host.join("trusted-attestors.toml");
     let revoked = host.join("revoked-keys.toml");
     let registries = host.join("registries.toml");
-    let record = host.join("documents/person.json");
+    let record = home.data().join("so.tilo.settings-person/state.automerge");
     let state = host.join("state.json");
-    let settings = host.join("documents/device/state.automerge");
+    let settings = home.data().join("so.tilo.settings-device/state.automerge");
     let accounts = host.join("accounts/store.json");
     let root_secret = host.join("identity/secrets/0123abcd.key");
     let active = host.join("identity/active");
@@ -356,7 +356,6 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
         "trusted-attestors.toml",
         "revoked-keys.toml",
         "registries.toml",
-        "documents/person.json",
     ] {
         let line = run(&["read", &format!("{config}/{private}")]);
         assert!(
@@ -412,7 +411,11 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
 
     // Phase `the_settings_document_is_not_there`: Settings writes through the shell's settings
     // service, so a write where the session keeps the document never reaches the host's.
-    let session = format!("{config}/documents/device/state.automerge");
+    let session = home
+        .data()
+        .join("so.tilo.settings-device/state.automerge")
+        .display()
+        .to_string();
     let line = run(&["read", &session]);
     assert!(
         line.starts_with("ERR "),

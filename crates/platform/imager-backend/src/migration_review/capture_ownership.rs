@@ -277,10 +277,11 @@ mod tests {
             environment.set("HOME", &home);
             environment.set("XDG_STATE_HOME", temporary.path().join("state"));
             environment.set("XDG_CONFIG_HOME", home.join(".config"));
+            environment.set("XDG_DATA_HOME", home.join(".local/share"));
             // The setup holds its settings profile in this Home while it runs.
-            let documents = tilo_paths::profile_dir().unwrap();
-            let lock = documents.join(tilo_paths::PROFILE_LOCK);
-            std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
+            let person = home.join(".local/share").join(tilo_paths::SETTINGS_PERSON);
+            std::fs::create_dir_all(&person).unwrap();
+            let lock = person.join("canonical.lock");
             std::fs::write(&lock, b"").unwrap();
             std::fs::write(home.join("document"), b"real user document").unwrap();
             let token = CaptureOwnership::review(&home).unwrap().unwrap();
@@ -300,8 +301,8 @@ mod tests {
             }
             assert!(SourceInventory::capture_captured_home(&pin, Some(&forged)).is_err());
             // A different file in its place is Home data again.
-            std::fs::write(documents.join("replacement"), b"").unwrap();
-            std::fs::rename(documents.join("replacement"), &lock).unwrap();
+            std::fs::write(person.join("replacement"), b"").unwrap();
+            std::fs::rename(person.join("replacement"), &lock).unwrap();
             assert!(SourceInventory::capture_captured_home(&pin, Some(&token)).is_err());
         }
     }

@@ -755,32 +755,36 @@ struct InstallerOwnership {
     stable: (u64, u32, u32, u32),
 }
 #[cfg(target_os = "linux")]
-/// The settings profile the running setup holds in this Home: its documents,
-/// their locks and its socket, none of it the person's data.
+/// The settings the running setup holds in this Home: the two documents it keeps in the device
+/// data store, none of it the person's data.
 #[cfg(target_os = "linux")]
 fn running_setup_paths(home: &Path) -> Vec<PathBuf> {
     let home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
-    setup_profile_dir()
-        .and_then(|directory| directory.strip_prefix(&home).ok().map(Path::to_path_buf))
-        .filter(|relative| !relative.as_os_str().is_empty())
+    let Some(data) = tilo_paths::xdg::data_home() else {
+        return Vec::new();
+    };
+    let data = std::fs::canonicalize(&data).unwrap_or(data);
+    [tilo_paths::SETTINGS_PERSON, tilo_paths::SETTINGS_DEVICE]
         .into_iter()
+        .filter_map(|name| {
+            data.join(name)
+                .strip_prefix(&home)
+                .ok()
+                .map(Path::to_path_buf)
+        })
+        .filter(|relative| !relative.as_os_str().is_empty())
         .collect()
 }
 
 #[cfg(target_os = "linux")]
 fn setup_settings_lock(home: &Path) -> Option<PathBuf> {
     let home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
-    setup_profile_dir()?
-        .join(tilo_paths::PROFILE_LOCK)
+    let data = tilo_paths::xdg::data_home()?;
+    let data = std::fs::canonicalize(&data).unwrap_or(data);
+    data.join(tilo_paths::PROFILE_LOCK)
         .strip_prefix(&home)
         .ok()
         .map(Path::to_path_buf)
-}
-
-#[cfg(target_os = "linux")]
-fn setup_profile_dir() -> Option<PathBuf> {
-    let directory = tilo_paths::profile_dir()?;
-    Some(std::fs::canonicalize(&directory).unwrap_or(directory))
 }
 
 /// A bounded path of plain names ending where the settings documents keep their holder's lock.
@@ -791,7 +795,7 @@ fn settings_lock_shape(relative: &Path) -> bool {
         && relative
             .components()
             .all(|part| matches!(part, std::path::Component::Normal(_)))
-        && relative.ends_with(Path::new(tilo_paths::PROFILE_DIR).join(tilo_paths::PROFILE_LOCK))
+        && relative.ends_with(Path::new(tilo_paths::PROFILE_LOCK))
 }
 
 /// Reached one no-follow edge at a time; `None` where nothing, or anything but a plain file, is
