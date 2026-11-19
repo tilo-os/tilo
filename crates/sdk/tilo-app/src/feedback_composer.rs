@@ -317,7 +317,7 @@ pub enum FeedbackEffect {
     #[effect(kind = "outside")]
     RemoveRecording,
     /// Show a span the review hid, or hide it again.
-    #[effect(kind = "outside")]
+    #[effect(screen)]
     Toggle {
         #[param("Which hidden span, by its place in the review")]
         index: usize,

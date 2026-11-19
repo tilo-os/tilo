@@ -184,7 +184,7 @@ pub(crate) enum InviteEffect {
     /// Open the invite sheet on a workspace: where a link into it is made, the part it brings
     /// someone in at picked and the links that still work taken back. An app shares what it shows
     /// by asking this, so it offers the one sheet the bar's invite button opens.
-    #[effect(kind = "outside")]
+    #[effect(screen)]
     ShowInvite {
         /// The workspace, by its key; the one in front when absent
         #[param("The workspace, by its key; the one in front when absent")]
@@ -193,12 +193,12 @@ pub(crate) enum InviteEffect {
     /// Show how an agent or another computer connects as the person: the setup their own card's
     /// "Connect an agent or computer" opens. An app that lists what acts as them offers adding to
     /// it this way.
-    #[effect(kind = "outside")]
+    #[effect(screen)]
     ShowConnect,
     /// Open the Add a device sheet: the link a new device of the person's becomes one of theirs,
     /// shown as a code its camera reads. An app that lists what acts as the person offers adding
     /// to it this way.
-    #[effect(kind = "outside")]
+    #[effect(screen)]
     ShowPairDevice,
     /// Cancel the invitation `invite` of a workspace: its link admits nobody from now on
     #[effect(kind = "outside")]

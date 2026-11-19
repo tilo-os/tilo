@@ -55,7 +55,7 @@ pub enum GitClientEffect {
     /// Open repository
     ///
     /// Open the git repository at a path on this device.
-    #[effect(kind = "outside")]
+    #[effect(own_device, kind = "outside")]
     OpenRepository {
         #[param("Absolute path of the repository's folder on this device")]
         path: AbsolutePath,

@@ -130,7 +130,7 @@ pub enum CodeEditorEffect {
     #[effect(icon = "delete")]
     DeleteLine,
     /// Toggle line comment.
-    #[effect(kind = "outside")]
+    #[effect(kind = "undoable")]
     #[effect(icon = "slash")]
     #[effect(tag = CARET)]
     ToggleComment,

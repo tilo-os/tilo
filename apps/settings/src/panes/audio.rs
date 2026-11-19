@@ -177,8 +177,7 @@ pub enum AudioEffect {
         channel: String,
     },
     /// Show the microphone's level for a few seconds, or stop showing it.
-    #[effect(kind = "outside")]
-    #[effect(label = "sound-mic-test")]
+    #[effect(screen, label = "sound-mic-test")]
     ToggleMicrophoneTest,
 }
 
