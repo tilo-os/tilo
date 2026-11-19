@@ -351,8 +351,8 @@ podman run --rm --privileged --network host --security-opt label=disable \\
   --entrypoint bash registry.fedoraproject.org/fedora:44 -eo pipefail -c '
 set -euo pipefail
 dnf install -y --setopt=install_weak_deps=False podman skopeo fuse-overlayfs e2fsprogs \\
-  util-linux jq python3 dosfstools btrfs-progs systemd mtools qemu-img sudo curl tar gzip zstd \\
-  cryptsetup shadow-utils >/dev/null
+  util-linux jq python3 dosfstools btrfs-progs systemd systemd-udev mtools qemu-img sudo curl \\
+  tar gzip zstd cryptsetup shadow-utils >/dev/null
 image=\$(podman pull -q oci:/var/w/image${tag:+:$tag})
 podman tag "\$image" localhost/tilo-host:ci
 cd /var/w/src
@@ -911,10 +911,16 @@ unattended_unlock() {
 }
 unattended_unlock || { ./os/dev/vm.sh serial > "$out/unattended-serial.log" 2>&1 || true
                        die 'the disk asked for a secret on a machine sealed to it: the PIN-less keyslot did not unseal'; }
-refuse 'the boot unlocked through the TPM keyslot, not a typed secret' '
-journalctl -b --no-pager 2>/dev/null | grep -q "unsealed to /run/cryptsetup-keys.d/root.key" \
-  || { echo "the initrd did not leave a TPM-unsealed key file this boot"; journalctl -b --no-pager | grep -i "tilo-rollback" | tail -20; exit 1; }
-'
+# The initrd's journal is its own; the boot's messages reach this side through
+# the console, so either place the unlock recorded itself counts.
+as_root 'journalctl -b --no-pager 2>/dev/null' > "$out/unattended-journal.txt" 2>&1 || true
+if grep -q 'unsealed to /run/cryptsetup-keys.d/root.key' "$out/unattended-journal.txt" \
+   || grep -q 'unsealed to /run/cryptsetup-keys.d/root.key' "$TILO_CONSOLE_LOG"; then
+  ok 'the boot unlocked through the TPM keyslot, not a typed secret'
+else
+  tail -40 "$TILO_CONSOLE_LOG" >&2 || true
+  die 'the disk opened by itself, but nothing recorded the TPM keyslot as what opened it'
+fi
 as_root 'dmesg -n 1; systemctl stop tilo-server-firstboot.service' >/dev/null 2>&1 || true
 
 say 'an image below the floor is refused'
