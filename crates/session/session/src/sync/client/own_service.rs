@@ -89,6 +89,12 @@ pub(crate) async fn open_with_groups(
             // its to sign: it wakes these relays and waits up to a net report for one before it
             // does.
             reachability: reachability.clone(),
+            // This device is a member of the workspaces the service holds: what its session
+            // writes there is signed as this device, as its apps' writes are.
+            member: Some(Arc::new(tilo_workspace_service::workspaces::MemberDevice {
+                cert: identity.device_cert.clone(),
+                signer: Arc::clone(&identity.signer),
+            })),
             ..workspace_service::ServiceConfig::new(root, tilo_server_protocol::WorkSetting::none())
         },
         service_identity,
