@@ -56,7 +56,8 @@ fn tools() -> Vec<Value> {
             "Run an action: `{path: \"notes/Todo#append-paragraph\", args: {text: \"Buy milk\"}}`; several in order, stopping at a failure: `calls: [{path, args}, …]`. `notes#open` starts an app; `terminal#run` runs a shell `command`. Answers `ok` with the result or `failed: why`; past wait_ms (default 5000), `pending <id>` for tilo_status. An invocation_id never runs twice.",
             json!({"path":string,"args":{"type":"object"},"calls":{"type":"array","minItems":1,"maxItems":MAX_CALLS,"items":call},"wait_ms":integer,"invocation_id":string}),
             json!([]),
-            json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true}),
+            // Every hint is MCP's default: it may change anything, anywhere, and not idempotently.
+            json!({}),
         ),
         (
             "tilo_link",
@@ -95,17 +96,18 @@ fn tools() -> Vec<Value> {
         ),
         (
             "tilo_ask",
-            "Ask your person what only they can answer (a decision, a choice between options, something only they know) and wait for their answer: `{question: \"Which venue?\", choices: [\"Hall A\", \"Hall B\"]}`. No choices: they type an answer; typed: true lets them type one besides the choices. Answers `answered: …`, `declined`, or past wait_ms (default: as long as the question waits) `pending <id>` for tilo_status. Not for allowing an action: tilo_do asks that itself.",
+            "Ask your person what only they can answer, and wait. choices: answers to offer (none: they type one; typed: true: both). Answers `answered: …`, `declined`, or past wait_ms `pending <id>` for tilo_status. Not to allow an action: tilo_do asks that.",
             json!({"question":string,"choices":{"type":"array","items":{"type":"string"},"maxItems":tilo_actions::remote::MAX_ASK_CHOICES},"typed":{"type":"boolean"},"wait_ms":integer}),
             json!(["question"]),
-            json!({"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}),
+            // Only what differs from MCP's defaults (writes, not idempotently).
+            json!({"destructiveHint":false,"openWorldHint":false}),
         ),
         (
             "tilo_status",
             "How an invocation went, or with no id this session's (cancel: stop it, undo: take its run back).",
             json!({"invocation_id":string,"cancel":{"type":"boolean"},"undo":{"type":"boolean"}}),
             json!([]),
-            json!({"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}),
+            json!({"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}),
         ),
     ]
     .into_iter()
