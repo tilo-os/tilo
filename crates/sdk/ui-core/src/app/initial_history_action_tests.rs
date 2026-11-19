@@ -1001,7 +1001,7 @@ fn accepted_delivery_is_refused_after_its_document_is_replaced() {
 
 /// An invocation whose document is not current while it arrives (the app's
 /// owner busy elsewhere, its newer capture still unapplied) waits for it, as
-/// long as that takes, with collaboration going on, and runs once it is. No
+/// long as that takes, with collaboration going on, and executes once it is. No
 /// clock fails it while its document catches up.
 #[test]
 fn an_invocation_waits_for_its_document_to_become_current() {
@@ -1064,7 +1064,7 @@ fn an_invocation_waits_for_its_document_to_become_current() {
     assert_eq!(
         calls.get(),
         0,
-        "it does not run before its document is current"
+        "it does not execute before its document is current"
     );
     release.send(()).unwrap();
     while calls.get() == 0 {

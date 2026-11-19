@@ -5053,7 +5053,8 @@ async fn spawn_context_stream(
 }
 
 /// The delivery turns of an accepted invocation's document owner routes,
-/// held until the owner takes it, so no read withdraws what it runs against.
+/// held until the owner takes it, so no read withdraws the document it is
+/// delivered against.
 #[derive(Debug)]
 struct NativeInvocationTurn {
     permits: Vec<tokio::sync::OwnedSemaphorePermit>,
@@ -5113,7 +5114,7 @@ async fn native_invocation_delivery_turn(
     }
 }
 
-// This existing host verb rechecks the original route's current read
+// This existing call rechecks the original route's current read
 // ownership and exact pending job. A waited delivery cannot reuse stale authority.
 #[allow(
     clippy::future_not_send,
@@ -5150,7 +5151,7 @@ async fn recheck_native_invocation(
 }
 
 /// The code an invocation fails with when the app never took it: its document
-/// was replaced, or cannot be read for it to run against.
+/// was replaced, or cannot be read for it to be delivered against.
 pub(crate) const UNDELIVERED_INVOCATION: &str = "action_not_delivered";
 
 /// Answer `invocation`, which the app never took (`why`), with its failure:
@@ -5893,7 +5894,7 @@ enum RouteRole {
 
 /// Keep the accepted request and its queue byte reservation on the worker
 /// stack while the route's read catches up, as long as that takes. No later
-/// barrier or command can overtake it. Reads run independently on this same
+/// barrier or command can overtake it. Reads proceed independently on this same
 /// LocalSet. The wait ends early only when the route will not become current,
 /// or the document beside the app's own has not reached this device, which may
 /// take as long as the device holding it stays away. The app's own document

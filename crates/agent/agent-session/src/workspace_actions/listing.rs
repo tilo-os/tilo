@@ -53,8 +53,8 @@ impl Worker {
                 more.into_iter().filter(|row| query.admits(row)).collect();
             let passed = admitted.len().min(*skip);
             *skip = skip.saturating_sub(admitted.len());
-            let room = wanted.saturating_sub(rows.len());
-            rows.extend(admitted.into_iter().skip(passed).take(room));
+            let left = wanted.saturating_sub(rows.len());
+            rows.extend(admitted.into_iter().skip(passed).take(left));
         };
         let mut failed: Option<(DocumentRoute, String)> = None;
         for route in routes {
