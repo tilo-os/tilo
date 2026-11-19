@@ -1633,3 +1633,19 @@ paths = [
 reason = "The link's `host-changed` failure code, the page's own wire vocabulary for the server a workspace's address pins: read here, never shown. The person's words for it name the server."
 words = ["host"]
 paths = ["crates/sdk/ui-core/src/workspace_sync.rs"]
+
+[[allow]]
+reason = "The first screen's own names, none of them prose: `first-run.mjs` and the `#first-run` screen with the elements a page drives it by (`first-run-agent`, `first-run-offer`), the `firstRun` the page exports with its `createFirstRun`/`startFirstRun`/`openFirstRun`/`offerFirstRunCodes`, the `dataset.firstRun` a page reports its step in, and the `run` a test names the same screen by."
+words = ["run"]
+identifiers = ["run", "firstRun", "createFirstRun", "startFirstRun", "openFirstRun", "offerFirstRun", "offerFirstRunCodes", "FirstRun"]
+paths = [
+    "crates/browser/tilo-browser-runtime/web/first-run.mjs",
+    "crates/browser/tilo-browser-runtime/web/first-run.inline.js",
+    "crates/browser/tilo-browser-runtime/web/first-run.test.mjs",
+    "crates/browser/tilo-browser-runtime/web/entry-page.mjs",
+    "crates/browser/tilo-browser-runtime/scripts/first-screen.mjs",
+    "crates/browser/tilo-web-desktop/scripts/agent-shell.mjs",
+    "os/containers/tilo-lounge/integration/agent-setup.mjs",
+    "os/containers/tilo-lounge/integration/setup-resume.mjs",
+    "os/containers/tilo-lounge/integration/tour.mjs",
+]

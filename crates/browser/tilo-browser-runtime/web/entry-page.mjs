@@ -1658,22 +1658,26 @@ export async function startEntryPage({mode}) {
       offerFirstRun({page, identityActions, runtime, pairSignIn: () => pairSignIn(listed)});
     }
     // Leaving the first screen (skipped, or the agent is in) opens the
-    // person's own workspace: the one their host keeps for them, where the
-    // agent was set up, or else their own desktop where the site gives one.
-    // The home workspace let them in already (they stay in it, and find it
-    // in the workspace menu), but their own comes first.
+    // person's own workspace: asked for then, so the host makes it for the
+    // person who stays, never for a visitor who signs in as someone else.
+    // Where the agent was set up it is the one its code named; else their
+    // own desktop where the site gives one. The home workspace let them in
+    // already (they stay in it, and find it in the workspace menu), but
+    // their own comes first.
     if (firstRun && !embed && here?.kind !== 'own') {
-      firstRun.whenDone(async () => {
-        if (!hostedOwn) await hostedOwnMade;
-        if (hostedOwn) {
+      firstRun.whenDone(async ({signedIn}) => {
+        // A sign-in leaves for the person's own workspace by loading the
+        // page as them (`signInAs`): nothing of this tab's is opened.
+        if (signedIn) return setupDone();
+        const own = page.peer ? await askOwnWorkspace(page.peer) : null;
+        setupDone();
+        if (own) {
           // Chosen before the setup is over, so no load in between opens the
           // site's home workspace: from now on a bare entry opens this one.
-          const choice = ownChoice(hostedOwn);
+          const choice = ownChoice(own);
           remembering(() => chooseWorkspace(choice));
-          setupDone();
           return openWorkspace({choice, page, status});
         }
-        setupDone();
         if (await ownDesktopAllowed(page.entry?.home)) {
           await openWorkspace({choice: {id: `${OPEN_WORKSPACE}own`, name: 'Your desktop', own: true}, page, status});
         }
@@ -2435,9 +2439,12 @@ function inputPause() {
 
 /**
  * What the first screen asks of this page once it is in its workspace: a
- * passkey sign-in, and the person's own workspace made, so leaving the screen
- * opens it. The login codes came before (`offerFirstRunCodes`), unless the
- * page got in some way other than its home's entry.
+ * passkey sign-in, and the login codes that set their agent up. The codes
+ * came before (`offerFirstRunCodes`), unless the page got in some way other
+ * than its home's entry. The person's own workspace is asked for when they
+ * leave the screen for it (`whenDone`), never while they are still deciding:
+ * one founded for a visitor who signs in as someone else is left behind on
+ * the host.
  *
  * A first visit whose site had not answered yet is shown now
  * (`firstRun.reveal`): the page is in, so the setup is the person's. A visit
@@ -2464,8 +2471,6 @@ function offerFirstRun({page, identityActions, runtime, pairSignIn: pairFor = ()
   // home's shared desktop this page is in.
   offerFirstRunCodes({origin, identity, runtime, link: page.link,
     home: homeAdmissionWorkspace(page.entry), pair: pairFor()});
-  // The workspace the codes name, so leaving the screen opens it.
-  void askOwnWorkspace(peer);
 }
 
 /**
@@ -2475,17 +2480,17 @@ function offerFirstRun({page, identityActions, runtime, pairSignIn: pairFor = ()
  * not answer, in which case the next ask asks again.
  */
 function askOwnWorkspace(peer) {
-  hostedOwnMade ??= ensureOwnWorkspace(peer).then(own => (hostedOwn = own), error => {
+  ownWorkspaceAsked ??= ensureOwnWorkspace(peer).catch(error => {
     if (error?.code === 'unknown_action') {
       console.info('first run: this host keeps no workspaces of people\'s own;', error?.message);
       setUpIn = peer.workspace;
     } else {
       console.warn('first run: your own workspace', error);
-      hostedOwnMade = null;
+      ownWorkspaceAsked = null;
     }
     return null;
   });
-  return hostedOwnMade;
+  return ownWorkspaceAsked;
 }
 
 /** Whether the first screen has its login codes offered. */
@@ -2587,13 +2592,16 @@ function connectAnAgent({origin, identity, runtime, link, workspace = null}) {
  * The code itself is [`agentSetupCodes`]'s. `pair` makes this tab a device of
  * a person through that host (the one whose device claimed the code), and
  * `home` is the host's shared home workspace, which a sign-in does not open.
+ * The setup code names the person's own workspace, which the host makes when
+ * it is asked for it, so it is made only once the person asks to set up
+ * (`ahead: false`).
  */
 function offerFirstRunCodes({origin, identity, runtime, link, home = null, pair = null}) {
   if (firstRunCodesOffered || !firstRun || !origin || !runtime?.createLoginCode) return;
   firstRunCodesOffered = true;
   const host = new URL(origin).origin;
   const setup = agentSetupCodes({origin: host, identity, runtime, link});
-  firstRun.offerSetup(setup.make, setup.resume);
+  firstRun.offerSetup(setup.make, setup.resume, {ahead: false});
   // Signing this tab in is this tab's own: it pairs here, as the person's
   // new device, so the device that claimed its code certifies it at once.
   if (!pair) return;
@@ -2668,11 +2676,8 @@ async function setupWorkspace() {
   return workspace;
 }
 
-/** The person's own workspace on the home host, once the first screen had
- * it made for the agent it set up. */
-let hostedOwn = null;
-/** Resolves to `hostedOwn`, or null, once asked for. */
-let hostedOwnMade = null;
+/** The person's own workspace on the home host, or null, once asked for. */
+let ownWorkspaceAsked = null;
 /** Set once a tab signed in with a passkey left its entry, until the
  * person's own workspace is in front: a load that ends before it opened (the
  * tab loaded again, the host did not answer) leaves it set, so the next one

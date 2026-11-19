@@ -1,10 +1,11 @@
 // The entry page's first screen (web/first-run.mjs) in headless Chrome, at a
 // phone's width and a laptop's, light and dark: it shows at the first paint
 // with no runtime loaded, fits without sideways scrolling, its primary
-// button is in view, the prompt shows before the click and the click copies
-// exactly that text, a code the host does not make is said with a way to try
-// again, the agent's steps show live as a fake host reports them, and the
-// returning and manual flows read. Screenshots of each state go to SHOTS_DIR.
+// button is in view, it makes no code (and so no workspace) until the person
+// presses for one, the click after that copies exactly the prompt shown, a
+// code the server does not make is said with a way to try again, the agent's
+// steps show live as a fake server reports them, and the returning and manual
+// flows read. Screenshots of each state go to SHOTS_DIR.
 //
 // usage: node first-screen.mjs [WEB_DIR]
 //   WEB_DIR  the page's sources (default: ../web); no bundle is needed, since
@@ -54,19 +55,20 @@ for (const [width, height, mobile] of [[390, 844, true], [1280, 800, false]]) {
     await sleep(300);
     if (shots) writeFileSync(`${shots}/first-screen-${name}.png`, await tab.screenshot());
 
-    // The page offers setup as it would once it has its person; the prompt
-    // shows before any click, and the click is a real one, so the clipboard
-    // takes the prompt inside it.
+    // The page offers setup as it would once it has its person. A first visit
+    // makes nothing while the person is still deciding: the button offers the
+    // prompt, and the press makes it. The press after that copies it, inside
+    // the click, so the clipboard takes it.
     await tab.evaluate(`import('./first-run.mjs').then(({firstRun}) => {
-      firstRun.offerSetup(async () => ${FAKE_CODE});
+      firstRun.offerSetup(async () => ${FAKE_CODE}, null, {ahead: false});
       firstRun.offerAgentSignIn(async () => ${FAKE_CODE});
     })`);
-    await tab.waitFor(`document.getElementById('first-run').dataset.setup === 'ready'`, {timeout: 10000});
-    const shown = await tab.evaluate(`document.getElementById('first-run-offer').textContent`);
-    check(shown.includes('tilo login K7Q-MX2P'), `${name}: the prompt shows before the click`);
-    check(!(await tab.evaluate(`document.getElementById('first-run').scrollWidth > innerWidth`)), `${name}: the shown prompt wraps rather than scrolling sideways`);
-    await sleep(300);
-    if (shots) writeFileSync(`${shots}/first-screen-${name}-prompt.png`, await tab.screenshot());
+    const idle = await tab.evaluate(`({asked: document.getElementById('first-run').dataset.setup ?? null,
+      well: getComputedStyle(document.querySelector('.fr-offer')).display !== 'none',
+      label: document.getElementById('first-run-agent').innerText.trim()})`);
+    check(idle.asked === null, `${name}: nothing is made before the person asks (${idle.asked})`);
+    check(!idle.well, `${name}: and no prompt box stands empty for it`);
+    check(idle.label === 'Set up with your agent', `${name}: the button offers to set up (${idle.label})`);
     const click = async id => {
       const at = await tab.evaluate(`(() => { const r = document.getElementById('${id}').getBoundingClientRect(); return {x: r.x + r.width / 2, y: r.y + r.height / 2}; })()`);
       for (const type of ['mousePressed', 'mouseReleased']) {
@@ -76,14 +78,21 @@ for (const [width, height, mobile] of [[390, 844, true], [1280, 800, false]]) {
     const passkey = await tab.evaluate(`(() => { const b = getComputedStyle(document.getElementById('first-run-passkey')); return {disabled: document.getElementById('first-run-passkey').disabled, color: b.color}; })()`);
     check(!passkey.disabled, `${name}: the passkey button reads as one to press before the runtime is in`);
 
-    // Set up manually: the MCP server and the commands, with a code.
+    // Set up manually: the MCP server and the commands, with a code the press
+    // makes.
     await click('first-run-manual-toggle');
     await tab.waitFor(`document.getElementById('first-run-commands').textContent.includes('tilo login K7Q-MX2P')`, {timeout: 10000});
     check(await tab.evaluate(`document.getElementById('first-run-mcp').textContent === 'https://mcp.tilo.sh'`), `${name}: manual shows the MCP server`);
-    check(!(await tab.evaluate(`document.getElementById('first-run').scrollWidth > innerWidth`)), `${name}: manual fits without sideways scrolling`);
+    check(!(await tab.evaluate(`document.getElementById('first-run').scrollWidth > innerWidth`)), `${name}: manual fits without scrolling sideways`);
     await sleep(300);
     if (shots) writeFileSync(`${shots}/first-screen-${name}-manual.png`, await tab.screenshot());
     await click('first-run-manual-toggle');
+
+    const shown = await tab.evaluate(`document.getElementById('first-run-offer').textContent`);
+    check(shown.includes('tilo login K7Q-MX2P'), `${name}: the press made the prompt, and it shows`);
+    check(!(await tab.evaluate(`document.getElementById('first-run').scrollWidth > innerWidth`)), `${name}: the shown prompt wraps rather than scrolling sideways`);
+    await sleep(300);
+    if (shots) writeFileSync(`${shots}/first-screen-${name}-prompt.png`, await tab.screenshot());
 
     const BOX = `(() => { const r = document.querySelector('.fr-offer').getBoundingClientRect();
       return {x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height),
@@ -179,8 +188,9 @@ for (const [width, height, mobile] of [[390, 844, true], [1280, 800, false]]) {
     await stuck.navigate(`${server.url}/`);
     await stuck.waitFor(`getComputedStyle(document.getElementById('first-run')).display !== 'none'`, {timeout: 20000});
     await stuck.evaluate(`import('./first-run.mjs').then(({firstRun}) => {
-      firstRun.offerSetup(async () => { throw Object.assign(new TypeError('Failed to fetch'), {code: 'unreachable'}); });
+      firstRun.offerSetup(async () => { throw Object.assign(new TypeError('Failed to fetch'), {code: 'unreachable'}); }, null, {ahead: false});
     })`);
+    await stuck.evaluate(`document.getElementById('first-run-agent').click()`);
     await stuck.waitFor(`document.getElementById('first-run').dataset.setup === 'failed'`, {timeout: 10000});
     const said = await stuck.evaluate(`({note: document.getElementById('first-run-offer-note').textContent,
       retry: !document.getElementById('first-run-offer-retry').hidden})`);

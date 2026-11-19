@@ -76,7 +76,7 @@ globalThis.__tiloSetupPaint=function(){
  if(!screen)return;
  var fresh=offer&&offer.expiresAt-now>60000&&shown.offer?shown.offer:'';
  screen.dataset.mode=shown.mode==='sign-in'?'sign-in':'setup';
- if(step===''){if(fresh){put('first-run-offer',fresh);$('first-run-offer-note').textContent='';}return;}
+ if(step===''){if(fresh){put('first-run-offer',fresh);$('first-run-offer-note').textContent='';screen.dataset.setup='ready';}return;}
  if(step==='connected'||step==='opening'){
   screen.dataset.skipped=String(!shown.heading);
   $('first-run-connected').textContent=shown.heading||'Opening your workspace';

@@ -321,12 +321,16 @@ const person = tab => tab.evaluate(`JSON.stringify({
 // 1. Set up through the agent.
 const first = await visit('setup');
 mark('the first browser opened the site');
-// The prompt is on the screen before the click, made without waiting for the
-// workspace to let the tab in; the click copies exactly that text.
+// A browser the site knows nothing of makes nothing for the person while
+// they are still deciding: its button offers the prompt, and the press makes
+// the code — and with it, on the host, the workspace the code names. The
+// press after that copies exactly the text the screen shows.
 const visited = Date.now();
-await until(first, `document.getElementById('first-run')?.dataset.setup === 'ready'`, 'the setup prompt shown on the first screen');
+await until(first, `document.getElementById('first-run')?.dataset.setup === undefined
+  && !!document.getElementById('first-run-agent')`, 'the first screen offering to set up');
+await click(first, 'first-run-agent');
+await until(first, `document.getElementById('first-run')?.dataset.setup === 'ready'`, 'the press making the setup prompt');
 report.promptShownMs = Date.now() - visited;
-report.promptBeforeAdmission = await first.evaluate(`document.documentElement.dataset.entry !== 'open'`);
 const shown = await first.evaluate(`document.getElementById('first-run-offer').textContent`);
 const beforeSetup = await clipboardNow(first);
 await click(first, 'first-run-agent');

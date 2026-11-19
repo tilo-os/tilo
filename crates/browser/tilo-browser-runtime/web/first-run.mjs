@@ -21,11 +21,15 @@
  *
  * The page makes its codes as soon as it can (`offerSetup`,
  * `offerAgentSignIn`), before anyone asks, and keeps a fresh one ready,
- * renewed shortly before it expires. So what a button copies is already on
- * the screen: the click writes exactly that text, inside the click, and the
- * screen says it copied only once the clipboard took it. A code the page has
- * not made yet is never promised: the button says what it waits for, and a
- * wait that runs too long says why, with a way to try again.
+ * renewed shortly before it expires — but for a first visit's setup only
+ * once the person asks for it (`offerSetup({ahead: false})`): the workspace
+ * its code names is made on the server with it, and one made for a browser
+ * still deciding is left behind by everyone who signs in as someone else.
+ * So what a button copies is already on the screen: the click writes exactly
+ * that text, inside the click, and the screen says it copied only once the
+ * clipboard took it. A code the page has not made yet is never promised: the
+ * button says what it waits for, and a wait that takes too long says why, with
+ * a way to try again.
  *
  * A code on the screen has to work however it leaves the page, and the host
  * keeps a code only from its tab's first follow: a person who selects the
@@ -39,8 +43,9 @@
  * this page cannot follow any more is not looked at in silence either: after
  * a while the screen says so, and reloading makes a fresh code.
  *
- * - **Copy prompt** copies `setupPrompt`, shown above it. The code names a
- *   pairing link to this tab, which holds the person's new root: the
+ * - **Set up with your agent** (a first visit; **Copy prompt** once the
+ *   person asked for it) copies `setupPrompt`, shown above it. The code names
+ *   a pairing link to this tab, which holds the person's new root: the
  *   agent's `tilo` command becomes a device of the person with a key of its
  *   own, certified here (the root never leaves). Once the agent is in the
  *   person's workspace the screen says so and leaves (`whenDone` opens that
@@ -425,6 +430,13 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
   let askNow = () => {};
   let attempt = 0;
   let manualShown = false;
+  // Whether the setup code is made before the person asks for it
+  // (`offerSetup`): a first visit's is not, since the workspace it names is
+  // made with it.
+  let ahead = true;
+  // Whether the person asked for a setup code before the page could make
+  // one: made once it can (`offerSetup`).
+  let asked = false;
   // The code the screen follows (or showed run out), so another tab's
   // change to the same code changes nothing here.
   let following = null;
@@ -453,7 +465,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
   const openOwn = () => {
     if (!leaving || !onDone || opened || closed) return;
     opened = true;
-    Promise.resolve().then(onDone).catch(error => console.warn('first run: opening your workspace', error)).finally(() => {
+    Promise.resolve().then(() => onDone({signedIn: false})).catch(error => console.warn('first run: opening your workspace', error)).finally(() => {
       // Opening loads the page anew; where it did not, the setup is over here.
       if (readSetup(storage)?.step !== 'done') setupDone(storage, now());
       close();
@@ -464,7 +476,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
   const openSignedIn = () => {
     if (!signedIn || !onDone || closed) return;
     leaving = true;
-    onDone();
+    onDone({signedIn: true});
     close();
   };
   // Leave the screen for the person's own workspace (`whenDone`). Until it
@@ -517,9 +529,14 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     // button reloads it: the sign-in beside it waits on the same load.
     const unloaded = !at.make && at.error?.code === 'not-loaded';
     const note = at.note ? {note: at.note} : {};
+    // A setup the person has not asked for yet is not being got: the screen
+    // waits for them, and makes the code when they ask (`copy`, `manual`).
+    const asking = kind !== 'setup' || at.making || Boolean(at.made) || Boolean(at.error)
+      || asked || (ahead && Boolean(at.make));
     view.offer(kind, at.made ? {text, code: at.made.code, ...note}
       : unloaded && kind !== 'setup' ? {}
-      : at.error ? {problem: setupFailure(at.error, {site}), ...(unloaded ? {reload: true} : {})} : {note: at.note ?? codeWait(site)});
+      : at.error ? {problem: setupFailure(at.error, {site}), ...(unloaded ? {reload: true} : {})}
+      : asking ? {note: at.note ?? codeWait(site)} : {asking: false});
     if (kind === 'setup' && manualShown) showManual();
     if (expiredKind === kind) drawExpired();
     watchShown();
@@ -669,6 +686,13 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
       at.making = false;
       if (!closed) show(kind);
     });
+  };
+  // The person asked for `kind`'s code, by copying it or opening the manual
+  // setup: made now, or, where the page can make none yet, as soon as it can
+  // (`offerSetup`). A code already on the screen is left as it is.
+  const askForCode = kind => {
+    if (kind === 'setup') asked = true;
+    if (!codes[kind].made) void prepare(kind);
   };
   // The page offered no codes in time: its runtime did not load, or it
   // failed in a way it did not say. Said instead of waiting on.
@@ -895,7 +919,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     if (closed) return Promise.resolve(false);
     const at = codes[kind];
     if (!at.made) {
-      if (at.error && at.make) void prepare(kind);
+      askForCode(kind);
       view.notReady(kind, at.error && !at.make ? setupFailure(at.error, {site}) : codeWait(site));
       return Promise.resolve(false);
     }
@@ -967,6 +991,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
       manualShown = !manualShown;
       view.manual(manualShown);
       if (!manualShown) { ++attempt; stop(); }
+      else askForCode('setup');
       // The panel follows the setup code itself; the offer behind it is
       // watched again once the panel is closed.
       watchShown();
@@ -997,7 +1022,10 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
       leave();
     },
     /** What leaving opens (the person's own workspace), run at once when
-     * the screen is leaving already. */
+     * the screen is leaving already. `open({signedIn})`: `false` for a
+     * screen the person left to stay where they are, `true` for one a
+     * sign-in left for another person's workspace, which the loaded page
+     * opens itself. */
     whenDone(open) {
       if (closed) return;
       onDone = open;
@@ -1021,14 +1049,23 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
         if (error?.code !== 'passkey-cancelled' && !['NotAllowedError', 'AbortError'].includes(error?.name)) view.signInFailed(error);
       } finally { view.signingIn(false); }
     },
-    /** The page can make setup codes: `make()` resolves to `{code, expiresAt,
+    /**
+     * The page can make setup codes: `make()` resolves to `{code, expiresAt,
      * follow(), saved}`, `saved` what the setup keeps of it, and
      * `resume(saved)` follows a kept one again (`null` when it is no longer
-     * this tab's to follow). */
-    offerSetup(make, resume = null) {
+     * this tab's to follow). A first visit's code names a workspace the
+     * server makes when it is asked for, so it is made when the person asks
+     * for it (`ahead: false`), never while they are still deciding — or at
+     * once, where they asked before the page could make one.
+     */
+    offerSetup(make, resume = null, {ahead: madeAhead = true} = {}) {
       codes.setup.make = make;
       codes.setup.resume = resume;
-      if (!adoptOffer()) void prepare('setup');
+      ahead = madeAhead;
+      if (!adoptOffer()) {
+        if (ahead || asked) void prepare('setup');
+        else show('setup');
+      }
       resumeFollow();
     },
     /** The page can make sign-in codes: as `offerSetup`, each also with
@@ -1135,9 +1172,16 @@ export function domView(document) {
       $('first-run').dataset.handed = 'false';
       $('first-run-heading').focus({preventScroll: true});
     },
-    offer(kind, {text = null, note = null, problem = null, reload = false}) {
-      // Whether a code is ready, for tests and tools driving the page.
-      $('first-run').dataset[kind === 'setup' ? 'setup' : 'signIn'] = text ? 'ready' : problem ? 'failed' : 'waiting';
+    offer(kind, {text = null, note = null, problem = null, reload = false, asking = true}) {
+      // Whether a code is ready, for tests and tools driving the page; and
+      // for the styles, which the button and the box read: no attribute
+      // while the person has not asked for a setup code yet.
+      const marks = $('first-run').dataset;
+      const code = kind === 'setup' ? 'setup' : 'signIn';
+      if (text) marks[code] = 'ready';
+      else if (problem) marks[code] = 'failed';
+      else if (asking) marks[code] = 'waiting';
+      else delete marks[code];
       if (kind === 'setup') {
         showPrompt($('first-run-offer'), text);
         $('first-run-offer-retry').hidden = !problem;

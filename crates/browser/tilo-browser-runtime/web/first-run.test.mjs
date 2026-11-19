@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
-import {ASK_MS, codeWait, domView, setupLater, showPrompt, CONNECTED_MS, KEPT_LOST_MS, QUIET_MS, createFirstRun, FOLLOW_MS, MAKE_MS,
+import {ASK_MS, domView, setupLater, showPrompt, CONNECTED_MS, KEPT_LOST_MS, QUIET_MS, createFirstRun, FOLLOW_MS, MAKE_MS,
   manualCommands, MCP_URL, OFFER_MS, openFirstRun, openSignIn, PASSKEY_WAIT_MS, RENEW_MS, readSetup, readShown, SETUP, setupFailure, setupPrompt, SHOWN_FOLLOW_MS,
   signInPrompt, startFirstRun, stepLines, minutesLeft, signInFailure} from './first-run.mjs';
 
@@ -109,13 +109,43 @@ test('each step reads in plain words: done ones checked, the one under way last'
     ['Claude Code on build-box vouched for you', 'Signing this tab in…']);
 });
 
-test('the prompt is on the screen before any click: the page makes its code ahead', async () => {
+test('a first visit makes no setup code, and so no workspace, until the person asks: the press says it is getting one', async () => {
+  const {run, last, copied, names} = fixture();
+  const codes = maker(fakeCode());
+  assert.deepEqual(last('offer'), ['offer', 'setup', {asking: false}], 'nothing is being got before the page can make one');
+  run.offerSetup(codes.make, null, {ahead: false});
+  await settle();
+  assert.deepEqual(codes.made, [], 'nothing is made while the person is still deciding');
+  assert.deepEqual(last('offer'), ['offer', 'setup', {asking: false}], 'the button offers to make one, and the screen says nothing it is not doing');
+  await run.copy();
+  await settle();
+  assert.equal(codes.made.length, 1, 'the press makes the code');
+  assert.deepEqual(last('offer'), ['offer', 'setup', {text: setupPrompt(CODE), code: CODE}], 'and the prompt is on the screen');
+  assert.deepEqual(copied, [], 'the press that made it copies nothing: the next one does');
+  assert.deepEqual(names().includes('waiting'), false);
+  await run.copy();
+  assert.deepEqual(copied, [setupPrompt(CODE)]);
+});
+
+test('the prompt is on the screen before any click: a screen reopened from the card makes its code ahead', async () => {
   const {run, last, copied} = fixture();
-  assert.deepEqual(last('offer'), ['offer', 'setup', {note: codeWait()}], 'until then the screen says what it waits for');
+  assert.deepEqual(last('offer'), ['offer', 'setup', {asking: false}], 'until then nothing is being got');
   run.offerSetup(maker(fakeCode()).make);
   await settle();
   assert.deepEqual(last('offer'), ['offer', 'setup', {text: setupPrompt(CODE), code: CODE}]);
   assert.deepEqual(copied, [], 'nothing is copied before the person asks');
+});
+
+test('a person who asks before the page can make a code gets it once the page can', async () => {
+  const {run, last, copied} = fixture();
+  await run.copy();
+  await settle();
+  assert.deepEqual(copied, [], 'nothing to copy yet');
+  const codes = maker(fakeCode());
+  run.offerSetup(codes.make, null, {ahead: false});
+  await settle();
+  assert.equal(codes.made.length, 1, 'the press asked for it, so it is made as soon as the page can');
+  assert.deepEqual(last('offer'), ['offer', 'setup', {text: setupPrompt(CODE), code: CODE}]);
 });
 
 test('the click copies exactly the prompt shown, inside the click, and only then says it copied', async () => {
@@ -299,11 +329,11 @@ test('a server that refuses the code says the code could not be made, never that
   assert.equal(setupFailure(numbered, {site: 'http://127.0.0.1:24520'}), `The code for your agent could not be made here: this site refused it.${rest}`);
   assert.equal(setupFailure(numbered), `The code for your agent could not be made here: tilo.sh refused it.${rest}`);
   // Skip for now still opens the person's own workspace, as the sentence says it does.
-  let opened = 0;
-  screen.whenDone(() => { opened += 1; });
+  const opened = [];
+  screen.whenDone(how => opened.push(how));
   screen.skip();
   await settle();
-  assert.equal(opened, 1, 'the person’s own workspace opens');
+  assert.deepEqual(opened, [{signedIn: false}], 'the person’s own workspace opens, as the tab’s own');
   // Only the page's own stop says a workspace could not be opened and promises a why (the page shows it
   // beneath this screen): no other failure does.
   for (const code of ['refused', 'no-workspace', 'no-codes', 'not-let-in', 'not-loaded', 'copy-failed', 'not-a-device', 'unknown',
@@ -474,10 +504,10 @@ test('returning: the agent claims the code, the tab asks to be that person, and 
   assert.deepEqual(last('connected'), ['connected', {mode: 'sign-in', agent: null, heading: 'You’re signed in'}]);
   await tick();
   assert.equal(code.signedIn.length, 1);
-  let opened = 0;
-  run.whenDone(() => { opened += 1; });
+  const opened = [];
+  run.whenDone(how => opened.push(how));
   [...state.timers.values()].find(timer => timer.ms === CONNECTED_MS).run();
-  assert.equal(opened, 1);
+  assert.deepEqual(opened, [{signedIn: true}], 'the page is told a sign-in did it: another person’s workspace opens, never this tab’s own');
   assert.equal(names().at(-1), 'close');
 });
 
@@ -495,12 +525,12 @@ test('returning: signed in before the page can open their workspace, the tab ope
   // The moment it said so is over before the page can open anything.
   [...state.timers.values()].find(timer => timer.ms === CONNECTED_MS).run();
   assert.notEqual(names().at(-1), 'close', 'the screen waits for what it opens, rather than leaving the tab where it stands');
-  let opened = 0;
-  run.whenDone(() => { opened += 1; });
-  assert.equal(opened, 1, 'the person\'s own workspace opens once the page can');
+  const opened = [];
+  run.whenDone(how => opened.push(how));
+  assert.deepEqual(opened, [{signedIn: true}], 'the page is told a sign-in opened it, once the page can');
   assert.equal(names().at(-1), 'close');
-  run.whenDone(() => { opened += 1; });
-  assert.equal(opened, 1, 'and only once');
+  run.whenDone(how => opened.push(how));
+  assert.equal(opened.length, 1, 'and only once');
 });
 
 test('returning: a sign-in the page could not finish says why', async () => {

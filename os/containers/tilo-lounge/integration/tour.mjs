@@ -332,6 +332,9 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
   // workspace.
   let agent = null;
   if (agentEnv && name === 'shell' && await tab.evaluate(`!!document.getElementById('first-run-agent')?.offsetParent`).catch(() => false)) {
+    // The press makes the prompt (a first visit makes nothing while the
+    // person is still deciding); the one after it copies.
+    await tab.evaluate(`document.getElementById('first-run-agent').click()`);
     await tab.waitFor(`document.getElementById('first-run')?.dataset.setup === 'ready'`, {timeout: 60_000}).catch(() => {});
     const prompt = await tab.evaluate(`document.getElementById('first-run-offer')?.textContent ?? ''`);
     await tab.evaluate(`document.getElementById('first-run-agent').click()`);

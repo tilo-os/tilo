@@ -9,8 +9,9 @@
 // what used to make a reload skip the setup.
 //
 // The matrix:
-//   1. before copy: a reload after the Lounge let the tab in shows the start,
-//      with the same prompt;
+//   1. before asking: nothing is made while the person is still deciding; the
+//      press makes the prompt, and a reload after the Lounge let the tab in
+//      shows the start, with the same prompt;
 //   2. after copy: a reload, back and forward, a second tab, and a closed and
 //      reopened tab show "Paste it into your agent" with the same prompt;
 //   3. agent installing: the agent runs `tilo login` while the tab is closed,
@@ -23,8 +24,8 @@
 //   7. code expiry: a code that ran out while the tab was closed shows a fresh
 //      one with a note, and copying it follows the fresh one;
 //   8. offline, then online: the screen says it is offline, then carries on;
-//   9. an agent that runs `tilo login` the moment the prompt shows, before the
-//      Lounge let the tab in, is waited for, never refused, and gets in.
+//   9. an agent that runs `tilo login` the moment the prompt shows, before it
+//      copied, is waited for, never refused, and gets in.
 //
 // usage: node setup-resume.mjs SITE_URL SERVER_ORIGIN TILO_BIN OUT_DIR
 //
@@ -215,6 +216,16 @@ const click = async (tab, id) => {
 // The clipboard's text as this page can read it: nothing where it may not.
 const clipboardText = tab => tab.evaluate(
   `navigator.clipboard.readText().then(text => text, () => '')`).catch(() => '');
+// The press that makes the setup prompt — a first visit makes nothing while
+// the person is still deciding — and the prompt once it is on the screen. The
+// button is there once the entry let the tab in; a press before then lands
+// nowhere.
+const makePrompt = async tab => {
+  await until(tab, `document.documentElement.dataset.firstRun === ''
+    && getComputedStyle(document.getElementById('first-run')).display !== 'none'`);
+  await click(tab, 'first-run-agent');
+  return until(tab, `document.getElementById('first-run')?.dataset.setup === 'ready' && document.getElementById('first-run-offer').textContent`);
+};
 // What a click on Copy wrote: the prompt the clipboard holds once it no longer
 // holds what it held before the click. The page writes the clipboard inside
 // the click and the browser takes a moment to land it, so a read that only
@@ -293,8 +304,16 @@ let frame = await firstFrame(tab);
 // entry's answer (first-run.inline.js): the screen is held at the first frame,
 // and shown once the entry let the person in.
 check(frame.step === null && frame.held, '1. a browser new here holds the first screen at its first frame, until the entry answers', JSON.stringify(frame));
-const ready = await until(tab, `document.getElementById('first-run')?.dataset.setup === 'ready' && document.getElementById('first-run-offer').textContent`);
-check(ready, '1. the setup prompt shows before the click', await pageText(tab));
+// Nothing of the person's is made while they are still deciding: the button
+// offers the prompt, and pressing it makes the code — and with it, on the
+// host, the workspace the code names.
+const offering = await until(tab, `document.documentElement.dataset.firstRun === ''
+  && getComputedStyle(document.getElementById('first-run')).display !== 'none'`, '1. the first screen shown');
+check(offering, '1. the first screen offers to set up', await pageText(tab));
+const idle = await tab.evaluate(`document.getElementById('first-run')?.dataset.setup === undefined`);
+check(idle, '1. nothing is made before the person asks for it', JSON.stringify(await where(tab)));
+const ready = await makePrompt(tab);
+check(ready, '1. the press that asks for it makes the prompt, and shows it', await pageText(tab));
 // The cause of the bug: the page joins the Lounge behind the first screen,
 // which writes memberships. Wait for that, then reload.
 const joined = await until(tab, `!!localStorage.getItem('tilo-host-memberships')`, stepLimit(3));
@@ -402,7 +421,7 @@ await close(tab);
 const later = await browser.context();
 tab = await tabIn(later, 'closed-mid-way');
 await tab.navigate(site);
-await until(tab, `document.getElementById('first-run')?.dataset.setup === 'ready'`);
+await makePrompt(tab);
 const promptC = await copy(tab, 'first-run-agent');
 const agentC = login(codeOf(promptC), computer('two'));
 // The screen cannot say the agent logged in before the agent did, and on a
@@ -431,7 +450,7 @@ await close(tab);
 const third = await browser.context();
 tab = await tabIn(third, 'expiry');
 await tab.navigate(site);
-await until(tab, `document.getElementById('first-run')?.dataset.setup === 'ready'`);
+await makePrompt(tab);
 const promptD = await copy(tab, 'first-run-agent');
 // The code's ten minutes pass while the tab is closed: kept as having run out.
 await tab.evaluate(`(() => { const s = JSON.parse(localStorage.getItem('tilo-setup')); s.code.expiresAt = Date.now() - 1000; localStorage.setItem('tilo-setup', JSON.stringify(s)); })()`);
@@ -457,12 +476,13 @@ shot(tab, 'resume-8-online');
 await close(tab);
 
 // ---- 9. A fourth person: the agent logs in the moment the prompt shows.
-// The tab is let into the Lounge behind the first screen, after its prompt is
-// ready; an agent this quick asks before that, and is waited for.
+// The prompt is made the moment the person asks for it, which is as soon as
+// the tab is let into the Lounge; the agent asks for the code at once, and is
+// waited for.
 const quick = await browser.context();
 tab = await tabIn(quick, 'login-at-once');
 await tab.navigate(site);
-const offerE = await until(tab, `document.getElementById('first-run')?.dataset.setup === 'ready' && document.getElementById('first-run-offer').textContent`);
+const offerE = await makePrompt(tab);
 const agentE = login(codeOf(offerE), computer('four'));
 report.admittedBeforeQuickAgent = await tab.evaluate(`!!localStorage.getItem('tilo-host-memberships')`);
 console.log(`9. tilo login started ${report.admittedBeforeQuickAgent ? 'after' : 'before'} the Lounge let the tab in`);

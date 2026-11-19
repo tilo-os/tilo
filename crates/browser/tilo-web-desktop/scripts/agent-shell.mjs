@@ -1621,13 +1621,20 @@ try {
             `status=${await tab.evaluate('document.getElementById("status")?.textContent ?? ""')}`);
           log(`${combo}: console`, tab.log.slice(-12).join(' | '));
         }
-        const button = await tab.evaluate(`(() => {
-          const rect = document.getElementById('first-run-agent').getBoundingClientRect();
-          return {x: rect.x + rect.width / 2, y: rect.y + rect.height / 2};
-        })()`);
-        for (const type of ['mousePressed', 'mouseReleased']) {
-          await tab.send('Input.dispatchMouseEvent', {type, x: button.x, y: button.y, button: 'left', clickCount: 1});
-        }
+        // The button offers the prompt: the press makes it, and with it the
+        // workspace its code names. The press after that copies it.
+        const press = async () => {
+          const button = await tab.evaluate(`(() => {
+            const rect = document.getElementById('first-run-agent').getBoundingClientRect();
+            return {x: rect.x + rect.width / 2, y: rect.y + rect.height / 2};
+          })()`);
+          for (const type of ['mousePressed', 'mouseReleased']) {
+            await tab.send('Input.dispatchMouseEvent', {type, x: button.x, y: button.y, button: 'left', clickCount: 1});
+          }
+        };
+        await press();
+        await until(() => tab.evaluate(`document.getElementById('first-run')?.dataset.setup === 'ready'`), 60000, 300);
+        await press();
         const SCREEN = `(() => ({
           run: document.documentElement.dataset.firstRun ?? null,
           prompt: document.getElementById('first-run-prompt')?.textContent ?? '',
