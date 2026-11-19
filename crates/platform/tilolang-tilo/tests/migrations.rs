@@ -23,6 +23,7 @@ type Group {
 }
 
 type Gallery {
+  name: Text = "Our gallery"
   groups: Collection<Group>
 }
 
@@ -180,6 +181,11 @@ fn a_fresh_root_starts_filled_in_its_making_and_nobody_is_caught_up_on_it() {
     );
 
     let root = replica.host.root_of(APP).unwrap();
+    assert_eq!(
+        replica.host.runtime().read(&root, "name").unwrap(),
+        Value::Text("Our gallery".into()),
+        "a text field starts at the words its type declares"
+    );
     let history = versions(&replica, &root);
     assert!(
         history.len() == 1 && history[0].1 == tilolang_runtime::store::CREATE_ACTION,
@@ -211,8 +217,8 @@ fn a_fresh_root_starts_filled_in_its_making_and_nobody_is_caught_up_on_it() {
 #[test]
 fn an_item_inserted_later_starts_with_its_types_initial_content_in_its_own_change() {
     let (mut replica, _) = Replica::new("ada", AutoCommit::new(), &[(GALLERY, "")]);
-    replica.commit();
     let root = replica.host.root_of(APP).unwrap();
+    replica.commit();
     let added = target(&call(
         &replica,
         "add",

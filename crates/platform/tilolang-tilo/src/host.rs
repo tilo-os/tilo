@@ -21,7 +21,6 @@ use tilo_actions::EncodedAction;
 use tilolang::{IdsLock, PackageMeta};
 use tilolang_runtime::ids::AppId;
 use tilolang_runtime::meta::{Meta, Ty, parse_ty};
-use tilolang_runtime::store::NewResource;
 use tilolang_runtime::value::{ResourceRef, Value, from_json};
 use tilolang_runtime::{
     Actor, InvokeOutcome, ModuleHash, PackageId, Reading, Runtime, RuntimeError, StoreError,

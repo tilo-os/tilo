@@ -72,6 +72,11 @@ fn window(ids: &str) -> Replica {
             runtime.unseen(&person, &root).unwrap().is_empty(),
             "nothing of what the gallery starts with is a change to catch anyone up on"
         );
+        assert_eq!(
+            runtime.read(&root, "controls_title").unwrap(),
+            Value::Text("Controls".into()),
+            "the gallery's text fields start at the words its type declares"
+        );
         let history = runtime.versions(&root).unwrap();
         assert!(
             history.len() == 1 && history[0].action == tilolang_runtime::store::CREATE_ACTION,

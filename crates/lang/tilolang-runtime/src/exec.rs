@@ -519,10 +519,12 @@ impl Core {
     }
 
     /// Make the resource `new` describes, under `id` or a fresh one, as one change that is
-    /// nobody's: the resource's making. What its type's `initial action` writes is in that change,
-    /// and so are the marks of its type's migrations, which upgrade what an earlier version wrote
-    /// and have nothing to do on what this one makes. A type with neither is made as the store
-    /// makes any resource.
+    /// nobody's: the resource's making. Its text fields start at the words their type declares
+    /// (the store reads an unwritten text field as empty, never as its default), what its type's
+    /// `initial action` writes is in that change, and so are the marks of its type's migrations,
+    /// which upgrade what an earlier version wrote and have nothing to do on what this one makes.
+    /// A type with none of these, or whose origin derives its content, is made as the store makes
+    /// any resource.
     ///
     /// # Errors
     ///
@@ -547,7 +549,16 @@ impl Core {
                 .map(|migration| migration.id.clone())
                 .collect()
         });
-        let Some(pkg) = pkg.filter(|_| initial.is_some() || !migrations.is_empty()) else {
+        let derived = pkg.as_ref().is_some_and(|pkg| {
+            pkg.meta
+                .type_named(&new.ty)
+                .and_then(|ty| ty.origin.as_deref())
+                .is_some_and(tilolang::origin::is_derived)
+        });
+        let Some(pkg) = pkg.filter(|_| {
+            !derived
+                && (initial.is_some() || !migrations.is_empty() || !new.text_defaults.is_empty())
+        }) else {
             let mut store = self.store.borrow_mut();
             return Ok(match id {
                 Some(id) => store.create_with_id(new, id)?,
@@ -579,6 +590,13 @@ impl Core {
         id: &str,
     ) -> Result<(ResourceRef, ChangeNote), RuntimeError> {
         let made = self.store.borrow_mut().create_in(txn, new, id)?;
+        for (field, text) in &new.text_defaults {
+            let starts = Mutation::SetText {
+                field: field.clone(),
+                text: text.clone(),
+            };
+            self.store.borrow_mut().apply(txn, &made, &starts)?;
+        }
         for migration in migrations {
             self.store
                 .borrow_mut()
