@@ -144,7 +144,11 @@ mod tests {
 
             let mut unknown = ui::AuthorDirectory::new();
             register_authors(&mut unknown, &authors, &|_| None);
-            assert_eq!(unknown.resolve("aa").name, key, "nobody to name them by");
+            assert_eq!(
+                unknown.resolve("aa").name,
+                ui::presence::unnamed_person_label(),
+                "nobody to name them by: never their key"
+            );
         }
 
         phase a_merged_shell_lists_both_peers_changes_by_name;

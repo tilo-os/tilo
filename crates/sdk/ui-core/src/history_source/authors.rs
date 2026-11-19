@@ -337,6 +337,12 @@ impl AuthorDirectory {
             .or_else(|| handle_actor_hex(key).and_then(|handle| self.by_actor.get(&handle)));
         if let Some(a) = registered {
             let mut presented = a.clone();
+            // Registered under a name that is none to show (blank, or the hex of a key, which is
+            // what a person who has not named themselves goes by): someone without a name yet,
+            // never the key.
+            if crate::presence::shown_name(&presented.name).is_none() {
+                presented.name = crate::presence::unnamed_person_label();
+            }
             let override_key = actor_handle(key).unwrap_or_else(|| key.to_owned());
             if let Some(rgb) = self.color_overrides.get(&override_key) {
                 presented = presented.with_rgb(*rgb);
@@ -457,7 +463,11 @@ impl AuthorDirectory {
                     // An app goes by its own name in the reader's language.
                     author.name = match (actor, actor.id().trim()) {
                         (_, "") => UNKNOWN_AUTHOR_NAME.to_owned(),
-                        (tilo_actions::Actor::App(_), _) => actor_label(actor),
+                        (
+                            tilo_actions::Actor::App(_)
+                            | tilo_actions::Actor::Member(tilo_actions::MemberId::Person(_)),
+                            _,
+                        ) => actor_label(actor),
                         (_, id) => id.to_owned(),
                     };
                     author
@@ -659,14 +669,22 @@ pub fn read_as(member: &tilo_actions::MemberId) {
     THREAD_READER.with(|reader| *reader.borrow_mut() = Some(member.clone()));
 }
 
+/// What a person goes by whom nobody named: their id where it is a name to show (a fixture's
+/// `ada`), else the words every surface of the desktop uses for a person without a name yet
+/// ([`crate::presence::unnamed_person_label`]), never their key.
+fn person_label(person: &str) -> String {
+    crate::presence::shown_name(person)
+        .map_or_else(crate::presence::unnamed_person_label, str::to_owned)
+}
+
 /// What `actor` is called in history and audit: an agent, a bot or an automation by its name, an
-/// app by its own name in the person's language, a person by their id, which a registered name
-/// replaces.
+/// app by its own name in the person's language, a person by their id where it is a name and
+/// else as someone without a name yet ([`person_label`]), which a registered name replaces.
 pub fn actor_label(actor: &tilo_actions::Actor) -> String {
     use tilo_actions::{Actor, MemberId};
     match actor {
         Actor::Member(MemberId::Agent(id) | MemberId::Bot(id)) => name_words(id),
-        Actor::Member(MemberId::Person(person)) => person.as_str().to_owned(),
+        Actor::Member(MemberId::Person(person)) => person_label(person.as_str()),
         Actor::Automation(id) => name_words(id.as_str()),
         Actor::App(app) => app_name(
             app.as_str(),
@@ -950,6 +968,37 @@ mod tests {
             assert_eq!(
                 resolved.identity_short, "",
                 "an app's row shows no fragment of its actor id"
+            );
+        }
+
+        phase a_person_nobody_named_reads_as_someone_without_a_name_never_their_key;
+        // A person's id is the hex of their key until they name themselves: history shows the
+        // words every surface uses for them, whether the change is signed by their key or
+        // recorded as theirs by a writer nobody registered.
+        {
+            let key = hex::encode([5_u8; 32]);
+            let person = tilo_actions::Actor::Member(tilo_actions::MemberId::person(&key));
+            assert_eq!(actor_label(&person), crate::presence::unnamed_person_label());
+            let ada = tilo_actions::Actor::Member(tilo_actions::MemberId::person("ada"));
+            assert_eq!(actor_label(&ada), "ada");
+
+            let invoker = tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::person(&key));
+            let entry = tilo_actions::ActionContext::default().with_invoker(invoker);
+            let author = AuthorDirectory::new().resolve_entry(&hex::encode([9_u8; 32]), Some(&entry));
+            assert_eq!(author.name, crate::presence::unnamed_person_label());
+            assert!(!author.name.contains(&key[..8]), "{}", author.name);
+
+            // A page whose own person has no name yet registers them by their key.
+            let member = tilo_actions::MemberId::person(&key);
+            let mut directory = AuthorDirectory::new();
+            directory.register_member(&member, author_for_identity(key.clone(), &key));
+            let own = hex::encode(member.actor_bytes());
+            assert_eq!(directory.resolve(&own).name, crate::presence::unnamed_person_label());
+            let invoker = tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::person(&key));
+            let entry = tilo_actions::ActionContext::default().with_invoker(invoker);
+            assert_eq!(
+                directory.resolve_entry(&own, Some(&entry)).name,
+                crate::presence::unnamed_person_label()
             );
         }
 
