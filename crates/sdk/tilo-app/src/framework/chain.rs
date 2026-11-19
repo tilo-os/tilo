@@ -78,6 +78,7 @@ use super::resources::ResourceApi;
 
 mod api;
 mod dispatching;
+mod follow;
 mod listing;
 mod named;
 mod part;
@@ -526,6 +527,13 @@ pub(crate) struct ChainCore {
     /// were last followed: while it stays, no part changed, and following
     /// them again reads nothing.
     followed_at: Cell<Option<u64>>,
+    /// The store's [`ResourceStore::kept_revision`] when the earlier parts
+    /// this chain lacks were last looked for ([`Self::hold_earlier`]).
+    earlier_at: Cell<Option<u64>>,
+    /// The pass ([`ui_core::component_inputs::running_pass`]) in which the
+    /// held parts were last read for it, so a pass reads them once (see the
+    /// [`follow`] module).
+    read_at: Cell<Option<u64>>,
     /// The person's record of the actions asked for while the part they
     /// change was on its way from the workspace ([`ChainState::apply_as`]),
     /// kept with the app's records: every window of the app shows them and
@@ -1079,32 +1087,12 @@ impl ChainCore {
             part_search: RefCell::default(),
             looked: Cell::new(None),
             followed_at: Cell::new(None),
+            earlier_at: Cell::new(None),
+            read_at: Cell::new(None),
             waiting_resource: unsent_checkout(&workspace.me),
             unsent_looked: Cell::new(false),
             workspace,
         }
-    }
-
-    /// Follow every held part that changed, and take up a newer head that
-    /// arrived on this device. Whether anything moved.
-    fn follow_parts(&self) -> bool {
-        let mut moved = false;
-        let generation = self.workspace.store.write_generation();
-        // Nothing held changes, and no earlier part arrives, while the store
-        // takes no write.
-        if generation == u64::MAX || self.followed_at.get() != Some(generation) {
-            moved = self.follow_held();
-            if self.part.held_whole {
-                self.hold_earlier();
-            }
-            self.followed_at
-                .set(Some(self.workspace.store.write_generation()));
-        }
-        if self.due() {
-            moved |= self.look();
-            moved |= self.follow_waiting();
-        }
-        moved
     }
 
     /// Follow each held part's document, and hold a part opened in the store

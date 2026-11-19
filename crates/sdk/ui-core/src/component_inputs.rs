@@ -42,7 +42,6 @@ enum Key {
     Record(usize, u64),
     Versioned(u64),
     Shared(usize),
-    Generation(usize),
 }
 
 thread_local! {
@@ -51,6 +50,8 @@ thread_local! {
     /// skipped pass changed nothing, which reruns every pass it skipped.
     static FORCED: Cell<bool> = const { Cell::new(false) };
     static PROVING: Cell<bool> = const { Cell::new(false) };
+    /// Counts this thread's passes.
+    static PASSES: Cell<u64> = const { Cell::new(0) };
 }
 
 /// Run `pass` as the pass of the component `owner` names, gathering what it reads outside the
@@ -58,11 +59,19 @@ thread_local! {
 pub(crate) fn reading<R>(owner: &WakeHandle, pass: impl FnOnce() -> R) -> (R, Reads) {
     // The store tells this pass which resources it read.
     crate::resource::observe_reads(read_resource);
-    crate::resource::observe_generation_reads(read_generation);
     let _feeding = crate::wake::FeedsComponent::begin();
+    PASSES.with(|passes| passes.set(passes.get().wrapping_add(1)));
     let pass_reading = PassReading::begin(owner);
     let result = pass();
     (result, pass_reading.end())
+}
+
+/// The number of the pass running, or `None` outside a pass: what a reader of several resources
+/// registers the reading it follows once a pass, however often the pass looks at them.
+#[must_use]
+pub fn running_pass() -> Option<u64> {
+    let reading = READING.with(|reading| reading.try_borrow().ok().is_some_and(|it| it.is_some()));
+    reading.then_some(PASSES.with(Cell::get))
 }
 
 /// The reading of one pass, from [`PassReading::begin`] to
@@ -192,20 +201,6 @@ fn read_resource(
                 Some(frontier(document)),
                 Box::new(move || store.read(&id, frontier)),
             )
-        },
-    );
-}
-
-/// A pass compared `store`'s write generation (a reader of many resources that skips them all while
-/// it stays put, and so reads none of them): the pass reads again once it moved.
-#[inline(never)]
-fn read_generation(store: &crate::resource::ResourceStore) {
-    probe(
-        || Key::Generation(store.key()),
-        || {
-            let store = store.clone();
-            let now = move || Some(store.write_generation());
-            (now(), Box::new(now))
         },
     );
 }

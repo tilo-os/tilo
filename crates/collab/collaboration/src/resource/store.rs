@@ -67,16 +67,6 @@ pub fn observe_reads(observer: ReadObserver) {
     let _ = READ_OBSERVER.set(observer);
 }
 
-/// What a toolkit learns of each read of a store's write generation, as of a resource's.
-pub type GenerationObserver = fn(&ResourceStore);
-
-static GENERATION_OBSERVER: std::sync::OnceLock<GenerationObserver> = std::sync::OnceLock::new();
-
-/// Tell `observer` of every [`ResourceStore::write_generation`] read, as [`observe_reads`] does.
-pub fn observe_generation_reads(observer: GenerationObserver) {
-    let _ = GENERATION_OBSERVER.set(observer);
-}
-
 fn observed_read(store: &ResourceStore, id: &DocumentId, document: &AutoCommit) {
     if let Some(observer) = READ_OBSERVER.get() {
         observer(store, id, document);
@@ -1724,11 +1714,6 @@ impl ResourceStore {
     /// change; it never stays put across one.
     #[must_use]
     pub fn write_generation(&self) -> u64 {
-        // A reader that skips its resources while this stays put reads none of them: this read is
-        // what a component's pass follows instead.
-        if let Some(observer) = GENERATION_OBSERVER.get() {
-            observer(self);
-        }
         self.0
             .try_borrow()
             .map_or(u64::MAX, |set| set.generation.get())
