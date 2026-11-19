@@ -628,11 +628,29 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             } else {
                 param_ty
             };
-            let declared = if optional {
-                quote!(#krate::__private::ActionParam::optional_owned(#param, #param_ty, #description))
-            } else {
-                quote!(#krate::__private::ActionParam::required_owned(#param, #param_ty, #description))
-            };
+            let schema = quote!({
+                #[allow(unused_imports, reason = "one of the two applies")]
+                use #krate::__private::{DescribedParam as _, UndescribedParam as _};
+                (&#krate::__private::ParamOf::<#ty>::new()).schema()
+            });
+            // The one mapping from a declared type to its parameter, shared
+            // with a verb's.
+            let declared = quote!(match #schema {
+                ::core::option::Option::Some(schema) => #krate::__private::declared_param(
+                    #param,
+                    #param_ty,
+                    #description,
+                    schema,
+                    #optional,
+                    #krate::__private::PlaceIn::Nowhere,
+                    ::core::option::Option::None,
+                ),
+                ::core::option::Option::None => if #optional {
+                    #krate::__private::ActionParam::optional_owned(#param, #param_ty, #description)
+                } else {
+                    #krate::__private::ActionParam::required_owned(#param, #param_ty, #description)
+                },
+            });
             let declared = match &described.choices {
                 Some(choices) => quote!(#declared.with_choices(#choices)),
                 None => declared,

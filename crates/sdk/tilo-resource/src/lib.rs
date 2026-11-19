@@ -916,6 +916,8 @@ pub mod __private {
         fn param_type(&self) -> ParamType;
         /// Its type as a surface publishes it, records and enums by name.
         fn field_type_of(&self) -> Option<crate::surface::FieldTypeOf>;
+        /// Its JSON Schema, the fragment [`declared_param`] publishes.
+        fn schema(&self) -> Option<fn() -> serde_json::Value>;
     }
 
     impl<T: crate::JsonSchema + ?Sized> DescribedParam for ParamOf<T> {
@@ -925,11 +927,15 @@ pub mod __private {
         fn field_type_of(&self) -> Option<crate::surface::FieldTypeOf> {
             Some(T::field_type)
         }
+        fn schema(&self) -> Option<fn() -> serde_json::Value> {
+            Some(T::json_schema)
+        }
     }
 
     pub trait UndescribedParam {
         fn param_type(&self) -> ParamType;
         fn field_type_of(&self) -> Option<crate::surface::FieldTypeOf>;
+        fn schema(&self) -> Option<fn() -> serde_json::Value>;
     }
 
     impl<T: ?Sized> UndescribedParam for &ParamOf<T> {
@@ -937,6 +943,9 @@ pub mod __private {
             ParamType::Object
         }
         fn field_type_of(&self) -> Option<crate::surface::FieldTypeOf> {
+            None
+        }
+        fn schema(&self) -> Option<fn() -> serde_json::Value> {
             None
         }
     }

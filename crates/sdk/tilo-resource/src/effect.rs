@@ -1572,6 +1572,24 @@ mod tests {
             assert!(matches!(rename.contract.result, ResultSpec::Json { .. }));
             assert_eq!(rename.contract.execution, ExecutionMode::Immediate);
 
+            // A parameter carries its type's schema, as a verb's does: it is
+            // what a caller of another language reads of the argument.
+            let schema_type = |param: &tilo_actions::ActionParam| {
+                param
+                    .schema
+                    .as_deref()
+                    .and_then(|schema| schema.get("type"))
+                    .cloned()
+            };
+            assert_eq!(
+                schema_type(&rename.params()[0]),
+                Some(serde_json::json!("string"))
+            );
+            assert_eq!(
+                schema_type(&specs[2].params()[0]),
+                Some(serde_json::json!("integer"))
+            );
+
             let paint = &specs[4];
             assert_eq!(paint.params()[0].description, "The colour");
             let choices = |index: usize| -> Vec<&str> {
