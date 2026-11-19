@@ -9,12 +9,17 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 
 /// The unit's name, and the launchd agent's label.
 const UNIT: &str = "tilo-peer.service";
 const LABEL: &str = "so.tilo.peer";
+
+/// How long a stop gives the holder to exit before it is killed. The holder's own waits add up
+/// to less than this (`mcp::held`), so a stop ends by itself rather than being killed.
+pub(crate) const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The environment the service carries over from the login that installed
 /// it: where the device is kept, and what a test's HTTPS trusts.
@@ -110,8 +115,9 @@ fn unit(exe: &Path, environment: &[(&str, String)]) -> String {
     let mut unit = format!(
         "[Unit]\nDescription=Tilo: your workspaces' files at ~/Tilo, kept in sync\n\
          After=network-online.target\n\n[Service]\nExecStart=\"{}\" mcp --hold\n\
-         Restart=on-failure\nRestartSec=5\nEnvironment=\"{SERVICE_ENV}=1\"\n",
-        exe.display()
+         Restart=on-failure\nRestartSec=5\nTimeoutStopSec={}\nEnvironment=\"{SERVICE_ENV}=1\"\n",
+        exe.display(),
+        STOP_TIMEOUT.as_secs()
     );
     for (name, value) in environment {
         let _ = writeln!(
@@ -309,6 +315,10 @@ mod tests {
             "{unit}"
         );
         assert!(unit.contains("Environment=\"TILO_DEVICE_DIR=/home/ada/state/tilo/device\"\n"));
+        assert!(
+            unit.contains(&format!("TimeoutStopSec={}\n", STOP_TIMEOUT.as_secs())),
+            "a stop is given its whole budget before the holder is killed: {unit}"
+        );
         assert!(unit.contains("WantedBy=default.target"));
         assert!(
             unit.contains("Environment=\"TILO_PEER_SERVICE=1\"\n"),
