@@ -136,6 +136,8 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     #bar-people { display: flex; flex: none; padding-left: 6px; }
     .bar-face { display: grid; place-items: center; box-sizing: border-box; width: 28px; height: 28px; margin-left: -6px; border-radius: 50%; border: 2px solid var(--bar-bg); background: #5b5f6b; color: #fff; font: 600 12px/1 system-ui, sans-serif; }
     .bar-face.bar-agent { border-radius: 7px; }
+    .bar-face.bar-unnamed { background: var(--bar-button); color: var(--bar-text); }
+    .bar-face svg { width: 15px; height: 15px; display: block; }
     .bar-face.bar-elsewhere { opacity: .55; }
     .bar-face.bar-more { background: var(--bar-button); color: var(--bar-text); font-weight: 500; }
     #bar button, #bar a#other-mode { flex: none; display: inline-flex; align-items: center; height: 30px; padding: 0 12px; border: 0; border-radius: 8px; font: 500 13px/1 system-ui, sans-serif; text-decoration: none; cursor: pointer; white-space: nowrap; }

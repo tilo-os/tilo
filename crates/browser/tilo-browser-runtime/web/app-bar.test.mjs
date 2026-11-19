@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {ANYONE_LINK_SECONDS, MAX_FACES, applyTheme, desktopRoute, drawPeople, initial, peopleHere, shareSheet} from './app-bar.mjs';
+import {ANYONE_LINK_SECONDS, MAX_FACES, applyTheme, desktopRoute, drawPeople, peopleHere, shareSheet} from './app-bar.mjs';
+import {UNNAMED, initial} from './person.mjs';
 
 const tick = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
 
@@ -60,7 +61,13 @@ test('the people here are each person once, those in this document first, never 
     [['Ada', true, false], ['Scribe', true, true], ['Bo', false, false]]);
   assert.deepEqual(peopleHere(null), []);
   assert.equal(initial('ada'), 'A');
-  assert.equal(initial(''), '?');
+  assert.equal(initial(''), '', 'a person nobody named has no letter on their face');
+  // Two people nobody named are each said in words, never numbered apart or given a stand-in name.
+  const unnamed = peopleHere([
+    {publisher: 'd6', user: 'cy', label: '', focus: here},
+    {publisher: 'd7', user: 'di', label: '', focus: null},
+  ], {self: 'me', here});
+  assert.deepEqual(unnamed.map(person => person.label), [UNNAMED, UNNAMED]);
 });
 
 test('the bar draws a few faces and counts the rest, and hides when nobody else is here', () => {
@@ -76,6 +83,18 @@ test('the bar draws a few faces and counts the rest, and hides when nobody else 
   assert.equal(list.hidden, false);
   drawPeople(list, [], document);
   assert.equal(list.hidden, true);
+});
+
+test('a face nobody’s name is on wears the person glyph, not letters of words or a key', () => {
+  const document = fakeDocument();
+  const list = new Element('span');
+  drawPeople(list, [{key: 'a', label: UNNAMED, colour: '#2a3fd1', agent: false, here: true}], document);
+  const face = list.children[0];
+  assert.match(face.className, /bar-unnamed/);
+  assert.match(face.innerHTML, /<svg/);
+  assert.equal(face.textContent, '', 'no letter stands for a name nobody gave');
+  assert.equal(face.title, UNNAMED);
+  assert.equal(face.style.background, undefined, 'a neutral disc, not the colour of a person named them');
 });
 
 test('“Open in Tilo” opens the same place on the desktop, a document of its own as its app', () => {

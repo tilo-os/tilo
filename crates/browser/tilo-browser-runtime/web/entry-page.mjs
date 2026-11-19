@@ -50,6 +50,7 @@ import {
   membershipOrigins, nameEntered, OPEN_WORKSPACE, ownDesktopOpen, ownedHosts, pairViaHost, rememberEntered,
   settleFailedWorkspace, unmarkOwnPairing, workspaceActions as workspaceSwitchActions, workspaceAt, workspaceChoices,
 } from './workspaces.mjs';
+import {initial, shownName} from './person.mjs';
 
 /** Set for the one reload that joins an embed's visiting page as the person. */
 const JOIN_NOW = 'tilo-embed-join';
@@ -157,7 +158,7 @@ const element = (tag, className, text) => {
  * words, never a name it made up. A key of theirs is never a name: it says
  * what it is, not who they are. */
 async function inviterName(inviter, origin) {
-  const named = typeof inviter?.name === 'string' ? inviter.name.trim() : '';
+  const named = shownName(inviter?.name);
   if (named) return named;
   const user = inviter?.userPublicKey;
   if (typeof user !== 'string') return '';
@@ -167,7 +168,7 @@ async function inviterName(inviter, origin) {
       return null;
     })
     : null;
-  return typeof profile?.display_name === 'string' ? profile.display_name.trim() : '';
+  return shownName(profile?.display_name);
 }
 
 /** What an invitation offers, before the person joins: the workspace it is
@@ -187,13 +188,13 @@ function invitationCard(offer, inviterColour) {
     // One sentence, read top to bottom: who asked, then the workspace as
     // the card's heading.
     const from = element('p', 'tilo-invite-from');
-    const inviter = typeof offer.inviter?.name === 'string' ? offer.inviter.name.trim() : '';
+    const inviter = shownName(offer.inviter?.name);
     if (inviter) {
       // The picture a person sets is not the workspace's to hand to someone
       // who is not in it yet; their initial is, as the desktop draws who it
       // has no picture of, in the colour presence gives them everywhere
       // else the desktop shows them.
-      const face = element('span', 'tilo-invite-face', [...inviter][0].toUpperCase());
+      const face = element('span', 'tilo-invite-face', initial(inviter));
       face.setAttribute('aria-hidden', 'true');
       if (typeof inviterColour === 'string' && /^#[0-9a-f]{6}$/i.test(inviterColour)) {
         face.style.background = inviterColour;
@@ -1331,7 +1332,7 @@ export async function startEntryPage({mode}) {
       const colour = typeof inviter === 'string' ? runtime?.presenceColor?.(inviter) : undefined;
       // The workspace signs the name it knows for who asked. When it knows
       // none, the card waits for the name their profile keeps.
-      const signed = typeof offer.inviter?.name === 'string' ? offer.inviter.name.trim() : '';
+      const signed = shownName(offer.inviter?.name);
       // A server reached only over iroh has no web origin to ask their profile of.
       if (!offer.inviter || signed || isInvitedServer(origin)) return invitationCard(offer, colour);
       return inviterName(offer.inviter, origin).then(name =>

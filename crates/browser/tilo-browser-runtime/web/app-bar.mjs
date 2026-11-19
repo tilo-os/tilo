@@ -13,6 +13,8 @@
  * viewer or an editor. Every refusal is the host's, said in its words.
  */
 
+import {PERSON_GLYPH, initial, personLabel} from './person.mjs';
+
 /** How long a link for anyone works, as the page's other invitations. */
 export const ANYONE_LINK_SECONDS = 7 * 86_400;
 /** Faces shown before the rest are counted. */
@@ -32,7 +34,7 @@ export function peopleHere(members, {self = null, here = null} = {}) {
     const inHere = Boolean(here && member.focus && member.focus.app === here.app && member.focus.document === here.document);
     const known = people.get(key);
     if (known && (known.here || !inHere)) continue;
-    people.set(key, {key, label: member.label || 'Someone', colour: member.colour ?? null,
+    people.set(key, {key, label: personLabel(member.label), colour: member.colour ?? null,
       agent: Boolean(member.agent), here: inHere});
   }
   return [...people.values()].sort((a, b) => Number(b.here) - Number(a.here) || a.label.localeCompare(b.label));
@@ -72,9 +74,6 @@ export function applyTheme(style, theme) {
   return true;
 }
 
-/** A name's initial, as a face shows it. */
-export const initial = label => ([...String(label ?? '').trim()][0] ?? '?').toUpperCase();
-
 /** Black or white, whichever reads on `background` (`#rrggbb`). */
 function readableOn(background) {
   const [r, g, b] = [1, 3, 5].map(at => Number.parseInt(background.slice(at, at + 2), 16) / 255)
@@ -88,12 +87,17 @@ export function drawPeople(list, people, document = globalThis.document) {
   const shown = people.slice(0, MAX_FACES);
   for (const person of shown) {
     const face = document.createElement('span');
-    face.className = `bar-face${person.agent ? ' bar-agent' : ''}${person.here ? '' : ' bar-elsewhere'}`;
-    face.textContent = initial(person.label);
+    const letter = initial(person.label);
+    face.className = `bar-face${letter ? '' : ' bar-unnamed'}${person.agent ? ' bar-agent' : ''}`
+      + `${person.here ? '' : ' bar-elsewhere'}`;
+    // Nobody named this person: their face is the person glyph on a neutral disc, never letters of
+    // the words said in their place.
+    if (letter) face.textContent = letter;
+    else face.innerHTML = PERSON_GLYPH;
     face.title = person.here ? person.label : `${person.label} (elsewhere in the workspace)`;
     face.setAttribute('role', 'listitem');
     face.setAttribute('aria-label', face.title);
-    if (typeof person.colour === 'string' && /^#[0-9a-f]{6}$/i.test(person.colour)) {
+    if (letter && typeof person.colour === 'string' && /^#[0-9a-f]{6}$/i.test(person.colour)) {
       face.style.background = person.colour;
       face.style.color = readableOn(person.colour);
     }

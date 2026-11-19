@@ -677,7 +677,7 @@ impl HereState {
         let mut names = HashMap::new();
         for member in self.members.iter().flatten().chain(self.own.as_ref()) {
             let agent = member.kind == "agent";
-            let label = member_name(member).map_or_else(unnamed_person_label, str::to_owned);
+            let label = ui::presence::person_label(member_name(member).unwrap_or_default());
             let key = if agent {
                 member.publisher.as_str()
             } else {
@@ -727,7 +727,7 @@ impl HereState {
             .chain(devices)
             .find(|member| member_name(member).is_some())
             .unwrap_or(first);
-        let label = member_name(named).map_or_else(unnamed_person_label, str::to_owned);
+        let label = ui::presence::person_label(member_name(named).unwrap_or_default());
         let label = self.labels().label(user, &label);
         let rgb = self
             .colors()
@@ -754,7 +754,7 @@ impl HereState {
                     .and_then(|user| self.person(user))
                     .unwrap_or_else(|| {
                         let name =
-                            member_name(member).map_or_else(unnamed_person_label, str::to_owned);
+                            ui::presence::person_label(member_name(member).unwrap_or_default());
                         (
                             labels.label(&member.publisher, &name),
                             color_in(&colors, &member.publisher),
@@ -885,10 +885,12 @@ impl HereState {
                 member: member.member.clone(),
                 // A person goes by the name they gave, never their device's label; an agent
                 // that says no name goes by the program it works in.
-                label: std::iter::once(member.label.as_str())
-                    .chain(agent.then_some(member.device.as_str()))
-                    .find_map(ui::presence::shown_name)
-                    .map_or_else(unnamed_person_label, str::to_owned),
+                label: ui::presence::person_label(
+                    std::iter::once(member.label.as_str())
+                        .chain(agent.then_some(member.device.as_str()))
+                        .find_map(ui::presence::shown_name)
+                        .unwrap_or_default(),
+                ),
                 devices: self.devices_of(&member.publisher),
                 rgb: color_in(&colors, &member.publisher),
                 agent,

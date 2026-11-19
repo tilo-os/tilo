@@ -2,12 +2,18 @@
  * No input, document edits, presence publication, discovery or animation loop.
  * A pointer is an observed LIVE_V1 pointer, never inferred from an MCP session.
  */
+import {personLabel} from './person.mjs';
+
 /** A member whose pointer was heard longer ago than this is not drawn. */
 export const STALE_AFTER_MS = 10000;
 /** A marker's text: the member's label, and for an agent what it is doing,
  * so a watcher sees which control it works on. */
 function markerText(publisher, member) {
-  const label = member?.label ?? publisher.slice(0, 8);
+  // A person nobody named is said in words, never by a part of their key; an agent without one goes
+  // by its id.
+  const label = member?.kind === 'agent'
+    ? (member.label ?? publisher.slice(0, 8))
+    : personLabel(member?.label);
   return member?.kind === 'agent' && member.activity ? `${label} · ${member.activity}` : label;
 }
 

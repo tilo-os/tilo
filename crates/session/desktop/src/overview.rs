@@ -254,8 +254,7 @@ impl WorkspaceCard {
 /// What `ws` calls `id`: the member's own name, or a guest's label where the workspace has not
 /// named them. Never the id itself: nobody is shown their key.
 fn display_name(id: &UserId, ws: &Workspace) -> String {
-    ws.person_name(id)
-        .map_or_else(ui::presence::unnamed_person_label, str::to_owned)
+    ui::presence::person_label(ws.person_name(id).unwrap_or_default())
 }
 
 /// `holder` as a share row shows them: their face's id and the name they go by.

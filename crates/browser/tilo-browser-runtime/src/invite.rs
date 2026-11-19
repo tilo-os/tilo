@@ -307,9 +307,7 @@ impl Workspace for PageWorkspace {
                 name: here
                     .person(&member)
                     .map(|(name, _)| name)
-                    .filter(|name| {
-                        !name.is_empty() && *name != tilo_desktop::here::unnamed_person_label()
-                    })
+                    .filter(|name| !ui::presence::is_unnamed_person(name))
                     .or_else(|| {
                         here.profile_name(&member)
                             .filter(|name| !name.is_empty())

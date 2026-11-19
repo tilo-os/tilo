@@ -429,9 +429,7 @@ fn mount_people(
 /// page names them: their name, a guest's while they gave none, and colour, neutral until the
 /// workspace knows whose page it is.
 pub(crate) fn own_identity(here: &tilo_desktop::here::HereState) -> (String, (u8, u8, u8)) {
-    let name = here
-        .own_shown()
-        .unwrap_or_else(tilo_desktop::here::unnamed_person_label);
+    let name = ui::presence::person_label(here.own_shown().as_deref().unwrap_or_default());
     let rgb = here.own_rgb().unwrap_or(ui::presence::UNSETTLED_RGB);
     (name, rgb)
 }
@@ -1570,12 +1568,8 @@ impl BrowserShell {
         let rgb = Some(self.chrome.own_chip().rgb);
         // The name in the field is the person's own, without the number
         // others are shown beside it.
-        let name = self
-            .chrome
-            .here
-            .borrow()
-            .own_label()
-            .map_or_else(tilo_desktop::here::unnamed_person_label, str::to_owned);
+        let name =
+            ui::presence::person_label(self.chrome.here.borrow().own_label().unwrap_or_default());
         ProfileModel {
             identity: ui::collaboration::local_user_id()
                 .person_id()

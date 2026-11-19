@@ -67,9 +67,7 @@ impl PresenceCtx {
         } else {
             self.names.get(user).cloned()
         };
-        known
-            .or_else(|| given.and_then(super::shown_name).map(str::to_owned))
-            .unwrap_or_else(super::unnamed_person_label)
+        known.unwrap_or_else(|| super::person_label(given.unwrap_or_default()))
     }
 
     /// Members an app placed at one thing it shows (agents at a map's pin): the first one's face

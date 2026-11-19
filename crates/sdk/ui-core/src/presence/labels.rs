@@ -33,9 +33,22 @@ pub fn unnamed_person_short_label() -> String {
     crate::i18n::widget_text("person-unnamed-short")
 }
 
+/// What `name` shows as where a person is named: the name they gave, else the words that stand
+/// for a person who gave none ([`unnamed_person_label`]). The one place a person's shown name is
+/// decided; their face beside it is the person glyph.
+#[must_use]
+pub fn person_label(name: &str) -> String {
+    if is_unnamed_person(name) {
+        unnamed_person_label()
+    } else {
+        name.trim().to_owned()
+    }
+}
+
 /// Whether `name` is no name of a person's: blank, a key's hex, or the words that stand in for
-/// a person who gave none ([`unnamed_person_label`], [`unnamed_person_short_label`]). Their face
-/// is then the person glyph, never initials of those words.
+/// a person who gave none ([`unnamed_person_label`], [`unnamed_person_short_label`]). None of
+/// those is read as a name: nobody is shown a key, and two people nobody named are not namesakes
+/// of each other. Their face is then the person glyph, never initials of those words.
 #[must_use]
 pub fn is_unnamed_person(name: &str) -> bool {
     shown_name(name)
@@ -55,7 +68,8 @@ pub fn unnamed_label(user: &crate::permissions::MemberId) -> String {
 }
 
 /// `name` where it is a name to show: not blank, and not the hex of a key, which is how a
-/// person is known before they named themselves and is never read as their name.
+/// person is known before they named themselves and is never read as their name. Whether it is
+/// the words said in place of a name too is [`is_unnamed_person`]'s to say.
 #[must_use]
 pub fn shown_name(name: &str) -> Option<&str> {
     let name = name.trim();
@@ -77,8 +91,9 @@ impl MemberLabels {
     /// Resolve the numbers for `people` as `(id, name, joined)`, `joined` being
     /// when the workspace admitted them (any unit every replica shares, such as
     /// the admission's Unix time). Order does not matter, and a repeated id
-    /// counts once (its last name). A blank name collides with nothing: it is
-    /// shown as whatever stands in for it. Whoever joined first is numbered
+    /// counts once (its last name). A name that is none ([`is_unnamed_person`])
+    /// collides with nothing: a person nobody named is shown as what stands in for
+    /// them, never numbered against the others. Whoever joined first is numbered
     /// first; those the workspace has no time for follow, by id.
     #[must_use]
     pub fn by_joining<'a>(
@@ -89,7 +104,12 @@ impl MemberLabels {
             if id.trim().is_empty() {
                 continue;
             }
-            by_id.insert(id, (name_key(name), joined));
+            let key = if is_unnamed_person(name) {
+                String::new()
+            } else {
+                name_key(name)
+            };
+            by_id.insert(id, (key, joined));
         }
         let mut ordered: Vec<(&str, &String, Option<u64>)> = by_id
             .iter()
@@ -242,6 +262,27 @@ mod tests {
         {
             let labels = labels_of([("a", " "), ("b", ""), ("", "Ada"), ("c", "Ada")]);
             assert!(labels.is_empty());
+        }
+
+        phase people_nobody_named_are_not_numbered_against_each_other;
+        {
+            let unnamed = unnamed_person_label();
+            let short = unnamed_person_short_label();
+            let key = "a".repeat(64);
+            let labels = labels_of([
+                ("a", unnamed.as_str()),
+                ("b", unnamed.as_str()),
+                ("c", short.as_str()),
+                ("d", key.as_str()),
+                ("e", ""),
+            ]);
+            assert!(labels.is_empty());
+            assert_eq!(labels.label("a", &unnamed), unnamed);
+            assert_eq!(labels.label("b", &unnamed), unnamed, "the second one too");
+            assert!(is_unnamed_person(&unnamed) && is_unnamed_person(&short) && is_unnamed_person(&key));
+            assert_eq!(person_label(&unnamed), unnamed);
+            assert_eq!(person_label(""), unnamed);
+            assert_eq!(person_label(" Ada "), "Ada");
         }
 
         phase a_repeated_id_counts_once;

@@ -1123,8 +1123,7 @@ impl SessionSearch {
                 .map(|r| (r.id.as_str(), r.name.as_str(), joined(&r.id))),
         );
         for recipient in out.iter_mut().filter(|r| r.kind != Conversation) {
-            let name = ui::presence::shown_name(&recipient.name)
-                .map_or_else(ui::presence::unnamed_person_label, str::to_owned);
+            let name = ui::presence::person_label(&recipient.name);
             recipient.name = labels.label(&recipient.id, &name);
         }
         out
