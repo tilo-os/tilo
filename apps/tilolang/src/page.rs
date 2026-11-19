@@ -32,7 +32,8 @@ use wasm_bindgen::prelude::*;
 /// its ids lock and the modules of the packages it uses (`imports/<app>.wasm`), as a `.tapp`'s
 /// payload holds them. Registers the app with the page's runtime and answers its id, which the
 /// page mounts. Its window opens with `scenarios` staged in its document, in order (names separated
-/// by commas, or `all` for every scenario the package declares), as a capture stages one.
+/// by commas, or `all` for every scenario the package declares), as a capture stages one, and at
+/// the capture's instant ([`ui::clock::freeze_for_capture`]).
 ///
 /// # Errors
 /// A file could not be fetched, the payload is not a tilolang package, or a package is already
@@ -67,6 +68,11 @@ pub async fn install_package(base: String, scenarios: Option<String>) -> Result<
             .map(|name| name.trim().to_owned())
             .collect(),
     };
+    // A window staged as a capture renders at the capture's instant, as a device's capture and
+    // a scenario drive do, so the page shows the days and times those show.
+    if !staged.is_empty() {
+        ui::clock::freeze_for_capture();
+    }
     STAGED.with(|held| *held.borrow_mut() = staged);
     crate::install(bundle).map_err(|error| error.to_string())?;
     ui::application::registry::register(crate::definition());

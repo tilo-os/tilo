@@ -453,7 +453,17 @@ pub fn local_zone_name() -> Option<String> {
         let (_, zone) = link.to_str()?.split_once("zoneinfo/")?;
         (!zone.is_empty()).then(|| zone.to_owned())
     }
-    #[cfg(not(all(unix, not(target_family = "wasm"))))]
+    // A page has no TZ or /etc/localtime: the browser names its zone (`Intl`), which the
+    // system zone reads on wasm. Without the name, a day in summer would be read at winter's
+    // offset (the one in force now), an hour off.
+    #[cfg(all(target_family = "wasm", feature = "local"))]
+    {
+        jiff::tz::TimeZone::system().iana_name().map(str::to_owned)
+    }
+    #[cfg(not(any(
+        all(unix, not(target_family = "wasm")),
+        all(target_family = "wasm", feature = "local")
+    )))]
     {
         None
     }
