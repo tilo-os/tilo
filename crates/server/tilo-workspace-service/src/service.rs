@@ -753,6 +753,16 @@ impl WorkspaceService {
         self.sessions.workspace_documents()
     }
 
+    /// The resources of the workspaces this service holds, as the broker answers an app's Open of
+    /// one and the session's own reads of one.
+    #[cfg(feature = "apps")]
+    #[must_use]
+    pub fn document_reads(&self) -> Arc<dyn crate::apps::services::NativeDocumentReads> {
+        Arc::new(crate::apps::service_reads::ServiceReads::new(
+            self.workspaces.clone(),
+        ))
+    }
+
     /// The certificate this service proves itself with.
     #[must_use]
     pub fn device_cert(&self) -> &DeviceCert {
@@ -829,32 +839,38 @@ impl ServiceSlot {
 /// nothing.
 #[must_use]
 pub fn deferred_protocols() -> (ServiceSlot, Protocols) {
-    let slot = ServiceSlot::default();
-    let handlers = SERVICE_ALPNS
+    let service = ServiceSlot::default();
+    (service.clone(), deferred_protocols_in(&service))
+}
+
+/// [`deferred_protocols`] for a [`ServiceSlot`] the embedder already holds: what it answers once
+/// a service is installed there ([`ServiceSlot::install`]).
+#[must_use]
+pub fn deferred_protocols_in(service: &ServiceSlot) -> Protocols {
+    SERVICE_ALPNS
         .iter()
         .map(|alpn| {
             (
                 alpn.to_vec(),
                 Box::new(Deferred {
-                    slot: slot.clone(),
+                    service: service.clone(),
                     alpn,
                 }) as Box<dyn DynProtocolHandler>,
             )
         })
-        .collect();
-    (slot, handlers)
+        .collect()
 }
 
 /// One ALPN of a [`ServiceSlot`].
 #[derive(Debug)]
 struct Deferred {
-    slot: ServiceSlot,
+    service: ServiceSlot,
     alpn: &'static [u8],
 }
 
 impl ProtocolHandler for Deferred {
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
-        let Some(service) = self.slot.service() else {
+        let Some(service) = self.service.service() else {
             return Err(AcceptError::from_err(std::io::Error::other(
                 "no workspace is served here",
             )));
