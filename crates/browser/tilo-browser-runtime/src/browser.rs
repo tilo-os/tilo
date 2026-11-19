@@ -1495,6 +1495,29 @@ fn files_of_the_workspace(
     )))
 }
 
+/// Save what a pass changed of the shell and send it to the workspace as soon as the pass made
+/// it, before the windows it opened are built and drawn: another person's page shows a window
+/// opened here without waiting for the frame that builds it here.
+fn publish_each_pass(
+    handle: &tilo_desktop_surface::DesktopHandle,
+    persistence: &Rc<crate::desktop::Persistence>,
+    peer: Option<u32>,
+) {
+    let persistence = Rc::downgrade(persistence);
+    handle.set_publish(Rc::new(move |handle| {
+        if let Some(persistence) = persistence.upgrade()
+            && let Err(error) = persistence.save(handle)
+        {
+            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                "Browser runtime: desktop not saved: {error}"
+            )));
+        }
+        if let Some(peer) = peer {
+            crate::replicated::publish(peer);
+        }
+    }));
+}
+
 fn present_desktop(
     id: u64,
     config: &Config,
@@ -1522,25 +1545,7 @@ fn present_desktop(
     )
     .map_err(error)?;
     let persistence = Rc::new(persistence);
-    // What a pass changed of the shell is saved and sent to the workspace as soon as the pass made
-    // it, before the windows it opened are built and drawn: another person's page shows a window
-    // opened here without waiting for the frame that builds it here.
-    handle.set_publish({
-        let persistence = Rc::downgrade(&persistence);
-        let peer = config.peer;
-        Rc::new(move |handle| {
-            if let Some(persistence) = persistence.upgrade()
-                && let Err(error) = persistence.save(handle)
-            {
-                web_sys::console::warn_1(&JsValue::from_str(&format!(
-                    "Browser runtime: desktop not saved: {error}"
-                )));
-            }
-            if let Some(peer) = peer {
-                crate::replicated::publish(peer);
-            }
-        })
-    });
+    publish_each_pass(&handle, &persistence, config.peer);
     let here = tilo_desktop::here::Here::default();
     let people: Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>> = Rc::default();
     let activity = serve_history(
