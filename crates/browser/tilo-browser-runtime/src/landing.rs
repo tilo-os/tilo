@@ -124,5 +124,25 @@ pub(crate) fn answered(
     answered
 }
 
+/// Whether a window's copy of a document goes to the workspace whole, as this page's own write,
+/// before the workspace delivered the document to the window. `asked`: this page asks the workspace
+/// for the document; `sent`: once it answered, whether it sent any of it.
+///
+/// A document the page asks for may be held there already, as a returning page's copy is: it waits
+/// for the answer, and where the workspace sent some of it, for that to be taken in, which tells
+/// the window what the workspace holds; only what the window changed after that goes. Sent whole,
+/// every change in the copy went out again as this page's write, sealed and signed: a hundred
+/// kilobytes for each part of a Tasks tracker, on every open.
+pub(crate) const fn sends_whole(asked: bool, sent: Option<bool>) -> bool {
+    match sent {
+        // The workspace holds none of it: the window's copy is all there is.
+        Some(false) => true,
+        // It sent some, which the window takes in once it is read.
+        Some(true) => false,
+        // A document not asked for is founded here, or delivered with the workspace's replay.
+        None => !asked,
+    }
+}
+
 #[cfg(test)]
 mod tests;

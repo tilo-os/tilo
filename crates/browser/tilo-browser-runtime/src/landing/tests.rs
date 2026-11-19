@@ -20,7 +20,7 @@ use ui::automerge::{AutoCommit, ROOT, transaction::Transactable as _};
 use ui::headless::{HeadlessApp, fixture_runner_inputs};
 use ui::resource::{DocumentCheckout, DocumentId, ResourceOpenError, ResourceOwners};
 
-use super::{Landed, answered, keep};
+use super::{Landed, answered, keep, sends_whole};
 
 const WORKSPACE: &str = "workspace-a";
 
@@ -234,4 +234,16 @@ fn text(seed: u64) -> String {
         let _ = write!(text, "{value:016x}");
     }
     text
+}
+
+#[test]
+fn a_window_sends_its_copy_whole_only_when_the_workspace_holds_none_of_it() {
+    // The workspace answered that it holds none: the window's copy is all there is.
+    assert!(sends_whole(true, Some(false)));
+    // It sent the document: the window's copy goes as what it changed past that.
+    assert!(!sends_whole(true, Some(true)));
+    // Asked and not yet answered: nothing goes until the answer says what it holds.
+    assert!(!sends_whole(true, None));
+    // Never asked: the window founded it, so the first write is the document whole.
+    assert!(sends_whole(false, None));
 }

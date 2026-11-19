@@ -109,7 +109,7 @@ enum DesktopSending {
 
 struct Mounted {
     attachment: Attachment,
-    records: HashMap<(String, String), DocumentSync>,
+    documents: HashMap<(String, String), DocumentSync>,
     /// The heads, sorted, at which the workspace last read each record this mount has open, as
     /// the mount took them in: everything up to them is in its replica, so the next read brings
     /// only what changed since, not the record whole.
@@ -138,6 +138,10 @@ pub(crate) struct Joined {
     /// The records not here that this page asked the workspace for, as wire
     /// `(app, record)` ([`ui::resource::ResourceStore::wanted_resources`]).
     asked: HashSet<(String, String)>,
+    /// Whether the workspace sent anything of each document this page asked it for, once it
+    /// answered. Until it answered, and until what it sent is merged, a window's copy of the
+    /// document is not sent whole as this page's own write ([`crate::landing::sends_whole`]).
+    opened: HashMap<(String, String), bool>,
     mounts: HashMap<u64, Mounted>,
     desktop: DocumentReplica,
     /// How this page sends its desktop to the workspace.
@@ -258,6 +262,7 @@ pub(crate) fn open(
         ready: false,
         when_opened: false,
         asked: HashSet::new(),
+        opened: HashMap::new(),
         mounts: HashMap::new(),
         desktop: DocumentReplica::new(AutoCommit::new()),
         desktop_sending: DesktopSending::Snapshot,
@@ -764,7 +769,7 @@ pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
             mount,
             Mounted {
                 attachment,
-                records: HashMap::new(),
+                documents: HashMap::new(),
                 merged: HashMap::new(),
             },
         );
@@ -1265,6 +1270,15 @@ impl Joined {
                         self.view_read = true;
                         self.view_sending = DesktopSending::Snapshot;
                     }
+                    let key = (route.app_id.clone(), route.document.clone());
+                    let sent = answered_without_frames(answer).is_none();
+                    self.opened.insert(key, sent);
+                    // What it sent landed before its answer, or the replica held all of it
+                    // already and nothing landed: either way the windows with it open take it in
+                    // now, which tells them what the workspace holds.
+                    if sent && route.cluster_id == self.uuid {
+                        landed.insert(route.clone());
+                    }
                     opened.extend(answered_without_frames(answer).map(|said| (route, said)));
                 }
                 _ => {}
@@ -1323,8 +1337,14 @@ impl Joined {
                 Ok(ResourceReading::Changes { bytes, heads, .. }) => {
                     self.apply_kept_changes(&route, bytes, &heads, replayed, &mut woken)
                 }
+                // The workspace holds the windows' copy as it is: they send what they change
+                // after it.
+                Ok(ResourceReading::Unchanged(_)) => {
+                    self.hold_open(&route);
+                    Ok(())
+                }
                 // Still arriving (its keys, or the checkpoint it builds on): it lands again.
-                Ok(ResourceReading::Unchanged(_) | ResourceReading::Pending) => Ok(()),
+                Ok(ResourceReading::Pending) => Ok(()),
                 Err(error) => Err(error),
             };
             if let Err(error) = applied {
@@ -1486,7 +1506,7 @@ impl Joined {
                                 handle.acknowledge(refused_change(&route.app_id, &plain));
                             }
                             if let Some(replica) = mounted
-                                .records
+                                .documents
                                 .get_mut(&(route.app_id.clone(), route.document.clone()))
                             {
                                 replica.advance(heads);
@@ -1590,7 +1610,7 @@ impl Joined {
                     continue;
                 };
                 let replica = mounted
-                    .records
+                    .documents
                     .entry((app.clone(), record.clone()))
                     .or_default();
                 if replica.merge_delivered(
@@ -1649,7 +1669,7 @@ impl Joined {
     /// when a mount has not taken it in yet, or two took in different reads.
     fn merged_heads(&self, app: &str, record: &str) -> Option<Vec<[u8; 32]>> {
         let key = (app.to_owned(), record.to_owned());
-        let mut shared: Option<&Vec<[u8; 32]>> = None;
+        let mut shared: Option<Vec<[u8; 32]>> = None;
         for mounted in self.mounts.values() {
             for store in mounted.attachment.stores.borrow().iter() {
                 if store.app_and_home().0 != app {
@@ -1660,21 +1680,63 @@ impl Joined {
                 }) else {
                     continue;
                 };
-                let heads = mounted.merged.get(&key)?;
-                // A record closed and opened again starts from what its store kept, which may
-                // stand before the heads this mount took in last.
-                let holds = store.read(&checkout.id, |doc| {
-                    heads.iter().all(|head| {
-                        ui::automerge::ReadDoc::has_change(doc, &ui::automerge::ChangeHash(*head))
-                    })
-                });
-                if holds != Some(true) || shared.is_some_and(|shared| shared != heads) {
+                let heads = match mounted.merged.get(&key) {
+                    // A record closed and opened again starts from what its store kept, which may
+                    // stand before the heads this mount took in last.
+                    Some(heads) => store
+                        .read(&checkout.id, |doc| {
+                            heads.iter().all(|head| {
+                                ui::automerge::ReadDoc::has_change(
+                                    doc,
+                                    &ui::automerge::ChangeHash(*head),
+                                )
+                            })
+                        })
+                        .filter(|holds| *holds)
+                        .map(|_| heads.clone())?,
+                    // Not taken in yet: the window's copy, which this page kept from the
+                    // workspace before. A read since its heads brings only what changed, or
+                    // the document whole where the workspace lacks some of it.
+                    None => sorted_heads(
+                        &store
+                            .with_action_state(&checkout.id, |doc, _, actions| {
+                                actions.commit_for_save(doc);
+                                doc.get_heads()
+                            })
+                            .ok()?
+                            .iter()
+                            .map(|head| head.0)
+                            .collect::<Vec<_>>(),
+                    ),
+                };
+                if shared.as_ref().is_some_and(|shared| *shared != heads) {
                     return None;
                 }
                 shared = Some(heads);
             }
         }
-        shared.filter(|heads| !heads.is_empty()).cloned()
+        shared.filter(|heads| !heads.is_empty())
+    }
+
+    /// The workspace holds `route` where the mounts with it open stand ([`Self::merged_heads`]):
+    /// each sends only what it changes after that, never its copy whole.
+    fn hold_open(&mut self, route: &DocumentRoute) {
+        let key = (route.app_id.clone(), route.document.clone());
+        let Some(heads) = self.merged_heads(&route.app_id, &route.document) else {
+            // The mounts stand at different heads: each sends its copy whole, as one the
+            // workspace held none of, so no change of theirs waits on a read that never comes.
+            self.opened.insert(key, false);
+            return;
+        };
+        for mounted in self.mounts.values_mut() {
+            let replica = mounted.documents.get_mut(&key);
+            if let Some(replica) = replica
+                && !replica.snapshotted()
+            {
+                replica.advance(delivered_heads(&heads));
+                mounted.merged.insert(key.clone(), heads.clone());
+            }
+        }
     }
 
     /// Whether a mount has `record` of `app` open.
@@ -1713,7 +1775,7 @@ impl Joined {
                     continue;
                 };
                 let replica = mounted
-                    .records
+                    .documents
                     .entry((app.clone(), record.clone()))
                     .or_default();
                 if replica.merge_delivered(
@@ -2008,7 +2070,7 @@ impl Joined {
                     );
                     // A record a join does not replay is asked for when a
                     // mount first opens it.
-                    if !mounted.records.contains_key(&key)
+                    if !mounted.documents.contains_key(&key)
                         && (self.when_opened
                             || neighbour_wire::document_sync(&key.1)
                                 != neighbour_wire::DocumentSync::Eager)
@@ -2019,24 +2081,17 @@ impl Joined {
                             document: key.1.clone(),
                         });
                     }
-                    let delivered = &mut self.delivered;
-                    let merged = &mut mounted.merged;
-                    let replica = mounted.records.entry(key.clone()).or_insert_with(|| {
-                        match delivered.remove(&key) {
-                            // The workspace has the record as it delivered it, and the store the
-                            // mount opened it from holds it there.
-                            Some(heads) => {
-                                merged.insert(
-                                    key.clone(),
-                                    sorted_heads(
-                                        &heads.iter().map(|head| head.0).collect::<Vec<_>>(),
-                                    ),
-                                );
-                                DocumentSync::delivered(heads)
-                            }
-                            None => DocumentSync::new(),
-                        }
+                    let replica = mounted.documents.entry(key.clone()).or_insert_with(|| {
+                        first_sync(&mut self.delivered, &mut mounted.merged, &key)
                     });
+                    if !replica.snapshotted()
+                        && !crate::landing::sends_whole(
+                            asked_for(&self.asked, &opening, &key),
+                            self.opened.get(&key).copied(),
+                        )
+                    {
+                        continue;
+                    }
                     let route = DocumentRoute {
                         app_id: app.clone(),
                         cluster_id: self.uuid.clone(),
@@ -2091,7 +2146,7 @@ impl Joined {
             if let Some(replica) = self
                 .mounts
                 .get_mut(&id)
-                .and_then(|m| m.records.get_mut(&key))
+                .and_then(|m| m.documents.get_mut(&key))
             {
                 replica.advance(heads);
             }
@@ -2372,6 +2427,39 @@ pub(crate) fn takes(event: &Event) -> bool {
             | Event::Refused { .. }
             | Event::DocumentOpened { .. }
     )
+}
+
+/// How a mount sends `document`, which it just opened: from the heads the workspace delivered it at
+/// before any mount had it open, when it did.
+fn first_sync(
+    delivered: &mut HashMap<(String, String), Vec<ui::automerge::ChangeHash>>,
+    merged: &mut HashMap<(String, String), Vec<[u8; 32]>>,
+    document: &(String, String),
+) -> DocumentSync {
+    match delivered.remove(document) {
+        // The workspace has the document as it delivered it, and the store the mount opened it
+        // from holds it there.
+        Some(heads) => {
+            merged.insert(
+                document.clone(),
+                sorted_heads(&heads.iter().map(|head| head.0).collect::<Vec<_>>()),
+            );
+            DocumentSync::delivered(heads)
+        }
+        None => DocumentSync::new(),
+    }
+}
+
+/// Whether this page asked the workspace for `document`, or asks for it in this pass (`asking`).
+fn asked_for(
+    asked: &HashSet<(String, String)>,
+    asking: &[DocumentRoute],
+    document: &(String, String),
+) -> bool {
+    asked.contains(document)
+        || asking
+            .iter()
+            .any(|route| route.app_id == document.0 && route.document == document.1)
 }
 
 /// `heads` sorted, as a read of a record names the heads it starts from.
