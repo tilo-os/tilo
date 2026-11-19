@@ -52,7 +52,8 @@ pub fn configure(
     let name = format!("cc-lld-{}", hex::encode(Sha256::digest(DRIVER.as_bytes())));
     let driver = directory.join(name);
     if !driver.exists() {
-        crate::fsutil::write_atomic(&driver, DRIVER.as_bytes())?;
+        tilo_files::native::atomic::write_creating_parent(&driver, DRIVER.as_bytes())
+            .map_err(DaemonError::io(format!("write {}", driver.display())))?;
     }
     if fs::read(&driver).map_err(DaemonError::io("read native linker driver"))? != DRIVER.as_bytes()
     {

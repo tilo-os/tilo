@@ -1,6 +1,8 @@
 use super::*;
 use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsStr;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 fn request(dir: PathBuf) -> NewAppRequest {
@@ -1031,7 +1033,8 @@ tilo_test_env::scenario! {
                 if attempt == 2 {
                     bail!("injected publication failure");
                 }
-                write_atomic(&write.path, write.source.as_bytes(), write.description)
+                tilo_files::native::atomic::write_creating_parent_preserving_mode(&write.path, write.source.as_bytes())
+                    .with_context(|| format!("publishing {} {}", write.description, write.path.display()))
             })
             .unwrap_err();
             assert!(error.to_string().contains("rolled back"), "{error:#}");

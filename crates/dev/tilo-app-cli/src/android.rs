@@ -1347,7 +1347,8 @@ fn release_keystore(tools: &Toolchain, explicit: Option<&Path>) -> Result<Keysto
     }
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let store_pass = hex::encode(tilo_app_package::SigningIdentity::generate().public_key_bytes());
-    write_private(&pass_file, &store_pass)?;
+    tilo_files::native::atomic::create_private(&pass_file, store_pass.as_bytes())
+        .with_context(|| format!("creating {}", pass_file.display()))?;
     let keystore = Keystore {
         path,
         key_pass: store_pass.clone(),
@@ -1362,18 +1363,6 @@ fn release_keystore(tools: &Toolchain, explicit: Option<&Path>) -> Result<Keysto
         pass_file.display()
     );
     Ok(keystore)
-}
-
-fn write_private(path: &Path, contents: &str) -> Result<()> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let mut file = options
-        .open(path)
-        .with_context(|| format!("creating {}", path.display()))?;
-    file.write_all(contents.as_bytes())?;
-    Ok(())
 }
 
 fn generate_keystore(tools: &Toolchain, keystore: &Keystore, dname: &str) -> Result<()> {

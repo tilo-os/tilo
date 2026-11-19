@@ -1,18 +1,9 @@
-//! Small filesystem helpers: atomic writes, tree copies and sizes.
+//! Small filesystem helpers: tree copies and sizes.
 
 use std::fs;
 use std::path::Path;
 
 use tilo_vm_protocol::layer_hash::walk;
-
-use crate::error::DaemonError;
-
-/// Replace `path` durably, creating its parent when missing, so readers see the old or the new
-/// content and never a torn file.
-pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
-    tilo_files::native::atomic::write_creating_parent(path, bytes)
-        .map_err(DaemonError::io(format!("write {}", path.display())))
-}
 
 /// Recursively copy `source` into the existing directory `dest`, keeping symlinks as symlinks and
 /// preserving permission bits.

@@ -17,7 +17,6 @@ use serde::{Deserialize, Serialize};
 use tilo_vm_protocol::{BootChange, BootConfirmResult};
 
 use crate::error::DaemonError;
-use crate::fsutil::write_atomic;
 
 pub const ENTRY_PREFIX: &str = "tilo-vm-";
 pub const KERNEL_DIR: &str = "tilo-vm";
@@ -288,7 +287,9 @@ impl Boot {
     fn save(&self, state: &BootState) -> Result<(), DaemonError> {
         let bytes = serde_json::to_vec_pretty(state)
             .map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
-        write_atomic(&self.state_path, &bytes)
+        tilo_files::native::atomic::write_creating_parent(&self.state_path, &bytes).map_err(
+            DaemonError::io(format!("write {}", self.state_path.display())),
+        )
     }
 
     pub fn loader(&self) -> Result<Loader, DaemonError> {
@@ -429,7 +430,9 @@ impl Boot {
         };
         let vmlinuz = fs::read(moddir.join("vmlinuz"))
             .map_err(DaemonError::io("read the layer's vmlinuz"))?;
-        write_atomic(&dir.join("vmlinuz"), &vmlinuz)?;
+        let kernel = dir.join("vmlinuz");
+        tilo_files::native::atomic::write_creating_parent(&kernel, &vmlinuz)
+            .map_err(DaemonError::io(format!("write {}", kernel.display())))?;
 
         let others: Vec<String> = self
             .entries()
@@ -445,11 +448,14 @@ impl Boot {
             &format!("{prefix}/{KERNEL_DIR}/{stem}/initramfs.img"),
             &options,
         );
-        write_atomic(
-            &self.entries_dir().join(format!("{stem}.conf")),
-            text.as_bytes(),
-        )?;
-        write_atomic(Path::new(SYSEXT_DROPIN), SYSEXT_DROPIN_TEXT.as_bytes())?;
+        let entries = self.entries_dir().join(format!("{stem}.conf"));
+        tilo_files::native::atomic::write_creating_parent(&entries, text.as_bytes())
+            .map_err(DaemonError::io(format!("write {}", entries.display())))?;
+        tilo_files::native::atomic::write_creating_parent(
+            Path::new(SYSEXT_DROPIN),
+            SYSEXT_DROPIN_TEXT.as_bytes(),
+        )
+        .map_err(DaemonError::io(format!("write {SYSEXT_DROPIN}")))?;
         let _ = Command::new("systemctl").arg("daemon-reload").status();
         Self::set_oneshot(loader, &id)?;
 

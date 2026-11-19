@@ -6,8 +6,6 @@ use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::io::{self, BufRead as _, BufReader, IsTerminal, Write as _};
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt as _;
-#[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command as ProcessCommand, Stdio};
@@ -2091,7 +2089,11 @@ fn navigation_link_write(
 
 fn write_batch(writes: &[PendingWrite]) -> Result<()> {
     write_batch_with(writes, |write| {
-        write_atomic(&write.path, write.source.as_bytes(), write.description)
+        tilo_files::native::atomic::write_creating_parent_preserving_mode(
+            &write.path,
+            write.source.as_bytes(),
+        )
+        .with_context(|| format!("publishing {} {}", write.description, write.path.display()))
     })
 }
 
@@ -2171,7 +2173,15 @@ fn write_batch_with(
                 .rev()
             {
                 let result = match original {
-                    Some(source) => write_atomic(&restore.path, source, "generator rollback"),
+                    Some(source) => {
+                        tilo_files::native::atomic::write_creating_parent_preserving_mode(
+                            &restore.path,
+                            source,
+                        )
+                        .with_context(|| {
+                            format!("publishing generator rollback {}", restore.path.display())
+                        })
+                    }
                     None if restore.path.exists() => std::fs::remove_file(&restore.path)
                         .with_context(|| format!("removing new {}", restore.path.display())),
                     None => Ok(()),
@@ -3997,25 +4007,8 @@ fn write_ui_node_tree(node: &tilo_ui_graph::UiNode, depth: usize, output: &mut S
 fn write_ui_graph(path: &Path, document: &tilo_ui_graph::UiDocument) -> Result<()> {
     let mut source = document.to_json_pretty()?;
     source.push('\n');
-    write_atomic(path, source.as_bytes(), "UI graph")
-}
-
-fn write_atomic(path: &Path, source: &[u8], description: &str) -> Result<()> {
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(parent)
-        .with_context(|| format!("creating {description} directory {}", parent.display()))?;
-    #[cfg(unix)]
-    let written = {
-        let mode = std::fs::metadata(path)
-            .map_or(0o644, |metadata| metadata.permissions().mode() & 0o7777);
-        tilo_files::native::atomic::write_with_mode(path, source, mode)
-    };
-    #[cfg(not(unix))]
-    let written = tilo_files::native::atomic::write(path, source);
-    written.with_context(|| format!("publishing {description} {}", path.display()))
+    tilo_files::native::atomic::write_creating_parent_preserving_mode(path, source.as_bytes())
+        .with_context(|| format!("publishing UI graph {}", path.display()))
 }
 
 impl CargoPlan {
@@ -9073,17 +9066,17 @@ fn publish_staged_app_with(
 ) -> Result<()> {
     validate_destination(destination)?;
     if let Some(update) = workspace
-        && let Err(error) = write_atomic(
+        && let Err(error) = tilo_files::native::atomic::write_creating_parent_preserving_mode(
             &update.path,
             update.updated.as_bytes(),
-            "workspace manifest",
         )
+        .with_context(|| format!("publishing workspace manifest {}", update.path.display()))
     {
-        let restore = write_atomic(
+        let restore = tilo_files::native::atomic::write_creating_parent_preserving_mode(
             &update.path,
             update.original.as_bytes(),
-            "workspace rollback",
-        );
+        )
+        .with_context(|| format!("publishing workspace rollback {}", update.path.display()));
         return match restore {
             Ok(()) => Err(error).context("registering app in workspace; manifest rolled back"),
             Err(rollback) => bail!("{error:#}; workspace rollback was incomplete: {rollback:#}"),
@@ -9123,11 +9116,12 @@ fn publish_staged_app_with(
             }
         }
         if let Some(update) = workspace
-            && let Err(rollback) = write_atomic(
-                &update.path,
-                update.original.as_bytes(),
-                "workspace rollback",
-            )
+            && let Err(rollback) =
+                tilo_files::native::atomic::write_creating_parent_preserving_mode(
+                    &update.path,
+                    update.original.as_bytes(),
+                )
+                .with_context(|| format!("publishing workspace rollback {}", update.path.display()))
         {
             rollback_failures.push(rollback.to_string());
         }

@@ -14,7 +14,7 @@ use crate::accounts::{DeviceSession, Login};
 use crate::apply::{Apply, GREETER_UNIT, Session, SessionProcess};
 use crate::boot::Boot;
 use crate::error::DaemonError;
-use crate::fsutil::{symlink, write_atomic};
+use crate::fsutil::symlink;
 use crate::input;
 
 const UNIT_DIR: &str = "/etc/systemd/system";
@@ -707,10 +707,9 @@ impl Apply for SystemdApply {
 
     fn write_dropin(&mut self, unit: &str, file: &str, contents: &str) -> Result<(), DaemonError> {
         let [dir, other] = dropin_dirs(file);
-        write_atomic(
-            &Path::new(dir).join(format!("{unit}.d")).join(file),
-            contents.as_bytes(),
-        )?;
+        let path = Path::new(dir).join(format!("{unit}.d")).join(file);
+        tilo_files::native::atomic::write_creating_parent(&path, contents.as_bytes())
+            .map_err(DaemonError::io(format!("write {}", path.display())))?;
         // A copy an older tilo-vmd wrote to the other place would win or linger.
         remove_dropin_in(other, unit, file)
     }
@@ -876,7 +875,8 @@ impl Apply for SystemdApply {
             };
         };
         fs::create_dir_all(dir).map_err(DaemonError::io(format!("create {NOTICE_DIR}")))?;
-        crate::fsutil::write_atomic(&path, text.as_bytes())?;
+        tilo_files::native::atomic::write_creating_parent(&path, text.as_bytes())
+            .map_err(DaemonError::io(format!("write {}", path.display())))?;
         // The owner's desktop reads it as its own user.
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
             .map_err(DaemonError::io(format!("make {} readable", path.display())))
