@@ -5188,8 +5188,11 @@ default = false
 
 [[check]]
 name = "os-assembler-x86_64"
-# dnf installs from Fedora's mirrors, which are no fixed host list.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# dnf installs podman into the guest from Fedora's mirrors, which are no fixed host list.
+# Pinned: that podman is only the tool; the image it builds is the pinned base's and the RPM
+# snapshot's packages at the snapshot's clock (os/image/assembler.Containerfile), the same digest
+# from every run, so the answer is kept by what the step read and its needs.
+egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
 run = "bash os/image/assembler.sh x86_64 /target/os/x86_64/assembler /target/publish/rpm-snapshot/x86_64"
 needs = ["rpm-snapshot-x86_64", "image-rpms-x86_64"]
 requires = ["arch=x86_64", "disk-100g"]
@@ -5412,8 +5415,11 @@ default = false
 
 [[check]]
 name = "os-assembler-aarch64"
-# dnf installs from Fedora's mirrors, which are no fixed host list.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# dnf installs podman into the guest from Fedora's mirrors, which are no fixed host list.
+# Pinned: that podman is only the tool; the image it builds is the pinned base's and the RPM
+# snapshot's packages at the snapshot's clock (os/image/assembler.Containerfile), the same digest
+# from every run, so the answer is kept by what the step read and its needs.
+egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
 run = "bash os/image/assembler.sh aarch64 /target/os/aarch64/assembler /target/publish/rpm-snapshot/aarch64"
 needs = ["rpm-snapshot-aarch64", "image-rpms-aarch64"]
 requires = ["arch=arm64", "disk-100g"]
