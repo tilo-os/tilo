@@ -1548,6 +1548,11 @@ mod component_adapter {
             }
             change
         }
+        /// The component's root carries the change below it; this wrapper only keeps the root's node.
+        fn remount_children(&mut self, remount: &mut crate::widget::Remount<'_>) -> bool {
+            self.in_root_mut(|root| root.remount_children(remount))
+                .unwrap_or(true)
+        }
         fn needs_redraw(&self) -> bool {
             self.save_status_shown
                 || self
