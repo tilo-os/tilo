@@ -46,7 +46,9 @@ container signature policy. A server must boot unattended, so every item below
 is judged for a machine nobody sits at.
 
 Its release is these checks, in order: `image-host` builds the image with the
-generation `generation-host` read from the server's own series, `seal-host`
+generation `generation-host` read from the server's own series,
+`sign-host-loader` signs the image's systemd-boot with the release EFI key and
+adds the signed companion `bootctl install` copies to the ESP, `seal-host`
 rewrites the UKI's placeholder composefs digest to the one `bootc install`
 computes from the image's layers (bootc#2334; the resealing bootc a sealed dev
 image is sealed with, `tools/ci/seal-dev-image.sh`), `sign-host-boot`
@@ -55,25 +57,33 @@ with the PCR authority, `apply-host-boot` verifies those signatures against the
 pinned keys and adds them under `/boot`, and `sign-host` and `publish-host` sign
 the image with the release key, attest its provenance with the generation, and
 publish it as `registry.tilo.so/tilo/tilo-host` under `gen<N>` among its tags.
+The desktop release and the boards have the same loader step,
+`sign-os-loader-{arch}` and `sign-os-loader-lenovo-83ed`, between composing the
+image and sealing it.
 
-`host-assurance-x86_64` proves the chain in a VM: it signs the sealed image with
-throwaway EFI and PCR keys through the same two steps, enrols only that EFI
-certificate in the firmware with Secure Boot on
+`host-assurance-x86_64` proves the chain in a VM: it signs the image's boot
+loader and UKIs with throwaway EFI and PCR keys through the same steps, enrols
+only that EFI certificate in the firmware with Secure Boot on
 (`os/dev/prepare-release-secureboot-vars.sh`), attaches a software TPM, and
-checks that the server boots enforcing, through systemd-stub, with its
-generation on the measured command line and PCR 11 extended; that a UKI whose
-command line was edited, and the same UKI unsigned, are both refused by the
-firmware; that an update, sealed and signed the same way, stages and rolls
-back when it breaks the server; and that an update from a registry is verified
-and staged while an unsigned one is refused.
+checks that the server boots enforcing, from the signed boot loader and through
+systemd-stub, with its generation on the measured command line and PCR 11
+extended; that a UKI whose command line was edited, and the same UKI unsigned,
+are both refused by the firmware; that an update, sealed and signed the same
+way, stages and rolls back when it breaks the server; and that an update from a
+registry is verified and staged while an unsigned one is refused. The installed
+machine then seals the volume to itself with the shipped `tilo-rollback enroll`
+(PIN-less, against the signed PCR 11 prediction and its own PCR 7) and reboots
+with nothing typed; an image whose prediction the authority signed as an older
+generation, with the floor moved to the running one by signed approvals, must
+not unseal it.
 
 | What a server needs | Where it stands |
 |---|---|
-| Firmware verifies the boot loader and the kernel image under Secure Boot | **Partly.** The UKIs are signed with the release EFI certificate, and the VM check proves the firmware boots them and refuses an edited or unsigned one. The boot loader is still the base's `systemd-boot-unsigned`, which no release signs, the desktop's included: the check signs it on its test disk with its throwaway key. Until a release signs the loader, a server with the release certificate enrolled refuses its loader too. |
+| Firmware verifies the boot loader and the kernel image under Secure Boot | **Implemented, VM proof pending.** The UKIs and systemd-boot are signed with the release EFI certificate. The loader is signed into the image before the seal (`sign-host-loader`, `sign-os-loader-{arch}` for the desktop and boards), and `bootctl install` copies its `.efi.signed` companion to `EFI/systemd` and `EFI/BOOT`. The VM check proves the install puts exactly that companion on the ESP, that the machine boots from it under firmware holding only the throwaway certificate, and that an edited or unsigned UKI is refused. |
 | A signed UKI with the command line inside the signature | **Done.** The kernel, the initramfs and the command line are one UKI, sealed from `kargs.d` (the root found by the unlock chain, the hardening arguments, the consoles, the boot mode and the generation). |
 | The composefs root verified, its digest bound into the signed image | **Done.** `seal-host` closes the digest before anything signs the UKI; `test-image-host` checks the sealed command line names one. |
-| Measured boot: the disk key sealed to PCR 7 and a signed PCR 11 policy | **Partly.** systemd-stub measures the UKI into PCR 11, the generation is on the measured command line, and each release carries the signed PCR 11 prediction of its generation under `/boot`, which `tilo-disk-encrypt enrol --tpm-automatic` seals a PIN-less keyslot to. The VM check installs a plain root, because its VM has no device-mapper, so no keyslot is enrolled or opened there yet. |
-| Rollback protection: no older signed image boots below the floor | **Partly.** Every server image carries a generation of the server's own dense series, which `os/dev/next-generation.sh` reads from the signed `gen<N>` tags and their provenance. `tilo-rollback-confirm` judges a server by its own probe, the unit `tilo-boot-health` is configured with, rather than by greetd, which a server never starts. The floor itself lives in the TPM beside the keyslots, so it moves only on an encrypted install, which the VM check does not do yet; the floor approvals the owner's devices sign (`crates/server/tilo-server/src/servers/floor.rs`) are what move it. |
+| Measured boot: the disk key sealed to PCR 7 and a signed PCR 11 policy | **Implemented, VM proof pending.** systemd-stub measures the UKI into PCR 11, the generation is on the measured command line, and each release carries the signed PCR 11 prediction of its generation under `/boot`, which `tilo-disk-encrypt enrol --tpm-automatic` seals a PIN-less keyslot to. The VM check seals the volume on the installed machine — the installer's enrollment ran in a guest whose PCR 7 is not the machine's, so it cannot open there — and proves an unattended reboot unlocks it through the TPM keyslot, with no peer and nothing typed. |
+| Rollback protection: no older signed image boots below the floor | **Implemented, VM proof pending.** Every server image carries a generation of the server's own dense series, which `os/dev/next-generation.sh` reads from the signed `gen<N>` tags and their provenance. `tilo-rollback-confirm` judges a server by its own probe, the unit `tilo-boot-health` is configured with, rather than by greetd, which a server never starts. The floor lives in the TPM beside the keyslots and moves by signed, single-use approvals (`crates/server/tilo-server/src/servers/floor.rs`). The VM check enrols an older signed image's prediction as a generation below any floor, moves the floor to the running generation with approvals, and proves the boot stops at the unlock prompt with the floor named as the reason, while the recovery key still opens the disk. |
 | Update images verified before staging | **Done.** Updates go through `tilo-verified-update`, and the container policy requires a Rekor-logged release signature for `registry.tilo.so/tilo/tilo-host`, as for the desktop's repositories; its releases carry certified signatures once the release root exists, and provenance with the generation. The VM check serves an update from a registry the server takes for a mirror of that repository, signed with a key that stands in for the release key in the same policy scope, and proves the server's update step verifies and stages it and refuses an image of the repository nobody signed (`os/tests/registry_update_check.sh`). An update from local media is still admitted unsigned, which takes root. |
 | No SSH | **Done.** `openssh`, `openssh-server` and `openssh-clients` are removed at build and the build fails if any returns. |
 | No interactive local login | **Done.** Every account, root's included, carries a locked password, so the gettys on the local and serial consoles and the emergency shell open for nobody; the build fails on an unlocked account. The consoles show the enrollment code. The command line is inside the signed UKI, and the boot menu's editor is off as well: the boot-entry pass writes `editor no` into `loader/loader.conf` on every machine. |

@@ -4759,11 +4759,27 @@ id_token = ["registry.tilo.so"]
 arch = ["x86_64", "aarch64"]
 
 [[check]]
+name = "sign-os-loader-{arch}"
+# Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/publish/sign-boot-loader.sh /target/os/{arch}/release-image /target/publish/os-release/{arch}/boot-loader"
+needs = ["os-release-image-{arch}", "os-assets", "signing-tools"]
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+env = { AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_EFI_SIGNING_KMS_KEY = "arn:aws:kms:us-east-1:125650147312:alias/tilo-efi-signing" }
+isolation = "vm"
+outputs = ["/target/publish/os-release/{arch}/boot-loader/**"]
+on = ["dispatch"]
+id_token = ["sts.amazonaws.com"]
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+[[check]]
 name = "os-release-seal-{arch}"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/publish/os-release.sh seal {arch} /target/os/{arch}/release-image /target/publish/os-release/{arch}/sealed"
+run = "loader=/target/publish/os-release/{arch}/boot-loader\nif [ -f \"$loader/oci/index.json\" ]; then image=$loader\nelif case \"${T_REF:-}\" in tag:*) true ;; *) false ;; esac; then echo 'a release signs its boot loader before it seals; sign-os-loader-{arch} produced nothing' >&2; exit 1\nelse image=/target/os/{arch}/release-image; fi\nbash tools/ci/publish/os-release.sh seal {arch} \"$image\" /target/publish/os-release/{arch}/sealed"
 needs = ["os-release-image-{arch}", "os-release-image-size-{arch}", "tilo-vm-binary-{arch}", "signing-tools"]
+optional_needs = ["sign-os-loader-{arch}"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["/dev/kvm", "disk-100g"]
@@ -4890,11 +4906,26 @@ on = ["dispatch"]
 id_token = ["registry.tilo.so"]
 
 [[check]]
+name = "sign-os-loader-lenovo-83ed"
+# Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/publish/sign-boot-loader.sh /target/os/aarch64/release-image-lenovo-83ed /target/publish/os-release/lenovo-83ed/boot-loader"
+needs = ["os-release-image-lenovo-83ed", "os-assets", "signing-tools"]
+image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
+env = { AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_EFI_SIGNING_KMS_KEY = "arn:aws:kms:us-east-1:125650147312:alias/tilo-efi-signing" }
+requires = ["arch=arm64"]
+isolation = "vm"
+outputs = ["/target/publish/os-release/lenovo-83ed/boot-loader/**"]
+on = ["dispatch"]
+id_token = ["sts.amazonaws.com"]
+
+[[check]]
 name = "os-release-seal-lenovo-83ed"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/publish/os-release.sh seal lenovo-83ed /target/os/aarch64/release-image-lenovo-83ed /target/publish/os-release/lenovo-83ed/sealed"
+run = "loader=/target/publish/os-release/lenovo-83ed/boot-loader\nif [ -f \"$loader/oci/index.json\" ]; then image=$loader\nelif case \"${T_REF:-}\" in tag:*) true ;; *) false ;; esac; then echo 'a release signs its boot loader before it seals; sign-os-loader-lenovo-83ed produced nothing' >&2; exit 1\nelse image=/target/os/aarch64/release-image-lenovo-83ed; fi\nbash tools/ci/publish/os-release.sh seal lenovo-83ed \"$image\" /target/publish/os-release/lenovo-83ed/sealed"
 needs = ["os-release-image-lenovo-83ed", "os-release-image-size-lenovo-83ed", "signing-tools"]
+optional_needs = ["sign-os-loader-lenovo-83ed"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 requires = ["arch=arm64", "disk-100g"]
 isolation = "vm"
@@ -6534,17 +6565,35 @@ isolation = "vm"
 timeout_secs = 1800
 default = false
 
+# The image's boot loader signed with the release key, before the seal: systemd-boot
+# sits in the rootfs and `bootc install` copies its `.efi.signed` companion to the
+# ESP, so the signature has to be inside the image the seal describes. Only a
+# release does this; a branch run has no key, as it has none for the UKIs either.
+[[check]]
+name = "sign-host-loader"
+# Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/publish/sign-boot-loader.sh /target/publish/host /target/publish/host-loader-signed"
+needs = ["image-host", "os-assets", "signing-tools"]
+env = { AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_EFI_SIGNING_KMS_KEY = "arn:aws:kms:us-east-1:125650147312:alias/tilo-efi-signing" }
+requires = ["arch=x86_64"]
+isolation = "vm"
+outputs = ["/target/publish/host-loader-signed/**"]
+on = ["dispatch"]
+id_token = ["sts.amazonaws.com"]
+
 # The image sealed: its UKI's composefs digest the one `bootc install` computes from its layers,
 # by the resealing bootc a sealed dev image takes it from (tools/ci/seal-dev-image.sh), and what
 # its boot signing signs prepared beside it (host-seal.sh seal). Everything after signs, boots or
-# publishes this image.
+# publishes this image; a release's is the one sign-host-loader signed the boot loader into.
 [[check]]
 name = "seal-host"
 # dnf installs from Fedora's mirrors and the resealing bootc comes from registry.tilo.so, or is
 # built from Fedora's: no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/publish/host-seal.sh seal /target/publish/host /target/publish/host-sealed"
+run = "image=/target/publish/host-loader-signed\nif [ ! -s \"$image/image.oci.tar\" ]; then\n  image=/target/publish/host\n  case \"${T_REF:-}\" in tag:*) echo 'a release signs its boot loader before it seals; sign-host-loader produced nothing' >&2; exit 1 ;; esac\nfi\nbash tools/ci/publish/host-seal.sh seal \"$image\" /target/publish/host-sealed"
 needs = ["image-host"]
+optional_needs = ["sign-host-loader"]
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/publish/host-sealed/**"]
@@ -6637,19 +6686,23 @@ on = ["dispatch"]
 heavy = true
 
 
-# The server image proves itself by booting: sealed and signed with throwaway EFI and PCR keys, it
-# installs onto an encrypted disk in a guest of its own (this check's micro-VM cannot open a
-# volume), and the machine boots that disk under firmware that trusts those keys alone, so only
-# from the signed UKI. It serves (the hosted-VM service binds its socket, the boot judges itself
-# by the server probe, updates stage through the verified path), an update that breaks the server
-# spends its tries and the boot loader goes back by itself, and a registry update is verified
-# before it stages. Driven at the serial console, which is the only console the image has.
+# The server image proves itself by booting: its boot loader and UKIs signed and sealed with
+# throwaway EFI and PCR keys the machine trusts, it installs onto an encrypted disk in a guest of
+# its own (this check's micro-VM cannot open a volume), and the machine boots that disk under
+# firmware that trusts those keys alone, so only from the signed boot loader and UKI. It serves
+# (the hosted-VM service binds its socket, the boot judges itself by the server probe, updates
+# stage through the verified path), an update that breaks the server spends its tries and the
+# boot loader goes back by itself, and a registry update is verified before it stages. The
+# installed machine then seals the disk to itself (a PIN-less keyslot against the signed PCR 11
+# prediction and its own PCR 7), reboots with nothing typed, and refuses an image whose signed
+# prediction is below the rollback floor the approvals moved. Driven at the serial console,
+# which is the only console the image has.
 [[check]]
 name = "host-assurance-x86_64"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/host-assurance.sh"
-needs = ["seal-host", "os-dev-disk-lean-x86_64", "tilo-vm-binary-x86_64", "os-assets"]
+needs = ["image-host", "host-base", "os-dev-disk-lean-x86_64", "tilo-vm-binary-x86_64", "os-assets"]
 env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"

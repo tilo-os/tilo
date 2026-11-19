@@ -202,6 +202,11 @@ tools/ci/publish/os-release.sh at a time:
   it holds the keys. `apply` verifies those signatures against the pinned
   keys, adds them under `/boot`, installs the image once more to prove the seal holds,
   and writes its SPDX SBOM and SLSA provenance.
+- Before the seal, `sign-os-loader-{arch}` (`sign-boot-loader.sh`, and
+  `sign-os-loader-lenovo-83ed` for a board) signs the image's systemd-boot with the same
+  EFI key and adds its `.efi.signed` companion, which `bootctl install` copies to the ESP;
+  the signature has to be inside the image the seal describes, so it cannot be added to an
+  installed disk afterwards.
 - `reproduce` builds the release image again in one step, every action
   from a compile without caches, and must get the same
   digest; a difference fails it with a report of where the images differ.
@@ -234,7 +239,8 @@ t dispatch publish-host --ref tag:vX.Y.Z --publish
 It builds what it needs and refuses to publish anything else: the server's programs
 (`host-binaries`), their base (`host-base`: the mirrored bootc base, the frozen package set,
 Firecracker and the tools that seal a UKI) and the image above it (`image-host`, carrying the
-generation `generation-host` reads from the server's series), its UKI sealed with the composefs
+generation `generation-host` reads from the server's series), its boot loader signed into it
+with the release EFI key (`sign-host-loader`), its UKI sealed with the composefs
 digest its install computes (`seal-host`); it proves the image in a container (`test-image-host`) and by installing and
 booting it under Secure Boot in a VM (`host-assurance-x86_64`); `sign-host-boot` signs its UKIs
 and PCR 11 prediction with the EFI and PCR keys in KMS and `apply-host-boot` adds them, verified;
