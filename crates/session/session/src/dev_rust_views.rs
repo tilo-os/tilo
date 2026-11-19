@@ -141,7 +141,7 @@ impl Service for RustApps {
                 app: tilo_actions::Noun::new("Tube", "Tube"),
                 root: false,
             })
-            .view(tilo_actions::ResourceViewSpec::new(
+            .with_view(tilo_actions::ResourceViewSpec::new(
                 "page",
                 channel.name.clone(),
                 "open",
@@ -177,7 +177,7 @@ impl Service for RustApps {
                     app: tilo_actions::Noun::new("Chat", "Chat"),
                     root: false,
                 })
-                .view(tilo_actions::ResourceViewSpec::new(
+                .with_view(tilo_actions::ResourceViewSpec::new(
                     "page",
                     conversation.name,
                     "open",
