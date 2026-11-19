@@ -4772,7 +4772,9 @@ name = "publish-os-dev-{arch}"
 # Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/os-dev-publish.sh image {arch} /target/os/{arch}/image /target/publish/os-dev/{arch}"
-needs = ["os-image-{arch}", "os-dev-image-{arch}", "os-dev-check-{arch}", "sign-dev-os-{arch}", "signing-tools"]
+# The Windows compatibility extension is published for the same commit first: a dev image whose
+# commit has no payload has no Windows support until one is published for it.
+needs = ["os-image-{arch}", "os-dev-image-{arch}", "os-dev-check-{arch}", "sign-dev-os-{arch}", "signing-tools", "publish-windows-compat-{arch}"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 requires = ["disk-100g"]
 isolation = "vm"
