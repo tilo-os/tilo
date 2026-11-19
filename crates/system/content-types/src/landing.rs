@@ -106,7 +106,9 @@ pub fn landing(head: &[u8], name: &str) -> Option<Landing> {
         return Some(landing);
     }
     // Text is the one the name decides: a markdown or plain-text file is a
-    // note, and a file nothing else lands is not made one by its name.
+    // note, and a file nothing else lands is not made one by its name. An
+    // empty file has no bytes to say otherwise, so its name decides: a new
+    // text file opens as a note to be written.
     let extension = std::path::Path::new(name)
         .extension()
         .and_then(|extension| extension.to_str())
@@ -115,7 +117,7 @@ pub fn landing(head: &[u8], name: &str) -> Option<Landing> {
         extension.as_deref(),
         Some("md" | "markdown" | "txt" | "text")
     );
-    (textual && crate::is_text(head)).then_some(NOTES)
+    (textual && (head.is_empty() || crate::is_text(head))).then_some(NOTES)
 }
 
 #[cfg(test)]
@@ -132,6 +134,8 @@ mod tests {
         assert_eq!(landing(b"plain words\n", "README"), None);
         assert_eq!(landing(&[0_u8, 1, 2, 3], "blob.bin"), None);
         assert_eq!(landing(b"", "empty.pdf"), None);
+        assert_eq!(landing(b"", "New file.txt"), Some(NOTES));
+        assert_eq!(landing(b"", "empty"), None);
     }
 
     #[test]

@@ -1,15 +1,14 @@
-//! The files a window shows: the folder of the workspace's tree it shows, so a
-//! window comes back to where the person left it.
+//! The resource behind every Files window of a workspace in a page: what the window offers
+//! on the folder it shows. Which folder that is belongs to the window, not to the resource:
+//! each person, and each of their windows, goes into folders on its own.
 
-use tilo_resource::{self, Atom, Effect, Model, SearchEntry, resource};
+use tilo_resource::{self, Effect, Model, SearchEntry, resource};
 
-/// The window's own resource: the folder of the workspace's tree it shows, so a
-/// window comes back to where the person left it.
+/// The resource every Files window of a workspace in a page opens. It holds nothing: the
+/// folder a window shows is that window's own view, never something it writes here, so
+/// one person going into a folder moves nobody else's window.
 #[derive(Model, Default, Clone, Debug, PartialEq)]
-pub struct FilesWindow {
-    /// The node of the tree the window shows; empty for the workspace's root.
-    pub folder: Atom,
-}
+pub struct FilesWindow {}
 
 /// What a window of the workspace's files does beyond showing a folder: the ways to put
 /// something new into the folder it shows.
@@ -27,6 +26,31 @@ pub enum FilesWindowEffect {
     NewFolder {
         #[param("Its name; none to name it in the window")]
         name: Option<String>,
+    },
+
+    /// New file
+    ///
+    /// Make an empty text file called `name` in the folder the window shows, and open it;
+    /// with no name, show the row it is named in, at the top of that folder.
+    #[effect(kind = "undoable", icon = "file-plus")]
+    NewFile {
+        #[param("Its name; none to name it in the window")]
+        name: Option<String>,
+    },
+
+    /// Enclosing folder
+    ///
+    /// Show the folder that holds the one the window shows. Only this window moves.
+    #[effect(kind = "read", icon = "arrow-up")]
+    Up,
+
+    /// Download
+    ///
+    /// Save the file at `node`, or the folder at `node` as one zip, onto this device.
+    #[effect(kind = "read", icon = "download")]
+    Download {
+        #[param("The file or folder, by its node in the workspace's tree")]
+        node: String,
     },
 
     /// Upload files
@@ -47,7 +71,7 @@ pub enum FilesWindowEffect {
 impl FilesWindow {}
 
 impl FilesWindow {
-    /// What the resource holds: the folder the window shows.
+    /// What the resource holds: nothing, as the folder a window shows is its own.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,

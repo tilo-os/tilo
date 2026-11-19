@@ -626,7 +626,8 @@ files-folder-remove-current-bookmark = Remove this folder from Favorites
 # The workspace's files in a page: the tree the workspace holds, which no
 # mount of this device shows.
 files-workspace-window = Files window
-files-tree-up = Enclosing folder
+files-tree-new-file-default-name = New file.txt
+files-tree-new-file-failed-title = Couldn’t create the file
 files-tree-root = Workspace
 files-tree-create = Create
 files-tree-cancel = Cancel
@@ -638,3 +639,4 @@ files-tree-open = Open
 files-tree-open-detail = Open the file in the app that reads it
 files-tree-download = Download
 files-tree-download-folder = Download as zip
+files-tree-download-unavailable = Downloading isn’t available on this device

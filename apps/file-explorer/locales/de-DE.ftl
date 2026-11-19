@@ -625,7 +625,8 @@ files-folder-remove-current-bookmark = Diesen Ordner aus Favoriten entfernen
 # The workspace's files in a page: the tree the workspace holds, which no
 # mount of this device shows.
 files-workspace-window = Dateienfenster
-files-tree-up = Übergeordneter Ordner
+files-tree-new-file-default-name = Neue Datei.txt
+files-tree-new-file-failed-title = Die Datei konnte nicht erstellt werden
 files-tree-root = Arbeitsbereich
 files-tree-create = Erstellen
 files-tree-cancel = Abbrechen
@@ -637,3 +638,4 @@ files-tree-open = Öffnen
 files-tree-open-detail = Die Datei in der App öffnen, die sie liest
 files-tree-download = Herunterladen
 files-tree-download-folder = Als ZIP herunterladen
+files-tree-download-unavailable = Herunterladen ist auf diesem Gerät nicht verfügbar

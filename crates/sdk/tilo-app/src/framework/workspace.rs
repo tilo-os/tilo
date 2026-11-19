@@ -657,15 +657,15 @@ fn opened_at_version(
     Ok(stored)
 }
 
-/// What `shared` holds as the keeping app's window offers it to callers from outside, beside
-/// the app's own resource: its read, and each action once the workspace's grants admit it
-/// ([`WorkspaceResource::admitted`]), applied as whoever asked.
-fn offered<P: Resource>(shared: &Rc<Shared<P>>) -> Held<P> {
+/// What `shared` holds as the keeping app's window offers it to callers from outside, under
+/// `id`, beside the app's own resource: its read, and each action once the workspace's grants
+/// admit it ([`WorkspaceResource::admitted`]), applied as whoever asked.
+fn offered<P: Resource>(shared: &Rc<Shared<P>>, id: String) -> Held<P> {
     let following = Rc::downgrade(shared);
     let applying = Rc::downgrade(shared);
     let reading = Rc::downgrade(shared);
     Held::new(
-        P::KIND.to_owned(),
+        id,
         P::LABEL.to_owned(),
         true,
         shared.live.clone(),
@@ -1027,7 +1027,9 @@ impl WorkspaceState {
         key: OpenKey,
         opened: Option<WorkspaceResource<P>>,
     ) -> Option<WorkspaceResource<P>> {
-        let WorkspaceResource { shared } = opened?;
+        let opened = opened?;
+        let document = opened.id().to_string();
+        let WorkspaceResource { shared } = opened;
         self.owners.borrow_mut().push(shared.record.history_owner());
         let weak = Rc::downgrade(&shared);
         self.refreshers.borrow_mut().push(Box::new(move || {
@@ -1035,10 +1037,23 @@ impl WorkspaceState {
         }));
         // The keeping app's own window offers it to callers from outside, beside its own
         // resource; every other app's window only opens it.
+        // The first resource of a kind is offered as the kind; each further one (a part of a
+        // resource kept in several documents, as a workspace's tree is) as its own document, so
+        // that no two share an address: two that do withdraw the window's every action.
         if key.0 == self.app_id {
+            let kind_taken = self
+                .published
+                .borrow()
+                .iter()
+                .any(|api| api.id() == P::KIND);
+            let id = if kind_taken {
+                document
+            } else {
+                P::KIND.to_owned()
+            };
             self.published
                 .borrow_mut()
-                .push(Rc::new(offered(&shared)) as Rc<dyn ResourceApi>);
+                .push(Rc::new(offered(&shared, id)) as Rc<dyn ResourceApi>);
         }
         self.opened
             .borrow_mut()

@@ -17460,6 +17460,24 @@
         ],
         "description": ""
       },
+      "files.workspace.up.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
+      "files.workspace.download.Arguments": {
+        "type": "object",
+        "properties": {
+          "node": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "node"
+        ],
+        "description": ""
+      },
       "firewall.config.start.Arguments": {
         "type": "object",
         "properties": {},
@@ -34032,6 +34050,18 @@
       "resource": "files.recent",
       "action": "forget",
       "arguments": "#/components/schemas/files.recent.forget.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "files.workspace",
+      "action": "up",
+      "arguments": "#/components/schemas/files.workspace.up.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "files.workspace",
+      "action": "download",
+      "arguments": "#/components/schemas/files.workspace.download.Arguments"
     },
     {
       "app": "so.tilo.firewall",
