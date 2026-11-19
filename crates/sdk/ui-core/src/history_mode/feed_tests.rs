@@ -108,23 +108,50 @@ pub fn sync(doc: &automerge::AutoCommit) {
 }
 
 /// The workspace's history of `doc` as the session reads it: its changes, newest first, and the spans
-/// of them its members named.
+/// of them its members named. Each change is served as the session serves it
+/// (`desktop-surface`'s `serve::wire_entry`): what it did under `step`, the app and the resource as
+/// a person names them, and its kind — the feed a window follows is read through exactly those
+/// fields. A resource's genesis is left out, as the session's history source leaves it out: nobody
+/// made it.
 fn read(doc: &automerge::AutoCommit) -> wire::Feed {
     let mut doc = doc.clone();
-    let source = crate::history_source::HistorySource::new();
+    let source = crate::history_source::HistorySource::new().without_resource_genesis();
     let entries = source
         .entries(&mut doc)
         .iter()
         .rev()
         .map(|entry| {
             let (red, green, blue) = entry.author.rgb();
+            let context = entry.context.as_ref();
             wire::Entry {
                 id: wire::entry_hex(entry.id.as_bytes()),
                 author: wire::Author {
                     name: entry.author.name.clone(),
                     rgb: [red, green, blue],
                     identity: entry.author.identity_short.clone(),
-                    ..wire::Author::default()
+                    relation: match entry.author.relation {
+                        AuthorRelation::Reader => wire::Relation::Reader,
+                        AuthorRelation::Person => wire::Relation::Person,
+                        AuthorRelation::Software => wire::Relation::Software,
+                    },
+                    on_behalf_of: entry
+                        .author
+                        .attribution
+                        .as_ref()
+                        .and_then(|who| who.on_behalf_of_name.clone()),
+                    for_reader: entry.author.for_reader,
+                    task: entry.author.task.clone(),
+                },
+                kind: match entry.entry_kind {
+                    EntryKind::Text => wire::Kind::Text,
+                    EntryKind::Move => wire::Kind::Move,
+                    EntryKind::Details => wire::Kind::Details,
+                    EntryKind::Comment => wire::Kind::Comment,
+                    EntryKind::Delete => wire::Kind::Delete,
+                    EntryKind::Restore => wire::Kind::Restore,
+                    EntryKind::Access => wire::Kind::Access,
+                    EntryKind::Compaction => wire::Kind::Compaction,
+                    EntryKind::Redaction => wire::Kind::Redaction,
                 },
                 at_ms: entry
                     .timestamp
@@ -133,6 +160,25 @@ fn read(doc: &automerge::AutoCommit) -> wire::Feed {
                         i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
                     }),
                 summary: entry.summary.clone(),
+                step: context
+                    .filter(|context| context.what.is_some())
+                    .map(|context| crate::tilo_actions::ActionContext {
+                        app: context.app.clone(),
+                        resource: context.resource.clone(),
+                        item: context.item.clone(),
+                        what: context.what.clone(),
+                        ..crate::tilo_actions::ActionContext::default()
+                    }),
+                app: context
+                    .and_then(|context| context.app.as_ref())
+                    .map(|app| app.label.clone())
+                    .filter(|label| !label.is_empty()),
+                resource: context
+                    .and_then(|context| context.resource.as_ref())
+                    .and_then(|resource| {
+                        crate::history_source::detail::human_label(&resource.label, &resource.id)
+                    })
+                    .map(str::to_owned),
                 ..wire::Entry::default()
             }
         })
@@ -248,5 +294,88 @@ fn a_row_says_its_step_in_the_apps_words_and_whom_software_acted_for() {
             .as_deref(),
         Some("Notes"),
         "the app as the session names it"
+    );
+}
+
+/// A change a window's History lists says what it did in the words of the step its action
+/// recorded, names the app and the resource as a person reads them, and a resource's own genesis,
+/// which nobody made, is not served to a window at all — the session's feed carries exactly these
+/// fields ([`crate::session`]'s `serve::wire_entry`) and leaves the genesis out.
+#[test]
+fn a_served_change_carries_the_step_its_action_recorded_and_no_genesis() {
+    use automerge::{AutoCommit, ROOT};
+
+    use crate::resource::{DocumentCheckout, DocumentId, ResourceOwners, ResourceType};
+    use crate::tilo_actions::{ActionKey, Described, Did};
+
+    /// A fixed clock so the change's date is deterministic.
+    const T0: i64 = 1_780_000_000;
+
+    crate::i18n::I18nManager::init("en-US");
+    crate::i18n::I18nManager::add_resource(
+        "en-US",
+        "tasks-rename = Renamed { $item } to { $title }\n".into(),
+    );
+
+    let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
+    let store = ResourceOwners::portable(cache)
+        .open("test", "workspace")
+        .unwrap();
+    let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("issues"));
+    store.create_resource(&checkout).unwrap();
+    let mut doc = store.read(&checkout.id, AutoCommit::clone).unwrap();
+    assert!(
+        read(&doc).entries.is_empty(),
+        "a resource's genesis names no one, so it is not served to a window"
+    );
+
+    let step = ActionContext::for_resource("i1", "tasks.issue", "Draft the plan")
+        .with_app("so.tilo.tasks", "Tasks")
+        .with_described(
+            Described::new(Did::verb(
+                ActionKey::new("so.tilo.tasks", "tasks.issues", "rename"),
+                [("title".to_owned(), "Final plan".into())],
+            ))
+            .on("i1", "Draft the plan"),
+        );
+    // The change is typed text, as a person's edit is: a splice into a block, not a
+    // metadata put, so the history classes it as text.
+    let (c, mut ids) = {
+        let c = tilo_doc::model::init(&mut doc, &ROOT);
+        let ids = tilo_doc::IdGen::new(doc.get_actor().to_hex_string());
+        (c, ids)
+    };
+    {
+        let mut dm = tilo_doc::DocMut {
+            doc: &mut doc,
+            c: &c,
+            ids: &mut ids,
+        };
+        let block = dm.insert_block(None, "paragraph");
+        dm.splice_text(&block, 0, 0, "Draft the plan");
+    }
+    tilo_resource::history::commit_stamped_at_with_message(&mut doc, T0, step.change_message());
+
+    let feed = read(&doc);
+    assert_eq!(feed.entries.len(), 1, "the one change someone made");
+    let served = &feed.entries[0];
+    assert_eq!(
+        served.app.as_deref(),
+        Some("Tasks"),
+        "the app as a person names it"
+    );
+    assert_eq!(served.resource.as_deref(), Some("Draft the plan"));
+    assert_eq!(served.kind, wire::Kind::Text);
+    assert_eq!(
+        served.step.as_ref().and_then(|step| step.what.as_ref()),
+        step.what.as_ref(),
+        "what the change did, under the step the feed carries"
+    );
+
+    let id = wire::entry_id(&served.id).expect("a history id");
+    let row = super::row(served, HistoryEntryId::from_bytes(id));
+    assert_eq!(
+        row.summary, "Renamed Draft the plan to Final plan",
+        "read in the app's words, from the step the change recorded"
     );
 }
