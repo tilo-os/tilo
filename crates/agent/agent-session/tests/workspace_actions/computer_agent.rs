@@ -13,7 +13,7 @@ const CHAT: &str = "so.tilo.chat";
 const NAME: &str = "Claude Code";
 
 /// The agent `NAME` on `computer`, in a session of its own: an MCP server acting as it.
-async fn computer_agent(
+pub(super) async fn computer_agent(
     hosted: &Hosted,
     computer: &Device,
     server: &Device,

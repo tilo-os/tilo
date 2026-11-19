@@ -84,6 +84,9 @@ mod branch_workspace;
 #[cfg(test)]
 #[path = "workspace_actions/computer_agent.rs"]
 mod computer_agent;
+#[cfg(test)]
+#[path = "workspace_actions/computer_restart.rs"]
+mod computer_restart;
 
 #[cfg(test)]
 #[path = "workspace_actions/bulk_import.rs"]
