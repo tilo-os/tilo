@@ -437,6 +437,7 @@ async fn a_members_document_write_reaches_another_member_of_a_held_workspace() {
     let b = user.enrol("phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let server_dev = user.enrol("home-server", DeviceCapabilities::member());
+    let server_cert = server_dev.cert.clone();
     let server = spawn_server_on(state.path(), &user, server_dev, &[WS], &[&a.cert, &b.cert]).await;
     let join = async |device: &crate::common::TestDevice| {
         let client = ServerClient::connect(
@@ -449,26 +450,51 @@ async fn a_members_document_write_reaches_another_member_of_a_held_workspace() {
         )
         .await
         .expect("connect");
-        let session = ServerCoeditSession::join(client, WS, device.device_pubkey()).unwrap();
-        tilo_test_env::within("Ready timeout", async {
-            while !matches!(session.recv().await, Some(Inbound::Ready { .. })) {}
-        })
-        .await;
-        session
+        ServerCoeditSession::join(client, WS, device.device_pubkey()).unwrap()
     };
-    let a_session = join(&a).await;
-    let b_session = join(&b).await;
-
-    // A's write names the workspace it is sent to, as A's replica of that
-    // workspace writes it.
+    // A's replica of the workspace is the one a member holds once it joined: the server's
+    // session hands it the workspace's governance before it says it is ready, and A takes it
+    // in. A write is signed under the governance it names, so a replica without it signs none.
     let mut replica = tilo_peer_state::StatePeer::new(
         &WS.to_string(),
-        a.cert.clone(),
-        vec![a.cert.clone(), b.cert.clone()],
+        server_cert.clone(),
+        vec![server_cert.clone(), a.cert.clone(), b.cert.clone()],
         RevocationList::new(),
         std::time::SystemTime::now(),
     )
     .unwrap();
+    replica.select_exact_admissions().unwrap();
+    let a_session = join(&a).await;
+    tilo_test_env::within("A holds the workspace", async {
+        let mut ready = false;
+        while !ready || replica.admitted_workspace().is_none() {
+            match a_session.recv().await.expect("A's session stays open") {
+                Inbound::Ready { .. } => ready = true,
+                Inbound::Delta { author, data } => {
+                    let message: neighbour_wire::NeighbourMsg =
+                        postcard::from_bytes(&data).unwrap();
+                    let origin = if author == server_cert.device_public_key {
+                        tilo_peer_state::TransportOrigin::RetainedServerDelta(author)
+                    } else {
+                        tilo_peer_state::TransportOrigin::ServerDelta(author)
+                    };
+                    replica
+                        .receive_from(origin, message, std::time::SystemTime::now())
+                        .unwrap();
+                }
+                _ => {}
+            }
+        }
+    })
+    .await;
+    let b_session = join(&b).await;
+    tilo_test_env::within("Ready timeout", async {
+        while !matches!(b_session.recv().await, Some(Inbound::Ready { .. })) {}
+    })
+    .await;
+
+    // A's write names the workspace it is sent to, as A's replica of that
+    // workspace writes it.
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "topic", "from A").unwrap();
     doc.commit_edit("fixture", "topic");
