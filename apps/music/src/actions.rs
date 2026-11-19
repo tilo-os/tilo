@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Effect};
 
 use crate::row_types::{
-    Album, Artist, LocalFile as LocalFileRow, Membership, Player, Playlist, Queue, QueueItem,
-    Recommendation, RecommendationArtist, RecommendationInput, RecommendationPreferences, Source,
-    SpotifyDevice, Track,
+    Album, Artist, Library, LocalFile as LocalFileRow, Membership, Player, Playlist, Queue,
+    QueueItem, Recommendation, RecommendationArtist, RecommendationInput,
+    RecommendationPreferences, Source, SpotifyDevice, Track,
 };
 use tilo_actions::ActionSpec;
 use ui::framework::EffectStatus;
@@ -194,20 +194,21 @@ pub enum MusicEffect {
     /// Choose music source
     ///
     /// Opens the source picker without starting sign-in or changing a grant.
+    #[effect(on = Library)]
     #[effect(kind = "outside", on = Source)]
     Sources,
     /// Enable full Spotify library and device controls
     ///
     /// Explicitly requests editing, playlist, followed-artist and remote-device permissions.
     #[effect(kind = "outside", on = Source)]
-    #[effect(attended, job)]
+    #[effect(attended, job, on = Library)]
     ConnectSpotifyLibrary,
     /// Connect Spotify
     ///
     /// Requests profile and saved-library read access, without editing or remote control.
     #[effect(kind = "outside", on = Source)]
     #[effect(attended, job)]
-    #[effect(label = "music-connect-spotify")]
+    #[effect(label = "music-connect-spotify", on = Library)]
     ConnectSpotify,
     /// Authorize Spotify playback
     ///
@@ -221,7 +222,7 @@ pub enum MusicEffect {
     SpotifyAccountStatus,
     /// Refresh Spotify devices
     #[effect(kind = "outside", on = Source)]
-    #[effect(job, returns)]
+    #[effect(job, returns, on = Library)]
     SpotifyDevices,
     /// Show Spotify's remote queue
     ///
@@ -231,7 +232,7 @@ pub enum MusicEffect {
     SpotifyQueue,
     /// Load more Spotify library collections
     #[effect(kind = "outside", on = Source)]
-    #[effect(job, returns)]
+    #[effect(job, returns, on = Library)]
     SpotifyLibraryMore,
     /// Name a new private Spotify playlist
     #[effect(kind = "outside", on = Source)]
@@ -240,14 +241,14 @@ pub enum MusicEffect {
     ///
     /// Creates an empty private playlist. Refresh before retrying an uncertain result.
     #[effect(kind = "outside")]
-    #[effect(job, returns)]
+    #[effect(job, returns, on = Library)]
     SpotifyCreatePlaylist {
         #[param("Playlist name")]
         name: String,
     },
     /// Transfer Spotify playback
     #[effect(kind = "outside", on = SpotifyDevice)]
-    #[effect(job, returns)]
+    #[effect(job, returns, on = Library)]
     SpotifyTransfer {
         #[param("Spotify Connect device ID")]
         device: String,
@@ -270,21 +271,21 @@ pub enum MusicEffect {
     },
     /// Save to Spotify library
     #[effect(kind = "outside", on = Track, on = Artist, on = Album, on = Playlist)]
-    #[effect(job, returns)]
+    #[effect(job, returns, on = Library)]
     SpotifySave {
         #[param("Spotify track, album, artist or playlist URI")]
         uri: String,
     },
     /// Remove from Spotify library
     #[effect(kind = "outside", on = Track, on = Artist, on = Album, on = Playlist)]
-    #[effect(job, returns)]
+    #[effect(job, returns, on = Library)]
     SpotifyUnsave {
         #[param("Spotify track, album, artist or playlist URI")]
         uri: String,
     },
     /// Rename Spotify playlist
     #[effect(kind = "outside")]
-    #[effect(job, returns)]
+    #[effect(job, returns, on = Library)]
     SpotifyRenamePlaylist {
         #[param("Spotify playlist URI")]
         playlist: String,
@@ -293,7 +294,7 @@ pub enum MusicEffect {
     },
     /// Add to Spotify playlist
     #[effect(kind = "outside")]
-    #[effect(job, returns)]
+    #[effect(job, returns, on = Library)]
     SpotifyPlaylistAdd {
         #[param("Spotify playlist URI")]
         playlist: String,

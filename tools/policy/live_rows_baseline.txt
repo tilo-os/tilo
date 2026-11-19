@@ -2,5 +2,3 @@
 # (tools/policy/check_live_rows.py). Counts only shrink.
 row-operation 1 apps/code-editor/src/app/surface.rs
 row-operation 1 apps/monitor/src/app.rs
-row-operation 1 apps/music/src/app/local_files.rs
-row-operation 1 apps/music/src/app/spotify.rs

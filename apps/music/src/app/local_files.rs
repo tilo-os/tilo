@@ -1482,25 +1482,18 @@ mod tests {
 impl Music {
     pub(super) fn make_source_buttons() -> Vec<ui::widget::Button> {
         use crate::actions::MusicEffect;
-        use ui::tilo_resource::Effect as _;
         [
-            (MusicEffect::Sources, "music-sources"),
-            (MusicEffect::SpotifyQueue, "music-spotify-queue-refresh"),
+            (MusicEffect::SOURCES, "music-sources"),
+            (MusicEffect::SPOTIFY_QUEUE, "music-spotify-queue-refresh"),
             (
-                MusicEffect::NewSpotifyPlaylist,
+                MusicEffect::NEW_SPOTIFY_PLAYLIST,
                 "music-spotify-create-playlist",
             ),
         ]
         .into_iter()
         .filter_map(|(effect, key)| {
-            let row = ui::framework::LiveRow::typed::<crate::row_types::Library>(
-                "music.library",
-                crate::i18n::CATALOG.t("music-resource-library"),
-            )
-            .effect(&effect);
-            tilo_actions::ActionBinding::unit_for(&row, effect.id())
-                .ok()
-                .map(|binding| ui::widget::Button::new(key, key).on_action(binding))
+            let binding = effect.binding("music.library").ok()?;
+            Some(ui::widget::Button::new(key, key).on_action(binding))
         })
         .collect()
     }
