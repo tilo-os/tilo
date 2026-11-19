@@ -1124,6 +1124,11 @@ tilo_test_env::scenario! {
         assert!("workspace".parse::<TreePath>().is_err());
         assert!("planet:x".parse::<TreePath>().is_err());
         assert!("workspace:".parse::<TreePath>().is_err());
+        let primary: TreePath = "workspace:r/app:mail/resource:".parse().unwrap();
+        assert_eq!(primary, mail().resource(""));
+        assert!(!primary.covers(&mail().resource("other")));
+        assert!(!primary.covers(&mail().any(Level::Resource)));
+        assert_eq!(primary.to_string(), "workspace:r/app:mail/resource:");
         assert!("workspace:a%zz".parse::<TreePath>().is_err());
     }
 

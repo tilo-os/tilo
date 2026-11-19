@@ -49,6 +49,14 @@ pub struct Branched {
     pub person: [u8; 32],
 }
 
+/// The Files keys needed to copy retained versions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BranchFileKeys {
+    None,
+    Destination,
+    SourceAndDestination,
+}
+
 /// What keeps the content of the workspaces this host governs, as it copies a
 /// source's content into a branch of it.
 pub trait BranchContent: Send + Sync {
@@ -67,13 +75,13 @@ pub trait BranchContent: Send + Sync {
         records: &[((String, String), Vec<u8>)],
     ) -> Result<(), String>;
 
-    /// Whether the copied Files tree needs keys to move its file content.
-    fn has_sealed_files(
+    /// The key groups needed to copy the versions the source still holds.
+    fn file_keys(
         &self,
         _source: &str,
         _documents: &[((String, String), Vec<u8>)],
-    ) -> Result<bool, String> {
-        Ok(false)
+    ) -> Result<BranchFileKeys, String> {
+        Ok(BranchFileKeys::None)
     }
 
     /// Copy and rekey the Files tree before committing the branch's documents.
@@ -82,7 +90,7 @@ pub trait BranchContent: Send + Sync {
         _source: &str,
         _branch: &str,
         _documents: &mut [((String, String), Vec<u8>)],
-        _keys: (&key_group::ContentKeys, &key_group::ContentKeys),
+        _keys: (Option<&key_group::ContentKeys>, &key_group::ContentKeys),
     ) -> Result<(), String> {
         Err("the content store cannot rekey sealed files".into())
     }
@@ -120,7 +128,7 @@ mod copy {
 
     use automerge::AutoCommit;
 
-    use super::{Branched, Workspaces};
+    use super::{BranchFileKeys, Branched, Workspaces};
     use crate::workspaces::{CollaborationError, WorkspaceSummary, sealed_documents};
     use tilo_lock::RwLockRecover as _;
 
@@ -280,44 +288,54 @@ mod copy {
                 return Ok(forked);
             };
             let files = || NotMade::of("the files its documents name");
-            let (forked, sealed) = {
+            let (forked, file_keys) = {
                 let content = Arc::clone(&content);
                 let source = source.to_owned();
                 tokio::task::spawn_blocking(move || {
-                    let sealed = content.has_sealed_files(&source, &forked)?;
-                    Ok::<_, String>((forked, sealed))
+                    let file_keys = content.file_keys(&source, &forked)?;
+                    Ok::<_, String>((forked, file_keys))
                 })
                 .await
                 .map_err(|error| files()(error.to_string()))?
                 .map_err(files())?
             };
-            let keys = if sealed {
+            let keys = if file_keys == BranchFileKeys::None {
+                None
+            } else {
                 let route = |workspace: &str| tilo_peer_state::document_frame::DocumentRoute {
                     app_id: tilo_app_id::apps::FILE_EXPLORER.to_owned(),
                     cluster_id: workspace.to_owned(),
                     document: collab_types::person_document_id(collab_types::FILES_TREE_KIND),
                 };
-                let source = self
-                    .own_route_keys(&route(source), false)
-                    .await
-                    .ok_or_else(|| files()("the source's Files keys are unavailable".to_owned()))?
-                    .map_err(files())?;
+                let source = if file_keys == BranchFileKeys::SourceAndDestination {
+                    Some(
+                        self.own_route_keys(&route(source), false)
+                            .await
+                            .ok_or_else(|| {
+                                files()("the source's Files keys are unavailable".to_owned())
+                            })?
+                            .map_err(files())?,
+                    )
+                } else {
+                    None
+                };
                 let branch = self
                     .own_route_keys(&route(branch), true)
                     .await
                     .ok_or_else(|| files()("the branch's Files keys are unavailable".to_owned()))?
                     .map_err(files())?;
                 Some((source, branch))
-            } else {
-                None
             };
             let (source, branch) = (source.to_owned(), branch.to_owned());
             tokio::task::spawn_blocking(move || {
                 let mut documents = forked;
                 match keys {
-                    Some((from, to)) => {
-                        content.copy_rekeyed(&source, &branch, &mut documents, (&from, &to))?
-                    }
+                    Some((from, to)) => content.copy_rekeyed(
+                        &source,
+                        &branch,
+                        &mut documents,
+                        (from.as_ref(), &to),
+                    )?,
                     None => content.copy(&source, &branch, &documents)?,
                 }
                 Ok::<_, String>(documents)

@@ -110,11 +110,10 @@ impl KeyDirectory for Directory {
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
         let peer = self.workspaces.peer(workspace)?;
         let at = std::time::SystemTime::UNIX_EPOCH
-            .checked_add(tilo_workspace_service::apps::workspace_keys::policy_instant(now))
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        let holders = peer.document_key_holders(app, document, at).ok()?;
+            .checked_add(tilo_workspace_service::apps::workspace_keys::policy_instant(now))?;
         Some(
-            holders
+            peer.document_key_holders(app, document, at)
+                .ok()?
                 .into_iter()
                 .map(Ed25519PublicKey::from_bytes)
                 .collect(),

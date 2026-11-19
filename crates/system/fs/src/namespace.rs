@@ -660,7 +660,7 @@ impl Namespace {
         Some(NodeMeta {
             document_id,
             kind: NodeKind::from_str(&str_at(&self.doc, obj, "kind").unwrap_or_default()),
-            hash: str_at(&self.doc, obj, "hash").and_then(|h| hash_from_hex(&h)),
+            hash: self.file_version_hash(obj, "hash"),
             size: read_u64(&self.doc, obj, "size"),
             mtime: read_u64(&self.doc, obj, "mtime"),
         })
@@ -1738,7 +1738,7 @@ impl Namespace {
     }
 
     pub fn deleted_hash(&self, id: &str) -> Option<Hash> {
-        str_at(&self.doc, &self.node(id)?, "deleted_hash").and_then(|h| hash_from_hex(&h))
+        self.file_version_hash(&self.node(id)?, "deleted_hash")
     }
 
     pub fn prev_parent(&self, id: &str) -> Option<String> {
@@ -1947,6 +1947,12 @@ impl Namespace {
     pub fn inode_for_node(&mut self, id: &str) -> Option<u64> {
         self.entry_for_node(id)?;
         Some(self.ino_for_id(id))
+    }
+
+    fn file_version_hash(&self, obj: &Obj, key: &str) -> Option<Hash> {
+        let hash = str_at(&self.doc, obj, key)?;
+        let alias = fs_protocol::tree::file_version_alias(&**self.doc.index(), &hash);
+        hash_from_hex(alias.as_deref().unwrap_or(&hash))
     }
 
     pub fn node_hash(&self, id: &str) -> Option<Hash> {

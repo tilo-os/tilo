@@ -531,7 +531,21 @@ pub fn requires_independent_document_keys(app: &str, document: &str) -> bool {
         .is_some_and(|root| tilo_action_policy::roles::requires_document_keys(app, root))
 }
 
-/// Replace the access rule for one recipient on a workspace document.
+/// The access editor's route: an empty app selects workspace defaults or the default for the
+/// app named in `document`. A nonempty app selects one exact document.
+fn access_rule_node(workspace: &str, app: &str, document: &str) -> Option<TreePath> {
+    let workspace_path = TreePath::workspace(workspace);
+    match (app, document) {
+        ("", "") => Some(workspace_path.any(tilo_action_policy::Level::App)),
+        ("", app) => tilo_app_id::AppId::parse(app)
+            .ok()
+            .map(|_| workspace_path.app(app)),
+        _ => document_access_target(app, document)
+            .map(|document| document_node(workspace, app, document)),
+    }
+}
+
+/// Replace the access rule for one recipient at the selected scope.
 pub fn document_access_changes(
     policy: &tilo_action_policy::WorkspacePolicy,
     actor: &str,
@@ -539,8 +553,8 @@ pub fn document_access_changes(
     access: &str,
 ) -> Result<Vec<tilo_action_policy::Change>, tilo_action_policy::Refusal> {
     use tilo_action_policy::{Answer, Change, Grant, Grantee, KindSet, MemberId, Refusal, Role};
-    let document = document_access_target(app, document)
-        .ok_or_else(|| Refusal::NotPermitted("this document serves the whole workspace".into()))?;
+    let path = access_rule_node(&policy.workspace, app, document)
+        .ok_or_else(|| Refusal::NotPermitted("this target has no workspace access rules".into()))?;
     let grantee = if who == "everyone" {
         Grantee::role(Role::Viewer)
     } else if let Some(id) = who.strip_prefix("role:") {
@@ -561,7 +575,6 @@ pub fn document_access_changes(
             "choose everyone, a role, or a member".into(),
         ));
     };
-    let path = crate::document_node(&policy.workspace, app, document);
     let key = format!("document-access:{who}:{path}:");
     let rules = match access {
         "inherit" => Vec::new(),
@@ -579,32 +592,36 @@ pub fn document_access_changes(
     };
     // Document delivery uses the exact route. Actions on the published
     // resource include a kind between the app and resource.
-    let typed_path = TreePath::workspace(&policy.workspace)
-        .app(app)
-        .any(tilo_action_policy::Level::Kind)
-        .resource(crate::receipt::published_resource(document));
+    let typed_path = (!app.is_empty()).then(|| {
+        let document = document_access_target(app, document).unwrap_or(document);
+        TreePath::workspace(&policy.workspace)
+            .app(app)
+            .any(tilo_action_policy::Level::Kind)
+            .resource(crate::receipt::published_resource(document))
+    });
     let grants: Vec<_> = rules
         .into_iter()
         .enumerate()
         .flat_map(|(index, (kinds, answer))| {
-            [
-                (format!("{key}{access}:{index}"), path.clone()),
-                (format!("{key}{access}:{index}:action"), typed_path.clone()),
-            ]
-            .into_iter()
-            .map({
-                let grantee = grantee.clone();
-                move |(id, node)| {
-                    Grant::new(
-                        id,
-                        grantee.clone(),
-                        node,
-                        kinds,
-                        answer,
-                        Grantee::person(actor),
-                    )
-                }
-            })
+            std::iter::once((format!("{key}{access}:{index}"), path.clone()))
+                .chain(
+                    typed_path
+                        .as_ref()
+                        .map(|typed| (format!("{key}{access}:{index}:action"), typed.clone())),
+                )
+                .map({
+                    let grantee = grantee.clone();
+                    move |(id, node)| {
+                        Grant::new(
+                            id,
+                            grantee.clone(),
+                            node,
+                            kinds,
+                            answer,
+                            Grantee::person(actor),
+                        )
+                    }
+                })
         })
         .collect();
     let mut changes: Vec<_> = policy
@@ -612,7 +629,7 @@ pub fn document_access_changes(
         .iter()
         .filter(|grant| {
             grant.grantee == grantee
-                && (grant.node == path || grant.node == typed_path)
+                && (grant.node == path || typed_path.as_ref() == Some(&grant.node))
                 && grant.id.as_str().starts_with(&key)
                 && !grants.iter().any(|wanted| wanted.id == grant.id)
         })
@@ -644,7 +661,38 @@ pub struct DocumentAccessRule {
     pub access: String,
 }
 
-/// Access settings selected for the supplied documents.
+/// The workspace and app defaults shown beside the workspace's documents, including
+/// defaults for apps whose documents are not on this device yet.
+#[must_use]
+pub fn document_access_scopes(
+    policy: &tilo_action_policy::WorkspacePolicy,
+    documents: &[(String, String)],
+    apps: impl IntoIterator<Item = String>,
+) -> Vec<(String, String)> {
+    use tilo_action_policy::Level;
+    let apps = apps
+        .into_iter()
+        .chain(
+            documents
+                .iter()
+                .filter(|(app, _)| !app.is_empty())
+                .map(|(app, _)| app.clone()),
+        )
+        .chain(policy.grants.iter().filter_map(|grant| {
+            let app = grant.node.id_at(Level::App)?;
+            (grant.node == TreePath::workspace(&policy.workspace).app(app)
+                && grant.id.as_str().starts_with("document-access:"))
+            .then(|| app.to_owned())
+        }))
+        .filter(|app| tilo_app_id::AppId::parse(app).is_ok())
+        .collect::<std::collections::BTreeSet<_>>();
+    std::iter::once((String::new(), String::new()))
+        .chain(apps.into_iter().map(|app| (String::new(), app)))
+        .chain(documents.iter().cloned())
+        .collect()
+}
+
+/// Access settings selected for the supplied scopes.
 pub fn document_access_rules(
     policy: &tilo_action_policy::WorkspacePolicy,
     documents: &[(String, String)],
@@ -652,10 +700,14 @@ pub fn document_access_rules(
     use tilo_action_policy::{Grantee, Role};
     let mut settings = Vec::new();
     for (app, document) in documents {
-        let Some(document) = document_access_target(app, document) else {
+        let Some(path) = access_rule_node(&policy.workspace, app, document) else {
             continue;
         };
-        let path = document_node(&policy.workspace, app, document);
+        let document = if app.is_empty() {
+            document
+        } else {
+            document_access_target(app, document).unwrap_or(document)
+        };
         for grant in policy.grants.iter().filter(|grant| grant.node == path) {
             let recipient = match &grant.grantee {
                 Grantee::Role(Role::Viewer) => "everyone".to_owned(),

@@ -2123,7 +2123,7 @@ impl Task {
                 |artifact, metadata, payload| {
                     let keys = self
                         .keys_for_ciphertext(route, *metadata)
-                        .ok_or("the document's keys have not arrived".to_owned())?;
+                        .ok_or_else(|| "the document's keys have not arrived".to_owned())?;
                     keys.open_content(artifact, metadata, payload)
                         .map(|plaintext| plaintext.to_vec())
                         .map_err(|error| error.to_string())
@@ -2408,14 +2408,14 @@ impl Task {
         metadata: collab_types::EncryptionMetadata,
     ) -> Option<key_group::ContentKeys> {
         let workspace = route.workspace_id().ok()?;
-        let group = metadata.key_group(workspace);
-        let keys = if group == workspace {
-            self.engine.seal_keys(workspace).ok()?
-        } else if route.key_scope().ok()?.group() == group {
-            self.engine.exact_document_keys(route).ok()?
-        } else {
-            return None;
-        };
+        let readers = self
+            .engine
+            .named_document_readers(workspace, &route.document)
+            .ok()?;
+        let readers = readers.as_deref().unwrap_or(collab_types::EVERY_MEMBER);
+        let original = collab_types::reader_group(workspace, readers)?;
+        let group = metadata.key_group(original);
+        let keys = self.engine.document_content_keys(route, group).ok()?;
         match keys {
             crate::engine::SealKeys::Here(keys) => Some(keys),
             _ => None,

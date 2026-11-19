@@ -990,6 +990,25 @@ impl StatePeer {
             .collect())
     }
 
+    /// Devices allowed by both workspace policy and the document's declared readers.
+    pub fn document_key_holders_read_by(
+        &self,
+        (app, document): (&str, &str),
+        named: Option<&str>,
+        now: SystemTime,
+    ) -> Result<BTreeSet<[u8; 32]>, String> {
+        let mut devices = self.document_key_holders(app, document, now)?;
+        if let Some(named) = named {
+            let Some(collab_types::Readers::People(people)) = collab_types::Readers::parse(named)
+            else {
+                return Err("invalid named readers".into());
+            };
+            let allowed = self.governance().reader_key_holders(&people, now)?;
+            devices.retain(|device| allowed.contains(device));
+        }
+        Ok(devices)
+    }
+
     /// Whether sealing with the workspace key would give this document to a
     /// device whose read access is restricted.
     pub fn requires_document_keys(
@@ -1039,6 +1058,7 @@ impl StatePeer {
     pub(super) fn check_document_key_scope(
         &self,
         (app, document): (&str, &str),
+        readers: Option<&str>,
         encryption: Option<collab_types::EncryptionMetadata>,
         now: SystemTime,
         historical: bool,
@@ -1050,14 +1070,20 @@ impl StatePeer {
         {
             let workspace = collab_types::WorkspaceId::parse(&self.core.workspace)
                 .ok_or("invalid workspace for a document key group")?;
-            let scope = neighbour_wire::KeyScope::Document {
-                workspace,
-                app: app.to_owned(),
-                document: document.to_owned(),
-            };
+            let scope = neighbour_wire::KeyScope::document(workspace, app, document, readers)
+                .ok_or("readers do not match the document")?;
             return (group == scope.group())
                 .then_some(())
                 .ok_or_else(|| "the encryption group belongs to another document".to_owned());
+        }
+        if neighbour_wire::KeyScope::has_named_readers(document) || readers.is_some() {
+            let workspace = collab_types::WorkspaceId::parse(&self.core.workspace)
+                .ok_or("invalid workspace for a reader set")?;
+            neighbour_wire::KeyScope::document(workspace, app, document, readers)
+                .ok_or("readers do not match the document")?;
+            if encryption.is_none() {
+                return Err("a named reader set requires encryption".into());
+            }
         }
         if !historical
             && self.has_governance()

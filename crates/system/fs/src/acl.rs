@@ -447,6 +447,25 @@ impl AclHandle {
         }
     }
 
+    /// Whether the compiled workspace policy gives this identity access at the reserved root.
+    pub(crate) fn permits_workspace_tree(
+        &self,
+        identity: &IdentityKey,
+        path: &str,
+        access: Access,
+    ) -> bool {
+        self.acl.read().is_ok_and(|acl| {
+            acl.bindings
+                .iter()
+                .flat_map(|binding| &binding.caps)
+                .any(|cap| {
+                    cap.effect == Effect::WorkspaceFileBoundary
+                        && matches!(&cap.scope, Scope::FsPath(root) if root == path)
+                })
+                && acl.permits(identity, path, access)
+        })
+    }
+
     /// Whether moving this path would move a governed file tree out of its scope.
     pub(crate) fn protects_workspace_tree(&self, path: &str) -> bool {
         self.acl.read().map_or(true, |acl| {

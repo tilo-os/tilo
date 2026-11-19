@@ -21,6 +21,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use collab_types::{Ed25519PublicKey, Readers};
+use neighbour_wire::KeyScope;
 use tilo_desktop_model::WorkspaceId;
 
 use super::KeyDirectory;
@@ -37,6 +38,7 @@ struct ReaderGroup {
 pub(super) struct Directory {
     workspaces: Box<dyn KeyDirectory>,
     groups: HashMap<WorkspaceId, ReaderGroup>,
+    documents: HashMap<WorkspaceId, KeyScope>,
 }
 
 impl Directory {
@@ -44,6 +46,7 @@ impl Directory {
         Self {
             workspaces,
             groups: HashMap::new(),
+            documents: HashMap::new(),
         }
     }
 
@@ -59,6 +62,83 @@ impl Directory {
             });
         }
         Some(group)
+    }
+
+    pub(super) fn register_scope(&mut self, scope: KeyScope) -> Option<WorkspaceId> {
+        let KeyScope::Document {
+            workspace,
+            app,
+            document,
+            readers,
+        } = &scope
+        else {
+            return None;
+        };
+        KeyScope::document(*workspace, app, document, readers.as_deref())?;
+        let group = scope.group();
+        match self.documents.entry(group) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(scope);
+                Some(group)
+            }
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                (entry.get() == &scope).then_some(group)
+            }
+        }
+    }
+
+    pub(super) fn scope_devices(
+        &self,
+        scope: &KeyScope,
+        now: u64,
+    ) -> Option<BTreeSet<Ed25519PublicKey>> {
+        let KeyScope::Document {
+            workspace,
+            app,
+            document,
+            readers,
+        } = scope
+        else {
+            return None;
+        };
+        let mut devices = self
+            .workspaces
+            .document_devices(*workspace, app, document, now)?;
+        if let Some(readers) = readers {
+            let Readers::People(people) = Readers::parse(readers)? else {
+                return None;
+            };
+            let named = self.workspaces.reader_devices(*workspace, &people, now)?;
+            devices.retain(|device| named.contains(device));
+        }
+        Some(devices)
+    }
+
+    pub(super) fn document_scope(&self, group: WorkspaceId) -> Option<&KeyScope> {
+        self.documents.get(&group)
+    }
+
+    pub(super) fn named_readers(&self, workspace: WorkspaceId, document: &str) -> Option<String> {
+        let name = collab_types::store_document_readers(document)?;
+        let candidates: BTreeSet<_> = self
+            .groups
+            .values()
+            .filter(|group| group.workspace == workspace)
+            .map(|group| &group.readers)
+            .chain(self.documents.values().filter_map(|scope| match scope {
+                KeyScope::Document {
+                    workspace: held,
+                    document: held_document,
+                    readers: Some(readers),
+                    ..
+                } if *held == workspace && held_document == document => Some(readers),
+                _ => None,
+            }))
+            .filter(|readers| collab_types::reader_set_name(readers) == name)
+            .collect();
+        (candidates.len() == 1)
+            .then(|| candidates.first().map(|readers| (*readers).clone()))
+            .flatten()
     }
 
     /// Every reader set's group known here: its workspace and readers, as a store keeps them.
@@ -78,15 +158,25 @@ impl Directory {
             .iter()
             .filter(|(_, group)| group.workspace == workspace)
             .map(|(group, _)| *group)
+            .chain(
+                self.documents.iter().filter_map(|(group, scope)| {
+                    (scope.workspace() == workspace).then_some(*group)
+                }),
+            )
             .collect()
     }
 
     /// The workspace whose transport carries `group`'s governance: the workspace of a reader
     /// set's group, else the group's own.
     pub(super) fn carrier(&self, group: WorkspaceId) -> WorkspaceId {
-        self.groups
-            .get(&group)
-            .map_or(group, |reader_group| reader_group.workspace)
+        self.document_scope(group).map_or_else(
+            || {
+                self.groups
+                    .get(&group)
+                    .map_or(group, |reader_group| reader_group.workspace)
+            },
+            KeyScope::workspace,
+        )
     }
 
     /// The group governance naming `group` that arrived in `workspace` is for: the workspace's
@@ -101,14 +191,10 @@ impl Directory {
 
     /// Forget the reader sets' groups of `workspace`, deleted, answering them.
     pub(super) fn forget(&mut self, workspace: WorkspaceId) -> Vec<WorkspaceId> {
-        let groups: Vec<WorkspaceId> = self
-            .groups
-            .iter()
-            .filter(|(_, reader_group)| reader_group.workspace == workspace)
-            .map(|(group, _)| *group)
-            .collect();
+        let groups = self.of(workspace);
         for group in &groups {
             self.groups.remove(group);
+            self.documents.remove(group);
         }
         groups
     }
@@ -120,6 +206,12 @@ impl KeyDirectory for Directory {
         workspace: WorkspaceId,
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
+        if let Some(scope) = self.document_scope(workspace) {
+            return self.scope_devices(scope, now);
+        }
+        if KeyScope::requires_document(workspace) {
+            return None;
+        }
         match self.groups.get(&workspace) {
             Some(group) => self
                 .workspaces
@@ -174,6 +266,14 @@ impl KeyDirectory for Directory {
     /// A reader set's group is founded by whichever of its devices first needs its keys: two
     /// founded at once settle on the genesis with the lower digest, as any group's do.
     fn founds(&self, workspace: WorkspaceId) -> bool {
-        self.groups.contains_key(&workspace) || self.workspaces.founds(workspace)
+        self.groups.contains_key(&workspace)
+            || matches!(
+                self.document_scope(workspace),
+                Some(KeyScope::Document {
+                    readers: Some(_),
+                    ..
+                })
+            )
+            || self.workspaces.founds(self.carrier(workspace))
     }
 }

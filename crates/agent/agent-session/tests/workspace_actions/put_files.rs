@@ -129,44 +129,66 @@ async fn tree_when(
 
 /// What a tree names a file of `bytes` by: the BLAKE3 address of its content
 /// manifest, whose chunks the workspace keeps beside it.
-async fn assert_sealed_file(hosted: &crate::harness::hosted::Hosted, hash: &str, expected: &[u8]) {
+pub(super) async fn opened_file_bytes(
+    server: &tilo_server::daemon::Server,
+    workspace: &str,
+    hash: &str,
+) -> Option<Vec<u8>> {
     use collab_types::{ContentRetention, EncryptionMetadata, WorkspaceId, file_content_artifact};
-    let workspace = WorkspaceId::parse(WORKSPACE).unwrap();
-    let store = hosted.server.content().get(WORKSPACE).unwrap();
-    let bytes = store
-        .read(hash)
-        .expect("the workspace keeps the file manifest");
-    let manifest = fs_content::Manifest::decode(&bytes).expect("the file manifest decodes");
-    let sealed = manifest.sealed().expect("the document names sealed chunks");
+    let store = server.content().get(workspace).ok()?;
+    let bytes = store.read(hash)?;
+    let manifest = fs_content::Manifest::decode(&bytes).ok()?;
     let chunk = |id: &[u8; 32]| store.read(&hex::encode(id));
-    assert_eq!(manifest.total_len(), expected.len() as u64);
-    assert!(fs_content::whole(bytes.clone(), expected.len() as u64, chunk).is_none());
+    let Some(sealed) = manifest.sealed() else {
+        return fs_content::whole(bytes, manifest.total_len(), chunk);
+    };
     let route = tilo_session_client::DocumentRoute {
-        cluster_id: WORKSPACE.to_owned(),
+        cluster_id: workspace.to_owned(),
         app_id: FILES_APP.to_owned(),
         document: tree_document(),
     };
-    let keys = hosted
-        .server
-        .workspaces()
-        .unwrap()
+    let keys = server
+        .workspaces()?
         .own_route_keys(&route, false)
-        .await
-        .expect("the serving device holds the group's keys")
-        .unwrap();
+        .await?
+        .ok()?;
+    let workspace = WorkspaceId::parse(workspace)?;
     let metadata = EncryptionMetadata::content_group(
         workspace,
         WorkspaceId::from_u128(u128::from_be_bytes(sealed.group)),
         sealed.epoch,
         ContentRetention::Delta,
     );
+    fs_content::whole_with(bytes, manifest.total_len(), chunk, |_, cipher| {
+        keys.open_content(file_content_artifact(workspace), &metadata, cipher)
+            .ok()
+            .map(|text| text.to_vec())
+    })
+}
+
+async fn assert_sealed_file(
+    server: &tilo_server::daemon::Server,
+    workspace: &str,
+    hash: &str,
+    expected: &[u8],
+) {
+    let store = server.content().get(workspace).unwrap();
+    let bytes = store
+        .read(hash)
+        .expect("the workspace keeps the file manifest");
+    let manifest = fs_content::Manifest::decode(&bytes).expect("the file manifest decodes");
+    assert!(
+        manifest.sealed().is_some(),
+        "the document names sealed chunks"
+    );
+    assert_eq!(manifest.total_len(), expected.len() as u64);
+    assert!(
+        fs_content::whole(bytes, expected.len() as u64, |id| store
+            .read(&hex::encode(id)))
+        .is_none()
+    );
     assert_eq!(
-        fs_content::whole_with(bytes, expected.len() as u64, chunk, |_, cipher| {
-            keys.open_content(file_content_artifact(workspace), &metadata, cipher)
-                .ok()
-                .map(|text| text.to_vec())
-        })
-        .as_deref(),
+        opened_file_bytes(server, workspace, hash).await.as_deref(),
         Some(expected),
         "the serving device opens exactly the uploaded bytes under the Files keys",
     );
@@ -254,7 +276,7 @@ async fn a_put_file_is_a_node_of_the_workspace_tree_and_no_app_record() {
         .as_deref()
         .expect("the file names its content")
         .to_owned();
-    assert_sealed_file(&hosted, &first, &form).await;
+    assert_sealed_file(&hosted.server, WORKSPACE, &first, &form).await;
     assert_eq!(node.size, form.len() as u64);
     assert_eq!(
         content_bytes(&server, &hash).await,
@@ -278,7 +300,13 @@ async fn a_put_file_is_a_node_of_the_workspace_tree_and_no_app_record() {
     })
     .await;
     let node = file_at(&tree, "forms/2026", "permit.pdf").expect("the file is in its folder");
-    assert_sealed_file(&hosted, node.hash.as_deref().unwrap(), &permit).await;
+    assert_sealed_file(
+        &hosted.server,
+        WORKSPACE,
+        node.hash.as_deref().unwrap(),
+        &permit,
+    )
+    .await;
     assert!(
         file_at(&tree, "", "permit.pdf").is_none(),
         "it is not at the root"
@@ -302,7 +330,13 @@ async fn a_put_file_is_a_node_of_the_workspace_tree_and_no_app_record() {
     })
     .await;
     let node = file_at(&tree, "", "visa.pdf").expect("still one file of that name");
-    assert_sealed_file(&hosted, node.hash.as_deref().unwrap(), &cover).await;
+    assert_sealed_file(
+        &hosted.server,
+        WORKSPACE,
+        node.hash.as_deref().unwrap(),
+        &cover,
+    )
+    .await;
     let roots = tree
         .children(ROOT_ID)
         .into_iter()
@@ -509,7 +543,13 @@ async fn a_resumed_upload_of_a_large_file_lands_once_and_whole() {
     })
     .await;
     let node = file_at(&tree, "scans", "scan.pdf").expect("the large file is in the tree");
-    assert_sealed_file(&hosted, node.hash.as_deref().unwrap(), &bytes).await;
+    assert_sealed_file(
+        &hosted.server,
+        WORKSPACE,
+        node.hash.as_deref().unwrap(),
+        &bytes,
+    )
+    .await;
     assert_eq!(node.size, bytes.len() as u64);
     assert_eq!(
         content_bytes(&server, &hash).await,

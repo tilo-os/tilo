@@ -180,7 +180,7 @@ async fn found(
     changes: &[u8],
     until: Instant,
 ) -> Result<(), String> {
-    let sealed = seal_keys(engine, workspace, (app, record), until).await?;
+    let sealed = Some(seal_keys(engine, workspace, (app, record), until).await?);
     engine
         .write_resource(workspace, (app, record), changes, true, sealed.as_ref())
         .await
@@ -382,11 +382,11 @@ async fn seal_keys(
     workspace: WorkspaceId,
     route: (&str, &str),
     until: Instant,
-) -> Result<Option<key_group::ContentKeys>, String> {
+) -> Result<key_group::ContentKeys, String> {
     loop {
         let mut events = events(engine);
         match engine.resource_write_keys(workspace, route)? {
-            SealKeys::Here(keys) => return Ok(Some(keys)),
+            SealKeys::Here(keys) => return Ok(keys),
             SealKeys::NoSecretStore => {
                 return Err("this device holds no secret store to keep its keys in".to_owned());
             }

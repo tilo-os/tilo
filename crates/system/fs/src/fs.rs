@@ -222,19 +222,6 @@ fn prepare_stage_dir(dir: &std::path::Path) -> io::Result<()> {
 #[cfg(test)]
 type CommitPause = Arc<dyn Fn(u64) + Send + Sync>;
 
-/// How a FUSE `read` is answered, decided by `QuickFS::plan_read` before any reply is
-/// sent.
-enum ReadPlan {
-    Error(i32),
-    Buffered(BufferedRead),
-    Local(Vec<u8>),
-    Remote(Hash),
-}
-
-enum BufferedRead {
-    Staged(io::Result<StagedRead>),
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PersistIntent {
     Close,
@@ -477,8 +464,10 @@ impl AclVisibleDocumentIndex {
 
 pub mod activity;
 pub mod native_ops;
+mod read;
 mod unavailable;
 mod write_stage;
+use read::ReadPlan;
 use tilo_lock::MutexRecover as _;
 use write_stage::{MissingRanges, SharedStage, StagedRead};
 pub use write_stage::{Stage, WriteStage};
@@ -839,6 +828,13 @@ impl QuickFS {
         if self.ns().getattr(ino).is_none() {
             return Ok(());
         }
+        let workspace = self.inode_workspace(ino);
+        if staged.lock().workspace() != workspace {
+            return Err(libc::EXDEV);
+        }
+        if workspace.is_some() {
+            self.check_access(ino, Access::Write)?;
+        }
         if let Err(error) = self.fill_stage(&staged) {
             self.buffer_states().entry(ino).or_default().failure = Some(EIO);
             eprintln!(
@@ -853,7 +849,8 @@ impl QuickFS {
         }
         #[cfg(test)]
         self.pause_commit(ino);
-        if intent == PersistIntent::Sync
+        if workspace.is_none()
+            && intent == PersistIntent::Sync
             && let Some(store) = &self.unsaved
         {
             return match self.stage_unsaved(store, ino, &mut guard, state.base_hash, None) {
@@ -884,7 +881,7 @@ impl QuickFS {
             Err(errno) => {
                 self.buffer_states().entry(ino).or_default().failure = Some(errno);
                 let detail = io::Error::from_raw_os_error(errno).to_string();
-                match &self.unsaved {
+                match self.unsaved.as_ref().filter(|_| workspace.is_none()) {
                     Some(store) => match self.stage_unsaved(
                         store,
                         ino,
@@ -941,15 +938,15 @@ impl QuickFS {
 
     /// A stage for `ino` over its committed content, reading none of it.
     fn new_stage(&self, ino: u64) -> Result<(WriteStage, Option<Hash>), i32> {
-        let (base, base_len) = {
+        let (base, base_len, path) = {
             let ns = self.ns();
             let base = ns.hash_for(ino);
             let len = ns
                 .getattr_including_unlinked(ino)
                 .map_or(0, |attr| attr.size);
-            drop(ns);
-            (base, len)
+            (base, len, ns.path_for(ino))
         };
+        let workspace = path.and_then(|path| self.hydrator.scoped_workspace(&path));
         let stage = WriteStage::over(
             base,
             base_len,
@@ -960,7 +957,7 @@ impl QuickFS {
             eprintln!("inode {ino}: could not open a write stage: {error}");
             EIO
         })?;
-        Ok((stage, base))
+        Ok((stage.with_workspace(workspace), base))
     }
 
     fn empty_stage(&self) -> WriteStage {
@@ -998,9 +995,9 @@ impl QuickFS {
     /// the stage as it was and is the caller's error.
     fn fill_stage(&self, stage: &SharedStage) -> io::Result<()> {
         const PIECE: u64 = 8 * 1024 * 1024;
-        let (base, gaps) = {
+        let (base, gaps, workspace) = {
             let guard = stage.lock();
-            (guard.base(), guard.gaps())
+            (guard.base(), guard.gaps(), guard.workspace())
         };
         if gaps.is_empty() {
             return Ok(());
@@ -1011,7 +1008,7 @@ impl QuickFS {
             let mut at = gap.start;
             while at < gap.end {
                 let len = gap.end.saturating_sub(at).min(PIECE);
-                let bytes = self.read_base_blocking(base, at, len)?;
+                let bytes = self.read_base_blocking(base, at, len, workspace)?;
                 stage.lock().fill(at, &bytes)?;
                 at = at.saturating_add(len);
             }
@@ -1019,28 +1016,10 @@ impl QuickFS {
         Ok(())
     }
 
-    fn read_base_blocking(&self, base: Hash, offset: u64, len: u64) -> io::Result<Vec<u8>> {
-        let hydrator = &self.hydrator;
-        let bytes = hydrator
-            .block_on(async {
-                match hydrator.read_local(base, offset, len).await {
-                    Some(bytes) => Ok(bytes),
-                    None => hydrator.read(base, offset, len).await,
-                }
-            })
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        if bytes.len() as u64 != len {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "committed content is shorter than the file it backs",
-            ));
-        }
-        Ok(bytes)
-    }
-
     /// Read `ino`'s stage: `None` when it has none. Ranges nobody wrote come from the
     /// committed content, local bytes inline; anything that needs a peer is left in
     /// [`StagedRead::Missing`] for the caller to hydrate without holding the stage.
+    #[cfg(test)]
     fn read_staged(&self, ino: u64, offset: u64, size: u64) -> Option<io::Result<StagedRead>> {
         let stage = self.stage(ino)?;
         Some(self.read_stage(&stage, offset, size))
@@ -1084,9 +1063,10 @@ impl QuickFS {
         stage.lock().set_len(new_size)?;
         self.fill_stage(&stage)?;
         let mut guard = stage.lock();
+        let workspace = guard.workspace();
         let committed = guard
             .source()
-            .and_then(|source| self.commit_version_at(ino, source, now_ms(), None));
+            .and_then(|source| self.commit_version_at(ino, source, now_ms(), None, workspace));
         drop(guard);
         committed
     }
@@ -1094,6 +1074,9 @@ impl QuickFS {
     /// Keep the bytes of `stage` as a new sibling of `ino` because they cannot be
     /// committed to its own record. Returns the copy's workspace path.
     fn preserve_as_sibling(&self, ino: u64, stage: &mut WriteStage) -> Result<String, i32> {
+        if stage.workspace() != self.inode_workspace(ino) {
+            return Err(libc::EXDEV);
+        }
         let (parent, name) = {
             let mut ns = self.ns();
             let name = ns.file_name_for(ino).ok_or(ENOENT)?;
@@ -1101,8 +1084,9 @@ impl QuickFS {
         };
         let digest = stage.digest().map_err(|_| EIO)?;
         let copy_name = unsaved_copy_name_for(name.as_bytes(), &digest);
+        let workspace = stage.workspace();
         let source = stage.source().map_err(|_| EIO)?;
-        self.create_preserved_copy(parent, &copy_name, source)
+        self.create_preserved_copy(parent, &copy_name, source, workspace)
     }
 
     fn create_preserved_copy(
@@ -1110,6 +1094,7 @@ impl QuickFS {
         parent: u64,
         copy_name: &[u8],
         source: VersionSource<'_>,
+        workspace: Option<collab_types::WorkspaceId>,
     ) -> Result<String, i32> {
         self.check_new_name(parent, copy_name)?;
         let existing = self.ns().lookup(parent, copy_name).map(|attr| attr.ino.0);
@@ -1122,7 +1107,7 @@ impl QuickFS {
             self.publish();
             ino
         };
-        self.commit_version_at(ino, source, now_ms(), None)
+        self.commit_version_at(ino, source, now_ms(), None, workspace)
             .map_err(|error| commit_errno(&error))?;
         self.ns().path_for(ino).ok_or(EIO)
     }
@@ -1198,18 +1183,33 @@ impl QuickFS {
         for item in loaded {
             let entry = &item.entry;
             let label = entry.path.as_deref().unwrap_or(&entry.key);
+            let workspace = entry
+                .path
+                .as_deref()
+                .and_then(|path| self.hydrator.scoped_workspace(path));
             let target = {
                 let ns = self.ns();
                 entry
                     .document_id
                     .and_then(|document_id| ns.ino_for_document_id(document_id))
                     .filter(|ino| ns.getattr(*ino).is_some())
+                    .filter(|ino| {
+                        ns.path_for(*ino)
+                            .and_then(|path| self.hydrator.scoped_workspace(&path))
+                            == workspace
+                    })
             };
             if let Some(ino) = target
                 && self.ns().hash_for(ino) == entry.base()
                 && self.check_access(ino, Access::Write).is_ok()
             {
-                match self.commit_content(ino, &item.bytes) {
+                match self.commit_version_at(
+                    ino,
+                    VersionSource::Bytes(&item.bytes),
+                    now_ms(),
+                    None,
+                    workspace,
+                ) {
                     Ok(()) => {
                         let _ = store.remove(&entry.key);
                         placed = placed.saturating_add(1);
@@ -1237,11 +1237,18 @@ impl QuickFS {
                     Some((parent, name.as_bytes().to_vec()))
                 })
             };
+            if workspace.is_some() && location.is_none() {
+                continue;
+            }
             let (parent, name) = location
                 .unwrap_or_else(|| (crate::namespace::ROOT_INO, entry.key.clone().into_bytes()));
             let copy_name = unsaved_copy_name(&name, &item.bytes);
-            match self.create_preserved_copy(parent, &copy_name, VersionSource::Bytes(&item.bytes))
-            {
+            match self.create_preserved_copy(
+                parent,
+                &copy_name,
+                VersionSource::Bytes(&item.bytes),
+                workspace,
+            ) {
                 Ok(path) => {
                     eprintln!("staged bytes for {label} were restored as {path}");
                     let _ = store.remove(&entry.key);
@@ -1331,7 +1338,10 @@ impl QuickFS {
     fn create_for_write(&self, parent: u64, name: &[u8], mode: u32) -> Result<u64, i32> {
         let ino = self.create_empty_file(parent, name)?;
         self.set_mode(ino, mode)?;
-        let stage = self.empty_stage().shared();
+        let stage = self
+            .empty_stage()
+            .with_workspace(self.inode_workspace(ino))
+            .shared();
         self.buffers().insert(ino, stage);
         self.buffer_states().insert(
             ino,
@@ -1396,152 +1406,6 @@ impl QuickFS {
         let attr = found.filter(|_| child.is_some_and(|c| self.in_view(&c)))?;
         let staged_len = self.staged_len(attr.ino.0);
         Some((self.live_attr(attr, staged_len), TTL))
-    }
-
-    /// Everything a FUSE `read` decides before it replies: authorization, then the write
-    /// stage or the committed content. The inode is read under one namespace lock, so its
-    /// liveness, path, kind and content hash come back together.
-    fn plan_read(&self, ino: u64, fh: u64, offset: u64, size: u32) -> ReadPlan {
-        let open_handle = self.open_handle(ino, fh);
-        let Some(view) = self.inode_view(ino, open_handle.is_some()) else {
-            return ReadPlan::Error(ENOENT);
-        };
-        // Live inodes use their current path. An unlinked/replaced inode has
-        // no path, so only the matching kernel handle may continue, with the
-        // access path captured when it was opened.
-        let access = if view.live {
-            self.check_view_access(&view, Access::Read)
-        } else if let Some(handle) = &open_handle {
-            self.check_path(&handle.opened_path, Access::Read)
-        } else {
-            Err(ENOENT)
-        };
-        if let Err(e) = access {
-            return ReadPlan::Error(e);
-        }
-        if let Some(staged) = self.read_staged(ino, offset, u64::from(size)) {
-            return ReadPlan::Buffered(BufferedRead::Staged(staged));
-        }
-        if view.attr.kind != FileType::RegularFile {
-            return ReadPlan::Error(EISDIR);
-        }
-        let Some(hash) = view.hash else {
-            return ReadPlan::Local(Vec::new());
-        };
-        let size = u64::from(size);
-        match self
-            .hydrator
-            .block_on(self.hydrator.read_local(hash, offset, size))
-        {
-            Some(data) => ReadPlan::Local(data),
-            None => ReadPlan::Remote(hash),
-        }
-    }
-
-    /// Answer a `read` whose bytes must come from a peer. The read blocks its caller as
-    /// POSIX expects, but no FUSE worker waits on the network, so a slow peer stalls only
-    /// the readers of that file.
-    fn reply_remote(
-        &self,
-        ino: u64,
-        hash: Hash,
-        range: (u64, u64),
-        nonblocking: bool,
-        reply: ReplyData,
-    ) {
-        let (offset, size) = range;
-        let hydrator = Arc::clone(&self.hydrator);
-        let rt = hydrator.runtime_handle.clone();
-        let note = self.unavailable_note(ino, Some(hash));
-        if nonblocking {
-            // A non-blocking reader gets EAGAIN at once; the range keeps
-            // hydrating so a retry finds it local.
-            rt.spawn(async move {
-                match hydrator.read(hash, offset, size).await {
-                    Ok(_) => {
-                        if let Some(note) = note {
-                            note.arrived().await;
-                        }
-                    }
-                    Err(error) => eprintln!("content hydration failed for {hash}: {error:#}"),
-                }
-            });
-            reply.error(to_errno(libc::EAGAIN));
-            return;
-        }
-        // The kernel holds the page locked while the read waits, so the read fails at its
-        // bound rather than waiting on a peer that went quiet; the file's record says it
-        // is unavailable until bytes arrive, and stored once it is whole.
-        let answering = self.activity.begin();
-        rt.spawn(async move {
-            let _answering = answering;
-            let read = async move { hydrator.read(hash, offset, size).await };
-            let bound = crate::hydration::BLOCKED_READ_BOUND;
-            match unavailable::noted_bounded_read(bound, read, note).await {
-                Ok(data) => reply.data(&data),
-                Err(error) => {
-                    eprintln!("content hydration failed for {hash}: {error:#}");
-                    reply.error(to_errno(EIO));
-                }
-            }
-        });
-    }
-
-    /// Where a blocked read of `ino`'s bytes notes whether they arrived: its availability
-    /// record, when this mount keeps them. When it is the file's current content, the
-    /// record says the file is stored once every byte of it is local.
-    fn unavailable_note(
-        &self,
-        ino: u64,
-        hash: Option<Hash>,
-    ) -> Option<unavailable::UnavailableNote> {
-        let registry = Arc::clone(self.availability.as_ref()?);
-        let (document_id, current) = {
-            let ns = self.ns();
-            (ns.document_id_for(ino)?, ns.hash_for(ino))
-        };
-        let content =
-            hash.filter(|hash| current == Some(*hash))
-                .map(|hash| unavailable::NotedContent {
-                    hydrator: Arc::clone(&self.hydrator),
-                    hash,
-                    stored: Arc::clone(&self.stored_writes),
-                });
-        Some(unavailable::UnavailableNote {
-            registry,
-            document_id,
-            content,
-        })
-    }
-
-    /// Answer a FUSE `read` that [`Self::plan_read`] sent to a buffer. Unwritten ranges a
-    /// peer must supply are hydrated on the runtime, like an unbuffered read.
-    fn reply_buffered(&self, ino: u64, buffered: BufferedRead, reply: ReplyData) {
-        match buffered {
-            BufferedRead::Staged(Ok(StagedRead::Ready(bytes))) => reply.data(&bytes),
-            BufferedRead::Staged(Ok(StagedRead::Missing(missing))) => {
-                let hydrator = Arc::clone(&self.hydrator);
-                let rt = hydrator.runtime_handle.clone();
-                let note = self.unavailable_note(ino, None);
-                let answering = self.activity.begin();
-                rt.spawn(async move {
-                    let _answering = answering;
-                    let read = async move { Ok(missing.finish(&hydrator).await?) };
-                    let bound = crate::hydration::BLOCKED_READ_BOUND;
-                    match unavailable::noted_bounded_read(bound, read, note).await {
-                        Ok(bytes) => reply.data(&bytes),
-                        Err(error) => {
-                            eprintln!("content hydration for a staged read failed: {error:#}");
-                            reply.error(to_errno(EIO));
-                        }
-                    }
-                });
-            }
-            BufferedRead::Staged(Err(error)) => {
-                eprintln!("read of the write stage of inode {ino} failed: {error}");
-                reply.error(to_errno(EIO));
-            }
-        }
     }
 
     fn flush_inode(&self, ino: u64) -> Result<(), i32> {
@@ -1667,6 +1531,10 @@ impl QuickFS {
     /// Buffered inodes never keep it, and neither do files whose payload is
     /// not resident, so "Free Local Space" also frees the kernel's copy.
     fn open_cache_flags(&self, ino: u64) -> FopenFlags {
+        if self.inode_workspace(ino).is_some() {
+            self.kernel_cached.lock_recover().remove(&ino);
+            return FopenFlags::FOPEN_DIRECT_IO;
+        }
         let volatile = self.payload_not_resident(ino) || self.buffers().contains_key(&ino);
         let hash = self.ns().hash_for(ino);
         let mut cached = self.kernel_cached.lock_recover();
@@ -1687,7 +1555,18 @@ impl QuickFS {
         if self.payload_not_resident(ino) || self.buffers().contains_key(&ino) {
             return None;
         }
+        // A workspace read must go through live policy on each request.
+        if self.inode_workspace(ino).is_some() {
+            return None;
+        }
         let hash = self.ns().hash_for(ino)?;
+        if self
+            .hydrator
+            .block_on(self.hydrator.local_manifest_index(hash))
+            .is_some_and(|manifest| manifest.sealed().is_some())
+        {
+            return None;
+        }
         let files = self.hydrator.store.files();
         if files
             .entry(hash.as_bytes())
@@ -1745,10 +1624,11 @@ impl QuickFS {
     /// from its file). Returns the errno the writer should see when the bytes did not become
     /// the file's committed content.
     fn commit_buffer(&self, ino: u64, stage: &mut WriteStage) -> Result<(), i32> {
+        let workspace = stage.workspace();
         Self::commit_retrying(ino, || {
             stage
                 .source()
-                .and_then(|source| self.commit_version_at(ino, source, now_ms(), None))
+                .and_then(|source| self.commit_version_at(ino, source, now_ms(), None, workspace))
         })?;
         self.remember_staged_metadata(ino, stage);
         Ok(())
@@ -2780,6 +2660,7 @@ impl QuickFS {
     /// generates.
     pub fn thumbnail_for(&self, ino: u64) -> Option<Vec<u8>> {
         let provider = self.thumbs.as_ref()?;
+        let workspace = self.inode_workspace(ino);
         let (name, content_hash, thumb_hash) = {
             let ns = self.ns();
             let name = ns
@@ -2794,6 +2675,22 @@ impl QuickFS {
             return None;
         }
         let content_hash = content_hash?;
+        if workspace.is_some() {
+            // Preview bytes are derived from the file and must not enter the unsealed blob store.
+            self.check_access(ino, Access::Read).ok()?;
+            let bytes = self.hydrator.block_on(self.hydrator.read_local_scoped(
+                content_hash,
+                0,
+                thumbnail::MAX_SOURCE_BYTES.saturating_add(1) as u64,
+                workspace,
+            ))?;
+            if bytes.len() > thumbnail::MAX_SOURCE_BYTES {
+                return None;
+            }
+            let image =
+                thumbnail::generate(&thumbnail::Source::Bytes(&bytes), category, provider.edge())?;
+            return thumbnail::encode_png(&image);
+        }
         let ch = *content_hash.as_bytes();
 
         if let Some(png) = provider.cached(ch) {
@@ -3189,23 +3086,31 @@ impl QuickFS {
         }
     }
 
+    fn inode_workspace(&self, ino: u64) -> Option<collab_types::WorkspaceId> {
+        self.ns()
+            .path_for(ino)
+            .and_then(|path| self.hydrator.scoped_workspace(&path))
+    }
+
     /// Stores one version's content and returns its content id and length (`None` when empty).
     /// `previous` is the file's current content, whose chunk tier the new version keeps.
     fn store_version_blocking(
         &self,
         source: VersionSource<'_>,
         previous: Option<Hash>,
+        workspace: Option<collab_types::WorkspaceId>,
     ) -> io::Result<Option<(Hash, u64)>> {
         let stored = match source {
             VersionSource::Bytes(data) => {
                 let len = data.len() as u64;
                 self.hydrator
-                    .block_on(self.hydrator.write_file_content(data, previous))
+                    .block_on(self.hydrator.write_file_content(data, previous, workspace))
                     .map(|hash| hash.map(|hash| (hash, len)))
             }
-            VersionSource::File { path, manifest } => self
-                .hydrator
-                .block_on(self.hydrator.publish_file_content(path, manifest, previous)),
+            VersionSource::File { path, manifest } => self.hydrator.block_on(
+                self.hydrator
+                    .publish_file_content(path, manifest, previous, workspace),
+            ),
         };
         stored.map_err(|e| io::Error::other(e.to_string()))
     }
@@ -3213,7 +3118,11 @@ impl QuickFS {
     /// Current full content of an inode: its stage if any, else the hydrated blob. `Ok(empty)` only for an empty or hashless file; a hydration failure is
     /// `Err`.
     fn read_full_blocking(&self, ino: u64) -> io::Result<Vec<u8>> {
+        let workspace = self.inode_workspace(ino);
         if let Some(stage) = self.stage(ino) {
+            if stage.lock().workspace() != workspace {
+                return Err(io::Error::from_raw_os_error(ENOENT));
+            }
             return self.read_stage_blocking(&stage, 0, u64::MAX);
         }
         let hash = self.ns().hash_for(ino);
@@ -3221,7 +3130,7 @@ impl QuickFS {
             return Ok(Vec::new());
         };
         self.hydrator
-            .block_on(self.hydrator.read(hash, 0, u64::MAX))
+            .block_on(self.hydrator.read_scoped(hash, 0, u64::MAX, workspace))
             .map_err(|e| io::Error::other(e.to_string()))
     }
 
@@ -3232,7 +3141,13 @@ impl QuickFS {
     }
 
     fn commit_content_at(&self, ino: u64, data: &[u8], mtime_ms: u64) -> io::Result<()> {
-        self.commit_version_at(ino, VersionSource::Bytes(data), mtime_ms, None)
+        self.commit_version_at(
+            ino,
+            VersionSource::Bytes(data),
+            mtime_ms,
+            None,
+            self.inode_workspace(ino),
+        )
     }
 
     /// [`Self::commit_content_at`] with the version's content from `source`, and for a version
@@ -3247,6 +3162,7 @@ impl QuickFS {
         source: VersionSource<'_>,
         mtime_ms: u64,
         fence: Option<crate::namespace::VersionFence>,
+        workspace: Option<collab_types::WorkspaceId>,
     ) -> io::Result<()> {
         #[cfg(test)]
         if let Some((fault_ino, errno)) = *self.commit_fault.lock_recover()
@@ -3254,11 +3170,24 @@ impl QuickFS {
         {
             return Err(io::Error::from_raw_os_error(errno));
         }
-        let previous = self.ns().hash_for(ino);
-        let (hash, byte_len) = match self.store_version_blocking(source, previous)? {
+        let previous = {
+            let ns = self.ns();
+            let actual = ns
+                .path_for(ino)
+                .and_then(|path| self.hydrator.scoped_workspace(&path));
+            if actual != workspace {
+                return Err(io::Error::from_raw_os_error(libc::EXDEV));
+            }
+            ns.hash_for(ino)
+        };
+        let (hash, byte_len) = match self.store_version_blocking(source, previous, workspace)? {
             Some((hash, len)) => (Some(hash), len),
             None => (None, 0),
         };
+        if workspace.is_some() {
+            self.check_access(ino, Access::Write)
+                .map_err(io::Error::from_raw_os_error)?;
+        }
         let (expected_hash, expected_len, stamp) = {
             let ns = self.ns();
             let expected_hash = ns.hash_for(ino);
@@ -3278,6 +3207,12 @@ impl QuickFS {
         };
         {
             let mut ns = self.ns();
+            let current_workspace = ns
+                .path_for(ino)
+                .and_then(|path| self.hydrator.scoped_workspace(&path));
+            if current_workspace != workspace {
+                return Err(io::Error::from_raw_os_error(libc::EXDEV));
+            }
             let current_len = ns.getattr(ino).map(|attr| attr.size);
             let installed = ns.hash_for(ino) == hash && current_len == Some(byte_len);
             if !installed
@@ -3410,8 +3345,14 @@ impl QuickFS {
         let mut namespace = self.ns();
         namespace.lookup(parent, name).ok_or(ENOENT)?;
         if self.enforcement.is_some() {
+            let source = namespace.path_for(parent).ok_or(ENOENT)?;
             let target = namespace.path_for(new_parent).ok_or(ENOENT)?;
-            self.check_movable_path(&child_path(&target, new_name))?;
+            let from = child_path(&source, name);
+            let to = child_path(&target, new_name);
+            self.check_movable_path(&to)?;
+            if self.hydrator.scoped_workspace(&from) != self.hydrator.scoped_workspace(&to) {
+                return Err(libc::EXDEV);
+            }
         }
         if !namespace.rename(parent, name, new_parent, new_name, now_ms()) {
             return Err(ENOENT);
@@ -4270,9 +4211,10 @@ impl Filesystem for QuickFS {
             ReadPlan::Error(e) => reply.error(to_errno(e)),
             ReadPlan::Buffered(buffered) => self.reply_buffered(ino.0, buffered, reply),
             ReadPlan::Local(data) => reply.data(&data),
-            ReadPlan::Remote(hash) => self.reply_remote(
+            ReadPlan::Remote(hash, workspace) => self.reply_remote(
                 ino.0,
                 hash,
+                workspace,
                 (offset, u64::from(size)),
                 flags.0 & libc::O_NONBLOCK != 0,
                 reply,
@@ -4340,7 +4282,7 @@ impl Filesystem for QuickFS {
             &self.presented_to(req, attr),
             Generation(0),
             FileHandle(handle),
-            FopenFlags::empty(),
+            self.open_cache_flags(ino),
         );
     }
 

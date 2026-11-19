@@ -673,20 +673,26 @@ impl Workspaces {
         access: &str,
         now: u64,
     ) -> Result<GovernanceCompletion, CollaborationError> {
-        let document = collab_types::document_access_target(app, document).ok_or_else(|| {
-            CollaborationError::new("this document has no workspace access rules")
-        })?;
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
         self.ensure_keeper(&mut workspace, caller.user_public_key, now)
             .await?;
         let at = system_time(now);
-        workspace
-            .peer()
-            .check_document_read(caller.device_public_key, app, document, at)?;
-        if workspace.peer().own_resource(app, document).is_some() {
-            return Err(CollaborationError::new("this document belongs to a person"));
-        }
+        let document = if app.is_empty() {
+            document
+        } else {
+            let document =
+                collab_types::document_access_target(app, document).ok_or_else(|| {
+                    CollaborationError::new("this document has no workspace access rules")
+                })?;
+            workspace
+                .peer()
+                .check_document_read(caller.device_public_key, app, document, at)?;
+            if workspace.peer().own_resource(app, document).is_some() {
+                return Err(CollaborationError::new("this document belongs to a person"));
+            }
+            document
+        };
         let policy = workspace.peer().governance().governed_policy()?;
         let actor = hex::encode(caller.user_public_key);
         let changes = collab_types::document_access_changes(
@@ -700,17 +706,20 @@ impl Workspaces {
             self.authorize(caller, Some(&workspace), WorkspaceOp::Change(change), now)?;
         }
         let key = self.inner.host.key.clone();
-        self.administer(
-            &mut workspace,
-            request_id,
-            request_digest(&("document-access", recipient, app, document, access))?,
-            |peer| {
-                peer.governance_mut()
-                    .change_document_access(changes, &key, at)
-            },
-            now,
-        )
-        .await
+        let completion = self
+            .administer(
+                &mut workspace,
+                request_id,
+                request_digest(&("document-access", recipient, app, document, access))?,
+                |peer| {
+                    peer.governance_mut()
+                        .change_document_access(changes, &key, at)
+                },
+                now,
+            )
+            .await;
+        drop(workspace);
+        completion
     }
 
     /// Hold the person `request.user_public_key` in `workspace` at

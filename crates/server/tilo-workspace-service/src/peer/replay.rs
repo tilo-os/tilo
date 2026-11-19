@@ -96,6 +96,7 @@ pub(super) async fn authorize_state_frame(
     if !super::records::DocumentRead::of(&runtime, peer).allows(&runtime.store, frame) {
         return Err(PeerError::Protocol("document access changed".into()));
     }
+    drop(runtime);
     Ok(())
 }
 

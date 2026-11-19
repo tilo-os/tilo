@@ -749,10 +749,8 @@ impl BrokerState {
                 allows: format!(
                     "{} {:?}",
                     match c.effect {
-                        Effect::Grant => "grant",
-                        Effect::Restrict => "restrict",
-                        Effect::WorkspaceFileAccess => "grant",
-                        Effect::WorkspaceFileBoundary => "restrict",
+                        Effect::Grant | Effect::WorkspaceFileAccess => "grant",
+                        Effect::Restrict | Effect::WorkspaceFileBoundary => "restrict",
                     },
                     c.access
                 ),

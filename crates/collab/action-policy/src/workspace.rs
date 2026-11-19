@@ -1089,28 +1089,7 @@ impl WorkspacePolicy {
         change: &Change,
         cx: &Context<'_>,
     ) -> Result<(), Refusal> {
-        // Administrators are made by whoever may make them, and unmade by the
-        // owner and whom the workspace is kept for alone; whom it is kept for
-        // is the owner's to say.
-        match change {
-            Change::Grant(grant) if roles::keeper_named(&grant.id).is_some() => {
-                if !self.is_owner(actor_person) {
-                    return Err(Refusal::KeeperByOwner);
-                }
-            }
-            Change::Revoke(id) if roles::keeper_named(id).is_some() => {
-                if !self.is_owner(actor_person) {
-                    return Err(Refusal::KeeperByOwner);
-                }
-            }
-            Change::Grant(grant) if roles::administrator_named(&grant.id).is_some() => {
-                self.check_makes_administrators(actor_person, actor, cx, false)?;
-            }
-            change if self.unmakes_administrator(actor_person, change) => {
-                self.check_makes_administrators(actor_person, actor, cx, true)?;
-            }
-            _ => {}
-        }
+        self.check_administration_change(actor_person, actor, change, cx)?;
         match change {
             Change::AddMember { person, role } => {
                 if self.is_member(person) {
@@ -1169,26 +1148,7 @@ impl WorkspacePolicy {
                 }
                 self.check_reach(actor_person, person, true)
             }
-            Change::Grant(grant) => {
-                if roles::is_role_grant(grant) {
-                    return Err(Refusal::BuiltInRole(grant.id.clone()));
-                }
-                if grant.node.workspace_id() != Some(self.workspace.as_str()) {
-                    return Err(Refusal::OutsideWorkspace(grant.node.clone()));
-                }
-                if let Grantee::CustomRole(id) = &grant.grantee {
-                    self.require_custom_role(id)?;
-                }
-                if let Some(held) = self.grants.iter().find(|held| held.id == grant.id) {
-                    // The same grant again converges: a replayed command
-                    // leaves the workspace as it was instead of refusing.
-                    if same_terms(held, grant) {
-                        return Ok(());
-                    }
-                    return Err(Refusal::DuplicateGrant(grant.id.clone()));
-                }
-                Self::check_within(actor, grant, cx)
-            }
+            Change::Grant(grant) => self.check_new_grant(actor, grant, cx),
             Change::Revoke(id) => {
                 if let Some(grant) = self.grants.iter().find(|grant| &grant.id == id) {
                     if roles::is_role_grant(grant) {
@@ -1199,21 +1159,7 @@ impl WorkspacePolicy {
                     Err(Refusal::UnknownGrant(id.clone()))
                 }
             }
-            Change::DefineRole { id, name } => {
-                if id.is_empty()
-                    || id.len() > 64
-                    || !id
-                        .bytes()
-                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
-                    || name.trim().is_empty()
-                    || name.trim() != name
-                    || name.chars().count() > 80
-                    || name.chars().any(char::is_control)
-                {
-                    return Err(Refusal::InvalidRole);
-                }
-                Ok(())
-            }
+            Change::DefineRole { id, name } => Self::check_role_definition(id, name),
             Change::RemoveRole { id } => self.require_custom_role(id),
             Change::SetMemberRoles { person, roles } => {
                 if !self.members.contains_key(person) {
@@ -1246,6 +1192,80 @@ impl WorkspacePolicy {
                 Ok(())
             }
         }
+    }
+
+    fn check_administration_change(
+        &self,
+        actor_person: &str,
+        actor: &Authority<'_>,
+        change: &Change,
+        cx: &Context<'_>,
+    ) -> Result<(), Refusal> {
+        // Administrators are made by whoever may make them, and unmade by the
+        // owner and whom the workspace is kept for alone; whom it is kept for
+        // is the owner's to say.
+        match change {
+            Change::Grant(grant) if roles::keeper_named(&grant.id).is_some() => {
+                if !self.is_owner(actor_person) {
+                    return Err(Refusal::KeeperByOwner);
+                }
+            }
+            Change::Revoke(id) if roles::keeper_named(id).is_some() => {
+                if !self.is_owner(actor_person) {
+                    return Err(Refusal::KeeperByOwner);
+                }
+            }
+            Change::Grant(grant) if roles::administrator_named(&grant.id).is_some() => {
+                self.check_makes_administrators(actor_person, actor, cx, false)?;
+            }
+            change if self.unmakes_administrator(actor_person, change) => {
+                self.check_makes_administrators(actor_person, actor, cx, true)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn check_new_grant(
+        &self,
+        actor: &Authority<'_>,
+        grant: &Grant,
+        cx: &Context<'_>,
+    ) -> Result<(), Refusal> {
+        if roles::is_role_grant(grant) {
+            return Err(Refusal::BuiltInRole(grant.id.clone()));
+        }
+        if grant.node.workspace_id() != Some(self.workspace.as_str()) {
+            return Err(Refusal::OutsideWorkspace(grant.node.clone()));
+        }
+        if let Grantee::CustomRole(id) = &grant.grantee {
+            self.require_custom_role(id)?;
+        }
+        if let Some(held) = self.grants.iter().find(|held| held.id == grant.id) {
+            // The same grant again converges: a replayed command
+            // leaves the workspace as it was instead of refusing.
+            if same_terms(held, grant) {
+                return Ok(());
+            }
+            return Err(Refusal::DuplicateGrant(grant.id.clone()));
+        }
+        Self::check_within(actor, grant, cx)
+    }
+
+    fn check_role_definition(id: &str, name: &str) -> Result<(), Refusal> {
+        if id.is_empty()
+            || id.len() > 64
+            || !id
+                .bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+            || name.trim().is_empty()
+            || name.trim() != name
+            || name.chars().count() > 80
+            || name.chars().any(char::is_control)
+        {
+            return Err(Refusal::InvalidRole);
+        }
+        Ok(())
     }
 
     fn require_custom_role(&self, id: &str) -> Result<(), Refusal> {

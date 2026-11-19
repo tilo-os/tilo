@@ -1305,7 +1305,7 @@ async fn a_workspace_members_role_controls_document_replay_and_open() {
     )
     .unwrap();
     runtime.admit_device(reader.device_public_key).unwrap();
-    runtime.project_access(access(&policy), Default::default());
+    runtime.project_access(access(&policy), tilo_peer_state::GovernanceHeads::default());
     let payload = collab_types::DocumentMutation::Snapshot(vec![42])
         .encode()
         .unwrap();
@@ -1408,7 +1408,7 @@ async fn a_workspace_members_role_controls_document_replay_and_open() {
     runtime
         .lock()
         .await
-        .project_access(access(&policy), Default::default());
+        .project_access(access(&policy), tilo_peer_state::GovernanceHeads::default());
     write.write_all(&open()).await.unwrap();
     assert!(matches!(
         wire.read_next().await.unwrap(),
@@ -1640,7 +1640,7 @@ async fn an_opened_records_answer_is_written_whole_before_live_frames() {
         }
     })
     .await;
-    let channel_of = |frame: &Envelope| match frame {
+    let digest_of = |frame: &Envelope| match frame {
         Envelope::Delta { delta, .. } => crate::peer::admission::channel_of(delta),
         _ => None,
     };
@@ -1657,7 +1657,7 @@ async fn an_opened_records_answer_is_written_whole_before_live_frames() {
             {
                 return (frames, answer.unwrap_or_default());
             }
-            if channel_of(&frame) == Some(record) {
+            if digest_of(&frame) == Some(record) {
                 answer.get_or_insert_with(Vec::new);
             }
             if let Some(answer) = answer.as_mut() {
@@ -1670,7 +1670,7 @@ async fn an_opened_records_answer_is_written_whole_before_live_frames() {
     let between = opened
         .1
         .iter()
-        .filter(|frame| channel_of(frame) != Some(record))
+        .filter(|frame| digest_of(frame) != Some(record))
         .count();
     assert_eq!(between, 0, "no live frame between the answer's frames");
     assert_eq!(opened.1.len(), 20);

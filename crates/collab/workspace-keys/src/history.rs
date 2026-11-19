@@ -52,15 +52,6 @@ impl HistoryKeys {
     /// under the epoch these keys seal with now. The plaintext never leaves this call.
     pub fn seal_checkpoint(
         &self,
-        app: &str,
-        document: &str,
-        cleartext: &[u8],
-    ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
-        self.seal_checkpoint_on(self.0.workspace(), (app, document), cleartext)
-    }
-
-    fn seal_checkpoint_on(
-        &self,
         workspace: WorkspaceId,
         (app, document): (&str, &str),
         cleartext: &[u8],
@@ -133,11 +124,12 @@ impl SharedKeys {
         &self,
         workspace: WorkspaceId,
         document: (&str, &str),
+        named: Option<&str>,
         readers: &std::collections::BTreeSet<[u8; 32]>,
         cleartext: &[u8],
     ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
-        self.scoped_history_keys(workspace, document, readers)?
-            .seal_checkpoint_on(workspace, document, cleartext)
+        self.scoped_history_keys(workspace, document, named, readers)?
+            .seal_checkpoint(workspace, document, cleartext)
     }
 
     /// Renew a held write under the document's current group, including a
@@ -146,15 +138,19 @@ impl SharedKeys {
         &self,
         workspace: WorkspaceId,
         document: (&str, &str),
+        named: Option<&str>,
         readers: &std::collections::BTreeSet<[u8; 32]>,
         write: &SignedOp,
     ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
         let metadata = write.encryption.ok_or("the write is not sealed")?;
-        let target = self.scoped_history_keys(workspace, document, readers)?;
-        if metadata.key_group(workspace) == target.0.workspace() {
+        let target = self.scoped_history_keys(workspace, document, named, readers)?;
+        let previous =
+            collab_types::reader_group(workspace, named.unwrap_or(collab_types::EVERY_MEMBER))
+                .ok_or("invalid reader set for write renewal")?;
+        if metadata.key_group(previous) == target.0.workspace() {
             return target.renew(write);
         }
-        let cleartext = self.open_history_write(workspace, write)?;
+        let cleartext = self.open_history_write(previous, write)?;
         let retention = metadata
             .retention()
             .ok_or("the write has no content retention")?;
@@ -167,15 +163,13 @@ impl SharedKeys {
     fn scoped_history_keys(
         &self,
         workspace: WorkspaceId,
-        document: (&str, &str),
+        (app, document): (&str, &str),
+        named: Option<&str>,
         readers: &std::collections::BTreeSet<[u8; 32]>,
     ) -> Result<HistoryKeys, String> {
-        let group = neighbour_wire::KeyScope::Document {
-            workspace,
-            app: document.0.to_owned(),
-            document: document.1.to_owned(),
-        }
-        .group();
+        let group = neighbour_wire::KeyScope::document(workspace, app, document, named)
+            .ok_or("readers do not match the document")?
+            .group();
         self.held_history_keys(group, Some(readers))
             .map(HistoryKeys)
     }
@@ -188,13 +182,22 @@ impl SharedKeys {
         &self,
         workspace: WorkspaceId,
         app: &str,
-        record: &str,
+        document: &str,
+        named: Option<&str>,
         cleartext: &[u8],
     ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
-        let (access, _) = self.access(workspace);
-        let KeyAccess::Ready(keys) = access else {
-            return Err("this device holds no current key for the record's group".into());
+        let group =
+            collab_types::reader_group(workspace, named.unwrap_or(collab_types::EVERY_MEMBER))
+                .ok_or("invalid reader set for compaction")?;
+        let keys = if named.is_some() {
+            self.held_history_keys(group, None)?
+        } else {
+            let (access, _) = self.access(group);
+            let KeyAccess::Ready(keys) = access else {
+                return Err("this device holds no current key for the document's group".into());
+            };
+            keys
         };
-        HistoryKeys(keys).seal_checkpoint(app, record, cleartext)
+        HistoryKeys(keys).seal_checkpoint(workspace, (app, document), cleartext)
     }
 }

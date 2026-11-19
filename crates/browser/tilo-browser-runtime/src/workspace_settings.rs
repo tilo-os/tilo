@@ -542,13 +542,25 @@ impl PageWorkspaceSettings {
                 }))
                 .collect();
             let documents = self.documents.borrow();
+            let targets = documents
+                .documents
+                .iter()
+                .cloned()
+                .chain(
+                    tilo_desktop_search::availability::catalog()
+                        .iter()
+                        .filter(|app| app.platforms.contains(&"web"))
+                        .map(|app| (String::new(), app.id.to_owned())),
+                )
+                .chain(std::iter::once((String::new(), String::new())))
+                .collect();
             sheet::Permissions {
                 composer: sheet::Composer {
                     who: t("workspace-settings-who"),
                     ..sheet::Composer::default()
                 },
                 documents: Some(document_access_pane(
-                    documents.documents.clone(),
+                    targets,
                     documents.rules.clone(),
                     recipients,
                 )),

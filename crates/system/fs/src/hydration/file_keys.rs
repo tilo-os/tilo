@@ -1,5 +1,6 @@
 //! Sealing file content with the same access as the workspace's Files tree.
 
+use std::collections::BTreeMap;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -14,6 +15,7 @@ use tilo_identity_client::{BrokerSigningIdentity, wire::KeyAccess};
 use tilo_lock::MutexRecover as _;
 use tokio::io::AsyncReadExt as _;
 
+use crate::acl::{Access, AclHandle, IdentityKey};
 use crate::content::{self, Manifest};
 use crate::tree_document::{FILES_APP, connect_identity, document_id};
 
@@ -45,9 +47,11 @@ impl FileKeys {
                 Ok(reply) => reply,
                 Err(error) => {
                     *connected = None;
+                    drop(connected);
                     return Err(anyhow!("could not read the Files keys: {error}"));
                 }
             };
+            drop(connected);
             ensure!(
                 reply.access == KeyAccess::Ready,
                 "the Files content keys are not ready"
@@ -74,7 +78,7 @@ impl FileKeys {
         }
     }
 
-    async fn access(&self) -> Result<ContentKeys> {
+    pub(crate) async fn access(&self) -> Result<ContentKeys> {
         let read = Arc::clone(&self.read);
         tokio::task::spawn_blocking(move || read()).await?
     }
@@ -86,7 +90,7 @@ impl FileKeys {
         source: impl tokio::io::AsyncRead + Unpin,
     ) -> Result<Hash> {
         let keys = self.access().await?;
-        let hash = write_sealed_chunks(store, &keys, self.artifact(), manifest, source).await?;
+        let hash = write_sealed_chunks(store, &keys, self.workspace, manifest, source).await?;
         let current = self.access().await?;
         ensure!(
             (current.workspace(), current.epoch()) == (keys.workspace(), keys.epoch()),
@@ -110,6 +114,60 @@ impl FileKeys {
     }
 }
 
+enum ScopedKeyService {
+    Identity(PathBuf),
+    Session {
+        link: crate::net::SessionLink,
+        runtime: tokio::runtime::Handle,
+    },
+}
+
+impl ScopedKeyService {
+    fn file_keys(&self, workspace: WorkspaceId) -> FileKeys {
+        match self {
+            Self::Identity(path) => FileKeys::new(workspace, path.clone()),
+            Self::Session { link, runtime } => {
+                let link = link.clone();
+                let runtime = runtime.clone();
+                FileKeys::from_session(workspace, move || {
+                    runtime.block_on(link.file_keys(workspace))
+                })
+            }
+        }
+    }
+}
+
+/// The managed mount shares one namespace between the person's folders and signed workspace roots.
+pub(super) struct ScopedFileKeys {
+    authority: ScopedKeyService,
+    policy: AclHandle,
+    reader: IdentityKey,
+    sources: Mutex<BTreeMap<WorkspaceId, FileKeys>>,
+}
+
+impl ScopedFileKeys {
+    fn authorize(&self, workspace: WorkspaceId, access: Access) -> Result<()> {
+        let root = tilo_paths::workspace_tree(Path::new("/"), &workspace.to_string())
+            .ok_or_else(|| anyhow!("invalid workspace folder"))?;
+        ensure!(
+            self.policy
+                .permits_workspace_tree(&self.reader, &root.to_string_lossy(), access),
+            "workspace Files access was refused"
+        );
+        Ok(())
+    }
+
+    fn source(&self, workspace: WorkspaceId, access: Access) -> Result<FileKeys> {
+        self.authorize(workspace, access)?;
+        Ok(self
+            .sources
+            .lock_recover()
+            .entry(workspace)
+            .or_insert_with(|| self.authority.file_keys(workspace))
+            .clone())
+    }
+}
+
 pub(super) struct FileDecoder {
     keys: ContentKeys,
     metadata: EncryptionMetadata,
@@ -130,27 +188,131 @@ impl FileDecoder {
 }
 
 impl Hydrator {
-    pub(super) async fn decoder(&self, manifest: &Manifest) -> Result<Option<FileDecoder>> {
+    /// Use the workspace key for each governed folder of the managed Files mount.
+    #[must_use]
+    pub fn with_scoped_file_keys(
+        self,
+        identity: PathBuf,
+        policy: AclHandle,
+        reader: IdentityKey,
+    ) -> Self {
+        self.with_key_service(ScopedKeyService::Identity(identity), policy, reader)
+    }
+
+    /// Use the active login's authenticated session link for shared workspace keys.
+    #[must_use]
+    pub fn with_session_file_keys(self, policy: AclHandle, reader: IdentityKey) -> Self {
+        let crate::net::Net::Session(link) = &self.net else {
+            return self;
+        };
+        let authority = ScopedKeyService::Session {
+            link: link.clone(),
+            runtime: self.runtime_handle.clone(),
+        };
+        self.with_key_service(authority, policy, reader)
+    }
+
+    fn with_key_service(
+        mut self,
+        authority: ScopedKeyService,
+        policy: AclHandle,
+        reader: IdentityKey,
+    ) -> Self {
+        self.scoped_file_keys = Some(ScopedFileKeys {
+            authority,
+            policy,
+            reader,
+            sources: Mutex::default(),
+        });
+        self
+    }
+
+    pub(crate) fn scoped_workspace(&self, path: &str) -> Option<WorkspaceId> {
+        self.scoped_file_keys.as_ref()?;
+        let mut components = path.strip_prefix('/')?.split('/');
+        if components.next()? != tilo_paths::WORKSPACE_TREES_DIR {
+            return None;
+        }
+        let workspace = components.next()?;
+        WorkspaceId::parse(workspace).filter(|id| id.to_string() == workspace)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn has_scoped_file_keys(&self) -> bool {
+        self.scoped_file_keys.is_some()
+    }
+
+    pub(crate) fn native_workspace(&self, relative: &Path) -> Option<WorkspaceId> {
+        use std::path::Component;
+
+        self.scoped_file_keys.as_ref()?;
+        let mut components = relative.components();
+        let Component::Normal(root) = components.next()? else {
+            return None;
+        };
+        let Component::Normal(workspace) = components.next()? else {
+            return None;
+        };
+        if root != tilo_paths::WORKSPACE_TREES_DIR {
+            return None;
+        }
+        let workspace = workspace.to_str()?;
+        WorkspaceId::parse(workspace).filter(|id| id.to_string() == workspace)
+    }
+
+    pub(crate) fn authorize_scoped_read(&self, workspace: Option<WorkspaceId>) -> Result<()> {
+        if let Some(workspace) = workspace {
+            self.scoped_file_keys
+                .as_ref()
+                .ok_or_else(|| anyhow!("this mount has no workspace file policy"))?
+                .authorize(workspace, Access::Read)?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn decoder(
+        &self,
+        manifest: &Manifest,
+        expected: Option<WorkspaceId>,
+    ) -> Result<Option<FileDecoder>> {
         let Some(sealed) = manifest.sealed() else {
             return Ok(None);
         };
-        let source = self
-            .file_keys
-            .as_ref()
-            .ok_or_else(|| anyhow!("this mount has no Files key authority"))?;
+        let source = match (&self.file_keys, &self.scoped_file_keys, expected) {
+            (Some(source), _, _) => source.clone(),
+            (None, Some(scopes), Some(workspace)) => scopes.source(workspace, Access::Read)?,
+            _ => return Err(anyhow!("this mount has no key authority for that file")),
+        };
+        let keys = source.access().await?;
+        let metadata = source.metadata(sealed);
+        ensure!(
+            keys.holds_key_for(&metadata),
+            "this workspace holds no key for that file"
+        );
         Ok(Some(FileDecoder {
-            keys: source.access().await?,
-            metadata: source.metadata(sealed),
+            keys,
+            metadata,
             artifact: source.artifact(),
         }))
+    }
+
+    fn file_writer(&self, workspace: Option<WorkspaceId>) -> Result<Option<FileKeys>> {
+        match (&self.file_keys, &self.scoped_file_keys, workspace) {
+            (Some(source), _, _) => Ok(Some(source.clone())),
+            (None, Some(scopes), Some(workspace)) => {
+                scopes.source(workspace, Access::Write).map(Some)
+            }
+            _ => Ok(None),
+        }
     }
 
     pub(crate) async fn write_file_content(
         &self,
         data: &[u8],
         previous: Option<Hash>,
+        workspace: Option<WorkspaceId>,
     ) -> Result<Option<Hash>> {
-        let Some(source) = &self.file_keys else {
+        let Some(source) = self.file_writer(workspace)? else {
             return self.store.write_content_after(data, previous).await;
         };
         if data.is_empty() {
@@ -166,8 +328,9 @@ impl Hydrator {
         path: &Path,
         known: Option<Arc<Manifest>>,
         previous: Option<Hash>,
+        workspace: Option<WorkspaceId>,
     ) -> Result<Option<(Hash, u64)>> {
-        let Some(source) = &self.file_keys else {
+        let Some(source) = self.file_writer(workspace)? else {
             return self.store.publish_file(path, known, previous).await;
         };
         let file = std::fs::File::open(path)?;
@@ -203,10 +366,11 @@ impl Hydrator {
 async fn write_sealed_chunks(
     store: &crate::store::ContentStore,
     keys: &ContentKeys,
-    artifact: ArtifactId,
+    workspace: WorkspaceId,
     plaintext: &Manifest,
     mut read: impl tokio::io::AsyncRead + Unpin,
 ) -> Result<Hash> {
+    let artifact = collab_types::file_content_artifact(workspace);
     let mut chunks = Vec::with_capacity(plaintext.chunks().len());
     let mut clear = Vec::new();
     let mut overhead = None;
@@ -250,6 +414,253 @@ async fn write_sealed_chunks(
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
+    async fn native_range(
+        hydration: Arc<Hydrator>,
+        hash: Hash,
+        workspace: WorkspaceId,
+        len: u64,
+    ) -> std::io::Result<Vec<u8>> {
+        use std::os::fd::AsFd as _;
+
+        use crate::native::fetch::ContentFetcher;
+        use fs_native::hydrate::{Cancel, Fetcher as _};
+
+        let runtime = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || {
+            let dir = tempfile::tempdir()?;
+            let relative = Path::new(".workspaces").join(workspace.to_string());
+            let parent = dir.path().join(relative);
+            std::fs::create_dir_all(&parent)?;
+            let path = parent.join("placeholder");
+            let file = std::fs::File::create(&path)?;
+            let fetch = ContentFetcher::new(hydration, runtime, 1)
+                .with_tree(dir.path().to_path_buf(), dir.path().join("mount"));
+            fetch.fill(
+                hash.as_bytes(),
+                0..len,
+                file.as_fd(),
+                false,
+                &Cancel::default(),
+            )?;
+            std::fs::read(path)
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scoped_mounts_open_file_content_only_inside_its_workspace() {
+        verify_scoped_file_access(false).await;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_mounted_file_refuses_a_read_after_workspace_access_is_revoked() {
+        tilo_test_env::require_capability!(
+            Fuse,
+            crate::fuse_session::mountable(
+                Path::new("/dev/fuse"),
+                std::env::var_os("PATH").as_deref()
+            ),
+            "requires /dev/fuse and fusermount3"
+        );
+        verify_scoped_file_access(true).await;
+    }
+
+    fn scoped_file_acl(
+        reader: [u8; 32],
+        workspace: WorkspaceId,
+        another: WorkspaceId,
+        allowed: bool,
+    ) -> crate::acl::WorkspaceAcl {
+        use collab_types::{CapOverride, Effect, Scope};
+        use tilo_action_policy::Grantee;
+
+        let capabilities: Vec<_> = [workspace, another]
+            .into_iter()
+            .flat_map(|id| {
+                let scope = Scope::FsPath(format!("/var/workspace/.workspaces/{id}"));
+                let who = Grantee::person("local");
+                let mut caps = vec![CapOverride::new(
+                    who.clone(),
+                    scope.clone(),
+                    Effect::WorkspaceFileBoundary,
+                    collab_types::Access::Read,
+                )];
+                if id != workspace || allowed {
+                    caps.push(CapOverride::new(
+                        who,
+                        scope,
+                        Effect::WorkspaceFileAccess,
+                        collab_types::Access::Write,
+                    ));
+                }
+                caps
+            })
+            .collect();
+        crate::acl::WorkspaceAcl::from_capabilities(
+            reader,
+            &capabilities,
+            &[collab_types::MemberId::person("local")],
+            None,
+        )
+    }
+
+    fn install_file_keys(hydrator: &Hydrator, workspaces: [WorkspaceId; 2]) {
+        let source = hydrator.scoped_file_keys.as_ref().unwrap();
+        for id in workspaces {
+            let mut group = *id.as_uuid().as_bytes();
+            group[8] |= 0xe0;
+            let keys = key_group::KeyGroup::create(
+                WorkspaceId::from_u128(u128::from_be_bytes(group)),
+                key_group::MemberKey::generate("member").unwrap(),
+            )
+            .unwrap()
+            .content_keys()
+            .unwrap();
+            source
+                .sources
+                .lock_recover()
+                .insert(id, FileKeys::from_session(id, move || Ok(keys.clone())));
+        }
+    }
+
+    async fn verify_scoped_file_access(kernel_mount: bool) {
+        let reader = [19; 32];
+        let workspace = WorkspaceId::new();
+        let another = WorkspaceId::new();
+        let acl = |allowed| scoped_file_acl(reader, workspace, another, allowed);
+        let policy = AclHandle::new(acl(true));
+        let store = Arc::new(crate::store::ContentStore::memory());
+        let hydrator = Hydrator::new(super::super::tests::local_endpoint().await, store.clone())
+            .with_scoped_file_keys(PathBuf::new(), policy.clone(), reader);
+        install_file_keys(&hydrator, [workspace, another]);
+
+        let data = b"private workspace file";
+        let len = data.len() as u64;
+        let namespace = Arc::new(Mutex::new(crate::Namespace::new("scoped-mount").unwrap()));
+        let tree = {
+            let mut ns = namespace.lock_recover();
+            let scopes = ns.create_dir(crate::ROOT_INO, ".workspaces", 1).unwrap();
+            ns.create_dir(scopes, workspace.to_string(), 1).unwrap()
+        };
+        let hydrator = Arc::new(hydrator);
+        let fs = crate::QuickFS::new(
+            namespace.clone(),
+            hydrator.clone(),
+            Arc::new(crate::Heuristics::new(hydrator.clone())),
+        )
+        .with_acl(policy.clone(), reader);
+        let path = Path::new(".workspaces")
+            .join(workspace.to_string())
+            .join("private.txt");
+        fs.apply_local_file(&path, data, 2).unwrap();
+        let hash = {
+            let mut ns = namespace.lock_recover();
+            let ino = ns.lookup(tree, "private.txt").unwrap().ino.0;
+            ns.hash_for(ino).unwrap()
+        };
+        let kept = store.manifest(hash).await.unwrap();
+        assert!(kept.sealed().is_some(), "the mount persisted ciphertext");
+        assert_eq!(fs.read_path(&path).unwrap(), data);
+        assert_eq!(
+            hydrator
+                .read_scoped(hash, 0, len, Some(workspace))
+                .await
+                .unwrap(),
+            data
+        );
+        assert!(
+            hydrator
+                .read_scoped(hash, 0, len, Some(another))
+                .await
+                .is_err()
+        );
+        assert!(hydrator.read(hash, 0, len).await.is_err());
+
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(
+                native_range(hydrator.clone(), hash, workspace, len)
+                    .await
+                    .unwrap(),
+                data
+            );
+            assert!(
+                native_range(hydrator.clone(), hash, another, len)
+                    .await
+                    .is_err()
+            );
+        }
+
+        if kernel_mount {
+            #[cfg(target_os = "linux")]
+            check_open_handle(fs, path, data, policy, acl(false)).await;
+            return;
+        }
+
+        policy.replace(acl(false));
+        assert!(fs.read_path(&path).is_err());
+        #[cfg(target_os = "linux")]
+        assert!(
+            native_range(hydrator.clone(), hash, workspace, len)
+                .await
+                .is_err()
+        );
+        assert!(
+            hydrator
+                .read_scoped(hash, 0, len, Some(workspace))
+                .await
+                .is_err()
+        );
+        assert!(
+            hydrator
+                .write_file_content(data, Some(hash), Some(workspace))
+                .await
+                .is_err()
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn check_open_handle(
+        fs: crate::QuickFS,
+        path: PathBuf,
+        contents: &'static [u8],
+        acl: AclHandle,
+        denied: crate::acl::WorkspaceAcl,
+    ) {
+        use std::io::{Read as _, Seek as _};
+
+        tokio::task::spawn_blocking(move || {
+            let mountpoint = tempfile::tempdir().unwrap();
+            let session = fuser::spawn_mount(fs, mountpoint.path(), &fuser::Config::default())
+                .expect("mount the scoped Files namespace");
+            let path = mountpoint.path().join(path);
+            let result = (|| -> std::io::Result<(Vec<u8>, bool, bool)> {
+                let mut opened = std::fs::File::open(&path)?;
+                let mut clear = vec![0; contents.len()];
+                opened.read_exact(&mut clear)?;
+
+                acl.replace(denied);
+                opened.rewind()?;
+                let existing_read_denied = opened.read(&mut [0_u8; 1]).is_err();
+                let new_read_denied = std::fs::read(path).is_err();
+                Ok((clear, existing_read_denied, new_read_denied))
+            })();
+            crate::fuse_session::unmount_and_join(session, mountpoint.path()).unwrap();
+            let (read, existing_read_denied, new_read_denied) = result.unwrap();
+            assert_eq!(read, contents);
+            assert!(
+                existing_read_denied,
+                "an already-open descriptor must stop reading"
+            );
+            assert!(new_read_denied, "opening the file again must stop reading");
+        })
+        .await
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn files_sealed_for_a_document_do_not_open_with_the_workspace_key() {
         let workspace = WorkspaceId::new();
@@ -270,7 +681,7 @@ mod tests {
         let (plain, _) = content::build(&bytes, None);
         let store = crate::store::ContentStore::memory();
         let artifact = collab_types::file_content_artifact(workspace);
-        let hash = write_sealed_chunks(&store, &keys, artifact, &plain, bytes.as_slice())
+        let hash = write_sealed_chunks(&store, &keys, workspace, &plain, bytes.as_slice())
             .await
             .unwrap();
         let manifest = store.manifest(hash).await.unwrap();

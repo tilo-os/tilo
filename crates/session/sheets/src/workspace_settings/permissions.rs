@@ -208,7 +208,7 @@ fn document_access(documents: &DocumentAccess, who: &str, parts: &Parts) -> Elem
         draft
             .document_access
             .as_deref()
-            .or(saved.map(String::as_str)),
+            .or_else(|| saved.map(String::as_str)),
     ) else {
         return Box::new(Column::new().with_no_padding());
     };

@@ -123,7 +123,7 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
             workspace, frame, ..
         } => {
             let mut route = b"mls-governance\0".to_vec();
-            scope_retention(workspace, frame.workspace, &mut route)?;
+            reader_group_route(&mut route, workspace, frame.workspace)?;
             if matches!(frame.action, collab_types::MlsGovernanceAction::Genesis) {
                 route.extend_from_slice(&frame.digest().ok()?);
             } else if audience(msg).is_some() {
@@ -139,7 +139,7 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
             workspace, request, ..
         } => {
             let mut route = b"mls-access\0".to_vec();
-            scope_retention(workspace, request.workspace, &mut route)?;
+            reader_group_route(&mut route, workspace, request.workspace)?;
             route.extend_from_slice(request.device.as_bytes());
             return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
         }
@@ -157,26 +157,29 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
     Some((*blake3::hash(route).as_bytes(), kind))
 }
 
-/// Do not let another document's commit or request replace this group's head.
-/// The original workspace group retains its existing delivery digests.
-fn scope_retention(
-    wire: &str,
-    signed: collab_types::WorkspaceId,
+/// Name `group` in `route` when it is the group of a reader set within `workspace`
+/// ([`collab_types::reader_group`]) rather than the workspace's own: each group's head and
+/// each device's request in it are kept apart from every other group's. The workspace's own
+/// group keeps the routes it always had.
+fn reader_group_route(
     route: &mut Vec<u8>,
+    wire: &str,
+    group: collab_types::WorkspaceId,
 ) -> Option<()> {
-    if let Some(workspace) = collab_types::WorkspaceId::parse(wire) {
-        if workspace != signed {
-            route.extend_from_slice(b"group\0");
-            route.extend_from_slice(signed.as_uuid().as_bytes());
-            route.push(0);
+    let workspace = if wire.contains('/') {
+        let scope = crate::KeyScope::parse(wire)?;
+        if scope.group() != group {
+            return None;
         }
-        return Some(());
+        Some(scope.workspace())
+    } else {
+        collab_types::WorkspaceId::parse(wire)
+    };
+    if workspace.is_some_and(|workspace| workspace != group) {
+        route.extend_from_slice(b"group\0");
+        route.extend_from_slice(group.as_uuid().as_bytes());
+        route.push(0);
     }
-    let scope = crate::KeyScope::parse(wire)?;
-    if scope.group() != signed {
-        return None;
-    }
-    route.extend_from_slice(signed.as_uuid().as_bytes());
     Some(())
 }
 

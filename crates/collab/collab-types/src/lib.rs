@@ -161,7 +161,8 @@ pub use validator::{
     validate_replayed_inbound_op,
 };
 pub use validator::{
-    DocumentAccessRule, document_access_changes, document_access_rules, document_access_target,
+    DocumentAccessRule, document_access_changes, document_access_rules, document_access_scopes,
+    document_access_target,
 };
 pub use workspace_document::{
     WORKSPACE_DOCUMENTS, WorkspaceDocument, workspace_document, workspace_document_id,
