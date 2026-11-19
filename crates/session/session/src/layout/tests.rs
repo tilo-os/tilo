@@ -765,3 +765,286 @@ fn what_a_session_ends_before_it_can_write_is_kept_for_the_next_one() {
         "nothing of it waits any more"
     );
 }
+
+/// The name of each strip of a workspace, and its groups with the windows in them.
+type Strips = Vec<(String, Vec<(u64, Vec<u64>)>)>;
+
+/// The strips of `workspace`, each with its groups and their windows: what a session shows.
+fn strips_of(workspace: &Workspace) -> Strips {
+    workspace
+        .strips
+        .iter()
+        .map(|strip| {
+            (
+                strip.name.clone(),
+                strip
+                    .window_groups
+                    .iter()
+                    .map(|group| (group.id, group.tabs.iter().map(|tab| tab.id).collect()))
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+/// A session founds its workspace from the shell it shows and ends before that write can reach it,
+/// with a step of the person's kept beside it; the session after shows the whole shell: both
+/// strips, every group, and the window of the person's own the workspace's layout never holds.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the shell a session founds, the step it keeps, and what the session after shows"
+)]
+fn a_whole_shell_a_session_founds_is_shown_by_the_next_one() {
+    use ed25519_dalek::SigningKey;
+    use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
+
+    use crate::engine::Engine;
+
+    let state = tempfile::tempdir().expect("a state directory");
+    let root = SigningKey::from_bytes(&[0x50; 32]);
+    let key = SigningKey::from_bytes(&[0x51; 32]);
+    let signing = key.clone();
+    let cert = tilo_peer_state::owner::testing::certificate(&root, &key, "Laptop");
+    let engine = Arc::new(
+        Engine::open(
+            tilo_identity::identity_store::DeviceIdentity::kept(cert.clone(), key),
+            Some(state.path()),
+            std::iter::empty(),
+            crate::platform::membership_check::of_this_session(),
+        )
+        .expect("this device's engine opens"),
+    );
+    let salt = tilo_desktop_model::ids::device_salt_of_key(&cert.device_public_key);
+    let person = hex::encode(cert.user_public_key);
+    let workspace = tilo_peer_state::owner::testing::founded(engine.owner(), &cert, &signing)
+        .expect("the workspace is founded");
+    engine.bind(workspace);
+    let keys = key_group::KeyGroup::create(
+        workspace,
+        key_group::MemberKey::generate("owner").expect("a member key"),
+    )
+    .expect("the workspace's group")
+    .content_keys()
+    .expect("the workspace's keys");
+    engine.hand_keys(workspace, keys);
+
+    // The shell the person shows: a strip of two groups, and a strip of one window of their own.
+    let mut ids = tilo_desktop_model::IdMinter::new(salt);
+    let window = |id: u64, title: &str, app: &str| Tab {
+        id,
+        title: title.to_owned(),
+        tile: TileContent::LocalApp {
+            app_id: app.to_owned(),
+            label: title.to_owned(),
+            note: String::new(),
+        },
+        app_title: None,
+        view: String::new(),
+        pinned: false,
+    };
+    let mut strip_of = |title: &str, groups: Vec<Vec<(&str, &str)>>| {
+        let strip = ids.mint();
+        Strip {
+            id: StripId(strip),
+            name: title.to_owned(),
+            window_groups: groups
+                .into_iter()
+                .map(|tabs| {
+                    let group = ids.mint();
+                    let tabs: Vec<Tab> = tabs
+                        .into_iter()
+                        .map(|(label, app)| window(ids.mint(), label, app))
+                        .collect();
+                    WindowGroup {
+                        id: group,
+                        active_tab: tabs[0].id,
+                        tabs,
+                        width: WindowWidth::Normal,
+                        maximized: false,
+                        focus_history: Vec::new(),
+                    }
+                })
+                .collect(),
+        }
+    };
+    let writing = strip_of(
+        "Writing",
+        vec![
+            vec![("Notes", "so.tilo.notes"), ("Build", "so.tilo.build")],
+            vec![("Files", "so.tilo.files")],
+        ],
+    );
+    let reference = strip_of("Reference", vec![vec![("Mail", "so.tilo.mail")]]);
+    let mut workspace_layout = Workspace::new(workspace, "Home");
+    workspace_layout.strips = vec![writing, reference];
+    let mut layout = Layout {
+        workspaces: vec![workspace_layout],
+        active: workspace,
+        salt,
+        ..Layout::default()
+    };
+    let in_front = layout.workspaces[0].strips[0].id;
+    layout.active_strip.insert(workspace, in_front);
+    layout.set_active_group(in_front, layout.workspaces[0].strips[0].window_groups[0].id);
+
+    let notes = Arc::new(crate::continuations::Continuations::default());
+    let layout_key = (workspace, Route::layout());
+    let (wake, _heard) = woken();
+    let before = Layouts::new(Arc::clone(&notes), wake, person.clone(), Some(state.path()));
+    before.attach_engine(&engine);
+    let mut shown = layout.clone();
+    before.follow(&engine, "", &mut shown);
+    // The step the session keeps while its workspace cannot hold the layout yet: the whole shell.
+    before.held(&layout_key, |held| {
+        held.pending_steps.push(
+            LayoutStep {
+                workspace: shown.workspaces[0].clone(),
+                step: shared_resource::step_message(&person),
+            },
+            None,
+        );
+    });
+    before.capture(&engine, &shown);
+    before.finish_writes(&engine, &shown, std::time::Duration::from_secs(30));
+    drop(before);
+    tilo_durable_writer::global().flush();
+
+    // The session after opens on the workspace and folds its layout and view in: the shell as it
+    // was.
+    let (wake, _heard) = woken();
+    let next = Layouts::new(Arc::clone(&notes), wake, person, Some(state.path()));
+    next.attach_engine(&engine);
+    let mut reopened = Layout {
+        workspaces: vec![Workspace::new(workspace, "Home")],
+        active: workspace,
+        salt,
+        ..Layout::default()
+    };
+    next.follow(&engine, "", &mut reopened);
+    let strips = strips_of(&reopened.workspaces[0]);
+    let wanted = strips_of(&layout.workspaces[0]);
+    assert_eq!(strips, wanted, "every strip, group and window is back");
+
+    // The layout written and folded again: the window of the person's own is theirs, and the
+    // workspace's layout it is not in never takes it away.
+    next.capture(&engine, &reopened);
+    next.finish_writes(&engine, &reopened, std::time::Duration::from_secs(30));
+    next.follow(&engine, "", &mut reopened);
+    let strips = strips_of(&reopened.workspaces[0]);
+    assert_eq!(
+        strips, wanted,
+        "and stays after the layout is written again"
+    );
+}
+
+/// A view whose write does not answer before the session ends is kept for the session after, the
+/// person's own windows with it: a desktop that ends cannot wait for its last write.
+#[test]
+fn a_view_the_session_cannot_write_before_it_ends_is_kept() {
+    use ed25519_dalek::SigningKey;
+    use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
+
+    use crate::engine::Engine;
+
+    let state = tempfile::tempdir().expect("a state directory");
+    let root = SigningKey::from_bytes(&[0x60; 32]);
+    let key = SigningKey::from_bytes(&[0x61; 32]);
+    let signing = key.clone();
+    let hold = Arc::new(Hold::default());
+    let theirs = Arc::clone(&hold);
+    let cert = tilo_peer_state::owner::testing::certificate(&root, &key, "Laptop");
+    let engine = Arc::new(
+        Engine::open(
+            tilo_identity::identity_store::DeviceIdentity::kept(
+                cert.clone(),
+                HeldSigner { key, hold: theirs },
+            ),
+            Some(state.path()),
+            std::iter::empty(),
+            crate::platform::membership_check::of_this_session(),
+        )
+        .expect("this device's engine opens"),
+    );
+    let salt = tilo_desktop_model::ids::device_salt_of_key(&cert.device_public_key);
+    let person = hex::encode(cert.user_public_key);
+    let workspace = tilo_peer_state::owner::testing::founded(engine.owner(), &cert, &signing)
+        .expect("the workspace is founded");
+    engine.bind(workspace);
+    let keys = key_group::KeyGroup::create(
+        workspace,
+        key_group::MemberKey::generate("owner").expect("a member key"),
+    )
+    .expect("the workspace's group")
+    .content_keys()
+    .expect("the workspace's keys");
+    engine.hand_keys(workspace, keys);
+
+    // One strip of one window of the person's own: what the workspace's layout never holds.
+    let mut ids = tilo_desktop_model::IdMinter::new(salt);
+    let (strip, group, tab) = (ids.mint(), ids.mint(), ids.mint());
+    let window = Tab {
+        id: tab,
+        title: "Settings".to_owned(),
+        tile: TileContent::LocalApp {
+            app_id: "so.tilo.settings".to_owned(),
+            label: "Settings".to_owned(),
+            note: String::new(),
+        },
+        app_title: None,
+        view: String::new(),
+        pinned: false,
+    };
+    let mut workspace_layout = Workspace::new(workspace, "Home");
+    workspace_layout.strips = vec![Strip {
+        id: StripId(strip),
+        name: "Main".to_owned(),
+        window_groups: vec![WindowGroup {
+            id: group,
+            tabs: vec![window],
+            active_tab: tab,
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        }],
+    }];
+    let mut layout = Layout {
+        workspaces: vec![workspace_layout],
+        active: workspace,
+        salt,
+        ..Layout::default()
+    };
+    layout.active_strip.insert(workspace, StripId(strip));
+
+    let (wake, _heard) = woken();
+    let desktops = Layouts::new(
+        Arc::new(crate::continuations::Continuations::default()),
+        wake,
+        person.clone(),
+        Some(state.path()),
+    );
+    desktops.attach_engine(&engine);
+    let mut shown = layout.clone();
+    desktops.follow(&engine, "", &mut shown);
+    let view_key = (workspace, Route::view(&person));
+    let own = || {
+        desktops.held(&view_key, |held| {
+            held.pending_view
+                .last()
+                .map(|step| step.changed.own.keys().copied().collect::<Vec<_>>())
+        })
+    };
+    assert_eq!(own(), None, "nothing of the view waits yet");
+
+    // The write of the view signs behind a hold the test never opens: it does not answer while
+    // the session ends, and the view it held is kept for the session after.
+    hold.hold();
+    desktops.capture(&engine, &shown);
+    desktops.finish_writes(&engine, &shown, std::time::Duration::from_millis(1));
+    assert_eq!(
+        own(),
+        Some(vec![tab]),
+        "the view, the person's own window with it, waits for the session after"
+    );
+    hold.open();
+}

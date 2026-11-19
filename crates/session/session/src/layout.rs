@@ -299,6 +299,14 @@ enum Laid {
     Failed(String, Option<Box<automerge::AutoCommit>>),
 }
 
+/// What a look writes of the person's view of a workspace's layout.
+enum Viewed {
+    /// The steps to write, the person's changes in the order they were made.
+    Steps(Vec<PendingStep<PersonView>>),
+    /// Nothing to write: the view did not change, or a write of it is under way.
+    Nothing,
+}
+
 /// What this device wrote: its layout, the windows of it that write holds, the steps it writes,
 /// and what the workspace did with it.
 struct Taken {
@@ -379,7 +387,15 @@ impl Save {
             None => base.clone(),
         };
         let laid_out = laid_into(&candidate, workspace, closed);
-        let windows = &windows_of(&laid_out) & &here;
+        // The windows this device's write holds that this session shows: one of the person's own
+        // is never in a workspace's layout, so this device's write never holds it either
+        // ([`tilo_desktop_model::personal`]).
+        let windows: BTreeSet<u64> = laid_out
+            .tabs()
+            .filter(|tab| !tab.is_personal())
+            .map(|tab| tab.id)
+            .filter(|id| here.contains(id))
+            .collect();
         // A change of a layout is the person's, written as this device: the record is every
         // member's, and another of their devices writing at the same instant must not number the
         // same change.
@@ -938,6 +954,21 @@ impl Layouts {
         self.wait_writes(patience);
     }
 
+    /// [`Self::finish_writes`] of the person's view alone: the layouts a login's end leaves as they
+    /// were, and what the person sees of them is theirs to keep.
+    pub(crate) fn finish_view(
+        &self,
+        engine: &Arc<Engine>,
+        tree: &Layout,
+        patience: std::time::Duration,
+    ) {
+        self.wait_writes(patience);
+        if let Some(person) = self.person.borrow().clone() {
+            self.capture_view(engine, &person, tree, true);
+        }
+        self.wait_writes(patience);
+    }
+
     /// Wait until this device has the keys of every workspace `tree` shows, or `patience` runs
     /// out: a workspace made on this session is founded off the loop, and its channel's keys reach
     /// this device after that. A session ending before they arrive cannot write the layout it made
@@ -976,6 +1007,11 @@ impl Layouts {
             match going {
                 Going::View(mut publishing) => {
                     let Some(written) = publishing.writing.finish(patience) else {
+                        // The write did not answer before the session ends: what it held is what
+                        // the person sees, and the session after writes it as their step.
+                        if let Some(Written::View(view)) = &publishing.replaced {
+                            self.keep_view(&key, view.clone());
+                        }
                         continue;
                     };
                     let publishing = *publishing;
@@ -1216,6 +1252,19 @@ impl Layouts {
             // taken it yet, and laying the record over the shell would put it back.
             if self.held(&key, |held| held.writing.is_some()) {
                 continue;
+            }
+            // The windows of the person's own stand on their layout wherever it is shown: the
+            // layout a workspace shares never holds them, so they come from the view this device
+            // read last, whether or not the workspace changed it since.
+            if let Some(view) = self.held(&key, |held| match &held.written {
+                Some(Written::View(view)) => Some(view.clone()),
+                _ => None,
+            }) && let Some(workspace) = tree
+                .workspaces
+                .iter_mut()
+                .find(|held| held.id() == workspace_id)
+            {
+                changed |= view.place_own(workspace);
             }
             let known = self.held(&key, |held| held.revision);
             let record = Self::record(engine, &key, known);
@@ -1922,6 +1971,63 @@ impl Layouts {
         true
     }
 
+    /// Keep `view` as a step of the person's for the session after, where this one cannot write
+    /// it: what they see of the layout, their own windows included, is theirs to keep.
+    fn keep_view(&self, key: &Key, view: PersonView) {
+        self.held(key, |held| {
+            if held.pending_view.last().map(|step| &step.changed) != Some(&view) {
+                held.pending_view.push(view, None);
+            }
+        });
+        self.keep_pending();
+    }
+
+    /// What this look writes of the person's view `view` of `key`: the changes made while it could
+    /// not be written, in the order they were made, and then the view as it stands: written at
+    /// once where an arranging action made the last of them, else once it rests.
+    fn view_steps(&self, key: &Key, view: &PersonView, now: bool) -> Viewed {
+        // What this device last wrote of this view: one that differs is the person's still.
+        let unwritten = self.held(key, |held| {
+            held.written.as_ref() != Some(&Written::View(view.clone()))
+        });
+        let keep = |looks: &Self| {
+            if now && unwritten {
+                // A session that ends before it can write its view keeps it for the next one, as
+                // the layout's steps are, the person's own windows with it.
+                looks.keep_view(key, view.clone());
+            }
+        };
+        if self.held(key, |held| held.writing.is_some()) {
+            // The write under way carries what the person changed.
+            return Viewed::Nothing;
+        }
+        if !self.held(key, |held| held.read) {
+            // A view this device has not read is not written over.
+            keep(self);
+            return Viewed::Nothing;
+        }
+        let mut steps = self.held(key, |held| held.pending_view.take());
+        match steps.last().map(|step| step.changed == *view) {
+            Some(true) => {}
+            Some(false) => steps.push(PendingStep {
+                changed: view.clone(),
+                acted: None,
+            }),
+            None => {
+                let rested = self.held(key, |held| rested(held, view, now));
+                let Some(rested) = rested else {
+                    keep(self);
+                    return Viewed::Nothing;
+                };
+                steps.push(PendingStep {
+                    changed: rested,
+                    acted: None,
+                });
+            }
+        }
+        Viewed::Steps(steps)
+    }
+
     /// Write the person here's view of every workspace whose view they changed into that
     /// workspace's record of it.
     /// `now`: the view is written as it stands, without waiting for it to rest.
@@ -1940,29 +2046,9 @@ impl Layouts {
                 (Some(Written::View(read)), Some(seen)) => read.over(&here, Some(seen)),
                 _ => here.clone(),
             });
-            // The changes made while the view could not be written, in the order they were made,
-            // and then the view as it stands: written at once where an arranging action made the
-            // last of them, else once it rests.
-            if !self.held(&key, |held| held.read && held.writing.is_none()) {
+            let Viewed::Steps(steps) = self.view_steps(&key, &view, now) else {
                 continue;
-            }
-            let mut steps = self.held(&key, |held| held.pending_view.take());
-            match steps.last().map(|step| step.changed == view) {
-                Some(true) => {}
-                Some(false) => steps.push(PendingStep {
-                    changed: view.clone(),
-                    acted: None,
-                }),
-                None => {
-                    let Some(view) = self.held(&key, |held| rested(held, &view, now)) else {
-                        continue;
-                    };
-                    steps.push(PendingStep {
-                        changed: view,
-                        acted: None,
-                    });
-                }
-            }
+            };
             let written = steps
                 .last()
                 .map_or_else(|| view.clone(), |step| step.changed.clone());

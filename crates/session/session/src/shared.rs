@@ -44,6 +44,15 @@ impl Shared {
         // in-place restart keeps them, so the last thing the person moved is written for the desktop
         // that follows instead of being lost with the one that saw it.
         if crate::termination::asked() && !crate::restart::restarting() {
+            // The apps a login's end takes with it leave the workspaces' layouts as they were; the
+            // person's view of them is theirs to keep, and the next session shows it.
+            if let Some(engine) = &self.engine {
+                self.desktops.finish_view(
+                    engine,
+                    &self.handle.read(Clone::clone),
+                    std::time::Duration::from_secs(5),
+                );
+            }
             tilo_durable_writer::global().flush();
             return;
         }

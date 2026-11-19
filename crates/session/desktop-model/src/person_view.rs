@@ -134,9 +134,9 @@ impl PersonView {
         view
     }
 
-    /// Put the person's own windows the view keeps and the workspace `workspace` of `tree` does not
-    /// show back where they stood. One whose strip is gone went with it. Whether any came back.
-    fn own_placed(&self, workspace: &mut crate::Workspace) -> bool {
+    /// Put the person's own windows this view keeps back on `workspace` where they stood. One
+    /// whose strip is gone went with it. Whether any came back.
+    pub fn place_own(&self, workspace: &mut crate::Workspace) -> bool {
         let mut placed = false;
         for (id, own) in &self.own {
             if workspace.tabs().any(|tab| tab.id == *id) {
@@ -201,7 +201,7 @@ impl PersonView {
         let Some(workspace) = tree.workspaces.iter_mut().find(|held| held.id() == id) else {
             return false;
         };
-        changed |= self.own_placed(workspace);
+        changed |= self.place_own(workspace);
         if let Some(strip) = self.front_strip
             && workspace.strips.iter().any(|held| held.id == strip)
             && tree.active_strip.get(&id) != Some(&strip)
