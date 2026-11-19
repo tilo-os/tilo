@@ -33,7 +33,8 @@ use serde_json::{Value, json};
 use tilo_server_protocol::workspaces::Role;
 
 use crate::common::people::{
-    Device, Person, Site, log_sessions_at, share_the_fleet, two_devices_of_one_person,
+    Device, Person, Site, join_together, log_sessions_at, share_the_fleet,
+    two_devices_of_one_person,
 };
 use crate::common::window::Client;
 
@@ -1130,9 +1131,14 @@ fn three_devices_of_one_person() -> (Site, Person, Device, Device, Device) {
     let mut phone = ada.device("Ada's phone");
     let tablet = ada.device("Ada's tablet");
     share_the_fleet(&ada, &[&laptop, &phone, &tablet]);
-    for device in [&mut laptop, &mut phone] {
-        let invitation = site.invite(ada.public, Role::Editor);
-        device.join(&invitation);
+    // Neither join needs the other device: both boot together, and the third is not started yet.
+    let hers = site.invite(ada.public, Role::Editor);
+    let hers_phone = site.invite(ada.public, Role::Editor);
+    join_together(
+        &mut [&mut laptop, &mut phone],
+        &[hers.as_str(), hers_phone.as_str()],
+    );
+    for device in [&laptop, &phone] {
         device.wait_holding(&site.workspace);
     }
     (site, ada, laptop, phone, tablet)

@@ -18,7 +18,7 @@
               until their sessions end"
 )]
 
-use crate::common::people::{Device, Person, Site, share_the_fleet};
+use crate::common::people::{Device, Person, Site, join_together, share_the_fleet, start_together};
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 use tilo_server_protocol::workspaces::Role;
@@ -48,20 +48,41 @@ impl Studio {
         // record, and a member's device cannot grant that for itself.
         let mut ada_laptop = ada.device("Ada's laptop");
         let mut ada_phone = ada.device("Ada's phone");
-        for device in [&mut ada_laptop, &mut ada_phone] {
-            let member = site.admit(ada.public);
+        let mut bob_laptop = bob.device("Bob's laptop");
+        let mut bob_phone = bob.device("Bob's phone");
+        for device in [&ada_laptop, &ada_phone, &bob_laptop, &bob_phone] {
             device.install_chat();
-            device.join(&member);
+        }
+        // The four devices join the workspace its entry admits them to, and none needs another
+        // started first: every session boots before any is waited for.
+        let hers = site.admit(ada.public);
+        let her_phones = site.admit(ada.public);
+        let his = site.admit(bob.public);
+        let his_phones = site.admit(bob.public);
+        join_together(
+            &mut [
+                &mut ada_laptop,
+                &mut ada_phone,
+                &mut bob_laptop,
+                &mut bob_phone,
+            ],
+            &[
+                hers.as_str(),
+                her_phones.as_str(),
+                his.as_str(),
+                his_phones.as_str(),
+            ],
+        );
+        for device in [&ada_laptop, &ada_phone] {
             device.wait_holding(&site.workspace);
             device.wait_showing(&site.workspace);
         }
         ada_laptop.open("so.tilo.chat");
         ada_laptop.wait_for_window("so.tilo.chat");
-        let mut bob_laptop = bob.device("Bob's laptop");
-        let mut bob_phone = bob.device("Bob's phone");
-        for device in [&mut bob_laptop, &mut bob_phone] {
-            device.install_chat();
-            enter(device, &site, Some(site.admit(bob.public).as_str()));
+        // Bob's windows open once Ada's laptop wrote the workspace's record, so what they read of
+        // the people in it is there from their first pass.
+        for device in [&bob_laptop, &bob_phone] {
+            show_chat(device, &site);
         }
         ada_phone.open("so.tilo.chat");
         ada_phone.wait_for_window("so.tilo.chat");
@@ -414,8 +435,9 @@ fn messages_the_host_kept_reach_a_device_that_was_away() {
     }
     // Bob's laptop starts again: the workspace hands it all three, in order,
     // and his phone the same when it comes back.
-    for device in [&mut studio.bob_laptop, &mut studio.bob_phone] {
-        enter(device, &studio.site, None);
+    start_together(&mut [&mut studio.bob_laptop, &mut studio.bob_phone]);
+    for device in [&studio.bob_laptop, &studio.bob_phone] {
+        show_chat(device, &studio.site);
         device
             .chat()
             .wait_for_texts(&ada_key, &["one", "two", "three"]);
@@ -470,8 +492,9 @@ fn both_people_writing_offline_converge_without_duplicates() {
     studio.ada_laptop.chat().send(&bob_key, "Ada two");
     studio.bob_laptop.chat().send(&ada_key, "Bob one");
     studio.bob_laptop.chat().send(&ada_key, "Bob two");
-    for device in [&mut studio.ada_phone, &mut studio.bob_phone] {
-        enter(device, &studio.site, None);
+    start_together(&mut [&mut studio.ada_phone, &mut studio.bob_phone]);
+    for device in [&studio.ada_phone, &studio.bob_phone] {
+        show_chat(device, &studio.site);
     }
     // Every message reaches every device. The two written offline at the same time have no order of
     // their own until the records give them one: each device waits for all of them, whichever order
@@ -593,9 +616,17 @@ fn a_device_takes_the_key_its_host_did_not_hand_it_from_the_persons_other_device
     let mut bob_laptop = bob.device("Bob's laptop");
     let mut bob_phone = bob.device("Bob's phone");
     share_the_fleet(&bob, &[&bob_laptop, &bob_phone]);
-    for device in [&mut bob_laptop, &mut bob_phone] {
+    for device in [&bob_laptop, &bob_phone] {
         device.install_chat();
-        enter(device, &site, Some(site.admit(bob.public).as_str()));
+    }
+    let his = site.admit(bob.public);
+    let his_phones = site.admit(bob.public);
+    join_together(
+        &mut [&mut bob_laptop, &mut bob_phone],
+        &[his.as_str(), his_phones.as_str()],
+    );
+    for device in [&bob_laptop, &bob_phone] {
+        show_chat(device, &site);
     }
     // The laptop's group state as it stands before the group moves on: what it comes back with
     // later, as a laptop whose last save of it never reached its disk does.
@@ -648,12 +679,19 @@ fn a_device_takes_the_key_its_host_did_not_hand_it_from_the_persons_other_device
 }
 
 /// Bring `device` into `site`'s workspace with Chat open: joining it with `member`, or starting
-/// again in it when there is none.
+/// again in it when there is none. A device started beside others is started by that batch
+/// ([`join_together`], [`start_together`]) and brought here by [`show_chat`].
 fn enter(device: &mut Device, site: &Site, member: Option<&str>) {
     match member {
         Some(member) => device.join(member),
         None => device.start(),
     }
+    show_chat(device, site);
+}
+
+/// Wait until `device`, whose session runs in `site`'s workspace, shows it in front with Chat
+/// open in it.
+fn show_chat(device: &Device, site: &Site) {
     device.wait_holding(&site.workspace);
     device.wait_showing(&site.workspace);
     device.open("so.tilo.chat");

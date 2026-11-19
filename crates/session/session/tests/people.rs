@@ -25,7 +25,7 @@
               until their sessions end"
 )]
 
-use crate::common::people::{Person, Site};
+use crate::common::people::{Person, Site, join_together};
 use tilo_server_protocol::workspaces::Role;
 
 #[test]
@@ -43,19 +43,28 @@ fn two_people_on_two_devices_each_meet_in_one_workspace() {
     let mut bob_phone = bob.device("Bob's phone");
 
     // Ada joins her workspace at the site's entry, as a person joining a workspace a site lists
-    // does, and lands in it.
+    // does, and lands in it. Her second device joins by the invitation her site issues for her, and
+    // so does each of Bob's, by the invitation it issues for him; every session boots before any is
+    // waited for, as no join needs another device of the four.
     let invitation = site.admit(ada.public);
-    ada_laptop.join(&invitation);
-    ada_laptop.wait_holding(&site.workspace);
-
-    // Her second device joins by the invitation her site issues for her, and so does each of Bob's,
-    // by the invitation it issues for him.
     let her_phone = site.invite(ada.public, Role::Editor);
-    ada_phone.join(&her_phone);
-    ada_phone.wait_holding(&site.workspace);
-    for device in [&mut bob_laptop, &mut bob_phone] {
-        let theirs = site.invite(bob.public, Role::Editor);
-        device.join(&theirs);
+    let his_laptop = site.invite(bob.public, Role::Editor);
+    let his_phone = site.invite(bob.public, Role::Editor);
+    join_together(
+        &mut [
+            &mut ada_laptop,
+            &mut ada_phone,
+            &mut bob_laptop,
+            &mut bob_phone,
+        ],
+        &[
+            invitation.as_str(),
+            her_phone.as_str(),
+            his_laptop.as_str(),
+            his_phone.as_str(),
+        ],
+    );
+    for device in [&ada_laptop, &ada_phone, &bob_laptop, &bob_phone] {
         device.wait_holding(&site.workspace);
     }
 

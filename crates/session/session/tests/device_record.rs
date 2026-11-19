@@ -17,7 +17,7 @@
     reason = "test fixtures: a failed step is the assertion, and a device lives until its session ends"
 )]
 
-use crate::common::people::{Device, Person, Site};
+use crate::common::people::{Device, Person, Site, join_together};
 use serde_json::{Value, json};
 use tilo_actions::remote::identity_admin;
 use tilo_identity::device_fleet::DeviceFleetStore;
@@ -129,13 +129,19 @@ fn a_paired_device_reaches_the_record_without_the_workspace_list_moving() {
     let site = Site::start(&ada, "Studio");
     site.publish(Role::Editor);
     let mut desktop = ada.device("Ada's desktop");
-    desktop.join(&site.admit(ada.public));
-    desktop.wait_holding(&site.workspace);
-    desktop.wait_showing(&site.workspace);
     let mut laptop = ada.device("Ada's laptop");
-    laptop.join(&site.admit(ada.public));
-    laptop.wait_holding(&site.workspace);
-    laptop.wait_showing(&site.workspace);
+    // Both join the workspace's entry, and neither needs the other's session first: both boot
+    // together.
+    let hers = site.admit(ada.public);
+    let its = site.admit(ada.public);
+    join_together(
+        &mut [&mut desktop, &mut laptop],
+        &[hers.as_str(), its.as_str()],
+    );
+    for device in [&desktop, &laptop] {
+        device.wait_holding(&site.workspace);
+        device.wait_showing(&site.workspace);
+    }
     let before = listed(&laptop);
     assert!(
         !lists(&before, "Ada's phone"),

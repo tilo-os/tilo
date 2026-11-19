@@ -598,8 +598,20 @@ fn two_people_at_a_site_carrying(
     authored: &[&str],
     install: impl Fn(&Device),
 ) -> (Site, Person, Person, Device, Device) {
-    let (site, ada, bob, ada_laptop) = site_carrying(authored, &install);
-    let bob_laptop = joined_carrying(&site, &bob, "Bob's laptop", &install);
+    let (site, ada, bob, mut ada_laptop) = site_carrying(authored, &install);
+    let mut bob_laptop = bob.device("Bob's laptop");
+    install(&bob_laptop);
+    // Both people join a workspace its host's own entry admits them to: neither join needs the
+    // other's device, so both sessions start before either is waited for.
+    let hers = site.invite(ada.public, Role::Editor);
+    let theirs = site.invite(bob.public, Role::Editor);
+    join_together(
+        &mut [&mut ada_laptop, &mut bob_laptop],
+        &[hers.as_str(), theirs.as_str()],
+    );
+    for device in [&ada_laptop, &bob_laptop] {
+        device.wait_holding(&site.workspace);
+    }
     site.wait_for_member(bob.public);
     (site, ada, bob, ada_laptop, bob_laptop)
 }
@@ -607,16 +619,22 @@ fn two_people_at_a_site_carrying(
 /// [`two_people_at_a_site_with_files`] before the second person joins: Ada's laptop holds the
 /// workspace, and what brings Bob in is the invitation her session hands out for it.
 pub fn a_site_with_files_for_one_laptop() -> (Site, Person, Person, Device) {
-    site_carrying(&[FILES_APP], &Device::install_files)
+    let (site, ada, bob, mut ada_laptop) = site_carrying(&[FILES_APP], &Device::install_files);
+    let hers = site.invite(ada.public, Role::Editor);
+    ada_laptop.join(&hers);
+    ada_laptop.wait_holding(&site.workspace);
+    (site, ada, bob, ada_laptop)
 }
 
-/// The site the two people share and the first person's laptop in it, carrying what `install`
-/// puts in its store.
+/// The site the two people share and the first person's laptop made, carrying what `install` puts
+/// in its store, before its session starts: the caller starts it, beside whatever it starts with
+/// it.
 fn site_carrying(_apps: &[&str], install: &impl Fn(&Device)) -> (Site, Person, Person, Device) {
     let ada = Person::new("Ada");
     let bob = Person::new("Bob");
     let site = Site::start(&ada, "Studio");
-    let ada_laptop = joined_carrying(&site, &ada, "Ada's laptop", install);
+    let ada_laptop = ada.device("Ada's laptop");
+    install(&ada_laptop);
     (site, ada, bob, ada_laptop)
 }
 
@@ -695,18 +713,24 @@ pub fn two_devices_of_one_person_with_chat() -> (Site, Person, Device, Device) {
 }
 
 /// The person's laptop and phone, each carrying what `install` puts in its store: both are made
-/// first, then told of the person's fleet, then started — a session reads the apps and the devices
-/// of the person it has when it starts.
+/// first, then told of the person's fleet, then started together — a session reads the apps and
+/// the devices of the person it has when it starts.
 fn two_devices_of_one_person_carrying(install: impl Fn(&Device)) -> (Site, Person, Device, Device) {
     let ada = Person::new("Ada");
     let site = Site::start(&ada, "Studio");
     let mut laptop = ada.device("Ada's laptop");
     let mut phone = ada.device("Ada's phone");
     share_the_fleet(&ada, &[&laptop, &phone]);
-    for device in [&mut laptop, &mut phone] {
+    for device in [&laptop, &phone] {
         install(device);
-        let invitation = site.invite(ada.public, Role::Editor);
-        device.join(&invitation);
+    }
+    let hers = site.invite(ada.public, Role::Editor);
+    let hers_phone = site.invite(ada.public, Role::Editor);
+    join_together(
+        &mut [&mut laptop, &mut phone],
+        &[hers.as_str(), hers_phone.as_str()],
+    );
+    for device in [&laptop, &phone] {
         device.wait_holding(&site.workspace);
     }
     (site, ada, laptop, phone)
@@ -727,6 +751,36 @@ pub fn share_the_fleet(person: &Person, devices: &[&Device]) {
                 .remember_certificate(&identity_id, other.cert.clone())
                 .expect("the person's device joins their fleet");
         }
+    }
+}
+
+/// Start `devices`' sessions together: every session is started before any is waited for, so the
+/// devices boot at once rather than one boot after another. Wait for what each needs of its
+/// workspace after this returns ([`Device::wait_holding`], [`Device::wait_showing`]).
+pub fn start_together(devices: &mut [&mut Device]) {
+    for device in &mut *devices {
+        device.begin(None);
+    }
+    for device in &mut *devices {
+        device.ready();
+    }
+}
+
+/// [`start_together`] for devices that each join by an invitation of their own, the `i`-th of
+/// `devices` redeeming `invitations[i]`: each session reads its invitation at boot
+/// ([`Device::join`]), so the whole batch is started before any is waited for.
+pub fn join_together(devices: &mut [&mut Device], invitations: &[&str]) {
+    assert_eq!(
+        devices.len(),
+        invitations.len(),
+        "every device joins by one invitation"
+    );
+    let mut invitations = invitations.iter();
+    for device in &mut *devices {
+        device.begin(invitations.next().copied());
+    }
+    for device in &mut *devices {
+        device.ready();
     }
 }
 
@@ -946,6 +1000,7 @@ impl Person {
             control: root.join("control.sock"),
             home,
             child: None,
+            announced: None,
         }
     }
 }
@@ -1052,6 +1107,7 @@ impl Person {
                 control,
                 home,
                 child: None,
+                announced: None,
             },
             *branched,
         )
@@ -1138,6 +1194,10 @@ pub struct Device {
     home: tempfile::TempDir,
     child: Option<Child>,
     control: PathBuf,
+    /// What the session [`Self::begin`] started last said of its control socket, for
+    /// [`Self::ready`]: whether it announced listening, sent once when the stream it prints on
+    /// ends.
+    announced: Option<mpsc::Receiver<bool>>,
 }
 
 impl Device {
@@ -1284,9 +1344,19 @@ impl Device {
         )
     }
 
-    /// Run this device's session: its own home, its own identity root, its own state and its own
-    /// control socket, as a device's session runs.
+    /// Run this device's session and wait until it listens: [`Self::begin`] and [`Self::ready`].
     fn spawn(&mut self, invitation: Option<&str>) {
+        self.begin(invitation);
+        self.ready();
+    }
+
+    /// Start this device's session: its own home, its own identity root, its own state and its own
+    /// control socket, as a device's session runs.
+    ///
+    /// What the session does before it listens — its boot and the join it was handed — runs in its
+    /// own process, so a test that starts several devices together ([`start_together`],
+    /// [`join_together`]) spends that once rather than once per device.
+    fn begin(&mut self, invitation: Option<&str>) {
         let root = self.home.path().to_path_buf();
         let control = self.control.clone();
         let logs = self.logs_dir();
@@ -1403,17 +1473,26 @@ impl Device {
             }
             let _ = tell.send(false);
         });
+        self.child = Some(child);
+        self.announced = Some(told);
+    }
+
+    /// Wait until the session [`Self::begin`] started opens its control socket, failing with what
+    /// it logged if it never does.
+    fn ready(&mut self) {
+        let Some(told) = self.announced.take() else {
+            return;
+        };
         match told.recv_timeout(tilo_test_env::hang_bound()) {
             Ok(true) => {}
             Ok(false) | Err(_) => panic!(
                 "{}'s session never opened its control socket:\n{}",
                 self.label,
                 String::from_utf8_lossy(
-                    &std::fs::read(root.join("session.log")).unwrap_or_default()
+                    &std::fs::read(self.home.path().join("session.log")).unwrap_or_default()
                 )
             ),
         }
-        self.child = Some(child);
     }
 
     /// Ask the device's session `request` , as `tilo-control` does, and return its answer.
