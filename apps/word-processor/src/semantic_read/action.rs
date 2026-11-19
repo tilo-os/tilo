@@ -77,6 +77,7 @@ pub fn spec() -> ActionSpec {
             format: params.format.unwrap_or_default(),
         },
     )
+    .into_spec()
     .with_description(
         "The document as Markdown, one block per line ending in its {#block id}; **bold**, *italic*, ~~struck~~, `code` and [links](url) show inline, their delimiters not counted in character offsets; tables are Markdown tables tagged {#table id}, each cell ending in its {#block id}. Pages of up to 64 blocks: pass nextCursor for the next",
     )

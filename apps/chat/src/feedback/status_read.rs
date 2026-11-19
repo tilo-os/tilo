@@ -2,14 +2,13 @@
 //! View api. This projection carries no new task or document authority.
 use std::sync::OnceLock;
 
-use tilo_actions::ActionSpec;
 use ui::semantic_document_read::{ReadPage, RegisteredSemanticReader, SemanticReadError};
 
 const OPERATION: &str = "chat.feedback.status";
 pub(crate) const READER: RegisteredSemanticReader =
     RegisteredSemanticReader::new(OPERATION, schema, super::receipt_read::validate, project);
 
-pub(crate) fn spec(id: &str) -> ActionSpec {
+pub(crate) fn spec(id: &str) -> ui::semantic_document_read::Declared {
     let id = id.to_owned();
     ui::semantic_document_read::read_action(
         ui::semantic_document_read::ReadName {

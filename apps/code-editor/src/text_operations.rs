@@ -213,7 +213,7 @@ struct SnapshotParams {
     expected_heads: Option<String>,
 }
 
-pub(crate) fn snapshot_spec(file: String) -> ActionSpec {
+pub(crate) fn snapshot_spec(file: String) -> ui::semantic_document_read::Declared {
     ui::semantic_document_read::read_action(
         ui::semantic_document_read::ReadName {
             id: "read-text-snapshot",
@@ -229,7 +229,7 @@ pub(crate) fn snapshot_spec(file: String) -> ActionSpec {
             expected_heads: params.expected_heads,
         },
     )
-    .reads_document()
+    .refined(ActionSpec::reads_document)
 }
 
 fn snapshot_schema() -> &'static serde_json::Value {

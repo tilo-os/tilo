@@ -33,7 +33,7 @@ type RowStatus = Rc<dyn Fn(&str) -> Vec<EffectStatus>>;
 /// How an item of a collection stands, by the collection and the item's id.
 type ItemPresentation = Rc<dyn Fn(&str, &str) -> Option<tilo_actions::ResourcePresentation>>;
 /// The reads one item answers, by the collection and the item's id.
-type ItemReads = Rc<dyn Fn(&str, &str) -> Vec<tilo_actions::ActionSpec>>;
+type ItemReads = Rc<dyn Fn(&str, &str) -> Vec<tilo_resource::read::Declared>>;
 type Intents = Rc<RefCell<dyn FnMut() -> Option<AppProcessIntent>>>;
 type Entries = Rc<dyn Fn() -> Vec<SearchEntry>>;
 type Unlocked = Rc<dyn Fn() -> Option<bool>>;
@@ -181,7 +181,7 @@ impl<R: Resource> Publishes<R> {
     #[must_use]
     pub fn item_reads(
         mut self,
-        reads: impl Fn(&str, &str) -> Vec<tilo_actions::ActionSpec> + 'static,
+        reads: impl Fn(&str, &str) -> Vec<tilo_resource::read::Declared> + 'static,
     ) -> Self {
         self.sources.item_reads = Some(Rc::new(reads));
         self
@@ -370,7 +370,7 @@ impl SurfacePublication for Publishing {
             .as_ref()
             .and_then(|presentation| presentation(field, id))
     }
-    fn item_reads(&self, field: &str, id: &str) -> Vec<tilo_actions::ActionSpec> {
+    fn item_reads(&self, field: &str, id: &str) -> Vec<tilo_resource::read::Declared> {
         self.sources
             .item_reads
             .as_ref()

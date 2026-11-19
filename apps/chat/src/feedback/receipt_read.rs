@@ -5,7 +5,7 @@
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
-use tilo_actions::{ActionSpec, ResourceSpec};
+use tilo_actions::ResourceSpec;
 use ui::semantic_document_read::{
     ReadPage, RegisteredSemanticReader, SemanticReadError, decode_request,
 };
@@ -57,7 +57,7 @@ struct Params {
     expected_author: Option<String>,
 }
 
-pub(crate) fn spec(id: &str) -> ActionSpec {
+pub(crate) fn spec(id: &str) -> ui::semantic_document_read::Declared {
     let id = id.to_owned();
     ui::semantic_document_read::read_action(
         ui::semantic_document_read::ReadName {

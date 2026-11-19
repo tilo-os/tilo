@@ -433,7 +433,7 @@ struct RowBindings {
     /// The reads each top-level collection item answers, by row id: the
     /// app's registered readers of its committed state, a launch replaying
     /// what it carries.
-    reads: std::collections::HashMap<String, Vec<tilo_actions::ActionSpec>>,
+    reads: std::collections::HashMap<String, Vec<tilo_resource::read::Declared>>,
 }
 
 impl ResourceRoot {
@@ -921,6 +921,7 @@ impl ResourceRoot {
         }
         if let Some(reads) = bindings.reads.remove(row.id.as_str()) {
             for read in reads {
+                let read = read.into_spec();
                 if !row.actions.iter().any(|known| known.id == read.id) {
                     row.actions.push(read);
                 }

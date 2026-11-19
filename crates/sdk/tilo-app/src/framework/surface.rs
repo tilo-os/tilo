@@ -366,7 +366,7 @@ pub(crate) trait SurfacePublication {
     /// published beside its effects, so a caller reads through the
     /// projection the app registered rather than through a row the view
     /// built.
-    fn item_reads(&self, _field: &str, _id: &str) -> Vec<tilo_actions::ActionSpec> {
+    fn item_reads(&self, _field: &str, _id: &str) -> Vec<tilo_resource::read::Declared> {
         Vec::new()
     }
     fn live_rows(&self) -> Vec<LiveRow>;
