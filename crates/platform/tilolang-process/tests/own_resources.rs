@@ -376,6 +376,11 @@ fn an_archive_owner_recovers_mail_into_the_shared_mailbox_once() {
     earlier.settle();
     for (id, action, arguments) in [
         (
+            5,
+            "set_signature",
+            serde_json::json!({ "signature": "Regards, Sam" }),
+        ),
+        (
             6,
             "label",
             serde_json::json!({ "name": "Release planning", "on": true }),
@@ -393,9 +398,10 @@ fn an_archive_owner_recovers_mail_into_the_shared_mailbox_once() {
             .iter()
             .find(|offered| {
                 offered.address.action == action
-                    && offered
-                        .resource_label
-                        .contains("Launch plan for the autumn release")
+                    && (action == "set_signature"
+                        || offered
+                            .resource_label
+                            .contains("Launch plan for the autumn release"))
             })
             .expect("the old conversation offers the action")
             .address
@@ -585,6 +591,34 @@ fn an_archive_owner_recovers_mail_into_the_shared_mailbox_once() {
                 .runtime()
                 .pending_outbox()
                 .is_empty()
+        );
+    }
+
+    ada.host
+        .instances_mut()
+        .next()
+        .unwrap()
+        .stage("a mailbox on its own");
+    ada.settle();
+    ada.inbox.borrow_mut().push_back(invoke(13, ADA));
+    ada.settle();
+    bo.settle();
+    assert!(ada.answer(13).contains("Succeeded"), "{}", ada.answer(13));
+    for member in [&ada, &bo] {
+        let host = member.hosted().instance().host().unwrap();
+        let root = host.root_of(MAIL).unwrap();
+        let Value::List(accounts) = host.runtime().read(&root, "accounts").unwrap() else {
+            panic!("the account is part of the shared mailbox");
+        };
+        let [Value::Ref(account)] = accounts.as_slice() else {
+            panic!("the workspace has its configured account");
+        };
+        assert_eq!(
+            host.runtime()
+                .read(&account.target, "signature")
+                .unwrap()
+                .as_text(),
+            Some("Regards, Sam")
         );
     }
 }

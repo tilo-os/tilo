@@ -63,6 +63,7 @@ pub(crate) fn arguments(
     let mut drafts = Vec::new();
     let mut labels = Vec::new();
     let mut conversations = Vec::new();
+    let mut signatures = Vec::new();
     let earlier = archived_member_document(documents, &route.app_id, APP, route.cluster_id, person)
         .map_err(|error| error.to_string())?;
     if let Some((first, rest)) = earlier {
@@ -79,6 +80,7 @@ pub(crate) fn arguments(
         let previous = archive.root_of(APP).map_err(|error| error.to_string())?;
         let current = live.root_of(APP).map_err(|error| error.to_string())?;
         conversations = archived_conversations(&archive, &previous, live, &current, person)?;
+        signatures = archived_signatures(&archive, &previous, live, &current, person)?;
         let imported = match live.runtime().read(&current, "recovered_drafts") {
             Ok(Value::List(keys)) => keys,
             Ok(_) => return Err("the mailbox's recovery keys could not be read".into()),
@@ -122,9 +124,46 @@ pub(crate) fn arguments(
             }
         }
     }
-    let payload =
-        serde_json::json!({ "drafts": drafts, "labels": labels, "conversations": conversations });
+    let payload = serde_json::json!({
+        "drafts": drafts,
+        "labels": labels,
+        "conversations": conversations,
+        "signatures": signatures,
+    });
     Ok(format!("{}{payload}", tilo_actions::ARGUMENTS_JSON_PREFIX))
+}
+
+fn archived_signatures(
+    archive: &Host,
+    previous: &ResourceRef,
+    live: &Host,
+    current: &ResourceRef,
+    person: &str,
+) -> Result<Vec<[String; 3]>, String> {
+    let mut available = std::collections::HashSet::new();
+    for account in items(live, current, "accounts")? {
+        if text(live, &account, "signature")?.is_empty() {
+            available.insert(text(live, &account, "key")?);
+        }
+    }
+    let recovered = text_list(live, current, "recovered_signatures")?;
+    let mut signatures = Vec::new();
+    for account in items(archive, previous, "accounts")? {
+        let key = text(archive, &account, "key")?;
+        if key.is_empty() || !available.contains(&key) {
+            continue;
+        }
+        let stamp = tilo_content::hash_bytes(format!("mail-signature:{person}:{key}").as_bytes());
+        let signature = text(archive, &account, "signature")?;
+        if !signature.is_empty() && !recovered.contains(&stamp) {
+            available.remove(&key);
+            signatures.push([stamp, key, signature]);
+        }
+        if signatures.len() == BATCH {
+            break;
+        }
+    }
+    Ok(signatures)
 }
 
 fn archived_conversations(

@@ -131,6 +131,7 @@ type Mail {
     /// Conversations retained from an earlier mailbox, outside the IMAP account collections.
     recovered_mail: Collection<Thread>
     recovered_conversations: Set<Text>
+    recovered_signatures: Set<Text>
     /// Previously imported drafts, including ones subsequently deleted.
     recovered_drafts: Set<Text>
 
@@ -141,6 +142,7 @@ type Mail {
         filter hold
         hide recovered_drafts
         hide recovered_conversations
+        hide recovered_signatures
     }
 }
 
@@ -207,11 +209,12 @@ action recover_previous(
     drafts: List<List<Text>> = [],
     labels: List<Text> = [],
     conversations: List<List<List<Text>>> = [],
+    signatures: List<List<Text>> = [],
 ) -> Int (
     icon: .archive,
     label: "Recover previous mail",
 ) {
-    let before = m.drafts.len() + m.labels.len() + m.recovered_mail.len()
+    let before = m.drafts.len() + m.labels.len() + m.recovered_mail.len() + m.recovered_signatures.len()
     for row in drafts {
         let key = row.at(0) ?? ""
         if row.len() == 8 and key != "" and not m.recovered_drafts.contains(key) {
@@ -283,7 +286,18 @@ action recover_previous(
             m.recovered_conversations.add(key)
         }
     }
-    m.drafts.len() + m.labels.len() + m.recovered_mail.len() - before
+    for row in signatures {
+        let stamp = row.at(0) ?? ""
+        let key = row.at(1) ?? ""
+        let signature = row.at(2) ?? ""
+        if row.len() == 3 and stamp != "" and key != "" and signature != "" and not m.recovered_signatures.contains(stamp) {
+            if let account = m.accounts.find(a -> a.key == key and a.signature == "") {
+                account.signature = signature
+                m.recovered_signatures.add(stamp)
+            }
+        }
+    }
+    m.drafts.len() + m.labels.len() + m.recovered_mail.len() + m.recovered_signatures.len() - before
 }
 
 fn recovered_time(value: Text) -> Time {

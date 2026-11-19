@@ -219,6 +219,8 @@ d-bag7bf25 = Recovered mail
 
 d-fezdozrd = Recovered conversations
 
+d-swilesl6 = Recovered signatures
+
 d-5upxgb6g = Recovered drafts
     .doc = Previously imported drafts, including ones subsequently deleted.
 
@@ -252,6 +254,8 @@ d-y6hvqjbf-drafts = Drafts
 d-y6hvqjbf-labels = Labels
 
 d-y6hvqjbf-conversations = Conversations
+
+d-y6hvqjbf-signatures = Signatures
 
 d-ygbvdl5l = New message
     .doc = Starts a message from the first account.
