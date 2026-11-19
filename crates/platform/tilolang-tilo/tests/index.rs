@@ -1159,6 +1159,35 @@ tilo_test_env::scenario! {
         assert_eq!(host.store().stats().builds, 1);
         assert_eq!(host.store().index_contents(APP).unwrap(), anew(&ada, &lock));
     }
+
+    phase an_index_a_killed_process_left_opens_at_once_and_catches_up;
+    {
+        // A process killed while its window is open leaves its index files as they are on disk
+        // then: copied while the window still holds them, before it closes them. The next process
+        // opens them without building the index again, and catches up with what the document
+        // took since.
+        let (mut ada, root, lock) = workspace();
+        for text in ["milk", "eggs"] {
+            let action = plan(&ada, "add", json!({ "text": text }), &root);
+            ada.apply(&action);
+        }
+        let dir = TempDir::new("killed");
+        let killed = TempDir::new("killed-left");
+        let open = kept_in(dir.path(), &ada.doc, &lock);
+        for entry in std::fs::read_dir(dir.path()).unwrap() {
+            let path = entry.unwrap().path();
+            std::fs::copy(&path, killed.path().join(path.file_name().unwrap())).unwrap();
+        }
+        drop(open);
+
+        let action = plan(&ada, "add", json!({ "text": "bread" }), &root);
+        ada.apply(&action);
+        let next = kept_in(killed.path(), &ada.doc, &lock);
+        let stats = next.store().stats();
+        assert_eq!(stats.builds, 0, "the index the killed process left is read, not built anew");
+        assert!(stats.catch_ups >= 1, "it catches up with the document");
+        assert_eq!(next.store().index_contents(APP).unwrap(), anew(&ada, &lock));
+    }
 }
 
 /// A directory of the test's own, removed when dropped.

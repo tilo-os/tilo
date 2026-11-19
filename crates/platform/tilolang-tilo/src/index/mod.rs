@@ -509,14 +509,19 @@ fn decode_doc(sealed: &[u8]) -> Result<(String, ChunkNo), Corrupt> {
 impl Index {
     /// The index of `app` at `path`, if it holds a complete index of this format and of the
     /// package's schema `schema`; else the file emptied (or made anew when there is none) for a
-    /// build. An index whose file needs repairing (the process was killed in the middle of a
-    /// commit) is built anew too: repairing reads the whole file, and what it held is not trusted
-    /// anyway.
+    /// build.
+    ///
+    /// A process killed with the index open leaves it as its last commit that reached the disk
+    /// ([`Self::persist`]) left it: every such commit keeps what redb needs to open the file
+    /// without reading all of it, so the index opens at once and catches up from the heads it
+    /// reflects. A file that would need its whole length read to open (one no such commit wrote)
+    /// is built anew instead, off the frame.
     ///
     /// An index this process has open already is that one, shared ([`Held`]), read as the heads
     /// it reflects say (none yet while the store holding it builds it); one of another schema is
     /// not this one's to empty (an error, as for a file another process holds).
     pub fn open(path: &Path, app: &str, schema: &str) -> Result<Opened, IndexError> {
+        let _phase = tilo_resource::profiling::Phase::start("tl.index.open");
         let mut open = OPEN.lock().unwrap_or_else(PoisonError::into_inner);
         open.retain(|_, index| index.strong_count() > 0);
         if let Some(index) = open.get(path).and_then(Weak::upgrade) {
@@ -663,7 +668,8 @@ impl Index {
 
     /// Empty the index for a build: no heads, so it is not read until the build commits.
     fn clear(&self, schema: &str) -> Result<(), IndexError> {
-        let txn = self.db.begin_write()?;
+        let mut txn = self.db.begin_write()?;
+        txn.set_quick_repair(self.path.is_some());
         txn.delete_table(META)?;
         txn.delete_table(DOCS)?;
         txn.delete_table(FIELDS)?;
@@ -721,10 +727,13 @@ impl Index {
         Ok(out)
     }
 
-    /// Wait for the commits so far to reach the disk.
+    /// Wait for the commits so far to reach the disk. The commit keeps redb's map of the file's
+    /// free pages with it, so a process killed after it leaves an index the next one opens without
+    /// reading the whole file to rebuild that map.
     pub fn persist(&self) -> Result<(), IndexError> {
         let mut txn = self.db.begin_write()?;
         txn.set_durability(Durability::Immediate)?;
+        txn.set_quick_repair(true);
         txn.commit()?;
         Ok(())
     }
