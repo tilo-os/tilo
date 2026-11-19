@@ -4608,15 +4608,33 @@ arch = ["x86_64", "aarch64"]
 [[check]]
 name = "server-installer-medium-x86_64"
 # dnf installs from Fedora's mirrors, which are no fixed host list; the server image itself
-# comes from seal-host's archive, the image with its UKI sealed.
+# comes from seal-host's archive, the image with its UKI sealed. Beside the medium, its live ESP
+# and root as the internal bundle the Imager stages onto a machine's own disk
+# (os/dev/export-internal-bundle.sh, which loop-mounts private copies of both). The bundle
+# shrinks the live root to what it holds, which only Btrfs does, so this medium's root is Btrfs.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "export TILO_INSTALLER_TARGET_OCI=/target/publish/host-sealed/image.oci.tar\nexport TILO_INSTALLER_TARGET_REPOSITORY=registry.tilo.so/tilo/tilo-host\nexport TILO_INSTALLER_TARGET_DIGEST=$(cat /target/publish/host-sealed/digest)\nexport TILO_INSTALLER_TARGET_ARCHITECTURE=x86_64\nexport TILO_INSTALLER_TARGET_PROFILE=generic\nexport TILO_INSTALLER_TARGET_UPDATE_ORIGIN=registry.tilo.so/tilo/tilo-host:dev-$(git rev-parse --short=12 HEAD)\nbash tools/ci/publish/installer-medium.sh x86_64 /target/os/x86_64/image /target/publish/server-installer-medium/x86_64"
+run = "export TILO_INSTALLER_TARGET_OCI=/target/publish/host-sealed/image.oci.tar\nexport TILO_INSTALLER_TARGET_REPOSITORY=registry.tilo.so/tilo/tilo-host\nexport TILO_INSTALLER_TARGET_DIGEST=$(cat /target/publish/host-sealed/digest)\nexport TILO_INSTALLER_TARGET_ARCHITECTURE=x86_64\nexport TILO_INSTALLER_TARGET_PROFILE=generic\nexport TILO_INSTALLER_TARGET_UPDATE_ORIGIN=registry.tilo.so/tilo/tilo-host:dev-$(git rev-parse --short=12 HEAD)\nexport TILO_INSTALLER_ROOTFS=btrfs\nbash tools/ci/publish/installer-medium.sh x86_64 /target/os/x86_64/image /target/publish/server-installer-medium/x86_64\nrm -rf /target/publish/server-installer-bundle/x86_64\nmkdir -p /target/publish/server-installer-bundle\nTMPDIR=/var/tmp bash os/dev/export-internal-bundle.sh /target/publish/server-installer-medium/x86_64/disk.qcow2 x86_64 imager-v0.0.0 /target/publish/server-installer-bundle/x86_64"
 needs = ["os-image-x86_64", "seal-host"]
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
-outputs = ["/target/publish/server-installer-medium/x86_64/disk.qcow2", "/target/publish/server-installer-medium/x86_64/disk.qcow2.sha256", "/target/publish/server-installer-medium/x86_64/disk.qcow2.hardware.json", "/target/publish/server-installer-medium/x86_64/source.json"]
+outputs = ["/target/publish/server-installer-medium/x86_64/disk.qcow2", "/target/publish/server-installer-medium/x86_64/disk.qcow2.sha256", "/target/publish/server-installer-medium/x86_64/disk.qcow2.hardware.json", "/target/publish/server-installer-medium/x86_64/source.json", "/target/publish/server-installer-bundle/x86_64/**"]
 git = true
 timeout_secs = 7200
+default = false
+
+# The Imager whose compiled-in release catalog names the server installer's bundle, the only bundle its staging
+# helper admits (os/dev/build-internal-cycle-imager.sh). Built here, with the compiler cache, so a
+# new bundle recompiles the Imager crate alone; without link-time optimisation, which only makes
+# the binary smaller and a test machine's build an hour longer.
+[[check]]
+name = "server-installer-imager-x86_64"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "rm -rf /target/server-installer-imager && mkdir -p /target/server-installer-imager\nbash os/dev/build-internal-cycle-imager.sh /target/publish/server-installer-bundle/x86_64 imager-v0.0.0 /target/server-installer-imager/imager"
+needs = ["server-installer-medium-x86_64"]
+env = { CARGO_PROFILE_RELEASE_LTO = "off", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+requires = ["arch=x86_64"]
+outputs = ["/target/server-installer-imager/imager"]
+timeout_secs = 5400
 default = false
 
 [[check]]
@@ -4647,8 +4665,8 @@ name = "server-plan-install-cycle"
 # dnf in the guests installs from Fedora's mirrors, and the enrolment and unlock cross the
 # public iroh relay of two user-mode networks; no fixed host list names either.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-x86_64.txt && bash os/dev/test-server-plan-install-cycle.sh --installer-disk /target/publish/server-installer-medium/x86_64/disk.qcow2 --owner-disk /target/publish/os-dev-disk/x86_64/disk/disk.qcow2 --release-tag imager-v0.0.0 --out /target/server-plan-install-cycle"
-needs = ["server-installer-medium-x86_64", "os-dev-disk-lean-x86_64", "tilo-vm-binary-x86_64"]
+run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-x86_64.txt && bash os/dev/test-server-plan-install-cycle.sh --bundle-dir /target/publish/server-installer-bundle/x86_64 --imager /target/server-installer-imager/imager --owner-disk /target/publish/os-dev-disk/x86_64/disk/disk.qcow2 --release-tag imager-v0.0.0 --out /target/server-plan-install-cycle"
+needs = ["server-installer-medium-x86_64", "server-installer-imager-x86_64", "os-dev-disk-lean-x86_64", "tilo-vm-binary-x86_64"]
 env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"

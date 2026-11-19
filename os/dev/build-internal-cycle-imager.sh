@@ -86,7 +86,7 @@ jq -e --arg sha "$manifest_sha256" --arg arch "$arch" \
 python3 "$repo/apps/imager/packaging/release-catalog.py" "$work/catalog" --copy-to "$catalog"
 
 (cd "$repo" && cargo build --release --locked -p imager --bin imager --features installation)
-binary="$repo/target/release/imager"
+binary="${CARGO_TARGET_DIR:-$repo/target}/release/imager"
 [ -x "$binary" ] || die "cargo did not produce $binary"
 # The embedded catalog is plain JSON inside the binary; prove it is this one.
 grep -aFq "$manifest_sha256" "$binary" || die "built imager does not embed the bundle's manifest digest"
