@@ -1260,9 +1260,9 @@ impl tilo_workspace_service::apps::document_content::ContentShelf for Shelf {
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
+    use neighbour_wire::content::PIECE_BYTES;
     use tilo_content::hash_bytes;
     use tilo_peer_state::peer_handle;
-    use tilo_workspace_service::apps::document_content::PIECE_BYTES;
 
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let governing = Box::pin(HostedWorkspace::start(directory.path())).await;
@@ -1407,9 +1407,9 @@ async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
 /// content arrives: waiting, then fetching, then here.
 #[tokio::test(flavor = "current_thread")]
 async fn a_want_through_the_host_waits_for_its_offline_holder_and_arrives_when_it_connects() {
+    use neighbour_wire::content::PIECE_BYTES;
     use tilo_content::{ContentState, hash_bytes};
     use tilo_peer_state::peer_handle;
-    use tilo_workspace_service::apps::document_content::PIECE_BYTES;
 
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let governing = Box::pin(HostedWorkspace::start(directory.path())).await;
