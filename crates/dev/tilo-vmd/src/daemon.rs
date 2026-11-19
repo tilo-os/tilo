@@ -340,33 +340,52 @@ pub fn restore_accounts(
         Ok(guard) => guard,
         Err(error) => return vec![issue(VM_ACCOUNT, error)],
     };
-    let records = match accounts.list() {
+    let listed = match accounts.list() {
         Ok(records) => records,
         Err(error) => return vec![issue(VM_ACCOUNT, error)],
     };
+    // An account that claimed the machine's display at an earlier boot holds it again: the
+    // machine's own session must not take the panel while that claim stands, and a supervisor
+    // that started with the boot holds it until stopped.
+    let claimed = listed.iter().any(|held| held.seat0.is_some());
+    if claimed
+        && let Some(device) = apply
+            .device_session()
+            .filter(|device| device.login.is_none())
+    {
+        // The supervisor first, then the units it started: the other way round it starts them
+        // again.
+        for unit in std::iter::once(device.unit).chain(device.units) {
+            let _ = apply.stop_unit(&unit);
+        }
+    }
     let mut issues = reconcile_seats(accounts, locks, apply);
     let failed: BTreeSet<String> = issues.iter().map(|i| i.account.clone()).collect();
-    for record in records {
-        let Some(session) = record.session() else {
+    for entry in listed {
+        let Some(session) = entry.session() else {
             continue;
         };
-        if failed.contains(&record.name) || session.login.is_some() {
+        // The claimed account runs on the panel; the machine's own session waits for its release.
+        if failed.contains(&entry.name)
+            || session.login.is_some()
+            || (claimed && entry.name == DEVICE_ACCOUNT)
+        {
             continue;
         }
-        let _account = match locks.account(&record.name) {
+        let _account = match locks.account(&entry.name) {
             Ok(guard) => guard,
             Err(error) => {
-                issues.push(issue(&record.name, error));
+                issues.push(issue(&entry.name, error));
                 continue;
             }
         };
-        let device = (record.name == DEVICE_ACCOUNT)
+        let device = (entry.name == DEVICE_ACCOUNT)
             .then(|| apply.device_session())
             .flatten();
-        let record = match accounts.load_with(&record.name, device) {
+        let entry = match accounts.load_with(&entry.name, device) {
             Ok(record) => record,
             Err(error) => {
-                issues.push(issue(&record.name, error));
+                issues.push(issue(&entry.name, error));
                 continue;
             }
         };
@@ -380,15 +399,15 @@ pub fn restore_accounts(
                 apply.start_unit(&session.unit)
             }
         };
-        if let Err(error) = prepare_account_session(accounts, layers, apply, &record, None)
+        if let Err(error) = prepare_account_session(accounts, layers, apply, &entry, None)
             .and_then(|()| started(apply))
         {
             issues.push(Issue {
-                account: record.name.clone(),
+                account: entry.name.clone(),
                 problem: format!("its session did not start at boot: {error}"),
                 hint: format!(
                     "tilo-vm logs {}   then   tilo-vm account restart {}",
-                    record.name, record.name
+                    entry.name, entry.name
                 ),
             });
         }
@@ -1718,10 +1737,8 @@ impl Daemon {
         };
         let mut actions = apply::deactivate(self.apply.as_mut(), &record)?;
         if record.seat0.is_some() {
-            self.apply.start_unit(GREETER_UNIT)?;
-            actions.push(Action::StartUnit {
-                unit: GREETER_UNIT.into(),
-            });
+            // The account that held the display is gone: the machine's own session takes it back.
+            actions.extend(self.give_the_panel_back()?);
         }
         let removed = self.accounts.remove(name)?;
         Ok(AccountRmResult { removed, actions })
@@ -2254,17 +2271,20 @@ impl Daemon {
             holder.seat0 = None;
             actions.extend(self.reseat(&mut holder)?);
         } else {
-            self.apply.stop_unit(GREETER_UNIT)?;
-            actions.push(Action::StopUnit {
-                unit: GREETER_UNIT.into(),
-            });
+            actions.extend(self.take_the_panel()?);
         }
         record.seat0 = Some(Lease {
             account: record.name.clone(),
             owner,
             since: accounts::now(),
         });
-        actions.extend(self.reseat(&mut record)?);
+        if let Err(error) = self.reseat(&mut record) {
+            // The claim did not take: the machine's own session takes its display back.
+            record.seat0 = None;
+            self.accounts.save(&record)?;
+            let _ = self.give_the_panel_back();
+            return Err(error);
+        }
         Ok(SeatResult {
             account: record.name,
             seat: "seat0".into(),
@@ -2288,17 +2308,60 @@ impl Daemon {
             });
         }
         record.seat0 = None;
-        let mut actions = self.reseat(&mut record)?;
-        self.apply.start_unit(GREETER_UNIT)?;
-        actions.push(Action::StartUnit {
-            unit: GREETER_UNIT.into(),
-        });
+        let mut actions = match self.reseat(&mut record) {
+            Ok(actions) => actions,
+            Err(error) => {
+                // The account is off the display either way: the machine's own session takes it,
+                // and the claim does not stand against the next boot.
+                let _ = self.accounts.save(&record);
+                let _ = self.give_the_panel_back();
+                return Err(error);
+            }
+        };
+        actions.extend(self.give_the_panel_back()?);
         Ok(SeatResult {
             seat: own_seat(&record),
             account: record.name,
             changed: true,
             actions,
         })
+    }
+
+    /// Stop the machine's own session so an account can take its display: a laptop's
+    /// greeter, or, on a machine without one, the device account's own session — its supervisor
+    /// and the units that supervisor starts, which hold the panel between them.
+    fn take_the_panel(&mut self) -> Result<Vec<Action>, DaemonError> {
+        let mut actions = Vec::new();
+        let machine = self
+            .apply
+            .device_session()
+            .filter(|device| device.login.is_none());
+        let Some(device) = machine else {
+            self.apply.stop_unit(GREETER_UNIT)?;
+            actions.push(Action::StopUnit {
+                unit: GREETER_UNIT.into(),
+            });
+            return Ok(actions);
+        };
+        // The supervisor first: stopped after the unit it starts, it would start it again.
+        for unit in std::iter::once(device.unit.clone()).chain(device.units.iter().cloned()) {
+            self.apply.stop_unit(&unit)?;
+            actions.push(Action::StopUnit { unit });
+        }
+        Ok(actions)
+    }
+
+    /// Give the display back to the session the machine keeps itself, as [`Self::take_the_panel`]
+    /// stopped it: the greeter, or the device account's own supervisor on the panel again.
+    fn give_the_panel_back(&mut self) -> Result<Vec<Action>, DaemonError> {
+        let machine = self
+            .apply
+            .device_session()
+            .filter(|device| device.login.is_none());
+        let unit = machine.map_or_else(|| GREETER_UNIT.to_owned(), |device| device.unit);
+        // The supervisor starts the units under it, as it did at boot.
+        self.apply.start_unit(&unit)?;
+        Ok(vec![Action::StartUnit { unit }])
     }
 
     fn gc(&mut self, request: &tilo_vm_protocol::Gc) -> Result<GcResult, DaemonError> {

@@ -1447,7 +1447,7 @@ pub enum AccountAppsCommand {
 pub enum SeatCommand {
     /// Move an account's session onto seat0, the display the hypervisor window shows.
     #[command(
-        after_help = "Examples:\n  tilo-vm seat claim\n  tilo-vm seat claim review-a --steal"
+        after_help = "Examples:\n  tilo-vm seat claim\n  tilo-vm seat claim review-a --steal\n\nThe machine's own session lets go of the display first: greetd on a laptop, or on a machine without one the device account's own session. The claim is kept at the next boot (tilo-vm-restore)."
     )]
     Claim {
         /// The account (default: your account).
@@ -1459,8 +1459,10 @@ pub enum SeatCommand {
         #[arg(long)]
         steal: bool,
     },
-    /// Give seat0 back to greetd; the account returns to its own seat.
-    #[command(after_help = "Examples:\n  tilo-vm seat release")]
+    /// Give seat0 back to the machine's own session; the account returns to its own seat.
+    #[command(
+        after_help = "Examples:\n  tilo-vm seat release\n\nGreetd on a laptop, or on a machine without one the device account's own session, takes the display back."
+    )]
     Release {
         /// The account (default: your account).
         account: Option<String>,

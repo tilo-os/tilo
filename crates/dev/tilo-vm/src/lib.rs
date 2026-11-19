@@ -25,6 +25,7 @@ pub mod image;
 pub mod imageup;
 pub mod lan;
 mod local_layer;
+pub mod panel;
 pub mod qemu;
 pub mod reach;
 pub mod receipt;
