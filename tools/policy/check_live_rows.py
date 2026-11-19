@@ -18,7 +18,8 @@ its app's name) and the type's declared effects (`#[effect(item = …)]`,
 declarations (`ResourceSpec::new` in the framework, `ActionSpec::typed` in
 `tilo-actions`), not from an app.
 
-This refuses, in production Rust under `apps/` and `crates/session/`:
+This refuses, in production Rust under `apps/` and `crates/session/`, every
+occurrence:
 
 * `untyped-live-row`: `LiveRow::new`, a row that names no declared type;
 * `row-operation`: `.operation(...)` or `.effect(...)` chained onto a
@@ -30,10 +31,10 @@ This refuses, in production Rust under `apps/` and `crates/session/`:
 * `hand-built-tree`: `ResourceSpec::new`, a resource tree an app built;
 * `hand-bound-action`: `ActionSpec::typed`, an action an app bound itself.
 
-The files still on them are listed in `live_rows_baseline.txt`, one line per
-rule and file with how many it still has. A count only shrinks: more than
-listed fails, fewer fails until the line is lowered, so a migrated app cannot
-fall back and the list reaches empty as each app moves to declared types.
+There is no baseline: the migration is done, so the old builders are
+framework-internal (`#[doc(hidden)]`) and an app that reaches for one fails
+here rather than silently publishing an untyped row. Test code is not the
+app's publication and is not counted.
 """
 
 from __future__ import annotations
@@ -46,7 +47,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import rust_source  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
-BASELINE = Path(__file__).resolve().parent / "live_rows_baseline.txt"
 
 SCOPES = ("apps", "crates/session")
 
@@ -164,48 +164,16 @@ def scan(root: Path) -> dict[tuple[str, str], int]:
     return found
 
 
-def load_baseline(path: Path) -> dict[tuple[str, str], int]:
-    allowed: dict[tuple[str, str], int] = {}
-    if not path.exists():
-        return allowed
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        rule, count, file = line.split(maxsplit=2)
-        if rule not in RULES and rule != "row-operation":
-            raise ValueError(f"{path.name}: unknown rule {rule!r}")
-        allowed[(rule, file)] = int(count)
-    return allowed
-
-
-def check(root: Path, baseline_path: Path) -> list[str]:
+def check(root: Path) -> list[str]:
     found = scan(root)
-    allowed = load_baseline(baseline_path)
-    errors = []
-    for rule, file in sorted(set(found) | set(allowed)):
-        have, may = found.get((rule, file), 0), allowed.get((rule, file), 0)
-        if have > may:
-            errors.append(f"{file}: {have} {rule} (allowed {may}); {ADVICE[rule]}")
-        elif have < may:
-            errors.append(f"{baseline_path.relative_to(root).as_posix()}: "
-                          f"{rule} {may} {file} is now {have}; "
-                          "lower the count (or delete the line at 0)")
-    return errors
+    return [
+        f"{file}: {count} {rule}; {ADVICE[rule]}"
+        for (rule, file), count in sorted(found.items())
+    ]
 
 
-def print_baseline(root: Path) -> None:
-    print("# Rows and trees apps still build by hand")
-    print("# (tools/policy/check_live_rows.py). Counts only shrink.")
-    for (rule, file), count in sorted(scan(root).items()):
-        print(f"{rule} {count} {file}")
-
-
-def main(argv: list[str]) -> int:
-    if argv[1:] == ["--print-baseline"]:
-        print_baseline(ROOT)
-        return 0
-    errors = check(ROOT, BASELINE)
+def main() -> int:
+    errors = check(ROOT)
     if errors:
         print("\n".join(errors))
         return 1
@@ -214,4 +182,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    sys.exit(main())
