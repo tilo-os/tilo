@@ -1063,11 +1063,15 @@ heavy = true
 
 [[check]]
 name = "model-providers-web"
+# The node has no GPU, so the page draws through a software rasteriser: its steps are a
+# software-drawn machine's 20 s, as the lounge flows take there. A screenshot waits for the
+# page's next frame, and the proof's first one was measured at 13 s on this node, past the
+# default 15 s bound (3 steps of 5 s).
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "cargo build --locked -p tilo-app-cli --bin tilo-app\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/provider-chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/provider-chrome.txt\" | tail -n 1)\n\"$CARGO_TARGET_DIR/debug/tilo-app\" build --target web --bundle app apps/model-providers\nnode apps/model-providers/web/run.mjs \"$CARGO_TARGET_DIR/tilo-app/web/model-providers/bundle\"\n"
 needs = ["test-assets"]
-env = { TILO_TEST_ASSET_SEED = "/target/test-assets" }
+env = { TILO_TEST_ASSET_SEED = "/target/test-assets", TILO_STEP_SECONDS = "20" }
 git = true
 on = ["dispatch", "idle"]
 heavy = true
