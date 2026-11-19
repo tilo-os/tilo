@@ -27,9 +27,10 @@ pub(super) struct ViewArgs {
 const OUTLINE: &str = "outline";
 /// How long a view read waits for its answer. The view is the answer: a read that gave up
 /// sooner told the agent nothing of what the window shows, only that it was still being
-/// read. A window read for the first time on the workspace's server is mounted and drawn
-/// there before it answers, which takes tens of seconds on a server that just started.
-const VIEW_WAIT_MS: u64 = 60_000;
+/// read. A window read for the first time on the workspace's server is opened and drawn
+/// there before it answers, which takes about a second; the rest is for a server that is
+/// still starting the app.
+const VIEW_WAIT_MS: u64 = 15_000;
 
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// `tilo_view {path}`: the lines of the view `path` names, or of the app window that
