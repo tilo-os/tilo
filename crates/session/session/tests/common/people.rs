@@ -2165,12 +2165,29 @@ impl Chat<'_> {
         }
     }
 
-    /// Wait until Chat offers `peer` as someone to talk to: until the workspace's people are in its
-    /// shared record, a conversation with them reads as unavailable rather than as held.
+    /// Wait until `peer` is someone to talk to here: this device reads Chat's shared resource of
+    /// the workspace, and the workspace's member list, which Chat offers its people from, names
+    /// them.
+    /// Asking the app itself would open the conversation on screen.
     pub fn wait_for_contact(&self, peer: &str) {
         self.wait_for(&format!("{peer} to talk to"), |held| {
-            held.conversation(peer).err()
+            if let Err(none) = held.conversation(peer) {
+                return Some(none);
+            }
+            (!self.lists_member(peer))
+                .then(|| format!("lists no member {peer} in the workspace in front"))
         });
+    }
+
+    /// Whether this device's session lists `peer` among the members of a workspace it shows.
+    fn lists_member(&self, peer: &str) -> bool {
+        self.device.state()["state"]["peers"]["workspaces"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|workspace| workspace["members"].as_array())
+            .flatten()
+            .any(|member| member["user"].as_str() == Some(peer))
     }
 
     /// Wait until the conversation with `peer` shows `texts` in that order,
@@ -2238,6 +2255,12 @@ impl HeldChat {
         };
         if peer == self.me {
             return Err(format!("Chat knows no person {peer}"));
+        }
+        // Once anyone opened Chat in the workspace, its shared resource holds the workspace's
+        // conversations: a read that holds none of it is a device that reads nothing of the
+        // workspace, never an empty conversation.
+        if self.chat.as_object().is_none_or(serde_json::Map::is_empty) {
+            return Err("reads none of Chat's shared resource".to_owned());
         }
         // A message keeps its author as the member's JSON, in a string.
         let author = Value::String(serde_json::to_string(&me).expect("a member serializes"));
