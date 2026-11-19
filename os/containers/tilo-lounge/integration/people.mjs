@@ -1638,8 +1638,9 @@ try {
     // that drew its window in one frame owes no second.
     await search(a.tab, a.command, 'chat', 'Chat');
     // The search slides the strip to the window: where its composer stands is read
-    // once the strip is at rest, not while it still moves.
-    await restingPan(a.tab);
+    // once the strip is at rest, not while it still moves (a strip that does not
+    // overflow has nowhere to slide and publishes no pan).
+    if (await panOf(a.tab)) await restingPan(a.tab);
     const composer = await published(a.tab, 'Message composer', 'the chat composer');
     const [cx0, cy0, cx1, cy1] = Array.isArray(composer.bounds)
       ? composer.bounds
