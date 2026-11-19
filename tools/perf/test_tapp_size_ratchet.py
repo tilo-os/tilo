@@ -72,6 +72,9 @@ class Measure(unittest.TestCase):
         self.assertIn('[apps."so.tilo.a"]', hint)
         # 1 % headroom on the 64 KiB grid: 1,048,576 is the next budget.
         self.assertIn("x86_64 = 48576", hint)
+        # The raise is the rounded step; the growth measured is said beside it, so a byte over
+        # never reads as 48 KiB grown.
+        self.assertIn("+1 measured, rounded up to a 64 KiB step", hint)
 
     def test_a_raise_file_adds_to_the_budget(self):
         raised = budget(dictation=app_raise(added=1))

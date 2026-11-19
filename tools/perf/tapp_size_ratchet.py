@@ -181,13 +181,14 @@ def run_label() -> str:
     return number if number.isdigit() else "<the Release / apps run number>"
 
 
-def raise_hint(over: dict[str, int], arch: str) -> str:
+def raise_hint(over: dict[str, tuple[int, int]], arch: str) -> str:
     lines = [f"A deliberate growth adds one raise file for the change, {DIRECTORY}/raises/<change>.toml",
              "(the other architecture's job prints its own lines; docs/measurements/app-package-size.md):",
              '    reason = "<why these apps grew, at least 20 characters>"',
              f"    run = {run_label()}"]
-    for app, added in sorted(over.items()):
-        lines += [f'    [apps."{app}"]', f"    {arch} = {added}"]
+    for app, (added, measured) in sorted(over.items()):
+        lines += [f'    [apps."{app}"]',
+                  f"    {arch} = {added}  # +{measured} measured, rounded up to a {ROUNDING // 1024} KiB step"]
     return "\n".join(lines)
 
 
@@ -196,7 +197,7 @@ def judge_apps(sizes: dict[str, int], arch: str, budget: Budget,
     """Each app's bytes against its budget on `arch`."""
     limits = budget.app_totals()
     lines: list[str] = []
-    over: dict[str, int] = {}
+    over: dict[str, tuple[int, int]] = {}
     missing = False
     for app, size in sorted(sizes.items()):
         proposed = budget_for(size, budget.headroom)
@@ -206,7 +207,7 @@ def judge_apps(sizes: dict[str, int], arch: str, budget: Budget,
             lines.append(f'error: {app} {arch}: {size} bytes and no budget; add [apps."{app}"] '
                          f"{arch} = {proposed} to {DIRECTORY}/budget.toml")
         elif size > limit:
-            over[app] = proposed - limit
+            over[app] = (proposed - limit, size - limit)
             lines.append(f"error: {app} {arch}: {size} bytes is over its budget of {limit} (+{size - limit})")
         elif proposed < limit * (1 - SLACK):
             lines.append(f"{app} {arch}: {size} bytes, under its budget of {limit}; lower it: "
