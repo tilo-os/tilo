@@ -1451,7 +1451,10 @@ is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by
 - Panel width: 320 for a utility Panel (quick settings,
   `panel_width_utility`; an overlay drawer is the same width,
   `drawer_width`), 360 for a roster or list Panel (`panel_width_list`), 560
-  for a sheet with a form in it (`panel_width_sheet`).
+  for a sheet with a form in it (`panel_width_sheet`). A document's page rail
+  stands 192 wide where its container leaves it the choice
+  (`page_rail_width`), so its thumbnails read at a glance and the viewer
+  beside it keeps the rest.
 - **The window shell (`NavShell`) reads every size from the metrics**; an app
   passes none:
 
