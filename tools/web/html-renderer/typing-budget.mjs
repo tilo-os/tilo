@@ -93,7 +93,7 @@ const MARKDOWN = Array.from({length: 60}, (_, i) => i % 10 === 0
   : `${i % 3 === 0 ? '- ' : ''}Paragraph ${i}: the quick brown fox jumps over the lazy dog while notes keep every thought close at hand, and the page keeps scrolling.`).join('\n\n');
 const SEED = `(async () => {
   const actions = window.mount.actions();
-  const importing = actions.find(a => /import/i.test(a.address.action) && /markdown/i.test(a.address.action));
+  const importing = actions.find(a => a.address.action === 'import-markdown');
   if (!importing) return 'no import action: ' + actions.map(a => a.address.action).join(',');
   const answer = await window.mount.invokeAction(importing.address.resource, importing.address.action,
     {title: 'Field notes', markdown: ${JSON.stringify(MARKDOWN)}, images: [], note: null});
