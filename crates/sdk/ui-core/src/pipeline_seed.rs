@@ -83,10 +83,7 @@ pub fn publish(
     let Some(data) = cache.get_data() else {
         return Ok(false);
     };
-    #[cfg(unix)]
     tilo_files::native::atomic::write_creating_parent_with_mode(&file, &data, 0o644)?;
-    #[cfg(not(unix))]
-    tilo_files::native::atomic::write_creating_parent(&file, &data)?;
     Ok(true)
 }
 
