@@ -952,21 +952,28 @@ test('the bar follows the session after the mount, not the mount alone', async (
   assert.notEqual(root.connection, 'offline', 'and it clears once the transport is back');
 });
 
-test('a person let in by a link into the site’s own home is handed to the bare site, where the first screen is', async () => {
-  // A link that carries a secret never shows the first screen, so a person who
-  // has not been set up here and was let in by one would stay on the shared
-  // desktop: the site's home, which is where people meet, not where someone
-  // starts. The bare site offers the first screen, and its skip or their agent
-  // opens a workspace of their own.
-  const home = {name: 'Lounge', host: {origin: ORIGIN}, admission: `${ORIGIN}/peer/v1/directory/current/`};
-  const entry = {base: 'https://web.example/', home};
-  const {calls, failure, at} = await fixture({entry});
-  assert.equal(failure, null);
-  // The site and the workspace share an address but for the fragment, so the
-  // page takes itself there and loads again: the bare entry, not the link.
-  assert.deepEqual(calls.filter(call => call === 'reload' || call === 'assign'), ['reload'],
-    'the page loaded the site itself again, not the workspace the link named');
-  assert.equal(at(), 'https://web.example/');
+test('an invited newcomer on an invite-only site stays in the site’s home workspace their invitation let them into, loading the page once', async () => {
+  // A fresh browser that opened an invitation keeps its setup for later
+  // (index.html) and joins the shared home workspace. The bare site shows the
+  // first screen only to a browser that has joined nothing, and an invite-only
+  // site holds it behind its entry: sending the newcomer there only opened
+  // the home workspace again, which sent them back, without end.
+  const before = globalThis.fetch;
+  try {
+    globalThis.fetch = directories({[ORIGIN]: [{workspace: 'current', name: 'Lounge', entry: 'directory/current/', invitationOnly: true,
+      waitList: {contact: null, mail: true}}]});
+    const home = {name: 'Lounge', host: {origin: ORIGIN}, admission: `${ORIGIN}/peer/v1/directory/current/`};
+    const {calls, failure, at} = await fixture({entry: {base: 'https://web.example/', home},
+      local: {'tilo-setup': JSON.stringify({step: 'later', at: 1}),
+        'tilo-host-memberships': JSON.stringify({[ORIGIN]: {origin: ORIGIN, workspace: 'current', userPublicKey: USER}})}});
+    assert.equal(failure, null);
+    assert.deepEqual(calls.filter(call => call === 'reload' || call === 'assign'), [], 'the page is not loaded again');
+    assert.notEqual(at(), 'https://web.example/', 'not sent to the bare site');
+    assert.equal(document.documentElement.dataset.entry, 'open', 'the home workspace opens');
+    assert.equal(JSON.parse(localStorage.getItem('tilo-setup')).step, 'later', 'their own setup still waits for later');
+  } finally {
+    globalThis.fetch = before;
+  }
 });
 
 test('a person already set up keeps the workspace a link into the site’s own home opened', async () => {

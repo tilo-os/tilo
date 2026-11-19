@@ -1617,23 +1617,14 @@ export async function startEntryPage({mode}) {
     // A device that came in by pairing is set up. Its person set their Tilo
     // up where their root is and approved this device there: the first screen
     // is for someone who has none, and a paired device could do nothing with
-    // it. Nothing else says so for it, since a link's secret never shows that
-    // screen, so the hand-off below would send it to the bare site, which
-    // opens this workspace as this device again, and hands it on again.
+    // it.
     if (page.peer && readSetup()?.step !== 'done'
         && remembering(() => keptMembership({host: {origin: page.peer.origin}}))?.paired) setupDone();
     // A link that carries a secret (an invitation, a pairing) never shows the
-    // first screen: the person is let in without it. A person who has not been
-    // set up here and was let in this way into the site's own home workspace is
-    // handed on to the bare site, where the first screen is — its skip, or
-    // their agent, opens a workspace of their own instead of leaving them on
-    // the shared desktop they landed in. A link into another workspace is that
-    // workspace's, and is left alone.
-    if (!embed && !firstRun && here?.kind === 'workspace' && readSetup()?.step !== 'done'
-        && page.peer?.workspace && page.peer.workspace === homeAdmissionWorkspace(page.entry)) {
-      loadPage(page.entry.base);
-      return;
-    }
+    // first screen, and a person it let in stays where it let them in, the
+    // site's own home included: the bare site shows that screen only to a
+    // browser that has joined nothing, so it is no place to send them, and
+    // their own setup waits in the workspace (identity-actions.mjs).
     // A tab an agent just signed in as a device of the person: it paired
     // through the home workspace, and opens the person's own one next.
     if (!embed && page.peer && openOwnAsked()) void openOwnAfterSignIn({page, status});
