@@ -131,13 +131,13 @@ struct Held {
     /// A step of the person's the layout asked for while its write was under way: it
     /// is taken on the look that finds that write done.
     pending_step: Option<bool>,
-    /// What an arranging action did to the person's view while the view could not be written: the
-    /// change that names it is written once it can be.
-    pending_acted: Option<Acted>,
     /// What this device changed of the layout while it could not be written, in the order it
-    /// changed: each stands in the workspace as a step of its own, so a step taken then is taken
-    /// back on its own.
-    pending_steps: Vec<Pending>,
+    /// changed: each is written as its own change, so a step taken then is taken back on its own.
+    pending_steps: PendingSteps<LayoutStep>,
+    /// The changes this device made of the person's view while it could not be written, in the
+    /// order it made them: each is written as its own change, so a step taken then is taken back
+    /// on its own.
+    pending_view: PendingSteps<PersonView>,
     /// Whether the record was read here.
     read: bool,
     /// Whether a look found the view unreadable: what it holds is not known here yet, so no view
@@ -188,14 +188,52 @@ struct Acted {
     was: Option<PersonView>,
 }
 
-/// A change of the layout this device made while it could not be written: the layout as it stood
-/// after the change, the arranging action that named it where one made it, and the step it is of
-/// the person's, named when they made it so it orders among their steps elsewhere.
+/// A workspace's layout as this device arranged it while the layout could not be written, and the
+/// step it is of the person's, named where they made it so it orders among their steps elsewhere.
 #[derive(Clone)]
-struct Pending {
+struct LayoutStep {
     workspace: Workspace,
-    acted: Option<Acted>,
     step: String,
+}
+
+/// A change this device made while what it changes could not be written, and the arranging action
+/// that named it where one made it.
+#[derive(Clone)]
+struct PendingStep<T> {
+    changed: T,
+    acted: Option<Acted>,
+}
+
+/// The changes this device made while that could not be written, in the order it made them.
+struct PendingSteps<T>(Vec<PendingStep<T>>);
+
+impl<T> Default for PendingSteps<T> {
+    fn default() -> Self {
+        Self(Vec::new())
+    }
+}
+
+impl<T> PendingSteps<T> {
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    fn last(&self) -> Option<&PendingStep<T>> {
+        self.0.last()
+    }
+
+    fn push(&mut self, changed: T, acted: Option<Acted>) {
+        self.0.push(PendingStep { changed, acted });
+    }
+
+    fn take(&mut self) -> Vec<PendingStep<T>> {
+        std::mem::take(&mut self.0)
+    }
+
+    /// Keep the changes a write that was not made held, before what changed since.
+    fn restore(&mut self, earlier: Vec<PendingStep<T>>) {
+        self.0.splice(..0, earlier);
+    }
 }
 
 /// A write of a record under way. Boxed: each holds a document, and the state beside it is small.
@@ -229,7 +267,7 @@ struct Laying {
     /// The person the change is theirs, whose step of the layout's history it is.
     person: String,
     /// The steps the write holds, kept for the next one if it is not made.
-    pending: Vec<Pending>,
+    pending: Vec<PendingStep<LayoutStep>>,
 }
 
 /// What a layout's write came to, off the loop.
@@ -284,7 +322,7 @@ struct Save {
     runs_here: Option<fn(&str) -> bool>,
     /// What this device changed of the layout that its workspace does not hold yet, in the order it
     /// changed: each is written as its own change.
-    pending: Vec<Pending>,
+    pending: Vec<PendingStep<LayoutStep>>,
 }
 
 impl Save {
@@ -347,7 +385,9 @@ impl Save {
         // no window, so taking back the first window leaves the strip it stood in.
         let founding = heads.is_empty();
         if founding {
-            let first = pending.first().map_or(&laid_out, |step| &step.workspace);
+            let first = pending
+                .first()
+                .map_or(&laid_out, |step| &step.changed.workspace);
             let found = founding_change(&mut candidate, workspace_id, first, &writing, &by_tab);
             if let Err(error) = found {
                 candidate.rollback();
@@ -438,7 +478,7 @@ fn write_changes(
     candidate: &mut automerge::AutoCommit,
     workspace_id: WorkspaceId,
     laid_out: &Workspace,
-    pending: &[Pending],
+    pending: &[PendingStep<LayoutStep>],
     writing: &Writing<'_>,
     by_tab: &mut BTreeMap<u64, String>,
     steps: &mut Vec<(Vec<ChangeHash>, Vec<ChangeHash>)>,
@@ -452,10 +492,10 @@ fn write_changes(
         wrote |= write_change(
             candidate,
             workspace_id,
-            &pending.workspace,
+            &pending.changed.workspace,
             writing,
             acted,
-            &pending.step,
+            &pending.changed.step,
             by_tab,
             steps,
         )?;
@@ -677,7 +717,7 @@ impl Layouts {
         let settled = self.held.borrow().values().all(|held| {
             held.pending.is_none()
                 && held.pending_step.is_none()
-                && held.pending_acted.is_none()
+                && held.pending_view.is_empty()
                 && held.pending_steps.is_empty()
         }) && self.seen.get() == Some(tree.external_revision)
             && tree
@@ -1232,7 +1272,7 @@ impl Layouts {
         if changed || acted.is_some() {
             self.remember(&key, workspace, acted, person);
         }
-        let pending = self.held(&key, |held| std::mem::take(&mut held.pending_steps));
+        let pending = self.held(&key, |held| held.pending_steps.take());
         self.unwritten(workspace_id, None);
         self.lay(
             engine,
@@ -1264,15 +1304,17 @@ impl Layouts {
         self.held(key, |held| {
             let moved = acted.is_some()
                 || held.pending_steps.last().is_none_or(|last| {
-                    last.workspace.strips != workspace.strips
-                        || last.workspace.layout != workspace.layout
+                    last.changed.workspace.strips != workspace.strips
+                        || last.changed.workspace.layout != workspace.layout
                 });
             if moved {
-                held.pending_steps.push(Pending {
-                    workspace: workspace.clone(),
+                held.pending_steps.push(
+                    LayoutStep {
+                        workspace: workspace.clone(),
+                        step: shared_resource::step_message(person),
+                    },
                     acted,
-                    step: shared_resource::step_message(person),
-                });
+                );
             }
         });
     }
@@ -1393,12 +1435,11 @@ impl Layouts {
                 // What was refused is not written, and the look that found it is not one that wrote
                 // it: the next look tries again, with the steps this write held before whatever
                 // changed since.
-                let mut steps = laying.pending.clone();
+                let steps = laying.pending.clone();
                 self.held(key, |held| {
                     held.written = None;
                     held.kept = record.map(|record| *record);
-                    steps.append(&mut held.pending_steps);
-                    held.pending_steps = steps;
+                    held.pending_steps.restore(steps);
                 });
                 self.say(&error, "the workspace's layout was not kept", workspace_id);
             }
@@ -1458,7 +1499,7 @@ impl Layouts {
         let busy = keys.iter().fold(false, |busy, key| {
             !self.settle_one(key)
                 | self.held(key, |held| {
-                    held.pending_acted.is_some() || !held.pending_steps.is_empty()
+                    !(held.pending_view.is_empty() && held.pending_steps.is_empty())
                 })
                 | busy
         });
@@ -1603,18 +1644,26 @@ impl Layouts {
                 )
             });
         // What the action did to the person's own view of the workspace (a width, a window made
-        // as large as its display) is a step of theirs in that view, written on the next look.
+        // as large as its display) is a step of theirs in that view, written in its turn.
         if let Some(workspace) = tree.active_workspace()
             && !workspace.id().is_nil()
         {
-            let key = (workspace.id(), Route::view(&person));
-            let was = PersonView::of(before, workspace.id());
-            let acted = Acted {
-                message: message.clone(),
-                shows: Vec::new(),
-                was: Some(was),
-            };
-            self.held(&key, |held| held.pending_acted = Some(acted));
+            let id = workspace.id();
+            let changed = PersonView::of(tree, id);
+            let was = PersonView::of(before, id);
+            if changed != was {
+                let key = (id, Route::view(&person));
+                self.held(&key, |held| {
+                    held.pending_view.push(
+                        changed,
+                        Some(Acted {
+                            message: message.clone(),
+                            shows: Vec::new(),
+                            was: Some(was),
+                        }),
+                    );
+                });
+            }
         }
         self.capture_layout(
             &engine,
@@ -1711,85 +1760,83 @@ impl Layouts {
                 (Some(Written::View(read)), Some(seen)) => read.over(&here, seen),
                 _ => here.clone(),
             });
-            // An arranging action's change of the view is written at once, as a step of the
-            // person's; any other change once it rests.
-            let acted = self.held(&key, |held| {
-                (held.read && held.writing.is_none())
-                    .then(|| held.pending_acted.take())
-                    .flatten()
-            });
-            let view = if acted.is_some() {
-                view
-            } else {
-                let Some(view) = self.held(&key, |held| rested(held, &view, now)) else {
-                    continue;
-                };
-                view
-            };
+            // The changes made while the view could not be written, in the order they were made,
+            // and then the view as it stands: written at once where an arranging action made the
+            // last of them, else once it rests.
+            if !self.held(&key, |held| held.read && held.writing.is_none()) {
+                continue;
+            }
+            let mut steps = self.held(&key, |held| held.pending_view.take());
+            match steps.last().map(|step| step.changed == view) {
+                Some(true) => {}
+                Some(false) => steps.push(PendingStep {
+                    changed: view.clone(),
+                    acted: None,
+                }),
+                None => {
+                    let Some(view) = self.held(&key, |held| rested(held, &view, now)) else {
+                        continue;
+                    };
+                    steps.push(PendingStep {
+                        changed: view,
+                        acted: None,
+                    });
+                }
+            }
+            let written = steps
+                .last()
+                .map_or_else(|| view.clone(), |step| step.changed.clone());
             self.held(&key, |held| {
-                held.written = Some(Written::View(view.clone()));
+                held.written = Some(Written::View(written.clone()));
                 held.seen = Some(here);
                 held.pending = None;
             });
             let Some(sealed) = self.sealed(engine, &key) else {
                 // The record's keys are not here yet: it is written on the look after they arrive,
-                // an arranging action's step with it.
+                // the steps taken here with it.
                 let awaited = keys_awaited(engine, &key);
                 self.held(&key, |held| {
                     held.read = false;
                     held.written = None;
                     held.pending = None;
                     if awaited {
-                        held.pending_acted = acted;
+                        held.pending_view.restore(steps);
                     }
                 });
                 continue;
             };
             let (mut held, revision) = self.copy(engine, &key);
             let from = held.get_heads();
-            let step = match view_written(&mut held, &view, acted.as_ref(), engine, person) {
-                Ok(step) => step,
-                Err(error) => {
-                    self.say(
-                        &error.to_string(),
-                        "the view of the layout was not kept",
-                        workspace_id,
-                    );
-                    continue;
+            let mut log = self.held(&key, |kept| kept.undo.take());
+            let mut refused = None;
+            for step in &steps {
+                if let Err(error) = view_step(&mut held, step, engine, person, &mut log) {
+                    refused = Some(error);
+                    break;
                 }
-            };
-            if held.pending_ops() == 0 {
-                self.keep(&key, held, revision);
+            }
+            self.held(&key, |kept| {
+                // A step whose change is dropped names nothing the workspace holds: the history is
+                // made again from what it does hold.
+                kept.undo = if refused.is_some() { None } else { log };
+            });
+            if let Some(error) = refused {
+                self.say(
+                    &error.to_string(),
+                    "the view of the layout was not kept",
+                    workspace_id,
+                );
                 continue;
             }
-            if let Some(acted) = acted {
-                held.commit_with(
-                    automerge::transaction::CommitOptions::default()
-                        .with_message(acted.message)
-                        .with_time(crate::activity::now_seconds()),
-                );
-                let after = held.get_heads();
-                self.held(&key, |kept| {
-                    let log = kept.undo.get_or_insert_with(|| {
-                        let mut from = held.clone();
-                        history(&mut from)
-                    });
-                    log.record_committed_span(
-                        &held,
-                        step,
-                        after,
-                        None,
-                        None,
-                        Some(user(person)),
-                        None,
-                    );
-                });
+            if held.pending_ops() == 0 && held.get_heads() == from {
+                self.keep(&key, held, revision);
+                continue;
             }
             wrote |= self.publish(
                 engine,
                 &key,
                 held,
-                Some(Written::View(view)),
+                Some(Written::View(written)),
                 &from,
                 revision,
                 sealed,
@@ -2278,18 +2325,21 @@ fn nothing_written(engine: &Engine, workspace_id: WorkspaceId, route: &Route) ->
         && !engine.holds_resource(&workspace_id.to_string(), route.app, &route.record)
 }
 
-/// Write `view` into `doc`, a person's view record. Where an arranging action changed it, the view
-/// as it stood before the action is committed first and the change is written as `person`'s, on
-/// whichever of their devices made it. The heads the action's step starts from.
-fn view_written(
+/// Write `step`, a change this device made of the person's view, into `doc` as one change, and
+/// close it as a step of theirs where an arranging action named it. Where the action changed the
+/// view, the view as it stood before it is committed first, so taking the step back takes back
+/// the action and nothing else. Whether anything was written.
+fn view_step(
     doc: &mut automerge::AutoCommit,
-    view: &PersonView,
-    acted: Option<&Acted>,
+    step: &PendingStep<PersonView>,
     engine: &Engine,
     person: &str,
-) -> Result<Vec<ChangeHash>, automerge::AutomergeError> {
+    log: &mut Option<UndoLog>,
+) -> Result<bool, automerge::AutomergeError> {
+    // A write of the view is this device's, never one of its other windows: every change it makes
+    // numbers its own.
     doc.set_actor(automerge::ActorId::random());
-    if let Some(was) = acted.and_then(|acted| acted.was.as_ref())
+    if let Some(was) = step.acted.as_ref().and_then(|acted| acted.was.as_ref())
         && PersonView::read(doc) != *was
         && was.write(doc)?
     {
@@ -2298,12 +2348,32 @@ fn view_written(
                 .with_message(shared_resource::change_message(Some(person))),
         );
     }
-    let step = doc.get_heads();
-    if acted.is_some() {
+    // An arranging action's step is the person's, on whichever of their devices made it.
+    if step.acted.is_some() {
         doc.set_actor(actor(engine, person));
     }
-    view.write(doc)?;
-    Ok(step)
+    let before = doc.get_heads();
+    if !step.changed.write(doc)? {
+        return Ok(false);
+    }
+    let message = step.acted.as_ref().map_or_else(
+        || shared_resource::change_message(Some(person)),
+        |acted| acted.message.clone(),
+    );
+    doc.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(message)
+            .with_time(crate::activity::now_seconds()),
+    );
+    if step.acted.is_some() {
+        let after = doc.get_heads();
+        let log = log.get_or_insert_with(|| {
+            let mut from = doc.clone();
+            history(&mut from)
+        });
+        log.record_committed_span(doc, before, after, None, None, Some(user(person)), None);
+    }
+    Ok(true)
 }
 /// The view to write into `key` now, if any: what a look writes only once it rests, and never
 /// while a write of it is under way or before this device has read it. A view that did not change
