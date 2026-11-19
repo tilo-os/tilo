@@ -62,7 +62,7 @@ impl PublisherAllowlist {
         toml::from_str(s).map_err(|e| AllowlistError::Parse(e.to_string()))
     }
 
-    /// Encode to pretty TOML for `atomic_write`.
+    /// Encode to pretty TOML for the atomic write.
     pub fn to_toml(&self) -> Result<String, AllowlistError> {
         toml::to_string_pretty(self).map_err(|e| AllowlistError::Encode(e.to_string()))
     }

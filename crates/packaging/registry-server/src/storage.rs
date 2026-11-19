@@ -59,6 +59,7 @@ use std::fs::OpenOptions;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tilo_files::native::atomic::write_creating_parent;
 
 use registry_types::{
     ChannelAuthorization, CompactRegistrySnapshot, EntryAction, EntryChangeRequest,
@@ -479,7 +480,8 @@ impl Storage {
         if self.stage_root(blake3_hex, bytes)? {
             return Ok(());
         }
-        atomic_write(&self.staged_artifact_path(blake3_hex)?, bytes)
+        write_creating_parent(&self.staged_artifact_path(blake3_hex)?, bytes)
+            .map_err(StorageError::from)
     }
 
     /// Record just the package root when the stored blobs and thin form rebuild `bytes` exactly.
@@ -504,7 +506,7 @@ impl Storage {
             return Ok(false);
         }
         let root = stored.meta.id.to_hex();
-        atomic_write(&self.staged_root_path(blake3_hex)?, root.as_bytes())?;
+        write_creating_parent(&self.staged_root_path(blake3_hex)?, root.as_bytes())?;
         Ok(true)
     }
 
@@ -642,7 +644,7 @@ impl Storage {
             }
             None => {}
         }
-        atomic_write(&archive, &body)
+        write_creating_parent(&archive, &body).map_err(StorageError::from)
     }
 
     /// Load an immutable historical snapshot by its monotonic sequence. Exactly one archive member
@@ -790,7 +792,7 @@ impl Storage {
         let path = self.handshake_path();
         let body =
             toml::to_string_pretty(ident).map_err(|e| StorageError::Encode(e.to_string()))?;
-        atomic_write(&path, body.as_bytes())
+        write_creating_parent(&path, body.as_bytes()).map_err(StorageError::from)
     }
 
     /// Load the publisher allowlist. Missing → empty (nobody can post).
@@ -810,7 +812,7 @@ impl Storage {
         let body = allow
             .to_toml()
             .map_err(|e| StorageError::Encode(e.to_string()))?;
-        atomic_write(&path, body.as_bytes())
+        write_creating_parent(&path, body.as_bytes()).map_err(StorageError::from)
     }
 
     fn entry_path(&self, package_id: &str) -> PathBuf {
@@ -890,7 +892,7 @@ impl Storage {
         let path = self.entry_path(&entry.package_id);
         let body =
             serde_json::to_vec_pretty(entry).map_err(|e| StorageError::Encode(e.to_string()))?;
-        atomic_write(&path, &body)
+        write_creating_parent(&path, &body).map_err(StorageError::from)
     }
 
     pub fn delete_entry(&self, package_id: &str) -> Result<bool, StorageError> {
@@ -1153,7 +1155,7 @@ impl<'a> SnapshotLock<'a> {
             self.validate_transition(snapshot)?;
             let body = serde_json::to_vec_pretty(snapshot)
                 .map_err(|error| StorageError::Encode(error.to_string()))?;
-            atomic_write(&self.storage.snapshot_transaction_path(), &body)?;
+            write_creating_parent(&self.storage.snapshot_transaction_path(), &body)?;
         }
         self.complete(snapshot)
     }
@@ -1209,7 +1211,7 @@ impl<'a> SnapshotLock<'a> {
         }
         let body =
             serde_json::to_vec(compact).map_err(|error| StorageError::Encode(error.to_string()))?;
-        atomic_write(&self.storage.compact_snapshot_path(), &body)?;
+        write_creating_parent(&self.storage.compact_snapshot_path(), &body)?;
         let dir = self.storage.root.join("version-indexes");
         for digest in list_digests(&dir, ".json")? {
             if !keep.contains(&digest) {
@@ -1547,7 +1549,7 @@ impl<'a> SnapshotLock<'a> {
         self.storage.archive_snapshot(snapshot)?;
         let body = serde_json::to_vec_pretty(snapshot)
             .map_err(|error| StorageError::Encode(error.to_string()))?;
-        atomic_write(&self.storage.snapshot_path(), &body)?;
+        write_creating_parent(&self.storage.snapshot_path(), &body)?;
         delete_if_exists(&self.storage.snapshot_transaction_path())?;
         Ok(())
     }
@@ -1754,7 +1756,7 @@ fn load_json_dir<T: serde::de::DeserializeOwned>(
 
 fn save_json<T: Serialize>(path: &Path, value: &T) -> Result<(), StorageError> {
     let body = serde_json::to_vec_pretty(value).map_err(|e| StorageError::Encode(e.to_string()))?;
-    atomic_write(path, &body)
+    write_creating_parent(path, &body).map_err(StorageError::from)
 }
 
 fn delete_if_exists(path: &Path) -> Result<bool, StorageError> {
@@ -1880,7 +1882,7 @@ fn write_once(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
     if path.exists() {
         return Ok(());
     }
-    atomic_write(path, bytes)
+    write_creating_parent(path, bytes).map_err(StorageError::from)
 }
 
 /// The bytes at `path`, which is named by their BLAKE3 `blake3_hex`, or `None` without a valid name
@@ -1953,12 +1955,6 @@ fn read_if_exists(path: &Path, what: &str) -> Result<Option<Vec<u8>>, StorageErr
     }
 }
 
-/// Replace `path` with `bytes` atomically and durably, creating its directory first.
-pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
-    tilo_files::native::atomic::write_creating_parent(path, bytes)
-        .map_err(|e| StorageError::Io(e.to_string()))
-}
-
 /// A percent-encoding of a package id, so it round-trips through the filesystem on macOS, Linux and
 /// a case-preserving fallback. Reverse-DNS ids ("so.tilo.editor") already only contain safe
 /// characters, but they are lower-cased and `/` becomes `_`.
@@ -1984,6 +1980,12 @@ pub enum StorageError {
     Parse(String),
     #[error("encode: {0}")]
     Encode(String),
+}
+
+impl From<std::io::Error> for StorageError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -2031,7 +2033,7 @@ mod tests {
             ));
             let bytes = b"a reviewed payload blob".repeat(64);
             let hash = tilo_app_package::BlobHash::of(&bytes);
-            atomic_write(&storage.payload_dir().join(hash.to_hex()), &bytes).unwrap();
+            write_creating_parent(&storage.payload_dir().join(hash.to_hex()), &bytes).unwrap();
             storage.write_payload_twin(&hash, &bytes).unwrap();
 
             let missing = tilo_app_package::BlobHash::of(b"never stored").to_hex();
@@ -2252,12 +2254,12 @@ mod tests {
                     let storage = Storage::open(dir.path()).unwrap();
                     let candidate = snapshot(1, String::new(), crash_point);
                     let body = serde_json::to_vec_pretty(&candidate).unwrap();
-                    atomic_write(&storage.snapshot_transaction_path(), &body).unwrap();
+                    write_creating_parent(&storage.snapshot_transaction_path(), &body).unwrap();
                     if matches!(crash_point, "archive" | "pointer") {
                         storage.archive_snapshot(&candidate).unwrap();
                     }
                     if crash_point == "pointer" {
-                        atomic_write(&storage.snapshot_path(), &body).unwrap();
+                        write_creating_parent(&storage.snapshot_path(), &body).unwrap();
                     }
 
                     let writer = storage.lock_snapshot().unwrap();
@@ -2310,7 +2312,7 @@ mod tests {
                 let wrong = snapshot(2, String::new(), "wrong");
                 let hash = registry_types::snapshot_hash(&wrong).unwrap();
                 let path = storage.snapshot_history_path(1, &hash).unwrap();
-                atomic_write(&path, &serde_json::to_vec_pretty(&wrong).unwrap()).unwrap();
+                write_creating_parent(&path, &serde_json::to_vec_pretty(&wrong).unwrap()).unwrap();
                 assert!(matches!(
                     storage.load_snapshot_sequence(1),
                     Err(StorageError::Parse(message)) if message.contains("contains sequence 2")
@@ -2364,7 +2366,7 @@ mod tests {
                 }
                 storage.archive_snapshot(&member).unwrap();
             }
-            atomic_write(
+            write_creating_parent(
                 &storage.snapshot_path(),
                 &serde_json::to_vec(&chain[19]).unwrap(),
             )
@@ -2410,7 +2412,7 @@ mod tests {
             // A run that crashed after writing its record finishes removal.
             let stale = &chain[usize::try_from(through - 1).unwrap()];
             let hash = registry_types::snapshot_hash(stale).unwrap();
-            atomic_write(
+            write_creating_parent(
                 &storage
                     .snapshot_history_path(stale.sequence, &hash)
                     .unwrap(),

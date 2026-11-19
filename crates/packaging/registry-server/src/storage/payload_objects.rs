@@ -14,7 +14,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tilo_app_package::BlobHash;
 use tilo_app_package::chunks::{ChunkList, ChunkRef, ChunkedReader, MAX_CHUNK_LIST_BYTES};
 
-use super::{Storage, StorageError, atomic_write, delete_if_exists, sync_dir};
+use super::{Storage, StorageError, delete_if_exists, sync_dir};
+use tilo_files::native::atomic::write_creating_parent;
 
 /// Suffix of a verified chunk list.
 pub(super) const CHUNKS_SUFFIX: &str = ".chunks";
@@ -126,7 +127,8 @@ impl Storage {
     /// Record the chunk list of a blob about to be fetched, so pruning keeps its chunks while they
     /// arrive. Nothing serves this list.
     pub fn begin_chunked_payload(&self, list: &ChunkList) -> Result<(), StorageError> {
-        atomic_write(&self.pending_chunk_list_path(&list.blob), &list.encode())
+        write_creating_parent(&self.pending_chunk_list_path(&list.blob), &list.encode())
+            .map_err(StorageError::from)
     }
 
     /// Publish the chunk list of a blob whose every chunk is stored and whose joined bytes
@@ -140,7 +142,7 @@ impl Storage {
                 )));
             }
         }
-        atomic_write(&self.chunk_list_path(&list.blob), &list.encode())?;
+        write_creating_parent(&self.chunk_list_path(&list.blob), &list.encode())?;
         delete_if_exists(&self.pending_chunk_list_path(&list.blob))?;
         Ok(())
     }

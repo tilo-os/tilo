@@ -24435,6 +24435,7 @@ dependencies = [
  "tilo-clock",
  "tilo-doc",
  "tilo-doc-codecs",
+ "tilo-files",
  "tilo-recurrence",
  "tilo-reference",
  "tilo-resource",

@@ -15,7 +15,8 @@ use tilo_app_package::BlobHash;
 use tilo_app_package::compressed::{self, SUFFIX};
 
 use super::checked::CheckedFiles;
-use super::{Storage, StorageError, atomic_write, is_hex_digest, list_digests};
+use super::{Storage, StorageError, is_hex_digest, list_digests};
+use tilo_files::native::atomic::write_creating_parent;
 
 /// What [`Storage::compress_stored_objects`] did.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -157,7 +158,7 @@ pub(super) fn write_twin(path: &Path, bytes: &[u8]) -> Result<Option<u64>, Stora
     }
     let twin = compressed::compress(bytes)
         .map_err(|error| StorageError::Encode(format!("compress {}: {error}", path.display())))?;
-    atomic_write(path, &twin)?;
+    write_creating_parent(path, &twin)?;
     Ok(Some(twin.len() as u64))
 }
 

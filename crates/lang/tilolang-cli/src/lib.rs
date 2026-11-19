@@ -62,38 +62,12 @@ pub fn identity_at(path: &Path) -> Result<SigningIdentity, String> {
         .parent()
         .ok_or_else(|| format!("{}: a key file has a directory", path.display()))?;
     std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-    let made = tempfile::Builder::new()
-        .prefix(".publisher-")
-        .tempfile_in(parent)
-        .map_err(|e| format!("{}: {e}", parent.display()))?;
-    write_private(made.path(), text.as_bytes())?;
-    match std::fs::hard_link(made.path(), path) {
+    match tilo_files::native::atomic::create_private(path, text.as_bytes()) {
         Ok(()) => Ok(SigningIdentity::from_seed(&seed)),
-        // Another command made the key first: it is whole, as it was linked whole.
+        // Another command made the key first: it is whole, as it was published whole.
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => load_identity(path),
         Err(error) => Err(format!("{}: {error}", path.display())),
     }
-}
-
-#[cfg(unix)]
-fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    use std::io::Write as _;
-    use std::os::unix::fs::PermissionsExt as _;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .open(path)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    file.set_permissions(std::fs::Permissions::from_mode(0o600))
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    file.write_all(bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|e| format!("{}: {e}", path.display()))
-}
-
-#[cfg(not(unix))]
-fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Where the tool keeps its state: the development key and the nested sessions' state.
