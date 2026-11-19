@@ -87,7 +87,9 @@ tilo_test_env::scenario! {
         ];
         for (grantee, golden) in cases {
             match grantee {
-                Grantee::Member(_) | Grantee::Role(_) | Grantee::App(_) => stored_as!(grantee, golden),
+                Grantee::Member(_) | Grantee::Role(_) | Grantee::App(_) | Grantee::CustomRole(_) => {
+                    stored_as!(grantee, golden)
+                }
             }
         }
     }

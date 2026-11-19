@@ -137,6 +137,7 @@ impl StatePeer {
     pub fn draft_write(
         &self,
         (app, record): (&str, &str),
+        readers: Option<&str>,
         frame: &[u8],
         seal: Option<&mut super::SealCheckpoint<'_>>,
         author: [u8; 32],
@@ -164,6 +165,7 @@ impl StatePeer {
         let attestation = collab_types::document_attestation_id(app, &self.core.workspace, record);
         let surface = self.signed_surface(app);
         let Some(seal) = seal else {
+            self.check_document_key_scope((app, record), readers, None, now, false)?;
             // A device that starts a record is told now when the workspace does not let it
             // create one, or when the record is there already: a peer's copy of the same start
             // is held or merged as the nothing it is, but its own write would be answered as
@@ -228,6 +230,7 @@ impl StatePeer {
             })
             .unwrap_or_default();
         let (metadata, ciphertext) = seal(frame)?;
+        self.check_document_key_scope((app, record), readers, Some(metadata), now, false)?;
         if metadata.retention() != Some(retention) {
             return Err("a sealed write is a delta or a checkpoint of the record".into());
         }
@@ -266,6 +269,17 @@ impl StatePeer {
         envelope: SignedOp,
         now: SystemTime,
     ) -> Result<(), NotAdmitted> {
+        self.admit_new_local_document_read_by((app, document), None, envelope, now)
+    }
+
+    /// Admit a local store write with the reader set bound to its route.
+    pub(crate) fn admit_new_local_document_read_by(
+        &mut self,
+        (app, document): (&str, &str),
+        readers: Option<&str>,
+        envelope: SignedOp,
+        now: SystemTime,
+    ) -> Result<(), NotAdmitted> {
         // The evidence is the entry this admission writes, found by its key:
         // comparing the index with a copy of it from before made every write
         // cost every entry the index held since it last settled.
@@ -278,7 +292,7 @@ impl StatePeer {
         let held = !compaction
             && (self.core.exact_admissions.get(&evidence.key).is_some()
                 || self.core.exact_admissions.covers(&evidence.key));
-        let report = self.admit_local(app, document, envelope, now)?;
+        let report = self.admit_local((app, document), readers, envelope, now)?;
         let outcome = &report.summary;
         if outcome.duplicate {
             return Err(NotAdmitted::Refused(

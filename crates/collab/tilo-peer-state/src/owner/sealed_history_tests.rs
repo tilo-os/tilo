@@ -22,6 +22,7 @@ impl SealedHistoryKeys for Held {
         _: WorkspaceId,
         app: &str,
         record: &str,
+        _named: Option<&str>,
         snapshot: &[u8],
     ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
         self.0
@@ -136,6 +137,7 @@ async fn write_all(
             .map(|(frame, drafted)| {
                 let op = view.peer().draft_write(
                     (APP, ""),
+                    None,
                     frame,
                     Some(&mut seal_delta(keys)),
                     author,
@@ -159,6 +161,76 @@ async fn write_all(
         .write(workspace, draft, &member_key(), now)
         .await
         .map(|committed| committed.len())
+}
+
+#[tokio::test]
+async fn a_named_store_document_keeps_its_reader_scope_through_local_admission() {
+    let joined = enrolled();
+    let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
+    let readers = owner
+        .with_current(workspace, |view| {
+            Ok(
+                collab_types::Readers::people([view.device().user_public_key])
+                    .unwrap()
+                    .text(),
+            )
+        })
+        .unwrap();
+    let document = format!("{}/notes.page#0", collab_types::reader_set_name(&readers));
+    let scope = neighbour_wire::KeyScope::document(workspace, APP, &document, Some(&readers))
+        .expect("the document binds the named reader set");
+    let keys = key_group::KeyGroup::create(
+        scope.group(),
+        key_group::MemberKey::generate("member").unwrap(),
+    )
+    .unwrap()
+    .content_keys()
+    .unwrap();
+    let mut initial = AutoCommit::new();
+    initial.put(ROOT, "w", readers.as_str()).unwrap();
+    initial.put(ROOT, "title", "Restricted notes").unwrap();
+    let frame = DocumentMutation::Snapshot(initial.save()).encode().unwrap();
+    let artifact = collab_types::document_artifact_id(APP, WORKSPACE, &document);
+    let author = member_key().verifying_key().to_bytes();
+
+    let draft = |view: &NativeCommittedView| {
+        let envelope = view.peer().draft_write(
+            (APP, &document),
+            Some(&readers),
+            &frame,
+            Some(&mut |plaintext| {
+                keys.seal_content(artifact, ContentRetention::Checkpoint, plaintext)
+                    .map_err(|error| error.to_string())
+            }),
+            author,
+            0,
+            now,
+        )?;
+        Ok(vec![OwnerCommitRequest {
+            workspace: WORKSPACE.into(),
+            operation: CommitOperation::Document {
+                app: APP.into(),
+                document: document.clone(),
+                envelope: Box::new(envelope),
+                own: None,
+                readers: Some(readers.clone()),
+            },
+        }])
+    };
+    assert_eq!(
+        owner
+            .write(workspace, draft, &member_key(), now)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let messages = ownership(owner, workspace, now);
+    assert!(messages.iter().any(|(_, message)| matches!(
+        message,
+        NeighbourMsg::AppDocument { document_id, readers: Some(named), envelope, .. }
+            if document_id == &document && named == &readers && open(&keys, envelope).as_deref() == Ok(frame.as_slice())
+    )));
 }
 
 /// What ownership holds, in the order it sends it.
@@ -476,6 +548,7 @@ impl SealedHistoryKeys for NotYet {
         _: WorkspaceId,
         _: &str,
         _: &str,
+        _named: Option<&str>,
         _: &[u8],
     ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
         Err("this device holds no group keys yet".into())
@@ -838,9 +911,16 @@ fn compacted_at(
         .draft_sealed_compaction(
             (APP, ""),
             None,
+            None,
             &mut |write| open(keys, write),
             &mut |snapshot| {
-                held.seal_checkpoint(WorkspaceId::parse(WORKSPACE).unwrap(), APP, "", snapshot)
+                held.seal_checkpoint(
+                    WorkspaceId::parse(WORKSPACE).unwrap(),
+                    APP,
+                    "",
+                    None,
+                    snapshot,
+                )
             },
             governor_key.verifying_key().to_bytes(),
             now,
@@ -851,7 +931,7 @@ fn compacted_at(
     }
     let [compaction]: [NeighbourMsg; 1] = host
         .publication_mut()
-        .admit_sealed_compaction(APP, "", op, now)
+        .admit_sealed_compaction(APP, "", None, op, now)
         .unwrap()
         .try_into()
         .unwrap();

@@ -49,6 +49,14 @@ pub struct Branched {
     pub person: [u8; 32],
 }
 
+/// The Files keys needed to copy retained versions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BranchFileKeys {
+    None,
+    Destination,
+    SourceAndDestination,
+}
+
 /// What keeps the content of the workspaces this host governs, as it copies a
 /// source's content into a branch of it.
 pub trait BranchContent: Send + Sync {
@@ -66,6 +74,26 @@ pub trait BranchContent: Send + Sync {
         branch: &str,
         records: &[((String, String), Vec<u8>)],
     ) -> Result<(), String>;
+
+    /// The key groups needed to copy the versions the source still holds.
+    fn file_keys(
+        &self,
+        _source: &str,
+        _documents: &[((String, String), Vec<u8>)],
+    ) -> Result<BranchFileKeys, String> {
+        Ok(BranchFileKeys::None)
+    }
+
+    /// Copy and rekey the Files tree before committing the branch's documents.
+    fn copy_rekeyed(
+        &self,
+        _source: &str,
+        _branch: &str,
+        _documents: &mut [((String, String), Vec<u8>)],
+        _keys: (Option<&key_group::ContentKeys>, &key_group::ContentKeys),
+    ) -> Result<(), String> {
+        Err("the content store cannot rekey sealed files".into())
+    }
 
     /// Let go of what was copied into `branch`, a branch that did not take
     /// everything and is discarded: nothing of it is kept.
@@ -96,10 +124,11 @@ impl Workspaces {
 #[cfg(feature = "agents")]
 mod copy {
     use std::collections::BTreeSet;
+    use std::sync::Arc;
 
     use automerge::AutoCommit;
 
-    use super::{Branched, Workspaces};
+    use super::{BranchFileKeys, Branched, Workspaces};
     use crate::workspaces::{CollaborationError, WorkspaceSummary, sealed_documents};
     use tilo_lock::RwLockRecover as _;
 
@@ -249,6 +278,73 @@ mod copy {
             .map_err(|error| NotMade::of("its records")(error.to_string()))?
         }
 
+        async fn copy_branch_content(
+            &self,
+            source: &str,
+            branch: &str,
+            forked: Vec<(Route, Vec<u8>)>,
+        ) -> Result<Vec<(Route, Vec<u8>)>, NotMade> {
+            let Some(content) = self.inner.branch_content.read_recover().clone() else {
+                return Ok(forked);
+            };
+            let files = || NotMade::of("the files its documents name");
+            let (forked, file_keys) = {
+                let content = Arc::clone(&content);
+                let source = source.to_owned();
+                tokio::task::spawn_blocking(move || {
+                    let file_keys = content.file_keys(&source, &forked)?;
+                    Ok::<_, String>((forked, file_keys))
+                })
+                .await
+                .map_err(|error| files()(error.to_string()))?
+                .map_err(files())?
+            };
+            let keys = if file_keys == BranchFileKeys::None {
+                None
+            } else {
+                let route = |workspace: &str| tilo_peer_state::document_frame::DocumentRoute {
+                    app_id: tilo_app_id::apps::FILE_EXPLORER.to_owned(),
+                    cluster_id: workspace.to_owned(),
+                    document: collab_types::person_document_id(collab_types::FILES_TREE_KIND),
+                };
+                let source = if file_keys == BranchFileKeys::SourceAndDestination {
+                    Some(
+                        self.own_route_keys(&route(source), false)
+                            .await
+                            .ok_or_else(|| {
+                                files()("the source's Files keys are unavailable".to_owned())
+                            })?
+                            .map_err(files())?,
+                    )
+                } else {
+                    None
+                };
+                let branch = self
+                    .own_route_keys(&route(branch), true)
+                    .await
+                    .ok_or_else(|| files()("the branch's Files keys are unavailable".to_owned()))?
+                    .map_err(files())?;
+                Some((source, branch))
+            };
+            let (source, branch) = (source.to_owned(), branch.to_owned());
+            tokio::task::spawn_blocking(move || {
+                let mut documents = forked;
+                match keys {
+                    Some((from, to)) => content.copy_rekeyed(
+                        &source,
+                        &branch,
+                        &mut documents,
+                        (from.as_ref(), &to),
+                    )?,
+                    None => content.copy(&source, &branch, &documents)?,
+                }
+                Ok::<_, String>(documents)
+            })
+            .await
+            .map_err(|error| files()(error.to_string()))?
+            .map_err(files())
+        }
+
         /// Found each of `forked` in `branch`, copy the content they name from
         /// `source`, and make the branch `person`'s own.
         async fn fill(
@@ -258,22 +354,11 @@ mod copy {
             forked: Vec<(Route, Vec<u8>)>,
             person: [u8; 32],
         ) -> Result<(), NotMade> {
+            let forked = self.copy_branch_content(source, branch, forked).await?;
             for ((app, record), document) in &forked {
                 self.found_branched(branch, (app, record), document)
                     .await
                     .map_err(|error| NotMade::record(app, record)(error.to_string()))?;
-            }
-            let content = self.inner.branch_content.read_recover().clone();
-            if let Some(content) = content {
-                let (source, branch) = (source.to_owned(), branch.to_owned());
-                let files = NotMade::of("the files its records name");
-                match tokio::task::spawn_blocking(move || content.copy(&source, &branch, &forked))
-                    .await
-                {
-                    Ok(Ok(())) => {}
-                    Ok(Err(why)) => return Err(files(why)),
-                    Err(error) => return Err(files(error.to_string())),
-                }
             }
             self.branch_machine(source, branch)
                 .await

@@ -276,45 +276,16 @@ fn ask(
             intent(intents, ChromeIntent::RenameWorkspace { name });
         }
         sheet::WorkspaceSettingsEffect::Move { step } => move_workspace(handle, step),
-        sheet::WorkspaceSettingsEffect::SetRole { member, role } => {
-            let Some(role) = Role::parse(&role) else {
-                tracing::debug!(%role, "no such role: nothing changed");
-                return;
-            };
-            govern(state, fed, move |ws, actor| {
-                domain::set_member_role(ws, actor, &member, role)
-            });
-        }
-        sheet::WorkspaceSettingsEffect::RemoveMember { member } => {
-            govern(state, fed, move |ws, actor| {
-                domain::remove_member(ws, actor, &member)
-            });
-        }
-        sheet::WorkspaceSettingsEffect::RevokeDelegation { server } => {
-            revoke_delegation(state, fed, &server);
-        }
-        sheet::WorkspaceSettingsEffect::Grant {
-            subject,
-            permission,
-            until,
-        } => govern(state, fed, move |ws, actor| {
-            let now = tilo_clock::unix_now_ms();
-            let Some(draft) = domain::draft_for(ws, &subject, &permission, until, now) else {
-                tracing::debug!(%subject, %permission, "no such grant: nothing changed");
-                return Ok(domain::PolicyEdit::default());
-            };
-            domain::apply_grant_draft(ws, actor, &draft)
-        }),
-        sheet::WorkspaceSettingsEffect::SetModeration { on } => {
-            govern(state, fed, move |ws, actor| {
-                domain::set_moderation(ws, actor, on)
-            });
-        }
-        sheet::WorkspaceSettingsEffect::Revoke { grant } => {
-            govern(state, fed, move |ws, actor| {
-                domain::apply_revoke(ws, actor, &grant)
-            });
-        }
+        sheet::WorkspaceSettingsEffect::SetRole { .. }
+        | sheet::WorkspaceSettingsEffect::SaveCustomRole { .. }
+        | sheet::WorkspaceSettingsEffect::SetCustomRole { .. }
+        | sheet::WorkspaceSettingsEffect::RemoveCustomRole { .. }
+        | sheet::WorkspaceSettingsEffect::SetDocumentAccess { .. }
+        | sheet::WorkspaceSettingsEffect::RemoveMember { .. }
+        | sheet::WorkspaceSettingsEffect::RevokeDelegation { .. }
+        | sheet::WorkspaceSettingsEffect::Grant { .. }
+        | sheet::WorkspaceSettingsEffect::SetModeration { .. }
+        | sheet::WorkspaceSettingsEffect::Revoke { .. } => governance_ask(state, fed, effect),
         sheet::WorkspaceSettingsEffect::ReviewActivity => {
             intent(intents, ChromeIntent::ShowActivity(None));
         }
@@ -345,6 +316,129 @@ fn ask(
         sheet::WorkspaceSettingsEffect::AddBot => add_bot(fed),
         sheet::WorkspaceSettingsEffect::RemoveBot { bot } => withdraw_bot(state, fed, &bot),
     }
+}
+
+fn governance_ask(
+    state: &sheet::WorkspaceSettingsState,
+    fed: &Feeding<'_>,
+    effect: sheet::WorkspaceSettingsEffect,
+) {
+    match effect {
+        sheet::WorkspaceSettingsEffect::SetRole { member, role } => {
+            let Some(role) = Role::parse(&role) else {
+                tracing::debug!(%role, "no such role: nothing changed");
+                return;
+            };
+            govern(state, fed, move |ws, actor| {
+                domain::set_member_role(ws, actor, &member, role)
+            });
+        }
+        sheet::WorkspaceSettingsEffect::SaveCustomRole { role, name } => {
+            let id = if role.is_empty() {
+                uuid::Uuid::new_v4().simple().to_string()
+            } else {
+                role
+            };
+            custom_role_change(
+                state,
+                fed,
+                tilo_action_policy::Change::DefineRole { id, name },
+            );
+        }
+        sheet::WorkspaceSettingsEffect::SetCustomRole {
+            member,
+            role,
+            assigned,
+        } => {
+            custom_role_change(
+                state,
+                fed,
+                tilo_action_policy::Change::SetMemberCustomRole {
+                    person: member,
+                    role,
+                    assigned,
+                },
+            );
+        }
+        sheet::WorkspaceSettingsEffect::RemoveCustomRole { role } => {
+            custom_role_change(
+                state,
+                fed,
+                tilo_action_policy::Change::RemoveRole { id: role },
+            );
+        }
+        sheet::WorkspaceSettingsEffect::SetDocumentAccess {
+            who,
+            app,
+            document,
+            access,
+        } => set_document_access(state, fed, (who, app, document), access),
+        sheet::WorkspaceSettingsEffect::RemoveMember { member } => {
+            govern(state, fed, move |ws, actor| {
+                domain::remove_member(ws, actor, &member)
+            });
+        }
+        sheet::WorkspaceSettingsEffect::RevokeDelegation { server } => {
+            revoke_delegation(state, fed, &server);
+        }
+        sheet::WorkspaceSettingsEffect::Grant {
+            subject,
+            permission,
+            until,
+        } => govern(state, fed, move |ws, actor| {
+            let now = tilo_clock::unix_now_ms();
+            let Some(draft) = domain::draft_for(ws, &subject, &permission, until, now) else {
+                tracing::debug!(%subject, %permission, "no such grant: nothing changed");
+                return Ok(domain::PolicyEdit::default());
+            };
+            domain::apply_grant_draft(ws, actor, &draft)
+        }),
+        sheet::WorkspaceSettingsEffect::SetModeration { on } => {
+            govern(state, fed, move |ws, actor| {
+                domain::set_moderation(ws, actor, on)
+            });
+        }
+        sheet::WorkspaceSettingsEffect::Revoke { grant } => {
+            govern(state, fed, move |ws, actor| {
+                domain::apply_revoke(ws, actor, &grant)
+            });
+        }
+        _ => unreachable!("ask dispatches only governance effects here"),
+    }
+}
+
+fn set_document_access(
+    state: &sheet::WorkspaceSettingsState,
+    fed: &Feeding<'_>,
+    (who, app, document): (String, String, String),
+    access: String,
+) {
+    let own = fed.handle.read(|tree| {
+        tree.active_workspace()
+            .zip(fed.engine)
+            .is_some_and(|(ws, engine)| {
+                engine
+                    .own_resource(&ws.id().to_string(), &app, &document)
+                    .is_some()
+            })
+    });
+    if own {
+        refuse(state, fed, "this document belongs to a person");
+        return;
+    }
+    govern(state, fed, move |ws, actor| {
+        domain::set_document_access(ws, actor, (&who, &app, &document), &access)
+    });
+}
+
+fn custom_role_change(
+    state: &sheet::WorkspaceSettingsState,
+    fed: &Feeding<'_>,
+    change: tilo_action_policy::Change,
+) {
+    govern(state, fed, move |ws, actor| {
+        ws.govern_all_at(actor, vec![change.clone()], tilo_clock::unix_now())
+    });
 }
 
 /// Put the sheet's notice away and draw the tab it stands over again, review and all.
@@ -757,7 +851,12 @@ fn settings(
             )
         }),
         permissions: workspace.map_or_else(sheet::Permissions::default, |ws| {
-            permissions(ws, person, apps)
+            permissions(
+                ws,
+                person,
+                apps,
+                engine.filter(|_| tab == sheet::Tab::Permissions),
+            )
         }),
         // The workspace's agents are Chat's record, opened when the tab is first shown.
         agents: if tab == sheet::Tab::Agents {
@@ -1063,6 +1162,7 @@ fn permissions(
     ws: &Workspace,
     person: &UserId,
     apps: &dyn domain::AppDirectory,
+    engine: Option<&Engine>,
 ) -> sheet::Permissions {
     let listed = domain::listed_permissions(ws, apps, person);
     let manage = ws.may_administer(person);
@@ -1112,10 +1212,10 @@ fn permissions(
             header: t("workspace-settings-grant-header"),
             who: t("workspace-settings-who"),
             who_agent: t("workspace-settings-who-agent"),
-            subjects: domain::grant_subjects(ws)
+            subjects: domain::grant_recipients(ws)
                 .iter()
                 .filter_map(|subject| {
-                    domain::grant_subject_key(subject).map(|key| sheet::Choice {
+                    domain::grant_recipient_key(subject).map(|key| sheet::Choice {
                         key,
                         label: subject.display(ws, person, apps),
                     })
@@ -1140,6 +1240,7 @@ fn permissions(
                 .collect(),
             grant: t("workspace-settings-grant"),
         },
+        documents: manage.then(|| document_access(ws, person, apps, engine)),
         sections,
         revoke: t("workspace-settings-revoke"),
         empty: (
@@ -1155,6 +1256,47 @@ fn permissions(
             confirm: t("workspace-settings-revoke-permission"),
         },
     }
+}
+
+fn document_access(
+    ws: &Workspace,
+    person: &UserId,
+    apps: &dyn domain::AppDirectory,
+    engine: Option<&Engine>,
+) -> sheet::DocumentAccess {
+    let workspace = ws.id().to_string();
+    let documents = engine.map_or_else(Vec::new, |engine| {
+        let mut documents = engine.documents(&workspace).unwrap_or_default();
+        documents.retain(|(app, document_id)| {
+            collab_types::workspace_document(app, document_id).is_none()
+                && engine.own_resource(&workspace, app, document_id).is_none()
+        });
+        documents
+    });
+    let mut recipients: Vec<_> = ws
+        .policy
+        .custom_roles
+        .iter()
+        .map(|(id, name)| sheet::Choice {
+            key: format!("role:{id}"),
+            label: name.clone(),
+        })
+        .collect();
+    recipients.extend(
+        domain::grant_recipients(ws)
+            .into_iter()
+            .filter_map(|recipient| {
+                let key = domain::grant_recipient_key(&recipient)?;
+                key.starts_with("member:").then(|| sheet::Choice {
+                    key,
+                    label: recipient.display(ws, person, apps),
+                })
+            }),
+    );
+    let targets =
+        collab_types::document_access_scopes(&ws.policy, &documents, apps.installed_apps());
+    let rules = collab_types::document_access_rules(&ws.policy, &targets);
+    super::document_access_pane(targets, rules, recipients)
 }
 
 /// The Apps & Files tab: which app opens each kind of file and link here,

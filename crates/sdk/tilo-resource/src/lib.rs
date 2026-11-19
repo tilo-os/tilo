@@ -656,7 +656,7 @@ pub mod __private {
     pub fn declared_param(
         name: &'static str,
         ty: ParamType,
-        description: &'static str,
+        description: impl Into<std::borrow::Cow<'static, str>>,
         schema: fn() -> serde_json::Value,
         optional: bool,
         place: PlaceIn,

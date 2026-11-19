@@ -27,7 +27,7 @@ fn time_to_keys(
         if ready_epoch(&devices[who].service.access(workspace_id, *now)).is_some() {
             return Some(now.duration_since(started));
         }
-        run(devices, now, 1);
+        drive(devices, now, 1);
     }
     None
 }
@@ -59,7 +59,7 @@ fn seeded_group(
         device.service.access(workspace_id, *now);
     }
     let mut all: Vec<&mut Device> = devices.iter_mut().collect();
-    run(&mut all, now, 12);
+    drive(&mut all, now, 12);
     for device in &mut devices {
         assert!(
             ready_epoch(&device.service.access(workspace_id, *now)).is_some(),
@@ -105,7 +105,7 @@ fn a_newcomer_behind_on_an_earlier_admission_is_kept_waiting_only_for_its_policy
     all.push(&mut earlier);
     all.push(&mut newcomer);
     let started = now;
-    run(&mut all, &mut now, LAG);
+    drive(&mut all, &mut now, LAG);
     late.allowed.lock().unwrap().insert(public(10));
     let waited = time_to_keys(
         &mut all,
@@ -167,7 +167,7 @@ fn a_welcome_the_view_never_backs_is_given_up_on_and_asked_for_again() {
     // Every quarter second, which Welcome the newcomer holds.
     let mut seen = Vec::new();
     for _ in 0..(4 * (WELCOME_WAIT.as_secs() + 6)) {
-        run(&mut all, &mut now, 0);
+        drive(&mut all, &mut now, 0);
         now = now.checked_add(Duration::from_millis(250)).unwrap();
         for device in &mut all {
             device.service.pump(&device.endpoint, now, 1_000);
@@ -336,7 +336,7 @@ fn a_guest_arriving_just_after_a_device_left_holds_its_keys_within_seconds() {
     let waited = {
         let mut all: Vec<&mut Device> = members.iter_mut().collect();
         all.push(&mut guest);
-        run(&mut all, &mut now, LAG);
+        drive(&mut all, &mut now, LAG);
         policy.allowed.lock().unwrap().remove(&public(3));
         time_to_keys(
             &mut all,
@@ -360,7 +360,7 @@ fn a_guest_arriving_just_after_a_device_left_holds_its_keys_within_seconds() {
     );
     let mut all: Vec<&mut Device> = members.iter_mut().collect();
     all.push(&mut guest);
-    run(&mut all, &mut now, 6);
+    drive(&mut all, &mut now, 6);
     let guest_epoch = ready_epoch(&guest.service.access(workspace_id, now)).unwrap();
     let removed_epoch = ready_epoch(&members[2].service.access(workspace_id, now));
     assert!(

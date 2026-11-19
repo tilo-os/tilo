@@ -30,6 +30,7 @@ use crate::content::ContentKeyring;
 use crate::{Error, Result};
 
 const WIRE_VERSION: u8 = 1;
+const WIRE_WITH_HISTORY: u8 = 2;
 
 /// Version of the box one sender's media keys are handed over in.
 const SENDER_MEDIA_BOX_VERSION: u8 = 1;
@@ -57,6 +58,7 @@ pub struct ContentKeys {
     workspace: WorkspaceId,
     epoch: u64,
     pub(crate) keyring: ContentKeyring,
+    legacy: Option<Box<Self>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -74,7 +76,18 @@ impl ContentKeys {
             workspace,
             epoch,
             keyring,
+            legacy: None,
         }
+    }
+
+    /// Keep the original workspace keys to open history written before the
+    /// document moved to its own group. New writes always use the document key.
+    #[must_use]
+    pub fn with_workspace_history(mut self, history: Self) -> Self {
+        if self.workspace.is_document_key_group() && !history.workspace.is_document_key_group() {
+            self.legacy = Some(Box::new(history));
+        }
+        self
     }
 
     pub fn workspace(&self) -> WorkspaceId {
@@ -85,13 +98,34 @@ impl ContentKeys {
         self.epoch
     }
 
+    /// Whether both handles encrypt with the same current key.
+    #[must_use]
+    pub fn same_write_key(&self, other: &Self) -> bool {
+        self.workspace == other.workspace
+            && self.epoch == other.epoch
+            && self
+                .keyring
+                .get(self.epoch)
+                .is_some_and(|key| other.keyring.get(other.epoch) == Some(key))
+    }
+
     pub fn holds_epoch(&self, epoch: u64) -> bool {
         self.keyring.get(epoch).is_some()
     }
 
     /// Whether a key of the epoch `metadata` names is held.
     pub fn holds_key_for(&self, metadata: &EncryptionMetadata) -> bool {
-        self.keyring.holds_key_for(metadata)
+        match metadata.scheme {
+            EncryptionScheme::DocumentContentKey { group, .. } => {
+                self.workspace == group && self.keyring.holds_key_for(metadata)
+            }
+            EncryptionScheme::ContentKey { .. } if self.workspace.is_document_key_group() => self
+                .legacy
+                .as_ref()
+                .is_some_and(|history| history.holds_key_for(metadata)),
+            EncryptionScheme::ContentKey { .. } => self.keyring.holds_key_for(metadata),
+            EncryptionScheme::MlsApplication => false,
+        }
     }
 
     /// Seal an op payload for `artifact` under the current epoch's key.
@@ -129,6 +163,11 @@ impl ContentKeys {
                 "MLS application messages open only at the device's MLS member".into(),
             ));
         }
+        if matches!(metadata.scheme, EncryptionScheme::ContentKey { .. })
+            && let Some(history) = &self.legacy
+        {
+            return history.open_content(artifact, metadata, payload);
+        }
         self.keyring
             .open(self.workspace, artifact, metadata, payload)
     }
@@ -147,7 +186,10 @@ impl ContentKeys {
         metadata: &EncryptionMetadata,
         payload: &[u8],
     ) -> Result<Zeroizing<Vec<u8>>> {
-        if metadata.epoch != self.epoch {
+        if metadata.epoch != self.epoch
+            || (self.workspace.is_document_key_group()
+                && !matches!(metadata.scheme, EncryptionScheme::DocumentContentKey { group, .. } if group == self.workspace))
+        {
             return Err(Error::InvalidState(
                 "payload is not sealed under the workspace's current epoch".into(),
             ));
@@ -255,7 +297,11 @@ impl ContentKeys {
     /// [`Error::Serialization`] if encoding fails.
     pub fn to_bytes(&self) -> Result<Zeroizing<Vec<u8>>> {
         let mut wire = Wire {
-            version: WIRE_VERSION,
+            version: if self.legacy.is_some() {
+                WIRE_WITH_HISTORY
+            } else {
+                WIRE_VERSION
+            },
             workspace: self.workspace,
             epoch: self.epoch,
             keys: self.keyring.to_wire(),
@@ -266,7 +312,11 @@ impl ContentKeys {
         for (_, key) in &mut wire.keys {
             key.zeroize();
         }
-        encoded
+        let mut encoded = encoded?;
+        if let Some(history) = &self.legacy {
+            encoded.extend_from_slice(&history.to_bytes()?);
+        }
+        Ok(encoded)
     }
 
     /// Decode what [`Self::to_bytes`] produced, refusing trailing bytes and
@@ -279,22 +329,33 @@ impl ContentKeys {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let (mut wire, rest) = postcard::take_from_bytes::<Wire>(bytes)
             .map_err(|error| Error::Serialization(error.to_string()))?;
-        let keys = std::mem::take(&mut wire.keys);
-        if !rest.is_empty() || wire.version != WIRE_VERSION {
-            let mut keys = keys;
-            for (_, key) in &mut keys {
-                key.zeroize();
+        let mut keys = Zeroizing::new(std::mem::take(&mut wire.keys));
+        let legacy = match wire.version {
+            WIRE_VERSION if rest.is_empty() => None,
+            WIRE_WITH_HISTORY
+                if wire.workspace.is_document_key_group()
+                    && rest.first() == Some(&WIRE_VERSION) =>
+            {
+                let history = Self::from_bytes(rest)?;
+                if history.workspace.is_document_key_group() {
+                    return Err(Error::Serialization(
+                        "expected workspace history keys".into(),
+                    ));
+                }
+                Some(Box::new(history))
             }
-            return Err(Error::Serialization(
-                "malformed workspace content keys".into(),
-            ));
-        }
+            _ => {
+                return Err(Error::Serialization(
+                    "malformed workspace content keys".into(),
+                ));
+            }
+        };
         if keys.len() > crate::content::MAX_HISTORY_KEYS {
             return Err(Error::InvalidState(
                 "too many workspace content keys".into(),
             ));
         }
-        let keyring = ContentKeyring::from_wire(keys)?;
+        let keyring = ContentKeyring::from_wire(std::mem::take(&mut *keys))?;
         if keyring.get(wire.epoch).is_none() {
             return Err(Error::MissingContentKey(wire.epoch));
         }
@@ -302,6 +363,7 @@ impl ContentKeys {
             workspace: wire.workspace,
             epoch: wire.epoch,
             keyring,
+            legacy,
         })
     }
 }
@@ -312,7 +374,7 @@ impl std::fmt::Debug for ContentKeys {
             .field("workspace", &self.workspace)
             .field("epoch", &self.epoch)
             .field("keyring", &self.keyring)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -620,6 +682,50 @@ mod tests {
         bytes.push(0);
         assert!(ContentKeys::from_bytes(&bytes).is_err());
         assert!(!format!("{decoded:?}").contains("key:"));
+    }
+
+    #[test]
+    fn a_document_endpoint_reads_workspace_history_but_only_writes_with_its_document_key() {
+        let workspace = WorkspaceId::new();
+        let document = WorkspaceId::from_u128(0xe0_u128 << 56);
+        let workspace_keys = KeyGroup::create(workspace, MemberKey::generate("owner").unwrap())
+            .unwrap()
+            .content_keys()
+            .unwrap();
+        let document_keys = KeyGroup::create(document, MemberKey::generate("owner").unwrap())
+            .unwrap()
+            .content_keys()
+            .unwrap()
+            .with_workspace_history(workspace_keys.clone());
+        let decoded = ContentKeys::from_bytes(&document_keys.to_bytes().unwrap()).unwrap();
+        let artifact = ArtifactId::new();
+        let (old, history) = workspace_keys
+            .seal_content(artifact, ContentRetention::Delta, b"before access changed")
+            .unwrap();
+        assert_eq!(
+            decoded
+                .open_content(artifact, &old, &history)
+                .unwrap()
+                .as_slice(),
+            b"before access changed"
+        );
+        assert!(
+            decoded
+                .open_current_content(artifact, &old, &history)
+                .is_err()
+        );
+        let (new, write) = decoded
+            .seal_content(artifact, ContentRetention::Delta, b"restricted")
+            .unwrap();
+        assert!(!workspace_keys.holds_key_for(&new));
+        assert!(workspace_keys.open_content(artifact, &new, &write).is_err());
+        assert_eq!(
+            decoded
+                .open_content(artifact, &new, &write)
+                .unwrap()
+                .as_slice(),
+            b"restricted"
+        );
     }
 
     #[test]

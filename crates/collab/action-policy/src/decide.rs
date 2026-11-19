@@ -1,5 +1,7 @@
 //! The one decision every action API, host and receiver makes.
 
+use std::cmp::Ordering;
+
 use tilo_app_id::AppId;
 
 use crate::{ActionKind, Answer, Context, Grant, GrantId, Grantee, Level, Lifetime, TreePath};
@@ -39,8 +41,12 @@ impl<'g> Decision<'g> {
 /// 1. Take the live grants naming one of `grantees` ([`names`]), whose node is
 ///    `node` or an ancestor of it, and whose kinds include `kind`.
 /// 2. The most specific node wins.
-/// 3. At the same node, Deny beats Ask beats Allow.
-/// 4. No grant: Deny.
+/// 3. For content at the same node, personal overrides come before custom
+///    roles, then the preset.
+/// 4. Custom roles combine by taking the most permissive answer. Among
+///    competing personal or preset rules the strictest answer wins.
+///    Governance uses the strictest answer at each scope.
+/// 5. No grant: Deny.
 pub fn decide<'g>(
     grants: impl IntoIterator<Item = &'g Grant>,
     grantees: &[Grantee],
@@ -49,6 +55,7 @@ pub fn decide<'g>(
     cx: &Context<'_>,
 ) -> Decision<'g> {
     let mut best: Option<&'g Grant> = None;
+    let governs = node.id_at(Level::Kind) == Some(crate::roles::WORKSPACE_KIND);
     for grant in grants {
         if !grant.kinds.contains(kind)
             || !names(grant, grantees, cx)
@@ -57,10 +64,14 @@ pub fn decide<'g>(
         {
             continue;
         }
-        let better = best.is_none_or(|held| match grant.node.cmp_specificity(&held.node) {
-            std::cmp::Ordering::Greater => true,
-            std::cmp::Ordering::Equal => grant.answer < held.answer,
-            std::cmp::Ordering::Less => false,
+        let better = best.is_none_or(|held| {
+            grant.node.cmp_specificity(&held.node).then_with(|| {
+                if governs {
+                    held.answer.cmp(&grant.answer)
+                } else {
+                    compare_content_rules(grant, held)
+                }
+            }) == Ordering::Greater
         });
         if better {
             best = Some(grant);
@@ -76,6 +87,25 @@ pub fn decide<'g>(
             basis: Basis::Grant(grant),
         },
     )
+}
+
+fn compare_content_rules(candidate: &Grant, current: &Grant) -> Ordering {
+    let priority = |rule: &Grant| {
+        if rule.grantee.person_id().is_some() {
+            3
+        } else if matches!(rule.grantee, Grantee::CustomRole(_)) {
+            2
+        } else {
+            u8::from(!crate::roles::is_role_grant(rule))
+        }
+    };
+    priority(candidate).cmp(&priority(current)).then_with(|| {
+        if matches!(candidate.grantee, Grantee::CustomRole(_)) {
+            candidate.answer.cmp(&current.answer)
+        } else {
+            current.answer.cmp(&candidate.answer)
+        }
+    })
 }
 
 /// Whether `grant` names one of `grantees`. A grant to a role names everyone
