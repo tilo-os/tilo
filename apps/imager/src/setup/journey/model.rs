@@ -620,7 +620,10 @@ impl Journey {
                 || matches!(
                     (edit.section, self.page),
                     (ReviewSection::Destination, Page::Storage)
-                        | (ReviewSection::Machine, Page::Storage | Page::Method)
+                        | (
+                            ReviewSection::Machine,
+                            Page::Storage | Page::Method | Page::Machine
+                        )
                         | (ReviewSection::Profile, Page::Profile)
                         | (
                             ReviewSection::Identity | ReviewSection::Devices,
