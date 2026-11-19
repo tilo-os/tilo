@@ -2750,7 +2750,7 @@ pub(crate) fn execute_resource_operation(
     {
         return Err(own_device_refusal());
     }
-    crate::invocation_scope::check_shown_here(actor, local_author, spec)?;
+    crate::invocation_scope::check_shown_here(actor, local_author, resource, spec)?;
     let mut context = spec.history_context(resource.id.as_str(), &resource.kind, &resource.label);
     if let Some(ambient) = ambient {
         context = context.enriched_by(ambient);
@@ -3188,7 +3188,7 @@ pub(crate) fn invoke_resource_action(
                         .map_err(|_| denied(spec))?;
                     // A refused private View must not invoke a Deferred encoder.
                     // The execution guard below remains an independent boundary.
-                    crate::invocation_scope::check_shown_here(actor, &binding.author, spec)?;
+                    crate::invocation_scope::check_shown_here(actor, &binding.author, resource, spec)?;
                     if let Some(scope) = scope {
                         scope.capture_locus_basis(target, invocation, actor, doc);
                     }

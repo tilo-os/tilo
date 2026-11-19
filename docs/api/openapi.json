@@ -2058,7 +2058,7 @@
             "schema": {
               "type": "string"
             },
-            "description": ""
+            "description": "The open invitation's id, as `GET members` lists it"
           },
           {
             "$ref": "#/components/parameters/Invocation"
@@ -21397,6 +21397,9 @@
           "markdown"
         ],
         "description": ""
+      },
+      "notes.pages.write-note.Result": {
+        "type": "object"
       },
       "osk.keyboard.set-layout.Arguments": {
         "type": "object",

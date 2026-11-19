@@ -43,6 +43,10 @@ pub(crate) const SECRET_APP: &str = "so.tilo.server";
 /// How often unconfirmed addresses left at the entry are let go.
 const WAIT_LIST_SWEEP_SECS: u64 = 60;
 #[derive(clap::Args, Clone, Debug, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the operator's switches are independent flags, not one state"
+)]
 pub struct PersistentArgs {
     /// Run one persistent public workspace with this name instead of a
     /// short-lived one.
@@ -266,6 +270,10 @@ pub struct PersistentArgs {
         requires = "moderation_key_file"
     )]
     pub moderation_model: Option<String>,
+    /// Enable the workspace's moderation bot: the person's decision that lets
+    /// it moderate Chat. Without it the bot stays off, even with a model key.
+    #[arg(long = "enable-moderation", requires = "moderation_key_file")]
+    pub enable_moderation: bool,
     /// Where avatars of authors a bot bridged out are published.
     #[arg(
         long = "public-avatars",
@@ -1462,18 +1470,28 @@ pub(crate) async fn run(
             .to_line()
         );
         // The moderation agent runs as the workspace's bot for as long as the workspace
-        // does; it answers reports left open while the workspace was down first.
-        let moderator = moderation.map(|agent| {
-            tokio::spawn(
-                tilo_server::workspace_bots::ModerationBot::new(
-                    workspaces.clone(),
-                    workspace.clone(),
-                    host_cert.clone(),
-                    agent,
+        // does, when the operator enabled it; it answers reports left open while
+        // the workspace was down first.
+        if persistent.enable_moderation {
+            tilo_server::workspace_bots::enable(&workspaces, &workspace)
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("enable the workspace's moderation bot: {error}")
+                })?;
+        }
+        let moderator = moderation
+            .filter(|_| persistent.enable_moderation)
+            .map(|agent| {
+                tokio::spawn(
+                    tilo_server::workspace_bots::ModerationBot::new(
+                        workspaces.clone(),
+                        workspace.clone(),
+                        host_cert.clone(),
+                        agent,
+                    )
+                    .run(),
                 )
-                .run(),
-            )
-        });
+            });
         // The connectors bots listen to, the operator's and those a member
         // sets up for a bot they ask for, share one host and keep what they
         // fetch in the workspace's content.

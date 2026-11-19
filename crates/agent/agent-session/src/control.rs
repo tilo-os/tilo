@@ -683,6 +683,32 @@ fn push_bounded<T>(list: &mut Vec<T>, item: T, max: usize) {
     list.push(item);
 }
 
+/// The sessions of the agents working beside a device, by the device each
+/// signs as: a change an action made for one of them is that agent's, signed
+/// with its own key.
+#[derive(Clone, Default)]
+pub struct AgentSessions {
+    links: Arc<Mutex<BTreeMap<[u8; 32], tilo_session_client::Link>>>,
+}
+
+impl AgentSessions {
+    /// The session of agent `device`, while it is open here.
+    #[must_use]
+    pub fn link(&self, device: &[u8; 32]) -> Option<tilo_session_client::Link> {
+        self.links.lock_recover().get(device).cloned()
+    }
+
+    /// `link` now serves agent `device`'s changes.
+    pub(crate) fn joined(&self, device: [u8; 32], link: tilo_session_client::Link) {
+        self.links.lock_recover().insert(device, link);
+    }
+
+    /// Agent `device`'s session ended.
+    pub(crate) fn left(&self, device: &[u8; 32]) {
+        self.links.lock_recover().remove(device);
+    }
+}
+
 /// Starts an agent's member for an identity and its control state:
 /// on its own thread in a host, on the test's thread in a test.
 pub type Spawner =

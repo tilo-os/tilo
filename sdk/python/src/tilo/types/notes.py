@@ -48,7 +48,6 @@ __all__ = [
     "PlaceImageArgs",
     "ImportMarkdownArgs",
     "ImportMarkdownFilesArgs",
-    "WriteNoteArgs",
 ]
 
 class Tag(TypedDict):
@@ -213,16 +212,9 @@ ImportMarkdownFilesArgs = TypedDict("ImportMarkdownFilesArgs", {
 })
 """The arguments of `import-markdown-files`."""
 
-WriteNoteArgs = TypedDict("WriteNoteArgs", {
-    "page": "str",
-    "markdown": "str",
-    "links": NotRequired["Links | None"],
-})
-"""The arguments of `write-note`."""
-
 class Notebook(Resource):
     """Notebook — `notes.notebook`."""
-    __surface__ = "so.tilo.notes@09fa5db73bd6ae3d"
+    __surface__ = "so.tilo.notes@c9a6126ebbe7501a"
     tags: list[Entry[Tag]]
 
     def new_tag(self, *, name: str) -> None:
@@ -261,7 +253,7 @@ class Notebook(Resource):
 
 class Pages(Resource):
     """Notes — `notes.pages`."""
-    __surface__ = "so.tilo.notes@09fa5db73bd6ae3d"
+    __surface__ = "so.tilo.notes@c9a6126ebbe7501a"
     pages: list[Entry[Page]]
     @property
     def images(self) -> dict[str, Any]:
@@ -554,7 +546,7 @@ class Pages(Resource):
         page: str,
         markdown: str,
         links: Links | None = None,
-    ) -> None:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["page"] = page
@@ -563,12 +555,8 @@ class Pages(Resource):
             args["links"] = links
         return self.action("write-note", **args)
 
-    def write_note_many(self, items: list[WriteNoteArgs]) -> list[dict[str, Any]]:
-        """Runs `write-note` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("write-note", items)
-
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_note", "new_child", "rename", "rename_many", "delete", "delete_many", "move_note", "move_note_many", "move_up", "move_up_many", "move_down", "move_down_many", "indent", "indent_many", "outdent", "outdent_many", "duplicate", "tag", "tag_many", "keep_image", "keep_image_many", "place_image", "place_image_many", "create_page", "import_markdown", "import_markdown_many", "import_markdown_files", "import_markdown_files_many", "append_to_note", "write_note", "write_note_many"})
+    __actions__ = frozenset({"new_note", "new_child", "rename", "rename_many", "delete", "delete_many", "move_note", "move_note_many", "move_up", "move_up_many", "move_down", "move_down_many", "indent", "indent_many", "outdent", "outdent_many", "duplicate", "tag", "tag_many", "keep_image", "keep_image_many", "place_image", "place_image_many", "create_page", "import_markdown", "import_markdown_many", "import_markdown_files", "import_markdown_files_many", "append_to_note", "write_note"})
 
 

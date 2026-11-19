@@ -122,14 +122,19 @@ fn subjects(listing: &Value) -> Vec<String> {
         .collect()
 }
 
-/// The held messages a read of the mailbox's messages lists, by name, newest
-/// first.
+/// The held messages a read of the mailbox's messages lists, by subject,
+/// newest first: each entry is the message's id and what it holds.
 fn held_names(listing: &Value) -> Vec<String> {
     listing["held"]
         .as_array()
         .map(|held| {
             held.iter()
-                .map(|message| message["name"].as_str().unwrap().to_owned())
+                .map(|message| {
+                    message["value"]["subject"]
+                        .as_str()
+                        .unwrap_or_else(|| panic!("a held entry names its subject: {message}"))
+                        .to_owned()
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -236,13 +241,15 @@ fn an_agent_reads_searches_drafts_and_exports_mail_delivered_without_a_server() 
         .unwrap()
         .iter()
         .find_map(|held| {
-            held["item"]
+            held["id"]
                 .as_str()
-                .filter(|item| item.ends_with(&request_id))
+                .filter(|id| *id == request_id)
                 .map(str::to_owned)
         })
-        .expect("the request is listed");
-    let one = step_on(&agent, &item, "read", json!({})).value.unwrap();
+        .unwrap_or_else(|| panic!("the request is listed: {listing}"));
+    let one = step_on(&agent, &beside, "read", json!({ "item": item }))
+        .value
+        .unwrap();
     assert!(
         one["message"]["body"]
             .as_str()

@@ -182,6 +182,20 @@ fn publishers(
         .expect("the broker answers")
 }
 
+/// Notes running in `workspace` as peer 9, publishing `actions`.
+fn notes_running(
+    workspace: &str,
+    actions: Vec<super::super::PublishedAction>,
+) -> super::super::PublishedSurface {
+    super::super::PublishedSurface {
+        peer_id: 9,
+        app_id: NOTES.into(),
+        route: tilo_broker_core::CrdtRoute::record(NOTES, workspace, "notes"),
+        actions,
+        live: true,
+    }
+}
+
 tilo_test_env::scenario! {
     fn an_agents_list_of_apps;
 
@@ -309,13 +323,7 @@ tilo_test_env::scenario! {
         let workspace = workspace();
         let workspace_id = workspace.id().to_string();
         let state = broker(vec![workspace], vec![NOTES], true);
-        state.replace_published_surfaces_for_test(vec![super::super::PublishedSurface {
-            peer_id: 9,
-            app_id: NOTES.into(),
-            route: tilo_broker_core::CrdtRoute::record(NOTES, &workspace_id, "notes"),
-            actions: Vec::new(),
-            live: true,
-        }]);
+        state.replace_published_surfaces_for_test(vec![notes_running(&workspace_id, Vec::new())]);
         let owner = Caller::local_person("owner").in_workspace(&workspace_id);
         let opens = |state: &Arc<AppBrokerState>| {
             installed(state, &owner, &workspace_id)
@@ -336,5 +344,68 @@ tilo_test_env::scenario! {
             .expect("windowless")
             .insert(9);
         assert!(opens(&state), "it runs with no window");
+    }
+
+    phase an_agent_naming_an_action_by_its_app_hears_whose_it_is;
+    // Named by the app alone, an action is looked up wherever the app publishes it: an effect
+    // only the person's screen shows is told of as theirs, and a control the window draws is
+    // never named to an agent at all.
+    {
+        let workspace = workspace();
+        let workspace_id = workspace.id().to_string();
+        let state = broker(vec![workspace], vec![NOTES], true);
+        let published = |resource: &str, kind: &str, action: &str| super::super::PublishedAction {
+            did: None,
+            state: tilo_actions::ActionState::default(),
+            semantic_identity: None,
+            resource: resource.into(),
+            action: action.into(),
+            resource_kind: kind.into(),
+            resource_label: "Notes".into(),
+            action_label: action.into(),
+            keywords: Vec::new(),
+            icon: None,
+            description: None,
+            operation_kind: tilo_actions::OperationKind::Effect,
+            params: Vec::new(),
+            contract: tilo_actions::ActionContract::view(),
+            view: None,
+            input: super::super::PublishedInput::None,
+        };
+        state.replace_published_surfaces_for_test(vec![notes_running(
+            &workspace_id,
+            vec![
+                published("notes.deep.page", "notes.page", "new-page"),
+                published("tilo.control:new", "tilo.control", "invoke"),
+            ],
+        )]);
+        let agent = turn_caller("scribe", "owner", &workspace_id);
+        let named = |action: &str| {
+            state
+                .action_query(
+                    &agent,
+                    &CatalogueQuery {
+                        provider: Some("9".into()),
+                        action: Some(action.into()),
+                        ..CatalogueQuery::default()
+                    },
+                )
+                .wait_timeout(tilo_test_env::hang_bound())
+                .ok()
+                .flatten()
+                .expect("the broker answers")
+                .expect("the agent may ask")
+                .rows
+        };
+        let rows = named("new-page");
+        let refusal = rows
+            .first()
+            .and_then(|row| row.action.as_ref())
+            .and_then(|action| action.contract.availability.refusal());
+        assert!(
+            matches!(refusal, Some(("private_view", _))),
+            "{rows:?}"
+        );
+        assert!(named("invoke").is_empty(), "a control is never named to an agent");
     }
 }

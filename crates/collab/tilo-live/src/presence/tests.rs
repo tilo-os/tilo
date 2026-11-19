@@ -344,6 +344,7 @@ tilo_test_env::scenario! {
             key: key.clone(),
             payload: Payload::Composing { composing: true },
             on_behalf: None,
+            member: None,
         };
         assert!(board.hear([1; 32], &draft, 3.0));
         assert_eq!(
@@ -639,7 +640,7 @@ tilo_test_env::scenario! {
                 reaction: None,
             })),
         )
-        .spoken_for(run);
+        .spoken_for(run, "claude-code");
         let mut board = board();
         assert!(
             !board.hear(host, &face, 1.0),
@@ -666,9 +667,14 @@ tilo_test_env::scenario! {
         let row = super::shown(shown, 3.0);
         assert_eq!(row.spoken_by, Some(hex::encode(host)));
         assert_eq!(row.activity.as_deref(), Some("New note"));
+        assert_eq!(
+            row.member,
+            Some(collab_types::MemberId::agent("claude-code")),
+            "the run is the agent it is, never the run's own id"
+        );
 
         // Another run is another member; both leave with the host.
-        assert!(board.hear(host, &face.clone().spoken_for("agent-session:10"), 4.0));
+        assert!(board.hear(host, &face.clone().spoken_for("agent-session:10", "claude-code"), 4.0));
         assert_eq!(board.here().count(), 2);
         board.depart(host);
         assert_eq!(board.here().count(), 0);
@@ -704,7 +710,7 @@ tilo_test_env::scenario! {
                     reaction: None,
                 })),
             )
-            .spoken_for(run)
+            .spoken_for(run, "claude-code")
         };
         let mut board = board();
         board.set_host(Some(host));
@@ -771,7 +777,7 @@ tilo_test_env::scenario! {
             theirs.hear(own, &frame, 1.0);
         }
 
-        assert!(board.speak_for(&[("helper".into(), face("Waiting"))]));
+        assert!(board.speak_for(&[("helper".into(), "claude-code".into(), face("Waiting"))]));
         let agent = board
             .present(stand_in(own, "helper"))
             .expect("the agent is here");
@@ -779,10 +785,10 @@ tilo_test_env::scenario! {
         assert_eq!(agent.spoken_by, Some(own));
         assert_eq!(agent.device, "laptop", "it lists as this device");
         assert!(
-            !board.speak_for(&[("helper".into(), face("Waiting"))]),
+            !board.speak_for(&[("helper".into(), "claude-code".into(), face("Waiting"))]),
             "the same face again is no news"
         );
-        assert!(board.speak_for(&[("helper".into(), face("Editing Notes"))]));
+        assert!(board.speak_for(&[("helper".into(), "claude-code".into(), face("Editing Notes"))]));
         let said = board.flush(10.0);
         let for_run: Vec<&Presence> = said
             .iter()
@@ -833,7 +839,7 @@ tilo_test_env::scenario! {
             sent_at_ms: 2,
             ..face(line)
         };
-        assert!(board.speak_for(&[("helper".into(), later("Looking at the apps"))]));
+        assert!(board.speak_for(&[("helper".into(), "claude-code".into(), later("Looking at the apps"))]));
         for (_, frame) in &board.flush(30.0) {
             theirs.hear(own, frame, 31.0);
         }
@@ -852,7 +858,7 @@ tilo_test_env::scenario! {
         stale.seq = 9;
         assert!(!theirs.hear(
             own,
-            &Presence::desktop(WORKSPACE, Payload::Shell(Box::new(stale))).spoken_for("helper"),
+            &Presence::desktop(WORKSPACE, Payload::Shell(Box::new(stale))).spoken_for("helper", "claude-code"),
             32.0,
         ));
         assert_eq!(

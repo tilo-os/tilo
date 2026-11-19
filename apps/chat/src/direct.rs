@@ -86,7 +86,9 @@ impl ChatApp {
     ) {
         match self.messages_chain() {
             Ok(chain) => {
-                chain.invoke_then(&post(id, text, None, None, Vec::new()), move |posted| {
+                let message = Id::from_raw(ui::tilo_resource::fresh_uuid().simple().to_string());
+                let post = post(id, &message, text, None, None, Vec::new());
+                chain.invoke_then(&post, move |posted| {
                     then(posted.map(drop).map_err(|error| error.to_string()));
                 });
             }
@@ -127,13 +129,21 @@ impl ChatApp {
             return Err(crate::i18n::t("chat-send-empty"));
         }
         let id = self.conversation_named(to, chat)?;
-        // The message the post makes is the first id it mints: the sender is told it, so what
-        // asked can stand the turn it opened (canvas.md §3) by the message, not by its words.
-        drop(ui::tilo_resource::take_minted());
+        // The post carries the message's id, named here, so the sender is told it at once, so
+        // what asked can stand the turn it opened (canvas.md §3) by the message, not by its
+        // words, even while the part the post goes into is still arriving and writes it later.
+        let message = Id::from_raw(ui::tilo_resource::fresh_uuid().simple().to_string());
         self.messages_chain()?
-            .invoke(&post(&id, text, parent.map(Id::from_raw), body, attached))
+            .invoke(&post(
+                &id,
+                &message,
+                text,
+                parent.map(Id::from_raw),
+                body,
+                attached,
+            ))
             .map_err(|error| error.to_string())?;
-        let message = ui::tilo_resource::take_minted().into_iter().next();
+        let message = message.to_string();
         // The conversation stands where the box stood: a window of the shell,
         // floated over it, that the workspace's document keeps for every
         // member.
@@ -312,6 +322,7 @@ pub(crate) struct SendMessage<'a> {
 /// `id`.
 fn post(
     id: &Id,
+    message: &Id,
     text: &str,
     parent: Option<Id>,
     body: Option<Vec<tilo_document::ClipBlock>>,
@@ -319,6 +330,7 @@ fn post(
 ) -> Invoke<ChatMessages> {
     ChatMessages::POST.with(chat_messages::Post {
         message: crate::messages::NewMessage {
+            id: Some(message.clone()),
             channel: id.clone(),
             text: text.to_owned(),
             parent,

@@ -59,6 +59,9 @@ fn colour_of(caller: &Caller) -> [u8; 3] {
 struct Voice {
     /// The agent's or key's name, as the host knows it.
     label: String,
+    /// The workspace member it is: the agent the workspace's list of its agents names it by,
+    /// which every surface names and colours it by.
+    member: String,
     /// Its colour: the agent's own, the one its every session and the workspace's record of
     /// its agents draw it in.
     colour: [u8; 3],
@@ -209,6 +212,7 @@ impl Sessions {
         let lease = caller.execution_lease()?;
         let voice = self.by_session.entry(session.id).or_insert_with(|| Voice {
             label: caller.agent_called().unwrap_or_default().to_owned(),
+            member: caller.acting().agent_id().unwrap_or_default().to_owned(),
             colour: colour_of(caller),
             activity: None,
             focus: None,
@@ -259,7 +263,7 @@ impl Sessions {
     /// The invocations here, each with its face: the agent it is, what it does and
     /// where, in its own colour. When a face is said, and its sequence, are the
     /// board's.
-    fn faces(&self) -> Vec<(String, ShellPresence)> {
+    fn faces(&self) -> Vec<(String, String, ShellPresence)> {
         self.by_session
             .iter()
             .map(|(session, voice)| {
@@ -273,7 +277,7 @@ impl Sessions {
                     None,
                 );
                 face.selection.clone_from(&voice.selection);
-                (session.clone(), face)
+                (session.clone(), voice.member.clone(), face)
             })
             .collect()
     }

@@ -56,6 +56,7 @@ impl ChatApp {
                 doc,
                 ChatMessages::POST.with(chat_messages::Post {
                     message: NewMessage {
+                        id: None,
                         channel: Id::from_raw(channel),
                         text,
                         parent: None,

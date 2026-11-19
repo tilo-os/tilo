@@ -56,6 +56,15 @@ pub use turns::{MAX_ADMITTED, MAX_WORKING};
 pub type SessionFactory<H> =
     std::sync::Arc<dyn Fn() -> std::io::Result<McpServer<H>> + Send + Sync>;
 
+/// What is told of each look this session makes at an invocation: the
+/// invocation and the state the look found. A turn times what its tools
+/// waited for with it, where the tool's own work is counted.
+pub type Observation = std::sync::Arc<
+    dyn Fn(&tilo_actions::InvocationId, Option<&tilo_actions::remote::InvocationState>)
+        + Send
+        + Sync,
+>;
+
 /// One MCP session. Its requests are answered through `&self`, so a client
 /// may overlap them: a `tilo_status`, reading or cancelling, answers while a
 /// `tilo_do` of the same session waits for its action.
@@ -63,6 +72,9 @@ pub struct McpServer<H> {
     /// Shared with the blocking threads synchronous broker work runs on.
     host: std::sync::Arc<H>,
     retire_execution: fn(&H, &Caller),
+    /// Told of each look at an invocation this session makes, when a turn
+    /// times what its tools waited for.
+    watched: Option<Observation>,
     workspace: String,
     actor: String,
     /// One transport-issued execution scope, independent of history labels.
@@ -568,6 +580,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         Self {
             host: std::sync::Arc::new(host),
             retire_execution: H::retire_execution,
+            watched: None,
             workspace,
             actor,
             caller,
@@ -609,6 +622,24 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     pub fn with_task_hosts(mut self, hosts: Option<std::sync::Arc<dyn TaskHosts>>) -> Self {
         self.task_hosts = hosts;
         self
+    }
+    /// Tell `watch` of each look this session makes at an invocation, and what
+    /// the look found: a turn times what its tools waited for with it, where
+    /// the tool's own work is counted.
+    #[must_use]
+    pub fn with_observation(mut self, watch: Observation) -> Self {
+        self.watched = Some(watch);
+        self
+    }
+    /// Tell what watches this session about the look `state` made at `id`.
+    fn saw(
+        &self,
+        id: tilo_actions::InvocationId,
+        state: Option<&tilo_actions::remote::InvocationState>,
+    ) {
+        if let Some(watch) = &self.watched {
+            watch(&id, state);
+        }
     }
     /// List the person's devices as `devices` reaches them, with
     /// [`crate::devices::DEVICES_TOOL`].
@@ -1085,6 +1116,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// Why `target` is not offered, in terms the caller can act on: the
     /// actions its resource has, or the resources there are. Only what the
     /// caller's own directory lists is named.
+    /// The workspace's answer that it offers nothing by `target`'s address, told as
+    /// [`Self::not_offered`] tells it and kept typed as the workspace gave it.
+    async fn unknown_action(&self, target: &RemoteActionTarget) -> Result<Failure, String> {
+        let mut unknown = Failure::from(tilo_actions::remote::ActionCallError::UnknownAction);
+        unknown.message = self.not_offered(target).await?;
+        Ok(unknown)
+    }
     async fn not_offered(&self, target: &RemoteActionTarget) -> Result<String, String> {
         let address = &target.address;
         let listed = self
@@ -1655,6 +1693,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 args.needle
             },
             target: None,
+            action: None,
             revision: (!args.revision.is_empty()).then_some(args.revision),
             cursor,
             max_results: args.max_results.unwrap_or(DEFAULT_PAGE).min(128),
@@ -1987,7 +2026,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     self.addressed(Some(peer), None, false).await?;
                 }
                 let Some(named) = self.named_resource(&target).await? else {
-                    return Err(self.not_offered(&target).await?.into());
+                    return Err(self.unknown_action(&target).await?);
                 };
                 target.address.resource = named;
                 match self
@@ -2004,7 +2043,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     Err(BridgeError::Host(
                         tilo_actions::remote::ActionCallError::UnknownAction,
                     )) => {
-                        return Err(self.not_offered(&target).await?.into());
+                        return Err(self.unknown_action(&target).await?);
                     }
                     ran => ran?,
                 }
@@ -2531,6 +2570,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             // Asked before observing, so a change in between still wakes it.
             let change = self.host().next_change(&self.caller(), &id);
             let state = self.observed(id).await;
+            self.saw(id, state.as_ref());
             if let Some(state) = state.as_ref().filter(|state| state.update.is_terminal()) {
                 return Ok(state_json(id, state));
             }

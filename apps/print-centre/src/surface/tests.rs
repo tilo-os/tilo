@@ -736,6 +736,47 @@ fn new_scanned_document_requires_consent_and_resets_only_the_document() {
     }
 }
 
+/// An agent never presses the person's buttons: its press of "New scanned document" is refused
+/// as the person's alone, and no confirmation opens on their screen. The person's press still
+/// asks them first.
+#[test]
+fn an_agent_cannot_press_new_scanned_document() {
+    let _serial = serial();
+    let mut app = live_with_studio();
+    {
+        let shared = centre(&mut app);
+        let mut centre = shared.borrow_mut();
+        centre.open_scan();
+        centre.scan_finished(Ok(scanned_page(10)));
+    }
+    app.settle();
+    let agent = ui::tilo_actions::Actor::Member(ui::tilo_actions::MemberId::agent("helper"));
+    let press = ui::tilo_actions::ActionAddress::new(
+        "tilo.control:print-centre.scan.new-document",
+        "invoke",
+    );
+    let none = ui::serde_json::Map::new();
+    let refused = app
+        .harness()
+        .invoke_action_as(&agent, &press, &none, true, None)
+        .expect_err("an agent does not press the person's button");
+    assert!(
+        matches!(&refused, ui::tilo_actions::ApiError::Unavailable { code, .. } if code == "private_view"),
+        "{refused:?}"
+    );
+    app.settle();
+    assert!(app.confirm_asked().is_none(), "nothing asks the person");
+    assert_eq!(centre(&mut app).borrow().scan.pages.len(), 1);
+
+    app.harness()
+        .click_named("print-centre.scan.new-document")
+        .unwrap();
+    assert!(
+        app.confirm_asked().is_some(),
+        "the person's press asks them"
+    );
+}
+
 #[test]
 fn new_scanned_document_refuses_pending_scan_and_save() {
     let mut app = live_with_studio();

@@ -661,3 +661,65 @@ fn a_message_sent_while_its_part_arrives_shows_as_sending_and_lands_after_it() {
         "written after what was posted meanwhile"
     );
 }
+
+/// A send from a box answers which message it posted even while the part its messages go to is
+/// still arriving, as it is in a Chat just started to post a canvas ask: what asked stands the
+/// turn it opened by that message (canvas.md §3), and the message lands under that id once the
+/// part is here.
+#[test]
+fn a_send_while_its_part_arrives_answers_the_message_it_posts() {
+    use ui::floating_surface::{Recipient, RecipientKind};
+
+    let devices = TwoDevices::back_from_away();
+    let mut app = crate::app::ChatApp::new_ephemeral();
+    app.attach_chain(
+        devices
+            .guest
+            .as_reader(&ui::tilo_resource::MemberId::person(crate::model::ME)),
+    );
+    let chat = crate::demo::demo();
+    let agent = "a5".repeat(16);
+    let to = [Recipient::found(RecipientKind::Agent, agent, "Ada")];
+    let sent = app
+        .send_message(
+            crate::direct::SendMessage {
+                to: &to,
+                attached: Vec::new(),
+                text: "what is on my task list?",
+                parent: None,
+                body: None,
+                opens: false,
+            },
+            &chat,
+        )
+        .expect("the box sends");
+    let ui::framework::Effected::Done(output) = sent else {
+        panic!("a send answers at once");
+    };
+    let message = output
+        .value
+        .as_ref()
+        .and_then(|value| value["message"].as_str())
+        .map(str::to_owned)
+        .expect("the send names the message it posts though its part is still arriving");
+
+    devices.first_post_reaches_the_guest();
+    devices.guest_store.note_kept();
+    let doc = crate::testing::demo_doc();
+    app.active_channel = output
+        .value
+        .as_ref()
+        .and_then(|value| value["conversation"].as_str())
+        .expect("the send names its conversation")
+        .to_owned();
+    app.reload(&doc);
+    let held: Vec<(String, String)> = app
+        .messages
+        .iter()
+        .map(|row| (row.id.clone(), row.text.clone()))
+        .collect();
+    assert!(
+        held.contains(&(message.clone(), "what is on my task list?".to_owned())),
+        "the message lands under the id the send answered ({message}): {held:?}"
+    );
+}

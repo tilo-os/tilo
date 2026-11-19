@@ -103,9 +103,9 @@ pub(super) fn pick_action<'a>(
     // What the caller may have meant, not everything there is: an app with
     // ninety actions is not told as one wall of names.
     let close = close_matches(name, &ids, CLOSE_MATCHES);
-    Err(if ids.is_empty() {
-        format!("{at} has no actions")
-    } else if close.is_empty() {
+    // An empty list is what this caller is offered here, never the app's whole: what the app
+    // offers deeper, or keeps for the person at its device, is not in it.
+    Err(if close.is_empty() {
         format!("{at} has no action {name}")
     } else {
         format!(

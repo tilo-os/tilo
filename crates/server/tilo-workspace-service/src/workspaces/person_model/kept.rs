@@ -62,7 +62,7 @@ struct Opened {
 pub(super) struct Key {
     last: Mutex<Option<Opened>>,
     /// How often the vault was opened for this work.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "agents"))]
     opened: std::sync::atomic::AtomicU64,
 }
 
@@ -87,7 +87,7 @@ impl Key {
             tracing::warn!(%error, "a person's vault was not read for their model");
             ModelRefusal::SettingsUnreadable
         })?;
-        #[cfg(test)]
+        #[cfg(all(test, feature = "agents"))]
         self.opened
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         *self.last.lock_recover() = stamp.map(|stamp| Opened {

@@ -1075,6 +1075,7 @@ pub async fn start_serving_documents_and_events(
         &host_cert,
         web_entry,
         (feedback_reviewer, shell, browsers),
+        None,
     )?;
     let (initiative, events) = server
         .workspaces()
@@ -1104,7 +1105,11 @@ fn attach_resources(
     host_cert: &DeviceCert,
     web_entry: Option<String>,
     (feedback_reviewer, shell, browsers): Lent,
+    sessions: Option<tilo_agent_session::AgentSessions>,
 ) -> Result<(), ServerError> {
+    if let Some(sessions) = sessions {
+        actions.attach_agent_sessions(sessions);
+    }
     if let Some(shell) = &shell {
         shell.serve_from(server);
     }
@@ -1226,6 +1231,7 @@ async fn start_inner(
         &host_cert,
         web_entry,
         (options.feedback_reviewer, options.shell, options.browsers),
+        Some(agents.agent_sessions()),
     )?;
     drop(host_actions);
     agents

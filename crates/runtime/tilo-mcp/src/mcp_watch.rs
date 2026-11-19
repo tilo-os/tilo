@@ -86,8 +86,9 @@ impl Cursor {
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// How invocation `id` stands, as `tilo_status` answers it.
     pub(crate) async fn status(&self, id: tilo_actions::InvocationId) -> Result<Value, String> {
-        self.observed(id)
-            .await
+        let state = self.observed(id).await;
+        self.saw(id, state.as_ref());
+        state
             .as_ref()
             .map(|state| crate::state_json(id, state))
             .ok_or_else(|| crate::UNOWNED.into())

@@ -821,6 +821,7 @@ pub fn start(doc: &mut AutoCommit, me: &str) -> Result<(), ApiError> {
 pub fn post(channel: &str, text: &str, parent: Option<&str>) -> Invoke<ChatMessages> {
     ChatMessages::POST.with(chat_messages::Post {
         message: crate::messages::NewMessage {
+            id: None,
             channel: Id::from_raw(channel),
             text: text.into(),
             parent: parent.map(Id::from_raw),

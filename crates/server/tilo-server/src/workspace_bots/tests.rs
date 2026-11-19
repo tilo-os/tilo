@@ -23,6 +23,8 @@ mod events;
 mod initiative;
 /// The host's own answers for the programs it runs for a person.
 mod judging;
+/// Reading a chat's messages.
+mod messages;
 /// A person's event that waits on a feed or a page outside.
 mod outside;
 /// A person's event that waits on their mail.
@@ -120,48 +122,7 @@ impl Judge for FakeJudge {
     }
 }
 
-fn chat_of(bytes: &[u8]) -> chat::Chat {
-    chat::Chat::read(&AutoCommit::load(bytes).unwrap()).unwrap()
-}
-
-fn texts_by(posts: &[chat::chat::Message], person: [u8; 32]) -> Vec<String> {
-    let person = hex::encode(person);
-    posts
-        .iter()
-        .filter(|message| message.author.person_id() == Some(person.as_str()))
-        .map(|message| message.text.clone())
-        .collect()
-}
-
-/// The chat's first part of messages, as a document of the workspace.
-fn first_part() -> String {
-    chat::parts::part(0).as_str().to_owned()
-}
-
-/// The messages of the chat's first part, as the workspace holds it.
-async fn posts(workspaces: &Workspaces, workspace: &str) -> Vec<chat::chat::Message> {
-    workspaces
-        .resource_document(workspace, CHAT, &first_part())
-        .await
-        .unwrap()
-        .map(|bytes| chat::messages::read_part(&AutoCommit::load(&bytes).unwrap()))
-        .map(|part| part.messages.values().cloned().collect())
-        .unwrap_or_default()
-}
-
-/// The message ids `page` holds in the parts beside its chat record.
-fn message_ids(page: &Replica) -> Vec<String> {
-    page.resources_beside()
-        .iter()
-        .filter_map(|record| page.read_resource(record, chat::messages::read_part))
-        .flat_map(|part| {
-            part.messages
-                .ids()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-        })
-        .collect()
-}
+pub(super) use messages::{chat_of, first_part, message_ids, posts, texts_by};
 
 /// Post `text` in `channel` of `workspace` as `author`, as their page does: a
 /// view of the chat record and the parts of its messages, posting through
@@ -176,6 +137,37 @@ async fn post_in(
     post_with(workspaces, workspace, cert, (author, channel, text), None).await
 }
 
+/// Introduce `person` to `workspace` as an editor, as a server admits a
+/// member before their page writes: a member's change is decided as a
+/// member's, never as the server's device alone.
+async fn introduce(workspaces: &Workspaces, workspace: &str, cert: &DeviceCert, person: &str) {
+    let Ok(bytes) = hex::decode(person) else {
+        return;
+    };
+    let Ok(key) = <[u8; 32]>::try_from(bytes) else {
+        return;
+    };
+    let Ok((_, members)) = workspaces.membership(workspace).await else {
+        return;
+    };
+    if members.contains_key(person) {
+        return;
+    }
+    workspaces
+        .add_member(
+            workspace,
+            cert,
+            crate::workspaces::AddMemberRequest {
+                request_id: *blake3::hash(person.as_bytes()).as_bytes(),
+                user_public_key: key,
+                place: crate::workspaces::MemberPlace::Role(tilo_peer_state::join::Role::Editor),
+                name: None,
+            },
+        )
+        .await
+        .unwrap();
+}
+
 /// [`post_in`] with `attachment`, a file another action put in the store.
 async fn post_with(
     workspaces: &Workspaces,
@@ -184,6 +176,7 @@ async fn post_with(
     (author, channel, text): (&str, &str, &str),
     attachment: Option<serde_json::Value>,
 ) -> String {
+    introduce(workspaces, workspace, cert, author).await;
     let catalogue = AppCatalogue::native();
     let chat = workspaces
         .resource_document(workspace, CHAT, "")
@@ -343,6 +336,11 @@ async fn a_report_filed_in_the_workspace_restricts_and_undoes_the_flood_as_the_b
         .await
         .unwrap();
     flood_posts(&workspaces, &workspace, &cert, &general).await;
+
+    // The person enables the workspace's moderation bot before it looks.
+    crate::workspace_bots::enable(&workspaces, &workspace)
+        .await
+        .unwrap();
 
     let mut bot = ModerationBot::new(
         workspaces.clone(),

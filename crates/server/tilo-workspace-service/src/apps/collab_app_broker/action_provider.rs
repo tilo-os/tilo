@@ -1009,6 +1009,9 @@ impl AppBrokerState {
 
     /// `action` of `app` as `actor` is offered it; one it is denied is left out, or for an agent
     /// marked not allowed ([`tilo_actions::Availability::not_allowed`]): it hears it is refused.
+    /// An agent is never offered a control the window draws, and hears that an effect which only
+    /// changes what the publisher's screen shows is theirs
+    /// ([`tilo_actions::Availability::shown_here`]).
     pub(super) fn offered_to(
         workspace: &Workspace,
         actor: &BrokerActor,
@@ -1016,6 +1019,15 @@ impl AppBrokerState {
         app: &str,
         mut action: ActionDescriptor,
     ) -> Option<ActionDescriptor> {
+        if actor.is_agent() {
+            if tilo_actions::kind_is_a_drawn_control(&action.resource_kind) {
+                return None;
+            }
+            if action.kind == tilo_actions::OperationKind::Effect && action.contract.only_shows() {
+                action.contract.availability = tilo_actions::Availability::shown_here();
+                return Some(action);
+            }
+        }
         let (address, need) = (&action.address, action.contract.need());
         let target = (&*action.resource_kind, &*address.resource, &*address.action);
         if actor.action_answer_in(workspace, app, target, &need, now)
@@ -1025,6 +1037,74 @@ impl AppBrokerState {
             return actor.is_agent().then_some(action);
         }
         Some(action)
+    }
+
+    /// The action with the id `action` wherever the live app `provider` publishes it, as
+    /// `caller` is offered it: the lookup of an action named by its app alone, answered from
+    /// the app's whole published surface, whatever order its resources stand in. An agent
+    /// hears here of an effect that only changes the publisher's screen
+    /// ([`tilo_actions::Availability::shown_here`]), which no listing offers it; a control the
+    /// window draws is never named to it. One the caller's role keeps from them is answered
+    /// not allowed, to anyone.
+    fn named_action_page(
+        &self,
+        caller: &Caller,
+        provider: &str,
+        action: &str,
+    ) -> Result<CataloguePage, ActionCallError> {
+        let peer_id = if provider.starts_with(super::canonical_route::PROVIDER_PREFIX) {
+            self.canonical_token_directory(provider)?.peer_id
+        } else {
+            provider
+                .parse::<u64>()
+                .map_err(|_| ActionCallError::UnknownAction)?
+        };
+        let surface = self
+            .surfaces
+            .lock()
+            .ok()
+            .and_then(|surfaces| {
+                surfaces
+                    .get(&peer_id)
+                    .filter(|surface| surface.live)
+                    .cloned()
+            })
+            .ok_or(ActionCallError::UnknownAction)?;
+        let Some((workspace, actor, now)) = self
+            .workspaces_for(caller)
+            .into_iter()
+            .find(|(workspace, ..)| workspace.id().to_string() == surface.route.cluster_id)
+        else {
+            return Err(ActionCallError::NotPermitted);
+        };
+        let rows = surface
+            .actions
+            .iter()
+            .filter(|published| published.action == action)
+            .filter_map(|published| {
+                let mut found = descriptor(published);
+                if actor.is_agent()
+                    && found.kind == tilo_actions::OperationKind::Effect
+                    && found.contract.only_shows()
+                    && !tilo_actions::kind_is_a_drawn_control(&found.resource_kind)
+                {
+                    found.contract.availability = tilo_actions::Availability::shown_here();
+                    return Some(found);
+                }
+                // Named, an action the caller may not take is answered refused, to a person
+                // too: a listing leaves it out of their controls, a lookup by name tells them.
+                let mut refused = found.clone();
+                refused.contract.availability = tilo_actions::Availability::not_allowed(None);
+                Self::offered_to(&workspace, &actor, now, &surface.app_id, found)
+                    .or_else(|| (!actor.is_agent()).then_some(refused))
+            })
+            .map(|found| CatalogueRow::for_action(provider, &surface.app_id, found))
+            .collect();
+        Ok(CataloguePage {
+            rows,
+            exhausted: true,
+            ..CataloguePage::default()
+        })
     }
 
     /// Whether `actor` may take the action `target` now
@@ -1645,6 +1725,9 @@ impl AppBrokerState {
         }
         if query.canonical_route.is_some() {
             return Pending::ready(self.canonical_provider_page(caller, query));
+        }
+        if let (Some(action), Some(provider)) = (&query.action, &query.provider) {
+            return Pending::ready(self.named_action_page(caller, provider, action));
         }
         if let Some(token) = query
             .provider

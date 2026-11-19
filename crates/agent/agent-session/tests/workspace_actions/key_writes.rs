@@ -169,9 +169,11 @@ async fn a_keys_writes_land() {
             .filter(|note| kept.get(*note).cloned().flatten().as_deref() != Some(&folder))
             .collect();
         let tree = tree_kept(workspaces, &workspace).await;
-        let missing = (0..FILES)
-            .filter(|index| !holds(&tree, "repo", &format!("f{index}.txt")))
-            .count();
+        let missing = missing_in(
+            &tree,
+            "repo",
+            (0..FILES).map(|index| format!("f{index}.txt")),
+        );
         if unmoved.is_empty() && missing == 0 {
             break;
         }
@@ -246,21 +248,30 @@ async fn a_keys_writes_land() {
         .await;
 }
 
-/// Whether `tree` holds the file `dir/name`.
-fn holds(tree: &fs_protocol::tree::Tree, dir: &str, name: &str) -> bool {
+/// How many of `names` the folder `dir` of `tree` lacks as files: its
+/// children listed once, not once a name, which over tens of thousands of
+/// files cost the test minutes.
+fn missing_in(
+    tree: &fs_protocol::tree::Tree,
+    dir: &str,
+    names: impl Iterator<Item = String>,
+) -> usize {
     use fs_protocol::files::FileNodeKind;
-    let Some((folder, _)) =
-        tree.children(fs_protocol::tree::ROOT_ID)
-            .into_iter()
-            .find(|(_, node)| {
-                node.kind == FileNodeKind::Directory && node.name.as_bytes() == dir.as_bytes()
-            })
-    else {
-        return false;
-    };
-    tree.children(folder)
+    let held: std::collections::HashSet<Vec<u8>> = tree
+        .children(fs_protocol::tree::ROOT_ID)
         .into_iter()
-        .any(|(_, node)| node.kind == FileNodeKind::File && node.name.as_bytes() == name.as_bytes())
+        .find(|(_, node)| {
+            node.kind == FileNodeKind::Directory && node.name.as_bytes() == dir.as_bytes()
+        })
+        .map(|(folder, _)| {
+            tree.children(folder)
+                .into_iter()
+                .filter(|(_, node)| node.kind == FileNodeKind::File)
+                .map(|(_, node)| node.name.as_bytes().to_vec())
+                .collect()
+        })
+        .unwrap_or_default();
+    names.filter(|name| !held.contains(name.as_bytes())).count()
 }
 
 /// What `server`'s tool `name` answers with `arguments`, which must succeed.
@@ -435,9 +446,11 @@ async fn a_computers_agent_moves_things_in() {
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         let tree = tree_kept(on_server.hosted.server.workspaces().unwrap(), &workspace).await;
-        let missing = (0..FOLDER)
-            .filter(|index| !holds(&tree, "repo", &format!("f{index}.txt")))
-            .count();
+        let missing = missing_in(
+            &tree,
+            "repo",
+            (0..FOLDER).map(|index| format!("f{index}.txt")),
+        );
         if missing == 0 {
             break;
         }
@@ -508,7 +521,7 @@ async fn issue_parts(on_server: &OnServer, workspace: &str) -> Vec<tasks::issue_
 }
 
 /// The ids of the issues of `workspace` its server keeps.
-async fn issues_kept(on_server: &OnServer, workspace: &str) -> Vec<String> {
+pub(super) async fn issues_kept(on_server: &OnServer, workspace: &str) -> Vec<String> {
     issue_parts(on_server, workspace)
         .await
         .iter()

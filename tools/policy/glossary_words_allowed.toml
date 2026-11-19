@@ -19,6 +19,10 @@ paths = [
     "crates/server/tilo-workspace-service/src/workspaces/servers.rs",
     "crates/server/tilo-workspace-service/src/workspaces/servers/tests.rs",
     "crates/server/tilo-workspace-service/src/workspaces/servers/tests/asked.rs",
+    # The API-on-a-server fixture's own `host` field, the server device a
+    # test admits people with: the same fixture field, in a test of who may
+    # write what.
+    "crates/agent/agent-session/tests/workspace_actions/device_writes.rs",
 ]
 
 [[allow]]
@@ -167,6 +171,7 @@ words = ["subject"]
 paths = [
     "apps/mail/*",
     "apps/tl/mail/*",
+    "crates/agent/agent-session/tests/mail_for_agents.rs",
     "crates/platform/mail-session/*",
     "crates/server/tilo-workspace-service/src/workspaces/mail_watch.rs",
     "crates/server/tilo-workspace-service/src/workspaces/person_settings.rs",
@@ -942,10 +947,19 @@ paths = [
 ]
 
 [[allow]]
-reason = "A call's failure names the host's own error beside its text (`Failure::host`): this file tells a policy refusal from a call the app cannot answer."
+reason = "A call's failure names the host's own error beside its text (`Failure::host`): these files tell a policy refusal from a call the app cannot answer."
 words = ["host"]
 identifiers = ["host"]
-paths = ["crates/runtime/tilo-mcp/src/mcp_agent.rs"]
+paths = [
+    "crates/runtime/tilo-mcp/src/mcp_agent.rs",
+    "crates/runtime/tilo-mcp/src/mcp_agent_unoffered.rs",
+]
+
+[[allow]]
+reason = "The model gateway's module of its wire types, named by the program it backs, not a Tilo concept."
+words = ["host"]
+identifiers = ["host_backend"]
+paths = ["crates/agent/agent-session/tests/harness/written_out.rs"]
 
 [[allow]]
 reason = "The search registry's own two questions — whether an app opens on a desktop's platforms, and what a window says where it does not — whose names the tests that check them say."

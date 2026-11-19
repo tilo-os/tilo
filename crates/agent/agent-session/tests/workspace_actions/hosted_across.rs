@@ -434,10 +434,10 @@ fn present_on(page: &mut Browser) -> Vec<String> {
 
 /// What a read by an agent kept elsewhere leaves for this workspace's members to see. The agent
 /// lists the apps, finds the letter and reads what Chat and the word processor keep, held to
-/// reading. Afterwards no document of the workspace has changed and a member's page shows nobody
-/// new present. What does show is the workspace's list of its invocations: it names the agent
-/// and the read it made of the letter to the owner and to the agent's own person, as it names
-/// any call to whoever may read what the call addressed.
+/// reading. A read is no invocation of the workspace's: afterwards no document of the workspace
+/// has changed, a member's page shows nobody new present, and the workspace's list of its
+/// invocations names nothing of it — what it lists is the calls that changed something, and a
+/// read changes nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn what_a_read_by_an_agent_kept_elsewhere_leaves_for_the_members_to_see() {
     let mut served = Served::start(1).await;
@@ -520,11 +520,11 @@ async fn what_a_read_by_an_agent_kept_elsewhere_leaves_for_the_members_to_see() 
             listed_before.contains(ASSISTANT),
         ),
         (
-            "the owner's listing of invocations names the agent after it read",
+            "the owner's listing of invocations names the agent after its read",
             listed_after.contains(ASSISTANT),
         ),
         (
-            "its own person's listing of invocations names the agent after it read",
+            "its own person's listing of invocations names the agent after its read",
             listed_to_cy.contains(ASSISTANT),
         ),
     ];
@@ -539,12 +539,12 @@ async fn what_a_read_by_an_agent_kept_elsewhere_leaves_for_the_members_to_see() 
             false,
         ),
         (
-            "the owner's listing of invocations names the agent after it read",
-            true,
+            "the owner's listing of invocations names the agent after its read",
+            false,
         ),
         (
-            "its own person's listing of invocations names the agent after it read",
-            true,
+            "its own person's listing of invocations names the agent after its read",
+            false,
         ),
     ];
     assert_eq!(seen, expected, "what was seen:\n{}", said.join("\n"));

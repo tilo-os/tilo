@@ -64,9 +64,14 @@ async fn a_backends_key_invites_a_reviewer_who_enters_with_a_key_of_their_own() 
     assert_eq!(invited["sent"], false, "{invited}");
     assert_eq!(invited["email"], "rosa@example.com", "{invited}");
     let link = invited["link"].as_str().unwrap().to_owned();
+    // The server's site is one only this computer reaches, so the link carries
+    // the invitation itself rather than shelving it at a site that opens
+    // nowhere else: `https://tilo.sh/#/w/<workspace>?invite=<signed bytes>`.
     assert!(
-        link.contains("/i/") && link.contains('#'),
-        "the site's short link: {link}"
+        link.starts_with("https://tilo.sh/#/w/")
+            && link.contains(&format!("{workspace}?invite="))
+            && !link.contains("/i/"),
+        "the site's carried link: {link}"
     );
 
     // Ada's own page follows an invitation too, as a person's layout joins the

@@ -2039,51 +2039,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         Ok(if outside { reply.labelled() } else { reply })
     }
 
-    /// The answer a caller whose rules keep a read off their directory is given: the app's
-    /// refusal as not permitted, when it publishes a read of the target to others.
-    async fn refused_read_answer(&self, resolved: &Resolved) -> Result<Option<Reply>, String> {
-        let Some(node) = resolved.node.as_ref() else {
-            return Ok(None);
-        };
-        Ok(self
-            .refused_read(&resolved.provider, &node.id)
-            .await?
-            .map(|why| Reply::failed(format!("not_permitted: {why}"))))
-    }
-
-    /// Why the app's own read of the resource `resource` at `provider` is not this caller's,
-    /// when the caller's rules keep it off their directory and the host refuses it as not
-    /// permitted; `None` when the app offers no read there either.
-    async fn refused_read(&self, provider: &str, resource: &str) -> Result<Option<String>, String> {
-        let call = OneCall {
-            provider: Addressed {
-                provider: provider.to_owned(),
-                app_id: None,
-            },
-            workspace: false,
-            revision: None,
-            resource: resource.to_owned(),
-            action: "read".to_owned(),
-            arguments: serde_json::Map::new(),
-            invocation_id: None,
-            wait_ms: Some(DEFAULT_WAIT_MS),
-        };
-        match Box::pin(self.invoke_one(call)).await {
-            Err(why)
-                if matches!(
-                    why.host,
-                    Some(
-                        tilo_actions::remote::ActionCallError::NotPermitted
-                            | tilo_actions::remote::ActionCallError::Refused { .. }
-                    )
-                ) =>
-            {
-                Ok(Some(why.to_string()))
-            }
-            _ => Ok(None),
-        }
-    }
-
     /// The action that reads `resolved`, and the id of the resource that
     /// offers it: the target's own, or its nearest ancestor's, which takes
     /// the target as its `item`.
@@ -2564,7 +2519,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                             .map(answered);
                     }
                     Err(error) => {
-                        return Err(format!("{error}; tilo_ls {} lists them", resolved.path).into());
+                        let asked = (arguments, invocation, wait_ms);
+                        return Box::pin(self.unoffered(&resolved, &action, &error, asked)).await;
                     }
                 }
             };
@@ -2636,7 +2592,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .iter()
             .filter_map(|(path, action)| Some((action_rank(name, action)?, path.clone(), action)))
             .collect();
-        let (path, action) = pick_action_anywhere(name, resolved, &ranked)?;
+        let (path, action) = match pick_action_anywhere(name, resolved, &ranked) {
+            Ok(found) => found,
+            Err(error) => {
+                return Err(self.kept_here(name, resolved).await.unwrap_or(error));
+            }
+        };
         // The path to the resource it is published on; the action follows
         // its `#`, as every path's does.
         let named_at = match path {
@@ -2644,6 +2605,29 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             None => resolved.path.clone(),
         };
         Ok((named_at, action.clone()))
+    }
+
+    /// Why `name` is refused when it names, by its id, an action the app keeps for the person at
+    /// its device, wherever in the app it stands: such an action is never listed to an agent,
+    /// and a call of it is told whose it is rather than that the app has no such action. `None`
+    /// when the path names a resource (its own actions were asked by id already) or the app
+    /// keeps none by that id.
+    async fn kept_here(&self, name: &str, resolved: &Resolved) -> Option<String> {
+        if resolved.node.is_some() {
+            return None;
+        }
+        let page = self
+            .ask(CatalogueQuery {
+                provider: Some(resolved.provider.clone()),
+                action: Some(name.to_owned()),
+                ..CatalogueQuery::default()
+            })
+            .await
+            .ok()?;
+        page.rows
+            .into_iter()
+            .filter_map(|row| row.action)
+            .find_map(|found| super::refusal::not_allowed(found).err())
     }
 
     /// The action `action` on the resolved target, by its id, asked of the
@@ -2782,6 +2766,8 @@ mod level;
 
 #[path = "mcp_agent_resolved.rs"]
 pub(super) mod resolved;
+#[path = "mcp_agent_unoffered.rs"]
+mod unoffered;
 use resolved::{Resolution, ResolvedAction};
 
 /// The answer to a read of `resolved` when it publishes no read action: the actions it has, and

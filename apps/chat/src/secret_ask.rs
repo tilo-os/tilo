@@ -669,6 +669,7 @@ impl ChatApp {
                 doc,
                 ChatMessages::POST.with(chat_messages::Post {
                     message: NewMessage {
+                        id: None,
                         channel: ui::tilo_resource::Id::from_raw(channel),
                         text: t(words),
                         parent: None,

@@ -328,9 +328,6 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    // The server takes every action the agent's tools ask for and makes its
-    // change as the workspace's own, under its own device.
-    let maker = home.cert.device_public_key;
 
     let hosted = start(&root, &home, state.path()).await;
 
@@ -389,6 +386,9 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
         .find(|agent| agent.id == grant)
         .unwrap()
         .clone();
+    // The tools ask the server for each action; the change it makes is the
+    // agent's own, signed with its device key.
+    let maker: [u8; 32] = hex::decode(&info.device).unwrap().try_into().unwrap();
     assert_eq!(
         info.tasks[0].state,
         TaskState::Completed,

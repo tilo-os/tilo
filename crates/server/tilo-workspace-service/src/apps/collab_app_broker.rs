@@ -8000,6 +8000,7 @@ struct DirectoryQuestion<'a> {
     field: Option<&'a str>,
     kind: ActionKind,
     private_view: bool,
+    shown_here: bool,
 }
 
 impl<'a> DirectoryQuestion<'a> {
@@ -8024,25 +8025,34 @@ impl<'a> DirectoryQuestion<'a> {
             // That exception requires a known View kind: a tag alone cannot
             // disclose resource-only metadata with an unknown governing kind.
             // Another read of the record (`review-restore`) discloses it the
-            // same way.
+            // same way. A control the window draws is its person's pointer
+            // and keyboard: whatever it offers is theirs alone.
+            private_view: tilo_actions::kind_is_a_drawn_control(resource_kind)
+                || ((operation == Some(tilo_actions::OperationKind::View) || operation.is_none())
+                    && !contract.is_presence_view()
+                    && !(operation == Some(tilo_actions::OperationKind::View)
+                        && contract.reads_resource())),
             // An effect that only opens a form or shows a place on its
             // publisher's screen is theirs alone, as a view is.
-            private_view: ((operation == Some(tilo_actions::OperationKind::View)
-                || operation.is_none())
-                && !contract.is_presence_view()
-                && !(operation == Some(tilo_actions::OperationKind::View)
-                    && contract.reads_resource()))
-                || (operation == Some(tilo_actions::OperationKind::Effect)
-                    && contract.only_shows()),
+            shown_here: operation == Some(tilo_actions::OperationKind::Effect)
+                && contract.only_shows(),
         }
     }
 
     fn disclosed_to(&self, actor: &BrokerActor, publishing_person: Option<&str>) -> bool {
-        !self.private_view
+        !(self.private_view || self.shown_here)
             || actor
                 .member()
                 .person_id()
                 .is_some_and(|me| publishing_person == Some(me))
+    }
+
+    /// Whether the row is listed to `actor` though `actor` may not invoke
+    /// it: an agent hears that an effect is its publisher's alone
+    /// ([`tilo_actions::Availability::shown_here`]), rather than reading
+    /// its absence as the app having no such action.
+    fn refused_by_name_to(&self, actor: &BrokerActor) -> bool {
+        self.shown_here && !self.private_view && actor.is_agent()
     }
 }
 
@@ -8211,15 +8221,18 @@ fn filter_directory_page(
         .map(directory_row_question)
         .collect::<Result<Vec<_>, _>>()?;
     let answers = state.permits_directory_actions(cluster_id, actor, app_id, &questions)?;
-    // What is not disclosed to the actor is not listed at all; what is, and its permissions deny,
-    // is listed to an agent as not allowed (`AppBrokerState::offered_to`).
+    // What is not disclosed to the actor is not listed at all, but for an effect only its
+    // publisher's screen shows, listed to an agent as theirs; what is disclosed, and its
+    // permissions deny, is listed to an agent as not allowed (`AppBrokerState::offered_to`).
     let answers = answers
         .into_iter()
         .zip(&questions)
         .map(|(answer, question)| {
-            question
-                .disclosed_to(actor, publishing_person)
-                .then_some(answer)
+            if question.disclosed_to(actor, publishing_person) {
+                Some(Ok(answer))
+            } else {
+                question.refused_by_name_to(actor).then_some(Err(()))
+            }
         })
         .collect::<Vec<_>>();
     drop(questions);
@@ -8231,16 +8244,22 @@ fn filter_directory_page(
         .into_iter()
         .zip(answers)
         .filter_map(|(mut row, answer)| match answer? {
-            Answer::Deny if actor.is_agent() => {
+            Err(()) => {
+                if let Some(descriptor) = row.descriptor.as_mut() {
+                    descriptor.contract.availability = tilo_actions::Availability::shown_here();
+                }
+                Some(row)
+            }
+            Ok(Answer::Deny) if actor.is_agent() => {
                 if let Some(descriptor) = row.descriptor.as_mut() {
                     descriptor.contract.availability =
                         tilo_actions::Availability::not_allowed(None);
                 }
                 Some(row)
             }
-            Answer::Deny => None,
-            Answer::Allow => Some(row),
-            Answer::Ask => {
+            Ok(Answer::Deny) => None,
+            Ok(Answer::Allow) => Some(row),
+            Ok(Answer::Ask) => {
                 if let Some(descriptor) = row.descriptor.as_mut()
                     && descriptor.contract.confirmation == tilo_actions::ConfirmationPolicy::None
                 {
