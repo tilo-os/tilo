@@ -37,6 +37,10 @@ use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::live::LiveAnchor;
 use ui::permissions::policy::{self, ActionKind, Answer, TreePath};
 
+/// How many times a write refused for a part nobody holds is asked again: a chain's
+/// head, then its first part.
+const UNHELD_ROUNDS: usize = 3;
+
 /// How long the person's answer to one invocation stays good for running it.
 const APPROVAL_LIFETIME: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
@@ -1079,6 +1083,18 @@ impl Worker {
             if held.held.parts.len() > before {
                 tried = asked(&held);
             }
+        }
+        // A part nobody holds yet (a chain's first, or the next one a full chain
+        // starts) is told held nowhere, and the action asked again: the chain starts
+        // it, where the caller would otherwise be refused for good, its replica let
+        // go and the next one asking for the same part again.
+        for _ in 0..UNHELD_ROUNDS {
+            if !matches!(&tried, Err(tilo_actions::api::ApiError::Unavailable { code, .. }) if code == tilo_actions::api::NOT_READY)
+            {
+                break;
+            }
+            super::catch_up::answer_unheld_parts(&key.0, &held.held, state);
+            tried = asked(&held);
         }
         let output = match tried {
             Ok(output) => output,
