@@ -2347,6 +2347,31 @@ mod tests {
         );
     }
 
+    /// A workspace's store judges a peer's change by the types and verbs of every app surface this
+    /// process knows, including one named after the store first opened.
+    #[test]
+    fn a_workspace_store_declares_every_surface_this_process_knows() {
+        let state = tempfile::tempdir().expect("a state directory");
+        let (laptop, _) = identity(DeviceCapabilities::member());
+        let engine = engine(state.path(), laptop);
+        let workspace = founded(&engine);
+        let verbs = |engine: &Engine| {
+            engine.read_resources(workspace, |store, _| {
+                store
+                    .schema()
+                    .verb("rename-area")
+                    .map(|verb| verb.writes.keys().cloned().collect::<Vec<_>>())
+            })
+        };
+        assert!(verbs(&engine).is_none(), "no surface is named yet");
+        collab_types::app_surface::register_built_in(
+            "so.tilo.tasks",
+            include_bytes!("../../../../apps/tasks/surface.toml"),
+        );
+        let writes = verbs(&engine).expect("the tasks app's verb is declared");
+        assert!(!writes.is_empty(), "it writes the kinds its type holds");
+    }
+
     /// A resource written through the store is this device's signed write of the document the store
     /// placed it in, read back from the store at once, and by the next session from what the
     /// replica kept.

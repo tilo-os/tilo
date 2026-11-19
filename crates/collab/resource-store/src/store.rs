@@ -758,6 +758,12 @@ impl Store {
         self.refused.get(doc).into_iter().flatten()
     }
 
+    /// The types and verbs declared so far: what a peer's change is checked against.
+    #[must_use]
+    pub const fn schema(&self) -> &Schema {
+        &self.schema
+    }
+
     /// Takes the types `schema` declares into those a peer's change is checked against.
     pub fn declare(&mut self, schema: Schema) {
         for ty in schema.types {

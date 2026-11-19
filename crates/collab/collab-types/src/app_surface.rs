@@ -148,6 +148,16 @@ pub fn hash_of(app_id: &str) -> Option<[u8; 32]> {
         .map(|named| named.hash)
 }
 
+/// Every app's surface this process carries, by app.
+#[must_use]
+pub fn every() -> Vec<(String, &'static [u8])> {
+    registry()
+        .lock_recover()
+        .iter()
+        .map(|(app, named)| (app.clone(), named.bytes))
+        .collect()
+}
+
 /// The surface bytes of `app_id`, when this process carries them.
 #[must_use]
 pub fn bytes_of(app_id: &str) -> Option<&'static [u8]> {
