@@ -4,7 +4,7 @@
 //!
 //! Measure with:
 //!
-//!     cargo bench -p tilo-resources --bench write_rate
+//!     cargo bench -p tilo-resource-store --bench write_rate
 
 #![allow(
     clippy::arithmetic_side_effects,
