@@ -251,10 +251,6 @@ pub use params::{
 };
 pub use protocol::{ContractViolation, validate_surface, validate_surface_contracts};
 pub use registry::{ActionRegistry, DecodePayload, decode_json, decode_payload};
-#[allow(
-    deprecated,
-    reason = "existing app impls still name this trait until they publish through tilo_resource"
-)]
 pub use resource::{
     ActionBinding, ActionBindingError, ActionInput, ActionSpec, ActionState, ActionType,
     ArgsBuilder, Collects, ContinuationArguments, ContinuationEvidence, ContinuationKey,

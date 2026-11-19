@@ -28,6 +28,12 @@ does in the one model, by the names in the code.
 | `ResourceSpec::resource_type` set only by tilolang's publisher | Set for every published resource, from its declaration: noun = the type's name in words (refined in the catalogue, i18n.md), app = the app. |
 | The app's search pushed as indexed rows (`IndexedContent`) | Search matches published types and their fields (search.md). The app pushes nothing. |
 
+The builders the left column names exist only for the framework's own use: `LiveRow::new`,
+`LiveRow::operation`/`effect`, `ResourceSpec::new` and `ActionSpec::typed*` are hidden from the
+SDK's API, and the repository's live-row check (`check_live_rows.py`) fails on any occurrence
+under `apps/` and `crates/session/`, with no baseline to grow back. A declaration is the only
+way an app publishes a row, a tree or a bound action.
+
 Example: Tube declares `Channel`, `Video`, `Playlist` and `Subscriptions` as `#[resource]` types.
 "youtube videos of mkbhd" then names a `Channel` by its type words, exactly as "my mails" names
 Mail's root.
