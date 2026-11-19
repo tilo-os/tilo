@@ -443,11 +443,26 @@ try {
   })()`).catch(() => null);
   if (!operatorPerson) await fail('the operator\'s tab made no person to add');
   await addOwner(operatorPerson);
-  report.operator = {user: operatorPerson};
   await arrive(operator, {expected: 'let in'});
   await until(operator.tab, `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(hostOrigin)}]?.workspace`,
     'the entry letting in the person the deployment made an owner', stepLimit(8));
   mark('the operator the deployment made an owner is let in by the closed entry');
+
+  // The operator gives their name, as anyone does: the invitations they make
+  // say who asked the stranger in, and the first thing that stranger reads is
+  // a person, never "someone".
+  const operatorName = 'Maya Chen';
+  await search(operator.tab, 'set your name', 'Set your name');
+  await until(operator.tab, `!!document.querySelector('input[name=display-name]')`, 'the name form', stepLimit(4));
+  await operator.tab.evaluate(`(() => {
+    const input = document.querySelector('input[name=display-name]');
+    input.value = ${JSON.stringify(operatorName)};
+    input.dispatchEvent(new Event('input', {bubbles: true}));
+    input.closest('form').querySelector('button[type=submit]').click();
+  })()`);
+  await until(operator.tab, `!document.querySelector('input[name=display-name]')`, 'the name kept', stepLimit(6));
+  report.operator = {user: operatorPerson, name: operatorName};
+  mark('the operator gave their name, so those they invite know who asked them in');
 
   // -- 1. a stranger at the wait list ----------------------------------------
   const stranger = await visit('stranger', {passkey: true});
@@ -573,16 +588,17 @@ try {
   await stranger.tab.navigate(inviteLink);
   const invitedCard = await until(stranger.tab, `(() => {
     const text = (document.body.innerText || '').replace(/\\s+/g, ' ').trim();
-    return text.includes('invited you to') ? text : '';
-  })()`, 'the invitation naming who invited them', stepLimit(6));
+    return text.includes(${JSON.stringify(`${operatorName} invited you`)}) ? text : '';
+  })()`, `the invitation naming who invited them (${operatorName})`, stepLimit(6));
   report.invitationCard = String(invitedCard).slice(0, 400);
   await dump(stranger.tab, '4-invitation');
-  if (!await pressText(stranger.tab, 'Join')) await fail(`the invitation offered no Join: ${report.invitationCard}`);
-  // Joined: the page enters a workspace other than the one the Lounge listed
-  // for it before. A newcomer who joined is not handed to the site's first
-  // screen: the workspace they joined opens, and the setup waits inside it,
-  // offered from their own card once they used it. Nothing stands between
-  // them and the workspace they were invited to.
+  mark('the invitation says who invited the stranger in');
+  // Someone let in off the wait list is new to this server: the invitation
+  // admits them to the Lounge, and their page opens a workspace of their own
+  // to work in, with the Lounge one switch away. A newcomer is not handed to
+  // the site's first screen either way; the setup waits in their workspace,
+  // offered from their own card once they used it.
+  if (!await pressText(stranger.tab, 'Open my workspace')) await fail(`the invitation offered no way into the workspace: ${report.invitationCard}`);
   await until(stranger.tab, `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(hostOrigin)}]?.workspace`,
     'the stranger joining through the invitation', stepLimit(8));
   await until(stranger.tab, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)
@@ -595,7 +611,7 @@ try {
       ? JSON.stringify({workspace: state.workspaceName, title: document.title}) : '';
   })()`, 'the workspace the stranger joined, drawn', stepLimit(8)));
   await dump(stranger.tab, '4-joined-workspace');
-  mark('the invitation brought the stranger into the workspace, which opened with no first screen over it');
+  mark('the invitation brought the stranger into a workspace of their own, with no first screen over it');
   console.log(`ok: the invitation brought the stranger into ${report.joined.workspace}, which opened with no first screen over it (${report.joined.title})`);
 
   // Their own setup is offered inside the workspace: the person's card's

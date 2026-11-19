@@ -1801,6 +1801,7 @@ try {
   }
 
   if (runs('invite')) {
+    const givenName = 'Ada';
     // A person the workspace lets invite, from the page itself: made an owner
     // while their page stands open (the stack's own owner adds them with `tilo
     // members add`), and the bar offers inviting without a reload, as a
@@ -1809,6 +1810,18 @@ try {
     report.inviteBefore = offeredBefore.length;
     if (offeredBefore.length) await failed('the bar offered inviting before the workspace allowed it', a.tab);
     addOwner(keptA.userPublicKey);
+    // The person gives their name, as anyone does: the workspace names them by
+    // it, and the link they hand over says who made it.
+    await search(a.tab, a.command, 'set your name', 'Set your name');
+    await until(a.tab, `!!document.querySelector('input[name=display-name]')`, 'the name form', stepLimit(3));
+    await a.tab.evaluate(`(() => {
+      const input = document.querySelector('input[name=display-name]');
+      input.value = ${JSON.stringify(givenName)};
+      input.dispatchEvent(new Event('input', {bubbles: true}));
+      input.closest('form').querySelector('button[type=submit]').click();
+    })()`);
+    await until(a.tab, `!document.querySelector('input[name=display-name]')`, 'the name kept', stepLimit(6));
+    report.inviterName = givenName;
     const allowedAt = Date.now();
     await waitFor(a.tab, 'Invite', "the bar's invite button");
     report.inviteAfterMs = Date.now() - allowedAt;

@@ -612,20 +612,23 @@ test('an invitation from someone the workspace has not named reads their profile
     profiled = text(cards()[0].children[0].children[0]);
     close(cards()[0]);
     await first;
-    // A machine keeping no profile for them: the card says a person, in
-    // plain words. Who asked is their key, which is never read as a name.
+    // A machine keeping no profile for them: the card says the person is
+    // invited in plain words, with no face and no name made up for who
+    // asked. Who asked is their key, which is never read as a name.
     globalThis.fetch = async () => ({ok: false});
     const second = deps.confirmInvitation({workspaceName: 'Lounge', role: 'viewer', members: 2,
       inviter: {name: '', userPublicKey: USER}}, ORIGIN);
     await tick();
-    unnamed = text(cards()[0].children[0].children[0]);
+    const from = cards()[0].children[0].children[0];
+    unnamed = {from: text(from), face: from.children.length > 1 ? from.children[0].style : null};
     close(cards()[0]);
     await second;
     return page;
   }});
   assert.equal(failure, null);
   assert.equal(profiled, 'AAsli invited you to', 'their profile names them, their initial in their colour');
-  assert.equal(unnamed, 'SSomeone invited you to', 'plain words name them where no profile keeps a name');
+  assert.deepEqual(unnamed, {from: 'You’re invited to', face: null},
+    'plain words where nobody named who asked: no stand-in name, no face');
   assert.equal(new URL(asked[0]).pathname, '/peer/v1/profile/fetch', asked.join());
 });
 

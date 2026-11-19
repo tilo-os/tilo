@@ -152,9 +152,10 @@ const element = (tag, className, text) => {
 /** The name the invitation card shows for who sent it: the one the workspace
  * signed into the invitation, which is its name for them; else the one their
  * profile keeps, which the machine serving the workspace at `origin` answers
- * by their key, as the desktop names someone not here to say theirs; else
- * plain words. A key of theirs is never a name: it says what it is, not who
- * they are. */
+ * by their key, as the desktop names someone not here to say theirs. Empty
+ * where nobody named them yet: the card says the person is invited in plain
+ * words, never a name it made up. A key of theirs is never a name: it says
+ * what it is, not who they are. */
 async function inviterName(inviter, origin) {
   const named = typeof inviter?.name === 'string' ? inviter.name.trim() : '';
   if (named) return named;
@@ -166,8 +167,7 @@ async function inviterName(inviter, origin) {
       return null;
     })
     : null;
-  const kept = typeof profile?.display_name === 'string' ? profile.display_name.trim() : '';
-  return kept || 'Someone';
+  return typeof profile?.display_name === 'string' ? profile.display_name.trim() : '';
 }
 
 /** What an invitation offers, before the person joins: the workspace it is
