@@ -990,8 +990,19 @@ tilo_test_env::scenario! {
             sentences(&grants, &Names),
             "Project workspace › Mail › anywhere › Send: outside effects ask first. \
          Project workspace › Mail: reading and undoable changes allowed. \
-         Project workspace › finance: everything not allowed. \
+         Project workspace › finance: everything not allowed. Tilo keeps it from them, but it is \
+         not encrypted apart: their devices hold the workspace's keys, so only the workspace \
+         itself keeps content from someone. \
          Project workspace: reading allowed."
+        );
+        assert!(
+            !grant("w", TreePath::workspace("r"), KindSet::READ, Answer::Deny)
+                .denies_reading_within_workspace(),
+            "refusing the whole workspace is its boundary"
+        );
+        assert!(
+            !grant("o", mail(), KindSet::OUTSIDE, Answer::Deny).denies_reading_within_workspace(),
+            "only refusing to read is told apart"
         );
         assert_eq!(sentences(&[], &Ids), "Nothing is granted.");
         let viewer = roles::role_preset(Role::Viewer, "r").assign(
