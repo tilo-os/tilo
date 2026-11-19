@@ -1020,8 +1020,11 @@ impl Worker {
             .ok_or(Outcome::Rejected(ActionCallError::UnknownAction))?;
         // What the caller's own view offers, asked for by address: the record
         // publishes to its owner what the caller may not run, which tells a
-        // refused action from one that does not exist.
+        // refused action from one that does not exist. The owner's copy is
+        // brought up to date for that answer alone: a caller's own actions
+        // never catch this device's copy up (`Worker::perform`).
         let Some(descriptor) = held.held.app.descriptor(&target.address) else {
+            self.brought_up_to_date(&key.0, state);
             return Err(Outcome::Rejected(
                 if self.publishes(&key.0, &target.address) {
                     ActionCallError::NotPermitted
