@@ -6298,6 +6298,31 @@ outputs = ["/target/peer-handover/state/logs/*.log"]
 evidence = ["/target/peer-handover/state/logs/**"]
 timeout_secs = 900
 
+# A folder's bulk write survives its holder being killed halfway: on a fresh stack from
+# tilo-sh-programs' one build (test-peer-kill-midwrite.sh), thousands of files go into a mounted
+# folder, the holder gets SIGKILL halfway while `tilo status` is asked the whole time, and the
+# write finishes with nothing the folder acknowledged lost, no status replacing a holder that was
+# there, and a holder with nothing kept reading the server's whole tree back.
+[[check]]
+name = "peer-kill-midwrite"
+# Not a default check: the write and its convergence take minutes of a stack.
+default = false
+# No egress: the holders and the stack meet on loopback alone.
+run = "bash os/containers/tilo-sh/test-peer-kill-midwrite.sh /target/peer-kill-midwrite"
+needs = ["tilo-sh-programs", "lounge-fonts", "tilo-sh-caddy"]
+# Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
+# changes as updates land, from mirrors no fixed list names.
+setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
+env = { TILO_SH_PROGRAMS = "/target/publish/tilo-sh-programs", TILO_SH_FONTS = "/target/publish/lounge/fonts", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy" }
+requires = ["arch=x86_64", "/dev/fuse"]
+isolation = "nested"
+# The stack lays the server's context out itself, from the apps' history (lounge-context.sh).
+git = true
+outputs = ["/target/peer-kill-midwrite/state/logs/*.log", "/target/peer-kill-midwrite/state/logs/kill-midwrite/*.log"]
+# What a failure keeps of why: every service's log and the write's.
+evidence = ["/target/peer-kill-midwrite/state/logs/**"]
+timeout_secs = 1800
+
 # Production's Caddy, which serves the local stack's server and site as its tls container and web
 # entry image do: the one pinned release (os/containers/tilo-sh/caddy.env), fetched and checked
 # here, so a check's bring-up downloads nothing.
