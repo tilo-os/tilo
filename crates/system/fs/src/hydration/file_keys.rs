@@ -449,6 +449,24 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn scoped_mounts_open_file_content_only_inside_its_workspace() {
+        verify_scoped_file_access(false).await;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_mounted_file_refuses_a_read_after_workspace_access_is_revoked() {
+        tilo_test_env::require_capability!(
+            Fuse,
+            crate::fuse_session::mountable(
+                Path::new("/dev/fuse"),
+                std::env::var_os("PATH").as_deref()
+            ),
+            "requires /dev/fuse and fusermount3"
+        );
+        verify_scoped_file_access(true).await;
+    }
+
+    async fn verify_scoped_file_access(kernel_mount: bool) {
         use crate::acl::WorkspaceAcl;
         use collab_types::{CapOverride, Effect, Scope};
         use tilo_action_policy::Grantee;
@@ -567,6 +585,12 @@ mod tests {
             );
         }
 
+        if kernel_mount {
+            #[cfg(target_os = "linux")]
+            check_open_handle(fs, path, data, policy, acl(false)).await;
+            return;
+        }
+
         policy.replace(acl(false));
         assert!(fs.read_path(&path).is_err());
         #[cfg(target_os = "linux")]
@@ -587,6 +611,45 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn check_open_handle(
+        fs: crate::QuickFS,
+        path: PathBuf,
+        contents: &'static [u8],
+        acl: AclHandle,
+        denied: crate::acl::WorkspaceAcl,
+    ) {
+        use std::io::{Read as _, Seek as _};
+
+        tokio::task::spawn_blocking(move || {
+            let mountpoint = tempfile::tempdir().unwrap();
+            let session = fuser::spawn_mount(fs, mountpoint.path(), &fuser::Config::default())
+                .expect("mount the scoped Files namespace");
+            let path = mountpoint.path().join(path);
+            let result = (|| -> std::io::Result<(Vec<u8>, bool, bool)> {
+                let mut opened = std::fs::File::open(&path)?;
+                let mut clear = vec![0; contents.len()];
+                opened.read_exact(&mut clear)?;
+
+                acl.replace(denied);
+                opened.rewind()?;
+                let existing_read_denied = opened.read(&mut [0_u8; 1]).is_err();
+                let new_read_denied = std::fs::read(path).is_err();
+                Ok((clear, existing_read_denied, new_read_denied))
+            })();
+            crate::fuse_session::unmount_and_join(session, mountpoint.path()).unwrap();
+            let (read, existing_read_denied, new_read_denied) = result.unwrap();
+            assert_eq!(read, contents);
+            assert!(
+                existing_read_denied,
+                "an already-open descriptor must stop reading"
+            );
+            assert!(new_read_denied, "opening the file again must stop reading");
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
