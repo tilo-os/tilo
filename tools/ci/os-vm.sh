@@ -54,6 +54,12 @@ revision=$(cat "$disk_dir/revision")
 export TILO_DISTROBOX= TILO_VM_ARCH=$arch TMPDIR=/var/tmp TILO_USER=tester TILO_PASS=tilo TILO_MEM=10240
 export TILO_RUN=/var/tmp/tilo-os-vm-$arch TILO_SSH_PORT=2222
 export TILO_DISK=$TILO_RUN/disk.qcow2
+# t gives this job the memory its earlier jobs measured, and QEMU takes all of the guest's at boot:
+# a smaller job ends it with "cannot set up guest memory", or later at the job's limit, while the
+# job still says the VM is up. Say so before booting instead.
+have=$(($(awk '/^MemTotal:/ {print $2}' /proc/meminfo) / 1024))
+((have >= TILO_MEM + 1024)) \
+  || die "the VM needs ${TILO_MEM} MiB and 1 GiB beside it, and t gave this job ${have} MiB"
 # The serial console and the display are served on sockets in the run directory, so the agent
 # can relay both; vm.sh hands both to tilo-vm, which keeps logging the serial line to the file
 # `vm.sh wait` reads.
