@@ -33,11 +33,13 @@ lock_staged_names=$(git diff --cached --name-only)
 # This inventory compares tracked paths with the working tree's baseline.
 # Run before the merge-only index hides scripts inherited from main, or
 # those baseline entries would incorrectly look like removed scripts.
-# Both judge the files this commit stages, read from the index: a file it
-# leaves as HEAD has it was judged by the commit that wrote it, and the whole
-# tree is judged by the policy suite and by CI on every pushed head. Reading
-# the change rather than the twenty thousand files around it is what keeps the
-# hook's cost with the size of the commit.
+# Both judge the files this commit stages, read from the real index: what a
+# merge inherits, and the exceptions that pin those assets, are part of what it
+# commits, so they are judged here, before the filtered copy below puts them
+# back at HEAD. A file a commit leaves as HEAD has it was judged by the commit
+# that wrote it, and the whole tree is judged by the policy suite and by CI on
+# every pushed head. Reading the change rather than the twenty thousand files
+# around it is what keeps the hook's cost with the size of the commit.
 GIT_INDEX_FILE="$full_index" python3 "$root/tools/policy/check_image_interpreters.py" --staged || fail=1
 GIT_INDEX_FILE="$full_index" python3 "$root/tools/policy/check_source_content.py" --staged || fail=1
 
@@ -63,10 +65,6 @@ if merge_head=$(git rev-parse -q --verify MERGE_HEAD); then
       | GIT_INDEX_FILE="$merge_index" git reset -q HEAD --pathspec-from-file=- --
   fi
   export GIT_INDEX_FILE="$merge_index"
-  # The filtered index put every file the merge took from its parent back at
-  # HEAD, so this second pass judges what the resolution itself changed; the
-  # first judged the whole candidate tree, inherited assets included.
-  python3 "$root/tools/policy/check_source_content.py" --staged || fail=1
 fi
 python3 "$root/tools/policy/check_public_references.py" --staged || fail=1
 note() { printf '  %s\n' "$*" >&2; }

@@ -124,7 +124,6 @@ def audit(root, staged=False):
             raise ValueError("duplicate or unexplained asset exception: " + key)
         allowed[key] = entry["oid"]
     parents = []
-    parents = []
     if staged:
         head = subprocess.run(["git", "-C", str(root), "rev-parse", "--verify", "--quiet", "HEAD"], capture_output=True)
         if head.returncode not in (0, 1):
