@@ -322,6 +322,9 @@ impl Workspaces {
                 // they are in.
                 let governed = held.lock().await;
                 let mut peer = governed.peer().clone();
+                if caller.user_public_key != peer.owner() {
+                    return Err(NOT_A_HOLDER.into());
+                }
                 peer.admit_owner_device(caller, now)?;
                 take_governance(&mut peer, &request.bootstrap, now)?;
                 if !names_holder(&peer, caller) {
