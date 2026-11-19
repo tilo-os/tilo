@@ -1044,7 +1044,8 @@ impl AppBrokerState {
     /// the app's whole published surface, whatever order its resources stand in. An agent
     /// hears here of an effect that only changes the publisher's screen
     /// ([`tilo_actions::Availability::shown_here`]), which no listing offers it; a control the
-    /// window draws is never named to it.
+    /// window draws is never named to it. One the caller's role keeps from them is answered
+    /// not allowed, to anyone.
     fn named_action_page(
         &self,
         caller: &Caller,
@@ -1090,7 +1091,12 @@ impl AppBrokerState {
                     found.contract.availability = tilo_actions::Availability::shown_here();
                     return Some(found);
                 }
+                // Named, an action the caller may not take is answered refused, to a person
+                // too: a listing leaves it out of their controls, a lookup by name tells them.
+                let mut refused = found.clone();
+                refused.contract.availability = tilo_actions::Availability::not_allowed(None);
                 Self::offered_to(&workspace, &actor, now, &surface.app_id, found)
+                    .or_else(|| (!actor.is_agent()).then_some(refused))
             })
             .map(|found| CatalogueRow::for_action(provider, &surface.app_id, found))
             .collect();
