@@ -139,7 +139,15 @@ async function viaSealedLink({scope, secrets, home, deep, runtime, deps, onProgr
 async function ready(peer, onProgress = () => {}) {
   // The desktop shows once the workspace's shared desktop record is here,
   // not after the whole workspace: the rest arrives while it is shown.
-  await peer?.whenReady?.({shown: true, onProgress: records => onProgress({phase: 'receiving', records})});
+  try {
+    await peer?.whenReady?.({shown: true, onProgress: records => onProgress({phase: 'receiving', records})});
+  } catch (error) {
+    // A peer that never opened still holds its device key and storage lease.
+    // Release them before the page reports the failure and another try starts.
+    try { await peer?.dispose?.(); }
+    catch (closeError) { console.warn('admission: closing the failed connection', closeError); }
+    throw error;
+  }
   return {peer};
 }
 

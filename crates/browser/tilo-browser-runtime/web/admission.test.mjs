@@ -145,6 +145,24 @@ test('nobody signed in at a link to a public workspace is let in through its own
   assert.deepEqual(read, []);
 });
 
+test('a paired peer that cannot open its workspace releases its storage before reporting the failure', async () => {
+  const failure = Object.assign(new Error('the workspace is not ready on this host yet'), {code: 'not-let-in'});
+  const closing = Promise.withResolvers();
+  const released = Promise.withResolvers();
+  const {deps} = entries({pairDevice: async () => ({
+    whenReady: async () => { throw failure; },
+    dispose: async () => { closing.resolve(); await released.promise; },
+  })});
+  const admission = admit({scope: target, secrets: {pair: 'ab'.repeat(32)}, runtime: rules(['pair']).runtime, deps});
+  let reportedFailure = false;
+  const reported = admission.catch(error => { reportedFailure = true; return error; });
+  assert.equal(await Promise.race([closing.promise, reported]), undefined, 'the peer starts closing before the failure is reported');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(reportedFailure, false, 'the page cannot retry while the peer still holds storage');
+  released.resolve();
+  await assert.rejects(admission, error => error === failure);
+});
+
 test('the person’s own desktop needs no peer', async () => {
   const {calls, deps} = entries();
   assert.deepEqual(await admit({scope: {kind: 'own'}, runtime: rules(['own-desktop']).runtime, deps}), {peer: null});

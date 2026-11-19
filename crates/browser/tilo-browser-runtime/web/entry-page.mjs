@@ -1864,7 +1864,7 @@ export async function startEntryPage({mode}) {
     }
     // A refusal is the host's answer, which trying again does not change.
     arrive('stopped');
-    document.documentElement.dataset.entry = error instanceof AdmissionError || refusedByHost(error) ? 'refused' : 'failed';
+    const outcome = error instanceof AdmissionError || refusedByHost(error) ? 'refused' : 'failed';
     // Turned away for coming without an invitation: the entry is a page of
     // its own, with its own ways in, and nothing else is shown over it. No
     // desktop speaks behind it, so it speaks the visitor's own language.
@@ -1884,6 +1884,7 @@ export async function startEntryPage({mode}) {
       offerRefusal({messages, language, named: linked.name, error, workspace: linked, runtime, link: admitting.link,
         home: homeAdmissionWorkspace(admitting.entry), pair: pairSignIn(linked), signIn: true, waitList});
       status.textContent = `${document.getElementById('arrival-refusal-heading')?.textContent ?? ''}. ${document.getElementById('arrival-refusal-body')?.textContent ?? ''}`;
+      root.entry = outcome;
       return;
     }
     if (error?.code === 'invitation-only') {
@@ -1897,6 +1898,7 @@ export async function startEntryPage({mode}) {
       const turnedAway = visitedAt ?? admitting?.entry?.home ?? null;
       offerRefusal({messages, language, named, error, workspace: turnedAway, runtime, link: admitting?.link,
         home: homeAdmissionWorkspace(admitting?.entry) ?? entryWorkspace(turnedAway), pair: pairSignIn(turnedAway)});
+      root.entry = outcome;
       if (admitting && !embed) void offerOwnDesktop({...admitting, runtime});
       // Its answer, not a failure of this page to report as an uncaught
       // error (every stranger at such an entry would send one).
@@ -1910,6 +1912,9 @@ export async function startEntryPage({mode}) {
     // another host holds it now, and no longer reopened on a bare entry.
     const settled = known && !local ? await settleWorkspace(known, runtime) : null;
     await showFailure({error, settled, admitted: inside, step, workspace: named ?? known?.name ?? null, messages});
+    // Native clients react to the terminal entry. Publish it together with
+    // the final status and details so one failed join only ends one attempt.
+    root.entry = outcome;
     // The cause reaches the console and, once, the site's host (above):
     // thrown on, it is not reported a second time as uncaught.
     pageErrors.reported(error);
@@ -2845,7 +2850,9 @@ function pairingOf({peer, identity, link}) {
  * pairs an agent), and the link opens a workspace of that server for the new
  * device to land in: the one a bare entry opens for the person in this
  * browser, else the one this browser was let into or entered there, else the
- * site's home workspace. The ceremony is the same as from a workspace:
+ * site's home workspace. A server that was set up again may have a new device
+ * key at the same origin. Workspaces remembered for the old key are dropped
+ * from the link's choices. The ceremony is the same as from a workspace:
  * a fresh invite that works once, for ten minutes, the person asked on this
  * page with the code the device shows, and the root signing here. `null`
  * where the site names no home server: nothing to pair through. Where no
@@ -2869,12 +2876,17 @@ function pairingAtHome({home, identity, runtime, link}) {
     }
   };
   const landing = () => {
+    const homeWorkspace = homeAdmissionWorkspace({home}) ?? home.workspace ?? null;
+    const serverDevice = hostDeviceOf(siteServer(server)?.info?.hostCert);
+    const entered = (remembering(() => enteredWorkspaces()) ?? []).filter(there);
+    const fromOldServer = workspace => serverDevice && workspace !== homeWorkspace
+      && entered.some(entry => entry.workspace === workspace && entry.hostDevice !== serverDevice);
     const chosen = remembering(() => chosenWorkspace());
-    if (there(chosen)) return chosen.workspace;
+    if (there(chosen) && !fromOldServer(chosen.workspace)) return chosen.workspace;
     // What this browser joined that server as counts only where it joined as this person.
     const member = remembering(() => keptMembership(home));
-    return (member?.userPublicKey === identity.userPublicKey ? member.workspace : null)
-      ?? (remembering(() => enteredWorkspaces()) ?? []).find(there)?.workspace ?? home.workspace ?? null;
+    if (member?.userPublicKey === identity.userPublicKey && member.workspace && !fromOldServer(member.workspace)) return member.workspace;
+    return entered.find(entry => !serverDevice || entry.hostDevice === serverDevice)?.workspace ?? homeWorkspace;
   };
   return {...through, link: invite => {
     const workspace = landing();

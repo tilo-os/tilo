@@ -677,6 +677,15 @@ paths = [
 ]
 
 [[allow]]
+reason = "The entry reads hostCert from the server's published metadata, compares hostDevice from remembered workspaces, and uses the existing refusal classifier."
+words = ["host"]
+identifiers = ["hostCert", "hostDevice", "hostDeviceOf", "refusedByHost"]
+paths = [
+    "crates/browser/tilo-browser-runtime/web/entry-page.mjs",
+    "crates/browser/tilo-browser-runtime/web/entry-page.test.mjs",
+]
+
+[[allow]]
 reason = "A link's workspace scope names the server it is on in the field `host`, as the runtime's link grammar (`parseLink`, `formatLink`) spells it, and the boot tests build scopes in that shape."
 words = ["host"]
 identifiers = ["host"]

@@ -5,6 +5,7 @@ import {chooseWorkspace, chosenWorkspace, enteredWorkspaces, joinViaHost, keptMe
 import {AdmissionError, admit} from './admission.mjs';
 import {assistantAddress, PAIRING_CLOCK, PAIRING_DECLINED, PAIRING_SAME_PERSON, parsePairSecret} from './pairing.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
+import {forgetSiteServers, nameSiteServer} from './site-host.mjs';
 
 const USER = 'aa'.repeat(32);
 /** The short link the page's site keeps an invitation under. */
@@ -312,6 +313,24 @@ test('the sign-in screen at a closed workspace offers someone with no Tilo ident
   } finally {
     globalThis.fetch = before;
   }
+});
+
+test('the terminal entry is published with the final join error and technical details', async () => {
+  const error = new Error('This profile/device is already open in another browser tab');
+  const states = [];
+  const {failure} = await fixture({boot: async ({onStep}) => {
+    const root = document.documentElement.dataset;
+    Object.defineProperty(root, 'entry', {set: entry => {
+      states.push({entry, failure: root.failure, details: document.getElementById('arrival-failure-text').textContent});
+    }});
+    onStep('join');
+    throw error;
+  }});
+  assert.equal(failure, error);
+  assert.equal(states.length, 1);
+  assert.equal(states[0].entry, 'failed');
+  assert.equal(states[0].failure, 'loading');
+  assert.match(states[0].details, /Stopped at: join\nError: Error: This profile\/device is already open/);
 });
 
 test('the entry says what works where passkeys cannot be used, and nothing when the person closes the sheet', async () => {
@@ -1617,6 +1636,36 @@ test('the own desktop’s pairing link opens a workspace of the home server this
   } finally {
     timers.release();
   }
+});
+
+test('pairing from the own desktop after a host reset uses a workspace of the current host', async t => {
+  const timers = heldTimers();
+  t.after(() => { timers.release(); forgetSiteServers(); });
+  const device = 'ef'.repeat(32);
+  const home = {name: 'Lounge', admission: `${ORIGIN}/peer/v1/directory/new-home/`, host: {origin: ORIGIN,
+    info: JSON.stringify({hostCert: {device_public_key: device}, address: {endpointAddr: {id: 'new-server'}}})}};
+  const entry = {...HOME_ENTRY, home};
+  nameSiteServer(home);
+  const local = {'tilo-host-memberships': JSON.stringify({[ORIGIN]: {origin: ORIGIN, workspace: 'old-home', userPublicKey: USER}})};
+  const oldEntries = ['old-own', 'old-home'].map(workspace => ({origin: ORIGIN, workspace, hostDevice: 'cd'.repeat(32)}));
+  const stale = await ownDesktop({server: homeServer(), entry, chosen: 'old-own', local, remembered: oldEntries});
+  choose(stale.diagnostics, 'pair-device');
+  await settled();
+  assert.equal(namedBy(pairingLinkOf(card('pair-link'))).workspace, 'new-home');
+
+  const remembered = [{origin: ORIGIN, workspace: 'new-own', hostDevice: device, name: 'Mine'}];
+  const current = await ownDesktop({server: homeServer(), entry, chosen: 'new-own', local, remembered});
+  choose(current.diagnostics, 'pair-device');
+  await settled();
+  assert.equal(namedBy(pairingLinkOf(card('pair-link'))).workspace, 'new-own');
+
+  // Direct admission can keep a membership without a separate entered row.
+  const direct = await ownDesktop({server: homeServer(), entry, local: {'tilo-host-memberships': JSON.stringify({
+    [ORIGIN]: {origin: ORIGIN, workspace: 'direct-entry', userPublicKey: USER},
+  })}});
+  choose(direct.diagnostics, 'pair-device');
+  await settled();
+  assert.equal(namedBy(pairingLinkOf(card('pair-link'))).workspace, 'direct-entry');
 });
 
 test('a page that is not one of the person’s root-holding devices opens no pairing sheet', async () => {
