@@ -51,7 +51,8 @@ so the SDKs trust it. For a browser of your own, import the CA file it names as 
 - **A switch that makes an ordinary computer a host for agents.** There is none in Tilo today: the way to
   have a host of your own is the local stack above, which is what we test the product with. When a Tilo
   desktop can host workspaces for its person's agents, it will be the same API and the same keys, pointed
-  at that machine.
+  at that machine. On a machine that is yours alone, `TILO_SH_TERMINAL_ON_MACHINE=1 stack.sh up` has
+  your agents' Terminal start real programs (`git`, `cargo`) on it, unconfined, as the stack's own user.
 - **Webhooks.** A host tells you what happened over the [event stream](events.md) it serves. Nothing calls
   your server.
 - **A hosted Browser needs a machine with KVM.** Running pages in a workspace's own Linux machine is part of

@@ -42,10 +42,16 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
       through the API server (minutes, once per state). --discord starts a
       fake Discord and points the Lounge's Discord sign-in and bridge at
       it. --fresh wipes the state first (a new Lounge, a new entry).
-  stack.sh restart NAME  after a code change: rebuild NAME and start it again,
-                         the rest left running (server, api, web, tls,
+  stack.sh restart [--detach] NAME...
+                         after a code change: rebuild each NAME and start it
+                         again, the rest left running (server, api, web, tls,
                          discord, releases; not with --images). The web
-                         rebuilds its bundle, the others their programs
+                         rebuilds its bundle, the others their programs. The
+                         server lets its agents' turns that are going end
+                         first. --detach builds everything named, says
+                         whether it built, and returns; the restarts then
+                         follow on their own (stack.sh logs restart): how an
+                         agent of the stack restarts it from its own Terminal
   stack.sh env
       The environment that points everything at this stack: eval "\$(stack.sh env)",
       then tilo keys create "My backend", the Python SDK (Tilo()), the TS SDK
@@ -193,6 +199,11 @@ OCI archive or a registry reference instead of this checkout's t build (e.g.
 the registry.tilo.so/tilo/lounge@sha256:… production pins).
 TILO_SH_VM_HOST=0 leaves the VM host out where it could run (it runs as
 root through sudo).
+TILO_SH_TERMINAL_ON_MACHINE=1, on a stack with no VM host, has the
+workspaces' Terminal start its programs (cargo, git, ...) on this machine as
+the stack's own user, with the PATH it was brought up with; nothing confines
+them, so it is for a machine that is one person's own, like a development VM.
+The state keeps it; =0 turns it off.
 State: TILO_SH_STATE (default \${XDG_STATE_HOME:-~/.local/state}/tilo-sh-local).
 The keys of people's sealed stores (their sign-ins, provider keys and vault
 items on the server) are kept in a folder beside the state, never in it, so a
@@ -611,6 +622,30 @@ server_env() {
     env+=("TILO_AGENT_MODEL=$TILO_SH_AGENT_MODEL")
     [[ -z ${TILO_SH_AGENT_MODEL_NAME:-} ]] || env+=("TILO_AGENT_MODEL_NAME=$TILO_SH_AGENT_MODEL_NAME")
     [[ -z ${TILO_SH_AGENT_API_KEY:-} ]] || env+=("TILO_AGENT_API_KEY=$TILO_SH_AGENT_API_KEY")
+  fi
+  # TILO_SH_TERMINAL_ON_MACHINE=1: with no VM host, the workspaces' Terminal
+  # (a person's and their agents') starts its programs on this machine, as the
+  # stack's own user, with the PATH and toolchain of whoever brought it up:
+  # for a stack that is one person's own machine, such as a development VM
+  # whose agent builds the very stack it talks through. Nothing confines those
+  # programs. The state keeps it, with that environment, so `restart server`
+  # serves it the same way; TILO_SH_TERMINAL_ON_MACHINE=0 turns it off again.
+  if [[ -n ${TILO_SH_TERMINAL_ON_MACHINE:-} ]]; then
+    if [[ $TILO_SH_TERMINAL_ON_MACHINE == 1 ]]; then
+      { printf 'PATH=%s:%s\n' "${lounge:-$native/lounge}/bin" "$PATH"
+        local toolchain
+        for toolchain in CARGO_HOME RUSTUP_HOME; do
+          [[ -z ${!toolchain:-} ]] || printf '%s=%s\n' "$toolchain" "${!toolchain}"
+        done
+      } > "$state/terminal-on-machine.env"
+    else
+      rm -f "$state/terminal-on-machine.env"
+    fi
+  fi
+  if [[ -f $state/terminal-on-machine.env ]] && ! vm_host_running; then
+    env+=(TILO_TERMINAL_ON_MACHINE=1)
+    local line
+    while IFS= read -r line; do env+=("$line"); done < "$state/terminal-on-machine.env"
   fi
   # A workspace's programs and its Browser run in its VM on this stack's own
   # VM host, when it is up: where to place a workspace, which device holds it,
@@ -1533,11 +1568,15 @@ run_native() {
 
 stop_native() {
   local pidfile=$runs/$1.pid pid
+  # The server first lets its agents' turns that are going end (five minutes at
+  # most), so a restart never cuts one off halfway.
+  local patience=5
+  [[ $1 != server ]] || patience=310
   [[ -f $pidfile ]] || return 0
   pid=$(cat "$pidfile")
   if kill -0 "$pid" 2>/dev/null; then
     kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
-    local deadline=$((SECONDS + 5))
+    local deadline=$((SECONDS + patience))
     while kill -0 "$pid" 2>/dev/null && ((SECONDS < deadline)); do sleep 0.1; done
     kill -KILL -- "-$pid" 2>/dev/null || true
     # Gone, every process of its group: one still exiting holds the ports the
@@ -1760,9 +1799,51 @@ up_native() {
   say "web up ($((SECONDS - phase))s)"
 }
 
+# restart [--detach] NAME…: each NAME rebuilt and started again, in the order
+# given. With --detach everything named is built first, here, so a build that
+# fails says so and leaves every service as it is; then the restarts follow on
+# their own, in a session of their own that outlives the caller
+# (logs/restart.log), and this returns at once. That is how a service's own
+# program restarts it: an agent of the stack's server, from its Terminal, has
+# its turn end before the server stops, which waits for it.
 restart() {
-  local name=${1:-}
-  [[ -n $name ]] || die 'restart NAME: server, api, web, tls, discord or releases'
+  local detach=0 names=() name
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --detach) detach=1 ;;
+      -*) die "restart takes --detach and service names, not $1" ;;
+      *) names+=("$1") ;;
+    esac
+    shift
+  done
+  [[ ${#names[@]} -gt 0 ]] || die 'restart [--detach] NAME…: server, api, web, tls, discord or releases'
+  if [[ $detach == 1 ]]; then
+    [[ $mode == native ]] || die '--detach rebuilds the native stack; the images are as they were built: stack.sh up --images again'
+    native_preflight
+    for name in "${names[@]}"; do
+      case $name in
+        server|api|discord|releases) build_programs ;;
+        web) build_bundle ;;
+        tls) ;;
+        *) die "restart takes server, api, web, tls, discord or releases, not $name" ;;
+      esac
+    done
+    say "built; restarting ${names[*]} on its own once this returns (stack.sh logs restart)"
+    # Held by this command until it returns: the restart takes it once it is free.
+    exec 9>&-
+    setsid nohup env TILO_SH_RESTART_AFTER=$$ bash "$here/stack.sh" restart "${names[@]}" \
+      >> "$state/logs/restart.log" 2>&1 < /dev/null &
+    return 0
+  fi
+  if [[ -n ${TILO_SH_RESTART_AFTER:-} ]]; then
+    # Started by a detached restart: the command that started it returns first.
+    while kill -0 "$TILO_SH_RESTART_AFTER" 2>/dev/null; do sleep 0.2; done
+  fi
+  for name in "${names[@]}"; do restart_one "$name"; done
+}
+
+restart_one() {
+  local name=$1
   [[ $mode == native ]] || die 'restart rebuilds the native stack; the images run as built: stack.sh up --images again'
   native_preflight
   # What the server reads of the operator's secrets, on a stack whose state was

@@ -30,8 +30,18 @@ bundle's module (`build.sh --profile local`: the same for the bundle, bound and
 split as the shipped bundle is, without wasm-opt). A change recompiles the
 parts of the crates it touched; a module that did not change is neither bound
 nor split again, and `stack.sh restart NAME` rebuilds and restarts one service
-while the others keep running. Each service gets its own state and runtime
-directory under the stack's state. `stack.sh help` lists every command.
+while the others keep running. The server lets the turns its agents are taking
+end before it stops, so a restart never cuts an answer off; `restart --detach
+NAME...` builds first, says whether that worked, and leaves the restarts to follow
+on their own, which is how an agent restarts the stack it talks through from its
+own Terminal. Each service gets its own state and runtime directory under the
+stack's state. `stack.sh help` lists every command.
+
+Without a VM for each workspace, a stack starts no programs in their Terminal
+beyond the shell's own commands. `TILO_SH_TERMINAL_ON_MACHINE=1` has it start them on
+the machine itself, as the stack's user with the `PATH` it was brought up with:
+for a stack that is one person's own machine, such as a development VM whose
+agent edits and rebuilds the stack. Nothing confines those programs.
 
 The keys of people's sealed stores (their sign-ins, provider keys and vault
 items on the server) are kept in a folder beside the stack's state, never in
