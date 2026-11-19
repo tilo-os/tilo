@@ -802,7 +802,7 @@ impl WindowsApp {
             .apps
             .iter()
             .position(|item| item.id == app.id)
-            .ok_or_else(|| "the application is no longer in the catalogue".to_owned())?;
+            .ok_or_else(|| strings::t("windows-error-app-gone"))?;
         self.apply_intent(Intent::SelectApp(index));
         Ok(())
     }
