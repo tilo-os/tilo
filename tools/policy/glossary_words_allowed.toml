@@ -350,6 +350,7 @@ paths = [
     "apps/chat-model-wasm/*",
     "apps/tl/chat/*",
     "crates/agent/agent-session/tests/workspace_actions/carried_names.rs",
+    "crates/agent/agent-session/tests/workspace_actions/chat_after_join.rs",
     "crates/agent/agent-session/tests/workspace_actions/chat_group.rs",
     "crates/agent/agent-session/tests/workspace_actions/held_roles.rs",
     "crates/sdk/ui-core/src/mentions.rs",
@@ -1666,3 +1667,9 @@ reason = "`join_ledger` is the field name version 6 of a device's owner entry wa
 words = ["ledger"]
 identifiers = ["join_ledger"]
 paths = ["crates/collab/tilo-peer-state/src/owner/stored/format.rs"]
+
+[[allow]]
+reason = "The api-on-server harness keeps the server's own device as `OnServer::host`, which a page of its workspace joins under."
+words = ["host"]
+identifiers = ["host"]
+paths = ["crates/agent/agent-session/tests/workspace_actions/chat_after_join.rs"]

@@ -95,6 +95,9 @@ mod bulk_import;
 #[path = "workspace_actions/chain_parts_restart.rs"]
 mod chain_parts_restart;
 #[cfg(test)]
+#[path = "workspace_actions/chat_after_join.rs"]
+mod chat_after_join;
+#[cfg(test)]
 #[path = "workspace_actions/chat_group.rs"]
 mod chat_group;
 #[cfg(test)]

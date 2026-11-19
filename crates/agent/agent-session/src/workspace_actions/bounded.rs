@@ -818,6 +818,7 @@ impl Worker {
         let wanted = self.kept_held(super::catch_up::wanted_untold(
             &holder,
             self.bounded.get(&key).map(|held| &held.held),
+            state,
         ));
         let held = self
             .bounded

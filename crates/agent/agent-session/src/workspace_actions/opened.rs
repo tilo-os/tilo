@@ -116,35 +116,21 @@ impl Workspace {
         routes
     }
 
-    /// Ask the workspace's host for the records `needs` reads that this
-    /// member holds none of, and say whether an answer is still owed: the
-    /// host's answer is the session's change that wakes the request to look
-    /// again, and the wait is the one the request's keys get, so a host that
-    /// never answers ends it. A workspace that sends its records when they
-    /// are opened sends nothing else, so a record not here is one the
-    /// workspace may still hold: it is asked for rather than taken as absent,
-    /// and is absent only once the host answered it holds none of it
-    /// ([`tilo_session_client::Event::DocumentOpened`] with no frames).
+    /// Ask the workspace's device for the resources `needs` reads that this
+    /// member holds none of, and say whether an answer is still owed: that
+    /// answer is the session's change that wakes the request to look again,
+    /// and the wait is the one the request's keys get, so a device that never
+    /// answers ends it. A resource not here is one the workspace may still
+    /// hold — a workspace that sends its resources when they are opened sends
+    /// nothing else, and one that replayed everything it held when this member
+    /// joined sends a resource made since only once it is asked for — so it is
+    /// asked for rather than taken as absent, and is absent only once the
+    /// workspace answered it holds none of it
+    /// ([`tilo_session_client::Event::DocumentOpened`] with no frames). A
+    /// chunk its tree lists that is not here was made since (a branch's,
+    /// refounded as it was made), and is asked for the same way; read as
+    /// absent, a write would found it again.
     pub(super) fn ask(&mut self, workspace_id: WorkspaceId, needs: Needs<'_>) -> bool {
-        if self.when_opened {
-            return self.ask_for(workspace_id, needs);
-        }
-        // A replay sent what the workspace held when this member joined. A chunk its tree
-        // lists that is not here was made since (a branch's, refounded as it was made), and
-        // reaches this member only asked: read as absent, a write would found it again.
-        let chunks = self
-            .routes(workspace_id, needs)
-            .into_iter()
-            .filter(|route| {
-                fs_protocol::tree::chunk_of_record(&route.document).is_some_and(|chunk| chunk > 0)
-            })
-            .collect();
-        self.ask_routes(workspace_id, chunks)
-    }
-
-    /// [`Self::ask`] whether or not the workspace replayed everything it held when this member
-    /// joined: a record made after that is sent to a member only once it asked for it.
-    pub(super) fn ask_for(&mut self, workspace_id: WorkspaceId, needs: Needs<'_>) -> bool {
         let routes = self.routes(workspace_id, needs);
         self.ask_routes(workspace_id, routes)
     }
@@ -162,11 +148,17 @@ impl Workspace {
                 && !self.answered.contains(&route)
                 && !self.asked.contains(&route)
             {
-                // A record the host sends only to a device that opened it (a chunk of a
-                // tree) is opened as one; any other is asked for by its route.
-                let ask = if tilo_actions::document_sync::document_sync(&route.document)
-                    == tilo_actions::document_sync::DocumentSync::Eager
-                {
+                // A resource the workspace sends only to a device that opened it (a chunk of
+                // a tree, a chain's head) is opened as such; in a workspace that sends its
+                // resources when they are opened, any other is asked for by its route,
+                // which the session takes as the open it is. In a workspace that replayed
+                // what it held when this member joined, a resource it holds none of was
+                // made since, and the session asks for the document itself: asking by its
+                // route there opens only the route, and the document's history never
+                // comes.
+                let eager = tilo_actions::document_sync::document_sync(&route.document)
+                    == tilo_actions::document_sync::DocumentSync::Eager;
+                let ask = if eager && self.when_opened {
                     Cmd::OpenRoute(route.clone())
                 } else {
                     Cmd::OpenDocumentAt(workspace_id, route.clone())

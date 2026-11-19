@@ -290,13 +290,15 @@ fn hold(route: &DocumentRoute, mounted: &mut Mounted, state: &WorkspaceState) {
 }
 
 /// The documents the view opened from its workspace that `holder` holds not yet, as routes:
-/// everything its store asked its workspace for, other than the parts of its chains
-/// ([`hold_parts`] hands those) and the document itself. A Files window opens the workspace's
-/// folder and each chunk it lists this way; a window whose app keeps nothing beside its own asks
-/// for nothing.
+/// everything its store asked its workspace for, other than the document itself and the parts
+/// of its chains this replica holds ([`hold_parts`] hands those). A Files window opens the
+/// workspace's folder and each chunk it lists this way; a chain this replica holds no part of
+/// is named by its head, and a part it holds none of by the part; a window whose app keeps
+/// nothing beside its own asks for nothing.
 pub(super) fn wanted_untold(
     holder: &DocumentRoute,
     mounted: Option<&Mounted>,
+    state: &WorkspaceState,
 ) -> Vec<DocumentRoute> {
     let Some(mounted) = mounted else {
         return Vec::new();
@@ -307,14 +309,40 @@ pub(super) fn wanted_untold(
         .wanted_resources()
         .into_iter()
         .filter(|document| document != own)
-        .filter(|document| document.chain_part().is_none() && !document.is_chain_head())
         .map(|document| DocumentRoute {
             app_id: holder.app_id.clone(),
             cluster_id: holder.cluster_id.clone(),
             document: document.as_str().to_owned(),
         })
+        // A chain's head is asked for by that name when this replica holds no
+        // part of the chain: nothing else tells this device which part is the
+        // newest, and the workspace's answer that it holds none of the chain
+        // is what lets the document start its first part.
+        .filter(|route| !is_head(route) || !holds_a_part_of(holder, state, &route.document))
+        // A part this replica holds is handed to the document by [`hold_parts`];
+        // one it holds none of is asked for, and its answer is what tells the
+        // document the part is new here.
+        .filter(|route| !is_part(&route.document) || !state.holds(route))
         .filter(|route| !mounted.parts.contains_key(route) && !mounted.foreign.contains(route))
         .collect()
+}
+
+/// Whether `route` names a chain's head, which holds no document of its own.
+fn is_head(route: &DocumentRoute) -> bool {
+    ui::resource::DocumentId::parse(&route.document)
+        .is_some_and(|document| document.is_chain_head())
+}
+
+/// Whether this member's replica holds a part of the chain whose head is
+/// `head`: what [`hold_parts`] hands the document as the chain's newest part,
+/// so its head is not asked for by name.
+fn holds_a_part_of(holder: &DocumentRoute, state: &WorkspaceState, head: &str) -> bool {
+    state.documents.iter().any(|route| {
+        route.app_id == holder.app_id
+            && route.cluster_id == holder.cluster_id
+            && ui::resource::DocumentId::parse(&route.document)
+                .is_some_and(|part| part.chain_head().as_str() == head)
+    })
 }
 
 /// The routes of what `holder`'s app keeps for its whole workspace beside its own document
@@ -449,7 +477,7 @@ impl Worker {
     /// that keeps asking for what the workspace holds none of does not hold the action.
     fn hand_wanted(&mut self, holder: &DocumentRoute, state: &WorkspaceState) {
         for _ in 0..WANTED_ROUNDS {
-            let wanted = self.kept_held(wanted_untold(holder, self.mounted.get(holder)));
+            let wanted = self.kept_held(wanted_untold(holder, self.mounted.get(holder), state));
             if wanted.is_empty() {
                 return;
             }
