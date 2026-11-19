@@ -1247,7 +1247,7 @@ impl StatePeer {
             Some(document) => Some(held_units(&document.doc, envelope)),
             None => enforced.then(AutoCommit::new),
         };
-        // A member's own record is decided as its person's: they do anything in
+        // A member's own resource is decided as its person's: they do anything in
         // it whatever their role, and nobody else anything.
         let person = self.core.own_person(app_id, record, source);
         let mut cx = tilo_action_policy::Context::at_time(authorization_time);
@@ -1308,7 +1308,16 @@ impl StatePeer {
                 Ok(Authorized::Hold(crate::MissingPrerequisite::Governance))
             }
             Err(refusal) => {
-                let said = refused_change(&refusal, &route, source, envelope);
+                let mut said = refused_change(&refusal, &route, source, envelope);
+                // Another member's write of a person's view of the layout is refused because the
+                // view is that person's alone, which says more than the grant it lacks.
+                if let Ok(writer) = super::person_of(&member)
+                    && let Err(not_theirs) = tilo_desktop_model::shared_resource::guard::may_write(
+                        app_id, record, writer,
+                    )
+                {
+                    said = format!("document change forbidden: {not_theirs}");
+                }
                 Err(AuthorizeRefusal::Rules(refusal, said))
             }
         }
