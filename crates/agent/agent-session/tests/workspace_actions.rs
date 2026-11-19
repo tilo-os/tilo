@@ -89,6 +89,9 @@ mod computer_agent;
 #[path = "workspace_actions/bulk_import.rs"]
 mod bulk_import;
 #[cfg(test)]
+#[path = "workspace_actions/chain_parts_restart.rs"]
+mod chain_parts_restart;
+#[cfg(test)]
 #[path = "workspace_actions/chat_group.rs"]
 mod chat_group;
 #[cfg(test)]

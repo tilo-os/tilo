@@ -67,7 +67,8 @@ impl Worker {
                 }
             })?;
             if let Some(mounted) = self.mounted.get_mut(holder) {
-                catch_up::hold_parts(holder, mounted, &state);
+                let missing = catch_up::hold_parts(holder, mounted, &state);
+                self.ask_parts(holder, missing);
             }
             std::thread::park_timeout(look);
             look = look.saturating_mul(2).min(PART_LOOK_MAX);

@@ -829,7 +829,7 @@ impl Worker {
         } else if let Some(behind) = behind {
             super::catch_up::catch_up(&holder, &mut held.held, state, Some(&behind));
         }
-        super::catch_up::hold_parts(&holder, &mut held.held, state);
+        let missing = super::catch_up::hold_parts(&holder, &mut held.held, state);
         super::catch_up::tell_kept(&mut held.held, state, kept);
         super::catch_up::tell_kept(&mut held.held, state, wanted);
         if holder != *route && !held.held.parts.contains_key(route) {
@@ -843,6 +843,7 @@ impl Worker {
                 .map_err(|error| unavailable(error.to_string()))?;
             held.held.parts.insert(route.clone(), Some(heads));
         }
+        self.ask_parts(&holder, missing);
         Ok(key)
     }
 
