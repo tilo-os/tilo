@@ -323,6 +323,8 @@ test-checklist-seed-long = Add `count` tasks whose titles wrap in a row, every t
 
 ## crates/sdk/tilo-app/tests/surface_report.rs
 test-surface-report-effects-count = Count what the record holds
+test-surface-report-effects-open-row = Show the row it is offered on
+test-surface-report-effects-read-row = Read the row it is offered on
 test-surface-report-effects-zoom-in = Zoom the window in
 test-counter = Counter
 test-counter-bump = Count one more

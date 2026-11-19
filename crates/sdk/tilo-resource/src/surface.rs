@@ -256,16 +256,23 @@ pub fn view_effects(rows: &[crate::effect::EffectRow]) -> Vec<String> {
 }
 
 /// An app's effects as actions a caller of another language reads: every one
-/// that only reads (`kind = "read"`) and that acts on the app's record,
-/// answering with the value it declares. What its window shows (a view's
-/// zoom, its caret) is no action of the catalogue, and neither is one offered
-/// only bound to a row's item: that reads the row, not the record.
+/// that only reads (`kind = "read"`) and that is offered on the app's own
+/// resource, answering with the value it declares. An effect offered on a row
+/// of a declared type is one of them: the resource's action, its parameter
+/// naming the row it acts on. What its window shows (a view's zoom, its caret)
+/// is no action of the catalogue, and neither is one offered on an item of the
+/// resource's collection: that is published on the item itself.
 #[must_use]
 pub fn effect_verbs(rows: &[crate::effect::EffectRow], types: &mut TypeSet) -> Vec<VerbSurface> {
     rows.iter()
         .filter(|row| row.kind != tilo_actions::OperationKind::View)
         .filter(|row| row.action_kind == crate::ActionKind::Read)
-        .filter(|row| !row.row && row.items.is_empty())
+        .filter(|row| !row.row)
+        .filter(|row| {
+            !row.items
+                .iter()
+                .any(|target| matches!(target, crate::effect::EffectTarget::Field(_)))
+        })
         .map(|row| effect_verb(&crate::EffectDecl::of_row(row), types))
         .collect()
 }

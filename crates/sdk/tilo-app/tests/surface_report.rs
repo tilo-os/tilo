@@ -149,6 +149,46 @@ tilo_test_env::scenario! {
             "a view is no action of the catalogue: {report}"
         );
     }
+
+    phase a_row_bound_effect_is_an_action_of_the_resource;
+    // An effect offered on a row of a declared type is the resource's action
+    // too: its parameter names the row it acts on.
+    {
+        let report = tilo_app::framework::headless::surface_report::<ReadingApp>();
+        let surface = &report["resources"][0];
+        let open = surface["verbs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|verb| verb["id"] == "open-row")
+            .unwrap_or_else(|| panic!("a row-bound read effect publishes a verb: {report}"));
+        assert_eq!(open["params"][0]["name"], "row", "{report}");
+        assert_eq!(open["params"][0]["required"], true, "{report}");
+        assert_eq!(open["params"][0]["type"], "text", "{report}");
+    }
+
+    phase an_agent_calls_a_row_bound_effect_by_its_published_address;
+    // The address and the row parameter come from the surface; an agent calls
+    // an effect that reads, and only a screen's own person calls one that
+    // shows.
+    {
+        use tilo_app::tilo_actions::ActionInvoker;
+
+        let mut app = TestApp::<ReadingApp>::new().unwrap();
+        let answer = app
+            .call_by(
+                ActionInvoker::agent("reader"),
+                Counter::KIND,
+                "read-row",
+                serde_json::json!({ "row": "row-7" }),
+            )
+            .unwrap();
+        assert_eq!(
+            answer.value,
+            Some(serde_json::json!({ "count": 1, "what": "row-7" })),
+            "the row names what it read"
+        );
+    }
 }
 
 /// What a read action answers, as the surface publishes it.
@@ -160,12 +200,29 @@ pub struct Counted {
     pub what: String,
 }
 
+/// A row of a type the app publishes.
+#[derive(tilo_app::tilo_resource::Row)]
+#[row(kind = "test.counter-row", label = "Counter row", effects = ReadEffect)]
+pub struct CounterRow;
+
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "test.surface-report.effects", catalogue = "tests/locales")]
 pub enum ReadEffect {
     /// Count what the record holds.
     #[effect(kind = "read", returns = Counted, idempotent)]
     Count,
+    /// Read the row it is offered on.
+    #[effect(kind = "read", on = CounterRow, returns = Counted)]
+    ReadRow {
+        #[param("The row's id")]
+        row: String,
+    },
+    /// Show the row it is offered on.
+    #[effect(screen, on = CounterRow)]
+    OpenRow {
+        #[param("The row's id")]
+        row: String,
+    },
     /// Zoom the window in.
     #[effect(view)]
     ZoomIn,
@@ -184,7 +241,11 @@ impl ResourceApp for ReadingApp {
                 count: 0,
                 what: String::new(),
             })),
-            ReadEffect::ZoomIn => Ok(Effected::done()),
+            ReadEffect::ReadRow { row } => Ok(Effected::value(Counted {
+                count: 1,
+                what: row,
+            })),
+            ReadEffect::OpenRow { .. } | ReadEffect::ZoomIn => Ok(Effected::done()),
         });
         Box::new(cx.button("bump", Counter::BUMP.invoke()))
     }
