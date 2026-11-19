@@ -131,7 +131,8 @@ pub fn name(language: Option<&str>) -> String {
     )
 }
 
-#[cfg(unix)]
+/// The package service this session handed off, once: a platform without one has no client,
+/// and the pane says the host offers no language packs.
 fn with_host<T>(ask: impl FnOnce(&BlockingClient) -> Result<T, String>) -> Result<T, String> {
     static HOST: std::sync::OnceLock<Option<BlockingClient>> = std::sync::OnceLock::new();
     let host = HOST
@@ -139,12 +140,6 @@ fn with_host<T>(ask: impl FnOnce(&BlockingClient) -> Result<T, String>) -> Resul
         .as_ref()
         .ok_or_else(|| t("settings-region-language-no-installer"))?;
     ask(host)
-}
-
-/// No session hands the service off unix.
-#[cfg(not(unix))]
-fn with_host<T>(_ask: impl FnOnce(&BlockingClient) -> Result<T, String>) -> Result<T, String> {
-    Err(t("settings-region-language-no-installer"))
 }
 
 fn read_offered() -> Offered {
