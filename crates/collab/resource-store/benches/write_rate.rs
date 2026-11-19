@@ -71,6 +71,7 @@ fn resource(n: usize) -> (String, Resource) {
     (
         id,
         Resource {
+            readers: "members".to_owned(),
             parent,
             order,
             fields,
@@ -78,31 +79,69 @@ fn resource(n: usize) -> (String, Resource) {
     )
 }
 
+/// A kept document: its id, its bytes, the index's snapshot of it and the heads it was taken at.
+type Kept = (String, Vec<u8>, Vec<u8>, Vec<automerge::ChangeHash>);
+
 /// Resources per second written through the store into its documents, and received by a peer,
-/// once it holds `size`.
+/// once it holds `size`; then how long a store holding all of them takes to start, reading
+/// every document, and from the index's snapshots of them.
 fn store(size: usize) {
     const WRITES: usize = 2_000;
     let mut store = Store::new();
+    let mut docs = std::collections::BTreeSet::new();
     for n in 0..size {
         let (id, resource) = resource(n);
-        store.put(KIND, &id, resource).expect("a write");
+        for written in store.put(KIND, &id, resource).expect("a write") {
+            docs.insert(written.doc);
+        }
     }
     let mut written = Vec::with_capacity(WRITES);
     let start = Instant::now();
     for n in size..size + WRITES {
         let (id, resource) = resource(n);
-        written.push(store.put(KIND, &id, resource).expect("a write"));
+        written.extend(store.put(KIND, &id, resource).expect("a write"));
     }
     let writes = WRITES as f64 / start.elapsed().as_secs_f64();
 
     let mut peer = Store::new();
     let start = Instant::now();
     for write in written {
-        peer.receive(&write.doc, vec![write.change])
+        docs.insert(write.doc.clone());
+        peer.receive(&write.doc, &write.readers, vec![write.change])
             .expect("a peer's change");
     }
     let received = WRITES as f64 / start.elapsed().as_secs_f64();
-    println!("resources={size} store_writes_per_s={writes:.0} store_received_per_s={received:.0}");
+
+    let kept: Vec<Kept> = docs
+        .iter()
+        .map(|doc| {
+            let bytes = store.document(doc).expect("a document").save();
+            let snapshot = store.snapshot(doc).expect("a snapshot");
+            let heads = store.index().heads(doc).expect("heads").to_vec();
+            (doc.clone(), bytes, snapshot, heads)
+        })
+        .collect();
+    let start = Instant::now();
+    let mut cold = Store::new();
+    for (doc, bytes, _, _) in &kept {
+        cold.load(doc, bytes).expect("a kept document");
+    }
+    let cold_ms = start.elapsed().as_secs_f64() * 1e3;
+    let start = Instant::now();
+    let mut warm = Store::new();
+    for (doc, _, snapshot, heads) in &kept {
+        assert!(
+            warm.restore(doc, snapshot, heads),
+            "a snapshot at its heads"
+        );
+    }
+    let warm_ms = start.elapsed().as_secs_f64() * 1e3;
+    let all = |_: &str| true;
+    assert_eq!(cold.count(KIND, &[], &all), warm.count(KIND, &[], &all));
+    println!(
+        "resources={size} store_writes_per_s={writes:.0} store_received_per_s={received:.0} start_reading_documents_ms={cold_ms:.0} start_from_snapshots_ms={warm_ms:.0} documents={}",
+        kept.len()
+    );
 }
 
 fn main() {
@@ -111,6 +150,7 @@ fn main() {
         let seed: Vec<Change> = (0..size).map(issue).collect();
         index.committed(&Commit {
             doc: "doc",
+            readers: "members",
             heads: &[],
             changes: &seed,
         });
@@ -120,6 +160,7 @@ fn main() {
         for change in &writes {
             index.committed(&Commit {
                 doc: "doc",
+                readers: "members",
                 heads: &[],
                 changes: std::slice::from_ref(change),
             });
@@ -132,11 +173,11 @@ fn main() {
         let start = Instant::now();
         let mut shown = 0;
         for _ in 0..100 {
-            shown += index.query(&page).resources.len();
+            shown += index.query(&page, &|_| true).resources.len();
         }
         let page_us = start.elapsed().as_secs_f64() * 1e6 / 100.0;
         let start = Instant::now();
-        let first = index.query(&Query::of(KIND, 50));
+        let first = index.query(&Query::of(KIND, 50), &|_| true);
         let unfiltered_us = start.elapsed().as_secs_f64() * 1e6;
 
         println!(

@@ -34,6 +34,7 @@ fn issue(id: &str, parent: &str, order: &str, title: &str, state: &str, points: 
 fn commit(index: &mut Index, doc: &str, changes: &[Change]) {
     index.committed(&Commit {
         doc,
+        readers: "everyone",
         heads: &[],
         changes,
     });
@@ -59,18 +60,31 @@ fn board() -> Index {
     index
 }
 
+/// Whoever reads: every reader set admitted.
+fn anyone(_: &str) -> bool {
+    true
+}
+
+fn query(index: &Index, query: &Query) -> tilo_resource_store::Page {
+    index.query(query, &anyone)
+}
+
+fn count(index: &Index, kind: &str, filters: &[Filter]) -> usize {
+    index.count(kind, filters, &anyone)
+}
+
 fn ids(index: &Index, query: &Query) -> Vec<String> {
-    index.query(query).ids().map(str::to_owned).collect()
+    self::query(index, query).ids().map(str::to_owned).collect()
 }
 
 #[test]
 fn pages_follow_the_kinds_order_and_resume_after_their_cursor() {
     let index = board();
-    let first = index.query(&Query::of(ISSUE, 4));
+    let first = query(&index, &Query::of(ISSUE, 4));
     assert_eq!(first.ids().collect::<Vec<_>>(), ["i0", "i1", "i2", "i3"]);
-    let second = index.query(&Query::of(ISSUE, 4).after(first.next));
+    let second = query(&index, &Query::of(ISSUE, 4).after(first.next));
     assert_eq!(second.ids().collect::<Vec<_>>(), ["i4", "i5", "i6", "i7"]);
-    let last = index.query(&Query::of(ISSUE, 4).after(second.next));
+    let last = query(&index, &Query::of(ISSUE, 4).after(second.next));
     assert_eq!(last.ids().collect::<Vec<_>>(), ["i8", "i9"]);
     assert!(last.next.is_none(), "the last page names no next one");
 }
@@ -78,7 +92,7 @@ fn pages_follow_the_kinds_order_and_resume_after_their_cursor() {
 #[test]
 fn a_cursor_still_resumes_after_the_resource_it_ended_at_left() {
     let mut index = board();
-    let first = index.query(&Query::of(ISSUE, 3));
+    let first = query(&index, &Query::of(ISSUE, 3));
     commit(
         &mut index,
         "doc-1",
@@ -112,18 +126,18 @@ fn filters_narrow_by_value_member_range_and_text() {
         .filter(Filter::Contains("title".into(), "ISSUE 4".into()));
     assert_eq!(ids(&index, &both), ["i4"]);
 
-    assert_eq!(index.count(ISSUE, &[]), 10);
-    assert_eq!(index.count(ISSUE, &open.filters), 5);
-    assert_eq!(index.count(ISSUE, &both.filters), 1);
+    assert_eq!(count(&index, ISSUE, &[]), 10);
+    assert_eq!(count(&index, ISSUE, &open.filters), 5);
+    assert_eq!(count(&index, ISSUE, &both.filters), 1);
 }
 
 #[test]
 fn a_filtered_page_resumes_after_its_cursor() {
     let index = board();
     let open = Query::of(ISSUE, 2).filter(Filter::Is("state".into(), "open".into()));
-    let first = index.query(&open);
+    let first = query(&index, &open);
     assert_eq!(first.ids().collect::<Vec<_>>(), ["i0", "i2"]);
-    let second = index.query(&open.after(first.next));
+    let second = query(&index, &open.after(first.next));
     assert_eq!(second.ids().collect::<Vec<_>>(), ["i4", "i6"]);
 }
 
@@ -131,7 +145,7 @@ fn a_filtered_page_resumes_after_its_cursor() {
 fn a_field_sorts_either_way() {
     let index = board();
     let most = Query::of(ISSUE, 3).order(Order::by("points").descending());
-    let first = index.query(&most);
+    let first = query(&index, &most);
     assert_eq!(first.ids().collect::<Vec<_>>(), ["i9", "i8", "i7"]);
     assert_eq!(ids(&index, &most.after(first.next)), ["i6", "i5", "i4"]);
 }
@@ -161,7 +175,7 @@ fn nested_resources_are_listed_by_their_parent_across_documents() {
     let other = Query::of(ISSUE, 100).filter(Filter::Is(PARENT.into(), "other-board".into()));
     assert_eq!(ids(&index, &other), ["j0"]);
     assert_eq!(
-        index.count(ISSUE, &[Filter::Is(PARENT.into(), "board".into())]),
+        count(&index, ISSUE, &[Filter::Is(PARENT.into(), "board".into())]),
         10
     );
     assert_eq!(index.get(ISSUE, "j0").unwrap().doc, "doc-2");
@@ -245,7 +259,9 @@ fn toml_like(value: serde_json::Value) -> tilo_actions::surface::Surface {
 mod store {
     use super::*;
     use tilo_resource_store::store::DOCUMENT_LIMIT;
-    use tilo_resource_store::{Resource, Store};
+    use tilo_resource_store::{Resource, Store, Written};
+
+    const MEMBERS: &str = "members";
 
     fn fields(title: &str, state: &str) -> BTreeMap<String, Cell> {
         BTreeMap::from([
@@ -259,38 +275,56 @@ mod store {
     }
 
     fn resource(parent: &str, order: &str, title: &str, state: &str) -> Resource {
+        read_by(MEMBERS, parent, order, title, state)
+    }
+
+    fn read_by(readers: &str, parent: &str, order: &str, title: &str, state: &str) -> Resource {
         Resource {
+            readers: readers.to_owned(),
             parent: Some(parent.to_owned()),
             order: Some(order.to_owned()),
             fields: fields(title, state),
         }
     }
 
-    /// Carries every change `from` wrote to `to`, as sync does.
-    fn send(written: &[tilo_resource_store::Written], to: &mut Store) {
+    fn put(store: &mut Store, id: &str, resource: Resource) -> Vec<Written> {
+        store.put(ISSUE, id, resource).unwrap()
+    }
+
+    /// Carries every change written to `to`, as sync does.
+    fn send(written: &[Written], to: &mut Store) {
         for write in written {
-            to.receive(&write.doc, vec![write.change.clone()]).unwrap();
+            to.receive(&write.doc, &write.readers, vec![write.change.clone()])
+                .unwrap();
         }
+    }
+
+    fn listed(store: &Store, query: &Query, may_read: &dyn Fn(&str) -> bool) -> Vec<String> {
+        store
+            .query(query, may_read)
+            .ids()
+            .map(str::to_owned)
+            .collect()
     }
 
     #[test]
     fn a_write_is_queried_at_once_and_reaches_a_peer() {
         let mut here = Store::new();
         let mut there = Store::new();
-        let written = vec![
-            here.put(ISSUE, "a", resource("board", "a0", "First", "open"))
-                .unwrap(),
-            here.put(ISSUE, "b", resource("board", "a1", "Second", "done"))
-                .unwrap(),
-        ];
+        let mut written = put(&mut here, "a", resource("board", "a0", "First", "open"));
+        written.extend(put(
+            &mut here,
+            "b",
+            resource("board", "a1", "Second", "done"),
+        ));
         let open = Query::of(ISSUE, 10).filter(Filter::Is("state".into(), "open".into()));
-        assert_eq!(here.query(&open).ids().collect::<Vec<_>>(), ["a"]);
+        assert_eq!(listed(&here, &open, &anyone), ["a"]);
 
         send(&written, &mut there);
-        assert_eq!(there.query(&open).ids().collect::<Vec<_>>(), ["a"]);
+        assert_eq!(listed(&there, &open, &anyone), ["a"]);
         assert_eq!(
-            there.query(&Query::of(ISSUE, 10)).resources,
-            here.query(&Query::of(ISSUE, 10)).resources
+            there.query(&Query::of(ISSUE, 10), &anyone).resources,
+            here.query(&Query::of(ISSUE, 10), &anyone).resources
         );
     }
 
@@ -298,19 +332,13 @@ mod store {
     fn two_devices_changing_different_fields_keep_both() {
         let mut here = Store::new();
         let mut there = Store::new();
-        let made = here
-            .put(ISSUE, "a", resource("board", "a0", "First", "open"))
-            .unwrap();
-        send(&[made], &mut there);
+        let made = put(&mut here, "a", resource("board", "a0", "First", "open"));
+        send(&made, &mut there);
 
-        let titled = here
-            .put(ISSUE, "a", resource("board", "a0", "Renamed", "open"))
-            .unwrap();
-        let closed = there
-            .put(ISSUE, "a", resource("board", "a0", "First", "done"))
-            .unwrap();
-        send(&[titled], &mut there);
-        send(&[closed], &mut here);
+        let titled = put(&mut here, "a", resource("board", "a0", "Renamed", "open"));
+        let closed = put(&mut there, "a", resource("board", "a0", "First", "done"));
+        send(&titled, &mut there);
+        send(&closed, &mut here);
         for store in [&here, &there] {
             let stored = store.index().get(ISSUE, "a").unwrap();
             assert_eq!(stored.scalar("title"), Value::from("Renamed"));
@@ -322,42 +350,195 @@ mod store {
     fn a_removal_reaches_a_peer() {
         let mut here = Store::new();
         let mut there = Store::new();
-        let made = here
-            .put(ISSUE, "a", resource("board", "a0", "First", "open"))
-            .unwrap();
+        let made = put(&mut here, "a", resource("board", "a0", "First", "open"));
         let gone = here.remove(ISSUE, "a").unwrap();
-        send(&[made], &mut there);
-        assert_eq!(there.count(ISSUE, &[]), 1);
+        send(&made, &mut there);
+        assert_eq!(there.count(ISSUE, &[], &anyone), 1);
         send(&[gone], &mut there);
-        assert_eq!(there.count(ISSUE, &[]), 0);
-        assert_eq!(here.count(ISSUE, &[]), 0);
+        assert_eq!(there.count(ISSUE, &[], &anyone), 0);
+        assert_eq!(here.count(ISSUE, &[], &anyone), 0);
     }
 
     #[test]
-    fn a_full_part_starts_the_next_and_a_query_reads_across_them() {
+    fn a_reader_is_shown_and_counted_only_what_they_may_read() {
+        let mut store = Store::new();
+        put(
+            &mut store,
+            "shared",
+            resource("board", "a0", "Shared", "open"),
+        );
+        put(
+            &mut store,
+            "mine",
+            read_by("ada-only", "board", "a1", "Private", "open"),
+        );
+        let ada = |readers: &str| readers == MEMBERS || readers == "ada-only";
+        let bob = |readers: &str| readers == MEMBERS;
+        let open = Query::of(ISSUE, 10).filter(Filter::Is("state".into(), "open".into()));
+        assert_eq!(listed(&store, &open, &ada), ["shared", "mine"]);
+        assert_eq!(listed(&store, &open, &bob), ["shared"]);
+        assert_eq!(store.count(ISSUE, &open.filters, &bob), 1);
+        assert_eq!(store.count(ISSUE, &[], &bob), 1);
+        assert!(store.get(ISSUE, "mine", &bob).is_none());
+        assert!(store.get(ISSUE, "mine", &ada).is_some());
+
+        // A page that ends in what one reader set holds resumes in the other's.
+        let first = store.query(&Query::of(ISSUE, 1), &ada);
+        assert_eq!(first.ids().collect::<Vec<_>>(), ["shared"]);
+        let next = store.query(&Query::of(ISSUE, 1).after(first.next), &ada);
+        assert_eq!(next.ids().collect::<Vec<_>>(), ["mine"]);
+    }
+
+    #[test]
+    fn a_resource_whose_readers_change_moves_to_a_document_of_theirs() {
+        let mut here = Store::new();
+        let mut there = Store::new();
+        let made = put(&mut here, "a", resource("board", "a0", "Draft", "open"));
+        send(&made, &mut there);
+        let moved = put(
+            &mut here,
+            "a",
+            read_by("ada-only", "board", "a0", "Draft", "open"),
+        );
+        let docs: Vec<(&str, &str)> = moved
+            .iter()
+            .map(|write| (write.doc.as_str(), write.readers.as_str()))
+            .collect();
+        assert_eq!(
+            docs,
+            [
+                ("members/board#0", MEMBERS),
+                ("ada-only/board#0", "ada-only")
+            ]
+        );
+        send(&moved, &mut there);
+        let members = |readers: &str| readers == MEMBERS;
+        for store in [&here, &there] {
+            assert_eq!(store.count(ISSUE, &[], &members), 0);
+            assert_eq!(store.count(ISSUE, &[], &anyone), 1);
+            assert_eq!(
+                store.index().get(ISSUE, "a").unwrap().doc,
+                "ada-only/board#0"
+            );
+        }
+    }
+
+    #[test]
+    fn a_full_document_starts_the_next_and_a_query_reads_across_them() {
         let mut store = Store::new();
         let mut docs = BTreeSet::new();
         for n in 0..=DOCUMENT_LIMIT {
-            let written = store
-                .put(
-                    ISSUE,
-                    &format!("i{n:05}"),
-                    resource("board", &format!("{n:05}"), "x", "open"),
-                )
-                .unwrap();
-            docs.insert(written.doc);
+            for written in put(
+                &mut store,
+                &format!("i{n:05}"),
+                resource("board", &format!("{n:05}"), "x", "open"),
+            ) {
+                docs.insert(written.doc);
+            }
         }
-        assert_eq!(docs.into_iter().collect::<Vec<_>>(), ["board#0", "board#1"]);
         assert_eq!(
-            store.count(ISSUE, &[Filter::Is(PARENT.into(), "board".into())]),
+            docs.into_iter().collect::<Vec<_>>(),
+            ["members/board#0", "members/board#1"]
+        );
+        assert_eq!(
+            store.count(ISSUE, &[Filter::Is(PARENT.into(), "board".into())], &anyone),
             DOCUMENT_LIMIT + 1
         );
-        let last = store.query(&Query::of(ISSUE, 1).order(Order::default().descending()));
+        let last = store.query(
+            &Query::of(ISSUE, 1).order(Order::default().descending()),
+            &anyone,
+        );
         assert_eq!(
             last.ids().collect::<Vec<_>>(),
             [format!("i{DOCUMENT_LIMIT:05}")]
         );
-        let held = store.document("board#0").unwrap();
+        let held = store.document("members/board#0").unwrap();
         assert!(held.save().len() < 1 << 20, "a document stays small");
+    }
+
+    /// A store holding three issues in one document, and that document saved.
+    fn kept() -> (Store, String, Vec<u8>) {
+        let mut store = Store::new();
+        let mut doc = String::new();
+        for (id, state) in [("a", "open"), ("b", "done"), ("c", "open")] {
+            doc = put(&mut store, id, resource("board", id, id, state))
+                .pop()
+                .unwrap()
+                .doc;
+        }
+        let bytes = store.document(&doc).unwrap().save();
+        (store, doc, bytes)
+    }
+
+    #[test]
+    fn a_kept_document_is_loaded_with_its_resources() {
+        let (kept, doc, bytes) = kept();
+        let mut started = Store::new();
+        started.load(&doc, &bytes).unwrap();
+        let all = Query::of(ISSUE, 10);
+        assert_eq!(
+            started.query(&all, &anyone).resources,
+            kept.query(&all, &anyone).resources
+        );
+        // A new resource goes on into the same document.
+        let next = put(&mut started, "d", resource("board", "d", "d", "open"));
+        assert_eq!(next[0].doc, doc);
+    }
+
+    #[test]
+    fn a_snapshot_at_the_documents_heads_starts_without_reading_it() {
+        let (kept, doc, bytes) = kept();
+        let snapshot = kept.snapshot(&doc).unwrap();
+        let heads = kept.index().heads(&doc).unwrap().to_vec();
+
+        let saved = bytes.clone();
+        let mut started = Store::with_source(Box::new(move |_| Some(saved.clone())));
+        assert!(started.restore(&doc, &snapshot, &heads));
+        assert_eq!(started.in_memory(), 0, "the document is not read to start");
+        let open = Query::of(ISSUE, 10).filter(Filter::Is("state".into(), "open".into()));
+        assert_eq!(listed(&started, &open, &anyone), ["a", "c"]);
+
+        // A write reads the document from the source and goes on from it.
+        put(&mut started, "b", resource("board", "b", "b", "open"));
+        assert_eq!(started.in_memory(), 1);
+        assert_eq!(listed(&started, &open, &anyone), ["a", "b", "c"]);
+        assert_eq!(started.document(&doc).unwrap().get_heads().len(), 1);
+
+        // A snapshot of other heads is not taken: the document is loaded instead.
+        let mut stale = Store::new();
+        assert!(!stale.restore(&doc, &snapshot, &[]));
+        assert_eq!(stale.count(ISSUE, &[], &anyone), 0);
+        stale.load(&doc, &bytes).unwrap();
+        assert_eq!(stale.count(ISSUE, &[], &anyone), 3);
+    }
+
+    #[test]
+    fn an_evicted_document_stays_indexed_and_is_read_again_for_a_write() {
+        let (mut store, doc, _) = kept();
+        let saved = store.evict(&doc).unwrap();
+        assert_eq!(store.in_memory(), 0);
+        assert_eq!(store.count(ISSUE, &[], &anyone), 3);
+
+        let mut sourced = Store::with_source(Box::new(move |_| Some(saved.clone())));
+        let (_, doc, bytes) = kept();
+        sourced.load(&doc, &bytes).unwrap();
+        sourced.evict(&doc);
+        put(&mut sourced, "a", resource("board", "a", "a", "done"));
+        let done = Query::of(ISSUE, 10).filter(Filter::Is("state".into(), "done".into()));
+        assert_eq!(listed(&sourced, &done, &anyone), ["a", "b"]);
+    }
+
+    #[test]
+    fn a_watch_names_the_commits_of_its_kind() {
+        let mut store = Store::new();
+        let issues = store.watch(ISSUE);
+        let notes = store.watch("Note");
+        put(&mut store, "a", resource("board", "a", "a", "open"));
+        assert_eq!(store.changed(), BTreeSet::from([issues]));
+        assert!(store.changed().is_empty(), "each change is named once");
+        store.unwatch(issues);
+        put(&mut store, "b", resource("board", "b", "b", "open"));
+        assert!(store.changed().is_empty());
+        let _ = notes;
     }
 }

@@ -95,6 +95,9 @@ pub enum Change {
 pub struct Commit<'a> {
     /// The document committed to.
     pub doc: &'a str,
+    /// Who may read the document: the reader set its resources were placed by, which picks
+    /// its key. Every resource of a document has the same readers.
+    pub readers: &'a str,
     /// The document's heads after the commit: what the index reflects of it.
     pub heads: &'a [ChangeHash],
     pub changes: &'a [Change],
@@ -311,7 +314,9 @@ impl Table {
         keys
     }
 
-    fn page(&self, query: &Query) -> Page {
+    /// Where the first `query.limit + 1` resources this table shows of `query` stand in its
+    /// order.
+    fn keys(&self, query: &Query) -> Vec<Entry> {
         let order = &query.order;
         let holds = |stored: &Indexed| query.filters.iter().all(|filter| filter.holds(stored));
         let from: Option<Entry> = query
@@ -334,7 +339,7 @@ impl Table {
         let mut keys: Vec<Entry> =
             if let (Sort::Position, Some((field, value))) = (&order.by, by_value) {
                 let Some(entries) = self.by_field.get(field.as_str()) else {
-                    return Page::default();
+                    return Vec::new();
                 };
                 let first = (value.clone(), Value::Null, String::new());
                 let resume = from.map(|(place, _, id)| (value.clone(), place, id));
@@ -375,7 +380,7 @@ impl Table {
                         Sort::Field(field) => self.by_field.get(field),
                     };
                     let Some(entries) = entries else {
-                        return Page::default();
+                        return Vec::new();
                     };
                     let keep = |(key, place, id): &&Entry| {
                         self.rows
@@ -391,25 +396,8 @@ impl Table {
                     Self::scan(entries, lower, upper, order.descending, wanted, keep)
                 }
             };
-        let more = keys.len() > query.limit;
-        keys.truncate(query.limit);
-        let next = if more {
-            keys.last().map(|(key, place, id)| Cursor {
-                key: key.clone(),
-                place: place.clone(),
-                id: id.clone(),
-            })
-        } else {
-            None
-        };
-        let resources = keys
-            .into_iter()
-            .filter_map(|(_, _, id)| {
-                let stored = self.rows.get(&id)?.clone();
-                Some((id, stored))
-            })
-            .collect();
-        Page { resources, next }
+        keys.truncate(wanted);
+        keys
     }
 
     fn count(&self, filters: &[Filter]) -> usize {
@@ -430,11 +418,22 @@ impl Table {
     }
 }
 
-/// Every kind's resources, as the commits so far left them. See the crate docs.
+/// What the index knows of one document.
+#[derive(Clone, Debug, Default)]
+struct Held {
+    readers: String,
+    heads: Vec<ChangeHash>,
+    /// The resources it holds, by kind and id.
+    resources: BTreeSet<(String, String)>,
+}
+
+/// Every kind's resources, as the commits so far left them, kept apart by who may read them.
+/// See the crate docs.
 #[derive(Default)]
 pub struct Index {
-    tables: HashMap<String, Table>,
-    heads: HashMap<String, Vec<ChangeHash>>,
+    /// Per kind, a table per reader set.
+    kinds: HashMap<String, HashMap<String, Table>>,
+    docs: HashMap<String, Held>,
 }
 
 impl Index {
@@ -446,66 +445,128 @@ impl Index {
     /// The heads of `doc` the index reflects; `None` for a document no commit reached it from.
     #[must_use]
     pub fn heads(&self, doc: &str) -> Option<&[ChangeHash]> {
-        self.heads.get(doc).map(Vec::as_slice)
+        self.docs.get(doc).map(|held| held.heads.as_slice())
     }
 
-    /// The resource `id` of `kind`.
+    /// Who may read `doc`.
+    #[must_use]
+    pub fn readers(&self, doc: &str) -> Option<&str> {
+        self.docs.get(doc).map(|held| held.readers.as_str())
+    }
+
+    /// The resource `id` of `kind`, whoever may read it: what the store itself reads.
     #[must_use]
     pub fn get(&self, kind: &str, id: &str) -> Option<&Indexed> {
-        self.tables.get(kind)?.rows.get(id)
+        self.kinds
+            .get(kind)?
+            .values()
+            .find_map(|table| table.rows.get(id))
     }
 
-    /// The kind of the resource `id` stored in `doc`.
+    /// The kind of the resource `id` held in `doc`.
     #[must_use]
     pub fn kind_of(&self, id: &str, doc: &str) -> Option<String> {
-        self.tables
+        self.docs
+            .get(doc)?
+            .resources
             .iter()
-            .find(|(_, table)| table.rows.get(id).is_some_and(|stored| stored.doc == doc))
+            .find(|(_, held)| held == id)
             .map(|(kind, _)| kind.clone())
     }
 
-    /// How many resources of `kind` there are.
-    #[must_use]
-    pub fn len(&self, kind: &str) -> usize {
-        self.tables.get(kind).map_or(0, |table| table.rows.len())
+    /// The resources `doc` holds, by kind and id.
+    pub fn held(&self, doc: &str) -> impl Iterator<Item = (&str, &str)> {
+        self.docs.get(doc).into_iter().flat_map(|held| {
+            held.resources
+                .iter()
+                .map(|(kind, id)| (kind.as_str(), id.as_str()))
+        })
     }
 
-    /// Whether there is no resource of `kind`.
-    #[must_use]
-    pub fn is_empty(&self, kind: &str) -> bool {
-        self.len(kind) == 0
-    }
-
-    /// One page of `query`.
-    #[must_use]
-    pub fn query(&self, query: &Query) -> Page {
-        self.tables
-            .get(&query.kind)
-            .map(|table| table.page(query))
-            .unwrap_or_default()
-    }
-
-    /// How many resources of `kind` hold to every filter of `filters`.
-    #[must_use]
-    pub fn count(&self, kind: &str, filters: &[Filter]) -> usize {
-        self.tables
+    /// The tables of `kind` whose readers `may_read` admits.
+    fn readable<'a>(
+        &'a self,
+        kind: &str,
+        may_read: &'a dyn Fn(&str) -> bool,
+    ) -> impl Iterator<Item = &'a Table> + 'a {
+        self.kinds
             .get(kind)
-            .map_or(0, |table| table.count(filters))
+            .into_iter()
+            .flat_map(|tables| tables.iter())
+            .filter(move |(readers, _)| may_read(readers))
+            .map(|(_, table)| table)
+    }
+
+    /// One page of `query`, of the resources whose readers `may_read` admits: nothing else is
+    /// listed, counted or skipped over.
+    #[must_use]
+    pub fn query(&self, query: &Query, may_read: &dyn Fn(&str) -> bool) -> Page {
+        let mut keys: Vec<(Entry, &Table)> = self
+            .readable(&query.kind, may_read)
+            .flat_map(|table| table.keys(query).into_iter().map(move |key| (key, table)))
+            .collect();
+        if query.order.descending {
+            keys.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        } else {
+            keys.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        }
+        let more = keys.len() > query.limit;
+        keys.truncate(query.limit);
+        let next = if more {
+            keys.last().map(|((key, place, id), _)| Cursor {
+                key: key.clone(),
+                place: place.clone(),
+                id: id.clone(),
+            })
+        } else {
+            None
+        };
+        let resources = keys
+            .into_iter()
+            .filter_map(|((_, _, id), table)| {
+                let stored = table.rows.get(&id)?.clone();
+                Some((id, stored))
+            })
+            .collect();
+        Page { resources, next }
+    }
+
+    /// How many resources of `kind` whose readers `may_read` admits hold to every filter.
+    #[must_use]
+    pub fn count(&self, kind: &str, filters: &[Filter], may_read: &dyn Fn(&str) -> bool) -> usize {
+        self.readable(kind, may_read)
+            .map(|table| table.count(filters))
+            .fold(0, usize::saturating_add)
     }
 
     /// Takes out everything stored in `doc`: a document this store no longer keeps.
     pub fn forget(&mut self, doc: &str) {
-        self.heads.remove(doc);
-        for table in self.tables.values_mut() {
-            let ids: Vec<String> = table
-                .rows
-                .iter()
-                .filter(|(_, stored)| stored.doc == doc)
-                .map(|(id, _)| id.clone())
-                .collect();
-            for id in ids {
+        let Some(held) = self.docs.remove(doc) else {
+            return;
+        };
+        for (kind, id) in held.resources {
+            if let Some(table) = self
+                .kinds
+                .get_mut(&kind)
+                .and_then(|tables| tables.get_mut(&held.readers))
+            {
                 table.remove(&id);
             }
+        }
+    }
+
+    fn take_out(&mut self, kind: &str, id: &str, doc: &str) {
+        let Some(tables) = self.kinds.get_mut(kind) else {
+            return;
+        };
+        for table in tables.values_mut() {
+            // A resource moved to another document stays where that one's commit put it.
+            if table.rows.get(id).is_some_and(|stored| stored.doc == doc) {
+                table.remove(id);
+            }
+        }
+        if let Some(held) = self.docs.get_mut(doc) {
+            held.resources.remove(&(kind.to_owned(), id.to_owned()));
         }
     }
 }
@@ -521,33 +582,53 @@ impl CommitHook for Index {
                     order,
                     fields,
                 } => {
+                    // Moved here from another document: out of where it was.
+                    let earlier = self.kinds.get(kind).and_then(|tables| {
+                        tables.iter().find_map(|(readers, table)| {
+                            table
+                                .rows
+                                .get(id)
+                                .map(|held| (readers.clone(), held.doc.clone()))
+                        })
+                    });
+                    if let Some((readers, doc)) = earlier {
+                        if readers != commit.readers
+                            && let Some(table) = self
+                                .kinds
+                                .get_mut(kind)
+                                .and_then(|tables| tables.get_mut(&readers))
+                        {
+                            table.remove(id);
+                        }
+                        if doc != commit.doc
+                            && let Some(held) = self.docs.get_mut(&doc)
+                        {
+                            held.resources.remove(&(kind.clone(), id.clone()));
+                        }
+                    }
                     let stored = Indexed {
                         doc: commit.doc.to_owned(),
                         parent: parent.clone(),
                         order: order.clone(),
                         fields: fields.clone(),
                     };
-                    self.tables
+                    self.kinds
                         .entry(kind.clone())
                         .or_default()
+                        .entry(commit.readers.to_owned())
+                        .or_default()
                         .insert(id, stored);
+                    self.docs
+                        .entry(commit.doc.to_owned())
+                        .or_default()
+                        .resources
+                        .insert((kind.clone(), id.clone()));
                 }
-                Change::Remove { kind, id } => {
-                    let Some(table) = self.tables.get_mut(kind) else {
-                        continue;
-                    };
-                    // A resource moved to another document stays where that one's commit put it.
-                    if table
-                        .rows
-                        .get(id)
-                        .is_some_and(|stored| stored.doc == commit.doc)
-                    {
-                        table.remove(id);
-                    }
-                }
+                Change::Remove { kind, id } => self.take_out(kind, id, commit.doc),
             }
         }
-        self.heads
-            .insert(commit.doc.to_owned(), commit.heads.to_vec());
+        let held = self.docs.entry(commit.doc.to_owned()).or_default();
+        commit.readers.clone_into(&mut held.readers);
+        held.heads = commit.heads.to_vec();
     }
 }

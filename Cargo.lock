@@ -21795,15 +21795,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-resource-store"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "tilo-actions",
- "tilo-automerge-fork",
-]
-
-[[package]]
 name = "tilo-recurrence"
 version = "0.1.0"
 dependencies = [
@@ -21908,6 +21899,17 @@ dependencies = [
  "quote",
  "syn 2.0.117",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-resource-store"
+version = "0.1.0"
+dependencies = [
+ "postcard",
+ "serde",
+ "serde_json",
+ "tilo-actions",
+ "tilo-automerge-fork",
 ]
 
 [[package]]

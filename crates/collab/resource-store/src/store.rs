@@ -2,36 +2,48 @@
 //! read the same way whichever app or language declared it.
 //!
 //! The store keeps of a resource its kind, the resource it is nested in, its place among its
-//! parent's resources, and its fields. Where it is stored is the store's alone. The resources
-//! nested in one parent fill a document of the parent's (`<parent>#<n>`, the top-level resources of
-//! a kind `<kind>#<n>`); a document holds at most [`DOCUMENT_LIMIT`] resources, and the next one starts
-//! when the newest is full. So a write changes one small document, a newcomer is sent the documents
-//! they open, and no document grows with the workspace.
+//! parent's resources, and its fields. Where it is stored is the store's alone. A document holds
+//! resources of one reader set only (who may read them, which picks the document's key), so
+//! sealing, syncing and reading all go by document: a query walks only the documents its reader
+//! may open, and a resource whose readers change moves to a document of the new ones. Within a
+//! reader set, the resources nested in one parent fill a document of the parent's
+//! (`<readers>/<parent>#<n>`, the top-level resources of a kind `<readers>/<kind>#<n>`); a
+//! document holds at most [`DOCUMENT_LIMIT`] resources, and the next one starts when the newest
+//! is full. So a write changes one small document, a newcomer is sent the documents they open,
+//! and no document grows with the workspace.
 //!
-//! The layout of a document, which nothing outside this module reads: a map `r` of each resource by
-//! its id, holding its kind (`k`), its parent (`p`), its place (`o`) and its fields (`f`), a
-//! scalar field as a scalar and a set as a map keyed by its members.
+//! The layout of a document, which nothing outside this module reads: its reader set under `w`,
+//! and a map `r` of each resource by its id, holding its kind (`k`), its parent (`p`), its place
+//! (`o`) and its fields (`f`), a scalar field as a scalar and a set as a map keyed by its members.
 //!
 //! Every apply updates the index in the same call ([`CommitHook`]): a local write
 //! ([`Store::put`], [`Store::remove`]) from what it wrote, and a peer's changes
 //! ([`Store::receive`]) from the patches their apply logged, which name the resources they touched
 //! and nothing else. Both cost what they changed, never the size of the store.
+//!
+//! **Starting.** A document the store kept is given back whole ([`Store::load`]), and its
+//! resources are read from it; or, faster, the index's snapshot of it ([`Store::snapshot`]) is
+//! given with the heads the document is at ([`Store::restore`]), and the document itself is
+//! read only when a write or a peer's change needs it, from the source the store was made with
+//! ([`Store::with_source`]). [`Store::evict`] lets a document go from memory again; its
+//! resources stay indexed.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use automerge::transaction::Transactable as _;
 use automerge::{
-    Automerge, Change as AmChange, ObjId, ObjType, PatchLog, Prop, ROOT, ReadDoc, ScalarValue,
-    Value as AmValue,
+    Automerge, Change as AmChange, ChangeHash, ObjId, ObjType, PatchLog, Prop, ROOT, ReadDoc,
+    ScalarValue, Value as AmValue,
 };
 
-use crate::index::{Change, Commit, CommitHook as _, Index};
+use crate::index::{Change, Commit, CommitHook as _, Index, Indexed};
 use crate::query::{Filter, Page, Query};
 use crate::value::{Cell, Value};
 
 /// The most resources one document holds before the next one starts.
 pub const DOCUMENT_LIMIT: usize = 4096;
 
+const READERS: &str = "w";
 const HELD: &str = "r";
 const KIND: &str = "k";
 const PARENT: &str = "p";
@@ -43,7 +55,7 @@ const FIELDS: &str = "f";
 pub enum StoreError {
     /// No resource of this kind has this id.
     Missing { kind: String, id: String },
-    /// The document refused the change.
+    /// The document refused the change, or what was given as one is none.
     Document(automerge::AutomergeError),
 }
 
@@ -64,36 +76,52 @@ impl From<automerge::AutomergeError> for StoreError {
     }
 }
 
-/// A resource as a write gives it: where it is nested, its place, its indexed fields.
+/// A resource as a write gives it: who may read it, where it is nested, its place, its indexed
+/// fields.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Resource {
+    /// Its reader set: whatever names who may read it, which also picks the key of the
+    /// document it is placed in.
+    pub readers: String,
     pub parent: Option<String>,
     pub order: Option<String>,
     pub fields: BTreeMap<String, Cell>,
 }
 
-/// The documents of one parent (or one kind's top-level resources): how many there are and how
-/// many resources the newest holds.
+/// The documents of one owner (a parent, or one kind's top-level resources) of one reader set:
+/// how many there are and how many resources the newest holds.
 #[derive(Clone, Copy, Debug, Default)]
 struct Filled {
     newest: u32,
     held: usize,
 }
 
-/// The resource store. See the module docs.
-#[derive(Default)]
-pub struct Store {
-    docs: HashMap<String, Automerge>,
-    filled: HashMap<String, Filled>,
-    index: Index,
-}
-
-/// The change one local write made to its document, for whoever carries it to the other devices.
+/// The change one local write made to its document, for whoever seals it with the document's
+/// key and carries it to the other devices.
 #[derive(Clone, Debug)]
 pub struct Written {
     /// The document written to.
     pub doc: String,
+    /// Its reader set, which picks its key.
+    pub readers: String,
     pub change: AmChange,
+}
+
+/// Where the store reads a document it does not hold in memory: the saved document, or `None`
+/// for one never kept.
+pub type Source = Box<dyn FnMut(&str) -> Option<Vec<u8>>>;
+
+/// The resource store. See the module docs.
+#[derive(Default)]
+pub struct Store {
+    /// The documents in memory.
+    docs: HashMap<String, Automerge>,
+    filled: HashMap<(String, String), Filled>,
+    index: Index,
+    source: Option<Source>,
+    /// Kinds an open query watches, by its watch.
+    watches: BTreeMap<u64, String>,
+    changed: BTreeSet<u64>,
 }
 
 impl Store {
@@ -102,48 +130,140 @@ impl Store {
         Self::default()
     }
 
-    /// The index of everything the store holds.
+    /// A store that reads each document it does not hold in memory from `source`.
+    #[must_use]
+    pub fn with_source(source: Source) -> Self {
+        Self {
+            source: Some(source),
+            ..Self::default()
+        }
+    }
+
+    /// The index of everything the store holds, whoever may read it.
     #[must_use]
     pub const fn index(&self) -> &Index {
         &self.index
     }
 
-    /// One page of `query`.
+    /// One page of `query`, of the resources whose readers `may_read` admits. `may_read` is the
+    /// one permission check, asked of a reader set: nothing it refuses is listed, counted or
+    /// skipped over.
     #[must_use]
-    pub fn query(&self, query: &Query) -> Page {
-        self.index.query(query)
+    pub fn query(&self, query: &Query, may_read: &dyn Fn(&str) -> bool) -> Page {
+        self.index.query(query, may_read)
     }
 
-    /// How many resources of `kind` hold to `filters`.
+    /// How many resources of `kind` whose readers `may_read` admits hold to `filters`.
     #[must_use]
-    pub fn count(&self, kind: &str, filters: &[Filter]) -> usize {
-        self.index.count(kind, filters)
+    pub fn count(&self, kind: &str, filters: &[Filter], may_read: &dyn Fn(&str) -> bool) -> usize {
+        self.index.count(kind, filters, may_read)
     }
 
-    /// The document a new resource of `kind` nested in `parent` goes to.
-    fn place(&mut self, kind: &str, parent: Option<&str>) -> String {
+    /// The resource `id` of `kind`, when its readers `may_read` admits.
+    #[must_use]
+    pub fn get(&self, kind: &str, id: &str, may_read: &dyn Fn(&str) -> bool) -> Option<&Indexed> {
+        let held = self.index.get(kind, id)?;
+        self.index
+            .readers(&held.doc)
+            .is_some_and(may_read)
+            .then_some(held)
+    }
+
+    /// Watches the resources of `kind`: from now on, every commit that changes one names the
+    /// watch in [`Self::changed`], so an open query reads its page again.
+    pub fn watch(&mut self, kind: &str) -> u64 {
+        let id = self
+            .watches
+            .last_key_value()
+            .map_or(0, |(id, _)| id.saturating_add(1));
+        self.watches.insert(id, kind.to_owned());
+        id
+    }
+
+    /// Stops the watch `id`.
+    pub fn unwatch(&mut self, id: u64) {
+        self.watches.remove(&id);
+        self.changed.remove(&id);
+    }
+
+    /// The watches whose kind a commit changed since this was last asked.
+    pub fn changed(&mut self) -> BTreeSet<u64> {
+        std::mem::take(&mut self.changed)
+    }
+
+    /// Hands `commit` to the index and notes the watches it concerns.
+    fn commit(&mut self, commit: &Commit<'_>) {
+        for change in commit.changes {
+            let kind = match change {
+                Change::Put { kind, .. } | Change::Remove { kind, .. } => kind,
+            };
+            for (id, watched) in &self.watches {
+                if watched == kind {
+                    self.changed.insert(*id);
+                }
+            }
+        }
+        self.index.committed(commit);
+    }
+
+    /// The document `doc`, read from the source when it is not in memory, made when it is
+    /// nowhere.
+    fn doc(&mut self, doc: &str) -> Result<&mut Automerge, StoreError> {
+        if !self.docs.contains_key(doc) {
+            let read = match self.source.as_mut().and_then(|source| source(doc)) {
+                Some(bytes) => Automerge::load(&bytes)?,
+                None => Automerge::new(),
+            };
+            self.docs.insert(doc.to_owned(), read);
+        }
+        self.docs
+            .get_mut(doc)
+            .ok_or(StoreError::Document(automerge::AutomergeError::Fail))
+    }
+
+    /// The document a new resource of `kind` nested in `parent`, read by `readers`, goes to.
+    fn place(&mut self, kind: &str, parent: Option<&str>, readers: &str) -> String {
         let owner = parent.unwrap_or(kind).to_owned();
-        let filled = self.filled.entry(owner.clone()).or_default();
+        let filled = self
+            .filled
+            .entry((readers.to_owned(), owner.clone()))
+            .or_default();
         if filled.held >= DOCUMENT_LIMIT {
             filled.newest = filled.newest.saturating_add(1);
             filled.held = 0;
         }
         filled.held = filled.held.saturating_add(1);
-        format!("{owner}#{}", filled.newest)
+        format!("{readers}/{owner}#{}", filled.newest)
     }
 
     /// Writes `resource` as the resource `id` of `kind`: a new one into the document the store
-    /// places it in, an existing one where it is. Its fields are replaced by those given.
+    /// places it in, an existing one where it is, or (its readers changed) moved to a document
+    /// of its new readers. Its fields are replaced by those given. Answers each document's
+    /// change: one, or two for a move.
     ///
     /// # Errors
-    /// When the document's document refuses the change.
-    pub fn put(&mut self, kind: &str, id: &str, resource: Resource) -> Result<Written, StoreError> {
-        let doc_id = match self.index.get(kind, id) {
-            Some(map) => map.doc.clone(),
-            None => self.place(kind, resource.parent.as_deref()),
+    /// When a document refuses the change.
+    pub fn put(
+        &mut self,
+        kind: &str,
+        id: &str,
+        resource: Resource,
+    ) -> Result<Vec<Written>, StoreError> {
+        let mut written = Vec::with_capacity(1);
+        let held = self.index.get(kind, id).map(|held| held.doc.clone());
+        let doc_id = match held {
+            Some(doc) if self.index.readers(&doc) == Some(resource.readers.as_str()) => doc,
+            Some(_) => {
+                written.push(self.remove(kind, id)?);
+                self.place(kind, resource.parent.as_deref(), &resource.readers)
+            }
+            None => self.place(kind, resource.parent.as_deref(), &resource.readers),
         };
-        let doc = self.docs.entry(doc_id.clone()).or_default();
+        let doc = self.doc(&doc_id)?;
         let mut tx = doc.transaction();
+        if text_at(&tx, &ROOT, READERS).as_deref() != Some(resource.readers.as_str()) {
+            tx.put(ROOT, READERS, resource.readers.as_str())?;
+        }
         let held = map_in(&mut tx, &ROOT, HELD)?;
         // Field by field, so two devices changing different fields of one resource both keep
         // their change.
@@ -197,10 +317,11 @@ impl Store {
         tx.commit();
         let change = doc
             .get_last_local_change()
-            .ok_or_else(|| StoreError::Document(automerge::AutomergeError::Fail))?;
+            .ok_or(StoreError::Document(automerge::AutomergeError::Fail))?;
         let heads = doc.get_heads();
-        self.index.committed(&Commit {
+        self.commit(&Commit {
             doc: &doc_id,
+            readers: &resource.readers,
             heads: &heads,
             changes: &[Change::Put {
                 kind: kind.to_owned(),
@@ -210,24 +331,27 @@ impl Store {
                 fields: resource.fields,
             }],
         });
-        Ok(Written {
+        written.push(Written {
             doc: doc_id,
+            readers: resource.readers,
             change,
-        })
+        });
+        Ok(written)
     }
 
     /// Removes the resource `id` of `kind`, and with it nothing else: the resources nested in it
     /// are the caller's to remove first.
     ///
     /// # Errors
-    /// When there is no such resource, or its document's document refuses the change.
+    /// When there is no such resource, or its document refuses the change.
     pub fn remove(&mut self, kind: &str, id: &str) -> Result<Written, StoreError> {
         let missing = || StoreError::Missing {
             kind: kind.to_owned(),
             id: id.to_owned(),
         };
         let doc_id = self.index.get(kind, id).ok_or_else(missing)?.doc.clone();
-        let doc = self.docs.get_mut(&doc_id).ok_or_else(missing)?;
+        let readers = self.index.readers(&doc_id).unwrap_or_default().to_owned();
+        let doc = self.doc(&doc_id)?;
         let mut tx = doc.transaction();
         if let Some((AmValue::Object(ObjType::Map), held)) = tx.get(ROOT, HELD)? {
             tx.delete(&held, id)?;
@@ -235,10 +359,11 @@ impl Store {
         tx.commit();
         let change = doc
             .get_last_local_change()
-            .ok_or_else(|| StoreError::Document(automerge::AutomergeError::Fail))?;
+            .ok_or(StoreError::Document(automerge::AutomergeError::Fail))?;
         let heads = doc.get_heads();
-        self.index.committed(&Commit {
+        self.commit(&Commit {
             doc: &doc_id,
+            readers: &readers,
             heads: &heads,
             changes: &[Change::Remove {
                 kind: kind.to_owned(),
@@ -247,16 +372,23 @@ impl Store {
         });
         Ok(Written {
             doc: doc_id,
+            readers,
             change,
         })
     }
 
-    /// Applies a peer's `changes` to the document `doc`, and indexes the resources they touched.
+    /// Applies a peer's `changes` to the document `doc`, which `readers` may read, and indexes
+    /// the resources they touched.
     ///
     /// # Errors
     /// When the document refuses the changes.
-    pub fn receive(&mut self, doc_id: &str, changes: Vec<AmChange>) -> Result<(), StoreError> {
-        let doc = self.docs.entry(doc_id.to_owned()).or_default();
+    pub fn receive(
+        &mut self,
+        doc_id: &str,
+        readers: &str,
+        changes: Vec<AmChange>,
+    ) -> Result<(), StoreError> {
+        let doc = self.doc(doc_id)?;
         let mut log = PatchLog::active();
         doc.apply_changes_log_patches(changes, &mut log)?;
         let patches = doc.make_patches(&mut log);
@@ -282,17 +414,41 @@ impl Store {
                 touched.insert(id.to_owned());
             }
         }
+        self.index_resources(doc_id, readers, (!every).then_some(touched))
+    }
+
+    /// Reads from `doc` the resources `only` names (all of them when `None`) and commits what
+    /// it holds of them to the index.
+    fn index_resources(
+        &mut self,
+        doc_id: &str,
+        readers: &str,
+        only: Option<BTreeSet<String>>,
+    ) -> Result<(), StoreError> {
+        let doc = self.doc(doc_id)?;
         let held = match doc.get(ROOT, HELD)? {
             Some((AmValue::Object(ObjType::Map), held)) => Some(held),
             _ => None,
         };
-        if every && let Some(held) = &held {
-            touched.extend(doc.keys(held));
-        }
-        let mut changes = Vec::with_capacity(touched.len());
-        for id in touched {
-            let read = held.as_ref().and_then(|held| read(doc, held, &id));
-            match read {
+        let ids: BTreeSet<String> = match only {
+            Some(ids) => ids,
+            None => held
+                .as_ref()
+                .map(|held| doc.keys(held).collect())
+                .unwrap_or_default(),
+        };
+        let reads: Vec<(String, Option<(String, Resource)>)> = ids
+            .into_iter()
+            .map(|id| {
+                let found = held.as_ref().and_then(|held| read(doc, held, &id));
+                (id, found)
+            })
+            .collect();
+        let heads = doc.get_heads();
+        let count = held.as_ref().map_or(0, |held| doc.length(held));
+        let mut changes = Vec::with_capacity(reads.len());
+        for (id, found) in reads {
+            match found {
                 Some((kind, resource)) => changes.push(Change::Put {
                     kind,
                     id,
@@ -308,48 +464,111 @@ impl Store {
                 }
             }
         }
-        let heads = doc.get_heads();
         for change in &changes {
             if let Change::Put { parent, kind, .. } = change {
-                self.know_part(doc_id, parent.as_deref().unwrap_or(kind));
+                self.know_document(doc_id, readers, parent.as_deref().unwrap_or(kind), count);
             }
         }
-        self.index.committed(&Commit {
+        self.commit(&Commit {
             doc: doc_id,
+            readers,
             heads: &heads,
             changes: &changes,
         });
         Ok(())
     }
 
-    /// Notes that `doc` is a document of `owner`'s, so a new resource goes to the newest document known.
-    fn know_part(&mut self, doc: &str, owner: &str) {
+    /// Notes that `doc` is a document of `owner`'s holding `count` resources, so a new resource
+    /// goes to the newest document known.
+    fn know_document(&mut self, doc: &str, readers: &str, owner: &str, count: usize) {
         let Some(number) = doc
-            .strip_prefix(owner)
+            .strip_prefix(readers)
+            .and_then(|rest| rest.strip_prefix('/'))
+            .and_then(|rest| rest.strip_prefix(owner))
             .and_then(|rest| rest.strip_prefix('#'))
             .and_then(|number| number.parse::<u32>().ok())
         else {
             return;
         };
-        let held = self
-            .docs
-            .get(doc)
-            .and_then(|doc| match doc.get(ROOT, HELD).ok()? {
-                Some((AmValue::Object(ObjType::Map), held)) => Some(doc.length(&held)),
-                _ => None,
-            })
-            .unwrap_or(0);
-        let filled = self.filled.entry(owner.to_owned()).or_default();
+        let filled = self
+            .filled
+            .entry((readers.to_owned(), owner.to_owned()))
+            .or_default();
         if number >= filled.newest {
             filled.newest = number;
-            filled.held = held;
+            filled.held = count;
         }
     }
 
-    /// The document `doc` as it stands, for whoever keeps or sends it whole.
+    /// Takes in the document `doc` the store kept (as [`Automerge::save`] wrote it) and indexes
+    /// every resource it holds.
+    ///
+    /// # Errors
+    /// When the bytes are no document.
+    pub fn load(&mut self, doc_id: &str, bytes: &[u8]) -> Result<(), StoreError> {
+        let doc = Automerge::load(bytes)?;
+        let readers = text_at(&doc, &ROOT, READERS).unwrap_or_default();
+        self.index.forget(doc_id);
+        self.docs.insert(doc_id.to_owned(), doc);
+        self.index_resources(doc_id, &readers, None)
+    }
+
+    /// What the index holds of `doc`, as bytes [`Self::restore`] takes back: what a start reads
+    /// instead of the document. `None` for a document the index has not seen.
+    #[must_use]
+    pub fn snapshot(&self, doc: &str) -> Option<Vec<u8>> {
+        crate::snapshot::save(&self.index, doc)
+    }
+
+    /// Indexes the document `doc` from its `snapshot`, when the snapshot was taken at `heads`,
+    /// the heads the document is at now; the document itself is read only when a write or a
+    /// peer's change needs it. Whether the snapshot was taken: one of other heads, or no
+    /// snapshot at all, takes nothing, and the document is then [loaded](Self::load) instead.
+    pub fn restore(&mut self, doc: &str, snapshot: &[u8], heads: &[ChangeHash]) -> bool {
+        let Some(restored) = crate::snapshot::read(snapshot) else {
+            return false;
+        };
+        if restored.heads != heads {
+            return false;
+        }
+        self.index.forget(doc);
+        self.docs.remove(doc);
+        let count = restored.changes.len();
+        for change in &restored.changes {
+            if let Change::Put { parent, kind, .. } = change {
+                self.know_document(
+                    doc,
+                    &restored.readers,
+                    parent.as_deref().unwrap_or(kind),
+                    count,
+                );
+            }
+        }
+        self.commit(&Commit {
+            doc,
+            readers: &restored.readers,
+            heads,
+            changes: &restored.changes,
+        });
+        true
+    }
+
+    /// Lets the document `doc` go from memory, answering it saved; its resources stay indexed,
+    /// and it is read again from the source when needed.
+    pub fn evict(&mut self, doc: &str) -> Option<Vec<u8>> {
+        self.docs.remove(doc).map(|doc| doc.save())
+    }
+
+    /// The document `doc` as it stands in memory, for whoever keeps or sends it whole.
     #[must_use]
     pub fn document(&self, doc: &str) -> Option<&Automerge> {
         self.docs.get(doc)
+    }
+
+    /// How many documents are in memory.
+    #[must_use]
+    pub fn in_memory(&self) -> usize {
+        self.docs.len()
     }
 }
 
@@ -435,6 +654,7 @@ fn read(doc: &Automerge, held: &ObjId, id: &str) -> Option<(String, Resource)> {
     Some((
         kind,
         Resource {
+            readers: String::new(),
             parent: text_at(doc, &map, PARENT),
             order: text_at(doc, &map, ORDER),
             fields,

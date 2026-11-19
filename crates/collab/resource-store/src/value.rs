@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 /// Values of different kinds sort by kind: nothing first, then flags, numbers and texts. An
 /// integer and a float compare by the number they stand for, so a field one app writes as `3`
 /// and another as `3.0` sorts and filters as one.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Value {
     /// An absent field, or one holding nothing.
     Null,
@@ -127,7 +127,7 @@ impl std::hash::Hash for Value {
 }
 
 /// What a resource holds in one indexed field.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Cell {
     /// A scalar field's value.
     One(Value),
