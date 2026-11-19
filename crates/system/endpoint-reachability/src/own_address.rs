@@ -33,20 +33,6 @@ pub async fn relay_addr(endpoint: &Endpoint, within: Duration) -> EndpointAddr {
     addr
 }
 
-/// Where `endpoint` answers once it is connected to a relay and its address names it: waits on
-/// that state itself, with no bound, for a caller that needs the relayed address and runs off any
-/// loop.
-pub async fn relayed(endpoint: &Endpoint) -> EndpointAddr {
-    endpoint.online().await;
-    let mut watch = endpoint.watch_addr();
-    loop {
-        let addr = watch.get();
-        if addr.relay_urls().next().is_some() || watch.updated().await.is_err() {
-            return addr;
-        }
-    }
-}
-
 pub async fn await_relay(endpoint: &Endpoint) -> EndpointAddr {
     relay_addr(endpoint, RELAY_WAIT).await
 }

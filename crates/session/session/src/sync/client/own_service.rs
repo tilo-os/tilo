@@ -86,7 +86,8 @@ pub(crate) async fn open_with_groups(
             // again once a relay comes, and a desktop never waits on the network to show.
             reaching: tilo_endpoint_reachability::Reaching::WhenNeeded,
             // The service makes the links this device hands out, and an invitation's address is
-            // its to sign: it wakes these relays and waits for one before it does.
+            // its to sign: it wakes these relays and waits up to a net report for one before it
+            // does.
             reachability: reachability.clone(),
             ..workspace_service::ServiceConfig::new(root, tilo_server_protocol::WorkSetting::none())
         },

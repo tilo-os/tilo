@@ -192,6 +192,7 @@ paths = [
     "crates/session/client/tests/invitation_entry.rs",
     "crates/session/client/tests/server_restart.rs",
     "crates/session/session/src/sync/client/mod.rs",
+    "crates/system/endpoint-reachability/*",
     "crates/session/session/src/sync/client/network.rs",
     "crates/session/session/src/sync/client/own_service.rs",
     "crates/session/session/src/enrollment.rs",

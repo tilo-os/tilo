@@ -224,6 +224,7 @@ impl Workspaces {
         wait_list_entry: Option<[u8; 32]>,
     ) -> Result<IssuedInvitation, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
+        let address = self.invitation_addr().await;
         let issued = {
             let governed = self.workspace(workspace).await?;
             let mut governed = governed.lock().await;
@@ -251,15 +252,14 @@ impl Workspaces {
                     "that address is no longer on the wait list",
                 ));
             }
-            let issued = self
-                .stage_issue(
-                    &mut governed,
-                    administrator,
-                    request,
-                    makes_administrator,
-                    now,
-                )
-                .await?;
+            let issued = self.stage_issue(
+                &mut governed,
+                administrator,
+                request,
+                makes_administrator,
+                &address,
+                now,
+            )?;
             if let Some(entry) = wait_list_entry {
                 governed
                     .wait_list
@@ -296,17 +296,19 @@ impl Workspaces {
             })
     }
 
-    /// Record an invitation `request` asks of `workspace`, unwritten.
-    pub(super) async fn stage_issue(
+    /// Record an invitation `request` asks of `workspace`, unwritten, naming this device at
+    /// `address` ([`Self::invitation_addr`]).
+    pub(super) fn stage_issue(
         &self,
         workspace: &mut GovernedWorkspace,
         administrator: &DeviceCert,
         request: IssueInvitationRequest,
         makes_administrator: bool,
+        address: &iroh_base::EndpointAddr,
         now: u64,
     ) -> Result<IssuedInvitation, CollaborationError> {
         let role = request.role;
-        let transport = vec![self.invitation_hint(workspace).await?];
+        let transport = vec![self.invitation_hint(workspace, address)?];
         let mut log = workspace.collaboration().clone();
         let issued = log.issue_as(
             &workspace.governed(self.serving_certificate()),

@@ -206,10 +206,11 @@ impl Reachability {
     }
 
     /// This device's address once it is reached through a relay, for `why`: the relays wake and
-    /// the answer waits until the endpoint is connected to one and its address names it (iroh's
-    /// online state), so an invite that carries it lets the invitee reach this device from behind
-    /// any network. `None` when this handle holds nothing back: the endpoint's own address is as
-    /// good as it gets. The answer runs on any task; nothing blocks while it waits.
+    /// the answer waits up to [`RELAY_WAIT`], about one net report, for the endpoint to name one,
+    /// so an invite that carries it lets the invitee reach this device from behind any network.
+    /// A device that reaches none in that time answers the address it has, so an offline one
+    /// still hands out a link. `None` when this handle holds nothing back: the endpoint's own
+    /// address is as good as it gets. The answer runs on any task; nothing blocks while it waits.
     #[must_use]
     pub fn reached_addr(
         &self,
@@ -217,7 +218,7 @@ impl Reachability {
     ) -> Option<impl std::future::Future<Output = EndpointAddr> + Send + use<>> {
         let endpoint = with_held(&self.held, |held| held.endpoint.clone())?;
         self.wake(why);
-        Some(async move { own_address::relayed(&endpoint).await })
+        Some(async move { own_address::relay_addr(&endpoint, RELAY_WAIT).await })
     }
 }
 
@@ -556,6 +557,28 @@ mod tests {
         endpoint.close().await;
     }
 
+    /// A device that reaches no relay still hands out a link: the wait for one ends after about
+    /// a net report, and the address it has is the answer, so an invitation never waits forever.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_invitation_from_a_device_with_no_way_out_names_the_address_it_has() {
+        let (endpoint, _) = endpoint_without_relays().await;
+        let reachability = deferred(&endpoint, REST_AFTER);
+        let addr = tilo_test_env::within(
+            "an invitation from a device that reaches no relay",
+            reachability
+                .reached_addr("an invitation is open")
+                .expect("the handle holds relays back"),
+        )
+        .await;
+        assert_eq!(addr.id, endpoint.id());
+        assert_eq!(
+            addr.relay_urls().count(),
+            0,
+            "no relay answered, so the address names the endpoint alone"
+        );
+        endpoint.close().await;
+    }
+
     /// Woken by an open invite, an endpoint names the relay it chose as home
     /// in its address, which the invite carries; once nothing needs the
     /// relays they rest, which empties the map and gives the home relay up,
@@ -584,8 +607,8 @@ mod tests {
         // its home relay: a bare wake would rest them after the 300 ms
         // delay, which a loaded runner's net report can outlast, and an
         // endpoint whose relays rested never picks one. The address is
-        // answered once the endpoint is reached through one, however long
-        // that takes.
+        // answered once the endpoint is reached through one, up to a net
+        // report.
         reachability.need(Need::Session, Some("an invitation is open"));
         let addr = tilo_test_env::within(
             "a woken endpoint to name its home relay",

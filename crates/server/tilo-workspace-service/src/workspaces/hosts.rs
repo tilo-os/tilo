@@ -948,23 +948,29 @@ impl Workspaces {
             .unwrap_or(CopyRole::KeyHolder)
     }
 
-    /// The hint an invitation of `workspace` carries: the address this device answers at once
-    /// its relays are up. They wake for it and the answer waits for one, because a link signed
-    /// before this device reached a relay names only the network it stands in and reaches
-    /// nobody the link is handed to. Nothing held back names the address the endpoint has.
-    pub(super) async fn invitation_hint(
-        &self,
-        workspace: &GovernedWorkspace,
-    ) -> Result<tilo_peer_state::join::TransportHint, CollaborationError> {
-        let role = self.own_role(workspace);
-        let waking = self
+    /// The address an invitation names: this device's once it is reached through one of its
+    /// relays, which wake for it and are waited for up to a net report, because a link signed
+    /// before this device reached one names only the network it stands in. A device that reaches
+    /// none in that time names the address it has, so one with no way out still hands out a link.
+    /// Nothing held back names the address the endpoint has. Asked before the workspace is
+    /// locked: the wait belongs to the invitation, not to everything the workspace answers.
+    pub(super) async fn invitation_addr(&self) -> EndpointAddr {
+        match self
             .reachability()
-            .reached_addr("an invitation names this device's address");
-        let addr = match waking {
+            .reached_addr("an invitation names this device's address")
+        {
             Some(reached) => reached.await,
             None => self.endpoint_addr(),
-        };
-        self.signed_hint(workspace, role, &addr)
+        }
+    }
+
+    /// The hint an invitation of `workspace` carries, signed for this device answering at `addr`.
+    pub(super) fn invitation_hint(
+        &self,
+        workspace: &GovernedWorkspace,
+        addr: &EndpointAddr,
+    ) -> Result<tilo_peer_state::join::TransportHint, CollaborationError> {
+        self.signed_hint(workspace, self.own_role(workspace), addr)
     }
 
     /// [`Self::transport_hint`], saying this device holds `workspace` as
