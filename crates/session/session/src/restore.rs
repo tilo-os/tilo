@@ -700,12 +700,18 @@ fn tabs_laid_out(kept: &tilo_app_launch::Adopted, waiting: &VecDeque<Saved>) -> 
         })
 }
 
-/// `tree` without the places a launch left on it that no window came for.
+/// `tree` without the places a launch of this device's left on it that no window came for.
 /// A place stands for a launch the session asked for a moment ago. The session that asked is gone
 /// by the next start, so nothing is on its way to those any more: they are not windows the person
 /// had open, and a start that kept them would show the remains of a launch that ended — one more of
 /// them with every restart, since each is written down with the layout.
+///
+/// Only this device's own places are its earlier session's: a place another device minted is that
+/// device's launch, under way while this one starts, and the workspace's layout holds it until its
+/// window comes. Closing it here would be a close this device writes, which takes the window away
+/// from the device that opened it.
 pub(crate) fn without_unfilled(tree: &mut Layout) {
+    let salt = tree.salt;
     let unfilled: Vec<TabId> = tree
         .workspaces
         .iter()
@@ -713,6 +719,7 @@ pub(crate) fn without_unfilled(tree: &mut Layout) {
         .flat_map(|strip| &strip.window_groups)
         .flat_map(|group| &group.tabs)
         .filter(|tab| matches!(tab.tile, TileContent::AppPlaceholder { .. }))
+        .filter(|tab| tilo_desktop_model::peer_salt_of(tab.id) == salt)
         .map(|tab| tab.id)
         .collect();
     for tab in unfilled {
@@ -884,6 +891,27 @@ mod tests {
             label: "Notes".into(),
             note: String::new(),
         }
+    }
+
+    /// The place a launch of this device's earlier session left goes at the start, and the place
+    /// another device holds for its own launch, under way as this device starts, stays.
+    #[test]
+    fn a_start_drops_its_own_unfilled_places_and_keeps_another_devices() {
+        let place = || TileContent::AppPlaceholder {
+            kind: tilo_desktop_model::AppKind::Other("so.tilo.chat".into()),
+            label: "so.tilo.chat".into(),
+        };
+        let own = tilo_desktop_model::compose_id(7, 4);
+        let theirs = tilo_desktop_model::compose_id(8, 5);
+        let mut tree = layout(vec![window(own, place()), window(theirs, place())]);
+        tree.salt = 7;
+        super::without_unfilled(&mut tree);
+        let left: Vec<u64> = tree
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.tabs().map(|tab| tab.id))
+            .collect();
+        assert_eq!(left, vec![theirs]);
     }
 
     /// A window another member opened arrives in the workspace's layout as one this device opens
