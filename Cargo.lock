@@ -21798,6 +21798,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-resource-store"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tilo-actions",
+ "tilo-automerge-fork",
+]
+
+[[package]]
 name = "tilo-recurrence"
 version = "0.1.0"
 dependencies = [

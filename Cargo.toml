@@ -277,6 +277,7 @@ members = [
     "crates/collab/automation",
     "crates/collab/key-group",
     "crates/collab/collab-types",
+    "crates/collab/resource-store",
     "crates/collab/collaboration",
     "crates/collab/neighbour-wire",
     "crates/collab/reference",

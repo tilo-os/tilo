@@ -1,0 +1,31 @@
+[package]
+autotests = false
+name = "tilo-resource-store"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license = "MIT"
+repository.workspace = true
+homepage.workspace = true
+description = "The resource store: every resource of a workspace in documents it places itself, indexed in the commit that changes it, with paged, filtered and counted queries, whichever language declared it."
+
+[dependencies]
+# The surface an app publishes from its typed model: the collections and fields it stores.
+tilo-actions = { version = "0.1.0", path = "../actions" }
+# A committed document, read in the stored layout its surface declares.
+automerge.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[[bench]]
+name = "write_rate"
+path = "benches/write_rate.rs"
+harness = false
+
+[lints]
+workspace = true
