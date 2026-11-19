@@ -972,21 +972,20 @@ impl tilo_app::linked_accounts::WorkspaceResourceActions for RecordActions {
 
 /// The person's linked accounts in this desktop's workspace, asked of the
 /// workspace's host through `shared`'s workspace actions; an answer wakes the mount.
-/// `shared` is the mount's before it holds them, so they hold no cycle.
+/// `shared` is the mount's before it holds them, so they hold no cycle. The code that reads them
+/// arrives as the page starts asking, once its first frame is up.
 fn linked_accounts(
     shared: &Shared,
     notify: &Arc<dyn Fn() + Send + Sync>,
 ) -> tilo_app::linked_accounts::LinkedAccounts {
     let (woken, notify) = (shared.clone(), Arc::clone(notify));
-    tilo_app::linked_accounts::LinkedAccounts::new(Rc::new(
-        tilo_app::linked_accounts::WorkspaceAccounts::new(
-            Rc::new(shared.resource_actions.clone()),
-            Rc::new(move || {
-                woken.wake();
-                notify();
-            }),
-        ),
-    ))
+    tilo_app::linked_accounts::LinkedAccounts::waiting(
+        Rc::new(shared.resource_actions.clone()),
+        Rc::new(move || {
+            woken.wake();
+            notify();
+        }),
+    )
 }
 
 struct Tiles {

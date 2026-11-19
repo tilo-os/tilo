@@ -210,6 +210,13 @@ split_code! {
 }
 
 split_code! {
+    /// The accounts a person linked to the services this workspace is connected to: the page
+    /// fetches them the first time something asks where they stand.
+    mod linked_accounts: ui::linked_accounts::MakeAccounts = ui::linked_accounts::builtin_accounts()
+        => ui::linked_accounts::ACCOUNTS, module = "linked_accounts", hash = "b07c41e95d2af683";
+}
+
+split_code! {
     /// The profile card: the first card that opens asks for it.
     mod profile_card: tilo_desktop::profile_card::MakeProfileCard = tilo_desktop::profile_card::builtin_profile_card()
         => tilo_desktop::profile_card::PROFILE_CARD, module = "profile_card", hash = "5f81c2e94a3d07b6";
@@ -388,6 +395,7 @@ pub(crate) fn register() {
     feedback_code::register();
     dom_presenter::register();
     profile_card::register();
+    linked_accounts::register();
     people::register();
     jobs_band::register();
     page_drops::register();

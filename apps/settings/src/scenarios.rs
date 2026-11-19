@@ -254,7 +254,7 @@ pub enum MobileSample {
 
 pub struct CaptureBridge(pub ui::linked_accounts::LinkState);
 
-impl ui::linked_accounts::LinkedAccountsHost for CaptureBridge {
+impl ui::linked_accounts::LinkedAccountsService for CaptureBridge {
     fn accounts(&self) -> Vec<ui::linked_accounts::LinkedAccount> {
         vec![ui::linked_accounts::LinkedAccount {
             app: "so.tilo.discord".into(),

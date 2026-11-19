@@ -34,6 +34,10 @@ test-support = [
     "tilo-resource/test-support",
     "tilo-actions/test-support",
 ]
+# The code that reads a person's linked accounts from a workspace's connectors
+# (`linked_accounts::ACCOUNTS`) loads on first use; the browser desktop supplies
+# it as its own module. Without it the code is linked in.
+lazy-accounts = []
 # Backend features of the native runner; on wasm32 they have no effect.
 webview-adblock = ["tilo-runner-native?/webview-adblock"]
 # X11 windows and clipboard for development builds on an X11 host; see

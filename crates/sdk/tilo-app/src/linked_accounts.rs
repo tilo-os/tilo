@@ -183,7 +183,7 @@ pub struct LinkedAccount {
 /// What shows and changes a person's linked accounts in a workspace. Asking
 /// never waits: what comes of it shows in [`Self::accounts`] once the workspace's
 /// host answered, and [`Self::revision`] moves.
-pub trait LinkedAccountsHost {
+pub trait LinkedAccountsService {
     /// Every service the workspace is connected to, with the person's account,
     /// as last heard.
     fn accounts(&self) -> Vec<LinkedAccount>;
@@ -218,16 +218,20 @@ pub trait LinkedAccountsHost {
     fn decline(&self, app: &str) {
         let _ = app;
     }
+    /// Whether the code that reads the accounts is still on its way: nothing asked yet reaches it.
+    fn waiting(&self) -> bool {
+        false
+    }
 }
 
-/// A host's [`LinkedAccountsHost`], as it lends it to a panel. The default
+/// A host's [`LinkedAccountsService`], as it lends it to a panel. The default
 /// has none: no service, and asking does nothing.
 #[derive(Clone, Default)]
-pub struct LinkedAccounts(Option<Rc<dyn LinkedAccountsHost>>);
+pub struct LinkedAccounts(Option<Rc<dyn LinkedAccountsService>>);
 
 impl LinkedAccounts {
     #[must_use]
-    pub fn new(host: Rc<dyn LinkedAccountsHost>) -> Self {
+    pub fn new(host: Rc<dyn LinkedAccountsService>) -> Self {
         Self(Some(host))
     }
 
@@ -294,6 +298,200 @@ impl LinkedAccounts {
     pub fn decline(&self, app: &str) {
         if let Some(host) = &self.0 {
             host.decline(app);
+        }
+    }
+
+    /// Whether the code that reads the accounts is still on its way.
+    #[must_use]
+    pub fn is_waiting(&self) -> bool {
+        self.0.as_ref().is_some_and(|host| host.waiting())
+    }
+
+    /// The person's linked accounts, read by [`ACCOUNTS`] once its code is in: what is asked
+    /// before then happens when it arrives.
+    #[must_use]
+    pub fn waiting(actions: Rc<dyn WorkspaceResourceActions>, changed: Rc<dyn Fn()>) -> Self {
+        Self(Some(Rc::new(WaitingAccounts::new(
+            &ACCOUNTS, actions, changed,
+        ))))
+    }
+}
+
+/// The code that asks the workspace's connectors where the person's linked accounts stand.
+pub type MakeAccounts =
+    fn(Rc<dyn WorkspaceResourceActions>, Rc<dyn Fn()>) -> Rc<dyn LinkedAccountsService>;
+
+ui_core::lazy_code! {
+    /// The code that reads the person's linked accounts from the workspace's connectors: linked,
+    /// or with `lazy-accounts` fetched the first time a page asks where they stand.
+    pub static ACCOUNTS: MakeAccounts = builtin_accounts, feature = "lazy-accounts";
+}
+
+/// The only path to [`ACCOUNTS`]'s code.
+#[must_use]
+pub fn builtin_accounts() -> MakeAccounts {
+    accounts_reader
+}
+
+fn accounts_reader(
+    actions: Rc<dyn WorkspaceResourceActions>,
+    changed: Rc<dyn Fn()>,
+) -> Rc<dyn LinkedAccountsService> {
+    Rc::new(WorkspaceAccounts::new(actions, changed))
+}
+
+/// A person's linked accounts whose reader is still on its way: every ask waits in [`Before`] and
+/// happens once the reader is in.
+struct WaitingAccounts {
+    code: &'static ui_core::lazy_code::LazyCode<MakeAccounts>,
+    actions: Rc<dyn WorkspaceResourceActions>,
+    changed: Rc<dyn Fn()>,
+    reader: RefCell<Option<Rc<dyn LinkedAccountsService>>>,
+    before: RefCell<Before>,
+}
+
+#[derive(Default)]
+struct Before {
+    refresh_all: bool,
+    refresh_apps: Vec<String>,
+    linked: Vec<(String, bool)>,
+    offered: Option<String>,
+    answered: Vec<(String, bool)>,
+}
+
+impl WaitingAccounts {
+    fn new(
+        code: &'static ui_core::lazy_code::LazyCode<MakeAccounts>,
+        actions: Rc<dyn WorkspaceResourceActions>,
+        changed: Rc<dyn Fn()>,
+    ) -> Self {
+        Self {
+            code,
+            actions,
+            changed,
+            reader: RefCell::new(None),
+            before: RefCell::default(),
+        }
+    }
+
+    /// The reader, built once its code is in; the first ask starts that code's fetch.
+    fn reader(&self) -> Option<Rc<dyn LinkedAccountsService>> {
+        if let Some(reader) = self.reader.borrow().as_ref() {
+            return Some(Rc::clone(reader));
+        }
+        let reader = self.code.get()?(Rc::clone(&self.actions), Rc::clone(&self.changed));
+        *self.reader.borrow_mut() = Some(Rc::clone(&reader));
+        let before = std::mem::take(&mut *self.before.borrow_mut());
+        if before.refresh_all {
+            reader.refresh();
+        }
+        for app in before.refresh_apps {
+            reader.refresh_app(&app);
+        }
+        if let Some(token) = before.offered {
+            reader.offer(&token);
+        }
+        for (app, linked) in before.linked {
+            if linked {
+                reader.link(&app);
+            } else {
+                reader.unlink(&app);
+            }
+        }
+        for (app, accepted) in before.answered {
+            if accepted {
+                reader.accept(&app);
+            } else {
+                reader.decline(&app);
+            }
+        }
+        Some(reader)
+    }
+}
+
+impl LinkedAccountsService for WaitingAccounts {
+    fn accounts(&self) -> Vec<LinkedAccount> {
+        self.reader()
+            .map_or_else(Vec::new, |reader| reader.accounts())
+    }
+
+    fn revision(&self) -> u64 {
+        self.reader().map_or(0, |reader| reader.revision())
+    }
+
+    fn profile_links(&self) -> Option<Vec<ProfileLink>> {
+        self.reader().and_then(|reader| reader.profile_links())
+    }
+
+    fn waiting(&self) -> bool {
+        self.reader.borrow().is_none()
+    }
+
+    fn refresh(&self) {
+        if let Some(reader) = self.reader() {
+            reader.refresh();
+            return;
+        }
+        let mut before = self.before.borrow_mut();
+        before.refresh_all = true;
+        before.refresh_apps.clear();
+    }
+
+    fn refresh_app(&self, app: &str) {
+        if let Some(reader) = self.reader() {
+            reader.refresh_app(app);
+            return;
+        }
+        let mut before = self.before.borrow_mut();
+        if !before.refresh_all && !before.refresh_apps.iter().any(|asked| asked == app) {
+            before.refresh_apps.push(app.to_owned());
+        }
+    }
+
+    fn link(&self, app: &str) {
+        match self.reader() {
+            Some(reader) => reader.link(app),
+            None => self.before.borrow_mut().linked.push((app.to_owned(), true)),
+        }
+    }
+
+    fn unlink(&self, app: &str) {
+        match self.reader() {
+            Some(reader) => reader.unlink(app),
+            None => self
+                .before
+                .borrow_mut()
+                .linked
+                .push((app.to_owned(), false)),
+        }
+    }
+
+    fn offer(&self, token: &str) {
+        match self.reader() {
+            Some(reader) => reader.offer(token),
+            None => self.before.borrow_mut().offered = Some(token.to_owned()),
+        }
+    }
+
+    fn accept(&self, app: &str) {
+        match self.reader() {
+            Some(reader) => reader.accept(app),
+            None => self
+                .before
+                .borrow_mut()
+                .answered
+                .push((app.to_owned(), true)),
+        }
+    }
+
+    fn decline(&self, app: &str) {
+        match self.reader() {
+            Some(reader) => reader.decline(app),
+            None => self
+                .before
+                .borrow_mut()
+                .answered
+                .push((app.to_owned(), false)),
         }
     }
 }
@@ -707,7 +905,7 @@ fn token_argument(token: &str) -> serde_json::Map<String, serde_json::Value> {
     arguments
 }
 
-impl LinkedAccountsHost for WorkspaceAccounts {
+impl LinkedAccountsService for WorkspaceAccounts {
     fn accounts(&self) -> Vec<LinkedAccount> {
         let known = self.known.borrow();
         known
@@ -1018,7 +1216,7 @@ mod tests {
         }
     }
 
-    fn host(offer: Result<OfferReading, String>) -> Rc<Host> {
+    fn served(offer: Result<OfferReading, String>) -> Rc<Host> {
         Rc::new(Host {
             reading: RefCell::new(discord()),
             offer: RefCell::new(Some(offer)),
@@ -1040,10 +1238,34 @@ mod tests {
             assert_eq!(connector_apps(workspace, runs_here), ["so.tilo.discord"]);
         }
 
+        phase asks_made_before_the_reader_arrives_happen_once_it_is_in;
+        {
+            static CODE: ui_core::lazy_code::LazyCode<MakeAccounts> =
+                ui_core::lazy_code::LazyCode::fetched();
+            let served = served(Ok(kim()));
+            let accounts = LinkedAccounts(Some(Rc::new(WaitingAccounts::new(
+                &CODE,
+                Rc::new(Rc::clone(&served)),
+                Rc::new(|| {}),
+            ))));
+            assert!(accounts.is_waiting(), "the reader's code is on its way");
+            accounts.refresh();
+            accounts.offer("T0KEN");
+            assert!(accounts.accounts().is_empty(), "nothing is read yet");
+            assert!(served.asked.borrow().is_empty(), "nothing asked yet");
+            CODE.install(builtin_accounts());
+            assert_eq!(
+                accounts.accounts()[0].state,
+                LinkState::Offered(kim()),
+                "the queued refresh and offer happened once the reader was in"
+            );
+            assert!(!accounts.is_waiting());
+        }
+
         phase connecting_goes_to_the_consent_page;
         {
-            let host = host(Err("gone".into()));
-            let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
+            let served = served(Err("gone".into()));
+            let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&served)), Rc::new(|| {}));
             assert!(
                 accounts.accounts().is_empty(),
                 "nothing is known before asking"
@@ -1057,19 +1279,19 @@ mod tests {
                 }
             );
             accounts.link("so.tilo.discord");
-            assert_eq!(*host.opened.borrow(), ["https://discord.example/authorize"]);
+            assert_eq!(*served.opened.borrow(), ["https://discord.example/authorize"]);
             assert_eq!(accounts.accounts()[0].state, LinkState::Connecting);
         }
 
         phase a_linked_account_is_named_with_its_picture_for_the_profile;
         {
-            let host = host(Ok(kim()));
-            let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
+            let served = served(Ok(kim()));
+            let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&served)), Rc::new(|| {}));
             assert_eq!(accounts.profile_links(), None, "nothing answered yet");
             accounts.refresh();
             assert_eq!(accounts.profile_links(), Some(Vec::new()), "not linked");
             {
-                let mut reading = host.reading.borrow_mut();
+                let mut reading = served.reading.borrow_mut();
                 reading.account = Some(kim().account);
                 reading.picture = Some("data:image/png;base64,AAAA".into());
                 reading.unlink = Some("unlink-mine".into());
@@ -1090,8 +1312,8 @@ mod tests {
 
         phase a_token_shows_its_offer_and_a_yes_links_it;
         {
-            let host = host(Ok(kim()));
-            let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
+            let served = served(Ok(kim()));
+            let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&served)), Rc::new(|| {}));
             accounts.offer("T0KEN");
             assert_eq!(accounts.accounts()[0].state, LinkState::Offered(kim()));
             accounts.accept("so.tilo.discord");
@@ -1103,11 +1325,11 @@ mod tests {
 
         phase an_offer_started_here_links_without_a_second_yes;
         {
-            let host = host(Ok(OfferReading {
+            let served = served(Ok(OfferReading {
                 started_here: true,
                 ..kim()
             }));
-            let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
+            let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&served)), Rc::new(|| {}));
             accounts.refresh();
             accounts.offer("T0KEN");
             assert_eq!(
@@ -1118,17 +1340,17 @@ mod tests {
 
         phase readings_that_cross_spend_the_token_once;
         {
-            let host = host(Ok(OfferReading {
+            let served = served(Ok(OfferReading {
                 started_here: true,
                 ..kim()
             }));
-            host.holding.set(true);
-            let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
+            served.holding.set(true);
+            let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&served)), Rc::new(|| {}));
             // The page came back with a token, and the card opening asked again.
             accounts.offer("T0KEN");
             accounts.refresh();
             loop {
-                let waiting = std::mem::take(&mut *host.waiting.borrow_mut());
+                let waiting = std::mem::take(&mut *served.waiting.borrow_mut());
                 if waiting.is_empty() {
                     break;
                 }
@@ -1136,7 +1358,7 @@ mod tests {
                     answer();
                 }
             }
-            let asked = host.actions.borrow();
+            let asked = served.actions.borrow();
             let count = |action: &str| asked.iter().filter(|a| *a == action).count();
             assert_eq!(
                 (count("link-offer"), count("accept-link")),
@@ -1150,8 +1372,8 @@ mod tests {
 
         phase a_declined_offer_is_dropped;
         {
-            let host = host(Ok(kim()));
-            let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
+            let served = served(Ok(kim()));
+            let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&served)), Rc::new(|| {}));
             accounts.offer("T0KEN");
             accounts.decline("so.tilo.discord");
             assert!(matches!(
@@ -1162,9 +1384,9 @@ mod tests {
 
         phase a_token_with_no_offer_is_asked_after_then_says_why;
         {
-            let host = host(Err("This link ran out.".into()));
+            let served = served(Err("This link ran out.".into()));
             let accounts = LinkedAccounts::new(Rc::new(WorkspaceAccounts::new(
-                Rc::new(Rc::clone(&host)),
+                Rc::new(Rc::clone(&served)),
                 Rc::new(|| {}),
             )));
             accounts.offer("T0KEN");
@@ -1184,10 +1406,10 @@ mod tests {
 
         phase a_workspace_with_no_connector_is_asked_again_a_few_times_then_left;
         {
-            let host = host(Err("gone".into()));
-            host.reading.borrow_mut().connected = false;
+            let served = served(Err("gone".into()));
+            served.reading.borrow_mut().connected = false;
             let accounts = LinkedAccounts::new(Rc::new(WorkspaceAccounts::new(
-                Rc::new(Rc::clone(&host)),
+                Rc::new(Rc::clone(&served)),
                 Rc::new(|| {}),
             )));
             let mut recheck = LinkingRecheck::default();
@@ -1198,7 +1420,7 @@ mod tests {
                 now = due;
                 assert!(waits.len() <= 10, "the asks again end");
             }
-            assert_eq!(host.asked.borrow().len() / 2, UNANSWERED_RETRIES as usize);
+            assert_eq!(served.asked.borrow().len() / 2, UNANSWERED_RETRIES as usize);
         }
     }
 

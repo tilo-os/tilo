@@ -986,7 +986,7 @@ fn ada() -> ui::linked_accounts::AccountName {
     }
 }
 
-impl ui::linked_accounts::LinkedAccountsHost for Bridged {
+impl ui::linked_accounts::LinkedAccountsService for Bridged {
     fn accounts(&self) -> Vec<ui::linked_accounts::LinkedAccount> {
         vec![ui::linked_accounts::LinkedAccount {
             app: "so.tilo.discord".into(),

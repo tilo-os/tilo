@@ -1746,6 +1746,10 @@ impl BrowserShell {
         const TRIES: u32 = 6;
         const APART: std::time::Duration = std::time::Duration::from_secs(5);
         let linked = &self.chrome.shared.linked;
+        // The code that reads them is on its way: the frame it is in asks with the rest.
+        if linked.is_waiting() {
+            return;
+        }
         let links = linked.profile_links();
         if links.is_none() && self.chrome.here.borrow().own_user().is_some() {
             let now = ui::time::now();
