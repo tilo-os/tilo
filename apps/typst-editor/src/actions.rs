@@ -7,7 +7,43 @@
 //! view.
 
 use ui::framework::LiveRow;
+use ui::tilo_resource::row::RowBindings;
 use ui::tilo_resource::{self, Effect};
+
+/// The Problems drawer, as the row it publishes: its children are the
+/// [`Diagnostic`] rows.
+#[derive(tilo_resource::Row)]
+#[row(kind = "typst.problems", label = "Problems")]
+pub(crate) struct Problems;
+
+/// One compile problem, as a row of the [`Problems`] drawer: going to it is
+/// the effect its type declares.
+#[derive(tilo_resource::Row)]
+#[row(kind = "typst.diagnostic", label = "Problem", effects = TypstEffect)]
+pub(crate) struct Diagnostic;
+
+/// The preview pager, as the row it publishes: its children are the
+/// [`PreviewPage`] rows.
+#[derive(tilo_resource::Row)]
+#[row(kind = "typst.preview-pages", label = "Preview pages")]
+pub(crate) struct PreviewPages;
+
+/// One page of the preview, as a row of the [`PreviewPages`] pager: going to
+/// it is the effect its type declares.
+#[derive(tilo_resource::Row)]
+#[row(kind = "typst.preview-page", label = "Page", effects = TypstEffect)]
+pub(crate) struct PreviewPage;
+
+/// The outline drawer: its children are the [`Heading`] rows.
+#[derive(tilo_resource::Row)]
+#[row(kind = "typst.outline", label = "Outline")]
+pub(crate) struct Outline;
+
+/// One heading of the file, as a row of the [`Outline`] drawer: going to it
+/// is the effect its type declares.
+#[derive(tilo_resource::Row)]
+#[row(kind = "typst.heading", label = "Heading", effects = TypstEffect)]
+pub(crate) struct Heading;
 
 /// Bound how many live diagnostic / preview-page rows the palette materialises.
 pub const LIVE_EXTRA_RESOURCE_LIMIT: usize = 32;
@@ -66,7 +102,7 @@ pub enum TypstEffect {
     #[effect(view, idempotent)]
     Preview,
     /// Go to diagnostic.
-    #[effect(view, row)]
+    #[effect(view, row, on = Diagnostic)]
     GoToDiagnostic {
         #[param("The Problems row")]
         index: usize,
@@ -75,13 +111,13 @@ pub enum TypstEffect {
     #[effect(view)]
     Outline,
     /// Go to heading.
-    #[effect(view, row)]
+    #[effect(view, row, on = Heading)]
     GoToHeading {
         #[param("The heading's one-based source line")]
         line: usize,
     },
     /// Go to page.
-    #[effect(view, row)]
+    #[effect(view, row, on = PreviewPage)]
     GoToPage {
         #[param("The zero-based page")]
         page: usize,
@@ -128,21 +164,18 @@ fn diagnostic_row(index: usize, diag: &crate::compile::Diagnostic) -> LiveRow {
         (Some(line), None) => format!("{severity} on line {line}: {message}"),
         _ => format!("{severity}: {message}"),
     };
-    LiveRow::new(
-        format!("typst.diagnostic:{index}"),
-        "typst.diagnostic",
-        label,
-    )
-    .effect(&TypstEffect::GoToDiagnostic { index })
+    let bindings =
+        RowBindings::new().bind(TypstEffect::GO_TO_DIAGNOSTIC, [("index", index.into())]);
+    LiveRow::typed_with::<Diagnostic>(format!("typst.diagnostic:{index}"), label, &bindings)
 }
 
 fn preview_page_row(page: usize) -> LiveRow {
-    LiveRow::new(
+    let bindings = RowBindings::new().bind(TypstEffect::GO_TO_PAGE, [("page", page.into())]);
+    LiveRow::typed_with::<PreviewPage>(
         format!("typst.preview-page:{page}"),
-        "typst.preview-page",
         format!("Page {}", page + 1),
+        &bindings,
     )
-    .effect(&TypstEffect::GoToPage { page })
 }
 
 /// Live Problems rows and preview-page hits — presentation cache, not
@@ -151,8 +184,7 @@ fn preview_page_row(page: usize) -> LiveRow {
 pub fn live_extras(ctx: &TypstResourceCtx<'_>) -> Vec<LiveRow> {
     let mut extras = Vec::new();
     if !ctx.diagnostics.is_empty() {
-        let mut problems = LiveRow::new(
-            "typst.problems",
+        let mut problems = LiveRow::typed::<Problems>(
             "typst.problems",
             format!("Problems ({})", ctx.diagnostics.len()),
         );
@@ -167,8 +199,7 @@ pub fn live_extras(ctx: &TypstResourceCtx<'_>) -> Vec<LiveRow> {
         extras.push(problems);
     }
     if ctx.page_count > 0 {
-        let mut pages = LiveRow::new(
-            "typst.preview-pages",
+        let mut pages = LiveRow::typed::<PreviewPages>(
             "typst.preview-pages",
             format!("Preview pages ({})", ctx.page_count),
         );

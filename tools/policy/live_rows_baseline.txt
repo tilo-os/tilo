@@ -66,8 +66,6 @@ row-operation 3 apps/remote/src/actions.rs
 row-operation 5 apps/store/src/app.rs
 row-operation 1 apps/terminal/src/main_body.rs
 row-operation 5 apps/tube/src/rows.rs
-row-operation 2 apps/typst-editor/src/actions.rs
-row-operation 1 apps/typst-editor/src/outline.rs
 row-operation 1 crates/session/activities/src/surface.rs
 row-operation 1 crates/session/notification-banners/src/surface.rs
 untyped-live-row 5 apps/camera/src/actions.rs
@@ -96,7 +94,5 @@ untyped-live-row 2 apps/remote/src/actions.rs
 untyped-live-row 13 apps/store/src/app.rs
 untyped-live-row 1 apps/terminal/src/main_body.rs
 untyped-live-row 10 apps/tube/src/rows.rs
-untyped-live-row 4 apps/typst-editor/src/actions.rs
-untyped-live-row 2 apps/typst-editor/src/outline.rs
 untyped-live-row 1 crates/session/activities/src/surface.rs
 untyped-live-row 1 crates/session/notification-banners/src/surface.rs
