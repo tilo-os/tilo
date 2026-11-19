@@ -24,18 +24,6 @@ pub(crate) use own_process::{in_own_process, test_path};
 #[cfg(test)]
 pub(crate) use owned_text::OwnedText;
 pub use tilo_test_env::{hang_bound, hang_deadline, wait_for, wait_until};
-
-/// Serve `doc`'s history to every History the tests on this thread open, as the session serves the
-/// history of the document a window shows. A test that changes `doc` after serving it serves it
-/// again ([`sync_history`]).
-pub fn serve_history(doc: &crate::automerge::AutoCommit) {
-    crate::history_mode::feed::tests::serve(doc);
-}
-
-/// `doc` as it stands now: what [`serve_history`] served before this reading is stale.
-pub fn sync_history(doc: &crate::automerge::AutoCommit) {
-    crate::history_mode::feed::tests::sync(doc);
-}
 #[cfg(test)]
 pub(crate) use widgets::{
     TwoWindows, delegate_widget_methods, inert_widget_methods, test_app_widget,

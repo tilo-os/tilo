@@ -704,10 +704,7 @@ async fn start_lending(
 ) -> Hosted {
     let options = Options {
         feedback_reviewer,
-        ..Options::working_with(
-            crate::common::catalogue,
-            crate::harness::written_out::model(),
-        )
+        ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
     };
     let options = match page {
         Some(origin) => options.serving(origin),

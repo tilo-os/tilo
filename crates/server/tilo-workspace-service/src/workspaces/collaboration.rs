@@ -691,22 +691,6 @@ impl Workspaces {
         done
     }
 
-    /// Every grant `workspace`'s governance holds, as the policy its holders
-    /// decide by keeps them.
-    ///
-    /// # Errors
-    ///
-    /// The workspace's policy is not here.
-    pub async fn workspace_grants(
-        &self,
-        workspace: &str,
-    ) -> Result<Vec<tilo_action_policy::Grant>, CollaborationError> {
-        self.policy_of(workspace)
-            .await
-            .map(|policy| policy.grants)
-            .ok_or_else(|| CollaborationError::new("the workspace's policy is not here"))
-    }
-
     /// Write workspace grants the governor decided (workspace settings such as a
     /// role's Deny on a kind), keyed by their ids.
     ///
