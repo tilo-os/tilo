@@ -15,7 +15,14 @@ pub enum WindowsEffect {
         #[param("The application id")]
         app: String,
     },
-    #[effect(view, row, returns, idempotent, on = crate::rows::CompatApp)]
+    #[effect(
+        view,
+        row,
+        returns,
+        idempotent,
+        on = crate::rows::CompatApp,
+        tag = tilo_actions::DOCUMENT_READ_TAG
+    )]
     ReadApp {
         #[param("The application id")]
         app: String,
@@ -309,6 +316,22 @@ mod tests {
             .into_iter()
             .map(LiveRow::into_resource)
             .collect()
+    }
+
+    /// Reading an application is a document read: it is what discloses its
+    /// row, so the operations bound to that row reach agents. A migration
+    /// that moves the read onto the type keeps that tag, or every action on
+    /// the row silently leaves the agents' survey (the reach test drives
+    /// every scenario for the same thing).
+    #[test]
+    fn reading_an_application_discloses_its_row_to_agents() {
+        use ui::tilo_resource::Effect as _;
+        let read = WindowsEffect::spec(WindowsEffect::READ_APP.id)
+            .expect("reading an application is declared");
+        assert!(
+            read.contract.reads_document(),
+            "read-app is a document read, so its row is disclosed"
+        );
     }
 
     /// A relative installer path is refused before the service sees it.

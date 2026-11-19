@@ -404,6 +404,16 @@ mod tests {
         assert!(rows.iter().any(|row| {
             row["resource"] == "windows.app:adobe-reader" && row["action"] == "launch"
         }));
+        // The read discloses the application's row: without it an agent is
+        // shown none of the work the row offers.
+        for action in ["read-app", "stop", "uninstall"] {
+            assert!(
+                rows.iter().any(|row| {
+                    row["resource"] == "windows.app:adobe-reader" && row["action"] == action
+                }),
+                "an agent is shown {action} on the application's row: {surface}"
+            );
+        }
         assert!(
             rows.iter()
                 .any(|row| { row["resource"] == "windows.appliance" && row["action"] == "start" })
