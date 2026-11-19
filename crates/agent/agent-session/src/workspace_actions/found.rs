@@ -30,10 +30,13 @@
 //! same catalogue a listing reads, so a caller acts on a hit by the path it lists: the note, not
 //! the notebook it is in.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tilo_actions::remote::{ChangePage, Found, Pending, RemoteActionMessage, Within, pending};
+use tilo_actions::remote::{
+    ChangePage, Found, MAX_CATALOGUE_PAGE, Pending, RemoteActionMessage, Within, pending,
+};
 use ui::history_source::feed::DocumentKey;
 use ui::search::index_publication::{IndexEntry, IndexWeight};
 
@@ -55,6 +58,66 @@ const NAMING_ROWS: u32 = 64;
 /// The most containers at an app's top level read, one page each, to name a
 /// resource it lists under one of them (a chain's issues).
 const NAMING_CONTAINERS: usize = 3;
+
+/// How many hits of one search in one document it takes for the levels they are named in to be
+/// read once for all of them, where fewer hits each ask the listing for their own row. A
+/// listing page costs what the document holds whatever it lists, so asking for every hit costs
+/// the hits times that.
+const MANY_HITS: usize = 8;
+
+/// The listings one search read, kept while it names its hits: a write landing meanwhile does
+/// not make it read a level again for its next hit.
+#[derive(Default)]
+struct Listed {
+    /// The documents so many hits stand in that their levels are read once.
+    many: HashSet<DocumentRoute>,
+    /// Each document's top-level listing, as this search read it.
+    top: HashMap<DocumentRoute, Option<Vec<CatalogueRow>>>,
+    /// Each level read so far, by its document and the parent it lists under.
+    levels: HashMap<(DocumentRoute, Option<String>), Level>,
+}
+
+/// The documents `ranked` names many hits in, each made of the entry beside it in `searched`.
+fn many_hits(
+    ranked: &[usize],
+    docs: &[crate::search::SearchDoc],
+    searched: &[Option<IndexEntry>],
+) -> HashSet<DocumentRoute> {
+    let mut hits: HashMap<&DocumentRoute, usize> = HashMap::new();
+    for at in ranked {
+        if let (Some(doc), Some(Some(_))) = (docs.get(*at), searched.get(*at)) {
+            let count = hits.entry(&doc.route).or_default();
+            *count = count.saturating_add(1);
+        }
+    }
+    hits.into_iter()
+        .filter(|(_, count)| *count >= MANY_HITS)
+        .map(|(route, _)| route.clone())
+        .collect()
+}
+
+/// One level of a document's listing, as far as a search has read it.
+#[derive(Default)]
+struct Level {
+    /// The resources it names so far, each by its id, with its kind and its label.
+    rows: HashMap<String, (String, String)>,
+    /// The rows it names that hold rows of their own, up to [`NAMING_CONTAINERS`].
+    containers: Vec<String>,
+    /// Where its next page begins and at which revision, while one follows.
+    next: Option<(Vec<u8>, String)>,
+    /// Whether its first page was asked for.
+    begun: bool,
+}
+
+impl Listed {
+    /// The containers the top level of the document at `route` names, as this search read it.
+    fn containers(&self, route: &DocumentRoute) -> Vec<String> {
+        self.levels
+            .get(&(route.clone(), None))
+            .map(|level| level.containers.clone())
+            .unwrap_or_default()
+    }
+}
 
 /// Whether `person` is answered with `entry` as far as where it was said goes: what is said in a
 /// direct conversation is found by the people it is between and by nobody else, whatever they
@@ -108,9 +171,9 @@ impl Worker {
         caller: &Caller,
         who: Option<&Bounded>,
         needle: &str,
-        docs: &[crate::search::SearchDoc],
-        searched: &[Option<IndexEntry>],
+        (docs, searched): (&[crate::search::SearchDoc], &[Option<IndexEntry>]),
         found: &mut Vec<Found>,
+        listed: &mut Listed,
     ) {
         for (entry, doc) in searched.iter().zip(docs) {
             if found.len() >= MOST_FOUND {
@@ -130,14 +193,33 @@ impl Worker {
             {
                 continue;
             }
-            let resource = self
-                .listed_resource(&doc.route, entry)
-                .or_else(|| self.named_resource(workspace_id, caller, who, &doc.route, entry));
+            let resource = self.listed_resource(&doc.route, entry).or_else(|| {
+                self.named_resource(workspace_id, caller, who, &doc.route, entry, listed)
+            });
             if let Some(resource) = resource
                 && !found.iter().any(|held| held.resource == resource.resource)
             {
                 found.push(resource);
             }
+        }
+    }
+
+    /// The answer one hit of a search is named with, as `caller` lists it: its own row, or the
+    /// resource the record it stands in leads with when the app tells search nothing of it.
+    fn named_hit(
+        &mut self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        who: Option<&Bounded>,
+        doc: &crate::search::SearchDoc,
+        entry: Option<&IndexEntry>,
+        listed: &mut Listed,
+    ) -> Option<Found> {
+        match entry {
+            Some(entry) => self.listed_resource(&doc.route, entry).or_else(|| {
+                self.named_resource(workspace_id, caller, who, &doc.route, entry, listed)
+            }),
+            None => self.leading_resource(workspace_id, caller, who, &doc.route, listed),
         }
     }
 
@@ -172,15 +254,16 @@ impl Worker {
         let (docs, searched) =
             self.searchable(workspace_id, &routes, (who.as_ref(), &person, within));
         let entries_ms = began.elapsed().as_millis();
+        let mut listed = Listed::default();
         let mut found: Vec<Found> = Vec::new();
         self.identity_matches(
             workspace_id,
             caller,
             who.as_ref(),
             needle,
-            &docs,
-            &searched,
+            (&docs, &searched),
             &mut found,
+            &mut listed,
         );
         // Words rank what holds them. With no words, a search narrowed to a place or a time
         // lists what it holds there, the newest first, and one narrowed to nothing finds
@@ -199,6 +282,9 @@ impl Worker {
             });
             newest
         };
+        // Where many hits stand in one document, the levels they are named in are read once
+        // for all of them ([`Listed`]).
+        listed.many = many_hits(&ranked, &docs, &searched);
         for at in ranked {
             if found.len() >= MOST_FOUND {
                 break;
@@ -217,12 +303,14 @@ impl Worker {
             if what.is_none() && !matches!(readable, Some(Readable::Whole)) {
                 continue;
             }
-            let resource = match what {
-                Some(entry) => self.listed_resource(&doc.route, entry).or_else(|| {
-                    self.named_resource(workspace_id, caller, who.as_ref(), &doc.route, entry)
-                }),
-                None => self.leading_resource(workspace_id, caller, who.as_ref(), &doc.route),
-            };
+            let resource = self.named_hit(
+                workspace_id,
+                caller,
+                who.as_ref(),
+                doc,
+                what.as_ref(),
+                &mut listed,
+            );
             if let Some(resource) = resource
                 && !found.iter().any(|held| held.resource == resource.resource)
             {
@@ -505,41 +593,50 @@ impl Worker {
         })
     }
 
-    /// What the document at `route` lists at its top level, as `caller` names its resources: read
-    /// on a find and kept until a write lands (per caller, for one served within bounds), so a
-    /// second find names what it finds without mounting the document again.
+    /// What the document at `route` lists at its top level, as `caller` names its resources: what
+    /// this search read of it, then what a find kept until a write lands (per caller, for one
+    /// served within bounds), so a second find names what it finds without mounting the document
+    /// again.
     fn route_listing(
         &mut self,
         workspace_id: WorkspaceId,
         who: Option<&Bounded>,
         caller: &Caller,
         route: &DocumentRoute,
+        listed: &mut Listed,
     ) -> Option<Vec<CatalogueRow>> {
-        if let Some(who) = who {
+        if let Some(rows) = listed.top.get(route) {
+            return rows.clone();
+        }
+        let kept = if let Some(who) = who {
             let key = Reader::of(who);
-            if let Some(access) = self.access(workspace_id, &key)
-                && let Some(rows) = access.listings.get(route)
-            {
-                return Some(rows.clone());
+            self.access(workspace_id, &key)
+                .and_then(|access| access.listings.get(route).cloned())
+        } else {
+            self.workspaces
+                .get(&workspace_id)
+                .and_then(|workspace| workspace.listings.get(route).cloned())
+        };
+        let rows = match kept {
+            Some(rows) => Some(rows),
+            None => self.page_rows(workspace_id, caller, route),
+        };
+        if let Some(rows) = &rows {
+            match who {
+                Some(who) => {
+                    if let Some(access) = self.access(workspace_id, &Reader::of(who)) {
+                        access.listings.insert(route.clone(), rows.clone());
+                    }
+                }
+                None => {
+                    if let Some(workspace) = self.workspaces.get_mut(&workspace_id) {
+                        workspace.listings.insert(route.clone(), rows.clone());
+                    }
+                }
             }
-            let rows = self.page_rows(workspace_id, caller, route)?;
-            if let Some(access) = self.access(workspace_id, &key) {
-                access.listings.insert(route.clone(), rows.clone());
-            }
-            return Some(rows);
         }
-        if let Some(rows) = self
-            .workspaces
-            .get(&workspace_id)
-            .and_then(|workspace| workspace.listings.get(route))
-        {
-            return Some(rows.clone());
-        }
-        let rows = self.page_rows(workspace_id, caller, route)?;
-        if let Some(workspace) = self.workspaces.get_mut(&workspace_id) {
-            workspace.listings.insert(route.clone(), rows.clone());
-        }
-        Some(rows)
+        listed.top.insert(route.clone(), rows.clone());
+        rows
     }
 
     /// The rows the document at `route` lists at its top level, as `caller` reads it now.
@@ -567,6 +664,7 @@ impl Worker {
         who: Option<&Bounded>,
         route: &DocumentRoute,
         entry: &IndexEntry,
+        listed: &mut Listed,
     ) -> Option<Found> {
         let key = (route.clone(), entry.resource.clone());
         if let Some(who) = who {
@@ -576,7 +674,7 @@ impl Worker {
             {
                 return known.clone();
             }
-            let answer = self.resolve_named(workspace_id, caller, Some(who), route, entry);
+            let answer = self.resolve_named(workspace_id, caller, Some(who), route, entry, listed);
             if let Some(access) = self.access(workspace_id, &reader) {
                 access.named.insert(key, answer.clone());
             }
@@ -587,7 +685,7 @@ impl Worker {
         {
             return known.clone();
         }
-        let answer = self.resolve_named(workspace_id, caller, None, route, entry);
+        let answer = self.resolve_named(workspace_id, caller, None, route, entry, listed);
         if let Some(workspace) = self.workspaces.get_mut(&workspace_id) {
             workspace.named.insert(key, answer.clone());
         }
@@ -605,13 +703,15 @@ impl Worker {
         who: Option<&Bounded>,
         route: &DocumentRoute,
         entry: &IndexEntry,
+        listed: &mut Listed,
     ) -> Option<Found> {
         let id = entry.resource.as_str();
+        let provider = record_provider(route);
         // What the document lists from its top, one read kept for every hit in it until a write
         // lands: a listing mounts the document and reads it out, and a search that named twenty
         // hits in one notebook paid for the notebook twenty times.
         if let Some(row) = self
-            .route_listing(workspace_id, who, caller, route)
+            .route_listing(workspace_id, who, caller, route, listed)
             .unwrap_or_default()
             .into_iter()
             .find(|row| row.resource.id == id)
@@ -623,13 +723,78 @@ impl Worker {
                 open: None,
                 arguments: serde_json::Map::new(),
                 app: Some(route.app_id.clone()),
-                provider: Some(record_provider(route)),
+                provider: Some(provider),
                 when: entry.when,
             });
         }
+        // Where many hits stand in this document, each level of its listing is read once for
+        // all of them ([`Self::named_at_each_level_once`]).
+        let (kind, label) = if listed.many.contains(route) {
+            self.named_at_each_level_once(workspace_id, caller, (route, &provider), id, listed)?
+        } else {
+            self.named_at_each_level(workspace_id, caller, (route, &provider), id, entry)?
+        };
+        Some(Found {
+            resource: id.to_owned(),
+            kind,
+            label,
+            open: None,
+            arguments: serde_json::Map::new(),
+            app: Some(route.app_id.clone()),
+            provider: Some(provider),
+            when: entry.when,
+        })
+    }
+
+    /// [`Self::resolve_named`] where many hits stand in the document: each level of its listing
+    /// is read once for all of them, without a hit's own id as the needle.
+    fn named_at_each_level_once(
+        &mut self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        (route, provider): (&DocumentRoute, &str),
+        id: &str,
+        listed: &mut Listed,
+    ) -> Option<(String, String)> {
+        for parent in naming_parents(route, id) {
+            if let Some(row) =
+                self.named_in_level(workspace_id, caller, (route, provider), parent, id, listed)
+            {
+                return Some(row);
+            }
+        }
+        // An app that keeps its items in parts beside its own document lists them under a
+        // container its top level names: each container is one page read once for every hit.
+        let _ = self.named_in_level(workspace_id, caller, (route, provider), None, "", listed);
+        for container in listed.containers(route) {
+            if let Some(row) = self.named_in_level(
+                workspace_id,
+                caller,
+                (route, provider),
+                Some(container),
+                id,
+                listed,
+            ) {
+                return Some(row);
+            }
+        }
+        None
+    }
+
+    /// [`Self::resolve_named`] where few hits stand in the document: each asks the listing for
+    /// its own row, under each parent its id extends and then under the containers the document
+    /// lists at its top.
+    fn named_at_each_level(
+        &mut self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        (route, provider): (&DocumentRoute, &str),
+        id: &str,
+        entry: &IndexEntry,
+    ) -> Option<(String, String)> {
         for parent in naming_parents(route, id) {
             let query = CatalogueQuery {
-                provider: Some(record_provider(route)),
+                provider: Some(provider.to_owned()),
                 parent_resource: parent,
                 needle: entry.resource.clone(),
                 max_results: NAMING_ROWS,
@@ -639,29 +804,19 @@ impl Worker {
                 continue;
             };
             if let Some(row) = page.rows.into_iter().find(|row| row.resource.id == id) {
-                return Some(Found {
-                    resource: row.resource.id,
-                    kind: row.resource.kind,
-                    label: row.resource.label,
-                    open: None,
-                    arguments: serde_json::Map::new(),
-                    app: Some(route.app_id.clone()),
-                    provider: query.provider,
-                    when: entry.when,
-                });
+                return Some((row.resource.kind, row.resource.label));
             }
         }
         // An app that keeps its items in parts beside its own document lists them under a
         // container its top level names: each container is one page read for the row it holds.
         let mut query = CatalogueQuery {
-            provider: Some(record_provider(route)),
+            provider: Some(provider.to_owned()),
             needle: entry.resource.clone(),
             max_results: NAMING_ROWS,
             ..CatalogueQuery::default()
         };
-        let root = self.catalogue_page(workspace_id, caller, &query);
+        let root = self.catalogue_page(workspace_id, caller, &query).ok()?;
         for container in root
-            .ok()?
             .rows
             .into_iter()
             .filter(|row| row.has_children)
@@ -673,19 +828,70 @@ impl Worker {
                 continue;
             };
             if let Some(row) = page.rows.into_iter().find(|row| row.resource.id == id) {
-                return Some(Found {
-                    resource: row.resource.id,
-                    kind: row.resource.kind,
-                    label: row.resource.label,
-                    open: None,
-                    arguments: serde_json::Map::new(),
-                    app: Some(route.app_id.clone()),
-                    provider: query.provider,
-                    when: entry.when,
-                });
+                return Some((row.resource.kind, row.resource.label));
             }
         }
         None
+    }
+
+    /// The kind and the label the level under `parent` of the document at `route` names `id` by,
+    /// as `caller` lists it: `None` where that level names no such resource. The level is read a
+    /// page at a time, only while nothing read of it names `id` yet, and what was read is kept in
+    /// `listed` for the search's other hits. It is the listing a hit alone would ask, without its
+    /// own id as the needle: the same rows in the same order.
+    fn named_in_level(
+        &mut self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        (route, provider): (&DocumentRoute, &str),
+        parent: Option<String>,
+        id: &str,
+        listed: &mut Listed,
+    ) -> Option<(String, String)> {
+        let key = (route.clone(), parent);
+        loop {
+            let level = listed.levels.entry(key.clone()).or_default();
+            if let Some(row) = level.rows.get(id) {
+                return Some(row.clone());
+            }
+            let (cursor, revision) = match (level.begun, &level.next) {
+                (false, _) => (Vec::new(), None),
+                (true, Some((cursor, revision))) => (cursor.clone(), Some(revision.clone())),
+                (true, None) => return None,
+            };
+            let query = CatalogueQuery {
+                provider: Some(provider.to_owned()),
+                parent_resource: key.1.clone(),
+                max_results: MAX_CATALOGUE_PAGE,
+                cursor,
+                revision,
+                ..CatalogueQuery::default()
+            };
+            let page = self
+                .catalogue_page(workspace_id, caller, &query)
+                .ok()
+                .filter(|page| !page.stale_cursor && !page.rows.is_empty());
+            let level = listed.levels.entry(key.clone()).or_default();
+            level.begun = true;
+            level.next = None;
+            if let Some(page) = page {
+                if !page.next_cursor.is_empty() {
+                    level.next = Some((page.next_cursor, page.revision));
+                }
+                for row in page.rows {
+                    if row.has_children
+                        && level.containers.len() < NAMING_CONTAINERS
+                        && !level.containers.contains(&row.resource.id)
+                    {
+                        level.containers.push(row.resource.id.clone());
+                    }
+                    level
+                        .rows
+                        .entry(row.resource.id)
+                        .or_insert((row.resource.kind, row.resource.label));
+                }
+            }
+        }
     }
 
     /// The resource the listing of the record at `route` leads with for `caller`, as a search
@@ -696,9 +902,10 @@ impl Worker {
         caller: &Caller,
         who: Option<&Bounded>,
         route: &DocumentRoute,
+        listed: &mut Listed,
     ) -> Option<Found> {
         let row = self
-            .route_listing(workspace_id, who, caller, route)?
+            .route_listing(workspace_id, who, caller, route, listed)?
             .into_iter()
             .next()?;
         Some(Found {
