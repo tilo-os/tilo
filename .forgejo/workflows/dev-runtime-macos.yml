@@ -116,6 +116,7 @@ on:
       - "crates/runtime/tilo-identity-client/**"
       - "crates/runtime/tilo-mcp/**"
       - "crates/runtime/tilo-runtime/**"
+      - "crates/runtime/tilo-wasm-host/**"
       - "crates/runtime/ush/**"
       - "crates/runtime/ush-shell/**"
       - "crates/runtime/ush-tilo/**"
