@@ -6,6 +6,8 @@
 //! checked against its one grant and keeping what they replace; any other program (`cargo`,
 //! `npm`, `python`) runs in the workspace's jailed VM through [`HostedPrograms`], metered
 //! per second, and a host that runs no VMs says which tier the program needs.
+//! A server that is its operator's own machine may start them on it instead
+//! ([`crate::machine_programs`]).
 //!
 //! A shell keeps its working directory and variables between commands. Output comes back
 //! whole and in order up to [`MAX_OUTPUT`], with how the command ended and, when the host
@@ -28,6 +30,7 @@ use ush_tilo::{Acted, Environment, Keeping, NativeFiles, NoPrograms, Place, Prog
 use crate::content::EnvironmentContent;
 use crate::file_actions::{FileAction, Recoverable};
 use crate::hosted_vm::{HostedPrograms, HostedTarget, shares_of};
+use crate::machine_programs::MachinePrograms;
 use crate::policy::Policy;
 
 pub const MAX_OUTPUT: usize = 1 << 20;
@@ -56,6 +59,9 @@ pub struct WorkspaceShells {
     /// Where each workspace's files are, when not below `state`.
     files_of: Option<Box<FilesOf>>,
     vms: Option<HostedTarget>,
+    /// Without a hosted-VM service, whether programs start on this machine itself
+    /// ([`MachinePrograms`]).
+    on_machine: bool,
     /// The hosted-VM service the workspaces' Browser starts on, when it is
     /// not the one the environment names.
     browsers: Option<PathBuf>,
@@ -101,6 +107,7 @@ impl WorkspaceShells {
             state: state.into(),
             files_of: None,
             vms,
+            on_machine: false,
             browsers: None,
             sessions: Mutex::new(HashMap::new()),
         }
@@ -115,14 +122,25 @@ impl WorkspaceShells {
         self
     }
 
+    /// The shells the server's environment asks for: Linux programs in the hosted VMs it names,
+    /// else on this machine when [`crate::machine_programs::MACHINE_ENV`] says so, else none.
     #[must_use]
     pub fn from_env(state: impl Into<PathBuf>) -> Self {
         Self::new(state, HostedTarget::from_env())
+            .on_machine(crate::machine_programs::on_machine_from_env())
+    }
+
+    /// The same shells, starting the programs of a workspace with no hosted VM on this machine
+    /// when `on_machine`.
+    #[must_use]
+    pub const fn on_machine(mut self, on_machine: bool) -> Self {
+        self.on_machine = on_machine;
+        self
     }
 
     #[must_use]
     pub fn runs_programs(&self) -> bool {
-        self.vms.is_some()
+        self.vms.is_some() || self.on_machine
     }
 
     /// Where a run `payer` pays for runs its Linux programs when the environment names the hosted-VM
@@ -290,7 +308,9 @@ impl WorkspaceShells {
             content: EnvironmentContent::at(root.join("content")),
         });
         let refused = Arc::new(Mutex::new(None));
-        let programs: Arc<dyn Programs> = match self.target_for(payer) {
+        let target = self.target_for(payer);
+        let programs_here = target.is_none() && self.on_machine;
+        let programs: Arc<dyn Programs> = match target {
             Some(target) => {
                 let shared = files.clone();
                 Arc::new(
@@ -303,6 +323,7 @@ impl WorkspaceShells {
                     .reporting_refusals(Arc::clone(&refused)),
                 )
             }
+            None if programs_here => Arc::new(MachinePrograms),
             None => Arc::new(NoPrograms),
         };
         let (notices_out, notices) = Output::buffer();
@@ -320,11 +341,7 @@ impl WorkspaceShells {
         let home = files.to_string_lossy().into_owned();
         let shell = Shell::new(
             Arc::new(host),
-            [
-                ("HOME".to_owned(), home),
-                ("PATH".to_owned(), "/usr/local/bin:/usr/bin:/bin".to_owned()),
-                ("TERM".to_owned(), "dumb".to_owned()),
-            ],
+            shell_env(home, programs_here),
             files,
             Stdio::null(),
         );
@@ -439,6 +456,25 @@ fn safe(workspace: &str) -> String {
             }
         })
         .collect()
+}
+
+/// What a new session's shell starts with. Programs in a VM start from a clean environment,
+/// `HOME` the workspace's files. Programs on this machine start as its user's own would: from the
+/// server's environment (its `PATH`, `HOME` and toolchain), so `cargo` and `git` work as in that
+/// user's own shell; only the terminal is a plain one.
+fn shell_env(files: String, programs_here: bool) -> Vec<(String, String)> {
+    let term = ("TERM".to_owned(), "dumb".to_owned());
+    if programs_here {
+        let mut env: Vec<(String, String)> =
+            std::env::vars().filter(|(key, _)| key != "TERM").collect();
+        env.push(term);
+        return env;
+    }
+    vec![
+        ("HOME".to_owned(), files),
+        ("PATH".to_owned(), "/usr/local/bin:/usr/bin:/bin".to_owned()),
+        term,
+    ]
 }
 
 fn now_ms() -> i64 {

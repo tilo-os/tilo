@@ -405,6 +405,12 @@ paths = [
 ]
 
 [[allow]]
+reason = "ush's `Programs::run` and `WorkspaceShells::run`, the methods that start a program in a shell, which the server's own-machine programs implement and its tests call."
+words = ["run"]
+identifiers = ["run"]
+paths = ["crates/runtime/ush/src/machine_programs.rs", "crates/runtime/ush/src/workspace_shell_tests.rs"]
+
+[[allow]]
 reason = "An airplane: the airplane-mode icon and words about planes in the sky."
 words = ["plane"]
 paths = [
