@@ -42,6 +42,13 @@ curl -fsS --retry 3 -H "authorization: Bearer $T_ATTACH_TOKEN" -o "$agent" \
   "${T_ATTACH_URL%/}/v1/attach-agent/agent.py" \
   || die "the t server at $T_ATTACH_URL served no attach agent"
 
+# The step's guest is sized by what this check needed before, and may be smaller than the VM's
+# RAM: QEMU then could not even reserve it ("cannot set up guest memory"), and the step ended
+# having taught t that it needs no more. Overcommitted, QEMU starts and touches only what the VM
+# uses; past the guest's RAM its kernel kills QEMU for memory, and t starts the step again in a
+# guest twice the size, learning what a booted dev image needs.
+sysctl -qw vm.overcommit_memory=1
+
 revision=$(cat "$disk_dir/revision")
 # 10 GiB, as the smallest machine local models run on the processor (8 GiB) with room to spare.
 export TILO_DISTROBOX= TILO_VM_ARCH=$arch TMPDIR=/var/tmp TILO_USER=tester TILO_PASS=tilo TILO_MEM=10240
@@ -63,7 +70,11 @@ cat > "$runner" <<'EOF'
 set -euo pipefail
 trap 'os/dev/vm.sh stop >/dev/null 2>&1 || true' EXIT TERM INT
 os/dev/vm.sh boot --2d
-os/dev/vm.sh wait || echo 'os-vm: no greeter took input yet; the VM keeps running for inspection' >&2
+if ! os/dev/vm.sh wait; then
+  # Without QEMU there is nothing to attach to: the step fails rather than passing empty.
+  pidof -q "qemu-system-$TILO_VM_ARCH" || { echo 'os-vm: QEMU exited during boot' >&2; exit 1; }
+  echo 'os-vm: no greeter took input yet; the VM keeps running for inspection' >&2
+fi
 echo "os-vm: up (user $TILO_USER, password $TILO_PASS): t vm console, t vm ssh, t vm display" >&2
 while kill -0 "$(cat "$TILO_RUN/qemu.pid")" 2>/dev/null; do sleep 5; done
 echo 'os-vm: QEMU exited' >&2
