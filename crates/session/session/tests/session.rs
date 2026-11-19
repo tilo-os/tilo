@@ -2040,10 +2040,16 @@ fn workspace_settings_shows_a_tab_and_moves_the_workspace() {
         .map(|(name, _)| name)
         .collect();
     assert_eq!(names.len(), 2, "two workspaces: {names:?}");
+    // The layout's own `move` is published too, so the sheet is found again by its show-tab: the
+    // one whose `move` takes a step and moves the workspace among this device's.
     let moved = WorkspaceSettingsEffect::MOVE.id;
-    let sheet = publisher(&session, moved).expect("the open sheet publishes moving");
+    let moved_sheet = publisher(&session, show).expect("the open sheet publishes moving");
     session
-        .invoke(&sheet, moved, &arguments(serde_json::json!({ "step": -1 })))
+        .invoke(
+            &moved_sheet,
+            moved,
+            &arguments(serde_json::json!({ "step": -1 })),
+        )
         .expect("move");
     session.step(Duration::from_millis(1)).unwrap();
     let after: Vec<String> = workspaces(&session)
