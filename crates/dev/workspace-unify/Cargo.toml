@@ -2646,10 +2646,6 @@ doc = false
 "walkdir-2_5_0" = { package = "walkdir", version = "^2.5.0", default-features = false, features = [] }
 "want-0_3_1" = { package = "want", version = "^0.3.1", default-features = false, features = [] }
 "wasm-encoder-0_252_0" = { package = "wasm-encoder", version = "^0.252.0", default-features = false, features = ["component-model", "default", "std"] }
-"wasmi-1_1_0" = { package = "wasmi", version = "^1.1.0", default-features = false, features = ["simd", "std"] }
-"wasmi_collections-1_1_0" = { package = "wasmi_collections", version = "^1.1.0", default-features = false, features = ["std"] }
-"wasmi_core-1_1_0" = { package = "wasmi_core", version = "^1.1.0", default-features = false, features = ["simd", "std"] }
-"wasmi_ir-1_1_0" = { package = "wasmi_ir", version = "^1.1.0", default-features = false, features = ["simd"] }
 "wasmparser-0_239_0" = { package = "wasmparser", version = "^0.239.0", default-features = false, features = ["features", "simd", "std", "validate"] }
 "wasmtime-internal-core-50_0_2" = { package = "wasmtime-internal-core", version = "^50.0.2", default-features = false, features = ["serde", "std"] }
 "wasmtime-internal-versioned-export-macros-50_0_2" = { package = "wasmtime-internal-versioned-export-macros", version = "^50.0.2", default-features = false, features = [] }
