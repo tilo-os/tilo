@@ -57,8 +57,10 @@ pub struct Request {
     pub kind: EnrollmentKind,
     /// The disk recovery key the machine installs with, when it installs
     /// without a person at its screen: the person's devices keep it in their
-    /// own store, and the installed system keeps no copy.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// own store, and the installed system keeps no copy. Its absence is a
+    /// byte of its own: the request is postcard, which carries no field
+    /// names to skip a field by.
+    #[serde(default)]
     pub recovery_key: Option<String>,
 }
 
