@@ -14,6 +14,11 @@ paths = [
 # of. A use of Tilo's own concept never goes here: rename it.
 
 [[allow]]
+reason = "The render service's existing name for whether a row is drawn on the device running the app rather than in its worker; code that asks it keeps that name."
+words = ["host"]
+identifiers = ["host_rendered"]
+
+[[allow]]
 reason = "The identity registry's field naming the file an identity is kept in."
 words = ["record"]
 identifiers = ["record_path"]

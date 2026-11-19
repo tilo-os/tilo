@@ -58,7 +58,7 @@ mod view;
 #[path = "mcp_watch.rs"]
 pub(super) mod watch;
 use answer::{action_named, action_row, actions_named, answer_of, outcome, text_result};
-use level::{LevelPages, LsCursor};
+use level::{LevelPages, LsCursor, PageMark};
 use render::{
     action_line, action_page, block_line, parse_read_cursor, read_answer, restart_pause,
     strip_blank,
@@ -731,7 +731,29 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             return Ok(read.clone());
         }
         let read = self
-            .read_level(provider, parent, None)
+            .read_level(provider, parent, None, usize::MAX)
+            .await?
+            .ok_or("the app's directory kept changing while it was read; try again")?;
+        levels.insert(parent.to_owned(), read.clone());
+        Ok(read)
+    }
+
+    /// One directory level, read as far as one page of a listing holds:
+    /// enough to name a resource and what it holds on its first page, and
+    /// extended by whoever pages past it ([`Self::level_reaching`],
+    /// [`Self::level_holding`]). A listing reads one page of a directory of
+    /// thousands per call, not a fixed stretch of it.
+    async fn level_near(
+        &self,
+        provider: &str,
+        parent: &str,
+        levels: &mut Levels,
+    ) -> Result<Level, String> {
+        if let Some(read) = levels.get(parent) {
+            return Ok(read.clone());
+        }
+        let read = self
+            .read_level(provider, parent, None, LS_LINES)
             .await?
             .ok_or("the app's directory kept changing while it was read; try again")?;
         levels.insert(parent.to_owned(), read.clone());
@@ -1382,7 +1404,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
         let mut here = match chain.last() {
             Some(_) if !list => Level::default(),
-            Some(node) => self.level(&provider, &node.id, &mut levels).await?,
+            Some(node) => self.level_near(&provider, &node.id, &mut levels).await?,
             None => {
                 // What the app's containers hold (a notebook's notes) is read for a listing.
                 // An action named on the app is found on the app's own level first
@@ -1886,7 +1908,18 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let next = (end < total || unread).then(|| {
             let resume = read.as_ref().and_then(|(level, first)| {
                 let node = resolved.node.as_ref()?;
-                level.resume_at(&node.id, end.checked_sub(*first)?)
+                level
+                    .row_mark(&node.id, end.checked_sub(*first)?)
+                    .map(|(cursor, revision)| {
+                        (
+                            PageMark {
+                                row: 0,
+                                cursor,
+                                revision,
+                            },
+                            0,
+                        )
+                    })
             });
             LsCursor {
                 offset: end,

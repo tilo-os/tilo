@@ -209,6 +209,9 @@ mod share_link;
 #[path = "workspace_actions/throughput.rs"]
 mod throughput;
 #[cfg(test)]
+#[path = "workspace_actions/tracker_listing.rs"]
+mod tracker_listing;
+#[cfg(test)]
 #[path = "workspace_actions/workspace_find.rs"]
 mod workspace_find;
 
