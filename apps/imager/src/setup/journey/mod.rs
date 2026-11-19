@@ -10481,7 +10481,7 @@ mod tests {
         app.settle();
         let identity = app
             .with_widget::<InstallerPreview, _>(|preview| {
-                assert!(visual_tests::control(preview, "installer.review.devices").is_some());
+                assert!(visual_tests::control(preview, "installer.review.plan-name").is_some());
                 preview.personal.prepared_handle().unwrap()
             })
             .unwrap();
@@ -11322,7 +11322,8 @@ mod tests {
             password(&mut app);
             app.effect(&InstallerPreviewEffect::ContinuePreview)
                 .unwrap();
-            for _ in 0..4 {
+            // Purpose, storage, method, machine and review all come before readiness.
+            for _ in 0..8 {
                 if status(&mut app)["page"] == "ready" {
                     break;
                 }
