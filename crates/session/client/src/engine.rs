@@ -22,7 +22,6 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-#[cfg(target_os = "linux")]
 use tilo_clock::time::SystemTime;
 
 use tilo_action_policy::WorkspacePolicy;
