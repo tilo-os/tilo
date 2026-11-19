@@ -2478,7 +2478,6 @@ impl RootPublishes for ResourceRoot {
         doc: &AutoCommit,
         id: &str,
     ) -> Option<ResourceSpec> {
-        let _profile = tilo_resource::profiling::Phase::start("framework.resource_for");
         let _viewer = member
             .cloned()
             .map(ui_core::invocation_scope::ViewerScope::enter);
@@ -2500,6 +2499,10 @@ impl RootPublishes for ResourceRoot {
         }
         // A change from another window or member may not have reached
         // this view yet: an item it removed is gone, one it made is there.
+        // The chains above answer a resource at the cost it takes; only this
+        // builds the publication, which is what `framework.resource_for`
+        // measures.
+        let _profile = tilo_resource::profiling::Phase::start("framework.resource_for");
         if let Some(mut published) = find(&[self.current_publication(doc)], id) {
             // The publication's items are listed with the read each answers;
             // this one is built alone, so it carries the same
