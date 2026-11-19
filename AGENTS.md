@@ -89,19 +89,12 @@ These hold for every app, the shell and the SDK. When a doc or code disagrees, t
 
 ## Git and delivery
 
-- Commit and push work to `integration` (`git pull --rebase origin integration`,
-  then `git push origin HEAD:integration`). Nothing lints or tests that push.
-  Never force-push `integration`: it holds everyone's work, and the pre-push
-  hook refuses a push that would drop commits from it.
-- No tests while iterating. Test once, when the work is done:
-  `tools/integrate.sh` merges `main` into `integration` (a merge commit, never a
-  rebase), checks what integration adds with `t` (the touched checks and
-  lint-head's wide lint), and fast-forwards `main` to it when nothing fails that
-  `main` does not already fail; when something new fails it names the check and
-  the commit, and `main` stays where it was.
-- `main` moves only through `tools/integrate.sh`. The pre-push hook refuses an
-  agent's push that sends `main` a commit `integration` does not hold. A fix
-  for a red `main` goes the same way: push the one fix to `integration`, then
-  `tools/integrate.sh` moves `main` as soon as that fix passes.
+- Commit small and push straight to `main` (`git pull --rebase origin main`,
+  then `git push origin HEAD:main`). There is no merge queue and no
+  integration branch. The pre-commit hook is fast; the pre-push hook lints the
+  packages the push changes.
+- No tests while iterating. Run the focused tests once, when the work is done,
+  then push.
+- A red `main` is fixed by the next commit, never by a revert or a hold.
 - After your change lands, watch CI on `main`; fix what you broke.
 - App packaging is affected-only; full image builds stay explicit or scheduled.
