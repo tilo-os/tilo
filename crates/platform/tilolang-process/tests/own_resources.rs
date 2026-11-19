@@ -26,6 +26,8 @@ use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::instance::document::InstanceDocument;
 
 const MAIL: &str = "so.tilo.lang.mail";
+const MAIL_SOURCE: &str = include_str!("../../../../apps/tl/mail/app.tl");
+const MAIL_IDS: &str = include_str!("../../../../apps/tl/mail/app.ids");
 
 /// Two members, by the hex of their user root keys.
 const ADA: &str = "abababababababababababababababababababababababababababababababab";
@@ -50,11 +52,7 @@ fn compiled(dir: &str, source: &str, ids: &str) -> Bundle {
 }
 
 fn mail() -> Bundle {
-    compiled(
-        "mail",
-        include_str!("../../../../apps/tl/mail/app.tl"),
-        include_str!("../../../../apps/tl/mail/app.ids"),
-    )
+    compiled("mail", MAIL_SOURCE, MAIL_IDS)
 }
 
 /// The window, from the far end of the patch connection: the root's tree as the instance sent
@@ -365,7 +363,18 @@ fn an_archive_owner_recovers_mail_into_the_shared_mailbox_once() {
 
     let bundle = Arc::new(mail());
     let workspace = uuid::Uuid::new_v4();
-    let mut earlier = member(&Rc::new(Bus::default()), workspace, ADA, &bundle);
+    let launch = "    let launch = a.threads.insert(";
+    let prior_source = MAIL_SOURCE.replacen(
+        launch,
+        &format!("    a.signature = \"Regards, Sam\"\n{launch}"),
+        1,
+    );
+    assert_ne!(
+        prior_source, MAIL_SOURCE,
+        "the archive fixture has a signature"
+    );
+    let prior_bundle = Arc::new(compiled("archived mail", &prior_source, MAIL_IDS));
+    let mut earlier = member(&Rc::new(Bus::default()), workspace, ADA, &prior_bundle);
     earlier.settle();
     earlier
         .host
@@ -375,11 +384,6 @@ fn an_archive_owner_recovers_mail_into_the_shared_mailbox_once() {
         .stage("a busy inbox");
     earlier.settle();
     for (id, action, arguments) in [
-        (
-            5,
-            "set_signature",
-            serde_json::json!({ "signature": "Regards, Sam" }),
-        ),
         (
             6,
             "label",
@@ -398,12 +402,11 @@ fn an_archive_owner_recovers_mail_into_the_shared_mailbox_once() {
             .iter()
             .find(|offered| {
                 offered.address.action == action
-                    && (action == "set_signature"
-                        || offered
-                            .resource_label
-                            .contains("Launch plan for the autumn release"))
+                    && offered
+                        .resource_label
+                        .contains("Launch plan for the autumn release")
             })
-            .expect("the old conversation offers the action")
+            .unwrap_or_else(|| panic!("the old conversation offers {action}"))
             .address
             .clone();
         earlier
