@@ -523,8 +523,8 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// A figure among the facts (how far a branch got, a temperature), between who it is
-    /// and how important it is.
+    /// A figure among the facts (how far a branch got, a temperature, a size), between who it
+    /// is and how important it is: a caption in dim ink, as the row's other facts.
     #[must_use]
     pub fn value(mut self, text: &'a str) -> Self {
         self.value = Some((text, RowValue::Body));
@@ -2071,10 +2071,6 @@ impl ListRow {
         // marks stand where the canvas paints them, around it.
         cx.children();
         cx.place_children();
-        if self.card {
-            // A card's surface, as the canvas lays it under the row.
-            cx.ground(crate::widget::card::card_ground(cx.theme()));
-        }
         let band = self.text_band();
         self.with_face(|face| face.compose(cx, band, check));
     }

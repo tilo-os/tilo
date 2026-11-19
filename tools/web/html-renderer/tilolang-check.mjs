@@ -7,12 +7,16 @@
 //                                                       [--scenario all|NAME,...] [--open ROW]
 //                                                       [--width N] [--height N]
 //                                                       [--pages ROW,ROW,...] [--zone ZONE]
+//                                                       [--press NAME,...]
 // With --pages, each named place in the window's sidebar is chosen, and its page shot in both
 // themes and both renderers as `<render>-<theme>-<place>.png`, before the interaction checks.
 // The gallery's pages are its sidebar's places, so by default every one of them is walked.
 // The page reads its clock in ZONE (an IANA name, UTC by default, as a device's capture does), and
 // a package staged with a scenario shows the capture's instant, so its days and times are a
 // capture's.
+// With --press, on each page the control or row reading each name (a table row, a tree row, a
+// card) is pointed at and shot as `<render>-<theme>-<place>-hovered-<name>.png`, then pressed
+// and shot as `...-pressed-<name>.png`: the states a pointer and a choice give it.
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join, resolve} from 'node:path';
 import {serve} from '../chrome.mjs';
@@ -34,6 +38,7 @@ const height = Number(option('--height')) || 800;
 const pages = (option('--pages') ?? (pkg === GALLERY ? GALLERY_PLACES.join(',') : ''))
   .split(',').filter(Boolean);
 const zone = option('--zone') ?? 'UTC';
+const presses = (option('--press') ?? '').split(',').filter(Boolean);
 const TEXT = 'Hello web';
 mkdirSync(out, {recursive: true});
 
@@ -140,6 +145,18 @@ try {
           );
           writeFileSync(join(out, `${render}-${theme}-${page.toLowerCase()}.png`), await tab.screenshot());
           if (render === 'dom' && theme === 'light') writeFileSync(join(out, `dom-${page.toLowerCase()}.html`), await tab.evaluate(`document.getElementById('app').outerHTML`));
+          for (const name of presses) {
+            const named = JSON.parse(await tab.evaluate(`${NAMED}(${JSON.stringify(name)})`));
+            const shot = state => join(out, `${render}-${theme}-${page.toLowerCase()}-${state}-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.png`);
+            (result.presses ??= {})[name] = named;
+            if (!named) continue;
+            await tab.mouse.move(named.x, named.y);
+            await settle(tab);
+            writeFileSync(shot('hovered'), await tab.screenshot());
+            await press(tab, named);
+            await settle(tab);
+            writeFileSync(shot('pressed'), await tab.screenshot());
+          }
           // Words typed into the page's first field for them reach it, on both renders.
           const field = theme === 'light' ? JSON.parse(await tab.evaluate(`${FIND}('words')`)) : null;
           if (field) {

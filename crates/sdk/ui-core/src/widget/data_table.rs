@@ -3872,19 +3872,21 @@ impl Widget for DataTableCore {
             }
             let ground = theme.tokens.colors.surfaces.content;
             let fill = if selected {
-                let tier = crate::chrome::selection_tier_on(
-                    theme,
-                    crate::chrome::SelectionState::new(true, false, false),
-                    ground,
-                );
-                Some((tier.fill, tier.border))
+                Some(
+                    crate::chrome::selection_tier_on(
+                        theme,
+                        crate::chrome::SelectionState::new(true, false, false),
+                        ground,
+                    )
+                    .fill,
+                )
             } else {
-                (index % 2 == 1).then(|| (zebra_on(theme, ground), None))
+                (index % 2 == 1).then(|| zebra_on(theme, ground))
             };
-            if let Some((fill, edge)) = fill {
+            if let Some(fill) = fill {
                 row.ground = Some(crate::composition::Ground {
                     fill: Some(crate::composition::rgba8(fill)),
-                    edge: edge.map(crate::composition::rgba8),
+                    edge: None,
                     radius: f64::from(theme.tokens.radii.item).min(row_rect.height() / 2.0),
                     inset: [0.0; 2],
                 });

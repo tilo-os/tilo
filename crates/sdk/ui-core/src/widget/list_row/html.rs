@@ -20,6 +20,7 @@ impl ListRowFace<'_> {
         if row.width() <= 0.0 || row.height() <= 0.0 {
             return;
         }
+        self.compose_ground(cx, row);
         let theme = cx.theme();
         let m = self.metrics(theme);
         crate::text_render::with_layout_renderer(theme, |text| {
@@ -29,6 +30,42 @@ impl ListRowFace<'_> {
             self.compose_lines(cx, &m, &frame, text, theme);
             self.compose_trailing(cx, &m, &frame, row, text, theme);
         });
+    }
+
+    /// What the row stands on, as the canvas paints it under the row: a card's surface, or the
+    /// lift of a chosen, hovered or pressed row on the content ground, in the box the list lifts
+    /// it in (`row`, past the row's own edges by the list's bleed), under everything it shows.
+    fn compose_ground(&self, cx: &mut HtmlCx<'_>, row: Rect) {
+        if self.card {
+            let ground = crate::widget::card::surface_ground(
+                cx.theme(),
+                self.interaction,
+                true,
+                self.selected,
+            );
+            cx.ground(ground);
+            return;
+        }
+        // The lift stands at rest too, bare, for the page to tint under a pointer over the row.
+        let hovered = self.interaction.hovered && !self.interaction.disabled;
+        let pressed = self.interaction.pressed && !self.selected;
+        let theme = cx.theme();
+        let ground = (self.selected || hovered || pressed).then(|| {
+            let fill = crate::chrome::selection_tier_on(
+                theme,
+                crate::chrome::SelectionState::new(self.selected, hovered, pressed),
+                theme.tokens.colors.surfaces.content,
+            )
+            .fill;
+            crate::composition::Ground {
+                fill: Some(crate::composition::rgba8(fill)),
+                edge: None,
+                radius: f64::from(theme.tokens.radii.item).min(row.height() / 2.0),
+                inset: [0.0; 2],
+            }
+        });
+        cx.part("lift", "ListRowLift", row).ground = ground;
+        cx.node().children.rotate_right(1);
     }
 
     fn compose_leading(
