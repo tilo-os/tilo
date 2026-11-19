@@ -63,7 +63,7 @@ use tokio::sync::mpsc;
 
 use crate::apps::route::CrdtRoute;
 
-use neighbour_wire::content::{MAX_CONTENT_BYTES, PIECE_BYTES};
+pub use neighbour_wire::content::{MAX_CONTENT_BYTES, PIECE_BYTES};
 
 /// Requests this device keeps open at once; past it, the oldest go.
 const MAX_OPEN_WANTS: usize = 256;
