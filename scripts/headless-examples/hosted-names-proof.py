@@ -84,8 +84,10 @@ def chat_says(address: str, seen: dict) -> list[str]:
     for name, pid in bus_pids(address).items():
         client = AtspiClient(address, name)
         try:
-            # Only a tilolang app's window is walked: the shell's own tree is the session's.
-            if "tilolang-app" not in client.property(ROOT_PATH, "Name"):
+            # Only a tilolang app's window is walked: the shell's own tree is the session's. An
+            # application node is named after the executable, and a tilolang app's window is its
+            # process's (`tilolang-process`), never the runtime's.
+            if "tilolang" not in client.property(ROOT_PATH, "Name"):
                 continue
             tree = client.tree(APP_TREE_NODE_LIMIT)
         except CheckError:
