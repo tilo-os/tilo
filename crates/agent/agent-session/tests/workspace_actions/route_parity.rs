@@ -152,6 +152,50 @@ impl WorkspaceDocumentsLink for Member {
     }
 }
 
+/// The workspace's governance holds what the member's link says of them:
+/// `member`'s person is an editor, the workspace approved their `keys`, and
+/// their agent device may make notes. Every holder decides the changes the
+/// server makes for them by it.
+async fn governed_as_the_link_says(
+    hosted: &Hosted,
+    server: &Device,
+    workspace: &str,
+    member: &Device,
+    keys: [&Device; 2],
+) {
+    super::resource_support::admit_person(
+        hosted,
+        server,
+        workspace,
+        member,
+        tilo_peer_state::join::Role::Editor,
+    )
+    .await;
+    let person = hex::encode(member.cert.user_public_key);
+    let agent_device = tilo_action_policy::Grantee::agent("assistant");
+    let mut grants: Vec<_> = workspace_policy(&person)
+        .grants
+        .into_iter()
+        .filter(|grant| grant.grantee == agent_device)
+        .collect();
+    for key in keys {
+        grants.extend(
+            tilo_action_policy::Acting::handed_agent(
+                tilo_action_policy::key_agent_id(&key.cert.device_public_key),
+                person.clone(),
+            )
+            .handed_preset(workspace),
+        );
+    }
+    hosted
+        .server
+        .workspaces()
+        .unwrap()
+        .put_workspace_grants(workspace, &server.cert, [0x9a; 32], grants)
+        .await
+        .unwrap();
+}
+
 /// How one route admitted an invocation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Admitted {
@@ -444,7 +488,7 @@ fn agent_actor(member: &collab_types::presence::Shown) -> tilo_actions::Actor {
 async fn both_routes_decide_every_callers_actions_alike() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let (guest, _) = tilo_user_identity::UserIdentity::generate("Grace", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::member());
+    let server = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let guest_device = enrol(&guest, "guest-browser", DeviceCapabilities::member());
     let all_key = enrol(&guest, "visa-backend", DeviceCapabilities::member());
@@ -455,24 +499,32 @@ async fn both_routes_decide_every_callers_actions_alike() {
     // granted: not one below /dev, where the scratch state is.
     let shell_state = tempfile::tempdir().unwrap();
     let shells = shell_state.path().join("shells");
-    let hosted = start(&root, &host, state.path()).await;
-    let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+    let hosted = start(&root, &server, state.path()).await;
+    let mut browser = Browser::open(&hosted, &browser_device, &server).await;
     let records: Vec<DocumentRoute> = [NOTES, PDF, WRITER, TERMINAL]
         .into_iter()
         .map(|app| browser.create(app))
         .collect();
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
 
-    let spoken_by = hex::encode(host.cert.device_public_key);
+    let spoken_by = hex::encode(server.cert.device_public_key);
     let mut differences = Vec::new();
     let person = guest_device.cert.user_public_key;
+    governed_as_the_link_says(
+        &hosted,
+        &server,
+        &browser.cluster_id,
+        &guest_device,
+        [&all_key, &one_key],
+    )
+    .await;
     let member = Arc::new(Member {
         host: HostDevice {
             endpoint: tilo_agent_session::HostEndpoint::iroh(
                 hosted.server.node_addr(),
-                host.cert.clone(),
+                server.cert.clone(),
             ),
-            key: host.key.clone(),
+            key: server.key.clone(),
             runtime: tokio::runtime::Handle::current(),
         },
         workspaces: hosted.server.workspaces().unwrap().clone(),
