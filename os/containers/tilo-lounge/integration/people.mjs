@@ -1726,6 +1726,9 @@ try {
     const ownName = (await snapshot(a.tab)).names
       .find(name => / \(you\): your profile$/.test(name))?.replace(/ \(you\): your profile$/, '') ?? null;
     if (!ownName) await failed("A's page names no person of its own", a.tab);
+    // The invitation carries the name the inviter had when it was made; the page names them
+    // as the workspace does now, with the number namesakes are told apart by.
+    const invitedBy = ownName.replace(/ \(\d+\)$/, '');
     report.inviter = ownName;
 
     // Someone else opens the link the sheet handed over, in a browser of their
@@ -1734,7 +1737,7 @@ try {
     // invitation, not from the link alone.
     const c = await followLink('C', made);
     invited = c;
-    for (const expected of [`${ownName} invited you to`, listedNow.name,
+    for (const expected of [`${invitedBy} invited you to`, listedNow.name,
       // The role the host verified, and the one sentence the workspace's own
       // settings say it lets a person do.
       'Commenter Can view shared work and add comments, but cannot edit it.']) {
