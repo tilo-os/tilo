@@ -60,15 +60,29 @@ pub struct Here {
     /// The host's listed workspace has an entry that admits people by itself.
     #[serde(default)]
     pub entry: bool,
-    /// This device entered the workspace the link names before.
+    /// The link names that listed workspace (or none, which its entry names).
     #[serde(default)]
-    pub entered: bool,
+    pub listed: bool,
+    /// What the device holds of the person and the workspace.
+    #[serde(flatten)]
+    pub held: Held,
     /// How many accounts the device holds for the host, once read (`None`: not read yet).
     #[serde(default)]
     pub accounts: Option<usize>,
     /// What the device itself can do.
     #[serde(flatten)]
     pub can: Can,
+}
+
+/// What a device holds of its person and the workspace the link names.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct Held {
+    /// A person: someone is signed in on it.
+    #[serde(default)]
+    pub person: bool,
+    /// It entered the workspace the link names before.
+    #[serde(default)]
+    pub entered: bool,
 }
 
 /// What a device can do on its way in, whatever the host.
@@ -102,6 +116,9 @@ pub enum Way {
     Member,
     /// Come back with the person's root the device holds: the host decides whether they are in.
     Reconnect,
+    /// Nobody is signed in on the device, and no entry lets a stranger into the workspace the
+    /// link names: the person signs in first, and the device then comes back as them.
+    SignIn,
     /// Read the accounts the device holds for the host, and ask again.
     Accounts,
     /// The link's secrets are damaged.
@@ -170,13 +187,17 @@ pub fn way_in(link: &Link, here: &Here) -> Way {
     }
 }
 
-/// A device without an account for the host: the entry, unless it entered this workspace before
-/// (the person's own, say), which it comes back to as the person first.
+/// A device without an account for the host: the listed workspace's entry, which lets anyone in,
+/// unless the device entered this workspace before (the person's own, say). Any other workspace
+/// it comes back to as the person it holds, and the host decides; with nobody signed in, the
+/// person signs in first rather than arrive as a stranger no entry lets in.
 fn without_account(here: &Here) -> Way {
-    if here.entry && !here.entered {
+    if here.entry && here.listed && !here.held.entered {
         Way::Entry
-    } else {
+    } else if here.held.person || here.held.entered {
         Way::Reconnect
+    } else {
+        Way::SignIn
     }
 }
 
@@ -219,7 +240,11 @@ mod tests {
     fn here(entry: bool, entered: bool, accounts: usize) -> Here {
         Here {
             entry,
-            entered,
+            listed: true,
+            held: Held {
+                person: true,
+                entered,
+            },
             accounts: Some(accounts),
             can: Can {
                 tickets: true,
@@ -356,6 +381,39 @@ mod tests {
                 "entered before: as the person first"
             );
             assert_eq!(way_in(&named, &here(false, false, 0)), Way::Reconnect);
+        }
+
+        phase nobody_signed_in_signs_in_before_any_workspace_but_the_listed_one;
+        {
+            let named = at(Some("r"));
+            let signed_out = |entry, listed| Here {
+                listed,
+                held: Held::default(),
+                ..here(entry, false, 0)
+            };
+            // The listed workspace's entry lets a stranger in.
+            assert_eq!(way_in(&named, &signed_out(true, true)), Way::Entry);
+            assert_eq!(way_in(&at(None), &signed_out(true, false)), Way::Entry);
+            // Another workspace of the host, or one at a host listing none: sign in first.
+            assert_eq!(way_in(&named, &signed_out(true, false)), Way::SignIn);
+            assert_eq!(way_in(&named, &signed_out(false, false)), Way::SignIn);
+            // Signed in, the device comes back as the person, and the host decides; one the
+            // host turns away still asks that workspace's entry.
+            let signed_in = Here {
+                listed: false,
+                ..here(true, false, 0)
+            };
+            assert_eq!(way_in(&named, &signed_in), Way::Reconnect);
+            assert_eq!(after(Failed::Reconnect, &signed_in), Way::Entry);
+            // A device that entered before (a paired one holds no root) comes back as before.
+            let entered = Here {
+                held: Held {
+                    person: false,
+                    entered: true,
+                },
+                ..here(false, true, 0)
+            };
+            assert_eq!(way_in(&named, &entered), Way::Reconnect);
         }
 
         phase a_failed_way_ends_in_the_entry_or_no_access;

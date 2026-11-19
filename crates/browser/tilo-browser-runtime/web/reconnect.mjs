@@ -251,7 +251,7 @@ export function domReconnectView({document = globalThis.document, messages = () 
         opener.hidden = !local;
         if (local) {
           opener.href = state.origin;
-          opener.textContent = say('entry-failure-open-host', 'Open { $host }', {host: hostName(state.origin)});
+          opener.textContent = say('entry-failure-open-host', 'Open { $server }', {server: hostName(state.origin)});
         }
       }
       const next = state.waiting === 'trying' ? say('arrival-reconnect-trying', 'Trying now…')

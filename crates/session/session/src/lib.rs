@@ -276,6 +276,7 @@ mod lock_screen;
 mod lock_service;
 #[cfg(target_os = "linux")]
 mod look;
+#[cfg(target_os = "linux")]
 mod machine_steps;
 #[cfg(target_os = "linux")]
 pub mod mcp_server;

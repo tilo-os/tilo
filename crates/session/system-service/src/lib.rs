@@ -267,12 +267,32 @@ pub fn power_surface() -> tilo_resource::surface::Surface {
     tilo_resource::surface::reading_surface::<Power, PowerAction>(POWER, "Power")
 }
 
+/// The `power` resource, as a declared type: the modes this device offers and
+/// who may use it.
+#[derive(tilo_resource::Row)]
+#[row(kind = "so.tilo.system.power", label = "Power")]
+pub struct PowerReading;
+
+/// The `system-update` resource, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "so.tilo.system.update", label = "System update")]
+pub struct UpdateReading;
+
+/// The `time-zone` resource, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "so.tilo.system.time", label = "Time zone")]
+pub struct TimeReading;
+
+/// The keyboard's backlight, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "so.tilo.system.keyboard-backlight", label = "Keyboard light")]
+pub struct KeyboardLightReading;
+
 /// The `power` resource reading `power`.
 #[must_use]
 pub fn power_resource(power: &Power) -> ResourceSpec {
-    let mut resource = offer::<PowerAction>(ResourceSpec::new(
+    let mut resource = offer::<PowerAction>(tilo_resource::typed_resource::<PowerReading>(
         POWER,
-        "so.tilo.system.power",
         crate::i18n::name("so.tilo.system.power", "Power"),
     ));
     if power.modes.is_empty() {
@@ -297,9 +317,8 @@ pub fn power_resource(power: &Power) -> ResourceSpec {
 /// The `system-update` resource reading `update`.
 #[must_use]
 pub fn update_resource(update: &Update) -> ResourceSpec {
-    let mut resource = offer::<UpdateAction>(ResourceSpec::new(
+    let mut resource = offer::<UpdateAction>(tilo_resource::typed_resource::<UpdateReading>(
         SYSTEM_UPDATE,
-        "so.tilo.system.update",
         crate::i18n::name("so.tilo.system.update", "System update"),
     ));
     if update.updating {
@@ -332,9 +351,8 @@ pub fn update_resource(update: &Update) -> ResourceSpec {
 /// The `time-zone` resource reading `time`.
 #[must_use]
 pub fn time_resource(time: &Time) -> ResourceSpec {
-    let mut resource = offer::<TimeAction>(ResourceSpec::new(
+    let mut resource = offer::<TimeAction>(tilo_resource::typed_resource::<TimeReading>(
         TIME_ZONE,
-        "so.tilo.system.time",
         crate::i18n::name("so.tilo.system.time", "Time zone"),
     ));
     if time.network_time.is_none() {
@@ -351,11 +369,11 @@ pub fn time_resource(time: &Time) -> ResourceSpec {
 /// The `device:keyboard-backlight` resource reading `light`.
 #[must_use]
 pub fn keyboard_light_resource(light: &KeyboardLight) -> ResourceSpec {
-    let mut resource = offer::<KeyboardLightAction>(ResourceSpec::new(
-        KEYBOARD_BACKLIGHT,
-        "so.tilo.system.keyboard-backlight",
-        crate::i18n::name("so.tilo.system.keyboard-backlight", "Keyboard light"),
-    ));
+    let mut resource =
+        offer::<KeyboardLightAction>(tilo_resource::typed_resource::<KeyboardLightReading>(
+            KEYBOARD_BACKLIGHT,
+            crate::i18n::name("so.tilo.system.keyboard-backlight", "Keyboard light"),
+        ));
     if light.level.is_none() {
         for action in ["brighter", "dimmer", "toggle", "set-level"] {
             unavailable(

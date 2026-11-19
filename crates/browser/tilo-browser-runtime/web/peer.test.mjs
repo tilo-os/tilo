@@ -1101,6 +1101,17 @@ test('whenReady rejects when the host refuses the device', async () => {
   await peer.dispose();
 });
 
+test('whenReady keeps the code the host stopped the session with, for the page to say why', async () => {
+  const runtime = fakeRuntime({phase: 'admitting'});
+  const peer = await connect(options(runtime, memoryStore()));
+  const ready = peer.whenReady();
+  Object.assign(runtime.peer, {error: 'This workspace was deleted by its owner.', errorCode: 'workspace-deleted'});
+  runtime.peer.emit('failed');
+  await assert.rejects(ready, {message: 'This workspace was deleted by its owner.', code: 'workspace-deleted',
+    sessionError: 'This workspace was deleted by its owner.', sessionErrorCode: 'workspace-deleted'});
+  await peer.dispose();
+});
+
 test('a host still replaying the workspace is waited for; one that says nothing is not', async () => {
   const runtime = fakeRuntime({phase: 'admitting'});
   const peer = await connect(options(runtime, memoryStore()));
@@ -1120,7 +1131,13 @@ test('a host still replaying the workspace is waited for; one that says nothing 
 
   const quiet = fakeRuntime({phase: 'admitting'});
   const silent = await connect(options(quiet, memoryStore()));
-  await assert.rejects(silent.whenReady({timeoutMs: 80, capMs: 5000}), {name: 'TimeoutError'});
+  // A host the session never got through to did not answer: the page asks it
+  // again (`hostUnreachable`), as it does a refused connection.
+  await assert.rejects(silent.whenReady({timeoutMs: 80, capMs: 5000}), {name: 'TimeoutError', code: 'unanswered', connected: false});
+  // A host that answered and never let the page in is not one that is away.
+  quiet.peer.transport = 'connected';
+  quiet.peer.emit('admitting');
+  await assert.rejects(silent.whenReady({timeoutMs: 80, capMs: 5000}), {name: 'TimeoutError', code: 'timed-out', connected: true});
   // A host that keeps sending but never lets the page in is given up on at the cap.
   const endless = silent.whenReady({timeoutMs: 80, capMs: 300});
   const feeding = setInterval(() => {

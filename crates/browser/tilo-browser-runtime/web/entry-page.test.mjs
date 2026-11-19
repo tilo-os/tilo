@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {chooseWorkspace, chosenWorkspace, enteredWorkspaces, joinViaHost, keptMembership} from './workspaces.mjs';
-import {AdmissionError} from './admission.mjs';
+import {AdmissionError, admit} from './admission.mjs';
 import {assistantAddress, PAIRING_CLOCK, PAIRING_DECLINED, PAIRING_SAME_PERSON, parsePairSecret} from './pairing.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 
@@ -185,6 +185,76 @@ async function fixture({boot, remembered = [], own = false, search = '', session
   return {calls, shown, diagnostics, page, prepared, signed, mounted: globalThis.__entryPageFixture.mounted, prefetched: globalThis.__entryPageFixture.prefetched, listeners, session: stored, failure, at: () => assigned, screen, module};
 }
 
+/** A workspace of the host other than its listed one (the Lounge), which a link names. */
+const STUDIO = '7d7cf1fb-7214-4cce-9b34-1b5fdf9c0d3c';
+/** The way-in rules for a link to such a workspace, by a browser with no account there
+ * (tilo-session-client's `way_in`, tested there): come back as the person, or sign in first. */
+const studioRules = {wayIn: (_link, here) => (JSON.parse(here).person ? 'reconnect' : 'sign-in'),
+  wayInAfter: () => 'no-access', admittedAsAsked: () => true};
+/** A page that opens `#/@node.example/w/<STUDIO>/so.tilo.chat`: the real admission, with the page's own deps. */
+const studioLink = ({reconnected = []} = {}) => async ({deps, onStep}, booted) => {
+  const scope = {kind: 'workspace', host: ORIGIN, workspace: STUDIO};
+  deps.onScope({scope, entry: {base: 'https://web.example/', home: LOUNGE}});
+  onStep('join');
+  const {peer} = await admit({scope, runtime: studioRules, deps: {...deps, workspaceAt: () => LOUNGE,
+    reconnect: async options => { reconnected.push(options); return {...booted.peer, workspace: STUDIO}; }}});
+  return peer ? booted : null;
+};
+
+test('a signed-out browser at a link to a workspace is asked to sign in, and comes back to that link signed in', async () => {
+  globalThis.location = undefined;
+  const before = {credential: Object.getOwnPropertyDescriptor(globalThis, 'PublicKeyCredential'), navigator: Object.getOwnPropertyDescriptor(globalThis, 'navigator')};
+  Object.defineProperty(globalThis, 'PublicKeyCredential', {value: function PublicKeyCredential() {}, configurable: true});
+  Object.defineProperty(globalThis, 'navigator', {value: {credentials: {get() {}}, language: 'en'}, configurable: true});
+  try {
+    const joins = [];
+    const {failure, screen, calls} = await fixture({identity: null, kept: null, entryParts: true,
+      join: async () => { joins.push('joinViaHost'); throw new Error('nothing joins'); }, boot: studioLink()});
+    // Nothing failed and nothing joined: the page asks for a sign-in.
+    assert.equal(failure, null, 'no failure is thrown on to the console');
+    assert.deepEqual(joins, []);
+    const root = document.documentElement.dataset;
+    assert.equal(root.entry, 'refused');
+    assert.equal(root.failure, undefined, 'never the failure screen');
+    assert.equal(screen['arrival-refusal-heading'].textContent, 'Sign in to open this workspace');
+    assert.match(screen['arrival-refusal-body'].textContent, /Sign in as one of them/);
+    assert.doesNotMatch(screen['arrival-refusal-heading'].textContent, /Lounge/, 'not under the site’s own workspace’s name');
+    // Signing in with a passkey loads the same link again, as the person: not their own workspace.
+    const parts = {};
+    for (const id of ['arrival-sign-in', 'arrival-sign-in-ask', 'arrival-sign-in-agent', 'arrival-sign-in-button', 'arrival-sign-in-note']) {
+      parts[id] = screen[id] ?? Object.assign(new Element(id), {hidden: false, textContent: '', classList: {add() {}, remove() {}}});
+    }
+    const {module, session: kept} = await fixture({identity: null, kept: null, boot: async () => null});
+    document.getElementById = id => parts[id] ?? null;
+    globalThis.location = {href: `https://web.example/#/@node.example/w/${STUDIO}/so.tilo.chat`, pathname: '/', reload: () => calls.push('reload')};
+    globalThis.__entryPageFixture.signIn = async () => ({userPublicKey: USER});
+    module.offerSignIn({workspace: {name: null, host: {origin: ORIGIN}, workspace: STUDIO}, named: null, messages: null, runtime: null,
+      link: null, stay: true});
+    await parts['arrival-sign-in-button'].listeners.get('click')();
+    assert.ok(calls.includes('reload'), 'the link loads again');
+    assert.equal(globalThis.location.href, `https://web.example/#/@node.example/w/${STUDIO}/so.tilo.chat`, 'at the place it named');
+    assert.equal(kept.get('tilo-open-own-workspace'), undefined, 'not sent to a workspace of their own');
+    // Loaded again, signed in: the page comes back as the person into the linked workspace, and opens it.
+    const reconnected = [];
+    const signedIn = await fixture({boot: studioLink({reconnected})});
+    assert.equal(signedIn.failure, null);
+    assert.deepEqual(reconnected.map(asked => [asked.origin, asked.workspace]), [[ORIGIN, STUDIO]]);
+    assert.equal(document.documentElement.dataset.entry, 'open', 'the linked workspace opens');
+    // Signed in with their agent instead, the browser keeps no person, only
+    // that it became their device on the host: that counts as signed in too.
+    const agentReconnected = [];
+    const asDevice = await fixture({identity: null, kept: null, boot: studioLink({reconnected: agentReconnected}),
+      local: {'tilo-host-memberships': JSON.stringify({[ORIGIN]: {origin: ORIGIN, workspace: STUDIO, userPublicKey: USER, paired: true}})}});
+    assert.equal(asDevice.failure, null);
+    assert.deepEqual(agentReconnected.map(asked => [asked.origin, asked.workspace]), [[ORIGIN, STUDIO]]);
+    assert.equal(document.documentElement.dataset.entry, 'open', 'the linked workspace opens for the agent-signed-in device');
+  } finally {
+    for (const [name, descriptor] of [['PublicKeyCredential', before.credential], ['navigator', before.navigator]]) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor); else delete globalThis[name];
+    }
+  }
+});
+
 test('the entry says what works where passkeys cannot be used, and nothing when the person closes the sheet', async () => {
   const {module, calls} = await fixture({boot: async () => { throw new AdmissionError('no-access', 'You don’t have access to this workspace.'); }});
   // The entry's sign-in row (index.html, `#arrival-sign-in`), by id.
@@ -316,6 +386,37 @@ test('a page whose host never answers names that host, not this site', async () 
   assert.match(screen['arrival-failure-body'].textContent, /doesn’t trust its certificate/);
   assert.equal(screen['arrival-failure-host'].hidden, false);
   assert.equal(screen['arrival-failure-host'].textContent, 'Open 127.0.0.1:24100');
+});
+
+test('a page reports its failure to its entry where the browser keeps no beacons, and always within what the entry reads', async () => {
+  const {module} = await fixture({boot: async () => { throw new AdmissionError('no-access', 'You don’t have access to this workspace.'); }});
+  const {reportBody, sendReport, MAX_REPORT_BYTES} = module;
+  // A Firefox stack is long: the cause still arrives, the stack is cut.
+  const body = reportBody({kind: 'failed', message: 'loading: Error: Shared resource connection closed', source: 'https://lounge.example',
+    line: 0, column: 0, stack: '@https://lounge.example/v/7/peer.mjs:1:1\n'.repeat(400), page: '/', build: '7'});
+  assert.ok(new TextEncoder().encode(body).length <= MAX_REPORT_BYTES, `${body.length}`);
+  const read = JSON.parse(body);
+  assert.equal(read.message, 'loading: Error: Shared resource connection closed');
+  assert.ok(read.stack.startsWith('@https://lounge.example/v/7/peer.mjs:1:1'));
+  // LibreWolf keeps `sendBeacon` with beacons off: it says it sent and sends
+  // nothing. The report goes as a request that outlives the page instead.
+  const sent = [];
+  const beacons = [];
+  const fetch = async (url, init) => { sent.push({url: String(url), ...init}); return {ok: true}; };
+  sendReport(new URL('https://host.example/directory/w/errors'), body, {navigator: {sendBeacon: (...args) => beacons.push(args) > 0}, fetch});
+  assert.equal(sent.length, 1);
+  assert.deepEqual(beacons, [], 'no beacon that may go nowhere');
+  assert.equal(sent[0].url, 'https://host.example/directory/w/errors');
+  assert.equal(sent[0].method, 'POST');
+  assert.equal(sent[0].keepalive, true, 'it outlives the page');
+  assert.equal(sent[0].mode, 'no-cors', 'any site reports to its host');
+  assert.equal(sent[0].body, body);
+  // A page without fetch sends a beacon.
+  sendReport('https://host.example/directory/w/errors', body, {navigator: {sendBeacon: (...args) => beacons.push(args) > 0}, fetch: null});
+  assert.equal(beacons.length, 1);
+  // Nothing it meets throws into the page.
+  sendReport('https://host.example/directory/w/errors', body, {navigator: {sendBeacon: () => { throw new TypeError('blocked'); }},
+    fetch: () => { throw new TypeError('blocked'); }});
 });
 
 test('the account choice says it is the account choice, and resolves to the account taken', async () => {
@@ -689,11 +790,15 @@ test('a person who joins through an invitation joins under the name their key dr
 });
 
 test('an uncaught page error reaches the entry the site names', async () => {
+  // What the page sent to its entry's errors route: a request that outlives the page.
   const beacons = [];
   globalThis.window = globalThis;
   globalThis.parent = {postMessage: () => {}};
-  Object.defineProperty(globalThis, 'navigator', {configurable: true,
-    value: {sendBeacon: (url, body) => { beacons.push({url: String(url), body}); return true; }, language: 'en'}});
+  const before = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith('/errors')) { beacons.push({url: String(url), body: init.body, keepalive: init.keepalive}); return {ok: true}; }
+    return before(url, init);
+  };
   const {failure, listeners} = await fixture({search: '?embed=1', boot: async (options, booted) => {
     options.deps.onScope({scope: booted.router.route.target.scope,
       entry: {base: 'https://home.example/', home: LOUNGE, embedder: 'https://site.example'}});
@@ -706,10 +811,11 @@ test('an uncaught page error reaches the entry the site names', async () => {
   fire('unhandledrejection', {reason: Error('the host went away')});
   assert.equal(beacons.length, 2);
   assert.equal(beacons[0].url, 'https://home.example/peer/v1/directory/lounge/errors', 'the entry\'s own errors route');
-  assert.deepEqual(JSON.parse(await beacons[0].body.text()), {
+  assert.equal(beacons[0].keepalive, true);
+  assert.deepEqual(JSON.parse(beacons[0].body), {
     kind: 'error', message: 'x is not a function', source: 'https://home.example/v/7/page.js', line: 12, column: 4,
     stack: 'at page.js:12', page: '/', build: 'development'});
-  const rejection = JSON.parse(await beacons[1].body.text());
+  const rejection = JSON.parse(beacons[1].body);
   assert.equal(rejection.kind, 'unhandledrejection');
   assert.equal(rejection.message, 'the host went away');
   assert.equal(rejection.page, '/');
@@ -717,6 +823,38 @@ test('an uncaught page error reaches the entry the site names', async () => {
   // A page that keeps failing says five things a load, never more.
   for (let i = 0; i < 10; i++) fire('error', {message: `again ${i}`});
   assert.equal(beacons.length, 5);
+  globalThis.fetch = before;
+});
+
+test('a page that stops, on any screen, tells the host it could not open its workspace, and why', async () => {
+  const reports = [];
+  const before = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith('/errors')) { reports.push(JSON.parse(init.body)); return {ok: true}; }
+    return before(url, init);
+  };
+  try {
+    // A browser that cannot draw: its own screen, and the host hears it.
+    await fixture({boot: async ({deps}, booted) => {
+      deps.onScope({scope: booted.router.route.target.scope, entry: {base: 'https://home.example/', home: LOUNGE}});
+      return {...booted, rendererUnavailable: {reason: 'Tilo draws with WebGPU, which is turned off in this browser.', steps: []}};
+    }});
+    assert.equal(document.documentElement.dataset.entry, 'unsupported');
+    assert.deepEqual(reports.map(report => [report.kind, report.message]),
+      [['failed', 'unsupported: Tilo draws with WebGPU, which is turned off in this browser.']]);
+    // A join that failed: the failure screen's cause.
+    reports.length = 0;
+    await fixture({boot: async ({deps, onStep}, booted) => {
+      deps.onScope({scope: booted.router.route.target.scope, entry: {base: 'https://home.example/', home: LOUNGE}});
+      onStep('join');
+      throw Object.assign(new Error('that workspace is not public'), {name: 'HostAdmissionError', code: 'refused'});
+    }});
+    assert.equal(document.documentElement.dataset.failure, 'no-access');
+    assert.deepEqual(reports.map(report => report.kind), ['failed']);
+    assert.match(reports[0].message, /^no-access: HostAdmissionError: that workspace is not public/);
+  } finally {
+    globalThis.fetch = before;
+  }
 });
 
 // A session's own status, as the peer publishes it (PeerSnapshot).
