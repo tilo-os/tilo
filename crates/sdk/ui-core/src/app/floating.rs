@@ -510,6 +510,8 @@ impl App {
         // Outside a Tilo session there is no trusted shell chooser to open.
         // Drain the edge so reconnecting later cannot replay a stale gesture.
         self.root_widget.take_pip_area_request();
+        // No shell to dial the workspace again: the press is dropped.
+        let _ = crate::workspace_sync::take_retry();
         for request in crate::shell_tabs::take_requests() {
             self.apply_unhosted_tab_request(request);
             changed = true;
@@ -734,6 +736,11 @@ impl App {
         for request in crate::shell_tabs::take_requests() {
             client.send(&tab_request_message(request, instance))?;
             *changed = true;
+        }
+        if crate::workspace_sync::take_retry() {
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::RetryWorkspace { instance },
+            )?;
         }
         // The window's bar shows the app's parts while the shell hears it.
         if crate::window_toolbar::set_hosted(true) {

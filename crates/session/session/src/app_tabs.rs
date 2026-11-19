@@ -349,6 +349,7 @@ impl AppTabs {
         // The windows that connected since the last pass join here, so an ask they write is
         // answered on this pass and no thread of the session's waits on a client.
         self.socket.take();
+        let mut redials = Vec::new();
         {
             let mut answered = Answers {
                 desktop,
@@ -361,6 +362,7 @@ impl AppTabs {
                 cards: &self.cards,
                 launches: &self.launches,
                 pages: &shared.pages,
+                redials: &mut redials,
             };
             for request in self.requests.try_iter() {
                 answered.answer(&mut self.host_shell, request);
@@ -371,6 +373,19 @@ impl AppTabs {
             // A control of a window's own content, pressed where the shell lists it, goes to the app
             // drawing that window.
             answered.deliver_target_presses();
+        }
+        // A window whose workspace could not arrive asked to dial it again: its workspace's holders
+        // are dialled now, and the window hears how it went in its next appearance.
+        if let Some(sync) = &shared.sync {
+            for (app, instance) in redials {
+                let ws = shared.handle.read(|tree| {
+                    crate::window_warmth::window_workspace(tree, &app, instance)
+                        .map(tilo_desktop_model::Workspace::id)
+                });
+                if let Some(ws) = ws {
+                    sync.redial(ws);
+                }
+            }
         }
         // What the members' sessions show of these windows' pages, and what the
         // apps sent of them since the last pass.
@@ -744,6 +759,8 @@ struct Answers<'a> {
     launches: &'a Launches,
     /// The windows whose apps hand their page over as a paint stream.
     pages: &'a Rc<RefCell<PageTracks>>,
+    /// The windows, by app and tab, whose workspace the person asked to dial again this pass.
+    redials: &'a mut Vec<(String, Option<u64>)>,
 }
 
 impl Answers<'_> {
@@ -986,6 +1003,9 @@ impl Answers<'_> {
             } => self.answer_open_beside(&app, target, background, own),
             FloatingSurfaceClientMessage::CloseTab { .. } => {
                 self.desktop.with_policy(|policy| policy.close_tab_of(&app));
+            }
+            FloatingSurfaceClientMessage::RetryWorkspace { .. } => {
+                self.redials.push((app.clone(), instance));
             }
             FloatingSurfaceClientMessage::ReopenClosedTab => {
                 self.desktop
@@ -1409,6 +1429,7 @@ fn instance_of(message: &FloatingSurfaceClientMessage) -> Option<u64> {
         | FloatingSurfaceClientMessage::Toolbar { instance, .. }
         | FloatingSurfaceClientMessage::WindowOffer { instance, .. }
         | FloatingSurfaceClientMessage::EditLocation { instance }
+        | FloatingSurfaceClientMessage::RetryWorkspace { instance }
         | FloatingSurfaceClientMessage::OpenSearch { instance, .. }
         | FloatingSurfaceClientMessage::OpenAppSearch { instance, .. }
         | FloatingSurfaceClientMessage::OpenFloated { instance, .. }

@@ -99,7 +99,7 @@ pub(crate) async fn spawn_ticking(
         .await
         .expect("the device's host opens");
     local.install(Arc::new(host));
-    cmd.send(NetCmd::OwnServiceReady)
+    cmd.send(NetCmd::OwnServiceSettled)
         .await
         .expect("the actor is running");
     Sibling {

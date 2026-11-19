@@ -218,6 +218,12 @@ pub enum FloatingSurfaceClientMessage {
     },
     /// Reopen the workspace's most recently closed tab.
     ReopenClosedTab,
+    /// Dial the holders of this window's workspace again now: the person pressed "Try again" on a
+    /// workspace whose content could not arrive ([`crate::workspace_sync::retry`]). The shell
+    /// says how it went in the window's next appearance.
+    RetryWorkspace {
+        instance: Option<u64>,
+    },
     /// Show the next (`forward`) or previous tab of the window group this app's tab is in: Ctrl+Tab or
     /// Ctrl+Shift+Tab that no widget of the app used.
     CycleTab {

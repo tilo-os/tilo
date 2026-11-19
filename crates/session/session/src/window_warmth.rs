@@ -133,17 +133,7 @@ fn workspace_sync(
     person: &str,
     persons: &RefCell<HashMap<WorkspaceId, String>>,
 ) -> Option<WorkspaceSync> {
-    let workspace = instance
-        .and_then(|instance| {
-            tree.workspaces.iter().find(|workspace| {
-                workspace.tabs().any(|shown| {
-                    shown.id == instance
-                        && tilo_desktop_model::apps::canonical_app_id(&shown.tile)
-                            .is_some_and(|id| tilo_desktop_model::apps::app_ids_match(&id, app))
-                })
-            })
-        })
-        .or_else(|| tree.workspace_holding_app(app))?;
+    let workspace = window_workspace(tree, app, instance)?;
     let workspace_id = workspace.id();
     let person = persons
         .borrow_mut()
@@ -155,6 +145,26 @@ fn workspace_sync(
         &workspace.name,
         workspace.app_writes_at(&person, app, tilo_clock::unix_now()),
     )
+}
+
+/// The workspace the window `instance` of `app` is in: the window's own, never another window's of
+/// the same app; `None` falls back to `app`, for a connection that has not named its window yet.
+pub(crate) fn window_workspace<'a>(
+    tree: &'a Layout,
+    app: &str,
+    instance: Option<u64>,
+) -> Option<&'a tilo_desktop_model::Workspace> {
+    instance
+        .and_then(|instance| {
+            tree.workspaces.iter().find(|workspace| {
+                workspace.tabs().any(|shown| {
+                    shown.id == instance
+                        && tilo_desktop_model::apps::canonical_app_id(&shown.tile)
+                            .is_some_and(|id| tilo_desktop_model::apps::app_ids_match(&id, app))
+                })
+            })
+        })
+        .or_else(|| tree.workspace_holding_app(app))
 }
 
 /// The theme the shell and its windows wear: the settings document's, with the host's accessibility

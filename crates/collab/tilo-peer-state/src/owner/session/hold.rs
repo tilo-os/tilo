@@ -22,6 +22,25 @@ const FIRST_PAUSE: Duration = Duration::from_secs(1);
 /// The longest pause between dials.
 const LONGEST_PAUSE: Duration = Duration::from_secs(60);
 
+/// Why a hold dials none of the workspace's holders now: nothing it does
+/// reaches the workspace until this changes, so the workspace cannot arrive
+/// while it lasts. The hold tries again when told to ([`Link::retry`]), and
+/// on its own pace where it keeps one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CannotDial {
+    /// This device has no identity to take part in the workspace with.
+    NoIdentity,
+    /// This device's certificate is no longer one the workspace takes,
+    /// and renewing it there failed (or there was nothing to renew it with).
+    NotRenewed,
+    /// The list of who holds the workspace could not be read.
+    HoldersUnreadable,
+    /// The workspace names no holder to dial.
+    NoHolders,
+    /// The workspace is placed on this device, whose own service is not open.
+    OwnServiceStopped,
+}
+
 /// Whoever holds a workspace's link: what [`hold`] asks of it.
 pub trait Holder: Send + Sync {
     /// How the workspace's holders are reached now.
@@ -39,6 +58,8 @@ pub trait Holder: Send + Sync {
         via: TransportHint,
         reason: String,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// The hold dials none of the workspace's holders now, for `cause`.
+    fn cannot_dial(&self, cause: CannotDial) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// Run `linked`, the workspace's link, pinned by `scope`, until it ends.
     fn run(
         &self,
@@ -88,7 +109,8 @@ enum Outcome {
 }
 
 /// Hold `connect`'s workspace's link for `holder`, as `identity`, until the
-/// workspace is no longer held here. Without ownership there is nothing to dial.
+/// workspace is no longer held here. Without an identity there is nothing to
+/// dial: the holder hears so, again each time it asks for a retry.
 pub async fn hold(
     connect: Connect,
     identity: Option<DeviceIdentity>,
@@ -96,8 +118,11 @@ pub async fn hold(
     link: &Link,
 ) {
     let Some(identity) = identity else {
-        // Nothing will ever be dialled here.
         link.settled();
+        while Connect::new(connect.owner().clone(), connect.workspace()).is_ok() {
+            holder.cannot_dial(CannotDial::NoIdentity).await;
+            wait(link, None).await;
+        }
         return;
     };
     let paced = holder.paces_itself();
@@ -147,12 +172,22 @@ async fn once(
     };
     let reach = holder.reach();
     let own = cert.device_public_key;
-    // A workspace placed on this device waits for its host to run.
+    // A workspace placed on this device waits for its own service to open.
     if super::hosted_by(&hint, &own) && reach.own_host.is_none() {
+        holder.cannot_dial(CannotDial::OwnServiceStopped).await;
         return Outcome::Wait;
     }
-    let Ok(mut holders) = connect.hosts(&own) else {
-        return Outcome::Failed;
+    let mut holders = match connect.holders(&own) {
+        Ok(holders) if holders.is_empty() => {
+            holder.cannot_dial(CannotDial::NoHolders).await;
+            return Outcome::Failed;
+        }
+        Ok(holders) => holders,
+        Err(error) => {
+            tracing::warn!(workspace = %connect.workspace(), %error, "the workspace's holders cannot be read");
+            holder.cannot_dial(CannotDial::HoldersUnreadable).await;
+            return Outcome::Failed;
+        }
     };
     if let Some(index) = last.and_then(|last| {
         holders
@@ -161,8 +196,7 @@ async fn once(
     }) {
         holders.rotate_left(index);
     }
-    link.establishing
-        .store(!holders.is_empty(), Ordering::Release);
+    link.establishing.store(true, Ordering::Release);
     let mut holders = holders.into_iter().peekable();
     let (linked, via) = loop {
         let Some(via) = holders.next() else {
@@ -213,6 +247,7 @@ async fn renew(
     identity: &DeviceIdentity,
 ) -> Outcome {
     if !matches!(connect.renewal(identity), Ok(Some(_))) {
+        holder.cannot_dial(CannotDial::NotRenewed).await;
         return Outcome::Failed;
     }
     let workspace = connect.workspace();
@@ -224,6 +259,8 @@ async fn renew(
         }
         Err(error) => {
             tracing::warn!(%workspace, %error, "this device's renewed certificate was not taken");
+            link.settled();
+            holder.cannot_dial(CannotDial::NotRenewed).await;
             Outcome::Failed
         }
     }

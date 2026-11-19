@@ -534,7 +534,7 @@ fn files_link(
 }
 
 /// Wait for `opening`, this device's own workspace service opening, and tell the peer actor once
-/// it is open: whether it opened.
+/// it opened or failed to: whether it opened.
 async fn own_service_opened(
     opening: impl std::future::Future<
         Output = Result<
@@ -542,6 +542,7 @@ async fn own_service_opened(
             String,
         >,
     >,
+    service: &OwnService,
     actor: &tokio::sync::mpsc::Sender<NetCmd>,
     device: Option<&DeviceActions>,
 ) -> bool {
@@ -552,11 +553,15 @@ async fn own_service_opened(
             if let Some(device) = device {
                 device.govern_with(service.workspaces().device_actions());
             }
-            let _ = actor.send(NetCmd::OwnServiceReady).await;
+            let _ = actor.send(NetCmd::OwnServiceSettled).await;
             true
         }
         Err(error) => {
             tracing::warn!(%error, "this device's workspace service did not open, so it founds no workspace");
+            // The workspaces placed on this device say they cannot be opened here, rather than
+            // wait for a service that will not come.
+            service.failed_to_open();
+            let _ = actor.send(NetCmd::OwnServiceSettled).await;
             false
         }
     }
@@ -671,7 +676,7 @@ async fn listening(
     let mut opened = false;
     if let (Some(service), Some(identity), Some(engine)) = (&own_service, identity, engine) {
         let opening = open_own_service(service, identity, engine, &endpoint, &reachability);
-        opened = own_service_opened(Box::pin(opening), &actor, actions.get()).await;
+        opened = own_service_opened(Box::pin(opening), service, &actor, actions.get()).await;
     }
     let founding_link = link.clone();
     let (events, carrying, attending) = heard(
@@ -961,6 +966,7 @@ async fn carry_out(
             .is_ok(),
         Cmd::ConnectDevice(addr) => network.send(NetCmd::Connect { addr }).await.is_ok(),
         Cmd::Replay(ws) => network.send(NetCmd::NativeReplay { ws }).await.is_ok(),
+        Cmd::Redial(ws) => network.send(NetCmd::RedialWorkspace { ws }).await.is_ok(),
         Cmd::OpenDocument { ws, channel, own } => network
             .send(NetCmd::OpenDocument { ws, channel, own })
             .await

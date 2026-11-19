@@ -12,6 +12,7 @@ use crate::own_service::OwnService;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_peer_state::direct::DirectSync;
 use tilo_peer_state::join::TransportHint;
+use tilo_peer_state::owner::session::CannotDial;
 pub use tilo_peer_state::owner::session::{Connect, Input, Scope};
 use tilo_peer_state::owner::session::{Holder, Link, Linked, OwnHost, Reach};
 
@@ -113,6 +114,18 @@ impl Holder for NativeHolder {
                     via: Box::new(via),
                     reason,
                 })
+                .await;
+        })
+    }
+
+    fn cannot_dial(
+        &self,
+        cause: CannotDial,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(async move {
+            let _ = self
+                .tx
+                .send(InternalEvent::NativeCannotDial { ws: self.ws, cause })
                 .await;
         })
     }
@@ -566,7 +579,7 @@ impl ActorState {
             });
             let hosts = route
                 .connect
-                .hosts(&identity.device_cert.device_public_key)
+                .holders(&identity.device_cert.device_public_key)
                 .unwrap_or_default();
             drop_unpinned(&mut self.native_links, ws, &material, &hosts);
             route.link.retry();
@@ -589,6 +602,45 @@ impl ActorState {
             .unwrap_or_default();
         tracing::debug!(ws = %ws, host = %hex::encode(via.host.device_public_key), %at, %reason, "native host dial failed; retrying");
         crate::workspace_sync::unreachable(ws);
+    }
+
+    /// The workspace on topic `ws`'s hold dials none of its holders, for
+    /// `cause`: its apps say what the workspace holds cannot arrive, and why.
+    /// A workspace placed on this device waits for this device's own service
+    /// while that is still opening: only a service that failed to open is a
+    /// failure.
+    pub(super) fn native_cannot_dial(&self, ws: WorkspaceId, cause: CannotDial) {
+        use ui::workspace_sync::WorkspaceUnavailable;
+        if !self.native_routes.contains(ws) {
+            return;
+        }
+        let unavailable = match cause {
+            CannotDial::NoIdentity => WorkspaceUnavailable::NoIdentity,
+            CannotDial::NotRenewed => WorkspaceUnavailable::NotRenewed,
+            CannotDial::HoldersUnreadable => WorkspaceUnavailable::HoldersUnreadable,
+            CannotDial::NoHolders => WorkspaceUnavailable::NoHolders,
+            CannotDial::OwnServiceStopped => {
+                if !self.own_service.as_ref().is_none_or(OwnService::failed) {
+                    return;
+                }
+                WorkspaceUnavailable::OwnServiceStopped
+            }
+        };
+        tracing::debug!(ws = %ws, ?cause, "the workspace's holders cannot be dialled");
+        crate::workspace_sync::unavailable(ws, unavailable);
+    }
+
+    /// The person asked to dial the holders of the workspace on topic `ws`
+    /// again now: its apps wait for the dial again, and its hold dials.
+    pub(super) fn redial_native_route(&mut self, ws: WorkspaceId) {
+        if !self.native_routes.contains(ws) {
+            return;
+        }
+        crate::workspace_sync::retrying(ws);
+        self.retry_native_routes();
+        // Without an identity the routes are not retried as a whole; this
+        // one still hears the retry and says how it stands.
+        self.native_routes.retry(ws);
     }
 
     /// The workspace on topic `ws`'s hold reached a host: its link runs here

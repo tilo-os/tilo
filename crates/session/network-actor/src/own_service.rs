@@ -31,6 +31,8 @@ pub struct OwnService(Arc<Inner>);
 struct Inner {
     service: ServiceSlot,
     installed: Mutex<Option<Arc<WorkspaceService>>>,
+    /// The service did not open, and will not in this session.
+    failed: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for OwnService {
@@ -51,6 +53,7 @@ impl OwnService {
             Self(Arc::new(Inner {
                 service,
                 installed: Mutex::new(None),
+                failed: std::sync::atomic::AtomicBool::new(false),
             })),
             protocols,
         )
@@ -66,6 +69,7 @@ impl OwnService {
             Self(Arc::new(Inner {
                 service,
                 installed: Mutex::new(None),
+                failed: std::sync::atomic::AtomicBool::new(false),
             })),
             protocols,
         )
@@ -79,6 +83,21 @@ impl OwnService {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+
+    /// The service did not open: the workspaces placed on this device cannot
+    /// be served here in this session.
+    pub fn failed_to_open(&self) {
+        self.0
+            .failed
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether the service did not open ([`Self::failed_to_open`]); while it is
+    /// still opening, it is on its way.
+    #[must_use]
+    pub fn failed(&self) -> bool {
+        self.get().is_none() && self.0.failed.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// The workspace-join exchange with this device's host, in process, as

@@ -63,13 +63,47 @@ pub fn synced(ws: WorkspaceId) {
 
 /// A try to reach the host of the workspace on topic `ws` failed. One that
 /// synced before keeps what it holds; one whose host speaks another peer
-/// protocol keeps saying which side has to update.
+/// protocol keeps saying which side has to update. One that could not be
+/// dialled before was dialled now: its holder is what is out of reach.
 pub fn unreachable(ws: WorkspaceId) {
     let mut states = STATES.lock_recover();
     if let Some(state) = states.get_mut(&ws)
-        && matches!(state, WorkspaceSyncState::Connecting)
+        && matches!(
+            state,
+            WorkspaceSyncState::Connecting | WorkspaceSyncState::Unavailable(_)
+        )
     {
         *state = WorkspaceSyncState::Unreachable;
+    }
+    drop(states);
+}
+
+/// This device dials none of the holders of the workspace on topic `ws`, for
+/// `cause`: what it holds cannot arrive until that changes. One that synced
+/// before keeps what it holds.
+pub fn unavailable(ws: WorkspaceId, cause: ui::workspace_sync::WorkspaceUnavailable) {
+    let mut states = STATES.lock_recover();
+    let current = states
+        .entry(ws)
+        .or_insert(WorkspaceSyncState::Unavailable(cause));
+    if !matches!(current, WorkspaceSyncState::Synced) {
+        *current = WorkspaceSyncState::Unavailable(cause);
+    }
+    drop(states);
+}
+
+/// The person asked to dial the holders of the workspace on topic `ws` again:
+/// one that could not be dialled is connecting again until the dial says how
+/// it went.
+pub fn retrying(ws: WorkspaceId) {
+    let mut states = STATES.lock_recover();
+    if let Some(state) = states.get_mut(&ws)
+        && matches!(
+            state,
+            WorkspaceSyncState::Unavailable(_) | WorkspaceSyncState::Unreachable
+        )
+    {
+        *state = WorkspaceSyncState::Connecting;
     }
     drop(states);
 }
@@ -190,6 +224,20 @@ mod tests {
             "who has to update stays said"
         );
         connecting(WS);
+        unavailable(WS, ui::workspace_sync::WorkspaceUnavailable::NoHolders);
+        assert_eq!(
+            state(WS),
+            Some(WorkspaceSyncState::Unavailable(
+                ui::workspace_sync::WorkspaceUnavailable::NoHolders
+            )),
+            "a workspace none of whose holders is dialled says why"
+        );
+        retrying(WS);
+        assert_eq!(
+            state(WS),
+            Some(WorkspaceSyncState::Connecting),
+            "a retry connects again until the dial says how it went"
+        );
         synced(WS);
         assert_eq!(
             told(WS, "Lounge", Some(false)),
@@ -201,7 +249,7 @@ mod tests {
                 cannot_keep_writes: false,
             })
         );
-        // Writes held for the workspace's hosts are not yet synced, and say
+        // Writes held for the workspace's holders are not yet synced, and say
         // so
         // until a host keeps them.
         assert!(unsynced(WS, 2));
@@ -220,6 +268,8 @@ mod tests {
         connecting(WS);
         other_version(WS, 0);
         unreachable(WS);
+        unavailable(WS, ui::workspace_sync::WorkspaceUnavailable::NotRenewed);
+        retrying(WS);
         assert_eq!(state(WS), Some(WorkspaceSyncState::Synced));
         forget(WS);
         assert_eq!(state(WS), None);

@@ -30,7 +30,9 @@ use tilo_peer_state::direct::DirectSync;
 use tilo_peer_state::join::{self, Role, TransportHint};
 use tilo_peer_state::join_transport::WorkspaceJoinClient;
 use tilo_peer_state::owner::enroll::{admit_as_member, prepare_and_complete};
-use tilo_peer_state::owner::session::{Connect, OwnHost, Reach};
+use tilo_peer_state::owner::session::{
+    CannotDial, Connect, Holder, Link, Linked, OwnHost, Reach, Scope,
+};
 use tilo_peer_state::owner::{NativeWorkspaceOwner, open_file};
 use tilo_peer_state::{CLOCK_SKEW_NS, CopyRole, unranked};
 use tilo_server::Reaching;
@@ -241,7 +243,7 @@ impl Desktop {
     async fn takes_part(&mut self) {
         let connect = Connect::new(self.owner.clone(), workspace()).expect("enrolled here");
         let enrolled = connect
-            .hosts(&self.id())
+            .holders(&self.id())
             .expect("the workspace names its holders")
             .into_iter()
             .next()
@@ -664,4 +666,135 @@ async fn the_rest_keep_the_workspace_when_the_desktop_it_was_made_on_leaves() {
     for desktop in [a2, a3, b1, b2] {
         desktop.leaves().await;
     }
+}
+
+/// A holder that hears why its hold dials no holder of the workspace, and
+/// nothing else.
+struct Causes {
+    reach: Reach,
+    heard: Arc<(std::sync::Mutex<Vec<CannotDial>>, tokio::sync::Notify)>,
+}
+
+impl Holder for Causes {
+    fn reach(&self) -> Reach {
+        self.reach.clone()
+    }
+
+    fn dial_failed(
+        &self,
+        _via: TransportHint,
+        reason: String,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        panic!("the hold dialled a holder: {reason}");
+    }
+
+    fn cannot_dial(
+        &self,
+        cause: CannotDial,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        self.heard.0.lock().unwrap().push(cause);
+        self.heard.1.notify_one();
+        Box::pin(std::future::ready(()))
+    }
+
+    fn run(
+        &self,
+        _linked: Linked,
+        _scope: Arc<Scope>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        panic!("the hold linked to a holder");
+    }
+}
+
+/// Why the hold of `desktop`'s workspace, as `identity`, with its own
+/// service running or not (`own_host`), dials none of its holders: the first
+/// cause it reports, and the one it reports again once retried.
+async fn why_no_dial(
+    desktop: &Desktop,
+    identity: Option<DeviceIdentity>,
+    own_host: bool,
+) -> (CannotDial, CannotDial) {
+    let heard = Arc::new((
+        std::sync::Mutex::new(Vec::new()),
+        tokio::sync::Notify::new(),
+    ));
+    let hearing = Arc::clone(&heard);
+    let holder = Causes {
+        reach: Reach {
+            endpoint: desktop.endpoint.clone(),
+            own_host: own_host.then(|| Arc::clone(&desktop.service) as Arc<dyn OwnHost>),
+        },
+        heard,
+    };
+    let connect = Connect::new(desktop.owner.clone(), workspace()).expect("enrolled here");
+    let link = Arc::new(Link::default());
+    let holding = tokio::spawn({
+        let link = Arc::clone(&link);
+        async move {
+            tilo_peer_state::owner::session::hold(connect, identity, &holder, &link).await;
+        }
+    });
+    let said = |index: usize| {
+        let hearing = Arc::clone(&hearing);
+        async move {
+            loop {
+                let notified = hearing.1.notified();
+                if let Some(cause) = hearing.0.lock().unwrap().get(index) {
+                    return *cause;
+                }
+                notified.await;
+            }
+        }
+    };
+    let first = tokio::time::timeout(Duration::from_secs(30), said(0))
+        .await
+        .expect("the hold says why it dials nothing");
+    link.retry();
+    let again = tokio::time::timeout(Duration::from_secs(30), said(1))
+        .await
+        .expect("a retried hold says why again");
+    holding.abort();
+    (first, again)
+}
+
+async fn founded(directory: &Path) -> Desktop {
+    let root = SigningKey::from_bytes(&[0x71; 32]);
+    let (key, cert) = device(&root, 0x72);
+    let desktop = Desktop::start(directory, "founder", key, cert).await;
+    desktop.founds().await;
+    desktop
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hold_with_no_identity_says_so_each_time_it_is_retried() {
+    let directory = tempfile::tempdir().unwrap();
+    let desktop = founded(directory.path()).await;
+    let heard = why_no_dial(&desktop, None, true).await;
+    drop(desktop);
+    assert_eq!(heard, (CannotDial::NoIdentity, CannotDial::NoIdentity));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_workspace_on_this_device_whose_service_is_not_open_says_so() {
+    let directory = tempfile::tempdir().unwrap();
+    let desktop = founded(directory.path()).await;
+    let heard = why_no_dial(&desktop, Some(desktop.identity()), false).await;
+    drop(desktop);
+    assert_eq!(
+        heard,
+        (CannotDial::OwnServiceStopped, CannotDial::OwnServiceStopped)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_the_workspace_does_not_take_and_cannot_renew_says_so() {
+    let directory = tempfile::tempdir().unwrap();
+    let desktop = founded(directory.path()).await;
+    // Another device of another person holds this copy: its certificate is
+    // not the one the workspace enrolled, and nothing renews it.
+    let (key, cert) = device(&SigningKey::from_bytes(&[0x73; 32]), 0x74);
+    let stranger = DeviceIdentity::kept(cert, key);
+    let heard = why_no_dial(&desktop, Some(stranger), true).await;
+    drop(desktop);
+    assert_eq!(heard, (CannotDial::NotRenewed, CannotDial::NotRenewed));
 }
