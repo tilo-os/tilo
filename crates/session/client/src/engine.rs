@@ -1297,7 +1297,32 @@ impl Engine {
     pub async fn write_resource(
         &self,
         workspace: WorkspaceId,
-        (app, record): (&str, &str),
+        document: (&str, &str),
+        changes: &[u8],
+        founding: bool,
+        sealed: Option<&key_group::ContentKeys>,
+    ) -> Result<tilo_peer_state::owner::AppWrite, tilo_peer_state::owner::WriteRefusal> {
+        self.write_resource_read_by(
+            workspace,
+            document,
+            collab_types::EVERY_MEMBER,
+            changes,
+            founding,
+            sealed,
+        )
+        .await
+    }
+
+    /// [`Self::write_resource`] of a document only `readers` read
+    /// ([`collab_types::Readers`]): sealed under `sealed`, the keys of that reader set's group,
+    /// for the document as those readers read it ([`collab_types::content_artifact_id`]).
+    /// # Errors
+    /// As [`Self::write_resource`].
+    pub(crate) async fn write_resource_read_by(
+        &self,
+        workspace: WorkspaceId,
+        (app, doc): (&str, &str),
+        readers: &str,
         changes: &[u8],
         founding: bool,
         sealed: Option<&key_group::ContentKeys>,
@@ -1305,7 +1330,11 @@ impl Engine {
         use tilo_broker_core::owner_service::OwnerService as _;
         let device = self.identity.device_cert.device_public_key;
         let now = tilo_clock::wall();
-        let artifact = collab_types::document_artifact_id(app, &workspace.to_string(), record);
+        let artifact = collab_types::content_artifact_id(
+            &workspace.to_string(),
+            readers,
+            &collab_types::app_document_id(app, doc),
+        );
         let frame = if founding {
             collab_types::DocumentMutation::Snapshot(changes.to_vec())
         } else {
@@ -1315,8 +1344,8 @@ impl Engine {
         .map_err(|error| error.to_string())?;
         let mut author = None;
         let draft = |view: &tilo_peer_state::owner::NativeCommittedView| {
-            if founding && view.peer().document(app, record).is_some() {
-                return Err(format!("{record} of {app} is in the workspace already"));
+            if founding && view.peer().document(app, doc).is_some() {
+                return Err(format!("{doc} of {app} is in the workspace already"));
             }
             if Admission::of(view, device) != Admission::Admitted {
                 return Err("the workspace has not admitted this device yet".to_owned());
@@ -1337,7 +1366,7 @@ impl Engine {
                 }
             });
             let op = view.peer().draft_write(
-                (app, record),
+                (app, doc),
                 &frame,
                 seal.as_mut()
                     .map(|seal| seal as &mut tilo_peer_state::SealCheckpoint<'_>),
@@ -1349,9 +1378,9 @@ impl Engine {
                 workspace: workspace.to_string(),
                 operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                     app: app.to_owned(),
-                    document: record.to_owned(),
+                    document: doc.to_owned(),
                     envelope: Box::new(op),
-                    own: view.peer().own_write(app, record, &device),
+                    own: view.peer().own_write(app, doc, &device),
                 },
             }])
         };
@@ -1375,7 +1404,7 @@ impl Engine {
             peer: neighbour_wire::peer_handle(&device),
             app_id: app.to_owned(),
             cluster_id: workspace.to_string(),
-            document_id: record.to_owned(),
+            document_id: doc.to_owned(),
             author: author.ok_or_else(|| {
                 tilo_peer_state::owner::WriteRefusal::Refused("the write was not made".to_owned())
             })?,
@@ -1430,6 +1459,32 @@ impl Engine {
                 return Err("the workspace removed this device from its group".to_owned());
             }
             Some(KeyAccess::NoSecretStore) => SealKeys::NoSecretStore,
+        })
+    }
+
+    /// The keys this device seals a document only `readers` read with, in `workspace`: the
+    /// workspace's own for every member, else the group of that reader set
+    /// ([`collab_types::reader_group`]), whose keys only its people's devices hold.
+    /// # Errors
+    /// As [`Self::seal_keys`], and when `readers` names no set.
+    pub fn reader_keys(&self, workspace: WorkspaceId, readers: &str) -> Result<SealKeys, String> {
+        if readers == collab_types::EVERY_MEMBER {
+            return self.seal_keys(workspace);
+        }
+        let keys = self
+            .keys
+            .get()
+            .ok_or("this session's key service is not running")?;
+        let group = keys
+            .reader_group(workspace, readers)
+            .ok_or("the reader set names no one")?;
+        Ok(match keys.access(group).0 {
+            KeyAccess::Ready(keys) => SealKeys::Here(keys),
+            KeyAccess::Waiting | KeyAccess::Unavailable => SealKeys::Waiting,
+            KeyAccess::Removed => {
+                return Err("the reader set's group removed this device".to_owned());
+            }
+            KeyAccess::NoSecretStore => SealKeys::NoSecretStore,
         })
     }
 

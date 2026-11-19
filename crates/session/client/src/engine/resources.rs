@@ -241,31 +241,29 @@ impl Engine {
     ) -> Result<Vec<AppWrite>, WriteRefusal> {
         let mut writes = Vec::with_capacity(written.len());
         for (write, founding) in written {
-            let sealed = if write.readers == "*" {
-                match self.seal_keys(workspace).map_err(WriteRefusal::Refused)? {
-                    SealKeys::Here(keys) => Some(keys),
-                    SealKeys::Waiting | SealKeys::NoSecretStore => {
-                        return Err(WriteRefusal::Refused(
-                            "this device holds no keys of the workspace yet".to_owned(),
-                        ));
-                    }
+            let sealed = match self
+                .reader_keys(workspace, &write.readers)
+                .map_err(WriteRefusal::Refused)?
+            {
+                SealKeys::Here(keys) => keys,
+                SealKeys::Waiting | SealKeys::NoSecretStore => {
+                    return Err(WriteRefusal::Refused(
+                        "this device holds no keys of the document's readers yet".to_owned(),
+                    ));
                 }
-            } else {
-                return Err(WriteRefusal::Refused(
-                    "a reader set other than the whole workspace has no keys here yet".to_owned(),
-                ));
             };
             let (bytes, founding) = match founding {
                 Some(whole) => (whole, true),
                 None => (write.change.raw_bytes().to_vec(), false),
             };
             writes.push(
-                self.write_resource(
+                self.write_resource_read_by(
                     workspace,
                     (app, &write.doc),
+                    &write.readers,
                     &bytes,
                     founding,
-                    sealed.as_ref(),
+                    Some(&sealed),
                 )
                 .await?,
             );
