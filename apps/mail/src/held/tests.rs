@@ -24,20 +24,19 @@ fn deliver(app: &mut TestApp<MailShell>, message: serde_json::Value) -> serde_js
     answer
 }
 
+/// The one message the scenarios below deliver, as a delivery takes it.
+fn quarterly() -> serde_json::Value {
+    json!({
+        "from": "Sam Lee <sam@example.test>",
+        "to": "me@example.test",
+        "subject": "Quarterly numbers",
+        "body": "They are up.\nSee the attached summary.",
+        "date": "2026-10-12T09:30:00Z",
+    })
+}
+
 fn sample(app: &mut TestApp<MailShell>) -> String {
-    deliver(
-        app,
-        json!({
-            "from": "Sam Lee <sam@example.test>",
-            "to": "me@example.test",
-            "subject": "Quarterly numbers",
-            "body": "They are up.\nSee the attached summary.",
-            "date": "2026-10-12T09:30:00Z",
-        }),
-    )["id"]
-        .as_str()
-        .unwrap()
-        .to_owned()
+    deliver(app, quarterly())["id"].as_str().unwrap().to_owned()
 }
 
 fn exported(app: &TestApp<MailShell>, answer: &serde_json::Value) -> Vec<u8> {
@@ -60,17 +59,7 @@ tilo_test_env::scenario! {
         assert!(message.server.is_none(), "nothing is queued for a server");
         assert!(crate::resource::TestMail::owed_by(&app).is_empty());
         let at = messages(&mut app);
-        let again = app.call_on(
-            &at,
-            "deliver-message",
-            json!({
-                "from": "Sam Lee <sam@example.test>",
-                "to": "me@example.test",
-                "subject": "Quarterly numbers",
-                "body": "They are up.\nSee the attached summary.",
-                "date": "2026-10-12T09:30:00Z",
-            }),
-        );
+        let again = app.call_on(&at, "deliver-message", quarterly());
         assert!(
             again.unwrap_err().to_string().contains(&id),
             "the same message is recognised, by the same id"
@@ -319,6 +308,27 @@ tilo_test_env::scenario! {
         assert_eq!(app.state().draft.body, "Friday? Or Monday.");
         app.call_confirmed("discard-draft", json!({})).unwrap();
         assert!(app.state().draft.is_empty());
+    }
+}
+
+tilo_test_env::scenario! {
+    /// A message delivered twice, as a migration that resumed asks again.
+    fn a_message_delivered_twice_answers_with_its_code;
+
+    phase delivering_the_same_message_again_answers_message_already_held;
+    {
+        let mut app = TestApp::<MailShell>::new().unwrap();
+        let id = sample(&mut app);
+        let at = messages(&mut app);
+        let refusal = app
+            .call_on(&at, "deliver-message", quarterly())
+            .expect_err("the mailbox holds it already");
+        assert_eq!(
+            refusal.code(),
+            ui::tilo_actions::codes::MESSAGE_ALREADY_HELD,
+            "a caller deciding on the answer reads its code, not its words: {refusal}"
+        );
+        assert!(refusal.to_string().contains(&id), "{refusal}");
     }
 }
 

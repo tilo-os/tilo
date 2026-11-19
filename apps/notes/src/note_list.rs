@@ -1998,13 +1998,13 @@ impl ui::framework::Chained for NoteList {
         notebook: &Notebook,
         parts: &[(u64, Rc<Self>)],
         invoker: &ui::tilo_actions::ActionInvoker,
-    ) -> Result<(), String> {
+    ) -> Result<(), Refusal> {
         let author = invoker
             .acting
             .members()
             .first()
             .map(|member| (*member).clone());
-        prepare(actions, notebook, parts, author.as_ref())
+        prepare(actions, notebook, parts, author.as_ref()).map_err(Refusal::new)
     }
 
     fn spread(

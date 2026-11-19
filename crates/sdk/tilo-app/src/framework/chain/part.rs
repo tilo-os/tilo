@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::collections::HashSet;
 
 use tilo_actions::{ActionError, ActionInvoker, ActionNeed, EncodedAction};
-use tilo_resource::{Reader, Resource};
+use tilo_resource::{Reader, Refusal, Resource};
 use ui_core::automerge::AutoCommit;
 use ui_core::resource::{DocumentId, ResourceStore};
 
@@ -32,7 +32,7 @@ type Action = Box<dyn Any>;
 type Route = (Option<String>, Option<Result<u64, String>>);
 
 type ReadPart = fn(&ResourceStore, &DocumentId) -> Result<Box<dyn HeldPart>, String>;
-type Prepare = fn(&[&dyn Any], &dyn Any, &dyn Any, &ActionInvoker) -> Result<Vec<Action>, String>;
+type Prepare = fn(&[&dyn Any], &dyn Any, &dyn Any, &ActionInvoker) -> Result<Vec<Action>, Refusal>;
 type RouteOf = fn(&dyn Any, &dyn Any, &dyn Any) -> Route;
 type Written =
     for<'a> fn(&'a dyn Any) -> Result<(&'a dyn tilo_actions::Action, EncodedAction), ActionError>;
@@ -333,14 +333,15 @@ fn prepare<P: Chained>(
     base: &dyn Any,
     parts: &dyn Any,
     invoker: &ActionInvoker,
-) -> Result<Vec<Action>, String> {
+) -> Result<Vec<Action>, Refusal> {
     let mut prepared = actions
         .iter()
         .map(|action| action_of::<P>(*action).cloned())
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(Refusal::new)?;
     P::prepare(
         &mut prepared,
-        base_of::<P>(base)?,
+        base_of::<P>(base).map_err(Refusal::new)?,
         parts_of::<P>(parts),
         invoker,
     )?;

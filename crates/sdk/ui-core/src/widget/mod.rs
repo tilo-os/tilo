@@ -21,6 +21,7 @@ pub(crate) use resource_operation::start_without_document_writes;
 pub(crate) use resource_operation::{
     ResourceOperation, ResourceOperationStart, ResourceOperations,
     local_resource_operation_handlers, poll_resource_operation, start_in_children, start_operation,
+    start_operation_refused,
 };
 
 use crate::permissions::PermissionScope;

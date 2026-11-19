@@ -158,6 +158,19 @@ fn operation_failure(reason: String) -> tilo_actions::ApiError {
     tilo_actions::ApiError::Failed(reason)
 }
 
+/// [`operation_failure`] for a refusal the handler named: a code a caller
+/// decides on reaches it as that code (a message the mailbox holds already),
+/// and one this API answers itself — a write waiting for what it changes —
+/// keeps its own answer.
+fn operation_refusal(refusal: tilo_resource::Refusal) -> tilo_actions::ApiError {
+    match refusal.code() {
+        Some(code) if code != tilo_actions::api::NOT_READY => {
+            tilo_actions::ApiError::refused(tilo_actions::ActionError::from(refusal))
+        }
+        _ => operation_failure(refusal.into_reason()),
+    }
+}
+
 /// The unchanged domain enum groups Unavailable failures.
 pub(crate) fn api_error_code(error: &tilo_actions::ApiError) -> &str {
     if let tilo_actions::ApiError::Unavailable { code, .. } = error
@@ -2793,14 +2806,14 @@ fn perform_resource_operation(
                 .with_target(target.as_ref())
                 .with_resource(resource.id.as_str());
             tilo_actions::with_invoking_context(ambient.cloned(), || {
-                crate::widget::start_operation(
+                crate::widget::start_operation_refused(
                     &mut *widget,
                     &op,
                     &mut crate::widget::Edits::lend(doc),
                     path,
                 )
             })
-            .map_err(operation_failure)?
+            .map_err(operation_refusal)?
             .ok_or_else(|| tilo_actions::ApiError::Unknown(address.clone()))?
         };
         match &started {

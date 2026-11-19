@@ -15,6 +15,7 @@ use ui_core::application_view::{
     ApplicationFocusRestore, ApplicationLocalView, ApplicationViewState,
 };
 use ui_core::automerge::AutoCommit;
+use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
 use ui_core::permissions::{LivePermissions, PermissionScope};
 use ui_core::presence::{PresenceCtx, PresenceKey};
 use ui_core::resource::ResourceSaveStatus;
@@ -1945,10 +1946,91 @@ impl RootModel for ResourceRoot {
         doc: &mut ui_core::widget::Edits<'_>,
         path: &ui_core::automerge::ObjId,
     ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
-        // A view of a resource the system asked for: show that item first, so
-        // the picture is of the item and not of whatever the window happened
-        // to show. `render` is the app's answer to "show me this resource",
-        // and `outline` the same request answered as lines.
+        self.start_operation_refused(op, doc, path)
+            .map_err(tilo_resource::Refusal::into_reason)
+    }
+
+    /// [`Self::start_operation`], keeping the refusal an action gave: a
+    /// chain's answer is the app's own refusal, and one a caller decides on
+    /// keeps its code (a message the mailbox holds already).
+    fn start_operation_refused(
+        &mut self,
+        op: &ResourceOperation<'_>,
+        doc: &mut ui_core::widget::Edits<'_>,
+        path: &ui_core::automerge::ObjId,
+    ) -> Result<Option<ResourceOperationStart>, tilo_resource::Refusal> {
+        if let Some(started) = self.start_shown(op, doc)? {
+            return Ok(Some(started));
+        }
+        if let Some(output) = self.start_resource_operation(op, doc)? {
+            return Ok(Some(ResourceOperationStart::Completed(output)));
+        }
+        if let Some(started) = self.start_read(op, doc)? {
+            return Ok(Some(started));
+        }
+        if let Some(request) = op.unscoped()
+            && request.type_id == OPEN_TYPE
+        {
+            let args: serde_json::Value = tilo_actions::decode_json(request.payload)
+                .map_err(|error| tilo_resource::Refusal::new(error.to_string()))?;
+            let anchor = args
+                .get(OPEN_ANCHOR)
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| tilo_resource::Refusal::new("open needs the anchor of an item"))?;
+            self.stages
+                .open(anchor)
+                .map_err(tilo_resource::Refusal::new)?;
+            // Whichever window of the app shows the item, it comes forward with it.
+            self.native_presentation.request_activation();
+            return Ok(Some(ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )));
+        }
+        if let Some(started) = self
+            .start_open_link(op)
+            .map_err(tilo_resource::Refusal::new)?
+        {
+            return Ok(Some(started));
+        }
+        // An effect reads the resource as the document stands, though no
+        // frame has been drawn since a member's change arrived.
+        if let Err(error) = self.typed.sync(doc) {
+            tracing::warn!(%error, kind = self.resource.kind, "resource unreadable");
+        }
+        if let Some(started) = self
+            .typed
+            .start_effect(
+                op,
+                doc.doc(),
+                effect_view(&mut self.unreadable, &mut self.content),
+            )
+            .map_err(tilo_resource::Refusal::new)?
+        {
+            return Ok(Some(started));
+        }
+        if let Some(started) =
+            ui_core::host_operation::start_operation(self.view_mut(), op, doc, path)
+                .map_err(tilo_resource::Refusal::new)?
+        {
+            return Ok(Some(started));
+        }
+        Ok(self.start_catalogue_view(op))
+    }
+}
+
+impl ResourceRoot {
+    /// The operations that show something first: a view of a resource the
+    /// system asked for, and the app's own presentation ones.
+    ///
+    /// A view of a resource the system asked for shows that item first, so
+    /// the picture is of the item and not of whatever the window happened to
+    /// show: `render` is the app's answer to "show me this resource", and
+    /// `outline` the same request answered as lines.
+    fn start_shown(
+        &mut self,
+        op: &ResourceOperation<'_>,
+        doc: &ui_core::widget::Edits<'_>,
+    ) -> Result<Option<ResourceOperationStart>, tilo_resource::Refusal> {
         if let Some(request) = op.unscoped()
             && matches!(
                 request.type_id,
@@ -1957,20 +2039,27 @@ impl RootModel for ResourceRoot {
             && !request.payload.is_empty()
             && let Some(anchor) = crate::runner::rendered_anchor(request.payload)
         {
-            self.stages.open(&anchor)?;
+            self.stages
+                .open(&anchor)
+                .map_err(tilo_resource::Refusal::new)?;
         }
-        if let Some(output) = with_app_view_mut(&mut self.content, |view| {
+        Ok(with_app_view_mut(&mut self.content, |view| {
             self.native_presentation.start_operation(op, doc, view)
-        })? {
-            return Ok(Some(
-                ui_core::host_operation::ResourceOperationStart::Completed(output),
-            ));
-        }
-        if let Some(output) = self.start_resource_operation(op, doc)? {
-            return Ok(Some(
-                ui_core::host_operation::ResourceOperationStart::Completed(output),
-            ));
-        }
+        })
+        .map_err(tilo_resource::Refusal::new)?
+        .map(ResourceOperationStart::Completed))
+    }
+
+    /// What reads the data this window keeps, its chain of parts or what the
+    /// app publishes beside it, answered where it is asked: what the app
+    /// holds, what a chain's parts hold, the facts of what the window shows,
+    /// and a share link's own answer.
+    fn start_read(
+        &mut self,
+        op: &ResourceOperation<'_>,
+        doc: &ui_core::widget::Edits<'_>,
+    ) -> Result<Option<ResourceOperationStart>, tilo_resource::Refusal> {
+        let completed = ResourceOperationStart::Completed;
         if (self.resource.readable || self.resource.resource_table.is_some())
             && let Some(request) = op.unscoped()
             && request.type_id == READ_TYPE
@@ -1981,10 +2070,9 @@ impl RootModel for ResourceRoot {
                 &*self.typed.state(),
                 doc,
                 request.payload,
-            )?;
-            return Ok(Some(
-                ui_core::host_operation::ResourceOperationStart::Completed(output),
-            ));
+            )
+            .map_err(tilo_resource::Refusal::new)?;
+            return Ok(Some(completed(output)));
         }
         // A chain of parts kept beside the record reads from its parts: what
         // it holds is not in the record's document, and a caller reading the
@@ -1992,10 +2080,11 @@ impl RootModel for ResourceRoot {
         if let Some(request) = op.unscoped()
             && request.type_id == super::chain::CHAIN_READ_TYPE
         {
-            let output = self.storage.chain_read(request.payload)?;
-            return Ok(Some(
-                ui_core::host_operation::ResourceOperationStart::Completed(output),
-            ));
+            let output = self
+                .storage
+                .chain_read(request.payload)
+                .map_err(tilo_resource::Refusal::new)?;
+            return Ok(Some(completed(output)));
         }
         if self.resource.facts
             && let Some(request) = op.unscoped()
@@ -2006,59 +2095,20 @@ impl RootModel for ResourceRoot {
                 &*self.typed.state(),
                 doc,
                 request.payload,
-            )?;
-            return Ok(Some(
-                ui_core::host_operation::ResourceOperationStart::Completed(output),
-            ));
+            )
+            .map_err(tilo_resource::Refusal::new)?;
+            return Ok(Some(completed(output)));
         }
         if let Some(request) = op.unscoped()
             && super::share_link::handles(request.type_id)
         {
-            return self.start_share(request.invocation, request.payload);
+            return self
+                .start_share(request.invocation, request.payload)
+                .map_err(tilo_resource::Refusal::new);
         }
-        if let Some(request) = op.unscoped()
-            && request.type_id == OPEN_TYPE
-        {
-            let args: serde_json::Value =
-                tilo_actions::decode_json(request.payload).map_err(|error| error.to_string())?;
-            let anchor = args
-                .get(OPEN_ANCHOR)
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| "open needs the anchor of an item".to_owned())?;
-            self.stages.open(anchor)?;
-            // Whichever window of the app shows the item, it comes forward with it.
-            self.native_presentation.request_activation();
-            return Ok(Some(
-                ui_core::host_operation::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput::default(),
-                ),
-            ));
-        }
-        if let Some(started) = self.start_open_link(op)? {
-            return Ok(Some(started));
-        }
-        // An effect reads the resource as the document stands, though no
-        // frame has run since a member's change arrived.
-        if let Err(error) = self.typed.sync(doc) {
-            tracing::warn!(%error, kind = self.resource.kind, "resource unreadable");
-        }
-        if let Some(started) = self.typed.start_effect(
-            op,
-            doc.doc(),
-            effect_view(&mut self.unreadable, &mut self.content),
-        )? {
-            return Ok(Some(started));
-        }
-        if let Some(started) =
-            ui_core::host_operation::start_operation(self.view_mut(), op, doc, path)?
-        {
-            return Ok(Some(started));
-        }
-        Ok(self.start_catalogue_view(op))
+        Ok(None)
     }
-}
 
-impl ResourceRoot {
     /// The record-level requests every framework app answers the same way:
     /// its history at a version, an operation on one of its records or its
     /// chain of parts, the person's own record history, and a read of a
@@ -2067,24 +2117,29 @@ impl ResourceRoot {
         &self,
         op: &ui_core::host_operation::ResourceOperation<'_>,
         doc: &mut ui_core::widget::Edits<'_>,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+    ) -> Result<Option<tilo_actions::ActionOutput>, tilo_resource::Refusal> {
         let Some(request) = op.unscoped() else {
             return Ok(None);
         };
         let output = if request.type_id == super::history::VIEW_TYPE {
-            super::history::answer(doc, request.payload)?
+            super::history::answer(doc, request.payload).map_err(tilo_resource::Refusal::new)?
         } else if request.type_id == super::resources::RESOURCE_ACTION_TYPE {
             self.storage
-                .resource_action(self.dispatch.me(), request.payload)?
+                .resource_action(self.dispatch.me(), request.payload)
+                .map_err(tilo_resource::Refusal::new)?
         } else if request.type_id == super::chain::CHAIN_ACTION_TYPE {
             self.storage
                 .chain_action(self.dispatch.me(), request.payload, doc)?
         } else if request.type_id == super::person::HISTORY_TYPE {
-            self.storage.person_history(request.payload)?
+            self.storage
+                .person_history(request.payload)
+                .map_err(tilo_resource::Refusal::new)?
         } else if request.type_id == READ_TYPE
-            && let Some(record) = tilo_resource::read::resource_of(request.payload)
+            && let Some(resource) = tilo_resource::read::resource_of(request.payload)
         {
-            self.storage.resource_read(&record, request.payload)?
+            self.storage
+                .resource_read(&resource, request.payload)
+                .map_err(tilo_resource::Refusal::new)?
         } else {
             return Ok(None);
         };

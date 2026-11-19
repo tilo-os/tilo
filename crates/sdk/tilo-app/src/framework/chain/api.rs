@@ -64,11 +64,24 @@ impl ResourceApi for ChainState {
         action: &tilo_actions::EncodedAction,
         invoker: &ActionInvoker,
     ) -> Result<tilo_actions::ActionOutput, String> {
+        self.apply_answering_refused(action, invoker)
+            .map_err(tilo_resource::Refusal::into_reason)
+    }
+
+    /// A chain answers a caller that decides on the refusal rather than reads
+    /// it (a message the mailbox holds already): the code an action gave is
+    /// kept, whichever half of the answer — a part's prepare or its verb —
+    /// gave it.
+    fn apply_answering_refused(
+        &self,
+        action: &tilo_actions::EncodedAction,
+        invoker: &ActionInvoker,
+    ) -> Result<tilo_actions::ActionOutput, tilo_resource::Refusal> {
         if action.type_id == PART_EDIT_TYPE {
-            let edit = part_edit(&action.payload)?;
+            let edit = part_edit(&action.payload).map_err(tilo_resource::Refusal::new)?;
             let value = self
                 .apply_history(&edit, invoker)
-                .map_err(|error| error.to_string())?;
+                .map_err(tilo_resource::Refusal::from)?;
             return Ok(tilo_actions::ActionOutput {
                 value: Some(value),
                 resources: Vec::new(),
@@ -76,11 +89,11 @@ impl ResourceApi for ChainState {
         }
         // A write the window's person asks through the API is their step, as
         // one their own surface asks is: Undo takes it back.
-        match (self.part().decode)(action)? {
+        match (self.part().decode)(action).map_err(tilo_resource::Refusal::new)? {
             part::Decoded::Group(group) => {
                 let created = match self
                     .apply_group_now(&group, invoker)
-                    .map_err(|error| error.to_string())?
+                    .map_err(tilo_resource::Refusal::from)?
                 {
                     Write::Done(written, created) => {
                         self.wrote(invoker, written, true);
@@ -94,7 +107,7 @@ impl ResourceApi for ChainState {
                 self.answered.borrow_mut().take();
                 let created = match self
                     .apply_now(&*action, invoker)
-                    .map_err(|error| error.to_string())?
+                    .map_err(tilo_resource::Refusal::from)?
                 {
                     Write::Done(written, created) => {
                         self.wrote(invoker, written, (self.part().is_step)(&*action));
@@ -111,9 +124,9 @@ impl ResourceApi for ChainState {
 /// Why an API's write made nothing: what it changes has not arrived from the
 /// workspace, so its caller asks again once it has ([`tilo_actions::api::NOT_READY`]).
 /// The newest part is asked for as it is refused, so the next ask finds it.
-fn arriving(chain: &ChainState) -> String {
+fn arriving(chain: &ChainState) -> tilo_resource::Refusal {
     chain.want_head();
-    tilo_actions::api::NOT_READY_REASON.to_owned()
+    tilo_resource::Refusal::new(tilo_actions::api::NOT_READY_REASON)
 }
 
 impl ChainState {

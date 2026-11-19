@@ -507,8 +507,8 @@ impl ui::framework::Chained for ContactCards {
         _book: &crate::resource::Contacts,
         parts: &[(u64, Rc<Self>)],
         _invoker: &ui::tilo_actions::ActionInvoker,
-    ) -> Result<(), String> {
-        prepare(actions, parts)
+    ) -> Result<(), Refusal> {
+        prepare(actions, parts).map_err(Refusal::new)
     }
 
     fn places(_book: &crate::resource::Contacts, parts: &[(u64, Rc<Self>)]) -> Vec<Derived<Self>> {

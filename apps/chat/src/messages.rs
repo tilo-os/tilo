@@ -1414,12 +1414,14 @@ impl ChatMessages {
 /// Refuse a post to `channel` unless the chat has it as a conversation that
 /// takes messages: a text channel, or a direct conversation between members
 /// the chat knows.
-fn takes_posts(chat: &Chat, channel: &Id) -> Result<(), String> {
+fn takes_posts(chat: &Chat, channel: &Id) -> Result<(), Refusal> {
     if chat.conversation(channel).is_none() {
-        return Err("there is no such channel".into());
+        return Err(Refusal::new("there is no such channel"));
     }
     if !chat.takes_messages(channel) {
-        return Err("a voice channel has no conversation to post in".into());
+        return Err(Refusal::new(
+            "a voice channel has no conversation to post in",
+        ));
     }
     Ok(())
 }
@@ -1489,7 +1491,7 @@ impl Chained for ChatMessages {
         chat: &Chat,
         parts: &[(u64, Rc<Self>)],
         invoker: &ui::tilo_actions::ActionInvoker,
-    ) -> Result<(), String> {
+    ) -> Result<(), Refusal> {
         for action in &mut *actions {
             match &mut action.operation {
                 ChatMessagesAction::Post(post) => {

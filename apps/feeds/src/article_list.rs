@@ -523,8 +523,8 @@ impl Chained for ArticleList {
         library: &Library,
         parts: &[(u64, Rc<Self>)],
         _invoker: &ui::tilo_actions::ActionInvoker,
-    ) -> Result<(), String> {
-        prepare(actions, library, parts)
+    ) -> Result<(), Refusal> {
+        prepare(actions, library, parts).map_err(Refusal::new)
     }
 
     /// The list shows every article, so a window holds all of them.

@@ -121,7 +121,7 @@ impl Chained for ThreadPart {
         _: &Log,
         parts: &[(u64, Rc<Self>)],
         _: &tilo_actions::ActionInvoker,
-    ) -> Result<(), String> {
+    ) -> Result<(), tilo_app::tilo_resource::Refusal> {
         for action in actions {
             let ThreadPartAction::Post(thread_part::Post { answers, .. }) = &action.operation
             else {
@@ -131,7 +131,9 @@ impl Chained for ThreadPart {
                 .iter()
                 .any(|(_, part)| part.posts.get(&Id::from_raw(answers.as_str())).is_some());
             if !answers.is_empty() && !known {
-                return Err(format!("no post named {answers}"));
+                return Err(tilo_app::tilo_resource::Refusal::new(format!(
+                    "no post named {answers}"
+                )));
             }
         }
         Ok(())

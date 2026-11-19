@@ -427,7 +427,7 @@ pub(crate) fn seed(doc: &Doc, domain: &[u8], payload: &[u8]) -> [u8; 32] {
 /// acts on the reason rather than reads it, a stable code naming it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Refusal {
-    code: Option<&'static str>,
+    code: Option<String>,
     reason: String,
 }
 
@@ -442,17 +442,17 @@ impl Refusal {
     /// A refusal a caller tells apart by `code` (a thing the action would add
     /// is there already, say), with `reason` in words beside it for whoever
     /// reads.
-    pub fn coded(code: &'static str, reason: impl Into<String>) -> Self {
+    pub fn coded(code: impl Into<String>, reason: impl Into<String>) -> Self {
         Self {
-            code: Some(code),
+            code: Some(code.into()),
             reason: reason.into(),
         }
     }
 
     /// The code the app gave, for a caller that decides on it.
     #[must_use]
-    pub fn code(&self) -> Option<&'static str> {
-        self.code
+    pub fn code(&self) -> Option<&str> {
+        self.code.as_deref()
     }
 
     /// Why, in the user's words.
@@ -664,6 +664,17 @@ fn automerge_refused(error: automerge::AutomergeError) -> ActionError {
 impl From<Refusal> for ActionError {
     fn from(refusal: Refusal) -> Self {
         refusal_refused(refusal)
+    }
+}
+
+/// An action's refusal as a verb's, for a reader above the action that hands
+/// it on: one a caller decides on keeps its code.
+impl From<ActionError> for Refusal {
+    fn from(error: ActionError) -> Self {
+        match error {
+            ActionError::Unavailable { code, message } => Refusal::coded(code, message),
+            other => Refusal::new(other.to_string()),
+        }
     }
 }
 

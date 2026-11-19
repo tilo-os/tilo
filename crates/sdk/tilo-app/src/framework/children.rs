@@ -1125,13 +1125,14 @@ impl<C: ChildResource> ResourceApi for ChildrenState<C> {
         self.apply_answering(action, invoker).map(drop)
     }
 
-    fn apply_in(
+    fn apply_in_refused(
         &self,
         action: &EncodedAction,
         invoker: &ActionInvoker,
         live: &mut Edits<'_>,
-    ) -> Result<tilo_actions::ActionOutput, String> {
+    ) -> Result<tilo_actions::ActionOutput, tilo_resource::Refusal> {
         self.answer(action, invoker, Some(live))
+            .map_err(tilo_resource::Refusal::new)
     }
 
     fn apply_answering(

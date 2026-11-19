@@ -544,11 +544,13 @@ fn shown_in_place(rest: &[u8]) -> Vec<u64> {
 /// already, in whichever part.
 ///
 /// # Errors
-/// Refuses a message held already, or an answer to a message not held.
+/// Refuses a message held already, by the `MESSAGE_ALREADY_HELD` code, so a
+/// caller that already delivered it tells so by that code rather than by its
+/// words; or an answer to a message not held.
 pub(crate) fn prepare_delivery(
     delivery: &mut Delivery,
     parts: &[(u64, std::rc::Rc<MessageStates>)],
-) -> Result<(), String> {
+) -> Result<(), Refusal> {
     // Dated as it is delivered, here, so its id is the same on every replica
     // and known before it is written.
     if delivery
@@ -567,8 +569,7 @@ pub(crate) fn prepare_delivery(
                 "this message is in the mailbox already, as {}",
                 key.as_str()
             ),
-        )
-        .to_string());
+        ));
     }
     if let Some(reply) = delivery
         .reply_to
@@ -580,7 +581,7 @@ pub(crate) fn prepare_delivery(
             .iter()
             .rev()
             .find_map(|(_, part)| part.held_message(reply).map(|(_, held)| held.clone()))
-            .ok_or("the message it answers is not held in this mailbox")?;
+            .ok_or_else(|| Refusal::new("the message it answers is not held in this mailbox"))?;
         delivery.answers = Some(answered.message_id.clone());
         if delivery
             .conversation

@@ -288,7 +288,7 @@ impl ViewStorage {
         me: Option<&tilo_resource::MemberId>,
         payload: &[u8],
         live: &mut ui_core::widget::Edits<'_>,
-    ) -> Result<tilo_actions::ActionOutput, String> {
+    ) -> Result<tilo_actions::ActionOutput, tilo_resource::Refusal> {
         self.chains.answer(me, payload, live)
     }
 

@@ -437,7 +437,7 @@ pub fn prepare(
     actions: &mut [<MessageStates as tilo_resource::Resource>::Action],
     mail: &Mail,
     parts: &[(u64, Rc<MessageStates>)],
-) -> Result<(), String> {
+) -> Result<(), Refusal> {
     use message_states as verb;
     for action in actions {
         match &mut action.operation {
@@ -452,7 +452,7 @@ pub fn prepare(
                     })
                 };
                 if !messages.iter().all(in_trash) {
-                    return Err(not_in_trash().to_string());
+                    return Err(not_in_trash());
                 }
             }
             MessageStatesAction::Ingest(verb::Ingest { messages }) => {
@@ -656,7 +656,7 @@ impl ui::framework::Chained for MessageStates {
         mail: &Mail,
         parts: &[(u64, Rc<Self>)],
         _invoker: &ui::tilo_actions::ActionInvoker,
-    ) -> Result<(), String> {
+    ) -> Result<(), Refusal> {
         prepare(actions, mail, parts)
     }
 

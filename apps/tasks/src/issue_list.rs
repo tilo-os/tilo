@@ -1746,8 +1746,8 @@ impl ui::framework::Chained for IssueList {
         tracker: &Tracker,
         parts: &[(u64, Rc<Self>)],
         _invoker: &ui::tilo_actions::ActionInvoker,
-    ) -> Result<(), String> {
-        prepare(actions, tracker, parts)
+    ) -> Result<(), Refusal> {
+        prepare(actions, tracker, parts).map_err(Refusal::new)
     }
 
     fn carry(_previous: u64, part: &Self) -> Option<tilo_resource::Invoke<Self>> {

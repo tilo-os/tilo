@@ -936,7 +936,7 @@ pub fn apply_part_doc_as(
                 &[(0, held)],
                 &invoker,
             )
-            .map_err(ApiError::Failed)
+            .map_err(|refusal| ApiError::refused(tilo_actions::ActionError::from(refusal)))
         });
     if let Err(error) = prepared {
         *part = std::mem::take(replica.doc_mut());

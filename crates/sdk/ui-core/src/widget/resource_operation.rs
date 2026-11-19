@@ -8,6 +8,7 @@ use super::Widget;
 use super::capability::{capability, capability_mut};
 use crate::invocation_scope::ResourceInvocationScope;
 use automerge::{AutoCommit, ObjId};
+use tilo_resource::Refusal;
 
 /// Result of admitting an effect/view operation into a widget.
 #[derive(Clone, Debug, PartialEq)]
@@ -360,6 +361,21 @@ pub trait ResourceOperations: Widget {
         start_by_default(self, op, doc, path)
     }
 
+    /// [`Self::start_operation`], where the refusal is the handler's own: one
+    /// a caller decides on rather than reads keeps its code
+    /// ([`Refusal::coded`]), so an answer that something is there already
+    /// reaches whoever asked as the code it gave, not as words. A handler
+    /// that refuses with a code overrides this; the default says the same in
+    /// words only.
+    fn start_operation_refused(
+        &mut self,
+        op: &ResourceOperation<'_>,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &ObjId,
+    ) -> Result<Option<ResourceOperationStart>, Refusal> {
+        self.start_operation(op, doc, path).map_err(Refusal::new)
+    }
+
     /// Poll one admitted operation without blocking the UI thread. `cancellation_requested` is
     /// a cooperative signal from the action broker.
     fn poll_resource_operation(
@@ -402,6 +418,20 @@ pub fn start_operation(
         return operations.start_operation(op, doc, path);
     }
     start_by_default(widget, op, doc, path)
+}
+
+/// Offer `op` to `widget`, keeping the refusal the handler gave:
+/// [`ResourceOperations::start_operation_refused`].
+pub fn start_operation_refused(
+    widget: &mut (impl Widget + ?Sized),
+    op: &ResourceOperation<'_>,
+    doc: &mut crate::widget::Edits<'_>,
+    path: &ObjId,
+) -> Result<Option<ResourceOperationStart>, Refusal> {
+    if let Some(operations) = capability_mut::<dyn ResourceOperations>(widget) {
+        return operations.start_operation_refused(op, doc, path);
+    }
+    start_by_default(widget, op, doc, path).map_err(Refusal::new)
 }
 
 pub fn poll_resource_operation(

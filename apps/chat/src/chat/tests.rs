@@ -90,7 +90,7 @@ impl Talk {
             &[],
             &ui::tilo_actions::ActionInvoker::person("tester"),
         )
-        .map_err(ApiError::Failed)?;
+        .map_err(|refusal| ApiError::refused(tilo_actions::ActionError::from(refusal)))?;
         let applied = self.part.apply_action(&action).map(drop);
         if applied.is_ok() {
             // The next change stands a millisecond after this one, as a person's does.

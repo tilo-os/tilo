@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use ui_core::Theme;
 use ui_core::application_view::{ApplicationFocusRestore, ApplicationLocalView};
 use ui_core::automerge::AutoCommit;
-use ui_core::host_operation::ResourceOperations;
+use ui_core::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
 use ui_core::presence::PresenceCtx;
 use ui_core::resource::ResourceSaveStatus;
 use ui_core::resources::PublishesResources;
@@ -75,6 +75,17 @@ pub(crate) trait RootModel:
         doc: &mut ui_core::widget::Edits<'_>,
         path: &ui_core::automerge::ObjId,
     ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String>;
+
+    /// [`Self::start_operation`], keeping the refusal the app gave: an
+    /// action's answer that names a code (a message the mailbox holds
+    /// already) reaches whoever asked as that code
+    /// ([`tilo_resource::Refusal::coded`]).
+    fn start_operation_refused(
+        &mut self,
+        op: &ResourceOperation<'_>,
+        doc: &mut ui_core::widget::Edits<'_>,
+        path: &ui_core::automerge::ObjId,
+    ) -> Result<Option<ResourceOperationStart>, tilo_resource::Refusal>;
 }
 
 /// The [`AppWidget`] part of a root.
@@ -420,6 +431,15 @@ impl ResourceOperations for RootWidget {
         path: &ui_core::automerge::ObjId,
     ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
         self.0.start_operation(op, doc, path)
+    }
+
+    fn start_operation_refused(
+        &mut self,
+        op: &ResourceOperation<'_>,
+        doc: &mut ui_core::widget::Edits<'_>,
+        path: &ui_core::automerge::ObjId,
+    ) -> Result<Option<ResourceOperationStart>, tilo_resource::Refusal> {
+        self.0.start_operation_refused(op, doc, path)
     }
 }
 

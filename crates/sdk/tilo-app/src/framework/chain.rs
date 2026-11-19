@@ -64,7 +64,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use tilo_actions::{ActionContext, ActionError, ActionInvoker};
-use tilo_resource::{Invoke, Resource};
+use tilo_resource::{Invoke, Refusal, Resource};
 use ui_core::automerge::transaction::Transactable as _;
 use ui_core::automerge::{ChangeHash, ObjType, ROOT, ReadDoc as _, Value};
 use ui_core::permissions::{LivePermissions, PermissionScope, TreePath};
@@ -248,12 +248,17 @@ pub trait Chained: Resource {
     /// all of them, and each takes up where the one before it left off (a
     /// new item placed after the one made before it), so a group costs what
     /// its members do, not its members times every item held.
+    ///
+    /// A refusal a caller decides on rather than reads keeps its code
+    /// ([`Refusal::coded`]): the answer names it as the verb's own refusal
+    /// would, so an agent told a message is in the mailbox already reads
+    /// that as the code it gave, whichever half of the delivery refused it.
     fn prepare(
         actions: &mut [Self::Action],
         base: &<Self::Base as Resource>::State,
         parts: &[(u64, Rc<Self::State>)],
         invoker: &ActionInvoker,
-    ) -> Result<(), String> {
+    ) -> Result<(), Refusal> {
         let _ = (actions, base, parts, invoker);
         Ok(())
     }
@@ -1868,7 +1873,7 @@ impl ChainState {
             Ok(prepared) => prepared,
             // What it names may be in a part on its way: it waits for it.
             Err(_) if self.core.earlier_on_its_way() => return Ok(Write::Arriving),
-            Err(refused) => return Err(ActionError::Refused(refused)),
+            Err(refused) => return Err(ActionError::from(refused)),
         }
         .pop()
         .ok_or_else(|| ActionError::Refused("the action was not prepared".into()))?;
@@ -1965,7 +1970,7 @@ impl ChainState {
         let prepared = match (part.prepare)(&members, &*base, &*parts, invoker) {
             Ok(prepared) => prepared,
             Err(_) if self.core.earlier_on_its_way() => return Ok(Write::Arriving),
-            Err(refused) => return Err(ActionError::Refused(refused)),
+            Err(refused) => return Err(ActionError::from(refused)),
         };
         let mut places = Vec::with_capacity(group.len());
         let mut indices = Vec::with_capacity(group.len());
@@ -2948,21 +2953,21 @@ impl Chains {
         me: Option<&tilo_resource::MemberId>,
         payload: &[u8],
         live: &mut ui_core::widget::Edits<'_>,
-    ) -> Result<tilo_actions::ActionOutput, String> {
+    ) -> Result<tilo_actions::ActionOutput, Refusal> {
         let request: super::resources::ResourceAction =
-            tilo_actions::decode_json(payload).map_err(|error| error.to_string())?;
+            tilo_actions::decode_json(payload).map_err(|error| Refusal::new(error.to_string()))?;
         let api = self
             .apis
             .borrow()
             .iter()
             .find(|api| api.id() == request.record)
             .cloned()
-            .ok_or_else(|| format!("no chain `{}` is open here", request.record))?;
+            .ok_or_else(|| Refusal::new(format!("no chain `{}` is open here", request.record)))?;
         let invoker = ui_core::invocation_scope::current_invoker()
             .or_else(|| me.cloned().map(ActionInvoker::member))
-            .ok_or("nobody changes a past version")?;
+            .ok_or_else(|| Refusal::new("nobody changes a past version"))?;
         let asked = ASKED.with(|asked| asked.replace(request.answers.clone()));
-        let output = api.apply_in(&request.action, &invoker, live);
+        let output = api.apply_in_refused(&request.action, &invoker, live);
         ASKED.with(|asking| asking.replace(asked));
         let mut output = output?;
         // A verb declared to answer nothing answers nothing of its own

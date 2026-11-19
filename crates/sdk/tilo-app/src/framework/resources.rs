@@ -347,15 +347,28 @@ pub(crate) trait ResourceApi {
     }
     /// [`Self::apply_answering`] in the window's pass over the record it
     /// shows, lent as `live`: what an API that writes that record too (a
-    /// container listing a new child) writes it through.
-    fn apply_in(
+    /// container listing a new child) writes it through. Its refusal is the
+    /// app's own, so one a caller decides on keeps its code
+    /// ([`tilo_resource::Refusal::coded`]): an answer saying the thing is
+    /// there already reaches whoever asked as that code.
+    fn apply_in_refused(
         &self,
         action: &EncodedAction,
         invoker: &ActionInvoker,
         live: &mut ui_core::widget::Edits<'_>,
-    ) -> Result<tilo_actions::ActionOutput, String> {
+    ) -> Result<tilo_actions::ActionOutput, tilo_resource::Refusal> {
         let _ = live;
+        self.apply_answering_refused(action, invoker)
+    }
+
+    /// [`Self::apply_answering`], keeping the refusal the app gave.
+    fn apply_answering_refused(
+        &self,
+        action: &EncodedAction,
+        invoker: &ActionInvoker,
+    ) -> Result<tilo_actions::ActionOutput, tilo_resource::Refusal> {
         self.apply_answering(action, invoker)
+            .map_err(tilo_resource::Refusal::new)
     }
 
     /// What a read of this API's record answers, asked as `payload`: a
