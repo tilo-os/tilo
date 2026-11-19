@@ -174,3 +174,74 @@ fn a_press_with_super_over_a_window_is_the_desktops_until_it_ends() {
         "the window never saw the press"
     );
 }
+
+/// Every window at one place, told 100×80, cut to that tile — and its client draws 200×140
+/// anyway, as a program that ignores its configure does.
+struct Tile;
+
+impl WindowPolicy for Tile {
+    fn initial_size(
+        &mut self,
+        _: &WindowInfo,
+        _: &[Rectangle<i32, Logical>],
+    ) -> Option<(i32, i32)> {
+        Some((100, 80))
+    }
+
+    fn place(
+        &mut self,
+        _: &WindowInfo,
+        _: (i32, i32),
+        _: &[Rectangle<i32, Logical>],
+    ) -> Point<i32, Logical> {
+        Point::from((100, 100))
+    }
+
+    fn arrange(
+        &mut self,
+        windows: &[(WindowInfo, Rectangle<i32, Logical>)],
+        _: &[Rectangle<i32, Logical>],
+    ) -> Option<Vec<WindowPlacement>> {
+        Some(
+            windows
+                .iter()
+                .map(|(window, _)| WindowPlacement {
+                    id: window.id,
+                    location: Point::from((100, 100)),
+                    size: Some((100, 80)),
+                    clip: Some(Rectangle::new((100, 100).into(), (100, 80).into())),
+                    fullscreen: None,
+                })
+                .collect(),
+        )
+    }
+}
+
+#[test]
+fn a_window_that_ignores_the_size_it_was_told_is_cut_at_its_tile() {
+    let mut compositor = headless(Box::new(Tile));
+    // The client commits what it wants, not what it was configured to.
+    let mut client = mapped_client(&mut compositor, "wider", (200, 140), [255, 0, 0, 255]);
+    compositor.draw_frame().expect("a frame");
+    compositor.draw_frame().expect("a frame");
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    let background = frame.pixel(10, 10);
+    assert_eq!(
+        frame.pixel(150, 150),
+        Some([255, 0, 0, 255]),
+        "inside its tile the window shows"
+    );
+    assert_eq!(
+        frame.pixel(250, 150),
+        background,
+        "past its tile to the right the desktop shows, not the window"
+    );
+    assert_eq!(
+        frame.pixel(150, 220),
+        background,
+        "past its tile below the desktop shows, not the window"
+    );
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.frames_done > 0
+    });
+}

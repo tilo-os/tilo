@@ -406,6 +406,11 @@ where
         // (a strip's window shows on its own display only).
         let area = match state.clip_of(window) {
             None => Some(bounds),
+            // A window whose own geometry already fits the part it may draw on is not cut at all:
+            // nothing of it would be left out, and a window drawn whole keeps the scan-out path.
+            Some(clip) if clip.contains_rect(Rectangle::new(location, window.geometry().size)) => {
+                Some(bounds)
+            }
             Some(clip) => physical(clip, origin, scale).intersection(bounds),
         };
         // What the shells draw over this window itself is over it and the windows behind it.

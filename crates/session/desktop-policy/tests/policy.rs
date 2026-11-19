@@ -1158,8 +1158,9 @@ fn a_window_launched_into_another_workspace_opens_there() {
     );
 }
 
-/// A window of a strip spread over two displays is cut to its own display: the part of a window
-/// wider than its display, or panned past its edge, is never drawn on the neighbouring one.
+/// A window of a strip spread over two displays is cut to its own tab, and so to its own display:
+/// the part of a window wider than its tab, or panned past its display's edge, is never drawn on
+/// the neighbouring one.
 #[test]
 fn a_window_is_cut_to_the_display_it_shows_on() {
     let (mut driver, mut policy) = mount();
@@ -1171,15 +1172,21 @@ fn a_window_is_cut_to_the_display_it_shows_on() {
     map(&mut driver, &mut policy, 2, "b");
     let layout = policy.placement();
     let clip = |id| layout.clips.iter().find(|(w, _)| *w == id).map(|c| c.1);
-    assert_eq!(
-        clip(1),
-        Some(Rect::new(0.0, 0.0, WIDTH / 2.0, 800.0)),
-        "{layout:?}"
+    let shown = |id| layout.shown.iter().find(|(w, _)| *w == id).map(|c| c.1);
+    for id in [1, 2] {
+        assert_eq!(
+            clip(id),
+            shown(id),
+            "a window is cut to exactly the tab it shows in: {layout:?}"
+        );
+    }
+    assert!(
+        clip(1).is_some_and(|clip| clip.x1 <= WIDTH / 2.0),
+        "the first display's tab ends at its own display: {layout:?}"
     );
-    assert_eq!(
-        clip(2),
-        Some(Rect::new(WIDTH / 2.0, 0.0, WIDTH, 800.0)),
-        "{layout:?}"
+    assert!(
+        clip(2).is_some_and(|clip| clip.x0 >= WIDTH / 2.0),
+        "the second display's tab starts at its own display: {layout:?}"
     );
 }
 

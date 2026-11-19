@@ -1773,9 +1773,15 @@ impl DesktopPolicy {
                 .collect()
         });
         let shown: Vec<(u64, Rect)> = placed.iter().map(|(id, rect, _)| (*id, *rect)).collect();
+        // Every window is cut to its tab, and to its own display when a strip is spread over
+        // several: a window that ignores the size it was configured to — as a program drawing its
+        // own frame does — is cut at its tab's edge rather than drawn over its neighbour.
         let clips: Vec<(u64, Rect)> = placed
             .iter()
-            .filter_map(|(id, _, clip)| Some((*id, (*clip)?)))
+            .map(|(id, rect, display)| {
+                let clip = display.map_or(*rect, |display| rect.intersect(display));
+                (*id, clip)
+            })
             .collect();
         let mut hidden: Vec<u64> = self
             .handle

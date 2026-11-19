@@ -9,7 +9,9 @@ use std::time::Duration;
 
 use tilo_app_keeper::wire::{self, FromKeeper, ToKeeper};
 use tilo_app_keeper::{Keeper, Options};
-use tilo_compositor::{Compositor, OutputConfig, StackPolicy};
+use tilo_compositor::{
+    Compositor, OutputConfig, StackPolicy, WindowInfo, WindowPlacement, WindowPolicy,
+};
 use wayland_client::backend::ObjectId;
 use wayland_client::protocol::{
     wl_buffer::WlBuffer,
@@ -177,6 +179,64 @@ fn linear_desktop(
         .add_output(&OutputConfig::new(OUTPUT, width, height).with_scale(scale))
         .expect("output");
     compositor
+}
+
+/// A desktop whose policy tells every window 100×80 at (100,100) and cuts it to that tile: a
+/// tiled window, and the cut a program that ignores its configure is kept by.
+pub fn tile_desktop(width: i32, height: i32) -> Compositor {
+    let mut compositor = Compositor::headless(Box::new(Tile)).expect("compositor");
+    compositor
+        .add_output(&OutputConfig::new(OUTPUT, width, height))
+        .expect("output");
+    compositor
+}
+
+/// Every window at (100,100), told 100×80, cut to exactly that. What it asks for is answered
+/// unchanged: a size, the states the desktop gave it, and the tile it is cut to.
+pub struct Tile;
+
+impl WindowPolicy for Tile {
+    fn initial_size(
+        &mut self,
+        _: &WindowInfo,
+        _: &[smithay::utils::Rectangle<i32, smithay::utils::Logical>],
+    ) -> Option<(i32, i32)> {
+        Some((100, 80))
+    }
+
+    fn place(
+        &mut self,
+        _: &WindowInfo,
+        _: (i32, i32),
+        _: &[smithay::utils::Rectangle<i32, smithay::utils::Logical>],
+    ) -> smithay::utils::Point<i32, smithay::utils::Logical> {
+        (100, 100).into()
+    }
+
+    fn arrange(
+        &mut self,
+        windows: &[(
+            WindowInfo,
+            smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+        )],
+        _: &[smithay::utils::Rectangle<i32, smithay::utils::Logical>],
+    ) -> Option<Vec<WindowPlacement>> {
+        Some(
+            windows
+                .iter()
+                .map(|(window, _)| WindowPlacement {
+                    id: window.id,
+                    location: (100, 100).into(),
+                    size: Some((100, 80)),
+                    clip: Some(smithay::utils::Rectangle::new(
+                        (100, 100).into(),
+                        (100, 80).into(),
+                    )),
+                    fullscreen: None,
+                })
+                .collect(),
+        )
+    }
 }
 
 /// A keeper on `dir` named `test-launch`, with the options `configure` changes last.
