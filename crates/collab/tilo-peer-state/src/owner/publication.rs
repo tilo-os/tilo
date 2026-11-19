@@ -102,6 +102,16 @@ pub trait SealedHistoryKeys: collab_types::signer::MaybeSendSync {
         record: &str,
         snapshot: &[u8],
     ) -> Result<(EncryptionMetadata, Vec<u8>), String>;
+    /// Seal under the document's group when its reader roster is narrower.
+    fn seal_scoped_checkpoint(
+        &self,
+        _workspace: WorkspaceId,
+        _document: (&str, &str),
+        _readers: &std::collections::BTreeSet<[u8; 32]>,
+        _snapshot: &[u8],
+    ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
+        Err("this device cannot seal a checkpoint for a restricted document yet".into())
+    }
     /// Seal `write` again under its channel's current epoch: one of this device's sealed writes
     /// of `workspace` that expired held before its host took it. Answers the encryption and
     /// payload its renewal carries.
@@ -113,6 +123,32 @@ pub trait SealedHistoryKeys: collab_types::signer::MaybeSendSync {
         workspace: WorkspaceId,
         write: &SignedOp,
     ) -> Result<(EncryptionMetadata, Vec<u8>), String>;
+    /// Renew a pending write under the document's current group.
+    fn renew_scoped(
+        &self,
+        _workspace: WorkspaceId,
+        _document: (&str, &str),
+        _readers: &std::collections::BTreeSet<[u8; 32]>,
+        _write: &SignedOp,
+    ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
+        Err("this device cannot renew a write to a restricted document".into())
+    }
+}
+
+fn seal_for_document(
+    keys: &dyn SealedHistoryKeys,
+    peer: &StatePeer,
+    workspace: WorkspaceId,
+    document: (&str, &str),
+    snapshot: &[u8],
+    now: SystemTime,
+) -> Result<(EncryptionMetadata, Vec<u8>), String> {
+    if peer.requires_document_keys(document.0, document.1, now)? {
+        let readers = peer.document_key_holders(document.0, document.1, now)?;
+        keys.seal_scoped_checkpoint(workspace, document, &readers, snapshot)
+    } else {
+        keys.seal_checkpoint(workspace, document.0, document.1, snapshot)
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct StoredPublication {
@@ -1898,8 +1934,15 @@ impl NativeWorkspaceOwner {
         let Some(keys) = self.0.history_keys.lock().clone() else {
             return Ok(0);
         };
-        let mut reseal = |write: &SignedOp| keys.renew(workspace, write);
         let draft = |view: &NativeCommittedView| {
+            let mut reseal = |(app, document): (&str, &str), write: &SignedOp| {
+                if view.peer.requires_document_keys(app, document, now)? {
+                    let readers = view.peer.document_key_holders(app, document, now)?;
+                    keys.renew_scoped(workspace, (app, document), &readers, write)
+                } else {
+                    keys.renew(workspace, write)
+                }
+            };
             let entries = &state_of(&view.record)?.entries;
             let originals = entries
                 .iter()
@@ -2067,9 +2110,10 @@ impl NativeWorkspaceOwner {
                     if asked.is_none() && resting.contains(&(app.clone(), record.clone())) {
                         return None;
                     }
-                    let mut seal =
-                        |snapshot: &[u8]| keys.seal_checkpoint(workspace, &app, &record, snapshot);
                     let route = (app.as_str(), record.as_str());
+                    let mut seal = |snapshot: &[u8]| {
+                        seal_for_document(&*keys, &view.peer, workspace, route, snapshot, now)
+                    };
                     let ops = view
                         .peer
                         .publication()
@@ -2501,7 +2545,8 @@ fn next_drafted(
     let owed = owed_to(publication, runs, route)?;
     let history = host_history(&view.peer, publication, runs, route, &owed)?;
     let mut open = |write: &SignedOp| keys.open(workspace, write);
-    let mut seal = |snapshot: &[u8]| keys.seal_checkpoint(workspace, route.0, route.1, snapshot);
+    let mut seal =
+        |snapshot: &[u8]| seal_for_document(keys, &view.peer, workspace, route, snapshot, now);
     let drafted = view.peer.publication().draft_sealed_compaction_of(
         route,
         history.clone(),

@@ -12,7 +12,7 @@ use crate::file_action::{FileAction, verbs};
 
 use crate::files::{FIRST_TREE_CHUNK, FileDocumentId, FileNameV1, FileNodeKind, TreeChunk};
 
-pub const TREE_KIND: &str = "files.tree";
+pub use collab_types::FILES_TREE_KIND as TREE_KIND;
 
 /// Nodes a chunk of the tree holds before new nodes start the next one.
 ///

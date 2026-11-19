@@ -411,6 +411,20 @@ impl Joined {
     }
 
     /// The devices that hold `workspace`'s keys at `now` (Unix seconds), as
+    pub(super) fn requires_document_keys(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        document: &str,
+    ) -> Option<bool> {
+        self.owner
+            .with_current(workspace, |view| {
+                view.peer()
+                    .requires_document_keys(app, document, tilo_clock::wall())
+            })
+            .ok()
+    }
+
     /// its governance decides it; `None` while it cannot be read.
     pub(super) fn key_holders(
         &self,
@@ -446,6 +460,29 @@ impl Joined {
         let holders = self
             .owner
             .with_current(workspace, |view| view.reader_key_holders(people, at))
+            .ok()?;
+        Some(
+            holders
+                .into_iter()
+                .map(collab_types::Ed25519PublicKey::from_bytes)
+                .collect(),
+        )
+    }
+
+    pub(super) fn document_key_holders(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        document_id: &str,
+        now: u64,
+    ) -> Option<std::collections::BTreeSet<collab_types::Ed25519PublicKey>> {
+        let at = std::time::SystemTime::UNIX_EPOCH
+            .checked_add(tilo_workspace_service::apps::workspace_keys::policy_instant(now))?;
+        let holders = self
+            .owner
+            .with_current(workspace, |view| {
+                view.peer().document_key_holders(app, document_id, at)
+            })
             .ok()?;
         Some(
             holders

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tilo_fs::fs::QuickFS;
-use tilo_fs::hydration::Hydrator;
+use tilo_fs::hydration::{FileKeys, Hydrator};
 use tilo_fs::smart::Heuristics;
 
 use super::content::SessionContent;
@@ -61,6 +61,7 @@ impl Drop for Showing {
 
 /// What one workspace's filesystem is made of here.
 pub(crate) struct Parts<'a> {
+    pub(crate) keys: FileKeys,
     pub(crate) replica: &'a TreeReplica,
     pub(crate) store: Arc<tilo_fs::ContentStore>,
     pub(crate) endpoint: iroh::Endpoint,
@@ -80,7 +81,8 @@ pub(crate) struct Parts<'a> {
 pub(crate) fn filesystem(parts: &Parts<'_>) -> std::io::Result<QuickFS> {
     let hydrator = Arc::new(
         Hydrator::new(parts.endpoint.clone(), Arc::clone(&parts.store))
-            .with_source(Arc::clone(&parts.content) as Arc<dyn tilo_fs::hydration::ContentSource>),
+            .with_source(Arc::clone(&parts.content) as Arc<dyn tilo_fs::hydration::ContentSource>)
+            .with_file_keys(parts.keys.clone()),
     );
     let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
     let availability = tilo_fs::AvailabilityRegistry::open(parts.state.join("availability.json"))

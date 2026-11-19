@@ -365,6 +365,9 @@ impl Projector {
             else {
                 continue;
             };
+            if self.content.native_workspace(from) != self.content.native_workspace(&to) {
+                continue;
+            }
             let from = from.clone();
             let current = table.as_ref().unwrap_or(materialized);
             let Some(m) = current.get(&from).cloned() else {
@@ -790,7 +793,7 @@ impl Projector {
             out.skipped_dirty.push(rel.to_path_buf());
             return Ok(Prepared::Done);
         }
-        let Some(install) = self.prepare_content(hash, e, local.is_some())? else {
+        let Some(install) = self.prepare_content(rel, hash, e, local.is_some())? else {
             return Ok(Prepared::Unavailable);
         };
         let placeholder = matches!(install, Install::Placeholder { .. });
@@ -820,6 +823,7 @@ impl Projector {
     /// be fetched: a small file only appears complete.
     fn prepare_content(
         &self,
+        rel: &Path,
         hash: Option<[u8; 32]>,
         e: &TreeEntry,
         replace: bool,
@@ -840,11 +844,16 @@ impl Projector {
             let parallel = self.parallel_chunks;
             let deadline = self.eager_deadline;
             let size = e.size;
+            let workspace = hydrator.native_workspace(rel);
             let fetched = self.runtime.block_on(async move {
-                tokio::time::timeout(
-                    deadline,
-                    hydrator.read_parallel(iroh_blobs::Hash::from(content), 0, size, parallel),
-                )
+                let hash = iroh_blobs::Hash::from(content);
+                tokio::time::timeout(deadline, async {
+                    if workspace.is_some() {
+                        hydrator.read_scoped(hash, 0, size, workspace).await
+                    } else {
+                        hydrator.read_parallel(hash, 0, size, parallel).await
+                    }
+                })
                 .await
             });
             return match fetched {

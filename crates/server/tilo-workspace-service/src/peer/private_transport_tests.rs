@@ -227,7 +227,7 @@ async fn paused_state_roundtrip(plain_lag: Option<LagBoundary>, full_backlog: bo
         let (client, server) = tokio::io::duplex(65536);
         let (read, write) = tokio::io::split(server);
         let ctx = peer_context(registry.clone(), user.public_key, &own.cert);
-        tasks.push(tokio::spawn(run_peer_stream(
+        tasks.push(tokio::spawn(serve_peer_stream(
             peer.clone(),
             read,
             write,
@@ -1099,7 +1099,7 @@ async fn heartbeat_is_answered_while_the_writer_waits_on_the_workspace() {
     let registry = Arc::new(AsyncMutex::new(HashMap::from([(id, workspace.clone())])));
     let (client, server) = tokio::io::duplex(65536);
     let (read, write) = tokio::io::split(server);
-    let session = tokio::spawn(run_peer_stream(
+    let session = tokio::spawn(serve_peer_stream(
         b.clone(),
         read,
         write,
@@ -1193,7 +1193,7 @@ async fn heartbeat_keeps_progress_during_unrelated_workspace_admission() {
     for peer in [&a, &b] {
         let (client, server) = tokio::io::duplex(65536);
         let (read, write) = tokio::io::split(server);
-        tasks.push(tokio::spawn(run_peer_stream(
+        tasks.push(tokio::spawn(serve_peer_stream(
             peer.clone(),
             read,
             write,
@@ -1265,6 +1265,165 @@ async fn heartbeat_keeps_progress_during_unrelated_workspace_admission() {
     }
 }
 
+#[tokio::test]
+async fn a_workspace_members_role_controls_document_replay_and_open() {
+    use tilo_action_policy::{
+        Answer, Change, Context, Grant, Grantee, KindSet, MemberAccess, Role, WorkspacePolicy,
+    };
+    let (root, user) = UserIdentity::generate("reader", 1);
+    let (reader, _) = certified_device(&root, user.public_key, "reader");
+    let (_, owner) = UserIdentity::generate("owner", 1);
+    let owner = hex::encode(owner.public_key);
+    let member = hex::encode(user.public_key);
+    let workspace_id = WorkspaceId::from_u128(87);
+    let workspace = workspace_id.to_string();
+    let app = "so.tilo.notes";
+    let document = "review";
+    let digest = neighbour_wire::app_document_channel(app, document);
+    let mut policy = WorkspacePolicy::new(&workspace, &owner);
+    policy.members.insert(member.clone(), Role::Viewer);
+    policy.grants.push(Grant::new(
+        "review-restricted",
+        Grantee::role(Role::Viewer),
+        collab_types::document_node(&workspace, app, document),
+        KindSet::READ,
+        Answer::Deny,
+        Grantee::person(owner.as_str()),
+    ));
+    let access = |policy: &WorkspacePolicy| {
+        std::collections::BTreeMap::from([(
+            reader.device_public_key,
+            MemberAccess::person(policy.clone(), member.as_str()),
+        )])
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let mut runtime = crate::workspace::WorkspaceRuntime::open(
+        tmp.path(),
+        workspace_id,
+        true,
+        crate::workspace::Membership::default(),
+    )
+    .unwrap();
+    runtime.admit_device(reader.device_public_key).unwrap();
+    runtime.project_access(access(&policy), Default::default());
+    let payload = collab_types::DocumentMutation::Snapshot(vec![42])
+        .encode()
+        .unwrap();
+    let envelope = collab_types::SignedOp::new_unsigned(
+        payload,
+        collab_types::document_artifact_id(app, &workspace, document),
+        collab_types::Ed25519PublicKey::from_bytes(reader.device_public_key),
+        collab_types::document_attestation_id(app, &workspace, document),
+        collab_types::OpKind::Change,
+        tilo_clock::wall(),
+        1,
+    );
+    let route = crate::payloads::Route {
+        app_id: app.to_owned(),
+        cluster_id: workspace.clone(),
+        document_id: document.to_owned(),
+        own: None,
+    };
+    let body = runtime
+        .store
+        .payloads()
+        .document_body(&reader.device_public_key, &route, envelope)
+        .unwrap();
+    let retained = Envelope::Delta {
+        workspace_id,
+        author_device_public_key: reader.device_public_key,
+        authored_at_ns: unix_now_ns(),
+        delta: crate::coedit::CoeditPayload::RetainedDelta {
+            channel: digest,
+            body,
+        }
+        .encode()
+        .unwrap(),
+        signature: [0; 64],
+    };
+    runtime
+        .store
+        .retain_delta(&digest, 1, &crate::transport::encode(&retained).unwrap())
+        .unwrap();
+    let runtime = Arc::new(AsyncMutex::new(runtime));
+    let registry = Arc::new(AsyncMutex::new(HashMap::from([(
+        workspace_id,
+        runtime.clone(),
+    )])));
+    let (client, server) = tokio::io::duplex(4096);
+    let (read, write) = tokio::io::split(server);
+    let session = tokio::spawn(serve_peer_stream(
+        reader.clone(),
+        read,
+        write,
+        peer_context(registry, user.public_key, &reader.cert),
+        std::future::pending::<()>(),
+    ));
+    let (read, mut write) = tokio::io::split(client);
+    let mut wire = SessionReader::new(read);
+    let send = |envelope| tilo_delivery_protocol::transport_v2::encode_state(&envelope).unwrap();
+    write
+        .write_all(&send(Envelope::Subscribe { workspace_id }))
+        .await
+        .unwrap();
+    let reply = wire.read_next().await.unwrap();
+    assert!(
+        matches!(reply, Some(EnvelopeV2::State(Envelope::Ready { .. }))),
+        "{reply:?}"
+    );
+
+    let open = || {
+        send(Envelope::OpenDocument {
+            workspace_id,
+            channel: digest,
+            own: None,
+        })
+    };
+    write.write_all(&open()).await.unwrap();
+    assert!(matches!(
+        wire.read_next().await.unwrap(),
+        Some(EnvelopeV2::State(Envelope::DocumentOpened {
+            answer: tilo_server_protocol::DocumentAnswer::NotYours,
+            ..
+        }))
+    ));
+    let held = policy.clone();
+    policy
+        .apply(
+            &owner,
+            &held.person_on_device(&owner, false),
+            Change::Grant(Grant::new(
+                "review-member-exception",
+                Grantee::person(member.as_str()),
+                collab_types::document_node(&workspace, app, document),
+                KindSet::READ,
+                Answer::Allow,
+                Grantee::person(owner.as_str()),
+            )),
+            &Context::at_time(tilo_clock::wall()),
+            false,
+        )
+        .unwrap();
+    runtime
+        .lock()
+        .await
+        .project_access(access(&policy), Default::default());
+    write.write_all(&open()).await.unwrap();
+    assert!(matches!(
+        wire.read_next().await.unwrap(),
+        Some(EnvelopeV2::State(Envelope::Delta { delta, .. }))
+            if crate::peer::admission::channel_of(&delta) == Some(digest)
+    ));
+    assert!(matches!(
+        wire.read_next().await.unwrap(),
+        Some(EnvelopeV2::State(Envelope::DocumentOpened {
+            answer: tilo_server_protocol::DocumentAnswer::Sent { frames: 1 },
+            ..
+        }))
+    ));
+    session.abort();
+}
+
 /// A device opening a record is sent the record's retained frames and its
 /// `DocumentOpened` with no live frame between them, however busy the
 /// workspace is: a live change landing among them would reach the device
@@ -1289,7 +1448,7 @@ async fn an_opened_records_answer_is_written_whole_before_live_frames() {
     // Small enough that the writer stalls on it while nothing reads.
     let (client, server) = tokio::io::duplex(4096);
     let (read, write) = tokio::io::split(server);
-    let session = tokio::spawn(run_peer_stream(
+    let session = tokio::spawn(serve_peer_stream(
         b.clone(),
         read,
         write,
@@ -1368,7 +1527,7 @@ async fn an_opened_records_answer_is_written_whole_before_live_frames() {
         }
     })
     .await;
-    let channel_of = |frame: &Envelope| match frame {
+    let digest_of = |frame: &Envelope| match frame {
         Envelope::Delta { delta, .. } => crate::peer::admission::channel_of(delta),
         _ => None,
     };
@@ -1385,7 +1544,7 @@ async fn an_opened_records_answer_is_written_whole_before_live_frames() {
             {
                 return (frames, answer.unwrap_or_default());
             }
-            if channel_of(&frame) == Some(record) {
+            if digest_of(&frame) == Some(record) {
                 answer.get_or_insert_with(Vec::new);
             }
             if let Some(answer) = answer.as_mut() {
@@ -1398,7 +1557,7 @@ async fn an_opened_records_answer_is_written_whole_before_live_frames() {
     let between = opened
         .1
         .iter()
-        .filter(|frame| channel_of(frame) != Some(record))
+        .filter(|frame| digest_of(frame) != Some(record))
         .count();
     assert_eq!(between, 0, "no live frame between the answer's frames");
     assert_eq!(opened.1.len(), 20);

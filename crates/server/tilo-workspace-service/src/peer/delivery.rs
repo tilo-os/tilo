@@ -247,6 +247,7 @@ async fn authorize_state_deliveries(
         return Ok((Vec::new(), workspace));
     }
     let mut accepted = Vec::with_capacity(run.len());
+    let document_read = super::records::DocumentRead::of(&runtime, peer);
     for delivery in run {
         // A connection can unsubscribe and subscribe again on the same
         // channel. Check the captured lease after the membership wait, before
@@ -262,6 +263,9 @@ async fn authorize_state_deliveries(
             .as_ref()
             .is_some_and(|source| !source.authorized(&runtime))
         {
+            continue;
+        }
+        if !document_read.allows(&runtime.store, &delivery.envelope) {
             continue;
         }
         accepted.push(delivery);

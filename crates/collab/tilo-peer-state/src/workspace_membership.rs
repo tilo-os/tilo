@@ -480,11 +480,16 @@ fn validate_member_change(change: &tilo_action_policy::Change) -> Result<(), Str
         | Change::Unban { person }
         | Change::Restrict { person, .. }
         | Change::Unrestrict { person }
-        | Change::SetRole { person, .. } => person,
+        | Change::SetRole { person, .. }
+        | Change::SetMemberRoles { person, .. }
+        | Change::SetMemberCustomRole { person, .. } => person,
         Change::Grant(grant) if grant.id.as_str().trim().is_empty() => {
             return Err("a grant needs an id".into());
         }
-        Change::Grant(_) | Change::Revoke(_) => return Ok(()),
+        Change::Grant(_)
+        | Change::Revoke(_)
+        | Change::DefineRole { .. }
+        | Change::RemoveRole { .. } => return Ok(()),
     };
     if person.len() != 64 || hex::decode(person).is_err() {
         return Err("a member is named by their user root key".into());
