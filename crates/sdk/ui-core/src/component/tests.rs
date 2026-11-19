@@ -339,7 +339,8 @@ tilo_test_env::scenario! {
     // Props given in place carry no built views, so a widget that shows its parts' views — a map's
     // pins, a board's cards — keeps each part's view where it is and takes from the props only
     // what it says *around* them. It therefore takes the props in place only while they name the
-    // parts it already has, and is built again when they name others.
+    // parts it already has, and is built again when they name others. A board, whose cards are
+    // their views, is built again for any props.
     //
     // The alternative is what left a stale node behind after `5fab1bdd584`: a map patched the pins
     // it recognised and kept the pin of a place the layout had closed, so a closed window's
@@ -447,7 +448,7 @@ tilo_test_env::scenario! {
                 ..BoardListProps::default()
             }],
         };
-        let (mut host, before) = laid_out(<Board as Described>::from_props(
+        let (mut frame, before) = laid_out(<Board as Described>::from_props(
             "board",
             board(&["a", "b"]),
         ));
@@ -455,14 +456,19 @@ tilo_test_env::scenario! {
             before.iter().any(|name| name.contains("the card b")),
             "the board shows its cards' views: {before:?}"
         );
-        assert!(
-            host.root_mut::<Board>().set_props(board(&["a", "b"])),
-            "a board given the lists and cards it holds takes where it stands"
-        );
-        let after = said(host.root::<Board>());
+        // As a window gives props in place: its cards named, none of their views built.
+        let mut in_place = board(&["a", "b"]);
+        for list in &mut in_place.lists {
+            for card in &mut list.cards {
+                card.body.clear();
+            }
+        }
+        let took = frame.root_mut::<Board>().set_props(in_place);
+        let after = said(frame.root::<Board>());
         assert!(
             after.iter().any(|name| name.contains("the card b")),
-            "the cards' views stay: {after:?}"
+            "a board given props in place shows its cards' views still (taken in place: {took}): \
+             {after:?}"
         );
         for other in [&["a"][..], &["a", "b", "c"][..], &["b", "a"][..]] {
             let mut held = <Board as Described>::from_props("board", board(&["a", "b"]));

@@ -385,26 +385,13 @@ impl Described for Board {
         board
     }
 
+    /// Props given in place carry none of the views a board's cards and list feet show, and
+    /// each card is its view (a row shown as a card, under its menu): lists made from those
+    /// props would show every card empty and no entry under any list. The board is built
+    /// again instead, from what the view says with its views.
     fn set_props(&mut self, props: BoardProps) -> bool {
-        let BoardProps { name, lists } = props;
-        let shaped: Vec<(String, Vec<String>)> = lists
-            .iter()
-            .map(|list| {
-                (
-                    list.key.clone(),
-                    list.cards.iter().map(|card| card.key.clone()).collect(),
-                )
-            })
-            .collect();
-        if !self.holds(&shaped) {
-            return false;
-        }
-        let built = lists_of(lists);
-        let on_drop = drop_handler(&built);
-        self.name = name;
-        self.set_lists(built.columns);
-        self.set_on_drop(on_drop);
-        true
+        let _ = props;
+        false
     }
 }
 

@@ -227,18 +227,6 @@ impl Board {
         });
     }
 
-    /// Whether the board shows exactly `lists`: each list by its key and its cards by theirs,
-    /// in order. A board's props given in place name the lists and cards it shows and carry
-    /// none of their views, so props naming other lists or cards are another board.
-    pub(crate) fn holds(&self, lists: &[(String, Vec<String>)]) -> bool {
-        self.lists.len() == lists.len()
-            && self
-                .lists
-                .iter()
-                .zip(lists)
-                .all(|(held, (key, cards))| held.key == *key && held.cards == *cards)
-    }
-
     pub(crate) fn set_lists(
         &mut self,
         lists: Vec<(
