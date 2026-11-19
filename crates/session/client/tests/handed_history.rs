@@ -24,6 +24,24 @@ const CHANGES: usize = 4200;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_device_handed_its_keys_compacts_a_full_history_and_its_writes_go_out() {
+    handed_keys_then_writes(Keys::First).await;
+}
+
+/// Writes made before the keys arrive wait for them, and then commit all at once: more of them
+/// than a document's history holds still go out, as many at a time as it holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn writes_held_for_the_keys_go_out_however_many_a_history_holds() {
+    handed_keys_then_writes(Keys::AfterTheWrites).await;
+}
+
+/// When the server's keys reach the device: before it writes, or once it wrote everything.
+#[derive(PartialEq, Eq)]
+enum Keys {
+    First,
+    AfterTheWrites,
+}
+
+async fn handed_keys_then_writes(keys: Keys) {
     let (alice, _) = UserIdentity::generate("Alice", 1);
     let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let (bob, _) = UserIdentity::generate("Bob", 1);
@@ -73,12 +91,17 @@ async fn a_device_handed_its_keys_compacts_a_full_history_and_its_writes_go_out(
         document: "tasks".into(),
         ..route()
     };
-    for route in [&tree, &tasks] {
-        peer.send(Cmd::InstallGroupKeys(
-            route.clone(),
-            group.content_keys().unwrap(),
-        ))
-        .unwrap();
+    let install = || {
+        for route in [&tree, &tasks] {
+            peer.send(Cmd::InstallGroupKeys(
+                route.clone(),
+                group.content_keys().unwrap(),
+            ))
+            .unwrap();
+        }
+    };
+    if keys == Keys::First {
+        install();
     }
 
     // One record takes more than its sealed history holds, then another record is written.
@@ -98,6 +121,10 @@ async fn a_device_handed_its_keys_compacts_a_full_history_and_its_writes_go_out(
     other.put(automerge::ROOT, "task", "write it down").unwrap();
     peer.write(tasks.clone(), &DocumentMutation::Snapshot(other.save()))
         .unwrap();
+
+    if keys == Keys::AfterTheWrites {
+        install();
+    }
 
     // Every one of them is kept by the host: none waits on a history this device cannot compact.
     let receipt = peer.barrier().unwrap();

@@ -59,7 +59,7 @@ pub use publication::{
 pub use stored::{
     NativeAuthorityStorage, PendingEnrollmentId, PendingEnrollmentStatus, StoredPendingEnrollment,
 };
-pub use write::{Committed, WriteRefusal};
+pub use write::{Committed, WriteRefusal, writes_in_one_turn};
 
 use crate::replica::Replica;
 use crate::{AdmissionReport, StatePeer, TransportOrigin};

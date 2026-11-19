@@ -318,10 +318,10 @@ type SealedHistory = Vec<(Route, Vec<SignedOp>)>;
 /// size. This crate's tests keep fewer, so a test crosses the bound many
 /// times over in the writes it can afford.
 #[cfg(not(test))]
-const MAX_SEALED_OPS: usize = 4096;
+pub(crate) const MAX_SEALED_OPS: usize = 4096;
 #[cfg(test)]
-const MAX_SEALED_OPS: usize = 256;
-const MAX_SEALED_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_SEALED_OPS: usize = 256;
+pub(crate) const MAX_SEALED_BYTES: usize = 16 * 1024 * 1024;
 /// Most payload bytes of a record's compaction set, the compaction and the
 /// segments it names: a snapshot as large as one document transfer, with
 /// workspace for its pieces' envelopes (a few bytes each) and the writers it

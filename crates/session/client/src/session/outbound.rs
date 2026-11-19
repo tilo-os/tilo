@@ -135,22 +135,35 @@ impl Task {
             .collect();
         let mut refused = BTreeMap::new();
         for route in ready {
-            let Some(frames) = self.engine.held_writes().lock().get(&route).cloned() else {
-                continue;
-            };
-            let taken = frames.len();
-            match self.commit_frames(&route, frames).await {
-                None => continue,
-                Some(Ok(())) => {}
-                Some(Err(reason)) => {
-                    refused.insert(route.clone(), reason);
+            // As many at a time as the document's history holds: a batch larger than that would
+            // never fit, and its writes would wait for good.
+            loop {
+                let held = self.engine.held_writes().lock().get(&route).cloned();
+                let Some(mut frames) = held else {
+                    break;
+                };
+                let mut taken = tilo_peer_state::owner::writes_in_one_turn(&frames);
+                frames.truncate(taken);
+                match self.commit_frames(&route, frames).await {
+                    None => break,
+                    Some(Ok(())) => {}
+                    // Refused for good: what was written after it goes with it.
+                    Some(Err(reason)) => {
+                        refused.insert(route.clone(), reason);
+                        taken = usize::MAX;
+                    }
                 }
-            }
-            let mut held = self.engine.held_writes().lock();
-            if let Some(frames) = held.get_mut(&route) {
-                frames.drain(..taken.min(frames.len()));
-                if frames.is_empty() {
-                    held.remove(&route);
+                {
+                    let mut held = self.engine.held_writes().lock();
+                    if let Some(frames) = held.get_mut(&route) {
+                        frames.drain(..taken.min(frames.len()));
+                        if frames.is_empty() {
+                            held.remove(&route);
+                        }
+                    }
+                }
+                if refused.contains_key(&route) {
+                    break;
                 }
             }
         }
