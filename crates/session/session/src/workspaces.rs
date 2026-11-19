@@ -1038,7 +1038,14 @@ impl crate::Shared {
                 let founded = crate::landing::off_loop(async move {
                     engine.found(id, &name).await;
                 });
-                self.landings.then(founded, drop);
+                let sync = self.sync.clone();
+                self.landings.then(founded, move |_| {
+                    // The workspace is held here now, as one joined is: its live session opens,
+                    // so this device says who is here in it and hears who else is.
+                    if let Some(sync) = &sync {
+                        sync.workspace_arrived();
+                    }
+                });
             }
             if workspace
                 .owner()

@@ -1081,13 +1081,12 @@ impl Live {
     }
 
     /// This device came to hold another workspace: its host admitted this device, as the person's
-    /// list or an invitation brought it. The workspace is given its reconciler now, which asks
-    /// for its keys and joins its relay.
+    /// list or an invitation brought it, or this device founded it. Every workspace held here that
+    /// has no live session yet is given its reconciler now, which asks for its keys and joins its
+    /// relay.
     ///
-    /// Nothing else says so. The channel service announces a workspace's keys once this device
-    /// asked for them, and the live session is what asks: until something else moved a key of some
-    /// workspace here, a workspace taken in while the session ran had no live session, and said nothing
-    /// of it.
+    /// The session's own passes say so, not the key service: it announces a workspace's keys once
+    /// this device asked for them, and the live session is what asks.
     pub(crate) fn workspace_arrived(&self) {
         self.shared.readopt.notify_one();
     }
