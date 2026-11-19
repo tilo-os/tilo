@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
-import {ASK_MS, domView, setupLater, showPrompt, CONNECTED_MS, KEPT_LOST_MS, QUIET_MS, createFirstRun, FOLLOW_MS, MAKE_MS,
-  manualCommands, MCP_URL, OFFER_MS, openFirstRun, openSignIn, PASSKEY_WAIT_MS, RENEW_MS, readSetup, readShown, SETUP, setupFailure, setupPrompt, SHOWN_FOLLOW_MS,
-  signInPrompt, startFirstRun, stepLines, minutesLeft, signInFailure} from './first-run.mjs';
+import {ASK_MS, domView, setupLater, showPrompt, CONNECTED_MS, KEPT_LOST_MS, QUIET_MS, createFirstScreen, FOLLOW_MS, MAKE_MS,
+  manualCommands, MCP_URL, OFFER_MS, openFirstScreen, openSignIn, PASSKEY_WAIT_MS, RENEW_MS, readSetup, readShown, SETUP, setupFailure, setupPrompt, SHOWN_FOLLOW_MS,
+  signInPrompt, startFirstScreen, stepLines, minutesLeft, signInFailure} from './first-screen.mjs';
 
 const here = name => new URL(name, import.meta.url);
 const CODE = 'K7Q-MX2P';
@@ -42,7 +42,7 @@ function fixture({copy, site, stored = new Map(), online = () => true, clock = 0
   const {view, said, names, last} = fakeView();
   const copied = [];
   const state = {clock, ticks: null, every: null, timers: new Map(), id: 0, reloads: 0};
-  const run = createFirstRun({view, site, held, signInOnly, onBack,
+  const screen = createFirstScreen({view, site, held, signInOnly, onBack,
     // The clipboard takes the text at once, as `writeText` does inside the click.
     clipboard: {copy: copy ?? (text => { copied.push(text); return Promise.resolve(); })},
     storage: signInOnly ? null : {setItem: (key, value) => stored.set(key, value), getItem: key => stored.get(key) ?? null},
@@ -58,7 +58,7 @@ function fixture({copy, site, stored = new Map(), online = () => true, clock = 0
     await settle();
   };
   const kept = () => readSetup({getItem: key => stored.get(key) ?? null});
-  return {run, screen: run, said, names, last, stored, state, copied, tick, fire, kept};
+  return {screen, said, names, last, stored, state, copied, tick, fire, kept};
 }
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 
@@ -110,51 +110,51 @@ test('each step reads in plain words: done ones checked, the one under way last'
 });
 
 test('a first visit makes no setup code, and so no workspace, until the person asks: the press says it is getting one', async () => {
-  const {run, last, copied, names} = fixture();
+  const {screen, last, copied, names} = fixture();
   const codes = maker(fakeCode());
   assert.deepEqual(last('offer'), ['offer', 'setup', {asking: false}], 'nothing is being got before the page can make one');
-  run.offerSetup(codes.make, null, {ahead: false});
+  screen.offerSetup(codes.make, null, {ahead: false});
   await settle();
   assert.deepEqual(codes.made, [], 'nothing is made while the person is still deciding');
   assert.deepEqual(last('offer'), ['offer', 'setup', {asking: false}], 'the button offers to make one, and the screen says nothing it is not doing');
-  await run.copy();
+  await screen.copy();
   await settle();
   assert.equal(codes.made.length, 1, 'the press makes the code');
   assert.deepEqual(last('offer'), ['offer', 'setup', {text: setupPrompt(CODE), code: CODE}], 'and the prompt is on the screen');
   assert.deepEqual(copied, [], 'the press that made it copies nothing: the next one does');
   assert.deepEqual(names().includes('waiting'), false);
-  await run.copy();
+  await screen.copy();
   assert.deepEqual(copied, [setupPrompt(CODE)]);
 });
 
 test('the prompt is on the screen before any click: a screen reopened from the card makes its code ahead', async () => {
-  const {run, last, copied} = fixture();
+  const {screen, last, copied} = fixture();
   assert.deepEqual(last('offer'), ['offer', 'setup', {asking: false}], 'until then nothing is being got');
-  run.offerSetup(maker(fakeCode()).make);
+  screen.offerSetup(maker(fakeCode()).make);
   await settle();
   assert.deepEqual(last('offer'), ['offer', 'setup', {text: setupPrompt(CODE), code: CODE}]);
   assert.deepEqual(copied, [], 'nothing is copied before the person asks');
 });
 
 test('a person who asks before the page can make a code gets it once the page can', async () => {
-  const {run, last, copied} = fixture();
-  await run.copy();
+  const {screen, last, copied} = fixture();
+  await screen.copy();
   await settle();
   assert.deepEqual(copied, [], 'nothing to copy yet');
   const codes = maker(fakeCode());
-  run.offerSetup(codes.make, null, {ahead: false});
+  screen.offerSetup(codes.make, null, {ahead: false});
   await settle();
   assert.equal(codes.made.length, 1, 'the press asked for it, so it is made as soon as the page can');
   assert.deepEqual(last('offer'), ['offer', 'setup', {text: setupPrompt(CODE), code: CODE}]);
 });
 
 test('the click copies exactly the prompt shown, inside the click, and only then says it copied', async () => {
-  const {run, last, names, copied, state} = fixture();
+  const {screen, last, names, copied, state} = fixture();
   const codes = maker(fakeCode(), fakeCode({code: NEXT}));
-  run.offerSetup(codes.make);
+  screen.offerSetup(codes.make);
   await settle();
   const [, , {text: shown}] = last('offer');
-  const done = run.copy();
+  const done = screen.copy();
   assert.deepEqual(copied, [shown], 'written at once, in the click, with nothing awaited first');
   assert.equal(names().includes('waiting'), false, 'no claim before the clipboard answered');
   await done;
@@ -176,13 +176,13 @@ test('the code is followed before the clipboard holds it: the host knows it when
   // again, for a look that had not landed yet.
   const askedAtCopy = [];
   let codes = null;
-  const {run, copied} = fixture({copy: text => { askedAtCopy.push(codes.made[0].asked); copied.push(text); return Promise.resolve(); }});
+  const {screen, copied} = fixture({copy: text => { askedAtCopy.push(codes.made[0].asked); copied.push(text); return Promise.resolve(); }});
   codes = maker(fakeCode());
-  run.offerSetup(codes.make);
+  screen.offerSetup(codes.make);
   await settle();
   assert.ok(codes.made[0].asked >= 1, 'the host was asked where the shown code is, before any click');
   const before = codes.made[0].asked;
-  await run.copy();
+  await screen.copy();
   assert.deepEqual(askedAtCopy.length, 1);
   assert.ok(askedAtCopy[0] > before, 'the click asked again before the clipboard had the prompt');
   assert.deepEqual(copied, [setupPrompt(CODE)], 'the prompt went to the clipboard');
@@ -194,9 +194,9 @@ test('a code shown and never copied is kept at once, and the steps say what the 
   // the code because the screen followed it, and the screen moves on to the
   // steps. Nothing was copied, and the agent already has the code, so the
   // screen says what it is doing instead of asking for a paste.
-  const {run, last, names, fire, copied} = fixture();
+  const {screen, last, names, fire, copied} = fixture();
   const code = fakeCode();
-  run.offerSetup(maker(code).make);
+  screen.offerSetup(maker(code).make);
   await settle();
   assert.ok(code.asked >= 1, 'kept as soon as it is on the screen');
   assert.deepEqual(copied, [], 'nothing is copied before the person asks');
@@ -220,9 +220,9 @@ test('a code handed over without a copy is kept that way after a reload', async 
 });
 
 test('the sign-in prompt is kept while it waits on the screen, so a claim signs the tab in without a click', async () => {
-  const {run, last, fire, copied} = fixture();
+  const {screen, last, fire, copied} = fixture();
   const code = fakeCode();
-  run.offerAgentSignIn(maker(code).make);
+  screen.offerAgentSignIn(maker(code).make);
   await settle();
   assert.ok(code.asked >= 1, 'kept while it waits on the screen');
   assert.deepEqual(copied, []);
@@ -243,7 +243,7 @@ test('a prompt kept from before a reload that this page cannot follow is said af
   // and its button reloads the page, which makes a fresh code.
   const keep = fakeCode({code: NEXT});
   const stored = new Map([[SETUP, JSON.stringify({step: 'start', offer: keep.saved, at: 0})]]);
-  const {run, last, state, fire} = fixture({stored});
+  const {screen, last, state, fire} = fixture({stored});
   await settle();
   assert.deepEqual(last('offer'), ['offer', 'setup', {text: setupPrompt(NEXT), code: NEXT}], 'the kept prompt is shown');
   // A few rounds of looking, without a word.
@@ -253,43 +253,43 @@ test('a prompt kept from before a reload that this page cannot follow is said af
   for (let round = 0; round <= KEPT_LOST_MS / SHOWN_FOLLOW_MS; round += 1) { state.clock += SHOWN_FOLLOW_MS; await fire(SHOWN_FOLLOW_MS); }
   assert.deepEqual(last('offer'), ['offer', 'setup', {problem: 'Tilo didn’t finish loading in this tab.', reload: true}],
     'said at the prompt, with the reload that makes a fresh code');
-  await run.retry('setup');
+  await screen.retry('setup');
   assert.equal(state.reloads, 1, 'the button reloads, which makes a fresh code');
 });
 
 test('a click before the page has a code copies nothing and says what it waits for', async () => {
-  const {run, last, names, copied} = fixture({site: 'https://tilo.sh'});
-  assert.equal(await run.copy(), false);
+  const {screen, last, names, copied} = fixture({site: 'https://tilo.sh'});
+  assert.equal(await screen.copy(), false);
   assert.deepEqual(copied, []);
   assert.deepEqual(last('notReady'), ['notReady', 'setup', 'Getting your code from tilo.sh…']);
   assert.equal(names().includes('waiting'), false, 'the button stays where it is');
-  await run.signInWithAgent();
+  await screen.signInWithAgent();
   await settle();
   assert.deepEqual(last('notReady'), ['notReady', 'signIn', 'Getting your code from tilo.sh…']);
 });
 
 test('a code the host never makes ends in a stated reason with a retry, not a hang', async () => {
-  const {run, last, fire, copied} = fixture({site: 'https://tilo.sh'});
+  const {screen, last, fire, copied} = fixture({site: 'https://tilo.sh'});
   let asked = 0;
-  run.offerSetup(() => { asked += 1; return new Promise(() => {}); });
+  screen.offerSetup(() => { asked += 1; return new Promise(() => {}); });
   await settle();
   assert.deepEqual(last('offer'), ['offer', 'setup', {note: 'Getting your code from tilo.sh…'}]);
   await fire(MAKE_MS);
   assert.deepEqual(last('offer'), ['offer', 'setup', {problem: 'Couldn’t reach tilo.sh. Check your connection, then try again.'}]);
-  assert.equal(await run.copy(), false, 'a click copies nothing');
+  assert.equal(await screen.copy(), false, 'a click copies nothing');
   assert.deepEqual(copied, []);
   assert.equal(asked, 2, 'and asks the host again');
-  await run.retry();
+  await screen.retry();
   assert.equal(asked, 2, 'one ask at a time');
   await fire(MAKE_MS);
-  void run.retry();
+  void screen.retry();
   await settle();
   assert.equal(asked, 3, 'retry asks again');
 });
 
 test('a host that refuses, or a page that never offers codes, is said, not waited on', async () => {
   const refused = fixture();
-  refused.run.offerSetup(async () => { throw Object.assign(new Error('refused'), {code: 'refused'}); });
+  refused.screen.offerSetup(async () => { throw Object.assign(new Error('refused'), {code: 'refused'}); });
   await settle();
   await settle();
   assert.deepEqual(refused.last('offer'), ['offer', 'setup', {problem: setupFailure({code: 'refused'})}]);
@@ -300,12 +300,12 @@ test('a host that refuses, or a page that never offers codes, is said, not waite
   // sign-in beside it says nothing more about the same load.
   assert.deepEqual(offered('setup'), ['offer', 'setup', {problem: setupFailure({code: 'not-loaded'}), reload: true}]);
   assert.deepEqual(offered('signIn'), ['offer', 'signIn', {}]);
-  await silent.run.retry();
+  await silent.screen.retry();
   assert.equal(silent.state.reloads, 1, 'trying again loads the page again');
   const gone = fixture();
-  gone.run.unavailable({code: 'refused'});
+  gone.screen.unavailable({code: 'refused'});
   assert.deepEqual(gone.last('offer'), ['offer', 'signIn', {problem: setupFailure({code: 'refused'})}]);
-  await gone.run.signInWithAgent();
+  await gone.screen.signInWithAgent();
   assert.deepEqual(gone.last('notReady'), ['notReady', 'signIn', setupFailure({code: 'refused'})]);
   assert.equal(setupFailure({code: 'not-let-in'}), 'This tab isn’t let in yet. Try again in a moment.');
 });
@@ -362,37 +362,37 @@ test('a page that stopped promises a why, and Skip for now leaves the screen for
 });
 
 test('a clipboard that refuses claims no copy: the prompt stays, to copy by hand', async () => {
-  const {run, last, names} = fixture({copy: async () => { throw new Error('denied'); }});
-  run.offerSetup(maker(fakeCode()).make);
+  const {screen, last, names} = fixture({copy: async () => { throw new Error('denied'); }});
+  screen.offerSetup(maker(fakeCode()).make);
   await settle();
-  assert.equal(await run.copy(), false);
+  assert.equal(await screen.copy(), false);
   assert.deepEqual(last('waiting'), ['waiting', 'setup', {text: setupPrompt(CODE), copied: false}]);
   assert.deepEqual(last('problem'), ['problem', setupFailure({code: 'copy-failed'})]);
   assert.equal(names().includes('copied'), false, 'nothing says it copied');
   const thrown = fixture({copy: () => { throw new Error('no clipboard'); }});
-  thrown.run.offerSetup(maker(fakeCode()).make);
+  thrown.screen.offerSetup(maker(fakeCode()).make);
   await settle();
-  assert.equal(await thrown.run.copy(), false);
+  assert.equal(await thrown.screen.copy(), false);
   assert.deepEqual(thrown.last('waiting')[2], {text: setupPrompt(CODE), copied: false});
-  await thrown.run.again('text');
+  await thrown.screen.again('text');
   assert.deepEqual(thrown.last('copied'), ['copied', false, 'prompt']);
 });
 
 test('a prompt copied by hand is followed like one copied with the button', async () => {
-  const {run, last, copied} = fixture();
-  run.copiedByHand();
+  const {screen, last, copied} = fixture();
+  screen.copiedByHand();
   assert.equal(last('waiting'), undefined, 'nothing shown, nothing copied');
-  run.offerSetup(maker(fakeCode()).make);
+  screen.offerSetup(maker(fakeCode()).make);
   await settle();
-  run.copiedByHand();
+  screen.copiedByHand();
   assert.deepEqual(last('waiting'), ['waiting', 'setup', {text: setupPrompt(CODE), copied: true}]);
   assert.deepEqual(copied, []);
 });
 
 test('a ready code is renewed shortly before it expires, the old one shown until then', async () => {
-  const {run, last, fire, names} = fixture();
+  const {screen, last, fire, names} = fixture();
   const codes = maker(fakeCode(), fakeCode({code: NEXT, expiresAt: 1_200_000}));
-  run.offerSetup(codes.make);
+  screen.offerSetup(codes.make);
   await settle();
   const offers = names().filter(name => name === 'offer').length;
   await fire(600_000 - RENEW_MS);
@@ -403,11 +403,11 @@ test('a ready code is renewed shortly before it expires, the old one shown until
 });
 
 test('a copied code that expires says so, and the retry copies the fresh one at once', async () => {
-  const {run, names, last, state, tick, copied} = fixture();
+  const {screen, names, last, state, tick, copied} = fixture();
   const codes = maker(fakeCode(), fakeCode({code: NEXT, expiresAt: 1_200_000}));
-  run.offerSetup(codes.make);
+  screen.offerSetup(codes.make);
   await settle();
-  await run.copy();
+  await screen.copy();
   await settle();
   state.clock = 18_500;
   await tick();
@@ -420,17 +420,17 @@ test('a copied code that expires says so, and the retry copies the fresh one at 
   assert.equal(names().at(-1), 'expired');
   assert.equal(state.ticks, null, 'an expired code is no longer followed');
   assert.ok(codes.made[1].asked >= 1, 'the fresh prompt is kept as soon as it shows');
-  await run.retry('setup');
+  await screen.retry('setup');
   assert.deepEqual(copied, [setupPrompt(CODE), setupPrompt(NEXT)]);
   assert.deepEqual(last('waiting')[2], {text: setupPrompt(NEXT), copied: true});
 });
 
 test('the host saying the code expired shows it expired too', async () => {
-  const {run, names, state, tick} = fixture();
+  const {screen, names, state, tick} = fixture();
   const code = fakeCode();
-  run.offerSetup(maker(code).make);
+  screen.offerSetup(maker(code).make);
   await settle();
-  await run.copy();
+  await screen.copy();
   await settle();
   code.polled.expired = true;
   await tick();
@@ -439,13 +439,13 @@ test('the host saying the code expired shows it expired too', async () => {
 });
 
 test('each step the agent reports shows live, then the screen leaves for the workspace, remembered', async () => {
-  const {run, names, last, stored, state, tick} = fixture();
+  const {screen, names, last, stored, state, tick} = fixture();
   const code = fakeCode();
-  run.offerSetup(maker(code).make);
+  screen.offerSetup(maker(code).make);
   await settle();
   let opened = 0;
-  run.whenDone(() => { opened += 1; });
-  await run.copy();
+  screen.whenDone(() => { opened += 1; });
+  await screen.copy();
   await settle();
   await tick();
   Object.assign(code.polled, {resolved: true, agent: 'Claude Code', steps: ['resolved', 'logged-in']});
@@ -469,16 +469,16 @@ test('each step the agent reports shows live, then the screen leaves for the wor
   assert.equal(names().at(-1), 'close');
   assert.equal(opened, 1, 'the person’s own workspace opens');
   assert.equal(readSetup({getItem: key => stored.get(key)}).step, 'done', 'the first screen is not shown again in this browser');
-  assert.ok(run.closed);
+  assert.ok(screen.closed);
   assert.equal([...state.timers.values()].some(timer => timer.ms !== CONNECTED_MS), false, 'no renewal outlives the screen');
 });
 
 test('a failure the computer reports is said, and the tab keeps following', async () => {
-  const {run, last, state, tick} = fixture();
+  const {screen, last, state, tick} = fixture();
   const code = fakeCode();
-  run.offerSetup(maker(code).make);
+  screen.offerSetup(maker(code).make);
   await settle();
-  await run.copy();
+  await screen.copy();
   await settle();
   Object.assign(code.polled, {resolved: true, steps: ['resolved', 'failed'], detail: 'Claude Code is not on this computer.'});
   await tick();
@@ -488,11 +488,11 @@ test('a failure the computer reports is said, and the tab keeps following', asyn
 });
 
 test('returning: the agent claims the code, the tab asks to be that person, and opens their workspaces', async () => {
-  const {run, last, names, copied, state, tick} = fixture();
+  const {screen, last, names, copied, state, tick} = fixture();
   const code = fakeCode();
-  run.offerAgentSignIn(maker(code).make);
+  screen.offerAgentSignIn(maker(code).make);
   await settle();
-  await run.signInWithAgent();
+  await screen.signInWithAgent();
   await settle();
   assert.deepEqual(copied, [signInPrompt(CODE)]);
   assert.deepEqual(last('waiting'), ['waiting', 'sign-in', {text: signInPrompt(CODE), copied: true}]);
@@ -505,18 +505,18 @@ test('returning: the agent claims the code, the tab asks to be that person, and 
   await tick();
   assert.equal(code.signedIn.length, 1);
   const opened = [];
-  run.whenDone(how => opened.push(how));
+  screen.whenDone(how => opened.push(how));
   [...state.timers.values()].find(timer => timer.ms === CONNECTED_MS).run();
   assert.deepEqual(opened, [{signedIn: true}], 'the page is told a sign-in did it: another person’s workspace opens, never this tab’s own');
   assert.equal(names().at(-1), 'close');
 });
 
 test('returning: signed in before the page can open their workspace, the tab opens it once it can', async () => {
-  const {run, last, names, state, tick} = fixture();
+  const {screen, last, names, state, tick} = fixture();
   const code = fakeCode();
-  run.offerAgentSignIn(maker(code).make);
+  screen.offerAgentSignIn(maker(code).make);
   await settle();
-  await run.signInWithAgent();
+  await screen.signInWithAgent();
   await settle();
   Object.assign(code.polled, {resolved: true, steps: ['resolved'], claimed: {user: 'ab'.repeat(32), invite: 'cd'.repeat(16), by: 'Claude Code'}});
   await tick();
@@ -526,20 +526,20 @@ test('returning: signed in before the page can open their workspace, the tab ope
   [...state.timers.values()].find(timer => timer.ms === CONNECTED_MS).run();
   assert.notEqual(names().at(-1), 'close', 'the screen waits for what it opens, rather than leaving the tab where it stands');
   const opened = [];
-  run.whenDone(how => opened.push(how));
+  screen.whenDone(how => opened.push(how));
   assert.deepEqual(opened, [{signedIn: true}], 'the page is told a sign-in opened it, once the page can');
   assert.equal(names().at(-1), 'close');
-  run.whenDone(how => opened.push(how));
+  screen.whenDone(how => opened.push(how));
   assert.equal(opened.length, 1, 'and only once');
 });
 
 test('returning: a sign-in the page could not finish says why', async () => {
-  const {run, last, tick} = fixture();
+  const {screen, last, tick} = fixture();
   const code = fakeCode();
   code.signIn = async () => { throw Object.assign(new Error('no'), {code: 'not-let-in'}); };
-  run.offerAgentSignIn(maker(code).make);
+  screen.offerAgentSignIn(maker(code).make);
   await settle();
-  await run.signInWithAgent();
+  await screen.signInWithAgent();
   await settle();
   Object.assign(code.polled, {resolved: true, claimed: {user: 'ab', invite: 'cd', by: 'x'}});
   await tick();
@@ -548,11 +548,11 @@ test('returning: a sign-in the page could not finish says why', async () => {
 });
 
 test('returning: a sign-in the agent gave up on says its reason alone, and stops following', async () => {
-  const {run, last, names, tick} = fixture();
+  const {screen, last, names, tick} = fixture();
   const code = fakeCode();
-  run.offerAgentSignIn(maker(code).make);
+  screen.offerAgentSignIn(maker(code).make);
   await settle();
-  await run.signInWithAgent();
+  await screen.signInWithAgent();
   await settle();
   const reason = 'This computer can’t sign the tab in: it doesn’t hold your Tilo identity.';
   Object.assign(code.polled, {resolved: true, steps: ['resolved', 'failed'], agent: 'Claude Code', detail: reason});
@@ -569,9 +569,9 @@ test('returning: a sign-in the agent gave up on says its reason alone, and stops
 
 test('signing in from the wait list: the prompt shows at once, a claim signs the tab in, nothing is kept', async () => {
   let back = 0;
-  const {run, last, names, stored, tick} = fixture({signInOnly: true, onBack: () => { back += 1; }});
+  const {screen, last, names, stored, tick} = fixture({signInOnly: true, onBack: () => { back += 1; }});
   const code = fakeCode();
-  run.offerAgentSignIn(maker(code).make);
+  screen.offerAgentSignIn(maker(code).make);
   await settle();
   await settle();
   // No click copied it: the screen shows the prompt to copy or select, and
@@ -590,25 +590,25 @@ test('signing in from the wait list: the prompt shows at once, a claim signs the
 
 test('signing in from the wait list: back closes the screen onto the wait list', async () => {
   let back = 0;
-  const {run, names} = fixture({signInOnly: true, onBack: () => { back += 1; }});
-  run.offerAgentSignIn(maker(fakeCode()).make);
+  const {screen, names} = fixture({signInOnly: true, onBack: () => { back += 1; }});
+  screen.offerAgentSignIn(maker(fakeCode()).make);
   await settle();
   await settle();
-  run.back();
+  screen.back();
   assert.equal(names().at(-1), 'close');
   assert.equal(back, 1);
 });
 
 test('set up manually shows the MCP server and the commands with the code shown, and follows it', async () => {
-  const {run, last, names, copied, tick} = fixture();
+  const {screen, last, names, copied, tick} = fixture();
   const code = fakeCode();
-  run.offerSetup(maker(code).make);
+  screen.offerSetup(maker(code).make);
   await settle();
-  run.manual();
+  screen.manual();
   assert.deepEqual(last('manual'), ['manual', true]);
   assert.deepEqual(last('commands'), ['commands', manualCommands(CODE), MCP_URL]);
   assert.deepEqual(copied, [], 'nothing is copied until asked');
-  await run.again(MCP_URL, 'mcp');
+  await screen.again(MCP_URL, 'mcp');
   assert.deepEqual(copied, [MCP_URL]);
   assert.deepEqual(last('copied'), ['copied', true, 'mcp']);
   Object.assign(code.polled, {resolved: true, steps: ['resolved', 'logged-in']});
@@ -617,33 +617,33 @@ test('set up manually shows the MCP server and the commands with the code shown,
   assert.equal(names().includes('steps'), true);
   // Closing the panel stops following its code.
   const other = fixture();
-  other.run.offerSetup(maker(fakeCode()).make);
+  other.screen.offerSetup(maker(fakeCode()).make);
   await settle();
-  other.run.manual();
-  other.run.manual();
+  other.screen.manual();
+  other.screen.manual();
   assert.deepEqual(other.last('manual'), ['manual', false]);
   assert.equal(other.state.ticks, null);
   // Without a code yet the panel says what it waits for.
   const early = fixture({site: 'https://tilo.sh'});
-  early.run.manual();
+  early.screen.manual();
   assert.deepEqual(early.last('commands'), ['commands', null, MCP_URL, 'Getting your code from tilo.sh…']);
 });
 
 test('back returns to the start, with the next prompt shown, and forgets the code under way', async () => {
-  const {run, names, last, state} = fixture();
-  run.offerSetup(maker(fakeCode(), fakeCode({code: NEXT})).make);
+  const {screen, names, last, state} = fixture();
+  screen.offerSetup(maker(fakeCode(), fakeCode({code: NEXT})).make);
   await settle();
-  await run.copy();
+  await screen.copy();
   await settle();
-  run.back();
+  screen.back();
   assert.deepEqual(names().slice(-2), ['start', 'offer']);
   assert.deepEqual(last('offer')[2].code, NEXT);
   assert.equal(state.ticks, null);
 });
 
 test('a passkey sign-in that fails is said, with what works where passkeys cannot be used, and a closed prompt is said by nothing', async () => {
-  const {run, names, last} = fixture();
-  const answered = error => { run.offerSignIn(async () => { throw error; }); return run.passkey(); };
+  const {screen, names, last} = fixture();
+  const answered = error => { screen.offerSignIn(async () => { throw error; }); return screen.passkey(); };
   const count = () => names().filter(name => name === 'signInFailed').length;
   // A web view inside an app that may not use this site's passkeys: refused before anything showed.
   await answered(Object.assign(new Error('Passkeys cannot be used here'), {code: 'passkeys-refused'}));
@@ -662,33 +662,33 @@ test('a passkey sign-in that fails is said, with what works where passkeys canno
 });
 
 test('a passkey clicked before the page can ask waits for it, busy, then asks; a page that never can says so', async () => {
-  const {run, names, stored} = fixture();
+  const {screen, names, stored} = fixture();
   let asked = 0;
-  const pressed = run.passkey();
+  const pressed = screen.passkey();
   assert.deepEqual(names().slice(-1), ['signingIn'], 'busy at once, not dead');
   await settle();
   assert.equal(asked, 0);
-  run.offerSignIn(async () => { asked += 1; });
+  screen.offerSignIn(async () => { asked += 1; });
   await pressed;
   assert.equal(asked, 1);
-  await run.passkey();
+  await screen.passkey();
   assert.equal(asked, 2);
-  run.skip();
+  screen.skip();
   assert.equal(names().at(-1), 'opening', 'the screen stays until the page can open the workspace');
-  run.whenDone(() => {});
+  screen.whenDone(() => {});
   await settle();
   assert.equal(names().at(-1), 'close');
   assert.equal(readSetup({getItem: key => stored.get(key)}).step, 'done');
   const never = fixture();
-  const waiting = never.run.passkey();
+  const waiting = never.screen.passkey();
   await never.fire(PASSKEY_WAIT_MS);
   await waiting;
   assert.deepEqual(never.names().slice(-2), ['signInFailed', 'signingIn'], 'the wait ends, said');
 });
 
-/** first-run.inline.js against a page at `href`, with `stored` keys and the
+/** first-screen.inline.js against a page at `href`, with `stored` keys and the
  * scrubber's `secrets`: whether the first screen shows, and whether it was
- * held for the site's entry to answer (`data-first-run-hold`). */
+ * held for the site's entry to answer (`data-first-screen-hold`). */
 function shows(href, {stored = {}, secrets = {}, storage = true, step = false, held = false} = {}) {
   const url = new URL(href);
   const attributes = new Map();
@@ -701,10 +701,10 @@ function shows(href, {stored = {}, secrets = {}, storage = true, step = false, h
   page.globalThis = page;
   page.__tiloLinkSecrets = secrets;
   if (!storage) Object.defineProperty(page, 'localStorage', {get() { throw new Error('denied'); }});
-  vm.runInNewContext(readFileSync(here('first-run.inline.js'), 'utf8'), page);
-  if (held) return attributes.has('data-first-run-hold');
-  if (step) return attributes.get('data-first-run') ?? null;
-  return attributes.has('data-first-run');
+  vm.runInNewContext(readFileSync(here('first-screen.inline.js'), 'utf8'), page);
+  if (held) return attributes.has('data-first-screen-hold');
+  if (step) return attributes.get('data-first-screen') ?? null;
+  return attributes.has('data-first-screen');
 }
 const kept = state => ({[SETUP]: JSON.stringify(state)});
 
@@ -733,25 +733,25 @@ test('only a browser new here, opening the site itself, is offered the first scr
 
 test('a first visit the site may still turn away is held: the setup shows once the page is in', async () => {
   const first = fixture({held: true});
-  assert.equal(first.run.held, true, 'the page has not said whether the setup is theirs');
+  assert.equal(first.screen.held, true, 'the page has not said whether the setup is theirs');
   assert.deepEqual(first.names(), ['offer'], 'nothing on the screen: the wait list may be what this visit is');
-  first.run.reveal();
-  assert.equal(first.run.held, false);
+  first.screen.reveal();
+  assert.equal(first.screen.held, false);
   assert.deepEqual(first.names().slice(-2), ['start', 'offer'], 'shown, on its start');
   assert.equal(first.kept()?.step, 'start', 'and kept from now on');
   // The same visit, shown at the first paint: nothing is redrawn under the person.
   const shown = fixture();
-  shown.run.offerSetup(maker(fakeCode()).make);
+  shown.screen.offerSetup(maker(fakeCode()).make);
   await settle();
   const drawn = shown.names().length;
-  assert.equal(shown.run.held, false);
-  shown.run.reveal();
+  assert.equal(shown.screen.held, false);
+  shown.screen.reveal();
   assert.equal(shown.names().length, drawn, 'left where it was');
   // A page that turned the person away closes it, and it stays closed.
   const away = fixture({held: true});
-  away.run.close();
-  away.run.reveal();
-  assert.equal(away.run.held, false);
+  away.screen.close();
+  away.screen.reveal();
+  assert.equal(away.screen.held, false);
   assert.deepEqual(away.names(), ['offer', 'close'], 'nothing comes back over the wait list');
 });
 
@@ -816,48 +816,48 @@ test('the kept setup alone decides the step a bare entry opens on, whatever the 
 
 test('the desktop entry page inlines the first screen’s script unchanged, after the scrubber, and carries its screen', () => {
   const html = readFileSync(here('index.html'), 'utf8');
-  const script = readFileSync(here('first-run.inline.js'), 'utf8');
+  const script = readFileSync(here('first-screen.inline.js'), 'utf8');
   const at = html.indexOf(`<script>\n${script}</script>`);
-  assert.ok(at > 0, 'index.html must inline first-run.inline.js unchanged');
+  assert.ok(at > 0, 'index.html must inline first-screen.inline.js unchanged');
   assert.ok(html.indexOf('__tiloLinkSecrets') < at, 'after the scrubber, whose secrets it reads');
-  for (const id of ['first-run', 'first-run-agent', 'first-run-offer', 'first-run-offer-note', 'first-run-offer-retry', 'first-run-sign-in-note', 'first-run-skip', 'first-run-passkey', 'first-run-agent-sign-in', 'first-run-manual-toggle', 'first-run-mcp', 'first-run-commands', 'first-run-steps', 'first-run-prompt', 'first-run-status', 'first-run-heading-wait', 'first-run-heading-hand', 'first-run-heading-hand-sign-in']) {
+  for (const id of ['first-screen', 'first-screen-agent', 'first-screen-offer', 'first-screen-offer-note', 'first-screen-offer-retry', 'first-screen-sign-in-note', 'first-screen-skip', 'first-screen-passkey', 'first-screen-agent-sign-in', 'first-screen-manual-toggle', 'first-screen-mcp', 'first-screen-commands', 'first-screen-steps', 'first-screen-prompt', 'first-screen-status', 'first-screen-heading-wait', 'first-screen-heading-hand', 'first-screen-heading-hand-sign-in']) {
     assert.ok(html.includes(`id="${id}"`), `index.html has #${id}`);
   }
-  assert.ok(html.includes('<script type="module" async src="./first-run.mjs"></script>'));
+  assert.ok(html.includes('<script type="module" async src="./first-screen.mjs"></script>'));
   assert.ok(html.includes('prefers-color-scheme: light'), 'the screen follows the person’s light or dark');
 });
 
 test('skip for now opens what the page names, also when the person skipped before it could', async () => {
   const later = fixture();
   let opened = 0;
-  later.run.whenDone(() => { opened += 1; });
-  later.run.skip();
+  later.screen.whenDone(() => { opened += 1; });
+  later.screen.skip();
   await settle();
   assert.equal(opened, 1, 'the person’s own workspace opens');
   const early = fixture();
-  early.run.skip();
+  early.screen.skip();
   assert.equal(readSetup({getItem: key => early.stored.get(key)}).step, 'opening', 'kept: a reload opens it as well');
-  early.run.whenDone(() => { opened += 1; });
+  early.screen.whenDone(() => { opened += 1; });
   await settle();
   assert.equal(opened, 2, 'a skip before the page opened still opens it');
   const closed = fixture();
-  closed.run.close();
-  closed.run.whenDone(() => { opened += 1; });
+  closed.screen.close();
+  closed.screen.whenDone(() => { opened += 1; });
   assert.equal(opened, 2, 'a screen closed otherwise opens nothing else');
 });
 
 test('a press before the module could answer is pressed again once it can, the last one only', async () => {
-  const {pressEarly} = await import('./first-run.mjs');
+  const {pressEarly} = await import('./first-screen.mjs');
   const pressed = [];
   const document = {getElementById: id => ({click: () => pressed.push(id)})};
-  const scope = {__tiloFirstRunEarly: ['first-run-manual-toggle', 'first-run-agent']};
+  const scope = {__tiloFirstScreenEarly: ['first-screen-manual-toggle', 'first-screen-agent']};
   pressEarly(document, scope);
-  assert.deepEqual(pressed, ['first-run-agent']);
-  assert.equal(scope.__tiloFirstRunReady, true, 'later presses reach the buttons themselves');
+  assert.deepEqual(pressed, ['first-screen-agent']);
+  assert.equal(scope.__tiloFirstScreenReady, true, 'later presses reach the buttons themselves');
   pressEarly(document, scope);
-  assert.deepEqual(pressed, ['first-run-agent'], 'a press is replayed once');
+  assert.deepEqual(pressed, ['first-screen-agent'], 'a press is replayed once');
   pressEarly(document, {});
-  assert.deepEqual(pressed, ['first-run-agent'], 'nothing pressed early, nothing pressed');
+  assert.deepEqual(pressed, ['first-screen-agent'], 'nothing pressed early, nothing pressed');
 });
 
 /** Codes kept by the setup, followed again: `resume(saved)` answers the
@@ -868,9 +868,9 @@ test('a reload mid-way shows the step that was kept at once, then follows the sa
   const stored = new Map();
   const first = fixture({stored});
   const code = fakeCode();
-  first.run.offerSetup(maker(code).make, resumer(code));
+  first.screen.offerSetup(maker(code).make, resumer(code));
   await settle();
-  await first.run.copy();
+  await first.screen.copy();
   await settle();
   Object.assign(code.polled, {resolved: true, agent: 'Claude Code', steps: ['resolved', 'logged-in']});
   await first.tick();
@@ -884,7 +884,7 @@ test('a reload mid-way shows the step that was kept at once, then follows the sa
   assert.deepEqual(again.last('steps')[1].map(({text}) => text).slice(0, 2), ['Tilo is installed', 'Claude Code logged in as you']);
   assert.deepEqual(again.last('net'), ['net', 'Checking with tilo.sh…'], 'and that it is checking');
   const made = maker(fakeCode({code: NEXT}));
-  again.run.offerSetup(made.make, resumer(code));
+  again.screen.offerSetup(made.make, resumer(code));
   await settle();
   assert.ok(code.asked > 1, 'the kept code is followed again');
   assert.deepEqual(again.last('net'), ['net', null], 'confirmed once the host answered');
@@ -903,8 +903,8 @@ test('the agent finishing while the tab was closed is said on reopening, and the
     polled: {resolved: true, steps: ['resolved', 'logged-in'], agent: 'Claude Code', detail: null}}));
   const back = fixture({stored});
   let opened = 0;
-  back.run.whenDone(() => { opened += 1; });
-  back.run.offerSetup(maker(fakeCode({code: NEXT})).make, resumer(code));
+  back.screen.whenDone(() => { opened += 1; });
+  back.screen.offerSetup(maker(fakeCode({code: NEXT})).make, resumer(code));
   await settle();
   assert.equal(back.last('connected')[1].heading, 'Claude Code is in your workspace');
   [...back.state.timers.values()].find(timer => timer.ms === CONNECTED_MS).run();
@@ -915,12 +915,12 @@ test('the agent finishing while the tab was closed is said on reopening, and the
 
 test('a code that runs out shows a fresh one with a note, kept so, and copying it follows the fresh one', async () => {
   const stored = new Map();
-  const {run, last, state, tick, copied, kept} = fixture({stored});
+  const {screen, last, state, tick, copied, kept} = fixture({stored});
   const code = fakeCode();
   const next = fakeCode({code: NEXT, expiresAt: 1_300_000});
-  run.offerSetup(maker(code, next).make, resumer(code, next));
+  screen.offerSetup(maker(code, next).make, resumer(code, next));
   await settle();
-  await run.copy();
+  await screen.copy();
   await settle();
   state.clock = 600_000;
   await tick();
@@ -928,10 +928,10 @@ test('a code that runs out shows a fresh one with a note, kept so, and copying i
   assert.equal(kept().step, 'expired');
   // Reloaded now, the screen still says it ran out, with the fresh prompt.
   const again = fixture({stored, clock: 600_000});
-  again.run.offerSetup(maker().make, resumer(code, next));
+  again.screen.offerSetup(maker().make, resumer(code, next));
   await settle();
   assert.deepEqual(again.last('expired'), ['expired', 'setup', {text: setupPrompt(NEXT)}]);
-  await run.again('', 'prompt');
+  await screen.again('', 'prompt');
   await settle();
   assert.deepEqual(copied.at(-1), setupPrompt(NEXT), 'the Copy beside it copies the fresh prompt');
   assert.equal(kept().step, 'waiting');
@@ -940,11 +940,11 @@ test('a code that runs out shows a fresh one with a note, kept so, and copying i
 
 test('offline, then online: said, kept following, picked up at once', async () => {
   let online = true;
-  const {run, last, tick} = fixture({online: () => online});
+  const {screen, last, tick} = fixture({online: () => online});
   const code = fakeCode();
-  run.offerSetup(maker(code).make);
+  screen.offerSetup(maker(code).make);
   await settle();
-  await run.copy();
+  await screen.copy();
   await settle();
   const follow = code.follow;
   code.follow = () => Promise.reject(new TypeError('Failed to fetch'));
@@ -954,18 +954,18 @@ test('offline, then online: said, kept following, picked up at once', async () =
   online = true;
   code.follow = follow;
   Object.assign(code.polled, {resolved: true, agent: 'Claude Code', steps: ['resolved', 'logged-in']});
-  run.online();
+  screen.online();
   await settle();
   assert.deepEqual(last('net'), ['net', null]);
   assert.equal(last('steps')[1][1].text, 'Claude Code logged in as you');
 });
 
 test('a slow host and a quiet agent are each said, with the reason, while the tab keeps following', async () => {
-  const {run, last, state, tick, fire} = fixture();
+  const {screen, last, state, tick, fire} = fixture();
   const code = fakeCode();
-  run.offerSetup(maker(code).make);
+  screen.offerSetup(maker(code).make);
   await settle();
-  await run.copy();
+  await screen.copy();
   await settle();
   const follow = code.follow;
   code.follow = () => new Promise(() => {});
@@ -986,9 +986,9 @@ test('a host that forgot the code: an agent that logged in opens the workspace, 
   const gone = Object.assign(new Error('no such login code'), {status: 404});
   const logged = fixture();
   const code = fakeCode();
-  logged.run.offerSetup(maker(code).make);
+  logged.screen.offerSetup(maker(code).make);
   await settle();
-  await logged.run.copy();
+  await logged.screen.copy();
   await settle();
   Object.assign(code.polled, {resolved: true, agent: 'Claude Code', steps: ['resolved', 'logged-in']});
   await logged.tick();
@@ -998,9 +998,9 @@ test('a host that forgot the code: an agent that logged in opens the workspace, 
   assert.equal(logged.kept().step, 'opening');
   const unused = fixture();
   const other = fakeCode();
-  unused.run.offerSetup(maker(other).make);
+  unused.screen.offerSetup(maker(other).make);
   await settle();
-  await unused.run.copy();
+  await unused.screen.copy();
   await settle();
   other.follow = () => Promise.reject(gone);
   await unused.tick();
@@ -1012,28 +1012,28 @@ test('a second tab follows the first: the same prompt on the start, the same cod
   const code = fakeCode();
   const a = fixture({stored});
   const made = maker(code, fakeCode({code: NEXT}));
-  a.run.offerSetup(made.make, resumer(code));
+  a.screen.offerSetup(made.make, resumer(code));
   await settle();
   const b = fixture({stored});
   const theirs = maker();
-  b.run.offerSetup(theirs.make, resumer(code));
+  b.screen.offerSetup(theirs.make, resumer(code));
   await settle();
   assert.equal(theirs.made.length, 0, 'the second tab makes no competing code');
   assert.equal(b.last('offer')[2].text, setupPrompt(CODE), 'it shows the first tab’s prompt');
-  await a.run.copy();
+  await a.screen.copy();
   await settle();
-  b.run.sync();
+  b.screen.sync();
   await settle();
   assert.deepEqual(b.last('waiting')[2].text, setupPrompt(CODE), 'copied in one tab, the other follows the same code');
   Object.assign(code.polled, {resolved: true, agent: 'Claude Code', steps: ['resolved', 'logged-in']});
   await b.tick();
   assert.equal(b.last('steps')[1][1].text, 'Claude Code logged in as you');
-  a.run.back();
-  b.run.sync();
+  a.screen.back();
+  b.screen.sync();
   assert.equal(b.names().includes('start'), true, 'back in one is back in both');
   stored.set(SETUP, JSON.stringify({step: 'done'}));
-  b.run.sync();
-  assert.ok(b.run.closed);
+  b.screen.sync();
+  assert.ok(b.screen.closed);
   assert.equal(b.state.reloads, 1, 'done in another tab: this one loads where the page opens now');
 });
 
@@ -1062,29 +1062,29 @@ test('Back in a second tab reaches the first, though the first redraws on its ow
       for (const [other, tab] of Object.entries(tabs)) {
         if (other === name) continue;
         if (!tab.stored.pending.get(key)) Map.prototype.set.call(tab.stored, key, value);
-        if (key === SETUP) tab.run.sync();
+        if (key === SETUP) tab.screen.sync();
       }
       await settle();
     }
   };
   const code = fakeCode();
   tabs.a = fixture({stored: copyOf('a')});
-  tabs.a.run.offerSetup(maker(code, fakeCode({code: NEXT})).make, resumer(code));
+  tabs.a.screen.offerSetup(maker(code, fakeCode({code: NEXT})).make, resumer(code));
   await settle();
-  await tabs.a.run.copy();
+  await tabs.a.screen.copy();
   await settle();
   await deliver();
   // The second tab opens on the same code, and draws its own screen.
   const second = copyOf('b');
   for (const [key, value] of tabs.a.stored) Map.prototype.set.call(second, key, value);
   tabs.b = fixture({stored: second});
-  tabs.b.run.offerSetup(maker().make, resumer(code));
+  tabs.b.screen.offerSetup(maker().make, resumer(code));
   await settle();
   assert.equal(tabs.b.last('waiting')?.[2]?.text, setupPrompt(CODE), 'the second tab waits on the same code');
   await deliver();
   // Back in the second tab; the first redraws (its next round of asking the
   // host) before that reaches it.
-  tabs.b.run.back();
+  tabs.b.screen.back();
   await tabs.a.tick();
   await deliver();
   assert.equal(tabs.b.kept().step, 'start', 'the second tab stays at the start');
@@ -1096,16 +1096,16 @@ test('reloaded on the start, the kept prompt shows and copies before the page ca
   const stored = new Map();
   const code = fakeCode();
   stored.set(SETUP, JSON.stringify({step: 'start', offer: code.saved}));
-  const {run, last, names, copied, kept, tick} = fixture({stored});
+  const {screen, last, names, copied, kept, tick} = fixture({stored});
   assert.deepEqual(last('offer')[2], {text: setupPrompt(CODE), code: CODE}, 'the same prompt, at once');
   assert.equal(names().includes('net'), false);
-  await run.copy();
+  await screen.copy();
   await settle();
   assert.deepEqual(copied, [setupPrompt(CODE)], 'a click before the page loaded copies it');
   assert.equal(kept().code.code, CODE);
   await tick();
   assert.equal(last('net')?.[1] ?? null, null, 'waiting for the page is no failure of the host');
-  run.offerSetup(maker(fakeCode({code: NEXT})).make, resumer(code));
+  screen.offerSetup(maker(fakeCode({code: NEXT})).make, resumer(code));
   await settle();
   Object.assign(code.polled, {resolved: true, agent: 'Claude Code', steps: ['resolved', 'logged-in']});
   await tick();
@@ -1116,8 +1116,8 @@ test('reloaded on the start, the kept prompt is kept again, and works before any
   const stored = new Map();
   const code = fakeCode();
   stored.set(SETUP, JSON.stringify({step: 'start', offer: code.saved}));
-  const {run, last, fire} = fixture({stored});
-  run.offerSetup(maker(fakeCode({code: NEXT})).make, resumer(code));
+  const {screen, last, fire} = fixture({stored});
+  screen.offerSetup(maker(fakeCode({code: NEXT})).make, resumer(code));
   await settle();
   assert.ok(code.asked >= 1, 'followed again as soon as the page can');
   Object.assign(code.polled, {resolved: true, agent: 'Claude Code', steps: ['resolved', 'logged-in']});
@@ -1134,9 +1134,9 @@ test('reloaded on the start, the kept prompt stays when the page can follow code
   const code = fakeCode();
   stored.set(SETUP, JSON.stringify({step: 'start', offer: code.saved}));
   for (let reload = 1; reload <= 5; reload += 1) {
-    const {run, last} = fixture({stored});
+    const {screen, last} = fixture({stored});
     const made = maker(fakeCode({code: NEXT}));
-    run.offerSetup(made.make, resumer(code));
+    screen.offerSetup(made.make, resumer(code));
     await settle();
     assert.equal(made.made.length, 0, `reload ${reload}: no new code is made`);
     assert.equal(last('offer')[2].code, CODE);
@@ -1188,7 +1188,7 @@ function stubDocument() {
   const document = {documentElement: root, getElementById, getSelection: () => null, addEventListener() {},
     createElement: name => element(name), createTextNode: text => ({kind: 'text', textContent: text}), body: element('body')};
   owner.document = document;
-  return {document, root, screen: () => byId.get('first-run'), made};
+  return {document, root, screen: () => byId.get('first-screen'), made};
 }
 
 test('a code an agent took without a copy: the screen says what it is doing, and claims no copy', () => {
@@ -1197,7 +1197,7 @@ test('a code an agent took without a copy: the screen says what it is doing, and
   view.waiting('setup', {copied: false, handed: true, agent: 'Claude Code'});
   assert.equal(screen().dataset.handed, 'true', 'the screen swaps its heading: what the agent is doing, not a paste');
   assert.equal(screen().dataset.copied, 'false', 'and says nothing was copied');
-  assert.equal(document.getElementById('first-run-status').textContent, 'Claude Code is setting up Tilo…');
+  assert.equal(document.getElementById('first-screen-status').textContent, 'Claude Code is setting up Tilo…');
   view.waiting('setup', {copied: true});
   assert.equal(screen().dataset.handed, 'false', 'a copy with the button keeps the paste instructions');
   assert.equal(screen().dataset.copied, 'true');
@@ -1206,38 +1206,38 @@ test('a code an agent took without a copy: the screen says what it is doing, and
 test('the agent setup can be shown again from the person\'s card, in the same place', () => {
   const {document, root, screen} = stubDocument();
   const storage = {getItem: () => JSON.stringify({step: 'done'}), setItem() {}};
-  const run = openFirstRun(document, {storage});
-  assert.ok(run, 'the setup, again');
-  assert.equal(typeof run.offerSetup, 'function', 'it takes a fresh code, as the first screen did');
-  assert.equal(root.attrs.get('data-first-run'), '', 'the screen is shown');
+  const controls = openFirstScreen(document, {storage});
+  assert.ok(controls, 'the setup, again');
+  assert.equal(typeof controls.offerSetup, 'function', 'it takes a fresh code, as the first screen did');
+  assert.equal(root.attrs.get('data-first-screen'), '', 'the screen is shown');
   assert.ok(screen(), 'in the page it was first shown in');
   // The person is set up: the setup is what shows, never the sign-in column a
   // past visit left the screen in.
   assert.equal(screen().dataset.reopened, 'true', 'the Returning? column has nobody left to sign in');
   assert.equal(screen().dataset.mode, 'setup', 'the setup is what the card asked for');
   screen().dataset.mode = 'sign-in';
-  openFirstRun(document, {storage});
+  openFirstScreen(document, {storage});
   assert.equal(screen().dataset.mode, 'setup', 'opening it again starts the setup, whatever it showed before');
   // Leaving it takes it off the page without taking it out of the document.
-  document.getElementById('first-run').dataset.closing = '';
+  document.getElementById('first-screen').dataset.closing = '';
   assert.notEqual(screen().removed, true, 'the same screen is shown the next time');
-  assert.equal(openFirstRun({getElementById: () => null}), null, 'a page without one shows nothing');
+  assert.equal(openFirstScreen({getElementById: () => null}), null, 'a page without one shows nothing');
 });
 
 test('signing in from the wait list as the setup screen fades out keeps the sign-in on the page', async () => {
   const {document, root} = stubDocument();
-  root.setAttribute('data-first-run', '');
+  root.setAttribute('data-first-screen', '');
   // The wait list closes the first visit's setup screen: it fades, then leaves the page.
   domView(document).close();
   // "Sign in with your agent", pressed before the fade is over.
   assert.ok(openSignIn(document));
   await new Promise(resolve => setTimeout(resolve, 400));
-  assert.equal(root.getAttribute('data-first-run'), '', 'the sign-in screen is still shown once the fade is over');
-  assert.equal(document.getElementById('first-run').getAttribute('data-closing'), null, 'and nothing on it is fading');
+  assert.equal(root.getAttribute('data-first-screen'), '', 'the sign-in screen is still shown once the fade is over');
+  assert.equal(document.getElementById('first-screen').getAttribute('data-closing'), null, 'and nothing on it is fading');
   // A close nothing opened again after still takes the screen off the page.
   domView(document).close();
   await new Promise(resolve => setTimeout(resolve, 400));
-  assert.equal(root.getAttribute('data-first-run'), null, 'a closed screen leaves the page');
+  assert.equal(root.getAttribute('data-first-screen'), null, 'a closed screen leaves the page');
 });
 
 test('a setup reopened from the card asks for a fresh code, not one an earlier visit kept', () => {
@@ -1246,31 +1246,31 @@ test('a setup reopened from the card asks for a fresh code, not one an earlier v
   const stored = [];
   const storage = {getItem: key => (key === SETUP ? JSON.stringify(kept) : null),
     setItem: (key, value) => { if (key === SETUP) stored.push(JSON.parse(value)); }};
-  const run = openFirstRun(document, {storage});
-  assert.ok(run);
+  const controls = openFirstScreen(document, {storage});
+  assert.ok(controls);
   assert.equal(stored.at(-1)?.offer, null, 'the code an earlier visit kept is spent or run out, never offered again');
 });
 
 test('a first paint that held the screen shows it once the page says the site let the person in', () => {
   const {document, root} = stubDocument();
-  root.dataset.firstRunHold = '';
+  root.dataset.firstScreenHold = '';
   const storage = {getItem: () => null, setItem() {}};
-  const run = startFirstRun(document, {storage});
-  assert.ok(run, 'the screen is wired while the entry decides');
-  assert.equal(run.held, true);
-  assert.equal(root.dataset.firstRun, undefined, 'nothing painted: the wait list may take its place');
-  run.reveal();
-  assert.equal(root.dataset.firstRun, '', 'shown once the page is in');
-  assert.equal(run.held, false);
-  run.close();
+  const controls = startFirstScreen(document, {storage});
+  assert.ok(controls, 'the screen is wired while the entry decides');
+  assert.equal(controls.held, true);
+  assert.equal(root.dataset.firstScreen, undefined, 'nothing painted: the wait list may take its place');
+  controls.reveal();
+  assert.equal(root.dataset.firstScreen, '', 'shown once the page is in');
+  assert.equal(controls.held, false);
+  controls.close();
   // A screen the first paint showed is left where it was.
   const painted = stubDocument();
-  painted.root.dataset.firstRun = 'waiting';
-  const paintedRun = startFirstRun(painted.document, {storage});
-  assert.equal(paintedRun.held, false);
-  paintedRun.reveal();
-  assert.equal(painted.root.dataset.firstRun, 'waiting');
-  assert.equal(startFirstRun(stubDocument().document, {storage}), null, 'a page with neither shows nothing');
+  painted.root.dataset.firstScreen = 'waiting';
+  const paintedControls = startFirstScreen(painted.document, {storage});
+  assert.equal(paintedControls.held, false);
+  paintedControls.reveal();
+  assert.equal(painted.root.dataset.firstScreen, 'waiting');
+  assert.equal(startFirstScreen(stubDocument().document, {storage}), null, 'a page with neither shows nothing');
 });
 
 test('a host that did not answer is named, and one on this computer is not blamed on the connection', () => {
@@ -1293,14 +1293,14 @@ async function shownCodeIsKept(t, kept, {expire = false} = {}) {
   const code = fakeCode();
   const next = fakeCode({code: NEXT, expiresAt: 1_300_000});
   if (kept) stored.set(SETUP, JSON.stringify(typeof kept === 'function' ? kept(code) : kept));
-  const {run, last, fire, state, tick, copied} = fixture({stored});
+  const {screen, last, fire, state, tick, copied} = fixture({stored});
   const was = readSetup({getItem: key => stored.get(key) ?? null})?.step ?? null;
-  run.offerSetup(maker(code, next).make, resumer(code, next));
-  run.offerAgentSignIn(maker(fakeCode({code: 'S1G-NNNN'})).make);
+  screen.offerSetup(maker(code, next).make, resumer(code, next));
+  screen.offerAgentSignIn(maker(fakeCode({code: 'S1G-NNNN'})).make);
   await settle();
   let shown = code;
   if (expire) {
-    await run.copy();
+    await screen.copy();
     await settle();
     state.clock = 600_000;
     await tick();
@@ -1338,14 +1338,14 @@ test('a code on the screen works without a copy however the person reached the s
 test('a prompt only shown after an invitation keeps the setup for later, even when another tab changes it', async () => {
   const stored = new Map([[SETUP, JSON.stringify({step: 'later', at: 1})]]);
   const code = fakeCode();
-  const {run, fire} = fixture({stored});
-  run.offerSetup(maker(code).make, resumer(code));
+  const {screen, fire} = fixture({stored});
+  screen.offerSetup(maker(code).make, resumer(code));
   await settle();
   assert.equal(setupLater({getItem: key => stored.get(key) ?? null}), true, 'the workspace still offers the setup');
   // Another tab keeps the same setup (its screen drew something): this one
   // stays on the start, following its code.
   stored.set(SETUP, JSON.stringify({...JSON.parse(stored.get(SETUP)), shown: {offer: 'x'}}));
-  run.sync();
+  screen.sync();
   const asked = code.asked;
   await fire(SHOWN_FOLLOW_MS);
   assert.ok(code.asked > asked, 'still followed');

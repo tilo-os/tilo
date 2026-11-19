@@ -64,7 +64,7 @@ function focusedEntry(snapshot) {
 /** Whether `location` names no route: the site's own address with nothing
  * after it, or with the empty fragment a taken-out route or a person's typing
  * leaves there (`#`, `#/`). The first paint reads it the same way
- * (first-run.inline.js). */
+ * (first-screen.inline.js). */
 export const bareEntry = location => ['', '#', '#/'].includes(location.hash);
 
 export function startRouter({
@@ -101,10 +101,10 @@ export function startRouter({
     }
   }
 
-  // While the first screen of a setup covers the page (first-run.mjs), what
+  // While the first screen of a setup covers the page (first-screen.mjs), what
   // is behind it is not in front of the person: the address stays the one
   // they opened, so Back from where the setup takes them never lands on it.
-  const covered = () => window.document?.documentElement?.dataset?.firstRun !== undefined;
+  const covered = () => window.document?.documentElement?.dataset?.firstScreen !== undefined;
   function write(route, how) {
     if (covered()) { current = route; return; }
     const url = link.format(route);

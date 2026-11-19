@@ -99,17 +99,17 @@ const FIRST_FRAME = `(() => {
     if (!document.getElementById('surface')) { requestAnimationFrame(look); return; }
     const text = id => document.getElementById(id)?.textContent ?? null;
     const expired = document.querySelector('.fr-expired');
-    globalThis.__firstFrame = {step: document.documentElement.dataset.firstRun ?? null, offer: text('first-run-offer'),
-      prompt: text('first-run-prompt'), steps: text('first-run-steps'), heading: text('first-run-connected'),
-      net: text('first-run-net'), expired: !!expired && getComputedStyle(expired).display !== 'none',
-      modules: !!globalThis.__tiloFirstRunReady, held: document.documentElement.hasAttribute('data-first-run-hold')};
+    globalThis.__firstFrame = {step: document.documentElement.dataset.firstScreen ?? null, offer: text('first-screen-offer'),
+      prompt: text('first-screen-prompt'), steps: text('first-screen-steps'), heading: text('first-screen-connected'),
+      net: text('first-screen-net'), expired: !!expired && getComputedStyle(expired).display !== 'none',
+      modules: !!globalThis.__tiloFirstScreenReady, held: document.documentElement.hasAttribute('data-first-screen-hold')};
   };
   requestAnimationFrame(look);
 })();`;
 
 // A tab of one browser profile (`context`), its first screen not marked seen.
 const tabIn = async (context, name) => {
-  const tab = await browser.tab({context, firstRun: true});
+  const tab = await browser.tab({context, firstScreen: true});
   open.push({name, tab});
   await tab.send('Page.addScriptToEvaluateOnNewDocument', {source: FIRST_FRAME});
   // Each tab counts as focused, as the one a person works in: the clipboard
@@ -169,8 +169,8 @@ const pageText = tab => tab.evaluate(`(document.body.innerText || '').replace(/\
 // them it was waiting on.
 const where = tab => tab.evaluate(`(() => {
   const state = globalThis.tiloMount?.state?.() ?? null;
-  return JSON.stringify({step: document.documentElement.dataset.firstRun ?? null,
-    screen: document.documentElement.dataset.firstRun !== undefined, title: document.title,
+  return JSON.stringify({step: document.documentElement.dataset.firstScreen ?? null,
+    screen: document.documentElement.dataset.firstScreen !== undefined, title: document.title,
     entry: document.documentElement.dataset.entry ?? null, phase: state?.phase ?? null,
     frames: state?.frames ?? null, workspace: state?.workspaceName ?? null});
 })()`)
@@ -185,8 +185,8 @@ const inLounge = async tab => {
 const OWN_WORKSPACE = `(() => {
   const state = globalThis.tiloMount?.state?.() ?? null;
   const title = document.title ?? '';
-  const firstRun = document.documentElement.dataset.firstRun ?? null;
-  return firstRun === null && state?.phase === 'presented' && state.workspaceName
+  const firstScreen = document.documentElement.dataset.firstScreen ?? null;
+  return firstScreen === null && state?.phase === 'presented' && state.workspaceName
     && /^Tilo · /.test(title) && !/lounge/i.test(title) ? title : '';
 })()`;
 const forget = tab => tab.evaluate('delete globalThis.__firstFrame').catch(() => {});
@@ -221,10 +221,10 @@ const clipboardText = tab => tab.evaluate(
 // button is there once the entry let the tab in; a press before then lands
 // nowhere.
 const makePrompt = async tab => {
-  await until(tab, `document.documentElement.dataset.firstRun === ''
-    && getComputedStyle(document.getElementById('first-run')).display !== 'none'`);
-  await click(tab, 'first-run-agent');
-  return until(tab, `document.getElementById('first-run')?.dataset.setup === 'ready' && document.getElementById('first-run-offer').textContent`);
+  await until(tab, `document.documentElement.dataset.firstScreen === ''
+    && getComputedStyle(document.getElementById('first-screen')).display !== 'none'`);
+  await click(tab, 'first-screen-agent');
+  return until(tab, `document.getElementById('first-screen')?.dataset.setup === 'ready' && document.getElementById('first-screen-offer').textContent`);
 };
 // What a click on Copy wrote: the prompt the clipboard holds once it no longer
 // holds what it held before the click. The page writes the clipboard inside
@@ -250,7 +250,7 @@ const copy = async (tab, id) => {
   return null;
 };
 const codeOf = prompt => prompt?.match(/(?:tilo|sh -s) login ([2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4})/)?.[1] ?? null;
-const steps = tab => tab.evaluate(`document.getElementById('first-run-steps')?.innerText ?? ''`).catch(() => '');
+const steps = tab => tab.evaluate(`document.getElementById('first-screen-steps')?.innerText ?? ''`).catch(() => '');
 
 // The agent's computer, as agent-setup.mjs makes it: its own home, a
 // `claude` that records how it was asked, and Claude Code's marker.
@@ -301,16 +301,16 @@ let tab = await tabIn(person, 'setup');
 await tab.navigate(site);
 let frame = await firstFrame(tab);
 // A browser the site knows nothing of is not shown the setup ahead of its
-// entry's answer (first-run.inline.js): the screen is held at the first frame,
+// entry's answer (first-screen.inline.js): the screen is held at the first frame,
 // and shown once the entry let the person in.
 check(frame.step === null && frame.held, '1. a browser new here holds the first screen at its first frame, until the entry answers', JSON.stringify(frame));
 // Nothing of the person's is made while they are still deciding: the button
 // offers the prompt, and pressing it makes the code — and with it, on the
 // host, the workspace the code names.
-const offering = await until(tab, `document.documentElement.dataset.firstRun === ''
-  && getComputedStyle(document.getElementById('first-run')).display !== 'none'`);
+const offering = await until(tab, `document.documentElement.dataset.firstScreen === ''
+  && getComputedStyle(document.getElementById('first-screen')).display !== 'none'`);
 check(offering, '1. the first screen offers to set up', await pageText(tab));
-const idle = await tab.evaluate(`document.getElementById('first-run')?.dataset.setup === undefined`);
+const idle = await tab.evaluate(`document.getElementById('first-screen')?.dataset.setup === undefined`);
 check(idle, '1. nothing is made before the person asks for it', JSON.stringify(await where(tab)));
 const ready = await makePrompt(tab);
 check(ready, '1. the press that asks for it makes the prompt, and shows it', await pageText(tab));
@@ -325,14 +325,14 @@ check(!await inLounge(tab), '1. reloaded before copy: not in the Lounge');
 shot(tab, 'resume-1-before-copy');
 
 // 2. After copy.
-await until(tab, `document.getElementById('first-run')?.dataset.setup === 'ready'`);
-const shown = await tab.evaluate(`document.getElementById('first-run-offer').textContent`);
-const prompt = await copy(tab, 'first-run-agent');
+await until(tab, `document.getElementById('first-screen')?.dataset.setup === 'ready'`);
+const shown = await tab.evaluate(`document.getElementById('first-screen-offer').textContent`);
+const prompt = await copy(tab, 'first-screen-agent');
 check(prompt && prompt === shown, '2. the click copies the prompt shown', `${prompt} / ${shown}`);
 await reload(tab);
 frame = await firstFrame(tab);
 check(frame.step === 'waiting' && frame.prompt === prompt, '2. reloaded after copy: waiting, same prompt, at the first frame', JSON.stringify(frame));
-check(await until(tab, `document.getElementById('first-run-net')?.textContent === ''`, stepLimit(2)),
+check(await until(tab, `document.getElementById('first-screen-net')?.textContent === ''`, stepLimit(2)),
   '2. reloaded after copy: confirmed by the host', await pageText(tab));
 shot(tab, 'resume-2-after-copy');
 await tab.navigate('about:blank');
@@ -352,22 +352,22 @@ shot(second, 'resume-2-second-tab');
 // after the press (the write reaching it, and its screen showing the start);
 // a starved machine takes a third, so the wait is that long rather than the
 // one a tab presses in.
-check(await click(second, 'first-run-back') && await until(second, `document.documentElement.dataset.firstRun === ''`, stepLimit(1)),
+check(await click(second, 'first-screen-back') && await until(second, `document.documentElement.dataset.firstScreen === ''`, stepLimit(1)),
   '2. back in the second tab: it is back at the start', await pageText(second));
-check(await until(tab, `document.documentElement.dataset.firstRun === ''`, stepLimit(3)), '2. back in the second tab: the first tab is back at the start too',
-  JSON.stringify({first: await tab.evaluate(`({screen: document.documentElement.dataset.firstRun ?? null, kept: localStorage.getItem('tilo-setup')})`).catch(() => null)}));
+check(await until(tab, `document.documentElement.dataset.firstScreen === ''`, stepLimit(3)), '2. back in the second tab: the first tab is back at the start too',
+  JSON.stringify({first: await tab.evaluate(`({screen: document.documentElement.dataset.firstScreen ?? null, kept: localStorage.getItem('tilo-setup')})`).catch(() => null)}));
 await close(second);
 // Copy again in the first tab (a fresh code), then close it and reopen. It
 // offers the prompt again at the start, which is the state the copy is made
 // on: a tab still on the step it was at copies that step's code.
-check(await until(tab, `document.documentElement.dataset.firstRun === '' && document.getElementById('first-run')?.dataset.setup === 'ready'`, stepLimit(3)),
+check(await until(tab, `document.documentElement.dataset.firstScreen === '' && document.getElementById('first-screen')?.dataset.setup === 'ready'`, stepLimit(3)),
   '2. the first tab offers the start again, which the next copy is made on', JSON.stringify(await where(tab)));
 // What the person pastes: the clipboard, or (where this browser will not
 // read it back to the harness in a tab that was behind another) the prompt
 // the page shows once it says it copied it; case 2 proved those are one.
-const readB = await copy(tab, 'first-run-agent');
-const promptB = readB ?? await until(tab, `document.getElementById('first-run')?.dataset.copied === 'true'
-  && document.getElementById('first-run-prompt').textContent`, stepLimit(1));
+const readB = await copy(tab, 'first-screen-agent');
+const promptB = readB ?? await until(tab, `document.getElementById('first-screen')?.dataset.copied === 'true'
+  && document.getElementById('first-screen-prompt').textContent`, stepLimit(1));
 report.promptBFrom = readB ? 'clipboard' : 'screen';
 check(codeOf(promptB) && promptB !== prompt, '2. a new copy after Back is a fresh code');
 await close(tab);
@@ -379,7 +379,7 @@ tab = await tabIn(person, 'reopened');
 await tab.navigate(site);
 frame = await firstFrame(tab);
 check(frame.step === 'waiting' && frame.prompt === promptB, '3. reopened while the agent installs: waiting, same prompt', JSON.stringify(frame));
-const loggedIn = await until(tab, `(document.getElementById('first-run-steps')?.innerText ?? '').includes('logged in as you') || document.documentElement.dataset.firstRun === 'connected'`, stepLimit(3));
+const loggedIn = await until(tab, `(document.getElementById('first-screen-steps')?.innerText ?? '').includes('logged in as you') || document.documentElement.dataset.firstScreen === 'connected'`, stepLimit(3));
 mark('case 3: the agent logged in');
 check(loggedIn, '3. the reopened tab approved the agent, which logged in', await pageText(tab));
 shot(tab, 'resume-3-agent-installing');
@@ -422,13 +422,13 @@ const later = await browser.context();
 tab = await tabIn(later, 'closed-mid-way');
 await tab.navigate(site);
 await makePrompt(tab);
-const promptC = await copy(tab, 'first-run-agent');
+const promptC = await copy(tab, 'first-screen-agent');
 const agentC = login(codeOf(promptC), computer('two'));
 // The screen cannot say the agent logged in before the agent did, and on a
 // loaded machine that login outlasts the steps of this flow's pacing: past the
 // usual wait, the agent's own end is the clock, then one step for the screen
 // to draw what the host said. A screen that never says it fails still.
-const LOGGED_IN = `(document.getElementById('first-run-steps')?.innerText ?? '').includes('logged in as you')`;
+const LOGGED_IN = `(document.getElementById('first-screen-steps')?.innerText ?? '').includes('logged in as you')`;
 check(await until(tab, LOGGED_IN, stepLimit(3)) || await agentC.then(() => until(tab, LOGGED_IN, stepLimit(1)), () => null),
   '6. the agent logged in', await pageText(tab));
 await close(tab);
@@ -439,7 +439,7 @@ tab = await tabIn(later, 'reopened-after-agent');
 await tab.navigate(site);
 frame = await firstFrame(tab);
 check(['waiting', 'connected'].includes(frame.step), '6. reopened: the setup it was at, at the first frame', JSON.stringify(frame));
-const said = await until(tab, `document.documentElement.dataset.firstRun === 'connected' && document.getElementById('first-run-connected').textContent`, stepLimit(2));
+const said = await until(tab, `document.documentElement.dataset.firstScreen === 'connected' && document.getElementById('first-screen-connected').textContent`, stepLimit(2));
 check(said === 'Claude Code is in your workspace', '6. reopened: "Claude Code is in your workspace"', said ?? await pageText(tab));
 shot(tab, 'resume-6-agent-done-while-closed');
 check(await until(tab, OWN_WORKSPACE, stepLimit(3)),
@@ -451,27 +451,27 @@ const third = await browser.context();
 tab = await tabIn(third, 'expiry');
 await tab.navigate(site);
 await makePrompt(tab);
-const promptD = await copy(tab, 'first-run-agent');
+const promptD = await copy(tab, 'first-screen-agent');
 // The code's ten minutes pass while the tab is closed: kept as having run out.
 await tab.evaluate(`(() => { const s = JSON.parse(localStorage.getItem('tilo-setup')); s.code.expiresAt = Date.now() - 1000; localStorage.setItem('tilo-setup', JSON.stringify(s)); })()`);
 await reload(tab);
 frame = await firstFrame(tab);
 check(frame.step === 'expired' && frame.expired, '7. a code that ran out: said at the first frame', JSON.stringify(frame));
-const fresh = await until(tab, `document.documentElement.dataset.firstRun === 'expired' && document.getElementById('first-run-prompt').textContent`, stepLimit(2));
+const fresh = await until(tab, `document.documentElement.dataset.firstScreen === 'expired' && document.getElementById('first-screen-prompt').textContent`, stepLimit(2));
 check(fresh && codeOf(fresh) && fresh !== promptD, '7. a fresh prompt shows beside the note', `${fresh}`);
 shot(tab, 'resume-7-expired');
-const copiedFresh = await copy(tab, 'first-run-retry');
+const copiedFresh = await copy(tab, 'first-screen-retry');
 check(copiedFresh === fresh, '7. copying it copies the fresh prompt shown', `${copiedFresh} / ${fresh}`);
-check(await until(tab, `document.documentElement.dataset.firstRun === 'waiting'`, stepLimit(1)) && (await setup(tab))?.code?.code === codeOf(fresh),
+check(await until(tab, `document.documentElement.dataset.firstScreen === 'waiting'`, stepLimit(1)) && (await setup(tab))?.code?.code === codeOf(fresh),
   '7. and follows the fresh code');
 await tab.send('Network.enable', {});
 await tab.send('Network.emulateNetworkConditions', {offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1});
-const offline = await until(tab, `document.getElementById('first-run-net')?.textContent`, stepLimit(2));
+const offline = await until(tab, `document.getElementById('first-screen-net')?.textContent`, stepLimit(2));
 check(/offline/i.test(offline ?? ''), '8. offline: the screen says so', offline ?? await pageText(tab));
 shot(tab, 'resume-8-offline');
 check(await where(tab).then(at => at.step === 'waiting'), '8. offline: still on its step');
 await tab.send('Network.emulateNetworkConditions', {offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1});
-check(await until(tab, `document.getElementById('first-run-net')?.textContent === ''`, stepLimit(2)), '8. online again: carries on, the note gone', await pageText(tab));
+check(await until(tab, `document.getElementById('first-screen-net')?.textContent === ''`, stepLimit(2)), '8. online again: carries on, the note gone', await pageText(tab));
 shot(tab, 'resume-8-online');
 await close(tab);
 
@@ -486,8 +486,8 @@ const offerE = await makePrompt(tab);
 const agentE = login(codeOf(offerE), computer('four'));
 report.admittedBeforeQuickAgent = await tab.evaluate(`!!localStorage.getItem('tilo-host-memberships')`);
 console.log(`9. tilo login started ${report.admittedBeforeQuickAgent ? 'after' : 'before'} the Lounge let the tab in`);
-await click(tab, 'first-run-agent');
-check(await until(tab, `(document.getElementById('first-run-steps')?.innerText ?? '').includes('logged in as you') || document.documentElement.dataset.firstRun === 'connected'`, stepLimit(3)),
+await click(tab, 'first-screen-agent');
+check(await until(tab, `(document.getElementById('first-screen-steps')?.innerText ?? '').includes('logged in as you') || document.documentElement.dataset.firstScreen === 'connected'`, stepLimit(3)),
   '9. an agent that logs in at once is approved', await pageText(tab));
 const ranE = await agentE;
 mark('case 9: tilo login finished');

@@ -118,10 +118,10 @@ addEventListener('click',function(event){if(event.target&&event.target.id==='arr
 </script>
 <script>
 (()=>{
-// Whether the entry page opens on its first screen (first-run.mjs), and at
+// Whether the entry page opens on its first screen (first-screen.mjs), and at
 // which step, inlined verbatim after the link scrubber so the screen is there
 // at the first paint, before any module loads. It is decided by the person's
-// setup this browser keeps (`tilo-setup`, first-run.mjs `SETUP`), and by
+// setup this browser keeps (`tilo-setup`, first-screen.mjs `SETUP`), and by
 // nothing else: a setup under way opens on its step whatever else the page
 // did meanwhile (joining the site's home workspace behind the screen, say),
 // and one that is done never shows the screen again. That holds whatever
@@ -140,7 +140,7 @@ addEventListener('click',function(event){if(event.target&&event.target.id==='arr
 // the setup ahead of its entry's answer: a site that takes people by
 // invitation only may send them to its wait list, and the setup is no way
 // in where they hold no invitation. The page shows the screen itself once
-// the entry let them in (first-run.mjs `reveal`). Without storage the page
+// the entry let them in (first-screen.mjs `reveal`). Without storage the page
 // opens as it always did.
 var root=document.documentElement,secrets=globalThis.__tiloLinkSecrets||{};
 var fresh=function(){
@@ -164,7 +164,7 @@ try{
   // workspace it entered. Whether the setup is even theirs to take up is
   // the site's entry's to say (it may keep a wait list instead), so the
   // screen is wired but held, and the page shows it once it is in.
-  root.setAttribute('data-first-run-hold','');
+  root.setAttribute('data-first-screen-hold','');
   return;
  }else if(setup.step==='later'){
   // Shown on the site itself, and kept for later still: until they take
@@ -182,35 +182,35 @@ var now=Date.now(),code=setup.code,offer=setup.offer,step=setup.step;
 // A code that ran out while nobody looked has run out now.
 if(step==='waiting'&&code&&!(setup.polled&&setup.polled.resolved)&&code.expiresAt<=now)step='expired';
 if(step!=='waiting'&&step!=='expired'&&step!=='connected'&&step!=='opening')step='';
-root.setAttribute('data-first-run',step==='opening'?'connected':step);
+root.setAttribute('data-first-screen',step==='opening'?'connected':step);
 // What the screen showed last, painted once its markup is parsed
 // (index.html calls this right after it), so a resumed setup shows its
-// step at the first frame; first-run.mjs takes over and asks the host.
+// step at the first frame; first-screen.mjs takes over and asks the host.
 globalThis.__tiloSetupPaint=function(){
- var $=function(id){return document.getElementById(id);},screen=$('first-run'),shown={};
- // What the screen showed last, kept apart from the setup (first-run.mjs `SHOWN`), for the code it was drawn for.
+ var $=function(id){return document.getElementById(id);},screen=$('first-screen'),shown={};
+ // What the screen showed last, kept apart from the setup (first-screen.mjs `SHOWN`), for the code it was drawn for.
  try{var drawn=JSON.parse(localStorage.getItem('tilo-setup-shown')||'null');if(drawn&&typeof drawn==='object'&&(drawn.code||null)===((code&&code.code)||null))shown=drawn;}catch(e){}
- // The prompt breaks only between its words, as first-run.mjs `showPrompt` writes it.
+ // The prompt breaks only between its words, as first-screen.mjs `showPrompt` writes it.
  var put=function(id,text){var at=$(id);at.textContent='';String(text||'').split(/( +)/).forEach(function(part){if(!part)return;if(/^ +$/.test(part)){at.appendChild(document.createTextNode(part));return;}var word=document.createElement('span');word.className='fr-word';word.textContent=part;at.appendChild(word);});};
  if(!screen)return;
  var fresh=offer&&offer.expiresAt-now>60000&&shown.offer?shown.offer:'';
  screen.dataset.mode=shown.mode==='sign-in'?'sign-in':'setup';
- if(step===''){if(fresh){put('first-run-offer',fresh);$('first-run-offer-note').textContent='';screen.dataset.setup='ready';}return;}
+ if(step===''){if(fresh){put('first-screen-offer',fresh);$('first-screen-offer-note').textContent='';screen.dataset.setup='ready';}return;}
  if(step==='connected'||step==='opening'){
   screen.dataset.skipped=String(!shown.heading);
-  $('first-run-connected').textContent=shown.heading||'Opening your workspace';
-  if(!shown.heading)$('first-run-done-lead').textContent='';
+  $('first-screen-connected').textContent=shown.heading||'Opening your workspace';
+  if(!shown.heading)$('first-screen-done-lead').textContent='';
   return;
  }
  screen.dataset.manual=String(setup.manual===true);
- if(step==='expired'){put('first-run-prompt',fresh);return;}
- put('first-run-prompt',shown.prompt);
+ if(step==='expired'){put('first-screen-prompt',fresh);return;}
+ put('first-screen-prompt',shown.prompt);
  screen.dataset.copied=String(setup.copied===true);
  // An agent took the code without a copy: the heading says what it is doing.
  screen.dataset.handed=String(setup.handed===true);
  var who=(setup.polled&&setup.polled.agent)||'Your agent',names=screen.querySelectorAll('.fr-hand-agent');
  for(var j=0;j<names.length;j++)names[j].textContent=who;
- var lines=shown.lines||[],list=$('first-run-steps');
+ var lines=shown.lines||[],list=$('first-screen-steps');
  for(var i=0;i<lines.length;i++){
   var line=lines[i],item=document.createElement('li');
   item.className=line.done?'done':line.act?'act':line.wait?'wait':line.failed?'failed':'now';
@@ -218,17 +218,17 @@ globalThis.__tiloSetupPaint=function(){
  }
  if(code&&!(setup.polled&&setup.polled.resolved)){
   var minutes=Math.max(1,Math.ceil((code.expiresAt-now)/60000));
-  $('first-run-left').textContent='Works once, for '+(minutes===1?'1 more minute':minutes+' more minutes')+'.';
+  $('first-screen-left').textContent='Works once, for '+(minutes===1?'1 more minute':minutes+' more minutes')+'.';
  }
- $('first-run-net').textContent='Checking with '+location.host+'…';
+ $('first-screen-net').textContent='Checking with '+location.host+'…';
 };
 // The screen is here before its module is: a press on one of its buttons
 // before then is kept, and the module presses it again once it can answer,
 // so a person who clicks at once is not ignored.
-var early=globalThis.__tiloFirstRunEarly=[];
+var early=globalThis.__tiloFirstScreenEarly=[];
 document.addEventListener('click',function(e){
- if(globalThis.__tiloFirstRunReady)return;
- var b=e.target&&e.target.closest&&e.target.closest('#first-run button[id]');
+ if(globalThis.__tiloFirstScreenReady)return;
+ var b=e.target&&e.target.closest&&e.target.closest('#first-screen button[id]');
  if(b)early.push(b.id);
 },true);
 })();
@@ -524,12 +524,12 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
       #arrival > p, #arrival-bar > span { transition: none; }
       .tilo-pair-done, .tilo-pair-check { animation: none; }
     }
-    /* The first screen of a first visit (first-run.mjs, first-run.inline.js):
+    /* The first screen of a first visit (first-screen.mjs, first-screen.inline.js):
        setting Tilo up with an agent, skipping it, or signing in again. Plain
        page markup over everything while Tilo loads behind it, in the
        person's light or dark; it fades and leaves once done. */
-    #first-run { display: none; }
-    [data-first-run] #first-run {
+    #first-screen { display: none; }
+    [data-first-screen] #first-screen {
       --fr-ground: #121214; --fr-ink: #ececf0; --fr-muted: #a8a8b2; --fr-faint: #7f7f89; --fr-line: #26282e; --fr-edge: #3a3c44;
       --fr-well: #17181c; --fr-primary: #f2f2f4; --fr-primary-ink: #121214; --fr-primary-hover: #ffffff;
       --fr-quiet-hover: #1e1f24; --fr-focus: #9ab4ff; --fr-side: #3b4376; --fr-core: #6f82ff; --fr-on: #3fae6c; --fr-problem: #ff8a80;
@@ -542,40 +542,40 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
       scrollbar-width: thin; scrollbar-color: var(--fr-edge) transparent;
     }
     @media (prefers-color-scheme: light) {
-      [data-first-run] #first-run { color-scheme: light; }
-      [data-first-run] #first-run {
+      [data-first-screen] #first-screen { color-scheme: light; }
+      [data-first-screen] #first-screen {
         --fr-ground: #f7f7f9; --fr-ink: #17181c; --fr-muted: #55565f; --fr-faint: #73747d; --fr-line: #e1e2e7; --fr-edge: #c9cad2;
         --fr-well: #ffffff; --fr-primary: #17181c; --fr-primary-ink: #ffffff; --fr-primary-hover: #000000;
         --fr-quiet-hover: #ebebef; --fr-focus: #2a3fd1; --fr-side: #9fa6e0; --fr-core: #2a3fd1; --fr-on: #2f8f5b; --fr-problem: #b3261e;
       }
     }
-    #first-run[data-closing] { opacity: 0; pointer-events: none; }
-    html[data-first-run]:not(:has(#first-run[data-closing])) #bar { visibility: hidden; }
+    #first-screen[data-closing] { opacity: 0; pointer-events: none; }
+    html[data-first-screen]:not(:has(#first-screen[data-closing])) #bar { visibility: hidden; }
     /* Anchored from the top, not centred: what changes under the prompt never moves what is above it. */
     .fr-page { display: grid; gap: 40px; width: min(880px, 100%); margin: min(8vh, 72px) auto auto; }
     .fr-main, .fr-aside { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
     .fr-mark { display: block; margin-bottom: 28px; }
     .fr-mark .side { fill: var(--fr-side); } .fr-mark .core { fill: var(--fr-core); }
-    #first-run h1 { margin: 0 0 12px; font-size: 26px; font-weight: 650; line-height: 1.2; letter-spacing: -0.018em; text-wrap: balance; }
-    #first-run h1:focus { outline: none; }
+    #first-screen h1 { margin: 0 0 12px; font-size: 26px; font-weight: 650; line-height: 1.2; letter-spacing: -0.018em; text-wrap: balance; }
+    #first-screen h1:focus { outline: none; }
     .fr-lead { margin: 0 0 28px; max-width: 32em; color: var(--fr-muted); text-wrap: pretty; }
     /* Reopened from the card, the agent is set up in the workspace the tab shows. */
-    #first-run[data-reopened=true] .fr-for-first, #first-run:not([data-reopened=true]) .fr-for-reopened { display: none; }
-    #first-run button { font: inherit; color: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
-    #first-run button:focus-visible { outline: 2px solid var(--fr-focus); outline-offset: 2px; }
-    #first-run .fr-primary { display: inline-flex; align-items: center; justify-content: center; gap: 10px; box-sizing: border-box; width: min(360px, 100%); min-height: 52px; padding: 0 22px; border: 0; border-radius: 12px; background: var(--fr-primary); color: var(--fr-primary-ink); font-size: 16px; font-weight: 600; }
-    #first-run .fr-primary:hover { background: var(--fr-primary-hover); }
-    #first-run .fr-primary svg { flex: none; }
+    #first-screen[data-reopened=true] .fr-for-first, #first-screen:not([data-reopened=true]) .fr-for-reopened { display: none; }
+    #first-screen button { font: inherit; color: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+    #first-screen button:focus-visible { outline: 2px solid var(--fr-focus); outline-offset: 2px; }
+    #first-screen .fr-primary { display: inline-flex; align-items: center; justify-content: center; gap: 10px; box-sizing: border-box; width: min(360px, 100%); min-height: 52px; padding: 0 22px; border: 0; border-radius: 12px; background: var(--fr-primary); color: var(--fr-primary-ink); font-size: 16px; font-weight: 600; }
+    #first-screen .fr-primary:hover { background: var(--fr-primary-hover); }
+    #first-screen .fr-primary svg { flex: none; }
     .fr-caption { margin: 10px 0 0; font-size: 13px; color: var(--fr-faint); }
     .fr-links { display: flex; flex-wrap: wrap; gap: 4px; margin: 14px 0 0 -12px; }
-    #first-run .fr-quiet { min-height: 44px; padding: 0 12px; border: 0; border-radius: 8px; background: none; color: var(--fr-muted); font-size: 15px; }
-    #first-run .fr-quiet:hover, #first-run .fr-quiet[aria-expanded=true] { background: var(--fr-quiet-hover); color: var(--fr-ink); }
-    #first-run .fr-secondary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; width: 100%; min-height: 44px; padding: 0 16px; border: 1px solid var(--fr-edge); border-radius: 10px; background: var(--fr-well); font-weight: 500; }
-    #first-run .fr-secondary ~ .fr-secondary { margin-top: 10px; }
-    #first-run .fr-secondary:hover { border-color: var(--fr-faint); }
+    #first-screen .fr-quiet { min-height: 44px; padding: 0 12px; border: 0; border-radius: 8px; background: none; color: var(--fr-muted); font-size: 15px; }
+    #first-screen .fr-quiet:hover, #first-screen .fr-quiet[aria-expanded=true] { background: var(--fr-quiet-hover); color: var(--fr-ink); }
+    #first-screen .fr-secondary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; width: 100%; min-height: 44px; padding: 0 16px; border: 1px solid var(--fr-edge); border-radius: 10px; background: var(--fr-well); font-weight: 500; }
+    #first-screen .fr-secondary ~ .fr-secondary { margin-top: 10px; }
+    #first-screen .fr-secondary:hover { border-color: var(--fr-faint); }
     .fr-aside { padding-top: 28px; border-top: 1px solid var(--fr-line); }
     .fr-eyebrow { margin: 0 0 4px; font-size: 13px; color: var(--fr-faint); }
-    #first-run h2 { margin: 0 0 16px; font-size: 17px; font-weight: 600; }
+    #first-screen h2 { margin: 0 0 16px; font-size: 17px; font-weight: 600; }
     .fr-note { margin: 12px 0 0; font-size: 13px; color: var(--fr-faint); text-wrap: pretty; }
     .fr-busy { display: none; }
     [aria-busy=true] > .fr-busy { display: block; }
@@ -585,190 +585,190 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     .fr-label { margin: 0 0 8px; font-size: 13px; font-weight: 500; color: var(--fr-muted); }
     .fr-field { display: flex; align-items: center; gap: 8px; box-sizing: border-box; width: 100%; margin: 0 0 20px; padding: 4px 4px 4px 14px; border: 1px solid var(--fr-line); border-radius: 10px; background: var(--fr-well); }
     .fr-field code { flex: 1; min-width: 0; overflow-wrap: anywhere; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    #first-run .fr-copy { flex: none; min-height: 32px; padding: 0 12px; border: 0; border-radius: 8px; background: none; font-size: 13px; font-weight: 500; }
-    #first-run .fr-copy:hover { background: var(--fr-quiet-hover); }
+    #first-screen .fr-copy { flex: none; min-height: 32px; padding: 0 12px; border: 0; border-radius: 8px; background: none; font-size: 13px; font-weight: 500; }
+    #first-screen .fr-copy:hover { background: var(--fr-quiet-hover); }
     /* After a copy the same screen follows the code: the heading and lead
        change in place, the prompt stays where it was, and what the agent
        did so far shows under it. The aside's column stays, so nothing
        moves sideways. */
-    html:not([data-first-run=waiting]):not([data-first-run=expired]):not([data-first-run=failed]) #first-run .fr-for-wait { display: none; }
-    html:is([data-first-run=waiting], [data-first-run=expired], [data-first-run=failed]) #first-run .fr-for-start { display: none; }
-    [data-first-run=connected] .fr-start { display: none; }
-    [data-first-run]:not([data-first-run='']) .fr-aside { visibility: hidden; }
+    html:not([data-first-screen=waiting]):not([data-first-screen=expired]):not([data-first-screen=failed]) #first-screen .fr-for-wait { display: none; }
+    html:is([data-first-screen=waiting], [data-first-screen=expired], [data-first-screen=failed]) #first-screen .fr-for-start { display: none; }
+    [data-first-screen=connected] .fr-start { display: none; }
+    [data-first-screen]:not([data-first-screen='']) .fr-aside { visibility: hidden; }
     /* Opened again by a person who is set up already ("Connect an agent"):
        there is nobody for the Returning? column to sign in. */
-    #first-run[data-reopened=true] .fr-aside { display: none; }
+    #first-screen[data-reopened=true] .fr-aside { display: none; }
     @media (min-width: 760px) {
-      #first-run[data-reopened=true] .fr-page { grid-template-columns: minmax(0, 1fr); }
+      #first-screen[data-reopened=true] .fr-page { grid-template-columns: minmax(0, 1fr); }
     }
     /* Stacked under the main column (a phone), the hidden aside would only lengthen the page. */
-    @media (max-width: 759.98px) { [data-first-run]:not([data-first-run='']) .fr-aside { display: none; } }
+    @media (max-width: 759.98px) { [data-first-screen]:not([data-first-screen='']) .fr-aside { display: none; } }
     /* A phone's prompt in a smaller mono size, so most of it fits without scrolling sideways. */
     @media (max-width: 600px) { .fr-offer pre { font-size: 12px; } }
     /* The headings, and the leads, take one place each, whichever shows. */
     .fr-swap { display: grid; }
     .fr-swap > * { grid-area: 1 / 1; }
-    #first-run .fr-swap > * { display: block !important; }
-    html:not([data-first-run=waiting]):not([data-first-run=expired]):not([data-first-run=failed]) #first-run .fr-swap > .fr-for-wait,
-    html:is([data-first-run=waiting], [data-first-run=expired], [data-first-run=failed]) #first-run .fr-swap > .fr-for-start,
-    #first-run[data-mode=setup] .fr-swap > .fr-for-sign-in, #first-run[data-mode=sign-in] .fr-swap > .fr-for-setup { visibility: hidden; }
+    #first-screen .fr-swap > * { display: block !important; }
+    html:not([data-first-screen=waiting]):not([data-first-screen=expired]):not([data-first-screen=failed]) #first-screen .fr-swap > .fr-for-wait,
+    html:is([data-first-screen=waiting], [data-first-screen=expired], [data-first-screen=failed]) #first-screen .fr-swap > .fr-for-start,
+    #first-screen[data-mode=setup] .fr-swap > .fr-for-sign-in, #first-screen[data-mode=sign-in] .fr-swap > .fr-for-setup { visibility: hidden; }
     [data-mode=setup] .fr-for-sign-in, [data-mode=sign-in] .fr-for-setup { display: none; }
     .fr-well { display: flex; align-items: flex-start; box-sizing: border-box; width: 100%; margin: 0 0 24px; border: 1px solid var(--fr-line); border-radius: 12px; background: var(--fr-well); }
     .fr-well pre { flex: 1; min-width: 0; box-sizing: border-box; max-height: 168px; margin: 0; padding: 12px 4px 12px 16px; overflow: auto; font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--fr-ink); white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; -webkit-user-select: all; }
     /* The prompt wraps only between its words: a flag or a URL stays whole, and one wider than the
-       box scrolls sideways rather than breaking (first-run.mjs `showPrompt`). */
+       box scrolls sideways rather than breaking (first-screen.mjs `showPrompt`). */
     .fr-offer pre { overflow-wrap: normal; }
     .fr-offer .fr-word { white-space: nowrap; }
-    #first-run [hidden] { display: none !important; }
+    #first-screen [hidden] { display: none !important; }
     /* The prompt the primary button copies, there before the click; until
        the page has its code, the well says what it waits for, or why there
        is none, with a way to try again. */
     .fr-start { align-self: stretch; }
     .fr-offer { min-height: 66px; max-width: 520px; margin-bottom: 16px; }
-    #first-run-offer:empty, .fr-offer-note:empty { display: none; }
+    #first-screen-offer:empty, .fr-offer-note:empty { display: none; }
     .fr-offer-note { flex: 1; margin: 0; padding: 12px 16px; font-size: 14px; color: var(--fr-faint); }
     .fr-offer-note[data-problem=true] { color: var(--fr-problem); }
     /* A setup nobody has asked for yet has no prompt to copy: the button
        offers to make one, and the box and its caption come with it. */
-    #first-run:not([data-setup]) .fr-start > .fr-offer,
-    #first-run:not([data-setup]) .fr-start > .fr-caption { display: none; }
-    #first-run:not([data-setup]) #first-run-agent > .fr-asked,
-    #first-run[data-setup] #first-run-agent > .fr-not-asked { display: none; }
+    #first-screen:not([data-setup]) .fr-start > .fr-offer,
+    #first-screen:not([data-setup]) .fr-start > .fr-caption { display: none; }
+    #first-screen:not([data-setup]) #first-screen-agent > .fr-asked,
+    #first-screen[data-setup] #first-screen-agent > .fr-not-asked { display: none; }
     /* The prompt takes the box's whole width, so it wraps the same before and after the click; the
        box's own Copy stands under it at the box's trailing edge, in line with its padding. */
     .fr-offer { flex-direction: column; align-items: stretch; }
     .fr-offer pre { padding: 12px 16px; }
-    #first-run .fr-offer .fr-copy { align-self: flex-end; margin: 0 6px 6px; }
+    #first-screen .fr-offer .fr-copy { align-self: flex-end; margin: 0 6px 6px; }
     /* The button that copies the prompt is as wide as the box it copies. */
-    #first-run .fr-start > .fr-primary { width: 100%; max-width: 520px; }
-    #first-run .fr-start > .fr-primary:disabled { opacity: 0.4; cursor: default; }
-    #first-run[data-setup=failed] .fr-start > .fr-caption { visibility: hidden; }
-    #first-run-sign-in-note { margin: 8px 0 0; font-size: 13px; color: var(--fr-muted); }
-    #first-run-sign-in-note:empty { display: none; }
-    #first-run-sign-in-note[data-problem=true] { color: var(--fr-problem); }
+    #first-screen .fr-start > .fr-primary { width: 100%; max-width: 520px; }
+    #first-screen .fr-start > .fr-primary:disabled { opacity: 0.4; cursor: default; }
+    #first-screen[data-setup=failed] .fr-start > .fr-caption { visibility: hidden; }
+    #first-screen-sign-in-note { margin: 8px 0 0; font-size: 13px; color: var(--fr-muted); }
+    #first-screen-sign-in-note:empty { display: none; }
+    #first-screen-sign-in-note[data-problem=true] { color: var(--fr-problem); }
     .fr-copied { display: none; margin: 4px 0 0; font-size: 13px; color: var(--fr-on); }
-    #first-run[data-copied=true] .fr-copied { display: block; }
-    html[data-first-run=expired] #first-run .fr-copied, html[data-first-run=failed] #first-run .fr-copied { display: none; }
+    #first-screen[data-copied=true] .fr-copied { display: block; }
+    html[data-first-screen=expired] #first-screen .fr-copied, html[data-first-screen=failed] #first-screen .fr-copied { display: none; }
     /* An agent took the code without the Copy button (typed, or copied by
        hand): the heading says what the agent is doing, and the paste
        instructions and the prompt it already has stay out of the way. */
-    #first-run .fr-swap > .fr-hand { visibility: hidden; }
-    #first-run[data-handed=true][data-mode=setup] .fr-swap > .fr-for-setup.fr-hand,
-    #first-run[data-handed=true][data-mode=sign-in] .fr-swap > .fr-for-sign-in.fr-hand { visibility: visible; }
-    #first-run[data-handed=true] .fr-offer,
-    #first-run[data-handed=true] .fr-lead,
-    #first-run[data-handed=true] .fr-copied { display: none; }
+    #first-screen .fr-swap > .fr-hand { visibility: hidden; }
+    #first-screen[data-handed=true][data-mode=setup] .fr-swap > .fr-for-setup.fr-hand,
+    #first-screen[data-handed=true][data-mode=sign-in] .fr-swap > .fr-for-sign-in.fr-hand { visibility: visible; }
+    #first-screen[data-handed=true] .fr-offer,
+    #first-screen[data-handed=true] .fr-lead,
+    #first-screen[data-handed=true] .fr-copied { display: none; }
     /* The headings share one grid cell, so the paste one is hidden, not undrawn. */
-    #first-run[data-handed=true] .fr-swap > #first-run-heading-wait { visibility: hidden; }
+    #first-screen[data-handed=true] .fr-swap > #first-screen-heading-wait { visibility: hidden; }
     .fr-well-bar { flex: none; padding: 6px; }
     [data-manual=true] .fr-offer, [data-manual=true] .fr-lead, [data-manual=true] .fr-caption, [data-manual=true] .fr-copied { display: none; }
-    #first-run-steps { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; font-size: 15px; }
-    #first-run-steps li { display: flex; align-items: center; gap: 12px; }
-    #first-run-steps li::before { content: ''; flex: none; box-sizing: border-box; width: 16px; height: 16px; border-radius: 50%; }
-    #first-run-steps .done { color: var(--fr-muted); }
-    #first-run-steps .done::before { background: var(--fr-on) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4.5 8.2l2.3 2.3 4.7-4.9' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 16px no-repeat; }
-    #first-run-steps .now::before, .fr-spinner { border: 2px solid var(--fr-line); border-top-color: var(--fr-ink); animation: tilo-spin 900ms linear infinite; }
-    #first-run-steps .act { font-weight: 600; }
-    #first-run-steps .act::before { border: 2px solid var(--fr-core); }
-    #first-run-steps .wait { color: var(--fr-muted); }
-    #first-run-steps .failed { color: var(--fr-problem); }
-    #first-run-steps .failed::before { border: 2px solid var(--fr-problem); }
+    #first-screen-steps { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; font-size: 15px; }
+    #first-screen-steps li { display: flex; align-items: center; gap: 12px; }
+    #first-screen-steps li::before { content: ''; flex: none; box-sizing: border-box; width: 16px; height: 16px; border-radius: 50%; }
+    #first-screen-steps .done { color: var(--fr-muted); }
+    #first-screen-steps .done::before { background: var(--fr-on) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4.5 8.2l2.3 2.3 4.7-4.9' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 16px no-repeat; }
+    #first-screen-steps .now::before, .fr-spinner { border: 2px solid var(--fr-line); border-top-color: var(--fr-ink); animation: tilo-spin 900ms linear infinite; }
+    #first-screen-steps .act { font-weight: 600; }
+    #first-screen-steps .act::before { border: 2px solid var(--fr-core); }
+    #first-screen-steps .wait { color: var(--fr-muted); }
+    #first-screen-steps .failed { color: var(--fr-problem); }
+    #first-screen-steps .failed::before { border: 2px solid var(--fr-problem); }
     /* Why nothing new shows: offline, a host not answering, an agent quiet for long. */
-    #first-run-net { margin: 10px 0 0 28px; font-size: 13px; color: var(--fr-muted); }
-    #first-run-net:empty { display: none; }
+    #first-screen-net { margin: 10px 0 0 28px; font-size: 13px; color: var(--fr-muted); }
+    #first-screen-net:empty { display: none; }
     /* The agent stopped: a new prompt to try again, under its reason. */
-    #first-run[data-agent-failed=true] #first-run-retry { display: inline-flex; }
-    #first-run[data-agent-failed=true] .fr-copied { display: none; }
+    #first-screen[data-agent-failed=true] #first-screen-retry { display: inline-flex; }
+    #first-screen[data-agent-failed=true] .fr-copied { display: none; }
     /* Opening after Skip: nothing succeeded, so no check, only the wait. */
-    #first-run .fr-opening { display: none; width: 28px; height: 28px; margin-bottom: 20px; border-width: 3px; }
-    #first-run[data-skipped=true] .fr-check { display: none; }
-    #first-run[data-skipped=true] .fr-opening { display: block; }
-    #first-run-done-lead:empty { display: none; }
-    #first-run-steps .wait::before { border: 2px solid var(--fr-edge); }
+    #first-screen .fr-opening { display: none; width: 28px; height: 28px; margin-bottom: 20px; border-width: 3px; }
+    #first-screen[data-skipped=true] .fr-check { display: none; }
+    #first-screen[data-skipped=true] .fr-opening { display: block; }
+    #first-screen-done-lead:empty { display: none; }
+    #first-screen-steps .wait::before { border: 2px solid var(--fr-edge); }
     .fr-spinner { flex: none; box-sizing: border-box; width: 14px; height: 14px; border-radius: 50%; }
-    #first-run-left { margin: 6px 0 0 28px; font-size: 13px; color: var(--fr-faint); font-variant-numeric: tabular-nums; }
-    #first-run-left:empty { display: none; }
-    #first-run-problem { margin: 12px 0 0; font-size: 14px; color: var(--fr-problem); }
-    #first-run-problem:empty { display: none; }
-    #first-run #first-run-retry { display: none; margin-top: 20px; }
-    [data-first-run=expired] #first-run #first-run-retry, [data-first-run=failed] #first-run #first-run-retry { display: inline-flex; }
-    [data-first-run=expired] #first-run-steps, [data-first-run=failed] #first-run-steps, [data-first-run=expired] #first-run-left, [data-first-run=failed] .fr-well { display: none; }
+    #first-screen-left { margin: 6px 0 0 28px; font-size: 13px; color: var(--fr-faint); font-variant-numeric: tabular-nums; }
+    #first-screen-left:empty { display: none; }
+    #first-screen-problem { margin: 12px 0 0; font-size: 14px; color: var(--fr-problem); }
+    #first-screen-problem:empty { display: none; }
+    #first-screen #first-screen-retry { display: none; margin-top: 20px; }
+    [data-first-screen=expired] #first-screen #first-screen-retry, [data-first-screen=failed] #first-screen #first-screen-retry { display: inline-flex; }
+    [data-first-screen=expired] #first-screen-steps, [data-first-screen=failed] #first-screen-steps, [data-first-screen=expired] #first-screen-left, [data-first-screen=failed] .fr-well { display: none; }
     /* It did not work: one sentence saying why, and Try again. */
-    [data-first-run=failed] #first-run :is(.fr-swap, .fr-leads, #first-run-left, #first-run-net) { display: none; }
-    [data-first-run=failed] #first-run .fr-for-expired, html:not([data-first-run=failed]) #first-run .fr-for-failed { display: none; }
-    [data-first-run=failed] #first-run-problem { margin: 0; font-size: 17px; line-height: 1.5; color: var(--fr-ink); max-width: 520px; }
+    [data-first-screen=failed] #first-screen :is(.fr-swap, .fr-leads, #first-screen-left, #first-screen-net) { display: none; }
+    [data-first-screen=failed] #first-screen .fr-for-expired, html:not([data-first-screen=failed]) #first-screen .fr-for-failed { display: none; }
+    [data-first-screen=failed] #first-screen-problem { margin: 0; font-size: 17px; line-height: 1.5; color: var(--fr-ink); max-width: 520px; }
     .fr-expired { display: none; margin: 12px 0 0; font-size: 14px; color: var(--fr-muted); }
-    [data-first-run=expired] .fr-expired { display: block; }
+    [data-first-screen=expired] .fr-expired { display: block; }
     .fr-links.fr-for-wait { margin-top: 28px; }
-    #first-run-steps { margin-top: 20px; }
+    #first-screen-steps { margin-top: 20px; }
     /* Done: the agent is in, or this tab is signed in. */
     .fr-done { display: none; flex-direction: column; align-items: flex-start; }
-    [data-first-run=connected] .fr-done { display: flex; }
+    [data-first-screen=connected] .fr-done { display: flex; }
     .fr-check { position: relative; width: 44px; height: 44px; margin-bottom: 20px; border-radius: 50%; background: var(--fr-on); animation: tilo-pair-pop 480ms cubic-bezier(.2, 1.4, .4, 1) both; }
     .fr-check::after { content: ''; position: absolute; left: 16px; top: 10px; width: 9px; height: 18px; border: solid #fff; border-width: 0 3px 3px 0; transform: rotate(45deg); }
     .fr-said { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     @media (min-width: 760px) {
-      [data-first-run] #first-run { padding: 48px; }
-      [data-first-run] .fr-page { grid-template-columns: minmax(0, 1fr) 260px; gap: 72px; align-items: start; }
+      [data-first-screen] #first-screen { padding: 48px; }
+      [data-first-screen] .fr-page { grid-template-columns: minmax(0, 1fr) 260px; gap: 72px; align-items: start; }
       .fr-aside { padding: 0 0 0 40px; border-top: 0; border-left: 1px solid var(--fr-line); margin-top: 72px; }
-      #first-run h1 { font-size: 32px; }
+      #first-screen h1 { font-size: 32px; }
       .fr-lead { font-size: 16px; }
     }
     @media (prefers-reduced-motion: reduce) {
-      [data-first-run] #first-run { transition: none; }
-      .fr-spinner, .fr-check, #first-run-steps .now::before { animation: none; }
+      [data-first-screen] #first-screen { transition: none; }
+      .fr-spinner, .fr-check, #first-screen-steps .now::before { animation: none; }
     }
   </style>
 </head>
 <body>
-  <main id="first-run" data-mode="setup" aria-labelledby="first-run-heading"><div class="fr-page">
+  <main id="first-screen" data-mode="setup" aria-labelledby="first-screen-heading"><div class="fr-page">
     <div class="fr-main">
       <svg class="fr-mark" aria-hidden="true" viewBox="0 0 100 100" width="40" height="40"><path class="side" d="M10.98 31.85Q10.98 27.97 14.4 26.12L20.26 22.97Q24.84 20.51 24.84 25.71L24.84 74.29Q24.84 79.49 20.26 77.03L14.4 73.88Q10.98 72.03 10.98 68.15Z"/><path class="side" d="M89.02 31.85Q89.02 27.97 85.6 26.12L79.74 22.97Q75.16 20.51 75.16 25.71L75.16 74.29Q75.16 79.49 79.74 77.03L85.6 73.88Q89.02 72.03 89.02 68.15Z"/><rect class="core" x="29" y="16" width="42" height="68" rx="6"/></svg>
       <div class="fr-start">
-        <div class="fr-swap"><h1 id="first-run-heading" class="fr-for-start" tabindex="-1">Let your agent set up Tilo</h1>
-        <h1 id="first-run-heading-wait" class="fr-for-wait" tabindex="-1">Paste it into your agent</h1>
-        <h1 id="first-run-heading-hand" class="fr-for-wait fr-for-setup fr-hand" tabindex="-1"><span class="fr-hand-agent">Your agent</span> is setting up Tilo</h1>
-        <h1 id="first-run-heading-hand-sign-in" class="fr-for-wait fr-for-sign-in fr-hand" tabindex="-1"><span class="fr-hand-agent">Your agent</span> is signing this tab in</h1></div>
+        <div class="fr-swap"><h1 id="first-screen-heading" class="fr-for-start" tabindex="-1">Let your agent set up Tilo</h1>
+        <h1 id="first-screen-heading-wait" class="fr-for-wait" tabindex="-1">Paste it into your agent</h1>
+        <h1 id="first-screen-heading-hand" class="fr-for-wait fr-for-setup fr-hand" tabindex="-1"><span class="fr-hand-agent">Your agent</span> is setting up Tilo</h1>
+        <h1 id="first-screen-heading-hand-sign-in" class="fr-for-wait fr-for-sign-in fr-hand" tabindex="-1"><span class="fr-hand-agent">Your agent</span> is signing this tab in</h1></div>
         <div class="fr-leads"><p class="fr-lead fr-for-start fr-for-first">Paste this line into Claude Code, Codex or any agent. It installs Tilo and signs in as you, and this tab becomes your workspace, with your agent in it.</p>
         <p class="fr-lead fr-for-start fr-for-reopened">Paste this line into Claude Code, Codex or any agent. It installs Tilo and signs in as you, in the workspace this tab shows, where you see it work.</p>
         <p class="fr-lead fr-for-wait fr-for-setup">Paste the prompt into Claude Code, Codex or any agent; this tab follows along.</p>
         <p class="fr-lead fr-for-wait fr-for-sign-in">Paste the prompt into your agent on a computer where you use Tilo, and it signs this tab in as you.</p></div>
-        <div class="fr-well fr-offer"><pre id="first-run-offer" class="fr-for-start" aria-label="The prompt"></pre><pre id="first-run-prompt" class="fr-for-wait" aria-label="The prompt"></pre><p id="first-run-offer-note" class="fr-offer-note fr-for-start" data-problem="false">Getting your code…</p><button id="first-run-offer-retry" class="fr-copy fr-for-start" type="button" hidden>Try again</button><button id="first-run-again" class="fr-copy fr-for-wait" type="button">Copy</button></div>
-        <button id="first-run-agent" class="fr-primary fr-for-start" type="button"><svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg><span class="fr-not-asked">Set up with your agent</span><span class="fr-asked">Copy prompt</span></button>
+        <div class="fr-well fr-offer"><pre id="first-screen-offer" class="fr-for-start" aria-label="The prompt"></pre><pre id="first-screen-prompt" class="fr-for-wait" aria-label="The prompt"></pre><p id="first-screen-offer-note" class="fr-offer-note fr-for-start" data-problem="false">Getting your code…</p><button id="first-screen-offer-retry" class="fr-copy fr-for-start" type="button" hidden>Try again</button><button id="first-screen-again" class="fr-copy fr-for-wait" type="button">Copy</button></div>
+        <button id="first-screen-agent" class="fr-primary fr-for-start" type="button"><svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg><span class="fr-not-asked">Set up with your agent</span><span class="fr-asked">Copy prompt</span></button>
         <p class="fr-caption fr-for-start">The code in it works once, for 10 minutes, in this tab only.</p>
         <p class="fr-copied fr-for-wait">Copied to your clipboard.</p>
-        <p id="first-run-problem" class="fr-for-wait"></p>
-        <ol id="first-run-steps" class="fr-for-wait" aria-label="What your agent did"></ol>
-        <p id="first-run-left" class="fr-for-wait"></p>
-        <p id="first-run-net" class="fr-for-wait"></p>
+        <p id="first-screen-problem" class="fr-for-wait"></p>
+        <ol id="first-screen-steps" class="fr-for-wait" aria-label="What your agent did"></ol>
+        <p id="first-screen-left" class="fr-for-wait"></p>
+        <p id="first-screen-net" class="fr-for-wait"></p>
         <p class="fr-expired">That prompt ran out before an agent used it. Here is a fresh one.</p>
-        <button id="first-run-retry" class="fr-primary" type="button"><span class="fr-for-expired">Copy a new prompt</span><span class="fr-for-failed">Try again</span></button>
-        <div class="fr-links fr-for-start"><button id="first-run-manual-toggle" class="fr-quiet" type="button" aria-expanded="false" aria-controls="first-run-manual">Set up manually</button><button id="first-run-skip" class="fr-quiet" type="button">Skip for now</button></div>
-        <div class="fr-links fr-for-wait"><button id="first-run-back" class="fr-quiet" type="button">Back</button><button id="first-run-skip-wait" class="fr-quiet fr-for-setup" type="button">Skip for now</button></div>
-        <div id="first-run-manual" class="fr-manual fr-for-start">
+        <button id="first-screen-retry" class="fr-primary" type="button"><span class="fr-for-expired">Copy a new prompt</span><span class="fr-for-failed">Try again</span></button>
+        <div class="fr-links fr-for-start"><button id="first-screen-manual-toggle" class="fr-quiet" type="button" aria-expanded="false" aria-controls="first-screen-manual">Set up manually</button><button id="first-screen-skip" class="fr-quiet" type="button">Skip for now</button></div>
+        <div class="fr-links fr-for-wait"><button id="first-screen-back" class="fr-quiet" type="button">Back</button><button id="first-screen-skip-wait" class="fr-quiet fr-for-setup" type="button">Skip for now</button></div>
+        <div id="first-screen-manual" class="fr-manual fr-for-start">
           <p class="fr-label">Tilo’s MCP server, for any agent</p>
-          <div class="fr-field"><code id="first-run-mcp">https://mcp.tilo.sh</code><button id="first-run-copy-mcp" class="fr-copy" type="button">Copy</button></div>
+          <div class="fr-field"><code id="first-screen-mcp">https://mcp.tilo.sh</code><button id="first-screen-copy-mcp" class="fr-copy" type="button">Copy</button></div>
           <p class="fr-label">Or in a terminal</p>
-          <div class="fr-well"><pre id="first-run-commands" aria-label="The commands"></pre><div class="fr-well-bar"><button id="first-run-copy-commands" class="fr-copy" type="button">Copy</button></div></div>
-          <p id="first-run-manual-left" class="fr-caption"></p>
+          <div class="fr-well"><pre id="first-screen-commands" aria-label="The commands"></pre><div class="fr-well-bar"><button id="first-screen-copy-commands" class="fr-copy" type="button">Copy</button></div></div>
+          <p id="first-screen-manual-left" class="fr-caption"></p>
         </div>
       </div>
-      <div class="fr-done"><span class="fr-check" aria-hidden="true"></span><span class="fr-spinner fr-opening" aria-hidden="true"></span><h1 id="first-run-connected">Your agent is in your workspace</h1><p id="first-run-done-lead" class="fr-lead">Opening your workspace…</p></div>
+      <div class="fr-done"><span class="fr-check" aria-hidden="true"></span><span class="fr-spinner fr-opening" aria-hidden="true"></span><h1 id="first-screen-connected">Your agent is in your workspace</h1><p id="first-screen-done-lead" class="fr-lead">Opening your workspace…</p></div>
     </div>
-    <aside class="fr-aside" aria-labelledby="first-run-sign-in">
+    <aside class="fr-aside" aria-labelledby="first-screen-sign-in">
       <p class="fr-eyebrow">Returning?</p>
-      <h2 id="first-run-sign-in">Sign in</h2>
-      <button id="first-run-agent-sign-in" class="fr-secondary" type="button">Sign in with your agent</button>
-      <p id="first-run-sign-in-note" data-problem="false"></p>
-      <button id="first-run-passkey" class="fr-secondary" type="button" aria-busy="false"><span class="fr-spinner fr-busy" aria-hidden="true"></span>Use a passkey</button>
+      <h2 id="first-screen-sign-in">Sign in</h2>
+      <button id="first-screen-agent-sign-in" class="fr-secondary" type="button">Sign in with your agent</button>
+      <p id="first-screen-sign-in-note" data-problem="false"></p>
+      <button id="first-screen-passkey" class="fr-secondary" type="button" aria-busy="false"><span class="fr-spinner fr-busy" aria-hidden="true"></span>Use a passkey</button>
       <p class="fr-note">Or open a pairing link from a device where you’re signed in.</p>
     </aside>
-    <p id="first-run-status" class="fr-said" role="status"></p>
+    <p id="first-screen-status" class="fr-said" role="status"></p>
   </div></main>
   <script>globalThis.__tiloSetupPaint&&globalThis.__tiloSetupPaint();</script>
   <!-- The first screen works as soon as this small module is in, not after
        the entry page's modules: `async` runs it the moment it arrives. -->
-  <script type="module" async src="./first-run.mjs"></script>
+  <script type="module" async src="./first-screen.mjs"></script>
   <div id="surface"></div>
   <div id="arrival" aria-hidden="true"><svg viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><p id="arrival-line"></p><span id="arrival-bar" hidden><span></span></span></div>
   <p id="arrival-note" role="status" hidden></p>

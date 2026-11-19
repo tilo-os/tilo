@@ -28,16 +28,16 @@ const siteCertificate = await servedCertificate(site);
 const browser = await launch({args: [pinnedCertificates([siteCertificate, await servedCertificate(server)])]});
 // A stranger's browser: nothing kept from an earlier visit, so the entry
 // page opens on its first screen unless the entry takes its place.
-const tab = await browser.tab({firstRun: true});
+const tab = await browser.tab({firstScreen: true});
 await tab.send('Page.enable', {});
 await tab.send('Emulation.setDeviceMetricsOverride', shellMetrics);
 
 const failures = () => tab.log.filter(line => /^(EXC|ERROR) /.test(line) || /panic/i.test(line));
-// The first screen of a first visit (`#first-run` in the entry page) stays in
+// The first screen of a first visit (`#first-screen` in the entry page) stays in
 // the document once it is done with, hidden, so the person's card can show it
-// again: what shows is whether the page set `data-first-run` and displayed it.
-const firstScreenShown = `(document.documentElement.dataset.firstRun !== undefined
-  && getComputedStyle(document.getElementById('first-run')).display !== 'none')`;
+// again: what shows is whether the page set `data-first-screen` and displayed it.
+const firstScreenShown = `(document.documentElement.dataset.firstScreen !== undefined
+  && getComputedStyle(document.getElementById('first-screen')).display !== 'none')`;
 const shot = async name => {
   const png = await tab.screenshot().catch(() => null);
   if (png) writeFileSync(join(out, name), png);
@@ -99,7 +99,7 @@ const until = async (expression, what, timeout = stepLimit(4)) => {
 // at a site whose home nothing admits them to. Taken from a browser of its
 // own, so neither visit sees the other's storage.
 if (before) {
-  const was = await browser.tab({firstRun: true});
+  const was = await browser.tab({firstScreen: true});
   await was.send('Emulation.setDeviceMetricsOverride', shellMetrics);
   await was.navigate(before);
   await was.waitFor(firstScreenShown, {timeout: stepLimit(12)}).catch(() => false);
@@ -107,7 +107,7 @@ if (before) {
   if (png) writeFileSync(join(out, '0-before-today.png'), png);
   report.before = await was.evaluate(`({
     firstScreen: ${firstScreenShown},
-    heading: document.querySelector('#first-run h1')?.textContent?.trim() ?? null,
+    heading: document.querySelector('#first-screen h1')?.textContent?.trim() ?? null,
     refusal: document.documentElement.dataset.refusal ?? null,
   })`).catch(() => null);
   console.log(`ok: the before shot (${report.before?.heading})`);
@@ -175,7 +175,7 @@ console.log(`ok: a reload stays on the wait list (${report.reloadListed})`);
 // Someone else's phone, so a browser of its own: a tab beside the first one
 // shares its storage, and so the address already listed, and never offers the
 // field again.
-const phone = await browser.tab({context: await browser.context(), firstRun: true});
+const phone = await browser.tab({context: await browser.context(), firstScreen: true});
 // The phone speaks German as a browser does: the locale override, and the
 // list of languages beside it, which the override leaves as it was.
 await phone.send('Emulation.setLocaleOverride', {locale: 'de-DE'});

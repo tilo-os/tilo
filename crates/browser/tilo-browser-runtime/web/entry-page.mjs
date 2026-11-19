@@ -29,7 +29,7 @@ import {connectPeer, httpsPost, identityProfile, inspectInvitation, invitedServe
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceKey} from './device-key.mjs';
 import {createIdentityActions, setupOrigin, syncProfile} from './identity-actions.mjs';
-import {firstRun, MCP_URL, openFirstRun, openSignIn, readSetup, setupDone, setupLater} from './first-run.mjs';
+import {firstScreen, MCP_URL, openFirstScreen, openSignIn, readSetup, setupDone, setupLater} from './first-screen.mjs';
 import {fetchPersonProfile, pickImageFile, squarePhoto} from './profile-photos.mjs';
 import {askOwnPairing, assistantAddress, deviceLabel, ofThisSite, ownPairing, PAIRING_SIGNING_IN, PAIRING_WAIT, PAIRING_WHOSE, pairingFailure, pairingStatus, pairingWhere, pairingWhose, pairSecret, whenRequested} from './pairing.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
@@ -918,7 +918,7 @@ export async function startEntryPage({mode}) {
     if (root.arrival === 'done' && step !== 'stopped') return;
     // A page that cannot go on has no workspace to set an agent up in: the
     // first screen says so rather than wait.
-    if (step === 'stopped') firstRun?.unavailable({code: 'stopped'});
+    if (step === 'stopped') firstScreen?.unavailable({code: 'stopped'});
     root.arrival = step;
     if (notes[step] && [loading, opening, drawing].includes(status.textContent)) status.textContent = notes[step];
   };
@@ -1248,11 +1248,11 @@ export async function startEntryPage({mode}) {
       const identity = kept?.paired ? undefined : await browserPerson();
       // The first screen's codes need only the person and their host, not
       // the workspace's session: made now, while the entry lets them in. A
-      // first visit the first paint held (`firstRun.held`) has none made
+      // first visit the first paint held (`firstScreen.held`) has none made
       // until it is in: a site taking people by invitation only may send it
       // to its wait list, and no code is owed to a visitor it turns away.
-      if (firstRun && !firstRun.held && identity && !embed) {
-        offerFirstRunCodes({origin: workspace.host.origin, identity, runtime, link: admitting?.link,
+      if (firstScreen && !firstScreen.held && identity && !embed) {
+        offerFirstScreenCodes({origin: workspace.host.origin, identity, runtime, link: admitting?.link,
           home: homeAdmissionWorkspace(admitting?.entry), pair: pairSignIn(workspace)});
       }
       // A page that came back here by itself because the host turned it
@@ -1647,15 +1647,15 @@ export async function startEntryPage({mode}) {
       void notifyThisBrowser({peer: page.peer,
         root: identity?.userPublicKey && identity.userPublicKey === page.peer?.userPublicKey ? identity : undefined});
     }
-    // The first screen (first-run.mjs) sets an agent up through this tab's
+    // The first screen (first-screen.mjs) sets an agent up through this tab's
     // root and signs in with an agent, both through a login code its host
     // makes, and signs in with a passkey, once the page can.
-    if (firstRun) {
+    if (firstScreen) {
       // The workspace listing at this page's own host, which a sign-in with
       // the person's agent pairs through: none, where the page reached a
       // host its entry does not list, and then the sign-in is not offered.
       const listed = page.peer ? workspaceAt(listedWorkspaces({home: page.entry?.home}), page.peer.origin) : null;
-      offerFirstRun({page, identityActions, runtime, pairSignIn: () => pairSignIn(listed)});
+      offerFirstScreen({page, identityActions, runtime, pairSignIn: () => pairSignIn(listed)});
     }
     // Leaving the first screen (skipped, or the agent is in) opens the
     // person's own workspace: asked for then, so the host makes it for the
@@ -1664,8 +1664,8 @@ export async function startEntryPage({mode}) {
     // own desktop where the site gives one. The home workspace let them in
     // already (they stay in it, and find it in the workspace menu), but
     // their own comes first.
-    if (firstRun && !embed && here?.kind !== 'own') {
-      firstRun.whenDone(async ({signedIn}) => {
+    if (firstScreen && !embed && here?.kind !== 'own') {
+      firstScreen.whenDone(async ({signedIn}) => {
         // A sign-in leaves for the person's own workspace by loading the
         // page as them (`signInAs`): nothing of this tab's is opened.
         if (signedIn) return setupDone();
@@ -2085,9 +2085,9 @@ function offerRefusal({messages, language, named, error, workspace, runtime, lin
   // loaded goes with it: the entry is what this visit is. Its setup code is
   // no longer watched for an agent either: this person approves no device
   // at a host that turned them away, and asking would only be refused.
-  firstRun?.close();
+  firstScreen?.close();
   for (const watcher of agentWatchers) watcher.stopWatchingAgents();
-  document.documentElement.removeAttribute('data-first-run');
+  document.documentElement.removeAttribute('data-first-screen');
   const form = document.getElementById('arrival-invite');
   const toggle = document.getElementById('arrival-invite-toggle');
   const field = document.getElementById('arrival-invite-link');
@@ -2191,8 +2191,8 @@ export function offerSignIn({workspace, named, messages, runtime, link, home = n
     const codes = loginCodes(runtime, new URL(origin).origin);
     const signIn = claimed => signInAs(claimed, {origin, home, stay}, link, pair);
     agent.addEventListener('click', () => {
-      const run = openSignIn(document, {onBack: () => agent.focus()});
-      run?.offerAgentSignIn(async () => ({...await codes.create(null), signIn}));
+      const screen = openSignIn(document, {onBack: () => agent.focus()});
+      screen?.offerAgentSignIn(async () => ({...await codes.create(null), signIn}));
     });
   }
   // A browser without passkeys cannot open an identity kept with one.
@@ -2398,7 +2398,7 @@ function keepIdentity({peer, mount, home, name, runtime, link, naming, photos}) 
       ? () => { connectAnAgent({origin: setupOrigin({peer, home}), identity, runtime, link, workspace: peer?.workspace ?? null}); }
       : null,
     // Arrived by an invitation, not set up yet: once they used the workspace
-    // a while, the setup is what they are asked (first-run.inline.js).
+    // a while, the setup is what they are asked (first-screen.inline.js).
     setupDue: () => setupLater(),
   });
   void actions.attach(mount);
@@ -2440,36 +2440,36 @@ function inputPause() {
 /**
  * What the first screen asks of this page once it is in its workspace: a
  * passkey sign-in, and the login codes that set their agent up. The codes
- * came before (`offerFirstRunCodes`), unless the page got in some way other
+ * came before (`offerFirstScreenCodes`), unless the page got in some way other
  * than its home's entry. The person's own workspace is asked for when they
  * leave the screen for it (`whenDone`), never while they are still deciding:
  * one founded for a visitor who signs in as someone else is left behind on
  * the host.
  *
  * A first visit whose site had not answered yet is shown now
- * (`firstRun.reveal`): the page is in, so the setup is the person's. A visit
+ * (`firstScreen.reveal`): the page is in, so the setup is the person's. A visit
  * the site's entry turned away never gets here, and keeps the wait list it
  * was sent to.
  */
-function offerFirstRun({page, identityActions, runtime, pairSignIn: pairFor = () => null}) {
-  firstRun.reveal();
+function offerFirstScreen({page, identityActions, runtime, pairSignIn: pairFor = () => null}) {
+  firstScreen.reveal();
   const peer = page.peer;
   // Its failure reaches the screen, which says it: the desktop's own action
   // (`perform`) keeps a failure to itself.
-  if (identityActions) firstRun.offerSignIn(() => identityActions.signIn());
+  if (identityActions) firstScreen.offerSignIn(() => identityActions.signIn());
   const identity = currentIdentity();
   // The address the page makes its codes at: the host it is in, unless this
   // page reached that host only over iroh, in which case the site's home host
   // serves them (`setupOrigin`).
   const origin = setupOrigin({peer, home: page.entry?.home});
   if (!origin || !peer.workspace || !identity || peer.userPublicKey !== identity.userPublicKey) {
-    if (!firstRunCodesOffered) firstRun.unavailable({code: 'no-codes'});
+    if (!firstScreenCodesOffered) firstScreen.unavailable({code: 'no-codes'});
     return;
   }
   // A sign-in with the person's agent pairs this tab through the workspace
   // listing at this host, and opens a workspace of theirs rather than the
   // home's shared desktop this page is in.
-  offerFirstRunCodes({origin, identity, runtime, link: page.link,
+  offerFirstScreenCodes({origin, identity, runtime, link: page.link,
     home: homeAdmissionWorkspace(page.entry), pair: pairFor()});
 }
 
@@ -2482,10 +2482,10 @@ function offerFirstRun({page, identityActions, runtime, pairSignIn: pairFor = ()
 function askOwnWorkspace(peer) {
   ownWorkspaceAsked ??= ensureOwnWorkspace(peer).catch(error => {
     if (error?.code === 'unknown_action') {
-      console.info('first run: this host keeps no workspaces of people\'s own;', error?.message);
+      console.info('first screen: this host keeps no workspaces of people\'s own;', error?.message);
       setUpIn = peer.workspace;
     } else {
-      console.warn('first run: your own workspace', error);
+      console.warn('first screen: your own workspace', error);
       ownWorkspaceAsked = null;
     }
     return null;
@@ -2494,7 +2494,7 @@ function askOwnWorkspace(peer) {
 }
 
 /** Whether the first screen has its login codes offered. */
-let firstRunCodesOffered = false;
+let firstScreenCodesOffered = false;
 /** The workspace an agent is set up in when the host keeps none of the
  * person's own: the one this page is in. */
 let setUpIn = null;
@@ -2561,7 +2561,7 @@ function agentSetupCodes({origin, identity, runtime, link, workspace = null}) {
       await agents.connectAgent({adopt: {id: saved.invite, expiresAt: saved.inviteExpiresAt}, watch: false});
       return agents;
     });
-    adopted.catch(error => console.warn('first run: approving your agent', error));
+    adopted.catch(error => console.warn('first screen: approving your agent', error));
     return {...made, follow: async () => watched(made, await adopted).follow()};
   };
   return {codes, ours, make, resume};
@@ -2569,18 +2569,18 @@ function agentSetupCodes({origin, identity, runtime, link, workspace = null}) {
 
 /**
  * The agent setup again, from the person's own card: the first screen, in
- * the same place, with a fresh code (`first-run.mjs` `openFirstRun`). Skip
+ * the same place, with a fresh code (`first-screen.mjs` `openFirstScreen`). Skip
  * there only closes it: the person is set up already.
  */
 function connectAnAgent({origin, identity, runtime, link, workspace = null}) {
-  const run = openFirstRun(document);
-  if (!run) return false;
+  const screen = openFirstScreen(document);
+  if (!screen) return false;
   if (!origin || !runtime?.createLoginCode) {
-    run.unavailable({code: 'no-codes'});
+    screen.unavailable({code: 'no-codes'});
     return true;
   }
   const {make, resume} = agentSetupCodes({origin, identity, runtime, link, workspace});
-  run.offerSetup(make, resume);
+  screen.offerSetup(make, resume);
   return true;
 }
 
@@ -2596,18 +2596,18 @@ function connectAnAgent({origin, identity, runtime, link, workspace = null}) {
  * it is asked for it, so it is made only once the person asks to set up
  * (`ahead: false`).
  */
-function offerFirstRunCodes({origin, identity, runtime, link, home = null, pair = null}) {
-  if (firstRunCodesOffered || !firstRun || !origin || !runtime?.createLoginCode) return;
-  firstRunCodesOffered = true;
+function offerFirstScreenCodes({origin, identity, runtime, link, home = null, pair = null}) {
+  if (firstScreenCodesOffered || !firstScreen || !origin || !runtime?.createLoginCode) return;
+  firstScreenCodesOffered = true;
   const host = new URL(origin).origin;
   const setup = agentSetupCodes({origin: host, identity, runtime, link});
-  firstRun.offerSetup(setup.make, setup.resume, {ahead: false});
+  firstScreen.offerSetup(setup.make, setup.resume, {ahead: false});
   // Signing this tab in is this tab's own: it pairs here, as the person's
   // new device, so the device that claimed its code certifies it at once.
   if (!pair) return;
   const {codes, ours} = setup;
   const signIn = claimed => signInAs(claimed, {origin: host, home}, link, pair);
-  firstRun.offerAgentSignIn(async () => {
+  firstScreen.offerAgentSignIn(async () => {
     const made = await codes.create(null);
     return {...made, saved: {...made.saved, person: identity.userPublicKey, host: new URL(origin).origin}, signIn};
   }, saved => (ours(saved) ? {...codes.resume(saved), signIn} : null));
@@ -2775,7 +2775,7 @@ function loginCodes(runtime, origin) {
 }
 
 /** `error`, naming the host at `origin` it came from (`origin`, as
- * `first-run.mjs` `setupFailure` reads it) unless it names one already: the
+ * `first-screen.mjs` `setupFailure` reads it) unless it names one already: the
  * codes' host is not the page's own (tilo.sh's come from eu1.tilo.sh), and
  * the screen says which one did not answer. */
 function hostNamed(error, origin) {

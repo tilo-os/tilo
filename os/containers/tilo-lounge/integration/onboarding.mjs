@@ -41,7 +41,7 @@
 import {execFile, execFileSync, spawn} from 'node:child_process';
 import {chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {FIRST_RUN_SEEN, launch, sleep} from '../../../../tools/web/chrome.mjs';
+import {FIRST_SCREEN_SEEN, launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import {stepLimit, shellMetrics, machine, browserMemory} from './waits.mjs';
 
@@ -76,7 +76,7 @@ const state = tab => tab.evaluate(`JSON.stringify({
   refusal: document.documentElement.dataset.refusal ?? null,
   waitList: document.documentElement.dataset.waitList ?? null,
   entry: document.documentElement.dataset.entry ?? null,
-  firstRun: document.documentElement.dataset.firstRun ?? null,
+  firstScreen: document.documentElement.dataset.firstScreen ?? null,
   title: document.title,
   workspace: globalThis.tiloMount?.state?.()?.workspaceName ?? null,
 })`).then(JSON.parse).catch(error => ({unreachable: String(error?.message ?? error).slice(0, 300)}));
@@ -149,9 +149,9 @@ const until = async (tab, expression, what, timeout = stepLimit(4)) => {
 const visit = async (name, {passkey = false, setupDone = false} = {}) => {
   const browser = await launch();
   browsers.push(browser);
-  const tab = await browser.tab({firstRun: true});
+  const tab = await browser.tab({firstScreen: true});
   tab.log ??= [];
-  if (setupDone) await tab.send('Page.addScriptToEvaluateOnNewDocument', {source: FIRST_RUN_SEEN});
+  if (setupDone) await tab.send('Page.addScriptToEvaluateOnNewDocument', {source: FIRST_SCREEN_SEEN});
   await tab.send('Network.enable', {}).catch(() => {});
   await tab.send('Log.enable', {}).catch(() => {});
   await tab.send('Page.enable', {}).catch(() => {});
@@ -341,10 +341,10 @@ const mailLink = (mail, marker) => {
 };
 
 /** Whether the first screen is in front of the person. Its element is in every
- * page the entry serves (`#first-run`), so what shows is whether the page set
- * `data-first-run` and displayed it. */
-const firstScreenShown = `(document.documentElement.dataset.firstRun !== undefined
-  && getComputedStyle(document.getElementById('first-run')).display !== 'none')`;
+ * page the entry serves (`#first-screen`), so what shows is whether the page set
+ * `data-first-screen` and displayed it. */
+const firstScreenShown = `(document.documentElement.dataset.firstScreen !== undefined
+  && getComputedStyle(document.getElementById('first-screen')).display !== 'none')`;
 
 // -- tilo.sh as a person meets it --------------------------------------------
 /** A person arriving at the site, in a tab that has not been here before.
@@ -587,7 +587,7 @@ try {
     'the stranger joining through the invitation', stepLimit(8));
   await until(stranger.tab, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)
     && !!globalThis.tiloMount?.state?.()?.phase`, 'the workspace the stranger joined', stepLimit(8));
-  const overWorkspace = await stranger.tab.evaluate(`document.documentElement.dataset.firstRun ?? null`);
+  const overWorkspace = await stranger.tab.evaluate(`document.documentElement.dataset.firstScreen ?? null`);
   if (overWorkspace !== null) await fail(`the first screen came over the workspace the stranger joined (${overWorkspace})`);
   report.joined = JSON.parse(await until(stranger.tab, `(() => {
     const state = globalThis.tiloMount?.state?.() ?? null;
@@ -619,17 +619,17 @@ try {
   report.firstScreenShown = await stranger.tab.evaluate(firstScreenShown);
   if (!report.firstScreenShown) await fail('the first screen is in the page but not shown');
   report.firstScreen = await stranger.tab.evaluate(`({
-    heading: document.getElementById('first-run-heading')?.textContent?.trim() ?? null,
-    prompt: document.getElementById('first-run-offer')?.textContent?.trim() ?? null,
-    skip: document.getElementById('first-run-skip')?.textContent?.trim() ?? null,
-    manual: document.getElementById('first-run-manual-toggle')?.textContent?.trim() ?? null,
+    heading: document.getElementById('first-screen-heading')?.textContent?.trim() ?? null,
+    prompt: document.getElementById('first-screen-offer')?.textContent?.trim() ?? null,
+    skip: document.getElementById('first-screen-skip')?.textContent?.trim() ?? null,
+    manual: document.getElementById('first-screen-manual-toggle')?.textContent?.trim() ?? null,
   })`);
   if (!report.firstScreen.skip) await fail('the first screen offers no way past it for a person without an agent');
-  await until(stranger.tab, `document.getElementById('first-run')?.dataset.setup === 'ready'`, 'the setup prompt made', stepLimit(6));
+  await until(stranger.tab, `document.getElementById('first-screen')?.dataset.setup === 'ready'`, 'the setup prompt made', stepLimit(6));
   const beforeCopy = await stranger.tab.evaluate(`navigator.clipboard.readText().catch(() => '')`).catch(() => '');
   await stranger.tab.send('Browser.grantPermissions', {origin: siteOrigin, permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']}).catch(() => {});
-  await pressId(stranger.tab, 'first-run-agent');
-  await until(stranger.tab, `document.documentElement.dataset.firstRun === 'waiting'`, 'the first screen answering the click', stepLimit(4));
+  await pressId(stranger.tab, 'first-screen-agent');
+  await until(stranger.tab, `document.documentElement.dataset.firstScreen === 'waiting'`, 'the first screen answering the click', stepLimit(4));
   const prompt = await copied(stranger.tab, beforeCopy);
   report.prompt = prompt;
   const setup = commandOf(prompt);

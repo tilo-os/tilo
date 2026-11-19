@@ -442,11 +442,11 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   if (peer && route.target.scope.kind === 'workspace' && (sealedAdmitted || admittedElsewhere || !route.target.scope.workspace)) {
     // The workspace is known now: show its canonical link, in place of the
     // address the link reached the page at. Not while the first screen of a
-    // setup covers it (first-run.mjs): this workspace is not in front of
+    // setup covers it (first-screen.mjs): this workspace is not in front of
     // the person then, and a reload or Back must not take its link for one
     // they opened.
     route = {...route, target: {...route.target, scope: {...route.target.scope, workspace: peer.workspace}}};
-    if (window.document?.documentElement?.dataset?.firstRun === undefined) {
+    if (window.document?.documentElement?.dataset?.firstScreen === undefined) {
       window.history.replaceState(window.history.state, '', link.format(route));
     }
   }
