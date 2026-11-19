@@ -243,15 +243,15 @@ doc = false
 "cpubits-0_1_1" = { package = "cpubits", version = "^0.1.1", default-features = false, features = [] }
 "cpufeatures-0_2_17" = { package = "cpufeatures", version = "^0.2.17", default-features = false, features = [] }
 "cpufeatures-0_3_0" = { package = "cpufeatures", version = "^0.3.0", default-features = false, features = [] }
-"cranelift-assembler-x64-0_137_1" = { package = "cranelift-assembler-x64", version = "^0.137.1", default-features = false, features = [] }
-"cranelift-bforest-0_137_1" = { package = "cranelift-bforest", version = "^0.137.1", default-features = false, features = [] }
-"cranelift-bitset-0_137_1" = { package = "cranelift-bitset", version = "^0.137.1", default-features = false, features = ["enable-serde"] }
-"cranelift-codegen-0_137_1" = { package = "cranelift-codegen", version = "^0.137.1", default-features = false, features = ["enable-serde", "gimli", "host-arch", "incremental-cache", "postcard", "pulley", "serde", "serde_derive", "sha2", "std", "timing", "unwind"] }
-"cranelift-codegen-shared-0_137_1" = { package = "cranelift-codegen-shared", version = "^0.137.1", default-features = false, features = [] }
-"cranelift-control-0_137_1" = { package = "cranelift-control", version = "^0.137.1", default-features = false, features = ["fuzz"] }
-"cranelift-entity-0_137_1" = { package = "cranelift-entity", version = "^0.137.1", default-features = false, features = ["enable-serde", "serde", "serde_derive"] }
-"cranelift-frontend-0_137_1" = { package = "cranelift-frontend", version = "^0.137.1", default-features = false, features = ["default", "std"] }
-"cranelift-native-0_137_1" = { package = "cranelift-native", version = "^0.137.1", default-features = false, features = ["default", "std"] }
+"cranelift-assembler-x64-0_137_2" = { package = "cranelift-assembler-x64", version = "^0.137.2", default-features = false, features = [] }
+"cranelift-bforest-0_137_2" = { package = "cranelift-bforest", version = "^0.137.2", default-features = false, features = [] }
+"cranelift-bitset-0_137_2" = { package = "cranelift-bitset", version = "^0.137.2", default-features = false, features = ["enable-serde"] }
+"cranelift-codegen-0_137_2" = { package = "cranelift-codegen", version = "^0.137.2", default-features = false, features = ["enable-serde", "gimli", "host-arch", "incremental-cache", "postcard", "pulley", "serde", "serde_derive", "sha2", "std", "timing", "unwind"] }
+"cranelift-codegen-shared-0_137_2" = { package = "cranelift-codegen-shared", version = "^0.137.2", default-features = false, features = [] }
+"cranelift-control-0_137_2" = { package = "cranelift-control", version = "^0.137.2", default-features = false, features = ["fuzz"] }
+"cranelift-entity-0_137_2" = { package = "cranelift-entity", version = "^0.137.2", default-features = false, features = ["enable-serde", "serde", "serde_derive"] }
+"cranelift-frontend-0_137_2" = { package = "cranelift-frontend", version = "^0.137.2", default-features = false, features = ["default", "std"] }
+"cranelift-native-0_137_2" = { package = "cranelift-native", version = "^0.137.2", default-features = false, features = ["default", "std"] }
 "crc32fast-1_5_0" = { package = "crc32fast", version = "^1.5.0", default-features = false, features = ["default", "std"] }
 "critical-section-1_2_0" = { package = "critical-section", version = "^1.2.0", default-features = false, features = [] }
 "crossbeam-channel-0_5_15" = { package = "crossbeam-channel", version = "^0.5.15", default-features = false, features = ["default", "std"] }
@@ -882,7 +882,7 @@ doc = false
 "publisher-model" = { path = "../../../apps/publisher-model", default-features = false, features = [] }
 "publisher-model-wasm" = { path = "../../../apps/publisher-model-wasm", default-features = false, features = [] }
 "pulldown-cmark-0_12_2" = { package = "pulldown-cmark", path = "../../../vendor/pulldown-cmark", default-features = false, features = [] }
-"pulley-interpreter-50_0_1" = { package = "pulley-interpreter", version = "^50.0.1", default-features = false, features = ["decode", "disas", "encode", "interp", "std"] }
+"pulley-interpreter-50_0_2" = { package = "pulley-interpreter", version = "^50.0.2", default-features = false, features = ["decode", "disas", "encode", "interp", "std"] }
 "pxfm-0_1_27" = { package = "pxfm", version = "^0.1.27", default-features = false, features = [] }
 "pyo3-0_30_1" = { package = "pyo3", version = "^0.30.1", default-features = false, features = ["abi3", "abi3-py311", "abi3-py312", "abi3-py313", "abi3-py314", "abi3-py315", "default", "extension-module", "macros", "pyo3-macros"] }
 "pyo3-async-runtimes-0_30_0" = { package = "pyo3-async-runtimes", version = "^0.30.0", default-features = false, features = ["default", "tokio", "tokio-runtime"] }
@@ -1573,14 +1573,14 @@ doc = false
 "wasmparser-0_252_0" = { package = "wasmparser", version = "^0.252.0", default-features = false, features = ["features", "simd", "std", "validate"] }
 "wasmparser-0_261_0" = { package = "wasmparser", version = "^0.261.0", default-features = false, features = ["component-model", "features", "serde", "simd", "std", "validate"] }
 "wasmprinter-0_261_0" = { package = "wasmprinter", version = "^0.261.0", default-features = false, features = ["component-model", "default", "validate"] }
-"wasmtime-50_0_1" = { package = "wasmtime", version = "^50.0.1", default-features = false, features = ["cranelift", "once_cell", "runtime", "std", "wasmtime-jit-icache-coherence", "winch"] }
-"wasmtime-environ-50_0_1" = { package = "wasmtime-environ", version = "^50.0.1", default-features = false, features = ["compile", "component-model", "gc", "gc-copying", "gc-drc", "gc-null", "stack-switching", "std", "threads"] }
-"wasmtime-internal-component-util-50_0_1" = { package = "wasmtime-internal-component-util", version = "^50.0.1", default-features = false, features = [] }
-"wasmtime-internal-core-50_0_1" = { package = "wasmtime-internal-core", version = "^50.0.1", default-features = false, features = ["serde", "std"] }
-"wasmtime-internal-cranelift-50_0_1" = { package = "wasmtime-internal-cranelift", version = "^50.0.1", default-features = false, features = ["pulley"] }
-"wasmtime-internal-jit-icache-coherence-50_0_1" = { package = "wasmtime-internal-jit-icache-coherence", version = "^50.0.1", default-features = false, features = [] }
-"wasmtime-internal-unwinder-50_0_1" = { package = "wasmtime-internal-unwinder", version = "^50.0.1", default-features = false, features = ["cranelift", "default"] }
-"wasmtime-internal-winch-50_0_1" = { package = "wasmtime-internal-winch", version = "^50.0.1", default-features = false, features = [] }
+"wasmtime-50_0_2" = { package = "wasmtime", version = "^50.0.2", default-features = false, features = ["cranelift", "once_cell", "runtime", "std", "wasmtime-jit-icache-coherence", "winch"] }
+"wasmtime-environ-50_0_2" = { package = "wasmtime-environ", version = "^50.0.2", default-features = false, features = ["compile", "component-model", "gc", "gc-copying", "gc-drc", "gc-null", "stack-switching", "std", "threads"] }
+"wasmtime-internal-component-util-50_0_2" = { package = "wasmtime-internal-component-util", version = "^50.0.2", default-features = false, features = [] }
+"wasmtime-internal-core-50_0_2" = { package = "wasmtime-internal-core", version = "^50.0.2", default-features = false, features = ["serde", "std"] }
+"wasmtime-internal-cranelift-50_0_2" = { package = "wasmtime-internal-cranelift", version = "^50.0.2", default-features = false, features = ["pulley"] }
+"wasmtime-internal-jit-icache-coherence-50_0_2" = { package = "wasmtime-internal-jit-icache-coherence", version = "^50.0.2", default-features = false, features = [] }
+"wasmtime-internal-unwinder-50_0_2" = { package = "wasmtime-internal-unwinder", version = "^50.0.2", default-features = false, features = ["cranelift", "default"] }
+"wasmtime-internal-winch-50_0_2" = { package = "wasmtime-internal-winch", version = "^50.0.2", default-features = false, features = [] }
 "wast-252_0_0" = { package = "wast", version = "^252.0.0", default-features = false, features = ["component-model", "wasm-module"] }
 "wat-1_252_0" = { package = "wat", version = "^1.252.0", default-features = false, features = ["component-model", "default"] }
 "wayland-backend-0_3_15" = { package = "wayland-backend", path = "../../../vendor/wayland-backend", default-features = false, features = ["client_system", "default", "dlopen", "log"] }
@@ -1613,7 +1613,7 @@ doc = false
 "whatsapp-rust-0_7_0" = { package = "whatsapp-rust", version = "^0.7.0", default-features = false, features = ["tokio-runtime"] }
 "whisper-rs-sys-0_15_0" = { package = "whisper-rs-sys", version = "^0.15.0", default-features = false, features = [] }
 "whoami-2_1_1" = { package = "whoami", version = "^2.1.1", default-features = false, features = ["default", "std", "wasi-wasite", "wasm-web"] }
-"winch-codegen-50_0_1" = { package = "winch-codegen", version = "^50.0.1", default-features = false, features = [] }
+"winch-codegen-50_0_2" = { package = "winch-codegen", version = "^50.0.2", default-features = false, features = [] }
 "windows-app" = { path = "../../../apps/windows", default-features = false, features = [] }
 "windows-vm" = { path = "../../../crates/windows/windows-vm", default-features = false, features = [] }
 "winnow-0_7_14" = { package = "winnow", version = "^0.7.14", default-features = false, features = ["alloc", "default", "std"] }
@@ -1819,12 +1819,12 @@ doc = false
 "cpubits-0_1_1" = { package = "cpubits", version = "^0.1.1", default-features = false, features = [] }
 "cpufeatures-0_2_17" = { package = "cpufeatures", version = "^0.2.17", default-features = false, features = [] }
 "cpufeatures-0_3_0" = { package = "cpufeatures", version = "^0.3.0", default-features = false, features = [] }
-"cranelift-assembler-x64-meta-0_137_1" = { package = "cranelift-assembler-x64-meta", version = "^0.137.1", default-features = false, features = [] }
-"cranelift-bitset-0_137_1" = { package = "cranelift-bitset", version = "^0.137.1", default-features = false, features = ["enable-serde"] }
-"cranelift-codegen-meta-0_137_1" = { package = "cranelift-codegen-meta", version = "^0.137.1", default-features = false, features = ["pulley"] }
-"cranelift-codegen-shared-0_137_1" = { package = "cranelift-codegen-shared", version = "^0.137.1", default-features = false, features = [] }
-"cranelift-isle-0_137_1" = { package = "cranelift-isle", version = "^0.137.1", default-features = false, features = ["default"] }
-"cranelift-srcgen-0_137_1" = { package = "cranelift-srcgen", version = "^0.137.1", default-features = false, features = [] }
+"cranelift-assembler-x64-meta-0_137_2" = { package = "cranelift-assembler-x64-meta", version = "^0.137.2", default-features = false, features = [] }
+"cranelift-bitset-0_137_2" = { package = "cranelift-bitset", version = "^0.137.2", default-features = false, features = ["enable-serde"] }
+"cranelift-codegen-meta-0_137_2" = { package = "cranelift-codegen-meta", version = "^0.137.2", default-features = false, features = ["pulley"] }
+"cranelift-codegen-shared-0_137_2" = { package = "cranelift-codegen-shared", version = "^0.137.2", default-features = false, features = [] }
+"cranelift-isle-0_137_2" = { package = "cranelift-isle", version = "^0.137.2", default-features = false, features = ["default"] }
+"cranelift-srcgen-0_137_2" = { package = "cranelift-srcgen", version = "^0.137.2", default-features = false, features = [] }
 "crc32fast-1_5_0" = { package = "crc32fast", version = "^1.5.0", default-features = false, features = ["default", "std"] }
 "critical-section-1_2_0" = { package = "critical-section", version = "^1.2.0", default-features = false, features = [] }
 "crossbeam-channel-0_5_15" = { package = "crossbeam-channel", version = "^0.5.15", default-features = false, features = ["default", "std"] }
@@ -2277,8 +2277,8 @@ doc = false
 "protobuf-support-3_7_2" = { package = "protobuf-support", version = "^3.7.2", default-features = false, features = [] }
 "psl-2_1_190" = { package = "psl", version = "^2.1.190", default-features = false, features = ["default", "helpers"] }
 "psl-types-2_0_11" = { package = "psl-types", version = "^2.0.11", default-features = false, features = [] }
-"pulley-interpreter-50_0_1" = { package = "pulley-interpreter", version = "^50.0.1", default-features = false, features = ["decode", "disas", "encode", "interp", "std"] }
-"pulley-macros-50_0_1" = { package = "pulley-macros", version = "^50.0.1", default-features = false, features = [] }
+"pulley-interpreter-50_0_2" = { package = "pulley-interpreter", version = "^50.0.2", default-features = false, features = ["decode", "disas", "encode", "interp", "std"] }
+"pulley-macros-50_0_2" = { package = "pulley-macros", version = "^50.0.2", default-features = false, features = [] }
 "pxfm-0_1_27" = { package = "pxfm", version = "^0.1.27", default-features = false, features = [] }
 "pyo3-build-config-0_30_1" = { package = "pyo3-build-config", version = "^0.30.1", default-features = false, features = ["default", "extension-module"] }
 "pyo3-macros-0_30_1" = { package = "pyo3-macros", version = "^0.30.1", default-features = false, features = [] }
@@ -2651,8 +2651,8 @@ doc = false
 "wasmi_core-1_1_0" = { package = "wasmi_core", version = "^1.1.0", default-features = false, features = ["simd", "std"] }
 "wasmi_ir-1_1_0" = { package = "wasmi_ir", version = "^1.1.0", default-features = false, features = ["simd"] }
 "wasmparser-0_239_0" = { package = "wasmparser", version = "^0.239.0", default-features = false, features = ["features", "simd", "std", "validate"] }
-"wasmtime-internal-core-50_0_1" = { package = "wasmtime-internal-core", version = "^50.0.1", default-features = false, features = ["serde", "std"] }
-"wasmtime-internal-versioned-export-macros-50_0_1" = { package = "wasmtime-internal-versioned-export-macros", version = "^50.0.1", default-features = false, features = [] }
+"wasmtime-internal-core-50_0_2" = { package = "wasmtime-internal-core", version = "^50.0.2", default-features = false, features = ["serde", "std"] }
+"wasmtime-internal-versioned-export-macros-50_0_2" = { package = "wasmtime-internal-versioned-export-macros", version = "^50.0.2", default-features = false, features = [] }
 "wayland-scanner-0_31_11" = { package = "wayland-scanner", version = "^0.31.11", default-features = false, features = [] }
 "wayland-sys-0_31_11" = { package = "wayland-sys", version = "^0.31.11", default-features = false, features = ["client", "dlopen", "egl", "once_cell"] }
 "web-async-0_1_5" = { package = "web-async", version = "^0.1.5", default-features = false, features = ["tracing"] }
@@ -2915,15 +2915,15 @@ doc = false
 "cpubits-0_1_1" = { package = "cpubits", version = "^0.1.1", default-features = false, features = [] }
 "cpufeatures-0_2_17" = { package = "cpufeatures", version = "^0.2.17", default-features = false, features = [] }
 "cpufeatures-0_3_0" = { package = "cpufeatures", version = "^0.3.0", default-features = false, features = [] }
-"cranelift-assembler-x64-0_137_1" = { package = "cranelift-assembler-x64", version = "^0.137.1", default-features = false, features = [] }
-"cranelift-bforest-0_137_1" = { package = "cranelift-bforest", version = "^0.137.1", default-features = false, features = [] }
-"cranelift-bitset-0_137_1" = { package = "cranelift-bitset", version = "^0.137.1", default-features = false, features = ["enable-serde"] }
-"cranelift-codegen-0_137_1" = { package = "cranelift-codegen", version = "^0.137.1", default-features = false, features = ["enable-serde", "gimli", "host-arch", "incremental-cache", "postcard", "pulley", "serde", "serde_derive", "sha2", "std", "timing", "unwind"] }
-"cranelift-codegen-shared-0_137_1" = { package = "cranelift-codegen-shared", version = "^0.137.1", default-features = false, features = [] }
-"cranelift-control-0_137_1" = { package = "cranelift-control", version = "^0.137.1", default-features = false, features = ["fuzz"] }
-"cranelift-entity-0_137_1" = { package = "cranelift-entity", version = "^0.137.1", default-features = false, features = ["enable-serde", "serde", "serde_derive"] }
-"cranelift-frontend-0_137_1" = { package = "cranelift-frontend", version = "^0.137.1", default-features = false, features = ["default", "std"] }
-"cranelift-native-0_137_1" = { package = "cranelift-native", version = "^0.137.1", default-features = false, features = ["default", "std"] }
+"cranelift-assembler-x64-0_137_2" = { package = "cranelift-assembler-x64", version = "^0.137.2", default-features = false, features = [] }
+"cranelift-bforest-0_137_2" = { package = "cranelift-bforest", version = "^0.137.2", default-features = false, features = [] }
+"cranelift-bitset-0_137_2" = { package = "cranelift-bitset", version = "^0.137.2", default-features = false, features = ["enable-serde"] }
+"cranelift-codegen-0_137_2" = { package = "cranelift-codegen", version = "^0.137.2", default-features = false, features = ["enable-serde", "gimli", "host-arch", "incremental-cache", "postcard", "pulley", "serde", "serde_derive", "sha2", "std", "timing", "unwind"] }
+"cranelift-codegen-shared-0_137_2" = { package = "cranelift-codegen-shared", version = "^0.137.2", default-features = false, features = [] }
+"cranelift-control-0_137_2" = { package = "cranelift-control", version = "^0.137.2", default-features = false, features = ["fuzz"] }
+"cranelift-entity-0_137_2" = { package = "cranelift-entity", version = "^0.137.2", default-features = false, features = ["enable-serde", "serde", "serde_derive"] }
+"cranelift-frontend-0_137_2" = { package = "cranelift-frontend", version = "^0.137.2", default-features = false, features = ["default", "std"] }
+"cranelift-native-0_137_2" = { package = "cranelift-native", version = "^0.137.2", default-features = false, features = ["default", "std"] }
 "crc32fast-1_5_0" = { package = "crc32fast", version = "^1.5.0", default-features = false, features = ["default", "std"] }
 "critical-section-1_2_0" = { package = "critical-section", version = "^1.2.0", default-features = false, features = [] }
 "crossbeam-channel-0_5_15" = { package = "crossbeam-channel", version = "^0.5.15", default-features = false, features = ["default", "std"] }
@@ -3526,7 +3526,7 @@ doc = false
 "psm-0_1_31" = { package = "psm", version = "^0.1.31", default-features = false, features = [] }
 "publisher" = { path = "../../../apps/publisher", default-features = false, features = [] }
 "pulldown-cmark-0_12_2" = { package = "pulldown-cmark", path = "../../../vendor/pulldown-cmark", default-features = false, features = [] }
-"pulley-interpreter-50_0_1" = { package = "pulley-interpreter", version = "^50.0.1", default-features = false, features = ["decode", "disas", "encode", "interp", "std"] }
+"pulley-interpreter-50_0_2" = { package = "pulley-interpreter", version = "^50.0.2", default-features = false, features = ["decode", "disas", "encode", "interp", "std"] }
 "pxfm-0_1_27" = { package = "pxfm", version = "^0.1.27", default-features = false, features = [] }
 "pyo3-0_30_1" = { package = "pyo3", version = "^0.30.1", default-features = false, features = ["abi3", "abi3-py311", "abi3-py312", "abi3-py313", "abi3-py314", "abi3-py315", "default", "extension-module", "macros", "pyo3-macros"] }
 "pyo3-async-runtimes-0_30_0" = { package = "pyo3-async-runtimes", version = "^0.30.0", default-features = false, features = ["default", "tokio", "tokio-runtime"] }
@@ -4194,14 +4194,14 @@ doc = false
 "wasmparser-0_252_0" = { package = "wasmparser", version = "^0.252.0", default-features = false, features = ["features", "simd", "std", "validate"] }
 "wasmparser-0_261_0" = { package = "wasmparser", version = "^0.261.0", default-features = false, features = ["component-model", "features", "serde", "simd", "std", "validate"] }
 "wasmprinter-0_261_0" = { package = "wasmprinter", version = "^0.261.0", default-features = false, features = ["component-model", "default", "validate"] }
-"wasmtime-50_0_1" = { package = "wasmtime", version = "^50.0.1", default-features = false, features = ["cranelift", "once_cell", "runtime", "std", "wasmtime-jit-icache-coherence", "winch"] }
-"wasmtime-environ-50_0_1" = { package = "wasmtime-environ", version = "^50.0.1", default-features = false, features = ["compile", "component-model", "gc", "gc-copying", "gc-drc", "gc-null", "stack-switching", "std", "threads"] }
-"wasmtime-internal-component-util-50_0_1" = { package = "wasmtime-internal-component-util", version = "^50.0.1", default-features = false, features = [] }
-"wasmtime-internal-core-50_0_1" = { package = "wasmtime-internal-core", version = "^50.0.1", default-features = false, features = ["serde", "std"] }
-"wasmtime-internal-cranelift-50_0_1" = { package = "wasmtime-internal-cranelift", version = "^50.0.1", default-features = false, features = ["pulley"] }
-"wasmtime-internal-jit-icache-coherence-50_0_1" = { package = "wasmtime-internal-jit-icache-coherence", version = "^50.0.1", default-features = false, features = [] }
-"wasmtime-internal-unwinder-50_0_1" = { package = "wasmtime-internal-unwinder", version = "^50.0.1", default-features = false, features = ["cranelift", "default"] }
-"wasmtime-internal-winch-50_0_1" = { package = "wasmtime-internal-winch", version = "^50.0.1", default-features = false, features = [] }
+"wasmtime-50_0_2" = { package = "wasmtime", version = "^50.0.2", default-features = false, features = ["cranelift", "once_cell", "runtime", "std", "wasmtime-jit-icache-coherence", "winch"] }
+"wasmtime-environ-50_0_2" = { package = "wasmtime-environ", version = "^50.0.2", default-features = false, features = ["compile", "component-model", "gc", "gc-copying", "gc-drc", "gc-null", "stack-switching", "std", "threads"] }
+"wasmtime-internal-component-util-50_0_2" = { package = "wasmtime-internal-component-util", version = "^50.0.2", default-features = false, features = [] }
+"wasmtime-internal-core-50_0_2" = { package = "wasmtime-internal-core", version = "^50.0.2", default-features = false, features = ["serde", "std"] }
+"wasmtime-internal-cranelift-50_0_2" = { package = "wasmtime-internal-cranelift", version = "^50.0.2", default-features = false, features = ["pulley"] }
+"wasmtime-internal-jit-icache-coherence-50_0_2" = { package = "wasmtime-internal-jit-icache-coherence", version = "^50.0.2", default-features = false, features = [] }
+"wasmtime-internal-unwinder-50_0_2" = { package = "wasmtime-internal-unwinder", version = "^50.0.2", default-features = false, features = ["cranelift", "default"] }
+"wasmtime-internal-winch-50_0_2" = { package = "wasmtime-internal-winch", version = "^50.0.2", default-features = false, features = [] }
 "wast-252_0_0" = { package = "wast", version = "^252.0.0", default-features = false, features = ["component-model", "wasm-module"] }
 "wat-1_252_0" = { package = "wat", version = "^1.252.0", default-features = false, features = ["component-model", "default"] }
 "wayland-backend-0_3_15" = { package = "wayland-backend", path = "../../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
@@ -4234,7 +4234,7 @@ doc = false
 "whatsapp-rust-0_7_0" = { package = "whatsapp-rust", version = "^0.7.0", default-features = false, features = ["tokio-runtime"] }
 "whisper-rs-sys-0_15_0" = { package = "whisper-rs-sys", version = "^0.15.0", default-features = false, features = [] }
 "whoami-2_1_1" = { package = "whoami", version = "^2.1.1", default-features = false, features = ["default", "std", "wasi-wasite", "wasm-web"] }
-"winch-codegen-50_0_1" = { package = "winch-codegen", version = "^50.0.1", default-features = false, features = [] }
+"winch-codegen-50_0_2" = { package = "winch-codegen", version = "^50.0.2", default-features = false, features = [] }
 "windows-app" = { path = "../../../apps/windows", default-features = false, features = [] }
 "windows-vm" = { path = "../../../crates/windows/windows-vm", default-features = false, features = [] }
 "winnow-0_7_14" = { package = "winnow", version = "^0.7.14", default-features = false, features = ["alloc", "default", "std"] }
@@ -4447,12 +4447,12 @@ doc = false
 "cpubits-0_1_1" = { package = "cpubits", version = "^0.1.1", default-features = false, features = [] }
 "cpufeatures-0_2_17" = { package = "cpufeatures", version = "^0.2.17", default-features = false, features = [] }
 "cpufeatures-0_3_0" = { package = "cpufeatures", version = "^0.3.0", default-features = false, features = [] }
-"cranelift-assembler-x64-meta-0_137_1" = { package = "cranelift-assembler-x64-meta", version = "^0.137.1", default-features = false, features = [] }
-"cranelift-bitset-0_137_1" = { package = "cranelift-bitset", version = "^0.137.1", default-features = false, features = ["enable-serde"] }
-"cranelift-codegen-meta-0_137_1" = { package = "cranelift-codegen-meta", version = "^0.137.1", default-features = false, features = ["pulley"] }
-"cranelift-codegen-shared-0_137_1" = { package = "cranelift-codegen-shared", version = "^0.137.1", default-features = false, features = [] }
-"cranelift-isle-0_137_1" = { package = "cranelift-isle", version = "^0.137.1", default-features = false, features = ["default"] }
-"cranelift-srcgen-0_137_1" = { package = "cranelift-srcgen", version = "^0.137.1", default-features = false, features = [] }
+"cranelift-assembler-x64-meta-0_137_2" = { package = "cranelift-assembler-x64-meta", version = "^0.137.2", default-features = false, features = [] }
+"cranelift-bitset-0_137_2" = { package = "cranelift-bitset", version = "^0.137.2", default-features = false, features = ["enable-serde"] }
+"cranelift-codegen-meta-0_137_2" = { package = "cranelift-codegen-meta", version = "^0.137.2", default-features = false, features = ["pulley"] }
+"cranelift-codegen-shared-0_137_2" = { package = "cranelift-codegen-shared", version = "^0.137.2", default-features = false, features = [] }
+"cranelift-isle-0_137_2" = { package = "cranelift-isle", version = "^0.137.2", default-features = false, features = ["default"] }
+"cranelift-srcgen-0_137_2" = { package = "cranelift-srcgen", version = "^0.137.2", default-features = false, features = [] }
 "crc32fast-1_5_0" = { package = "crc32fast", version = "^1.5.0", default-features = false, features = ["default", "std"] }
 "critical-section-1_2_0" = { package = "critical-section", version = "^1.2.0", default-features = false, features = [] }
 "crossbeam-channel-0_5_15" = { package = "crossbeam-channel", version = "^0.5.15", default-features = false, features = ["default", "std"] }
@@ -4929,8 +4929,8 @@ doc = false
 "psl-2_1_190" = { package = "psl", version = "^2.1.190", default-features = false, features = ["default", "helpers"] }
 "psl-types-2_0_11" = { package = "psl-types", version = "^2.0.11", default-features = false, features = [] }
 "pulldown-cmark-0_12_2" = { package = "pulldown-cmark", path = "../../../vendor/pulldown-cmark", default-features = false, features = [] }
-"pulley-interpreter-50_0_1" = { package = "pulley-interpreter", version = "^50.0.1", default-features = false, features = ["decode", "disas", "encode", "interp", "std"] }
-"pulley-macros-50_0_1" = { package = "pulley-macros", version = "^50.0.1", default-features = false, features = [] }
+"pulley-interpreter-50_0_2" = { package = "pulley-interpreter", version = "^50.0.2", default-features = false, features = ["decode", "disas", "encode", "interp", "std"] }
+"pulley-macros-50_0_2" = { package = "pulley-macros", version = "^50.0.2", default-features = false, features = [] }
 "pxfm-0_1_27" = { package = "pxfm", version = "^0.1.27", default-features = false, features = [] }
 "pyo3-build-config-0_30_1" = { package = "pyo3-build-config", version = "^0.30.1", default-features = false, features = ["default", "extension-module"] }
 "pyo3-macros-0_30_1" = { package = "pyo3-macros", version = "^0.30.1", default-features = false, features = [] }
@@ -5338,8 +5338,8 @@ doc = false
 "wasmi_core-1_1_0" = { package = "wasmi_core", version = "^1.1.0", default-features = false, features = ["simd", "std"] }
 "wasmi_ir-1_1_0" = { package = "wasmi_ir", version = "^1.1.0", default-features = false, features = ["simd"] }
 "wasmparser-0_239_0" = { package = "wasmparser", version = "^0.239.0", default-features = false, features = ["features", "simd", "std", "validate"] }
-"wasmtime-internal-core-50_0_1" = { package = "wasmtime-internal-core", version = "^50.0.1", default-features = false, features = ["serde", "std"] }
-"wasmtime-internal-versioned-export-macros-50_0_1" = { package = "wasmtime-internal-versioned-export-macros", version = "^50.0.1", default-features = false, features = [] }
+"wasmtime-internal-core-50_0_2" = { package = "wasmtime-internal-core", version = "^50.0.2", default-features = false, features = ["serde", "std"] }
+"wasmtime-internal-versioned-export-macros-50_0_2" = { package = "wasmtime-internal-versioned-export-macros", version = "^50.0.2", default-features = false, features = [] }
 "wayland-backend-0_3_15" = { package = "wayland-backend", path = "../../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
 "wayland-client-0_31_14" = { package = "wayland-client", version = "^0.31.14", default-features = false, features = ["system"] }
 "wayland-csd-frame-0_3_0" = { package = "wayland-csd-frame", version = "^0.3.0", default-features = false, features = [] }
