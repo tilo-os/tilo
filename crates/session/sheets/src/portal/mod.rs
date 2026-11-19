@@ -251,15 +251,17 @@ pub struct Dialog {
 
 impl Dialog {
     /// What the sheet says, as plain text, for a reader that shows it
-    /// without the sheet (a notification).
+    /// without the sheet (a notification): what it asks, and its caution on
+    /// a line of its own. The facts under it stay on the sheet, since plain
+    /// text could only join each to its label.
     #[must_use]
     pub fn words(&self) -> String {
-        let facts = self
-            .facts
-            .iter()
-            .map(|(label, value)| format!("{label}: {value}"));
-        std::iter::once(self.detail.clone())
-            .chain(facts)
+        let asked = if self.detail.is_empty() {
+            self.heading.clone()
+        } else {
+            self.detail.clone()
+        };
+        std::iter::once(asked)
             .chain(self.caution.clone())
             .filter(|line| !line.is_empty())
             .collect::<Vec<_>>()

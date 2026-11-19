@@ -256,8 +256,14 @@ impl Asker {
         } else {
             dialog.detail.clone()
         };
+        // It comes from the agent that asks, under the name it asks by.
+        let from = who(&question);
         let mut notice = crate::platform::notice::Notice::new(
-            word("agent-ask-notice-app"),
+            if from.trim().is_empty() {
+                word("agent-ask-notice-app")
+            } else {
+                from
+            },
             1,
             dialog.title,
             body,

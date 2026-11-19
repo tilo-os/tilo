@@ -225,7 +225,8 @@ fn notify(question: &PendingConfirmation) {
     }
     let asked = dialog(question);
     let words = asked.words();
-    let notice = ui::notify::Notification::new(tag(&question.id), asked.title, words);
+    let notice = ui::notify::Notification::new(tag(&question.id), asked.title, words)
+        .from_agent(&question.agent_label, &question.agent_id);
     if let Err(error) = ui::process::current().notifications.show(&notice) {
         tracing::debug!(%error, "agent questions: no notification");
     }
@@ -239,6 +240,7 @@ fn notify_deferred(question: &PendingConfirmation) {
     let notice = ui::notify::Notification::new(tag(&question.id), asked.title, words)
         .with_activation(format!("{SCHEME}:{}", hex::encode(question.id)))
         .with_action(tilo_sheets::word("agent-ask-answer"))
+        .from_agent(&question.agent_label, &question.agent_id)
         .quietly();
     if let Err(error) = ui::process::current().notifications.show(&notice) {
         tracing::debug!(%error, "agent questions: no notification for a question put off");

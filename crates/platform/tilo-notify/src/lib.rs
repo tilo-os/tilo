@@ -58,6 +58,16 @@ pub struct Notification {
     /// download's progress), which would otherwise sound at every step. macOS plays no
     /// sound for any.
     pub silent: bool,
+    /// The agent it is from, when an agent sent it: the notification names the agent as its
+    /// sender and leads with the agent's face, where the platform draws one.
+    pub agent: Option<NotificationAgent>,
+}
+
+/// An agent a notification is from: its name, and the stable id its face is drawn from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotificationAgent {
+    pub name: String,
+    pub id: String,
 }
 
 pub const MAX_BUTTONS: usize = 3;
@@ -89,7 +99,18 @@ impl Notification {
             severity: Severity::Info,
             buttons: Vec::new(),
             silent: false,
+            agent: None,
         }
+    }
+
+    /// From the agent `name`, whose stable id is `id`.
+    #[must_use]
+    pub fn from_agent(mut self, name: impl Into<String>, id: impl Into<String>) -> Self {
+        self.agent = Some(NotificationAgent {
+            name: name.into(),
+            id: id.into(),
+        });
+        self
     }
 
     #[must_use]

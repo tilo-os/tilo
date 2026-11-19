@@ -794,6 +794,9 @@ impl AppInbox {
                         shown.app_name = Some(name);
                         shown.source_workspace = workspace;
                     }
+                    if let Some(agent) = notification.agent {
+                        shown = shown.with_agent_from(agent.name, agent.id);
+                    }
                     shown.severity = match notification.severity {
                         ui::notify::Severity::Info => NotificationSeverity::Info,
                         ui::notify::Severity::Warning => NotificationSeverity::Warning,

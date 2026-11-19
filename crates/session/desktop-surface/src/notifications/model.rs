@@ -402,11 +402,13 @@ impl Notification {
     }
 
     /// The name every surface attributes this notification to: the sending app's own name, its
-    /// verified id when it has no display name, else the desktop itself. Never empty.
+    /// verified id when it has no display name, the person or agent it is from when no app sent
+    /// it, else the desktop itself. Never empty.
     pub fn sender_name(&self) -> String {
         self.app_name
             .clone()
             .or_else(|| self.app_id.clone())
+            .or_else(|| self.from.as_ref().map(|from| from.name.clone()))
             .unwrap_or_else(|| crate::i18n::t("notification-group-system"))
     }
 }
