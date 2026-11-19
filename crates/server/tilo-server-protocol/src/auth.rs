@@ -221,6 +221,10 @@ pub struct HelloAck2 {
 pub enum HelloRefusal {
     /// The device's person removed it from their devices.
     DeviceRevoked,
+    /// The certificate the hello showed did not verify, or had expired: a
+    /// device whose kept certificate lapsed, or one a device of its person
+    /// signed with a certificate this server cannot take.
+    CertificateRejected,
 }
 
 impl HelloRefusal {
@@ -230,6 +234,7 @@ impl HelloRefusal {
     pub const fn code(self) -> &'static str {
         match self {
             Self::DeviceRevoked => "device-revoked",
+            Self::CertificateRejected => "certificate-rejected",
         }
     }
 
@@ -244,6 +249,10 @@ impl HelloRefusal {
     /// endpoint does not admit hears nothing, as that person's other devices
     /// hear nothing. Who removed the device, when, for what reason, and which
     /// other devices its person has are never said.
+    ///
+    /// A certificate the server cannot verify is the device's own: it may
+    /// certify again, and it learns nothing about the people this server
+    /// serves.
     #[must_use]
     pub fn said_of(
         error: &AuthError,
@@ -251,8 +260,13 @@ impl HelloRefusal {
         own_user_public_key: &[u8; 32],
         trust: HandshakeTrust<'_>,
     ) -> Option<Self> {
-        (matches!(error, AuthError::Revoked) && trust.admits(cert, own_user_public_key))
-            .then_some(Self::DeviceRevoked)
+        match error {
+            AuthError::Revoked if trust.admits(cert, own_user_public_key) => {
+                Some(Self::DeviceRevoked)
+            }
+            AuthError::Cert(_) => Some(Self::CertificateRejected),
+            _ => None,
+        }
     }
 }
 
@@ -260,6 +274,7 @@ impl std::fmt::Display for HelloRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::DeviceRevoked => f.write_str("its person removed this device"),
+            Self::CertificateRejected => f.write_str("the certificate it showed was refused"),
         }
     }
 }
@@ -1571,7 +1586,9 @@ mod tests {
             let (error, said) = refused(HandshakeTrust::Live(&admitting), &stranger, &strangers);
             assert!(matches!(error, AuthError::Revoked));
             assert_eq!(said, Some(HelloRefusal::DeviceRevoked));
-            // A certificate that does not verify is refused before a removal is looked at.
+            // A certificate that does not verify is refused before a removal is looked at, and
+            // the device is told its certificate was refused: that is its own to know, and to
+            // certify again.
             let mut forged = Party {
                 cert: laptop.cert.clone(),
                 sk: laptop.sk.clone(),
@@ -1579,7 +1596,7 @@ mod tests {
             forged.cert.capabilities.can_administer_devices = true;
             let (error, said) = refused(HandshakeTrust::OwnerDevicesOnly, &forged, &revocations);
             assert!(matches!(error, AuthError::Cert(_)));
-            assert_eq!(said, None);
+            assert_eq!(said, Some(HelloRefusal::CertificateRejected));
             // No other refusal says anything, whatever the endpoint admits.
             for error in [
                 AuthError::PolicyReject,
@@ -1736,7 +1753,7 @@ mod tests {
             let later = postcard::to_stdvec(&Later {
                 protocol: PEER_PROTOCOL_VERSION,
                 cert: &server.cert,
-                refusal: 1,
+                refusal: 2,
                 sig_over_refusal: refused.sig_over_refusal,
             })
             .unwrap();

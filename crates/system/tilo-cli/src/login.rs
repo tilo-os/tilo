@@ -304,6 +304,10 @@ fn link_said(error: &LinkError) -> String {
         LinkError::Malformed(_) | LinkError::PeerVersion { .. } => TOO_OLD.to_owned(),
         LinkError::Sign(_) => LOGIN_DAMAGED.to_owned(),
         LinkError::DeviceRevoked => LOGIN_ENDED.to_owned(),
+        LinkError::CertificateRejected => {
+            "The workspace refused this computer's certificate. `tilo login` again makes a new one."
+                .to_owned()
+        }
     }
 }
 

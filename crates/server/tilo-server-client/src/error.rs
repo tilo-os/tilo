@@ -29,6 +29,13 @@ pub enum LinkError {
     /// this device asks again changes it.
     #[error("this device was removed from its person's devices")]
     DeviceRevoked,
+    /// The server refused the certificate this device showed, and said so
+    /// under its own signature
+    /// (`tilo_server_protocol::auth::HelloRefusal::CertificateRejected`): a
+    /// device whose kept certificate lapsed certifies again, and gets in no
+    /// other way.
+    #[error("the server refused this device's certificate")]
+    CertificateRejected,
     /// The server speaks peer protocol `theirs`, not this device's: they do not
     /// sync until the one behind has updated
     /// (docs/architecture/compatibility.md).

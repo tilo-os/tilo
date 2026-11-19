@@ -108,15 +108,23 @@ tilo_test_env::scenario! {
         assert!(!transient(&LinkError::ServerChanged));
         assert!(!transient(&LinkError::PeerVersion { theirs: 0 }));
         assert!(!transient(&LinkError::DeviceRevoked));
+        assert!(!transient(&LinkError::CertificateRejected));
     }
 
-    phase a_removal_its_server_says_stops_the_session_at_once;
+    phase a_refusal_its_server_says_stops_the_session_at_once;
     {
         assert_eq!(
             refusal(&LinkError::DeviceRevoked),
             Refusal::Final(
                 "device-revoked",
                 "This device was removed from your devices.".to_owned()
+            ),
+        );
+        assert_eq!(
+            refusal(&LinkError::CertificateRejected),
+            Refusal::Final(
+                "certificate-rejected",
+                "This workspace’s server refused this browser’s certificate.".to_owned()
             ),
         );
         // A refusal with nothing said is counted before it stops anything.
@@ -186,6 +194,12 @@ tilo_test_env::scenario! {
                 tilo_server_protocol::auth::HelloRefusal::DeviceRevoked
             )),
             LinkError::DeviceRevoked,
+        );
+        assert_eq!(
+            link_error(ClientError::Refused(
+                tilo_server_protocol::auth::HelloRefusal::CertificateRejected
+            )),
+            LinkError::CertificateRejected,
         );
     }
 }
