@@ -132,7 +132,6 @@ pub struct Text {
     style: TextStyle,
     prepared_input: Option<PreparedText>,
     renderer_epoch: Option<std::sync::Arc<()>>,
-    observed_renderer_text_scale: f32,
     heading_level: Option<u8>,
     max_lines: Option<u32>,
     /// It elides at the width it is given instead of wrapping wider: it never
@@ -194,7 +193,6 @@ impl Text {
             style: crate::tokens::typography::stock().style(TextRole::Body),
             prepared_input: None,
             renderer_epoch: None,
-            observed_renderer_text_scale: 1.0,
             heading_level: None,
             max_lines: None,
             truncate: false,
@@ -421,7 +419,10 @@ impl Text {
         }
     }
 
-    fn observe_renderer_text_scale(&mut self, renderer: &TextRenderer) {
+    /// Only another renderer's fonts change what this text measures: a style
+    /// the theme resolved does not follow the renderer's text scale, which a
+    /// panel drawing a zoomed document sets for its draw alone.
+    fn observe_renderer(&mut self, renderer: &TextRenderer) {
         let epoch = renderer.layout_epoch();
         // The first measure already uses this renderer. Only a change from
         // an observed renderer invalidates an existing layout; recording the
@@ -435,13 +436,6 @@ impl Text {
             self.layout_dirty = true;
         }
         self.renderer_epoch = Some(epoch.clone());
-        let scale = renderer.text_scale();
-        if self.observed_renderer_text_scale.to_bits() != scale.to_bits() {
-            self.observed_renderer_text_scale = scale;
-            self.dirty = true;
-            self.layout_dirty = true;
-            self.prepared_input = None;
-        }
     }
 
     #[must_use]
@@ -972,7 +966,7 @@ impl Widget for Text {
     ) -> taffy::Size<f32> {
         self.observe_i18n_revision();
         self.observe_engine_revision();
-        self.observe_renderer_text_scale(text_renderer);
+        self.observe_renderer(text_renderer);
         let input = self.renderer_input();
 
         let max_w = if let Some(w) = known_dimensions.width {
@@ -1068,7 +1062,7 @@ impl Widget for Text {
         self.observe_theme(theme);
         self.observe_i18n_revision();
         self.observe_engine_revision();
-        self.observe_renderer_text_scale(text_renderer);
+        self.observe_renderer(text_renderer);
         self.layout_dirty = layout_dirty;
         let color = self.color.unwrap_or({
             let colors = &theme.tokens.colors;
@@ -1608,6 +1602,47 @@ mod tests {
                     assert_eq!(content.text_style().scaling, TextScaling::Content);
                 }
             }
+        }
+
+        phase a_text_does_not_measure_again_for_a_scale_a_draw_set;
+        {
+            let theme = Theme::dark();
+            let mut renderer = crate::font_catalog::fixture_renderer();
+            let window_scale = renderer.text_scale();
+            let mut caption = Text::new("Zoomed caption").with_role(TextRole::Caption);
+            let _ = build_measure_draw(&mut caption, &theme, &mut renderer);
+            // The solve that measured it, then the draw.
+            Widget::layout_measured(&mut caption);
+            Widget::mark_drawn(&mut caption);
+            // A panel drawing a zoomed document sets the renderer's scale for
+            // its draw alone, then puts the window's back.
+            renderer.set_text_scale(window_scale * 1.0625);
+            let mut scene = Scene::new();
+            Widget::draw(
+                &mut caption,
+                &mut scene,
+                Affine::IDENTITY,
+                &mut renderer,
+                &theme,
+                &crate::presence::PresenceCtx::empty(),
+            );
+            renderer.set_text_scale(window_scale);
+            let _ = Widget::measure(
+                &mut caption,
+                taffy::Size {
+                    width: None,
+                    height: None,
+                },
+                taffy::Size {
+                    width: taffy::AvailableSpace::MaxContent,
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+                &mut renderer,
+            );
+            assert!(
+                !Widget::is_layout_dirty(&caption),
+                "a text asked to be measured again for a scale its metrics do not follow"
+            );
         }
 
         phase text_caches_invalidate_only_when_inputs_change;
