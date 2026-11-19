@@ -46,6 +46,8 @@ fn drive() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
     // Who sits here, as the binary reads it before it builds anything.
     tilo_session::identity::install();
+    // The font catalog every renderer sets text in, built on a thread as the binary builds it.
+    let fonts = ui::warmup::spawn_warmup();
     // The desktop services run beside a session in no bus at all: nothing here reaches the caller's
     // session bus, and an arrival is pushed into the daemon's handle the way the bus would hand it
     // over.
@@ -80,8 +82,8 @@ fn drive() {
         session.step(Duration::from_millis(1)).expect("a turn");
     }
 
-    // Startup is over: from here on the loop answers everything from a worker, and the audit holds
-    // it to that.
+    // Startup is over: the font catalog is read; from here the loop answers from workers.
+    let _ = fonts.map(std::thread::JoinHandle::join);
     tilo_liveness::main_thread_files::arm().expect("the audit arms on the main thread");
 
     // An app's notification arrives: its banner asks for the app's artwork.

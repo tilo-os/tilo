@@ -66,11 +66,16 @@ fn no_catalog(errors: &[FontCatalogError]) {
 /// ([`mapped`]), so shaping never opens a file.
 #[cfg(not(test))]
 pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
-    if cfg!(feature = "test-support") {
-        return Some(fixture_font_system());
-    }
+    // A test binary of another crate links this one without `cfg(test)`: its text is set in the
+    // pinned catalog, built and mapped once per process as the product's is.
+    let fixtures = cfg!(feature = "test-support");
     static DATABASE: OnceLock<Option<fontdb::Database>> = OnceLock::new();
     let database = DATABASE.get_or_init(|| {
+        if fixtures {
+            return Some(tilo_startup_metrics::span("font-files-map", || {
+                mapped(fixture_font_system().db())
+            }));
+        }
         let roots = catalog_roots();
         let recorded = index::location();
         if let Some(db) = recorded.as_deref().and_then(|path| {
