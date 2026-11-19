@@ -56,10 +56,10 @@ pub struct Query;
 
 /// What puts a resource on the canvas and steps the layout's history.
 pub(super) fn layout_resource(words: &Words) -> ResourceSpec {
-    offer::<LayoutEffect>(typed_resource::<Layout>(
+    carried(offer::<LayoutEffect>(typed_resource::<Layout>(
         RESOURCE,
         words("session-resource-layout", &[], "Tree"),
-    ))
+    )))
 }
 
 /// The record itself, whose actions step its history by the record's address: a person is offered
@@ -83,13 +83,13 @@ pub(super) fn history_resource(words: &Words) -> ResourceSpec {
 /// ([`Layout::resources`](super::Layout::resources)).
 #[must_use]
 pub fn place_kind_resource(_words: &Words) -> ResourceSpec {
-    LiveRow::typed::<Place>(String::new(), String::new()).into_resource()
+    carried(LiveRow::typed::<Place>(String::new(), String::new()).into_resource())
 }
 
 /// The resource a strip's own actions are published on: [`place_kind_resource`] for a strip.
 #[must_use]
 pub fn strip_kind_resource(_words: &Words) -> ResourceSpec {
-    LiveRow::typed::<LayoutStrip>(String::new(), String::new()).into_resource()
+    carried(LiveRow::typed::<LayoutStrip>(String::new(), String::new()).into_resource())
 }
 
 /// The resource a row is published as: [`place_kind_resource`] for a row. A row offers no action of
@@ -106,7 +106,7 @@ pub fn row_kind_resource() -> ResourceSpec {
 #[effect(operation = "tilo.shell.layout", catalogue = "../session/locales")]
 pub enum LayoutEffect {
     /// Show a resource on the canvas, as one of its views
-    #[effect(kind = "outside", audience = "agents", label = "session-action-place")]
+    #[effect(kind = "undoable", audience = "agents", label = "session-action-place")]
     Place {
         /// The workspace whose canvas it stands on, by its id; the one in front when left out
         #[param(
@@ -164,7 +164,7 @@ pub enum LayoutEffect {
     },
     /// Put what a text finds on the canvas, or into a strip as a tab
     #[effect(
-        kind = "outside",
+        kind = "undoable",
         audience = "agents",
         label = "session-action-place-found"
     )]
@@ -204,7 +204,7 @@ pub enum LayoutEffect {
         seen_height: Option<i64>,
     },
     /// Open a resource with its own view, beside what the ask is in
-    #[effect(kind = "outside", audience = "agents", label = "session-action-open")]
+    #[effect(kind = "undoable", audience = "agents", label = "session-action-open")]
     Open {
         /// The resource it shows
         #[param(resource = "", "The resource it shows")]
@@ -221,7 +221,7 @@ pub enum LayoutEffect {
         beside: Option<String>,
     },
     /// Show another resource in a place, keeping the place where it is
-    #[effect(kind = "outside", audience = "agents", label = "session-action-show")]
+    #[effect(kind = "undoable", audience = "agents", label = "session-action-show")]
     Show {
         /// The place, by its resource
         #[param(resource = "layout.place", "The place, by its resource")]
@@ -235,7 +235,7 @@ pub enum LayoutEffect {
     },
     /// Look for what a place's search names again
     #[effect(
-        kind = "outside",
+        kind = "undoable",
         audience = "agents",
         label = "session-action-retry-query"
     )]
@@ -245,13 +245,13 @@ pub enum LayoutEffect {
         place: String,
     },
     /// Undo the last layout change
-    #[effect(kind = "outside", label = "session-action-undo")]
+    #[effect(kind = "undoable", label = "session-action-undo")]
     Undo,
     /// Redo the last layout change
-    #[effect(kind = "outside", label = "session-action-redo")]
+    #[effect(kind = "undoable", label = "session-action-redo")]
     Redo,
     /// Pin a place, so an agent's changes leave it alone
-    #[effect(on = Place, kind = "outside", audience = "agents", label = "session-action-pin")]
+    #[effect(on = Place, kind = "undoable", audience = "agents", label = "session-action-pin")]
     Pin {
         /// The place
         #[param("The place")]
@@ -263,7 +263,7 @@ pub enum LayoutEffect {
     /// Stand a place at a point on the canvas, as a drag that let it go there
     #[effect(
         on = Place,
-        kind = "outside",
+        kind = "undoable",
         audience = "agents",
         label = "session-action-position"
     )]
@@ -288,7 +288,7 @@ pub enum LayoutEffect {
     /// Give a place a size, as dragging its edge does
     #[effect(
         on = Place,
-        kind = "outside",
+        kind = "undoable",
         audience = "agents",
         label = "session-action-size"
     )]
@@ -319,7 +319,7 @@ pub enum LayoutEffect {
         height: i64,
     },
     /// Close a place
-    #[effect(on = Place, kind = "outside", audience = "agents", label = "session-action-close")]
+    #[effect(on = Place, kind = "undoable", audience = "agents", label = "session-action-close")]
     Close {
         /// The place
         #[param("The place")]
@@ -328,7 +328,7 @@ pub enum LayoutEffect {
     /// Bring a place in front of its strip
     #[effect(
         on = Place,
-        kind = "outside",
+        kind = "undoable",
         audience = "agents",
         label = "session-action-activate"
     )]
@@ -338,7 +338,7 @@ pub enum LayoutEffect {
         place: String,
     },
     /// Move a place into a row, or into a strip as a tab of it
-    #[effect(on = Place, kind = "outside", audience = "agents", label = "session-action-move")]
+    #[effect(on = Place, kind = "undoable", audience = "agents", label = "session-action-move")]
     Move {
         /// The place
         #[param("The place")]
@@ -357,7 +357,7 @@ pub enum LayoutEffect {
         before: Option<String>,
     },
     /// Float a place above its workspace's windows, where every member sees it
-    #[effect(on = Place, kind = "outside", audience = "agents", label = "session-action-float")]
+    #[effect(on = Place, kind = "undoable", audience = "agents", label = "session-action-float")]
     Float {
         /// The place
         #[param("The place")]
@@ -385,7 +385,7 @@ pub enum LayoutEffect {
     /// Snap a floating place back among its workspace's windows
     #[effect(
         on = Place,
-        kind = "outside",
+        kind = "undoable",
         audience = "agents",
         label = "session-action-snap-back"
     )]
@@ -401,7 +401,7 @@ pub enum LayoutEffect {
         before: Option<String>,
     },
     /// Resize a strip
-    #[effect(on = LayoutStrip, kind = "outside", audience = "agents", label = "session-action-resize")]
+    #[effect(on = LayoutStrip, kind = "undoable", audience = "agents", label = "session-action-resize")]
     Resize {
         /// The strip
         #[param("The strip")]
@@ -413,7 +413,7 @@ pub enum LayoutEffect {
     /// Maximize a strip, so it stands alone and fills the shell
     #[effect(
         on = LayoutStrip,
-        kind = "outside",
+        kind = "undoable",
         audience = "agents",
         label = "session-action-maximize-strip"
     )]
@@ -428,7 +428,7 @@ pub enum LayoutEffect {
     /// Show a match of the search in this place
     #[effect(
         on = Query,
-        kind = "outside",
+        kind = "undoable",
         audience = "agents",
         label = "session-action-show-match"
     )]
@@ -441,7 +441,7 @@ pub enum LayoutEffect {
         resource: String,
     },
     /// Look for it again
-    #[effect(on = Query, kind = "outside", audience = "agents", label = "session-action-retry")]
+    #[effect(on = Query, kind = "undoable", audience = "agents", label = "session-action-retry")]
     Retry {
         /// The query
         #[param("The query")]
@@ -674,6 +674,31 @@ fn float_coord(value: Option<i64>, default: i64) -> i32 {
 /// A floated window's side, at least one pixel.
 fn float_side(value: Option<i64>, default: u32) -> u32 {
     u32::try_from(value.unwrap_or_else(|| i64::from(default)).max(1)).unwrap_or(u32::MAX)
+}
+
+/// What a change of the layout did, as its history says it: the words the hand-built specs
+/// declared beside each action, kept on the published spec.
+const DIDS: &[(&str, &str)] = &[
+    ("pin", "pinned"),
+    ("position", "moved on the canvas"),
+    ("size", "sized"),
+    ("close", "closed"),
+    ("activate", "brought to the front"),
+    ("move", "moved"),
+    ("show", "showed in its place"),
+    ("place", "showed"),
+    ("place-found", "put on the canvas"),
+    ("open", "opened"),
+];
+
+/// `resource` with each of its actions that a change of the layout says what it did by.
+pub(super) fn carried(mut resource: ResourceSpec) -> ResourceSpec {
+    for action in &mut resource.actions {
+        if let Some((_, did)) = DIDS.iter().find(|(id, _)| *id == action.id) {
+            action.type_mut().did = Some((*did).to_owned());
+        }
+    }
+    resource
 }
 
 /// The record key of a place, a strip or a row, as its actions take it. `0` for the keyless

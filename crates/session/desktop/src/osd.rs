@@ -49,7 +49,7 @@ pub struct Readout;
 )]
 pub enum OsdShow {
     /// Show a readout
-    #[effect(kind = "outside", label = "desktop-action-show-osd")]
+    #[effect(kind = "undoable", label = "desktop-action-show-osd")]
     Show {
         /// What it is about: volume, brightness, a mode's new state
         #[param(
@@ -1693,12 +1693,18 @@ mod tests {
 
     #[test]
     fn a_readout_shows_by_its_action_changes_in_place_and_goes() {
+        use tilo_resource::Effect as _;
         let _settled = ui::motion::testing::settled();
         ui::i18n::I18nManager::init("en-US");
         let mut slab = OsdSlab::new();
         assert!(slab.current().is_none());
         let resource = osd_resource();
         let spec = &resource.actions[0];
+        assert_eq!(
+            spec.action_type().contract.kind,
+            tilo_actions::ActionKind::Undoable,
+            "the readout's action is the undoable change it always was"
+        );
         let show = |arguments: &serde_json::Map<String, serde_json::Value>| {
             tilo_actions::api::encode_json(
                 std::slice::from_ref(&resource),
@@ -1712,7 +1718,6 @@ mod tests {
         arguments.insert("level".into(), 0.3.into());
         arguments.insert("device".into(), "Built-in display".into());
         arguments.insert("device-glyph".into(), "display".into());
-        use tilo_resource::Effect as _;
         let encoded = show(&arguments);
         let osd = OsdShow::from_payload(&encoded.payload)
             .expect("the action carries the readout it declares")

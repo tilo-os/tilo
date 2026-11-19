@@ -1474,18 +1474,22 @@ impl Layout {
                 .into_resource()
         });
         let strips = reading.strips.iter().map(|strip| {
-            tilo_resource::LiveRow::typed::<LayoutStrip>(
-                Item::Strip.resource(&strip.key),
-                strip_label(&self.words, strip),
+            published::carried(
+                tilo_resource::LiveRow::typed::<LayoutStrip>(
+                    Item::Strip.resource(&strip.key),
+                    strip_label(&self.words, strip),
+                )
+                .into_resource(),
             )
-            .into_resource()
         });
         let places = reading.places.iter().map(|place| {
-            tilo_resource::LiveRow::typed::<Place>(
-                Item::Place.resource(&place.key),
-                place_label(&self.words, place),
+            published::carried(
+                tilo_resource::LiveRow::typed::<Place>(
+                    Item::Place.resource(&place.key),
+                    place_label(&self.words, place),
+                )
+                .into_resource(),
             )
-            .into_resource()
         });
         // A query a place shows while its app answers is a resource of its own beside the places,
         // so an open place draws it and its rows may be pressed (`query_resource`).
