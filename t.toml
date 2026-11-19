@@ -1048,6 +1048,9 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "cargo build --locked -p tilo-app-cli --bin tilo-app\ncargo test --locked --manifest-path tools/web/wasm-split/Cargo.toml\napp=$CARGO_TARGET_DIR/debug/tilo-app\n# model-providers-web builds the same bundle path in the dev profile, possibly\n# at the same time in the same build directory, so the release bundle has its own.\nexport CARGO_TARGET_DIR=$CARGO_TARGET_DIR/release-web\nbundle=$CARGO_TARGET_DIR/tilo-app/web/calculator/bundle\n\"$app\" build --target web --bundle desktop --release apps/calculator\npython3 -I tools/web/wasm_size_ratchet.py measure desktop \"$bundle\"\n"
 needs = ["test-assets"]
 env = { TILO_TEST_ASSET_SEED = "/target/test-assets" }
+# The splitter's record of what the start module was made of: `parts desktop BUNDLE` writes
+# tools/web/wasm-size-budget/parts/desktop.json from it.
+outputs = ["/target/release-web/tilo-app/web/calculator/bundle/pkg/split.json"]
 
 # The same bundle qualified in Chromium: when dispatched, and when there is room.
 [[check]]
