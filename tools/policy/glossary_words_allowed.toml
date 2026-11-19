@@ -1658,3 +1658,9 @@ reason = "HTTP's own `Host` request header (`hyper::header::HOST`), which a test
 words = ["host"]
 identifiers = ["HOST"]
 paths = ["crates/server/tilo-server/src/daemon.rs"]
+
+[[allow]]
+reason = "`join_ledger` is the field name version 6 of a device's owner entry was written with: the step that brings that version up removes it by that name."
+words = ["ledger"]
+identifiers = ["join_ledger"]
+paths = ["crates/collab/tilo-peer-state/src/owner/stored/format.rs"]
