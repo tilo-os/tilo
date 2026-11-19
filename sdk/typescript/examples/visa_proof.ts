@@ -214,7 +214,14 @@ async function reviewerAccepts(link: string): Promise<Record<string, unknown>> {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ link }),
   });
-  return (await answer.json()) as Record<string, unknown>;
+  const said = answer.headers.get("content-type")?.startsWith("application/json")
+    ? ((await answer.json()) as Record<string, unknown>)
+    : {};
+  if (!answer.ok) {
+    console.error(String(said.error ?? `the reviewer did not get in (${answer.status}): ${answer.statusText}`));
+    process.exit(1);
+  }
+  return said;
 }
 
 // -- the proof ---------------------------------------------------------------
