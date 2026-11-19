@@ -3680,13 +3680,26 @@ mod tests {
                 .begin_write(&app.target().unwrap().dev_path(), "sdb")
                 .expect_err("unreconciled startup must not expose a write");
             assert!(error.contains("Restoring the previous image-write state"));
-            let row = app.target_row(app.target().unwrap()).into_resource();
-            assert!(
-                row.actions
+            let mut rows = vec![app.target_row(app.target().unwrap()).into_resource()];
+            let statuses = crate::window_view::PublishingWindow::row_statuses(&app);
+            let said = |id: &str| {
+                statuses
                     .iter()
-                    .any(|spec| spec.id == "write" && !spec.contract.availability.is_available()),
-                "the drive's write is unavailable"
-            );
+                    .find(|(row, _)| row == id)
+                    .map(|(_, statuses)| statuses.clone())
+                    .unwrap_or_default()
+            };
+            ui::framework::apply_row_statuses(&mut rows, &said);
+            let write = rows[0]
+                .actions
+                .iter()
+                .find(|spec| spec.id == "write")
+                .unwrap();
+            let tilo_actions::Availability::Unavailable { code, .. } = &write.contract.availability
+            else {
+                panic!("the drive's write waits for the startup reconcile");
+            };
+            assert_eq!(code, "restoring_write_state");
         }
 
         {
