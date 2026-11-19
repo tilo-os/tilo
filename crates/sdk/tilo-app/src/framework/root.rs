@@ -420,6 +420,18 @@ fn effect_view<'a>(
     }
 }
 
+/// What one walk of the view learns about the rows it publishes.
+struct RowBindings {
+    /// The edits each row's surfaces offer, by row id.
+    offered: std::collections::HashMap<String, Box<dyn std::any::Any>>,
+    /// What the surfaces say of the effects on each row, nested ones
+    /// included, by row id, where they differ from the declaration.
+    statuses: std::collections::HashMap<String, Vec<super::effect::EffectStatus>>,
+    /// How each top-level collection item stands now, by row id, where the
+    /// view knows what its document does not hold.
+    presentations: std::collections::HashMap<String, tilo_actions::ResourcePresentation>,
+}
+
 impl ResourceRoot {
     /// Once the window's arrival settled (the app's view shows, its
     /// cross-fade over), the view stands in the arrival's place: the root
@@ -745,52 +757,19 @@ impl ResourceRoot {
         walk(self.content.as_ref(), self.resource.id, visit);
     }
 
-    /// What the surfaces say of the effects on the published entity `id`
-    /// now (`Publishes::row_status`), laid over its actions by the
-    /// publication.
-    fn row_statuses(&self, id: &str) -> Vec<super::effect::EffectStatus> {
-        let mut statuses = Vec::new();
-        self.surfaces(&mut |surface| statuses.extend(surface.row_status(id)));
-        statuses
-    }
-
-    /// How the surfaces say the item `id` of the collection `field` stands
-    /// now (`Publishes::item_presentation`), when they know what its document
-    /// does not hold.
-    fn item_presentation(
-        &self,
-        field: &str,
-        id: &str,
-    ) -> Option<tilo_actions::ResourcePresentation> {
-        let mut found = None;
-        self.surfaces(&mut |surface| {
-            if found.is_none() {
-                found = surface.item_presentation(field, id);
-            }
-        });
-        found
-    }
-
-    /// Bind the edits views offer on the rows `rows` name
-    /// ([`Publishes::row_edits`](super::Publishes::row_edits)).
+    /// What the surfaces say of the rows `rows` name, gathered in one walk
+    /// of the view: the edits each row's views offer
+    /// ([`Publishes::row_edits`](super::Publishes::row_edits)), and, where
+    /// `items_of` names the collection's kind, the effects on each row
+    /// (`Publishes::row_status`) and how each item of that collection stands
+    /// (`Publishes::item_presentation`).
     ///
-    /// One walk of the view asks every surface about every row, so binding
-    /// costs the view plus surfaces × rows, never the view once per row. Each
-    /// row binds its edits in tree order of the surfaces offering them.
+    /// One walk asks every surface about every row, so binding costs the view
+    /// plus surfaces × rows, never the view once per row. Each row's edits,
+    /// statuses and presentations arrive in tree order of the surfaces
+    /// offering them.
     #[inline(never)]
-    /// Lay what the surfaces say of each row's effects over it, and over the
-    /// rows nested beneath it.
-    fn apply_row_statuses(&self, rows: &mut [ResourceSpec]) {
-        for row in rows {
-            let statuses = self.row_statuses(row.id.as_str());
-            if !statuses.is_empty() {
-                super::rows::apply_statuses(row, &statuses);
-            }
-            self.apply_row_statuses(&mut row.children);
-        }
-    }
-
-    fn bind_row_declarations(&self, rows: &mut [ResourceSpec]) {
+    fn row_bindings(&self, rows: &[ResourceSpec], items_of: Option<&str>) -> RowBindings {
         // Every row, nested ones too (a playlist's tracks), asked of the
         // surfaces in one walk.
         fn ids(rows: &[ResourceSpec], out: &mut Vec<String>) {
@@ -799,6 +778,72 @@ impl ResourceRoot {
                 ids(&row.children, out);
             }
         }
+        let mut bindings = RowBindings {
+            offered: std::collections::HashMap::new(),
+            statuses: std::collections::HashMap::new(),
+            presentations: std::collections::HashMap::new(),
+        };
+        if rows.is_empty() {
+            return bindings;
+        }
+        let mut all = Vec::new();
+        ids(rows, &mut all);
+        // The collection field and item id each row is, for the collections
+        // whose items the views give presentations to.
+        let items: Vec<Option<(String, String)>> = rows
+            .iter()
+            .map(|row| {
+                items_of.and_then(|kind| {
+                    let (field, id) =
+                        tilo_resource::items::item_of_resource_in(kind, row.id.as_str())?;
+                    Some((field.to_owned(), id.as_str().to_owned()))
+                })
+            })
+            .collect();
+        let mut spare: Option<Box<dyn std::any::Any>> = None;
+        self.surfaces(&mut |surface| {
+            for id in &all {
+                if let Some(decls) = bindings.offered.get_mut(id.as_str()) {
+                    surface.row_declarations(id, decls.as_mut());
+                    continue;
+                }
+                let decls = spare.get_or_insert_with(|| self.typed.no_declarations());
+                if surface.row_declarations(id, decls.as_mut())
+                    && let Some(decls) = spare.take()
+                {
+                    bindings.offered.insert(id.clone(), decls);
+                }
+            }
+            if items_of.is_none() {
+                return;
+            }
+            // A row's status reaches it wherever it is published, nested ones
+            // too; an item's presentation is about the items of the page.
+            for id in &all {
+                let statuses = surface.row_status(id);
+                if !statuses.is_empty() {
+                    bindings
+                        .statuses
+                        .entry(id.clone())
+                        .or_default()
+                        .extend(statuses);
+                }
+            }
+            for (index, row) in rows.iter().enumerate() {
+                let id = row.id.as_str();
+                if let Some((field, item)) = items.get(index).and_then(Option::as_ref)
+                    && !bindings.presentations.contains_key(id)
+                    && let Some(presentation) = surface.item_presentation(field, item)
+                {
+                    bindings.presentations.insert(id.to_owned(), presentation);
+                }
+            }
+        });
+        bindings
+    }
+
+    /// Bind the edits `bindings` offers on the rows `rows` name.
+    fn bind_rows(&self, rows: &mut [ResourceSpec], bindings: &mut RowBindings) {
         fn bind(
             typed: &dyn TypedRoot,
             rows: &mut [ResourceSpec],
@@ -812,29 +857,47 @@ impl ResourceRoot {
                 bind(typed, &mut row.children, offered);
             }
         }
+        bind(self.typed.as_ref(), rows, &mut bindings.offered);
+    }
+
+    /// Bind the edits views offer on the rows `rows` name
+    /// ([`Publishes::row_edits`](super::Publishes::row_edits)).
+    fn bind_row_declarations(&self, rows: &mut [ResourceSpec]) {
         if rows.is_empty() {
             return;
         }
-        let mut all = Vec::new();
-        ids(rows, &mut all);
-        let mut offered: std::collections::HashMap<String, Box<dyn std::any::Any>> =
-            std::collections::HashMap::new();
-        let mut spare: Option<Box<dyn std::any::Any>> = None;
-        self.surfaces(&mut |surface| {
-            for id in &all {
-                if let Some(decls) = offered.get_mut(id.as_str()) {
-                    surface.row_declarations(id, decls.as_mut());
-                    continue;
-                }
-                let decls = spare.get_or_insert_with(|| self.typed.no_declarations());
-                if surface.row_declarations(id, decls.as_mut())
-                    && let Some(decls) = spare.take()
-                {
-                    offered.insert(id.clone(), decls);
-                }
-            }
-        });
-        bind(self.typed.as_ref(), rows, &mut offered);
+        let mut bindings = self.row_bindings(rows, None);
+        self.bind_rows(rows, &mut bindings);
+    }
+
+    /// Lay what `bindings` gathered over the top-level `rows`: the effects
+    /// each view says differ from their declaration, and the presentation it
+    /// gives an item from state the document does not hold.
+    fn apply_row_bindings(rows: &mut [ResourceSpec], bindings: &mut RowBindings) {
+        for row in rows {
+            Self::apply_row_binding(row, bindings);
+        }
+    }
+
+    /// [`Self::apply_row_bindings`] over `rows` and every row nested beneath
+    /// them: a row's status reaches it wherever it is published.
+    fn apply_row_bindings_below(rows: &mut [ResourceSpec], bindings: &mut RowBindings) {
+        for row in rows {
+            Self::apply_row_binding(row, bindings);
+            Self::apply_row_bindings_below(&mut row.children, bindings);
+        }
+    }
+
+    /// Lay what `bindings` gathered over `row` alone.
+    fn apply_row_binding(row: &mut ResourceSpec, bindings: &mut RowBindings) {
+        if let Some(statuses) = bindings.statuses.remove(row.id.as_str()) {
+            super::rows::apply_statuses(row, &statuses);
+        }
+        if let Some(presentation) = bindings.presentations.remove(row.id.as_str())
+            && presentation.is_valid()
+        {
+            row.presentation = Some(presentation);
+        }
     }
 
     /// The resource as published: its own actions and children, the edits
@@ -1098,25 +1161,16 @@ impl ResourceRoot {
         }
         if children {
             merge(&mut resource.children, rows);
-            // What the views say of the items and rows they published beside
-            // the document: an item's presentation from state the document
-            // does not hold, and an effect unavailable on one row.
-            let kind = resource.kind.clone();
-            // A row's status reaches it wherever it is published, nested ones
-            // too (a playlist's tracks, the cameras of a disconnected capture
-            // row), as its declarations do.
-            self.apply_row_statuses(&mut resource.children);
-            for child in &mut resource.children {
-                if let Some((field, id)) =
-                    tilo_resource::items::item_of_resource_in(&kind, child.id.as_str())
-                    && let Some(presentation) = self.item_presentation(field, id.as_str())
-                    && presentation.is_valid()
-                {
-                    child.presentation = Some(presentation);
-                }
-            }
             let _profile = tilo_resource::profiling::Phase::start("framework.row_declarations");
-            self.bind_row_declarations(&mut resource.children);
+            // One walk gathers what the views say of the rows they published
+            // beside the document: their edits, an item's presentation from
+            // state the document does not hold, and an effect unavailable on
+            // one row. A row's status reaches it wherever it is published,
+            // nested ones too (a playlist's tracks, the cameras of a
+            // disconnected capture row), as its declarations do.
+            let mut bindings = self.row_bindings(&resource.children, Some(&resource.kind));
+            Self::apply_row_bindings_below(&mut resource.children, &mut bindings);
+            self.bind_rows(&mut resource.children, &mut bindings);
             // The nested editors the views opened ([`Dispatcher::child`]):
             // each is published at its own address, with its actions applying
             // as this resource's, so the palette, agents and scripts address
@@ -2460,18 +2514,10 @@ impl RootPublishes for ResourceRoot {
             (child, row) => child.or(row),
         };
         if let Some(mut resolved) = resolved {
-            self.bind_row_declarations(std::slice::from_mut(&mut resolved));
-            let statuses = self.row_statuses(resolved.id.as_str());
-            if !statuses.is_empty() {
-                super::rows::apply_statuses(&mut resolved, &statuses);
-            }
-            if let Some((field, item)) =
-                tilo_resource::items::item_of_resource_in(self.resource.kind, resolved.id.as_str())
-                && let Some(presentation) = self.item_presentation(field, item.as_str())
-                && presentation.is_valid()
-            {
-                resolved.presentation = Some(presentation);
-            }
+            let mut bindings =
+                self.row_bindings(std::slice::from_ref(&resolved), Some(self.resource.kind));
+            self.bind_rows(std::slice::from_mut(&mut resolved), &mut bindings);
+            Self::apply_row_bindings(std::slice::from_mut(&mut resolved), &mut bindings);
             if self.stages.opens() {
                 offer_item_open(self.resource.opens_as_item, &mut resolved);
             }
