@@ -328,6 +328,11 @@ identifiers = ["channel"]
 paths = ["crates/session/app-keeper/*"]
 
 [[allow]]
+reason = "A Discord server's channels, and the Chat channels the bridge mirrors them into."
+words = ["channel"]
+paths = ["apps/discord/*"]
+
+[[allow]]
 reason = "Chat's channels, and the mentions read from a chat's messages."
 words = ["channel"]
 paths = [

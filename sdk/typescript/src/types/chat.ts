@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@48a5e870f50777e9";
+export const SURFACE = "so.tilo.chat@76b61dcfa066393c";
 
 export interface Category {
   name: string;
@@ -827,6 +827,15 @@ export interface DeliverMessageArgs {
   ts?: number;
 }
 
+/** The arguments of `import-message`. */
+export interface ImportMessageArgs {
+  channel: string;
+  text: string;
+  origin: Origin;
+  parent?: string;
+  attachments?: Attached[];
+}
+
 /** The arguments of `edit-message`. */
 export interface EditMessageArgs {
   message: string;
@@ -1335,6 +1344,15 @@ export interface Messages extends tilo.Resource {
   }): Promise<void>;
   /** Runs `deliver-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deliverMessageMany(items: DeliverMessageArgs[]): Promise<tilo.ActionAnswer[]>;
+  importMessage(args: {
+    channel: string;
+    text: string;
+    origin: Origin;
+    parent?: string;
+    attachments?: Attached[];
+  }): Promise<void>;
+  /** Runs `import-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  importMessageMany(items: ImportMessageArgs[]): Promise<tilo.ActionAnswer[]>;
   editMessage(args: {
     message: string;
     text: string;
@@ -1458,7 +1476,7 @@ export interface Messages extends tilo.Resource {
 
 /** The actions `Messages` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MESSAGES_ACTIONS = ["post", "postMany", "postFile", "postFileMany", "shareResource", "shareResourceMany", "shareWindow", "shareWindowMany", "stopSharing", "stopSharingMany", "setShareAccess", "setShareAccessMany", "shareOpen", "shareOpenMany", "deliverMessage", "deliverMessageMany", "editMessage", "editMessageMany", "deleteMessage", "deleteMessageMany", "removeMessage", "removeMessageMany", "pin", "pinMany", "retry", "retryMany", "recordWork", "recordWorkMany", "ask", "askMany", "answerQuestion", "answerQuestionMany", "withdrawQuestion", "withdrawQuestionMany", "settleQuestion", "settleQuestionMany", "askAgent", "askAgentMany", "stopAgent", "stopAgentMany", "postView", "postViewMany", "answerWithView", "answerWithViewMany", "rewriteView", "rewriteViewMany", "carryCounts", "carryCountsMany", "streamOutput", "streamOutputMany"] as const;
+export const MESSAGES_ACTIONS = ["post", "postMany", "postFile", "postFileMany", "shareResource", "shareResourceMany", "shareWindow", "shareWindowMany", "stopSharing", "stopSharingMany", "setShareAccess", "setShareAccessMany", "shareOpen", "shareOpenMany", "deliverMessage", "deliverMessageMany", "importMessage", "importMessageMany", "editMessage", "editMessageMany", "deleteMessage", "deleteMessageMany", "removeMessage", "removeMessageMany", "pin", "pinMany", "retry", "retryMany", "recordWork", "recordWorkMany", "ask", "askMany", "answerQuestion", "answerQuestionMany", "withdrawQuestion", "withdrawQuestionMany", "settleQuestion", "settleQuestionMany", "askAgent", "askAgentMany", "stopAgent", "stopAgentMany", "postView", "postViewMany", "answerWithView", "answerWithViewMany", "rewriteView", "rewriteViewMany", "carryCounts", "carryCountsMany", "streamOutput", "streamOutputMany"] as const;
 
 /** The `chat.messages` kind at `path`. */
 export function messages(ws: tilo.Workspace, path: string): Messages {

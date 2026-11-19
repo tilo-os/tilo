@@ -846,6 +846,31 @@ pub fn post(channel: &str, text: &str, parent: Option<&str>) -> Invoke<ChatMessa
     })
 }
 
+/// Import into `channel` a message `author` wrote in `source` at `written_ms`
+/// (milliseconds since the epoch) saying `text`: kept at that time.
+pub fn import(
+    channel: &str,
+    text: &str,
+    (author, source): (&str, &str),
+    written_ms: i64,
+) -> Invoke<ChatMessages> {
+    ChatMessages::IMPORT_MESSAGE.with(chat_messages::ImportMessage {
+        channel: Id::from_raw(channel),
+        text: text.into(),
+        origin: ui::tilo_resource::Origin {
+            author: author.into(),
+            handle: None,
+            source: source.into(),
+            url: None,
+            reference: None,
+            created_ms: Some(written_ms),
+            updated_ms: None,
+        },
+        parent: None,
+        attachments: None,
+    })
+}
+
 /// Apply `invoke`, a verb on the messages, as `author` invokes it to
 /// `part`, a part of the chat's messages held as a document (started with
 /// its genesis when empty), read against the chat resource `chat` as the

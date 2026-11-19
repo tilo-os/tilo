@@ -142,6 +142,7 @@ __all__ = [
     "SetShareAccessArgs",
     "ShareOpenArgs",
     "DeliverMessageArgs",
+    "ImportMessageArgs",
     "EditMessageArgs",
     "DeleteMessageArgs",
     "RemoveMessageArgs",
@@ -908,6 +909,15 @@ DeliverMessageArgs = TypedDict("DeliverMessageArgs", {
 })
 """The arguments of `deliver-message`."""
 
+ImportMessageArgs = TypedDict("ImportMessageArgs", {
+    "channel": "str",
+    "text": "str",
+    "origin": "Origin",
+    "parent": NotRequired["str | None"],
+    "attachments": NotRequired["list[Attached] | None"],
+})
+"""The arguments of `import-message`."""
+
 EditMessageArgs = TypedDict("EditMessageArgs", {
     "message": "str",
     "text": "str",
@@ -1181,7 +1191,7 @@ SetSubAgentLimitsArgs = TypedDict("SetSubAgentLimitsArgs", {
 
 class Workspace(Resource):
     """Chat — `chat.workspace`."""
-    __surface__ = "so.tilo.chat@48a5e870f50777e9"
+    __surface__ = "so.tilo.chat@76b61dcfa066393c"
     @property
     def categories(self) -> list[Entry[Category]]:
         """Read only."""
@@ -1516,7 +1526,7 @@ class Workspace(Resource):
 
 class Messages(Resource):
     """Messages — `chat.messages`."""
-    __surface__ = "so.tilo.chat@48a5e870f50777e9"
+    __surface__ = "so.tilo.chat@76b61dcfa066393c"
     @property
     def messages(self) -> list[Entry[Message]]:
         """Read only."""
@@ -1687,6 +1697,29 @@ class Messages(Resource):
     def deliver_message_many(self, items: list[DeliverMessageArgs]) -> list[dict[str, Any]]:
         """Runs `deliver-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("deliver-message", items)
+
+    def import_message(self,
+        *,
+        channel: str,
+        text: str,
+        origin: Origin,
+        parent: str | None = None,
+        attachments: list[Attached] | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["channel"] = channel
+        args["text"] = text
+        args["origin"] = origin
+        if parent is not None:
+            args["parent"] = parent
+        if attachments is not None:
+            args["attachments"] = attachments
+        return self.action("import-message", **args)
+
+    def import_message_many(self, items: list[ImportMessageArgs]) -> list[dict[str, Any]]:
+        """Runs `import-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("import-message", items)
 
     def edit_message(self,
         *,
@@ -1965,12 +1998,12 @@ class Messages(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"post", "post_many", "post_file", "post_file_many", "share_resource", "share_resource_many", "share_window", "share_window_many", "stop_sharing", "stop_sharing_many", "set_share_access", "set_share_access_many", "share_open", "share_open_many", "deliver_message", "deliver_message_many", "edit_message", "edit_message_many", "delete_message", "delete_message_many", "remove_message", "remove_message_many", "pin", "pin_many", "retry", "retry_many", "record_work", "record_work_many", "ask", "ask_many", "answer_question", "answer_question_many", "withdraw_question", "withdraw_question_many", "settle_question", "settle_question_many", "ask_agent", "ask_agent_many", "stop_agent", "stop_agent_many", "post_view", "post_view_many", "answer_with_view", "answer_with_view_many", "rewrite_view", "rewrite_view_many", "carry_counts", "carry_counts_many", "stream_output", "stream_output_many"})
+    __actions__ = frozenset({"post", "post_many", "post_file", "post_file_many", "share_resource", "share_resource_many", "share_window", "share_window_many", "stop_sharing", "stop_sharing_many", "set_share_access", "set_share_access_many", "share_open", "share_open_many", "deliver_message", "deliver_message_many", "import_message", "import_message_many", "edit_message", "edit_message_many", "delete_message", "delete_message_many", "remove_message", "remove_message_many", "pin", "pin_many", "retry", "retry_many", "record_work", "record_work_many", "ask", "ask_many", "answer_question", "answer_question_many", "withdraw_question", "withdraw_question_many", "settle_question", "settle_question_many", "ask_agent", "ask_agent_many", "stop_agent", "stop_agent_many", "post_view", "post_view_many", "answer_with_view", "answer_with_view_many", "rewrite_view", "rewrite_view_many", "carry_counts", "carry_counts_many", "stream_output", "stream_output_many"})
 
 
 class Drafts(Resource):
     """Chat drafts — `chat.drafts`."""
-    __surface__ = "so.tilo.chat@48a5e870f50777e9"
+    __surface__ = "so.tilo.chat@76b61dcfa066393c"
     drafts: dict[str, str]
 
     def start_draft(self, *, key: str) -> None:
@@ -1988,7 +2021,7 @@ class Drafts(Resource):
 
 class Learned(Resource):
     """What your agents learned — `chat.learned`."""
-    __surface__ = "so.tilo.chat@48a5e870f50777e9"
+    __surface__ = "so.tilo.chat@76b61dcfa066393c"
     @property
     def facts(self) -> list[Entry[Fact]]:
         """Read only."""
@@ -2039,7 +2072,7 @@ class Learned(Resource):
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@48a5e870f50777e9"
+    __surface__ = "so.tilo.chat@76b61dcfa066393c"
     emoji: dict[str, Emoji]
 
     def add_emoji(self,
@@ -2077,7 +2110,7 @@ class WorkspaceEmoji(Resource):
 
 class ChatAgent(Resource):
     """Agents — `chat.agent`."""
-    __surface__ = "so.tilo.chat@48a5e870f50777e9"
+    __surface__ = "so.tilo.chat@76b61dcfa066393c"
     agents: list[Entry[Agent]]
 
     def create_agent(self,

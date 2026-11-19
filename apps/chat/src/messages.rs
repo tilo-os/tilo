@@ -99,6 +99,28 @@ fn written_at(cx: &ActionCx, written: Option<i64>, brought: bool) -> i64 {
         .map_or(now, |written| written.saturating_mul(1_000).clamp(0, now))
 }
 
+/// The id of the message imported into `channel` from `origin`, written there
+/// at `created_ms` saying `text`: the same message imported again names the
+/// same one. It is known there by its reference or its page, else by its author.
+fn imported_id(
+    channel: &Id,
+    origin: &ui::tilo_resource::Origin,
+    created_ms: i64,
+    text: &str,
+) -> Id {
+    let there = origin
+        .reference
+        .as_deref()
+        .or(origin.url.as_deref())
+        .unwrap_or(&origin.author);
+    crate::transcript::delivered_id(
+        channel,
+        &format!("{}\u{1f}{there}", origin.source),
+        created_ms,
+        text,
+    )
+}
+
 /// Oldest first: when it was written, ties by id. The time is the one the
 /// action that wrote the message carried, which every replica reads from the
 /// message itself.
@@ -633,6 +655,57 @@ impl ChatMessages {
                     avatar: None,
                     persona: None,
                 }),
+                ..Posting::default()
+            },
+        )
+        .map(drop)
+    }
+
+    /// Import message.
+    ///
+    /// Adds a message written elsewhere (another chat's history, a bridged
+    /// server's channel) at the time it was written there, however much newer
+    /// what the conversation already holds is: it reads among them in the
+    /// order they were written, shown as imported, by its author there and
+    /// the tool it came from. A post written here takes now; only an import
+    /// keeps an earlier time. Importing it again changes nothing.
+    #[action(incoming_message, audience = "agents")]
+    pub fn import_message(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The channel")] channel: Id,
+        #[param("The message")] text: String,
+        #[param("Where it was written: its author there, the tool, its page and when")]
+        origin: ui::tilo_resource::Origin,
+        #[param("The message it answers in a thread, already here")] parent: Option<Id>,
+        #[param("Files another step put in the store that it carries")] attachments: Option<
+            Vec<tilo_reference::Attached>,
+        >,
+    ) -> Result<(), Refusal> {
+        let attachments = attachments.unwrap_or_default();
+        if text.trim().is_empty() && attachments.is_empty() {
+            return Err(Refusal::new("a message says something"));
+        }
+        let origin = origin.checked()?;
+        let created_ms = origin
+            .created_ms
+            .ok_or_else(|| Refusal::new("an imported message says when it was written"))?;
+        let id = imported_id(&channel, &origin, created_ms, &text);
+        if self.messages.contains(&id) {
+            return Ok(());
+        }
+        let appearance = cx.appearance();
+        self.append(
+            cx,
+            id,
+            &channel,
+            created_ms.clamp(0, cx.now_ms()),
+            Posting {
+                text,
+                parent,
+                attachments,
+                appearance,
+                origin: Some(origin),
                 ..Posting::default()
             },
         )
@@ -1365,8 +1438,8 @@ impl Chained for ChatMessages {
     /// the message is.
     fn beside(action: &Self::Action) -> Option<Id> {
         use chat_messages::{
-            AnswerWithView, AskAgent, DeliverMessage, EditMessage, PostView, RecordWork,
-            RewriteView, StreamOutput,
+            AnswerWithView, AskAgent, DeliverMessage, EditMessage, ImportMessage, PostView,
+            RecordWork, RewriteView, StreamOutput,
         };
         match &action.operation {
             ChatMessagesAction::Post(chat_messages::Post {
@@ -1391,6 +1464,14 @@ impl Chained for ChatMessages {
                 body,
                 ts: Some(ts),
             }) => Some(crate::transcript::delivered_id(channel, author, *ts, body)),
+            ChatMessagesAction::ImportMessage(ImportMessage {
+                channel,
+                text,
+                origin,
+                ..
+            }) => origin
+                .created_ms
+                .map(|created_ms| imported_id(channel, origin, created_ms, text)),
             ChatMessagesAction::AskAgent(AskAgent { message, .. }) => message.clone(),
             ChatMessagesAction::StreamOutput(StreamOutput { reply, .. }) => {
                 Some(Id::from_raw(reply.clone()))
@@ -1463,6 +1544,9 @@ impl Chained for ChatMessages {
                 ChatMessagesAction::StreamOutput(stream) => takes_posts(chat, &stream.channel)?,
                 ChatMessagesAction::DeliverMessage(delivery) => {
                     takes_posts(chat, &delivery.channel)?;
+                }
+                ChatMessagesAction::ImportMessage(import) => {
+                    takes_posts(chat, &import.channel)?;
                 }
                 _ => {}
             }
@@ -1539,6 +1623,7 @@ fn channel_written(
         ChatMessagesAction::PostView(post) => &post.channel,
         ChatMessagesAction::AskAgent(ask) => &ask.channel,
         ChatMessagesAction::DeliverMessage(delivery) => &delivery.channel,
+        ChatMessagesAction::ImportMessage(import) => &import.channel,
         ChatMessagesAction::StreamOutput(stream) => &stream.channel,
         _ => {
             let message = ChatMessages::beside(action)

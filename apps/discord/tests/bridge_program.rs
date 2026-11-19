@@ -170,11 +170,23 @@ fn each(list: &str, body: Vec<Step>) -> Step {
 /// Mirror Discord messages into Chat: post with the author's appearance,
 /// then map the message the post created to its Discord counterpart.
 fn mirrored_post(step: &str, extra: &[(&str, Binding)]) -> Vec<Step> {
+    mirrored(step, "post", ("written", item("written")), extra)
+}
+
+/// Mirror what Discord wrote before the newest message its Tilo channel
+/// holds: import it, at its time and saying where it came from, then map it.
+fn mirrored_import(step: &str, extra: &[(&str, Binding)]) -> Vec<Step> {
+    mirrored(step, "import-message", ("origin", item("origin")), extra)
+}
+
+/// Write a Discord message into Chat with `verb`, which takes when it was
+/// written as `when`, then map the message it made to its Discord one.
+fn mirrored(step: &str, verb: &str, when: (&str, Binding), extra: &[(&str, Binding)]) -> Vec<Step> {
     let mut args = vec![
         ("channel", item("channel")),
         ("text", item("text")),
         ("parent", item("parent")),
-        ("written", item("written")),
+        when,
     ];
     args.extend(extra.iter().cloned());
     let posted = format!("{step}-post");
@@ -189,7 +201,7 @@ fn mirrored_post(step: &str, extra: &[(&str, Binding)]) -> Vec<Step> {
         args.insert("persona".into(), item("persona"));
         args.insert("root".into(), item("parent"));
     }
-    vec![message(&posted, "post", &args, true), mapped]
+    vec![message(&posted, verb, &args, true), mapped]
 }
 
 #[allow(
@@ -495,6 +507,22 @@ fn pass() -> Vec<Step> {
                 &[(
                     "attachments",
                     Binding::List(vec![plan_step("fetch-file", "/attachment")]),
+                )],
+            ));
+            body
+        }),
+        each("imports", mirrored_import("import", &[])),
+        each("file_imports", {
+            let mut body = vec![guild(
+                "fetch-imported-file",
+                "fetch-asset",
+                &[("op", item("fetch"))],
+            )];
+            body.extend(mirrored_import(
+                "file-import",
+                &[(
+                    "attachments",
+                    Binding::List(vec![plan_step("fetch-imported-file", "/attachment")]),
                 )],
             ));
             body

@@ -822,3 +822,77 @@ fn a_send_while_its_part_arrives_answers_the_message_it_posts() {
         "the message lands under the id the send answered ({message}): {held:?}"
     );
 }
+
+/// History written elsewhere comes into a conversation that already holds a
+/// newer message: each imported message keeps the time it was written there
+/// and reads in that order among them, says where it came from, and importing
+/// it again changes nothing. A post written here after them still reads last.
+#[test]
+fn imported_history_keeps_its_times_in_a_conversation_holding_newer_messages() {
+    let chat = crate::demo::demo();
+    let mut workspace = Workspace::default();
+    workspace.write_part(0, &ChatMessages::default()).unwrap();
+    let mut doc = ui::automerge::AutoCommit::load(&workspace.part_bytes(0).unwrap()).unwrap();
+    let today = 1_800_000_000_000;
+    let day = 86_400_000;
+    let mut write = |now: Option<i64>, invoke: ui::tilo_resource::Invoke<ChatMessages>| {
+        crate::demo::apply_part_doc_as(
+            &mut doc,
+            &chat,
+            |replica| replica.as_invoker("u_aria"),
+            now,
+            invoke,
+        )
+        .unwrap();
+    };
+    write(Some(today), crate::demo::post("c_general", "today", None));
+    let first = crate::demo::import(
+        "c_general",
+        "ten days ago",
+        ("Ada", "Slack"),
+        today - 10 * day,
+    );
+    write(None, first.clone());
+    write(
+        None,
+        crate::demo::import(
+            "c_general",
+            "three days ago",
+            ("Ada", "Slack"),
+            today - 3 * day,
+        ),
+    );
+    write(None, first);
+    write(
+        Some(today + 1_000),
+        crate::demo::post("c_general", "later today", None),
+    );
+    let part = read_part(&doc);
+    let read: Vec<(String, i64)> = Messages::single(part.clone())
+        .iter()
+        .map(|(_, message)| (message.text.clone(), message.ts))
+        .collect();
+    assert_eq!(
+        read,
+        [
+            ("ten days ago".to_owned(), today - 10 * day),
+            ("three days ago".to_owned(), today - 3 * day),
+            ("today".to_owned(), today),
+            ("later today".to_owned(), today + 1_000),
+        ],
+        "each at the time it was written, imported again or not"
+    );
+    let (_, imported) = part
+        .messages
+        .iter()
+        .find(|(_, message)| message.text == "ten days ago")
+        .unwrap();
+    assert_eq!(
+        imported
+            .origin
+            .as_ref()
+            .map(|origin| origin.source.as_str()),
+        Some("Slack"),
+        "it says where it came from"
+    );
+}

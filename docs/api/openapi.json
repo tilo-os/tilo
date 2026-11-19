@@ -10919,6 +10919,365 @@
         ],
         "description": ""
       },
+      "chat.messages.import-message.Arguments": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "origin": {
+            "additionalProperties": false,
+            "properties": {
+              "author": {
+                "type": "string"
+              },
+              "created_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "handle": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reference": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "type": "string"
+              },
+              "updated_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "url": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "author",
+              "source"
+            ],
+            "type": "object"
+          },
+          "parent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "attachments": {
+            "items": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "anchor": {
+                      "oneOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "oneOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "Item": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "id": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "id"
+                                  ],
+                                  "type": "object"
+                                }
+                              },
+                              "required": [
+                                "Item"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "Items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "ids": {
+                                      "items": {
+                                        "type": "string"
+                                      },
+                                      "type": "array"
+                                    }
+                                  },
+                                  "required": [
+                                    "ids"
+                                  ],
+                                  "type": "object"
+                                }
+                              },
+                              "required": [
+                                "Items"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "Text": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "end": {
+                                      "type": "string"
+                                    },
+                                    "path": {
+                                      "type": "string"
+                                    },
+                                    "start": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "path",
+                                    "start",
+                                    "end"
+                                  ],
+                                  "type": "object"
+                                }
+                              },
+                              "required": [
+                                "Text"
+                              ],
+                              "type": "object"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    "at": {
+                      "properties": {
+                        "app": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "id": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "kind": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "label": {
+                          "type": "string"
+                        },
+                        "record": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "app",
+                        "kind",
+                        "id",
+                        "label"
+                      ],
+                      "type": "object"
+                    },
+                    "kind": {
+                      "const": "resource",
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "at",
+                    "label"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "from": {
+                      "properties": {
+                        "app": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "id": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "kind": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "label": {
+                          "type": "string"
+                        },
+                        "record": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "app",
+                        "kind",
+                        "id",
+                        "label"
+                      ],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    },
+                    "kind": {
+                      "const": "text",
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "text"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "blob": {
+                      "type": "string"
+                    },
+                    "h": {
+                      "maximum": 4294967295,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "kind": {
+                      "const": "image",
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "w": {
+                      "maximum": 4294967295,
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "name",
+                    "blob",
+                    "w",
+                    "h"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "blob": {
+                      "type": "string"
+                    },
+                    "h": {
+                      "maximum": 4294967295,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "kind": {
+                      "const": "video",
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "size": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "w": {
+                      "maximum": 4294967295,
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "name",
+                    "blob",
+                    "w",
+                    "h",
+                    "size"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "blob": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "file",
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "size": {
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "name",
+                    "blob",
+                    "size"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "channel",
+          "text",
+          "origin"
+        ],
+        "description": ""
+      },
       "chat.messages.edit-message.Arguments": {
         "type": "object",
         "properties": {
@@ -32610,6 +32969,12 @@
       "resource": "chat.messages",
       "action": "deliver-message",
       "arguments": "#/components/schemas/chat.messages.deliver-message.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.messages",
+      "action": "import-message",
+      "arguments": "#/components/schemas/chat.messages.import-message.Arguments"
     },
     {
       "app": "so.tilo.chat",
