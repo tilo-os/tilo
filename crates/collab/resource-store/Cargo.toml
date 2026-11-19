@@ -21,6 +21,7 @@ postcard = { workspace = true, features = ["alloc"] }
 serde_json.workspace = true
 # Short names of reader sets in document ids.
 blake3.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 
