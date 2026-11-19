@@ -1056,7 +1056,7 @@ impl tilo_server::workspaces::AsksPeople for Approver {
 /// person is asked first, and their answer stands, until they allow it outright.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_logged_in_computers_agent_reads_and_invites_people_as_its_grants_let_it() {
-    use tilo_action_policy::agent_answers::{self, AnswerScope};
+    use tilo_action_policy::agent_answers::AnswerScope;
     use tilo_actions::remote::{WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER};
     let on_server = api_on_server(ISSUER).await;
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
@@ -1122,26 +1122,18 @@ async fn a_logged_in_computers_agent_reads_and_invites_people_as_its_grants_let_
     );
     assert_eq!(questions(), 2);
 
-    // Allowed in the workspace's settings, under Agents, it goes unasked: the answer Ada gave,
-    // kept by her workspace's server.
-    let scope = AnswerScope::action(
+    // Allowed in the workspace's settings, under Agents, it goes unasked: Ada's laptop sets the
+    // agent's bound in the workspace's list of its agents, as her settings do, and the server
+    // decides the agent's calls by it.
+    let invite_node = AnswerScope::action(
         WORKSPACE_GOVERNANCE_PROVIDER,
         WORKSPACE_GOVERNANCE_KIND,
         "invite",
-    );
+    )
+    .node(&workspace);
     let agent =
         tilo_actions::remote::device_agent_id(&holder.laptop.cert.user_public_key, "Claude Code");
-    let grant = agent_answers::grant(
-        &workspace,
-        &agent,
-        (&scope, tilo_action_policy::roles::GOVERNANCE_KIND),
-        tilo_action_policy::Answer::Allow,
-        tilo_action_policy::Grantee::person(ada_key.clone()),
-    );
-    workspaces
-        .put_workspace_grants(&workspace, &on_server.host.cert, [7; 32], vec![grant])
-        .await
-        .unwrap();
+    allow_on_list(workspaces, &holder, (&workspace, &agent), &invite_node).await;
     holder
         .command()
         .post(&invitations, &invite)
@@ -1149,6 +1141,93 @@ async fn a_logged_in_computers_agent_reads_and_invites_people_as_its_grants_let_
         .expect("allowed outright, the agent invites");
     assert_eq!(questions(), 2, "allowed outright, nobody is asked");
     assert!(holder.device.is_live());
+}
+
+/// Ada's laptop allows `agent` outright at `node` in `workspace`: it sets the agent's bound in the
+/// workspace's list of its agents as her own write, once the list names the agent, and waits
+/// until the server holds it.
+async fn allow_on_list(
+    workspaces: &tilo_server::workspaces::Workspaces,
+    holder: &Holder,
+    (workspace, agent): (&str, &str),
+    node: &tilo_action_policy::TreePath,
+) {
+    use ui::tilo_workspace_agent::{Bound, WorkspaceAgents, workspace_agents::SetAgentBound};
+    let chat = ui::tilo_workspace_agent::OWNER;
+    let document = &collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND);
+    let listed = |bounded: bool| async move {
+        let bytes = workspaces
+            .resource_document(workspace, chat, document)
+            .await
+            .ok()
+            .flatten()?;
+        let doc = automerge::AutoCommit::load(&bytes).ok()?;
+        let agents = <WorkspaceAgents as ui::tilo_resource::Resource>::read(&doc).ok()?;
+        agents
+            .agents
+            .iter()
+            .any(|kept| kept.id.0 == agent && (!bounded || !kept.bound.is_empty()))
+            .then_some(doc)
+    };
+    let deadline = tilo_test_env::hang_deadline();
+    let doc = loop {
+        if let Some(doc) = listed(false).await {
+            break doc;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the workspace's agents never list the computer's agent"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    let ada = hex::encode(holder.laptop.cert.user_public_key);
+    let mut list = ui::tilo_resource::Replica::<WorkspaceAgents>::from_doc(doc)
+        .as_author(&ada)
+        .in_app(chat, "Chat");
+    let heads = list.doc_mut().get_heads();
+    list.apply(WorkspaceAgents::SET_AGENT_BOUND.with(SetAgentBound {
+        agent: ui::tilo_resource::Id::from_raw(agent.to_owned()),
+        bound: vec![Bound {
+            node: node.to_string(),
+            kinds: vec!["outside".into()],
+            answer: "allow".into(),
+        }],
+    }))
+    .expect("its keeper may allow it to invite people");
+    let changes = list.doc_mut().save_after(&heads);
+    // The workspace seals what its members write: her laptop seals the change under its keys,
+    // once the workspace handed them to it.
+    let engine = holder.device.session().engine();
+    let held = holder.device.workspace_id();
+    let sealed =
+        if tilo_broker_core::owner_service::OwnerService::commits_documents(&**engine, held) {
+            None
+        } else {
+            loop {
+                match engine
+                    .seal_keys(held)
+                    .expect("her laptop keeps the workspace's keys")
+                {
+                    tilo_session_client::engine::SealKeys::Here(keys) => break Some(keys),
+                    _ => assert!(
+                        std::time::Instant::now() < deadline,
+                        "the workspace never hands her laptop its keys"
+                    ),
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        };
+    engine
+        .write_resource(held, (chat, document), &changes, false, sealed.as_ref())
+        .await
+        .expect("Ada's laptop writes the bound");
+    while listed(true).await.is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the server never holds the agent's bound"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 }
 
 /// What a hosted workspace answers a key besides actions: what changed in it,
