@@ -827,6 +827,17 @@ impl From<&Link> for Arc<dyn tilo_session_actions::RemoteSession> {
             outbox: Arc::clone(&link.outbox),
             reports: Arc::clone(&link.reports),
             events: link.events_where(|event| matches!(event, Event::Remote(_))),
+            presence: link.events_where(|event| {
+                matches!(
+                    event,
+                    Event::LiveSession {
+                        track: tilo_live::live::Track::Presence,
+                        ..
+                    }
+                )
+            }),
+            boards: Mutex::new(BTreeMap::new()),
+            publisher: link.engine.identity().device_cert.device_public_key,
         })
     }
 }
@@ -836,6 +847,12 @@ struct Asking {
     outbox: Arc<dyn Outbox + Send + Sync>,
     reports: Arc<Reports>,
     events: Events,
+    /// What the members of the session's workspaces say of themselves, as it arrives.
+    presence: Events,
+    /// Who is in each workspace, as their presence was heard: the board a page keeps too.
+    boards: Mutex<BTreeMap<WorkspaceId, tilo_live::presence::Board>>,
+    /// This device, which hears its own presence as nobody else's.
+    publisher: [u8; 32],
 }
 
 impl tilo_session_actions::RemoteSession for Asking {
@@ -872,6 +889,49 @@ impl tilo_session_actions::RemoteSession for Asking {
 
     fn connections(&self) -> u64 {
         self.reports.read(|status| status.connections)
+    }
+
+    /// Who is in `workspace_id`, as their presence reached this session, and the window each
+    /// works in.
+    fn here(&self, workspace_id: WorkspaceId) -> Option<Vec<tilo_actions::remote::Here>> {
+        let now = crate::presence::now_ms();
+        let mut boards = self.boards.lock_recover();
+        for event in self.presence.drain() {
+            if let Event::LiveSession { ws, from, body, .. } = event {
+                boards
+                    .entry(ws)
+                    .or_insert_with(|| {
+                        tilo_live::presence::Board::new(ws.to_string(), self.publisher)
+                    })
+                    .heard(from, &body, now);
+            }
+        }
+        let board = boards.entry(workspace_id).or_insert_with(|| {
+            tilo_live::presence::Board::new(workspace_id.to_string(), self.publisher)
+        });
+        let here = Some(
+            board
+                .here()
+                .map(|member| {
+                    let shown = tilo_live::presence::shown(member, now);
+                    tilo_actions::remote::Here {
+                        who: shown
+                            .user
+                            .clone()
+                            .or_else(|| shown.member.as_ref().map(ToString::to_string))
+                            .unwrap_or_else(|| shown.publisher.clone()),
+                        name: shown.label.clone(),
+                        kind: if shown.agent { "agent" } else { "person" }.into(),
+                        works_in: shown.focus.map(|focus| tilo_actions::remote::HereWindow {
+                            app: focus.app,
+                            document: focus.document,
+                        }),
+                    }
+                })
+                .collect(),
+        );
+        drop(boards);
+        here
     }
 
     fn session_state(

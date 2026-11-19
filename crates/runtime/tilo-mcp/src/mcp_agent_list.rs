@@ -17,15 +17,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let (_, running) = self.providers().await?;
         let mut lines: Vec<String> = Vec::new();
         let mut rows: Vec<Value> = Vec::new();
-        let mut running_ids: Vec<String> = Vec::new();
-        for (_, app) in &running {
-            let Some(app_id) = app["app_id"].as_str() else {
-                continue;
-            };
-            if !running_ids.iter().any(|seen| seen == app_id) {
-                running_ids.push(app_id.to_owned());
-            }
-        }
+        let running_ids = running_app_ids(&running);
         let (installed, unread) = match self.installed().await {
             Ok(installed) => (installed, None),
             Err(reason) => (Vec::new(), Some(reason)),
@@ -33,7 +25,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // What each app holds rows of: a document this is served of holds
         // what the app has, the workspace's own folder holds its files, and
         // a service holds only windows. An app is no resource of its own.
-        let mut listed: Vec<(String, &str, &str, bool)> = Vec::new();
+        // Who works in which app's window now, as their presence says: the window a person has
+        // in front of them is the one they mean by "this".
+        let here = self.host.here(&self.caller()).unwrap_or_default();
+        let mut listed: Vec<(String, &str, String, bool, Vec<String>)> = Vec::new();
         for app_id in &running_ids {
             let label = installed
                 .iter()
@@ -46,10 +41,15 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     || tilo_actions::remote::is_resource_provider(provider))
                     && app["app_id"].as_str() == Some(app_id)
             });
-            let state = if windowed { "running" } else { "service" };
+            let workers = if windowed {
+                people_working_in(&here, app_id)
+            } else {
+                Vec::new()
+            };
+            let state = running_state(windowed, &workers);
             let name = app_names(std::slice::from_ref(app_id)).join("");
             let holds = windowed || super::names_files(app_id);
-            listed.push((name, label, state, holds));
+            listed.push((name, label, state, holds, workers));
         }
         let mut unopened = false;
         for app in &installed {
@@ -60,15 +60,17 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     unopened = true;
                     "installed, not yours to open"
                 };
+                let state = state.to_owned();
                 let name = app_names(std::slice::from_ref(&app.app_id)).join("");
                 // Installing starts a document; a walk never makes one.
                 let holds = super::names_files(&app.app_id);
-                listed.push((name, &app.label, state, holds));
+                listed.push((name, &app.label, state, holds, Vec::new()));
             }
         }
-        for (name, label, state, holds) in listed {
+        for (name, label, state, holds, workers) in listed {
             lines.push(format!("{name}  {label}  {state}"));
             rows.push(json!({
+                "works_in_it": workers,
                 "path": name,
                 "name": name,
                 "label": label,
@@ -143,5 +145,41 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .children
             .retain(|node| node.kind == tilo_actions::remote::FOUND_FILE);
         Ok(resolved)
+    }
+}
+
+/// Each running app once, in the order the providers serve them.
+fn running_app_ids(running: &[(String, Value)]) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for (_, app) in running {
+        if let Some(app_id) = app["app_id"].as_str()
+            && !ids.iter().any(|seen| seen == app_id)
+        {
+            ids.push(app_id.to_owned());
+        }
+    }
+    ids
+}
+
+/// The people whose focused window is one of `app_id`'s, by name.
+fn people_working_in(here: &[tilo_actions::remote::Here], app_id: &str) -> Vec<String> {
+    here.iter()
+        .filter(|member| member.kind == "person")
+        .filter(|member| {
+            member
+                .works_in
+                .as_ref()
+                .is_some_and(|window| window.app == app_id)
+        })
+        .map(|member| member.name.clone())
+        .collect()
+}
+
+/// A running app's state: a service has no window, and a windowed app names who works in it.
+fn running_state(windowed: bool, workers: &[String]) -> String {
+    match (windowed, workers) {
+        (false, _) => "service".to_owned(),
+        (true, []) => "running".to_owned(),
+        (true, names) => format!("running, {} works in it", names.join(" and ")),
     }
 }

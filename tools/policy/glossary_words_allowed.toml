@@ -1542,3 +1542,9 @@ reason = "The web size ratchet's test writes a raise's TOML with a helper named 
 words = ["record", "run"]
 identifiers = ["record", "run", "not_a_run"]
 paths = ["tools/tests/test_wasm_size_ratchet.py"]
+
+[[allow]]
+reason = "The MCP server's own field for the action provider it serves from (`self.host`), which every tool reads."
+words = ["host"]
+identifiers = ["host"]
+paths = ["crates/runtime/tilo-mcp/src/mcp_agent_list.rs"]

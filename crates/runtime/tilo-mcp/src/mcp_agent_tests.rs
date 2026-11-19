@@ -177,6 +177,7 @@ impl Notes {
                 who: "ada".into(),
                 name: "Ada".into(),
                 kind: "person".into(),
+                works_in: None,
             }]))),
             asks: Arc::default(),
             links: Arc::default(),
@@ -1722,11 +1723,13 @@ tilo_test_env::scenario! {
                     who: "ada".into(),
                     name: "Ada".into(),
                     kind: "person".into(),
+                    works_in: None,
                 },
                 tilo_actions::remote::Here {
                     who: "agent:claude".into(),
                     name: "Claude Code".into(),
                     kind: "agent".into(),
+                    works_in: None,
                 },
             ]));
             let (ran, failed) = answer(

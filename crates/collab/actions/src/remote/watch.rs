@@ -18,6 +18,20 @@ pub struct Here {
     pub name: String,
     /// `person` or `agent`.
     pub kind: String,
+    /// The window they work in, as their presence says: `None` while they work in none, or
+    /// where the roster does not know.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub works_in: Option<HereWindow>,
+}
+
+/// The window a member works in, as their presence names it to everyone in the workspace.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HereWindow {
+    /// The app the window shows, as its stable id.
+    pub app: String,
+    /// The resource it shows, as the 16-hex short digest of its live resource: what a reader
+    /// matches against the resources it holds.
+    pub document: String,
 }
 
 /// What a watch of a workspace follows besides its own
