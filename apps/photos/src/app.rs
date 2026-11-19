@@ -591,6 +591,9 @@ pub struct Photos {
     library_thumbnails: HashMap<String, ImageData>,
     thumbnail_resource_keys: HashMap<String, String>,
     thumbnail_unavailable: HashSet<String>,
+    /// Photos whose bytes this device lacks: asked of the workspace, and given their thumbnail
+    /// once they arrive (the window syncs as content does), never failed for want of them.
+    thumbnail_awaiting: HashSet<String>,
     original_decode_failed: Option<String>,
     thumbnail_service: thumbnail::ThumbnailService,
     thumbnail_keys: HashMap<String, thumbnail::ThumbKey>,
@@ -882,6 +885,7 @@ impl Photos {
             library_thumbnails: HashMap::new(),
             thumbnail_resource_keys: HashMap::new(),
             thumbnail_unavailable: HashSet::new(),
+            thumbnail_awaiting: HashSet::new(),
             original_decode_failed: None,
             thumbnail_service,
             thumbnail_keys: HashMap::new(),

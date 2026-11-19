@@ -49,6 +49,7 @@ impl Photos {
                 && self.thumbnail_visible_ids.iter().any(|id| {
                     !self.library_thumbnails.contains_key(id)
                         && !self.thumbnail_unavailable.contains(id)
+                        && !self.thumbnail_awaiting.contains(id)
                 }))
     }
 

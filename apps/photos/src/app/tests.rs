@@ -2139,10 +2139,11 @@ tilo_test_env::scenario! {
         let mut doc = crate::test_doc::new_doc();
         let mut library = crate::model::PhotoLibrary::default();
         for index in 0..500 {
+            let origin = format!("/library/library-{index}.png");
+            // A thumbnail is asked for once its bytes are here: these are, though no picture.
+            app.state().content.put(origin.as_bytes()).unwrap();
             library.add_photo(LibraryPhoto::from_image(OpenImage::fixture(
-                &format!("/unavailable/library-{index}.png"),
-                32_000,
-                32_000,
+                &origin, 32_000, 32_000,
             )));
         }
         crate::test_doc::set_library(&mut doc, &library);
@@ -2157,6 +2158,43 @@ tilo_test_env::scenario! {
                 .thumbnail_generation
                 .is_some_and(|generation| generation > 0)
         );
+    }
+
+    phase a_photo_whose_bytes_arrive_after_the_library_gets_its_thumbnail_then;
+    {
+        use ui::collaboration::document_content::{ContentLink, DocumentContent};
+        let link = std::sync::Arc::new(ContentLink::default());
+        let mut app = editing(PhotosApp::with_content(DocumentContent::store(
+            tilo_content::ContentStore::memory(),
+            std::sync::Arc::clone(&link),
+        )));
+        let mut doc = crate::test_doc::new_doc();
+        let picture = pixels::encode_png(&shots_pattern(16, 8)).unwrap();
+        let hash = tilo_content::hash_bytes(&picture);
+        let photo = LibraryPhoto::from_image(OpenImage::named("/library/later.png", 16, 8, &hash));
+        let id = thumbnail_key(&photo.image);
+        let mut library = crate::model::PhotoLibrary::default();
+        library.add_photo(photo);
+        crate::test_doc::set_library(&mut doc, &library);
+        sync(&mut app, &mut doc);
+        assert_eq!(link.take_requests().wants, vec![hash.clone()]);
+        assert!(
+            !app.state().thumbnail_unavailable.contains(&id)
+                && !app.state().thumbnail_queued.contains(&id),
+            "a photo whose bytes are on their way waits for them"
+        );
+
+        link.arrive(hash, picture);
+        let deadline = tilo_test_env::hang_deadline();
+        while !app.state().library_thumbnails.contains_key(&id) {
+            assert!(
+                ui::time::now() < deadline,
+                "the thumbnail is made once the bytes arrive"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            sync(&mut app, &mut doc);
+        }
+        assert!(!app.state().thumbnail_unavailable.contains(&id));
     }
 
     phase a_stale_thumbnail_result_cannot_populate_a_replaced_library_slice;

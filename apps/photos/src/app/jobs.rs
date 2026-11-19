@@ -731,6 +731,8 @@ impl Photos {
                 .retain(|id, _| self.thumbnail_visible_ids.contains(id));
             self.thumbnail_unavailable
                 .retain(|id| self.thumbnail_visible_ids.contains(id));
+            self.thumbnail_awaiting
+                .retain(|id| self.thumbnail_visible_ids.contains(id));
         }
         if self.thumbnail_generation.is_none() {
             return;
@@ -750,11 +752,42 @@ impl Photos {
                 continue;
             }
             let id = thumbnail_key(&photo.image);
+            if !self.has_bytes_of(&photo.image, &id) {
+                continue;
+            }
             let request = thumbnail_request(&photo.image, &self.content);
             self.thumbnail_keys.insert(id.clone(), request.key());
             self.thumbnail_service.request(request);
             self.thumbnail_queued.insert(id);
         }
+    }
+
+    /// Whether the bytes of `image`, whose thumbnail is `id`, are on this device to make its
+    /// thumbnail from. Bytes it lacks are asked of the workspace once, and the photo waits for
+    /// them: a page that opens again reads its photos' bytes as the workspace hands them back,
+    /// and a thumbnail asked for before they are here would fail and never be asked again.
+    /// Bytes no device holds make no thumbnail.
+    fn has_bytes_of(&mut self, image: &OpenImage, id: &str) -> bool {
+        let Some(reference) = image
+            .content
+            .reference()
+            .filter(|_| image.content.inline().is_none())
+        else {
+            return true;
+        };
+        // Opening content the library names and this device lacks asks the workspace for it, once.
+        if self.content.has(&reference)
+            || (self.thumbnail_awaiting.insert(id.to_owned())
+                && self.content.open(&reference).is_some())
+        {
+            self.thumbnail_awaiting.remove(id);
+            return true;
+        }
+        if self.content.state(&reference) == tilo_content::ContentState::Unavailable {
+            self.thumbnail_awaiting.remove(id);
+            self.thumbnail_unavailable.insert(id.to_owned());
+        }
+        false
     }
 
     fn withdraw_thumbnail_requests(&mut self, still_visible: &[String]) {
