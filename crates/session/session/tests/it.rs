@@ -263,6 +263,8 @@ mod tools;
 mod traditional_desktop;
 #[path = "tray.rs"]
 mod tray;
+#[path = "unheld_workspace.rs"]
+mod unheld_workspace;
 #[path = "visual_alerts.rs"]
 mod visual_alerts;
 #[path = "vpn.rs"]

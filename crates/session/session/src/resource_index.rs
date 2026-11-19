@@ -1,9 +1,9 @@
 //! The content of the workspaces' records, in the search index, without an
 //! app of theirs running.
 //!
-//! A record is what the workspace keeps; a window is one reading of it. What
-//! search finds is therefore the record's to answer: this reads every record
-//! a change lands in, asks the app whose record it is what it holds
+//! A resource is what the workspace keeps; a window is one reading of it. What
+//! search finds is therefore the resource's to answer: this reads every one
+//! a change lands in, asks the app whose resource it is what it holds
 //! ([`RecordReader`], the app's own binary in its record mode, which links
 //! the model types this session does not), and publishes the answer to the
 //! same [`AppContentIndex`] a running window publishes to. A device that
@@ -34,7 +34,7 @@ pub(crate) trait DocumentSource: Send + Sync + 'static {
     /// The workspaces this device holds.
     fn workspaces(&self) -> Vec<String>;
 
-    /// Every record `workspace` holds, by its app and id.
+    /// Every document `workspace` holds, by its app and route.
     ///
     /// # Errors
     /// The workspace is not held here, or its documents cannot be listed.
@@ -73,14 +73,20 @@ impl DocumentSource for ServiceSource {
     }
 }
 
-/// The indexer of the documents of the workspaces this device's service holds, reading content
+/// The indexer of the documents the workspaces this device's service holds keep, reading content
 /// into `content` and taking what `changes` notes: what this device holds is found before
-/// anything changes, and every change after it.
+/// anything changes, and every change after it. The stream notes only those workspaces: a change
+/// of one the service does not hold is no news to any role that follows it, and is taken when the
+/// service holds the workspace.
 pub(crate) fn start(
     reads: &Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
     content: Arc<tilo_desktop_search::content_index::AppContentIndex>,
     changes: crate::platform::records::Changes,
 ) -> Arc<RecordIndex> {
+    changes.holding(Arc::new({
+        let reads = Arc::clone(reads);
+        move |workspace: &str| reads.workspaces().iter().any(|held| held == workspace)
+    }));
     RecordIndex::start(
         Arc::new(ServiceSource(Arc::clone(reads))) as Arc<dyn DocumentSource>,
         Arc::new(AppReader::of_device()),
@@ -204,6 +210,8 @@ pub(crate) struct RecordIndex {
     /// The records whose keys were not here when they were read: read again once the channels
     /// settled.
     sealed: Mutex<BTreeSet<(String, String, String)>>,
+    /// The workspaces this device held when they were last read whole ([`RecordIndex::sweep`]).
+    swept: Mutex<BTreeSet<String>>,
     /// Wakes the worker: a record is waiting.
     wake: std::sync::mpsc::Sender<()>,
     /// What a change of a record reached besides the index: the one stream the roles that follow
@@ -228,6 +236,7 @@ impl RecordIndex {
             content,
             queued: Mutex::new(BTreeSet::new()),
             sealed: Mutex::new(BTreeSet::new()),
+            swept: Mutex::new(BTreeSet::new()),
             wake,
             changes,
         });
@@ -250,14 +259,18 @@ impl RecordIndex {
         index
     }
 
-    /// Read what this device already holds, once the channel service that opens its sealed
-    /// records runs: the records of every workspace it keeps, so search finds them before
-    /// anything changes. What it holds is not news to the roles following records: these reached
-    /// them with the workspace's own replay.
+    /// Read what this device already holds, once the key service that opens its sealed documents
+    /// runs: everything every workspace it keeps holds, so search finds it before anything
+    /// changes. What it holds is not news to the roles following the stream: these reached them
+    /// with the workspace's own replay. A workspace read before is not read again.
     pub(crate) fn sweep(&self) {
         for workspace in self.source.workspaces() {
+            if self.swept.lock_recover().contains(&workspace) {
+                continue;
+            }
             match self.source.records(&workspace) {
                 Ok(records) => {
+                    self.swept.lock_recover().insert(workspace.clone());
                     for (app, record) in records {
                         self.reached(&workspace, &app, &record, true);
                     }
@@ -271,9 +284,11 @@ impl RecordIndex {
         }
     }
 
-    /// The channels settled: the records whose keys were not here are read again, and those whose
-    /// keys still are not wait for the next settling.
+    /// The keys settled: the workspaces this device holds now are read, what had no keys here is
+    /// read again, and what still has none waits for the next settling.
     pub(crate) fn settled(&self) {
+        self.changes.settling();
+        self.sweep();
         let sealed = std::mem::take(&mut *self.sealed.lock_recover());
         if sealed.is_empty() {
             return;
@@ -289,15 +304,15 @@ impl RecordIndex {
     }
 
     /// Note that `record` of `app` changed in `workspace`, as `replayed` where it is what the
-    /// device already held, and queue it for the next pass.
+    /// device already held, and queue it for the next pass. Nothing of a workspace this device
+    /// does not hold is queued: it is read by [`Self::sweep`] when the workspace becomes held.
     fn reached(&self, workspace: &str, app: &str, record: &str, replayed: bool) {
-        if app.is_empty() {
+        // An app's own document of the workspace (an empty route: a tilolang app's, which its
+        // windows write) is news to whoever follows it, the session's own copy of it among them;
+        // search reads what has a route of its own, and queues it for none.
+        if !self.changes.note(workspace, app, record, replayed) {
             return;
         }
-        // An app's record of the workspace (an empty route: a tilolang app's, which its windows
-        // write) is news to whoever follows it, the session's own copy of it among them; search
-        // reads the records with routes of their own, and queues it for none.
-        self.changes.note(workspace, app, record, replayed);
         if record.is_empty() {
             return;
         }

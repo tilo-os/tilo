@@ -34,20 +34,24 @@ impl Held {
     }
 }
 
-/// The workspace's records, as the owner lists and reads them.
+/// What the workspace keeps, as this device's service lists and reads it.
 struct Source {
     workspace: String,
     held: Arc<Held>,
+    /// Whether the service holds the workspace: one it does not is listed by none, and its
+    /// documents read as the service answers, with an error.
+    holds: Arc<Mutex<bool>>,
 }
 
 impl DocumentSource for Source {
     fn workspaces(&self) -> Vec<String> {
-        vec![self.workspace.clone()]
+        let holds = *self.holds.lock_recover();
+        holds.then(|| self.workspace.clone()).into_iter().collect()
     }
 
     fn records(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
-        if workspace != self.workspace {
-            return Ok(Vec::new());
+        if workspace != self.workspace || !*self.holds.lock_recover() {
+            return Err("this service does not hold the workspace".to_owned());
         }
         Ok(self.held.docs.lock_recover().keys().cloned().collect())
     }
@@ -105,21 +109,42 @@ fn entry(resource: &str, title: &str) -> IndexEntry {
     }
 }
 
-/// An index over `held` that nothing wakes: the test reads a pass itself.
+/// An index over the workspace `held` holds, which nothing wakes: the test reads a pass itself.
 fn index(held: &Arc<Held>, content: &Arc<AppContentIndex>) -> RecordIndex {
-    let (wake, woken) = std::sync::mpsc::channel();
-    std::mem::forget(woken);
-    RecordIndex {
-        source: Arc::new(Source {
+    index_over(
+        Arc::new(Source {
             workspace: "w".to_owned(),
             held: Arc::clone(held),
+            holds: Arc::new(Mutex::new(true)),
         }),
+        held,
+        content,
+    )
+}
+
+/// [`index`] over `source`, the stream noting only what the source holds, as the session's own
+/// stream does.
+fn index_over(
+    source: Arc<Source>,
+    held: &Arc<Held>,
+    content: &Arc<AppContentIndex>,
+) -> RecordIndex {
+    let (wake, woken) = std::sync::mpsc::channel();
+    std::mem::forget(woken);
+    let changes = crate::platform::records::Changes::default();
+    changes.holding({
+        let source = Arc::clone(&source);
+        Arc::new(move |workspace: &str| source.workspaces().iter().any(|held| held == workspace))
+    });
+    RecordIndex {
+        source: source as Arc<dyn DocumentSource>,
         reader: Arc::new(Reader(Arc::clone(held))),
         content: Some(Arc::clone(content)),
         queued: Mutex::new(BTreeSet::new()),
         sealed: Mutex::new(BTreeSet::new()),
+        swept: Mutex::new(BTreeSet::new()),
         wake,
-        changes: crate::platform::records::Changes::default(),
+        changes,
     }
 }
 
@@ -305,6 +330,52 @@ tilo_test_env::scenario! {
         index.pass();
         assert_eq!(index.waiting(), 0);
         assert_eq!(held.read("chat.messages", "part-1"), 1);
+    }
+
+    phase a_change_of_a_workspace_this_device_does_not_hold_waits_for_it;
+    // A change of a workspace the service holds nothing of is nothing search can read: it is not
+    // queued, not read, and nothing is said of it. What the workspace holds is read once the
+    // service holds it, when the keys settle.
+    {
+        let held = Arc::new(Held::default());
+        held.hold(
+            "chat.messages",
+            "part-1",
+            vec![entry("messages/m1", "hello")],
+        );
+        let content = Arc::new(AppContentIndex::in_memory());
+        let holds = Arc::new(Mutex::new(false));
+        let index = index_over(
+            Arc::new(Source {
+                workspace: "w".to_owned(),
+                held: Arc::clone(&held),
+                holds: Arc::clone(&holds),
+            }),
+            &held,
+            &content,
+        );
+
+        index.changed("w", "chat.messages", "part-1");
+        assert_eq!(
+            index.waiting(),
+            0,
+            "a change of an unheld workspace is not queued"
+        );
+        index.pass();
+        assert_eq!(
+            held.read("chat.messages", "part-1"),
+            0,
+            "and never read, so nothing is said of it"
+        );
+
+        *holds.lock_recover() = true;
+        index.settled();
+        index.pass();
+        assert_eq!(
+            content.title("w", "messages/m1").as_deref(),
+            Some("hello"),
+            "read once the service holds the workspace"
+        );
     }
 
     phase a_stopped_reader_leaves_the_record_for_the_next_pass;
