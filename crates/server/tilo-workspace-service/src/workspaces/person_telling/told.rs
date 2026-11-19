@@ -127,7 +127,7 @@ impl Kept {
             if told.at_ms > back {
                 continue;
             }
-            let asks = told.kind == Kind::Question || told.insists.is_some();
+            let asks = told.is_decision() || told.insists.is_some();
             if told.waits() && asks {
                 stretch.waits.push(told);
             } else if told.at_ms <= left {
@@ -145,6 +145,127 @@ impl Kept {
         }
         stretch
     }
+
+    /// Keep at most `keep_history` resolved or informational entries while
+    /// preserving every pending decision durably until it is explicitly
+    /// answered or taken back.
+    fn trim(&mut self, keep_history: usize) {
+        let history = self
+            .told
+            .iter()
+            .filter(|told| !told.is_pending_decision())
+            .count();
+        let mut drop_count = history.saturating_sub(keep_history);
+        if drop_count == 0 {
+            return;
+        }
+        self.told.retain(|told| {
+            if drop_count > 0 && !told.is_pending_decision() {
+                drop_count -= 1;
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    /// Apply `change` to the entry with `id`, advancing its place and
+    /// trimming resolved/informational history when it moved.
+    fn change(
+        &mut self,
+        id: &str,
+        now_ms: u64,
+        change: impl FnOnce(&mut Told, u64) -> Changed,
+    ) -> Result<(Told, Changed), String> {
+        let unknown = || "Nothing was told under that id".to_owned();
+        let at = self
+            .told
+            .iter()
+            .position(|told| told.id == id)
+            .ok_or_else(unknown)?;
+        let mut told = self.told.remove(at).ok_or_else(unknown)?;
+        let outcome = change(&mut told, now_ms);
+        match outcome {
+            Changed::Nothing => {
+                self.told.insert(at, told.clone());
+            }
+            Changed::Noted => {
+                self.told.insert(at, told.clone());
+            }
+            Changed::Moved => {
+                self.newest = self.newest.saturating_add(1);
+                told.seq = self.newest;
+                self.told.push_back(told.clone());
+                self.trim(TOLD_KEPT);
+            }
+        }
+        Ok((told, outcome))
+    }
+}
+
+/// Apply a notification acknowledgment or explicit decision resolution to
+/// `told`. Opening or dismissing a notice for a waiting decision marks the
+/// notification as seen and silences insistent re-raising without resolving
+/// the decision itself.
+fn apply_acknowledgement(told: &mut Told, now_ms: u64, device: &str, by: &str) -> Changed {
+    if told.withdrawn_at_ms.is_some() {
+        return Changed::Nothing;
+    }
+    let by = by.trim();
+    let by = if by.is_empty() {
+        BY_OPENED.to_owned()
+    } else {
+        clipped(by, MAX_WORD_BYTES)
+    };
+    let entry = Acknowledged {
+        at_ms: now_ms,
+        device: clipped(device.trim(), MAX_WORD_BYTES),
+        by,
+    };
+    if told.is_decision() {
+        if entry.is_notice_only() {
+            if told.acknowledged.is_some() || told.is_resolved() {
+                return Changed::Nothing;
+            }
+            told.acknowledged = Some(entry);
+            if let Some(insists) = &mut told.insists {
+                insists.next_at_ms = None;
+            }
+            return Changed::Moved;
+        }
+        if told.is_resolved() {
+            return Changed::Nothing;
+        }
+        told.resolved = Some(entry.clone());
+        if told.acknowledged.is_none() {
+            told.acknowledged = Some(entry);
+        }
+        if let Some(insists) = &mut told.insists {
+            insists.next_at_ms = None;
+        }
+        return Changed::Moved;
+    }
+    if told.acknowledged.is_some() {
+        return Changed::Nothing;
+    }
+    told.acknowledged = Some(entry);
+    if let Some(insists) = &mut told.insists {
+        insists.next_at_ms = None;
+    }
+    Changed::Moved
+}
+
+/// Apply withdrawal to `told`, settling an unresolved decision even if its
+/// notification was previously opened or dismissed.
+fn apply_withdrawal(told: &mut Told, now_ms: u64) -> Changed {
+    if told.is_settled() {
+        return Changed::Nothing;
+    }
+    told.withdrawn_at_ms = Some(now_ms);
+    if let Some(insists) = &mut told.insists {
+        insists.next_at_ms = None;
+    }
+    Changed::Moved
 }
 
 /// How a thing that must not be missed stands when it is first raised at
@@ -390,13 +511,12 @@ impl Workspaces {
                 // cannot make a thing loud that the rule keeps quiet.
                 insists: (tell.insists && reach.is_some()).then(|| insisting(&rule, now_ms)),
                 acknowledged: None,
+                resolved: None,
                 withdrawn_at_ms: None,
                 pushed: Vec::new(),
             };
             kept.told.push_back(told.clone());
-            while kept.told.len() > TOLD_KEPT {
-                kept.told.pop_front();
-            }
+            kept.trim(TOLD_KEPT);
             write_log(&root, &kept)?;
             told
         };
@@ -588,7 +708,7 @@ impl Workspaces {
                     Changed::Nothing
                 };
             }
-            if told.acknowledged.is_some() || told.withdrawn_at_ms.is_some() {
+            if told.is_settled() {
                 return Changed::Nothing;
             }
             if !told.reaches && !theirs {
@@ -655,28 +775,18 @@ impl Workspaces {
         id: &str,
         change: impl FnOnce(&mut Told, u64) -> Changed,
     ) -> Result<Told, String> {
-        let unknown = || "Nothing was told under that id".to_owned();
         let root = self.person_settings_root(person);
         let (told, moved) = {
             let _writing = self.inner.telling.writing.lock_recover();
             let mut kept = read_log(&root);
-            let at = kept
-                .told
-                .iter()
-                .position(|told| told.id == id)
-                .ok_or_else(unknown)?;
-            let mut told = kept.told.remove(at).ok_or_else(unknown)?;
-            match change(&mut told, tilo_clock::unix_now_ms()) {
+            let (told, outcome) = kept.change(id, tilo_clock::unix_now_ms(), change)?;
+            match outcome {
                 Changed::Nothing => return Ok(told),
                 Changed::Noted => {
-                    kept.told.insert(at, told.clone());
                     write_log(&root, &kept)?;
                     (told, false)
                 }
                 Changed::Moved => {
-                    kept.newest = kept.newest.saturating_add(1);
-                    told.seq = kept.newest;
-                    kept.told.push_back(told.clone());
                     write_log(&root, &kept)?;
                     (told, true)
                 }
@@ -689,8 +799,10 @@ impl Workspaces {
     }
 
     /// `person` saw the thing `id` on `device`, or acted on it: `by` says
-    /// how. The first acknowledgement stands, and a thing acknowledged
-    /// insists no more.
+    /// how. Opening or dismissing a notification for a waiting question does
+    /// not resolve the question itself; only an explicit answer or decision
+    /// button press clears it. The first notice acknowledgement and first
+    /// resolution each stand, and an acknowledged thing insists no more.
     ///
     /// # Errors
     /// Nothing was told that person under that id.
@@ -702,23 +814,7 @@ impl Workspaces {
         by: &str,
     ) -> Result<Told, String> {
         self.change_told(person, id, |told, now_ms| {
-            if told.acknowledged.is_some() {
-                return Changed::Nothing;
-            }
-            let by = by.trim();
-            told.acknowledged = Some(Acknowledged {
-                at_ms: now_ms,
-                device: clipped(device.trim(), MAX_WORD_BYTES),
-                by: if by.is_empty() {
-                    BY_OPENED.to_owned()
-                } else {
-                    clipped(by, MAX_WORD_BYTES)
-                },
-            });
-            if let Some(insists) = &mut told.insists {
-                insists.next_at_ms = None;
-            }
-            Changed::Moved
+            apply_acknowledgement(told, now_ms, device, by)
         })
     }
 
@@ -728,16 +824,7 @@ impl Workspaces {
     /// # Errors
     /// Nothing was told that person under that id.
     pub fn withdraw_told(&self, person: &[u8; 32], id: &str) -> Result<Told, String> {
-        self.change_told(person, id, |told, now_ms| {
-            if told.withdrawn_at_ms.is_some() || told.acknowledged.is_some() {
-                return Changed::Nothing;
-            }
-            told.withdrawn_at_ms = Some(now_ms);
-            if let Some(insists) = &mut told.insists {
-                insists.next_at_ms = None;
-            }
-            Changed::Moved
-        })
+        self.change_told(person, id, apply_withdrawal)
     }
 
     /// The thing `id` was told `person` outside Tilo through `by`, and
@@ -791,7 +878,12 @@ impl Workspaces {
 
 #[cfg(test)]
 mod tests {
-    use tilo_actions::remote::person_telling::Cause;
+    #![allow(
+        clippy::unwrap_used,
+        reason = "in a test an unexpected error is the assertion failure"
+    )]
+
+    use tilo_actions::remote::person_telling::{BY_ANSWERED, BY_DISMISSED, BY_OPENED, Cause};
 
     use super::*;
 
@@ -888,5 +980,305 @@ mod tests {
         assert_eq!(ids(&stretch.came_in), ["found", "answered", "reminder"]);
         // A person who never left is told nothing happened.
         assert_eq!(Kept::default().stretch(), Stretch::default());
+    }
+
+    /// Opening or dismissing a notification for a waiting question leaves
+    /// the question waiting in catch-up until it is explicitly answered,
+    /// resolved via a button, or withdrawn; non-question notices settle on
+    /// dismissal as before.
+    #[test]
+    fn dismissing_or_opening_a_question_keeps_it_waiting_until_resolved() {
+        let (left, back) = (100 * MINUTE, 160 * MINUTE);
+        let mut q_dismissed = told("q-dismissed", 110 * MINUTE, Kind::Question, None);
+        q_dismissed.seq = 1;
+        q_dismissed.insists = Some(Insists {
+            every_secs: 600,
+            times: 6,
+            raised: 1,
+            next_at_ms: Some(120 * MINUTE),
+        });
+        let mut q_opened = told("q-opened", 115 * MINUTE, Kind::Question, None);
+        q_opened.seq = 2;
+        let mut q_button = told("q-button", 120 * MINUTE, Kind::Question, None);
+        q_button.seq = 3;
+        let mut q_withdrawn = told("q-withdrawn", 125 * MINUTE, Kind::Question, None);
+        q_withdrawn.seq = 4;
+        let mut reminder = told(
+            "r-dismissed",
+            130 * MINUTE,
+            Kind::Reminder,
+            Some("reminder"),
+        );
+        reminder.seq = 5;
+
+        let mut kept = Kept {
+            newest: 5,
+            told: VecDeque::from(vec![q_dismissed, q_opened, q_button, q_withdrawn, reminder]),
+            left_at_ms: Some(left),
+            back_at_ms: Some(back),
+            ..Kept::default()
+        };
+
+        // Swiping away or opening a question notice stops insistent re-raising
+        // without resolving the question or removing it from catch-up.
+        let (dismissed, outcome) = kept
+            .change("q-dismissed", 135 * MINUTE, |item, now| {
+                apply_acknowledgement(item, now, "phone", BY_DISMISSED)
+            })
+            .unwrap();
+        assert!(matches!(outcome, Changed::Moved));
+        assert!(dismissed.waits());
+        assert!(dismissed.is_pending_decision());
+        assert_eq!(
+            dismissed.acknowledged.as_ref().map(|ack| ack.by.as_str()),
+            Some(BY_DISMISSED)
+        );
+        assert!(dismissed.resolved.is_none());
+        assert_eq!(
+            dismissed.insists.map(|insists| insists.next_at_ms),
+            Some(None)
+        );
+
+        // A second notice-only interaction changes nothing.
+        let (_, repeat_notice) = kept
+            .change("q-dismissed", 136 * MINUTE, |item, now| {
+                apply_acknowledgement(item, now, "laptop", BY_OPENED)
+            })
+            .unwrap();
+        assert!(matches!(repeat_notice, Changed::Nothing));
+
+        let (opened, _) = kept
+            .change("q-opened", 137 * MINUTE, |item, now| {
+                apply_acknowledgement(item, now, "laptop", "")
+            })
+            .unwrap();
+        assert!(opened.waits());
+        assert_eq!(
+            opened.acknowledged.as_ref().map(|ack| ack.by.as_str()),
+            Some(BY_OPENED)
+        );
+        assert!(opened.resolved.is_none());
+
+        // Dismissing a reminder still settles it.
+        let (rem_done, _) = kept
+            .change("r-dismissed", 138 * MINUTE, |item, now| {
+                apply_acknowledgement(item, now, "phone", BY_DISMISSED)
+            })
+            .unwrap();
+        assert!(!rem_done.waits());
+
+        // Dismissing a question then pressing a decision button resolves it.
+        let _ = kept
+            .change("q-button", 139 * MINUTE, |item, now| {
+                apply_acknowledgement(item, now, "phone", BY_DISMISSED)
+            })
+            .unwrap();
+        let (button_resolved, outcome) = kept
+            .change("q-button", 140 * MINUTE, |item, now| {
+                apply_acknowledgement(item, now, "phone", "approve")
+            })
+            .unwrap();
+        assert!(matches!(outcome, Changed::Moved));
+        assert!(!button_resolved.waits());
+        assert_eq!(
+            button_resolved
+                .acknowledged
+                .as_ref()
+                .map(|ack| ack.by.as_str()),
+            Some(BY_DISMISSED)
+        );
+        assert_eq!(
+            button_resolved.resolved.as_ref().map(|res| res.by.as_str()),
+            Some("approve")
+        );
+
+        // Dismissing a question does not block withdrawing it later.
+        let _ = kept
+            .change("q-withdrawn", 141 * MINUTE, |item, now| {
+                apply_acknowledgement(item, now, "phone", BY_DISMISSED)
+            })
+            .unwrap();
+        let (withdrawn, outcome) = kept
+            .change("q-withdrawn", 142 * MINUTE, apply_withdrawal)
+            .unwrap();
+        assert!(matches!(outcome, Changed::Moved));
+        assert!(!withdrawn.waits());
+        assert_eq!(withdrawn.withdrawn_at_ms, Some(142 * MINUTE));
+
+        // Catch-up still lists the dismissed and opened questions.
+        let ids = |items: &[Told]| items.iter().map(|item| item.id.clone()).collect::<Vec<_>>();
+        let mid_stretch = Kept {
+            told: kept.told.clone(),
+            left_at_ms: kept.left_at_ms,
+            back_at_ms: kept.back_at_ms,
+            ..Kept::default()
+        }
+        .stretch();
+        assert_eq!(ids(&mid_stretch.waits), ["q-dismissed", "q-opened"]);
+
+        // Explicitly answering clears the dismissed question while preserving
+        // its earlier notice dismissal, and a second resolution is ignored.
+        let (answered, outcome) = kept
+            .change("q-dismissed", 145 * MINUTE, |item, now| {
+                apply_acknowledgement(item, now, "laptop", BY_ANSWERED)
+            })
+            .unwrap();
+        assert!(matches!(outcome, Changed::Moved));
+        assert!(!answered.waits());
+        assert_eq!(
+            answered.acknowledged.as_ref().map(|ack| ack.by.as_str()),
+            Some(BY_DISMISSED)
+        );
+        assert_eq!(
+            answered
+                .resolved
+                .as_ref()
+                .map(|res| (res.device.as_str(), res.by.as_str())),
+            Some(("laptop", BY_ANSWERED))
+        );
+        let (_, second_answer) = kept
+            .change("q-dismissed", 146 * MINUTE, |item, now| {
+                apply_acknowledgement(item, now, "phone", "deny")
+            })
+            .unwrap();
+        assert!(matches!(second_answer, Changed::Nothing));
+
+        let final_stretch = kept.stretch();
+        assert_eq!(ids(&final_stretch.waits), ["q-opened"]);
+    }
+
+    /// Pending decisions stay durable across hundreds of newer notices and
+    /// disk persistence, while resolved and informational notices remain
+    /// bounded by `TOLD_KEPT`.
+    #[test]
+    fn pending_decisions_survive_bounded_history_eviction() {
+        let dir = tempfile::tempdir().unwrap();
+        let (left, back) = (10 * MINUTE, 1_000 * MINUTE);
+        let mut kept = Kept {
+            left_at_ms: Some(left),
+            back_at_ms: Some(back),
+            ..Kept::default()
+        };
+
+        let push = |kept: &mut Kept, mut item: Told| {
+            kept.newest = kept.newest.saturating_add(1);
+            item.seq = kept.newest;
+            kept.told.push_back(item);
+            kept.trim(TOLD_KEPT);
+        };
+
+        // Three early questions: one untouched, one dismissed, one answered.
+        push(
+            &mut kept,
+            told("q-untouched", 20 * MINUTE, Kind::Question, None),
+        );
+        push(
+            &mut kept,
+            told("q-dismissed", 21 * MINUTE, Kind::Question, None),
+        );
+        let _ = kept
+            .change("q-dismissed", 22 * MINUTE, |item, now| {
+                apply_acknowledgement(item, now, "phone", BY_DISMISSED)
+            })
+            .unwrap();
+        push(
+            &mut kept,
+            told("q-answered", 23 * MINUTE, Kind::Question, None),
+        );
+        let _ = kept
+            .change("q-answered", 24 * MINUTE, |item, now| {
+                apply_acknowledgement(item, now, "laptop", BY_ANSWERED)
+            })
+            .unwrap();
+
+        // Flood the log well past `TOLD_KEPT` with informational notices.
+        let flood = TOLD_KEPT + 150;
+        for index in 0..flood {
+            push(
+                &mut kept,
+                told(
+                    &format!("news-{index}"),
+                    30 * MINUTE + index as u64,
+                    Kind::News,
+                    Some("event"),
+                ),
+            );
+        }
+
+        // Persist and reload to verify durability on disk.
+        write_log(dir.path(), &kept).unwrap();
+        let mut reloaded = read_log(dir.path());
+
+        let pending: Vec<String> = reloaded
+            .told
+            .iter()
+            .filter(|item| item.is_pending_decision())
+            .map(|item| item.id.clone())
+            .collect();
+        let history_count = reloaded
+            .told
+            .iter()
+            .filter(|item| !item.is_pending_decision())
+            .count();
+
+        assert_eq!(pending, ["q-untouched", "q-dismissed"]);
+        assert_eq!(history_count, TOLD_KEPT);
+        assert!(
+            !reloaded.told.iter().any(|item| item.id == "q-answered"),
+            "an already-answered question ages out with bounded history"
+        );
+        assert!(
+            !reloaded.told.iter().any(|item| item.id == "news-0"),
+            "oldest informational notices are evicted"
+        );
+        assert!(
+            reloaded
+                .told
+                .iter()
+                .any(|item| item.id == format!("news-{}", flood - 1)),
+            "newest informational notices are kept"
+        );
+
+        // Catch-up on another device still finds both pending decisions.
+        let stretch = Kept {
+            told: reloaded.told.clone(),
+            left_at_ms: reloaded.left_at_ms,
+            back_at_ms: reloaded.back_at_ms,
+            ..Kept::default()
+        }
+        .stretch();
+        let wait_ids: Vec<String> = stretch.waits.into_iter().map(|item| item.id).collect();
+        assert_eq!(wait_ids, ["q-untouched", "q-dismissed"]);
+
+        // Once explicitly answered, the previously protected decision moves
+        // into bounded history and keeps history capped at `TOLD_KEPT`.
+        let (resolved, _) = reloaded
+            .change("q-dismissed", 900 * MINUTE, |item, now| {
+                apply_acknowledgement(item, now, "laptop", BY_ANSWERED)
+            })
+            .unwrap();
+        assert!(!resolved.is_pending_decision());
+        let history_after_answer = reloaded
+            .told
+            .iter()
+            .filter(|item| !item.is_pending_decision())
+            .count();
+        assert_eq!(history_after_answer, TOLD_KEPT);
+
+        // Further notices eventually evict the now-resolved question while
+        // keeping the still-unanswered one.
+        for index in 0..TOLD_KEPT {
+            push(
+                &mut reloaded,
+                told(
+                    &format!("later-{index}"),
+                    950 * MINUTE + index as u64,
+                    Kind::News,
+                    Some("event"),
+                ),
+            );
+        }
+        assert!(reloaded.told.iter().any(|item| item.id == "q-untouched"));
+        assert!(!reloaded.told.iter().any(|item| item.id == "q-dismissed"));
     }
 }

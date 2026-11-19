@@ -31,7 +31,7 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionFailure, ActionOutput, InvocationUpdate};
 use tilo_workspace_agent::Agent;
 
-use super::asks::{Answered, Carried, Carries, ServerAsk};
+use super::asks::{Answered, Carried, Carries, ServerAsk, could_not_ask};
 use super::turn_provider::{Ending, Rows};
 use super::{CHAT, HostAgents as Agents, Reply, Turn, TurnProvider, WorkspaceId};
 use crate::workspaces::Workspaces;
@@ -55,6 +55,31 @@ const ASKED_FIRST: &str = "asked_person_first";
 /// asked.
 const CHANGED: &str = "The question no longer says what this server asked, so nothing was sent.";
 
+/// What a turn that reaches its person's mail is told of it: which verbs it has, the call that
+/// lists an inbox, and what reaches nothing of mail at all. Mail's verbs act on the person's own
+/// accounts, not on an app the workspace keeps, so no path names them that reads or links the
+/// mail app instead, and a call spent on one is lost. What came before any of that is the
+/// account's id: `fetch`, `read` and `search` never answer without it, and one read of it is
+/// worth more than a call they refuse.
+pub(super) const TOLD: &str = " Your person's mail is reached through the actions of \
+     `accounts/accounts`, which `tilo_ls` with `{\"path\": \"accounts\"}` lists: `list`, \
+     `arrived`, `fetch`, `read`, `search`, `begin-send`, `send-piece`, `save-draft` and `send`. \
+     Call them with `tilo_do` as `{\"path\": \"accounts/accounts#<verb>\", \"args\": {…}}`, \
+     and start from `accounts/accounts#list`: what an account is called and which folders it \
+     holds. What already arrived is one `tilo_do` of `accounts/accounts#fetch` with `account` \
+     and `folder` (`inbox`), which answers the messages with their senders, their titles and a \
+     part of their words; `arrived` answers only what reached the inboxes since a place in the \
+     log of what arrived, so it is not how an inbox is read. One message whole is \
+     `accounts/accounts#read` with `account`, `folder` and the message's `uid`. A request over \
+     one account's folder is one `tilo_do` naming `account` and `folder` once: a second ask \
+     goes on from what the first answered. A call that says `did not answer before the timeout` \
+     waited out the account's connection, so the same call straight away is very likely to \
+     time out again: say that the account did not answer, read what `arrived` already holds \
+     without it, and keep anything that would leave as a draft until the account answers. \
+     `mail` is no path of these actions: `tilo_read` and `tilo_link` of it answer nothing, so \
+     read mail with the verbs and link a message by the path their answer names. Show what an \
+     inbox holds with `answer_with_view` once you have it, or say it in words.";
+
 /// What one turn reaches of its person's mail. A turn's caller changes when its person writes
 /// again while it works, so each request is taken as the caller of the tool call that made it.
 pub(super) struct TurnMail {
@@ -63,6 +88,10 @@ pub(super) struct TurnMail {
     /// The workspace's id; `None` where the turn names none, which reaches nothing.
     workspace_id: Option<WorkspaceId>,
     agent: Agent,
+    /// Verified active root assistant id when this turn belongs to a sub-agent.
+    root_agent: Option<String>,
+    /// Explicit narrowing rules from the agent and its starter line (never Chat's one-way rules).
+    narrowed: Option<Vec<tilo_action_policy::Rule>>,
     /// The mail actions this turn is offered: none for a turn the entry refuses.
     offered: Vec<CatalogueRow>,
 }
@@ -71,14 +100,16 @@ impl TurnMail {
     /// What `turn` reaches of its person's mail, where `reply` holds what its tools begin as.
     pub(super) async fn for_turn(agents: &Agents, turn: &Turn, reply: &Reply) -> Arc<Self> {
         let workspace_id = WorkspaceId::parse(&reply.workspace);
-        let narrowed = narrowing(&turn.agent, &reply.workspace);
+        let narrowed = turn_narrowing(turn);
+        let root_agent = root_agent_of(turn);
         let offered = if let Some(workspace) = workspace_id {
             let hosted = HostedTurn {
                 workspace,
                 caller: &reply.caller,
                 keeper: &turn.agent.keeper,
                 bound: narrowed.as_deref(),
-            };
+            }
+            .under_root(root_agent.as_deref());
             agents.workspaces.mail_offered(&hosted).await
         } else {
             Vec::new()
@@ -88,8 +119,16 @@ impl TurnMail {
             workspace: reply.workspace.clone(),
             workspace_id,
             agent: turn.agent.clone(),
+            root_agent,
+            narrowed,
             offered,
         })
+    }
+
+    /// Whether this turn is offered anything of its person's mail: what its keeper was named
+    /// for an account to reach ([`TOLD`]).
+    pub(super) fn offers(&self) -> bool {
+        !self.offered.is_empty()
     }
 
     /// Take the mail request `request` as `caller`: how it ended, or the server's refusal.
@@ -102,13 +141,13 @@ impl TurnMail {
         let Some(workspace) = self.workspace_id else {
             return Err(ActionCallError::UnknownAction);
         };
-        let narrowed = narrowing(&self.agent, &self.workspace);
         let hosted = HostedTurn {
             workspace,
             caller,
             keeper: &self.agent.keeper,
-            bound: narrowed.as_deref(),
-        };
+            bound: self.narrowed.as_deref(),
+        }
+        .under_root(self.root_agent.as_deref());
         let workspaces = &self.agents.workspaces;
         let asked = match workspaces.mail_for_turn(&hosted, request).await? {
             Taken::Done(value) => {
@@ -126,10 +165,10 @@ impl TurnMail {
             Ok(()) => ASKED.to_owned(),
             Err(why) => {
                 workspaces.send_not_asked(&asked);
-                format!(
-                    "Your person could not be asked whether this message may leave ({why}), so \
-                     nothing was sent. It is still begun."
-                )
+                could_not_ask(&format!(
+                    "{why}. The message may not leave unasked, so it is still begun: keep what \
+                     you wrote as a draft and tell them about it"
+                ))
             }
         };
         Ok(InvocationUpdate::Failed {
@@ -224,11 +263,91 @@ impl TurnProvider for TurnMail {
     }
 }
 
-/// The rules a turn of `agent` is decided by in `workspace`, where anything narrows it: what
-/// its entry bounds it to and, for a sub-agent, what keeps it from whoever started it. `None`
-/// for an agent nothing narrows.
-pub(super) fn narrowing(agent: &Agent, workspace: &str) -> Option<Vec<tilo_action_policy::Rule>> {
-    (agent.bound_rules().is_some() || agent.is_sub()).then(|| agent.turn_rules(workspace))
+/// Explicit narrowing rules set on `agent` for non-Chat services, excluding Chat-only
+/// one-way rules (`sub::one_way`). `None` when nothing explicitly narrows `agent`.
+pub(super) fn narrowing(agent: &Agent, _workspace: &str) -> Option<Vec<tilo_action_policy::Rule>> {
+    agent.bound_rules()
+}
+
+/// Verified active root assistant id for a sub-agent's turn in the same workspace and for
+/// the same keeper; `None` for a top-level agent or when the root assistant is inactive.
+pub(super) fn root_agent_of(turn: &Turn) -> Option<String> {
+    let root = &turn.line.as_ref()?.root;
+    (root.id.0 != turn.agent.id.0 && root.is_active() && root.keeper == turn.agent.keeper)
+        .then(|| root.id.0.clone())
+}
+
+/// Explicit narrowing rules for non-Chat services across `turn`'s agent and any ancestors in
+/// its starter line, excluding Chat-only one-way rules (`sub::one_way`).
+pub(super) fn turn_narrowing(turn: &Turn) -> Option<Vec<tilo_action_policy::Rule>> {
+    let mut agents = vec![&turn.agent];
+    if let Some(line) = &turn.line {
+        if let Some(starter) = &line.starter
+            && starter.id.0 != turn.agent.id.0
+            && starter.keeper == turn.agent.keeper
+        {
+            agents.push(starter);
+        }
+        if line.root.id.0 != turn.agent.id.0
+            && line.root.keeper == turn.agent.keeper
+            && !agents.iter().any(|seen| seen.id.0 == line.root.id.0)
+        {
+            agents.push(&line.root);
+        }
+    }
+    chain_narrowing(&agents)
+}
+
+/// Explicit narrowing rules across `agents` (an agent and its ancestors), excluding Chat-only
+/// one-way rules. Returns `None` when none of the agents carry explicit narrowing rules; when
+/// multiple carry explicit bounds, intersects them so no descendant exceeds an ancestor.
+pub(super) fn chain_narrowing(agents: &[&Agent]) -> Option<Vec<tilo_action_policy::Rule>> {
+    let layers: Vec<Vec<tilo_action_policy::Rule>> = agents
+        .iter()
+        .filter_map(|agent| agent.bound_rules())
+        .collect();
+    match layers.as_slice() {
+        [] => None,
+        [only] => Some(only.clone()),
+        many => Some(intersect_bounds(many)),
+    }
+}
+
+/// Intersect multiple explicit narrowing rule sets so an action is allowed only when every
+/// narrowed layer in the starter line permits it.
+fn intersect_bounds(layers: &[Vec<tilo_action_policy::Rule>]) -> Vec<tilo_action_policy::Rule> {
+    use tilo_action_policy::{ActionKind, Answer, Level, Segment};
+
+    let mut kept = Vec::new();
+    for (index, layer) in layers.iter().enumerate() {
+        for rule in layer {
+            if rule.answer == Answer::Deny {
+                kept.push(rule.clone());
+                continue;
+            }
+            if !rule.kinds.contains(ActionKind::Outside) {
+                continue;
+            }
+            let ends_with_named_action = matches!(
+                rule.node.segments().last(),
+                Some(Segment::Name(Level::Action, _))
+            );
+            let is_connection_node = rule.node.id_at(Level::App)
+                == Some(tilo_actions::remote::person_connections::PROVIDER);
+            let allowed_by_all = layers.iter().enumerate().all(|(other_index, other)| {
+                if other_index == index {
+                    return true;
+                }
+                let granted = tilo_automation::grant_answer(other, &rule.node, ActionKind::Outside);
+                granted.answer == Answer::Allow
+                    && (is_connection_node || !ends_with_named_action || granted.names_action)
+            });
+            if allowed_by_all {
+                kept.push(rule.clone());
+            }
+        }
+    }
+    kept
 }
 
 /// What carries out a person's answer to the question about a message their agent would send.
@@ -291,6 +410,30 @@ impl Sends {
         }
         found
     }
+
+    /// Whether `root_id` is still an active agent for `ask.person` in `ask.workspace`.
+    async fn root_active(&self, ask: &KeptAsk, root_id: &str) -> bool {
+        let mut person = [0; 32];
+        if hex::decode_to_slice(&ask.person, &mut person).is_err() {
+            return false;
+        }
+        let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+        let Ok(Some(kept)) = self
+            .workspaces
+            .read_resource::<tilo_workspace_agent::WorkspaceAgents>(&ask.workspace, (CHAT, &list))
+            .await
+        else {
+            return false;
+        };
+        kept.agents.iter().any(|agent| {
+            agent.id.0 == root_id
+                && agent.is_active()
+                && tilo_action_policy::PersonId::parse(&agent.keeper)
+                    .ok()
+                    .and_then(|id| id.root())
+                    == Some(person)
+        })
+    }
 }
 
 impl Carries for Sends {
@@ -298,17 +441,33 @@ impl Carries for Sends {
     /// the server asked. Whatever they answered, what waited is gone after it.
     fn carry<'a>(&'a self, ask: &'a KeptAsk, answer: Answered) -> Carried<'a> {
         Box::pin(async move {
+            let asked_send = serde_json::from_value::<AskedSend>(ask.kept.clone()).ok();
             let mut changed = false;
+            let mut root_gone = false;
             if answer == Answered::Once {
-                let words = serde_json::from_value::<AskedSend>(ask.kept.clone())
-                    .map(|asked| asked.words())
+                let words = asked_send
+                    .as_ref()
+                    .map(AskedSend::words)
                     .unwrap_or_default();
                 changed = !self.says(ask, words.trim()).await;
+                if !changed
+                    && let Some(root_id) = asked_send
+                        .as_ref()
+                        .and_then(|asked| asked.named_agent.as_deref())
+                {
+                    root_gone = !self.root_active(ask, root_id).await;
+                }
             }
-            let allowed = answer == Answered::Once && !changed;
+            let allowed = answer == Answered::Once && !changed && !root_gone;
             let left = self.workspaces.send_asked(ask, allowed).await.map(drop);
             if changed {
                 return Err(CHANGED.to_owned());
+            }
+            if root_gone {
+                return Err(
+                    "This assistant is no longer active for that account, so nothing was sent."
+                        .to_owned(),
+                );
             }
             left
         })
@@ -323,5 +482,162 @@ impl Agents {
             workspaces: self.workspaces.clone(),
         };
         self.carries(SEND_CARRIER, Arc::new(sends));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::expect_used,
+        reason = "in unit tests panicking is the assertion"
+    )]
+
+    use tilo_action_policy::{ActionKind, Answer, KindSet, Rule, TreePath};
+    use tilo_actions::remote::person_accounts;
+    use tilo_resource::Atom;
+    use tilo_workspace_agent::{Agent, AgentState, Bound, sub::Sub};
+
+    use super::super::{Ask, Line, Turn};
+    use super::{chain_narrowing, narrowing, root_agent_of, turn_narrowing};
+
+    fn make_agent(id: &str, keeper: &str, sub_of: Option<&str>) -> Agent {
+        Agent {
+            id: Atom(id.to_owned()),
+            name: id.to_owned(),
+            keeper: keeper.to_owned(),
+            state: AgentState::Active,
+            sub: sub_of.map(|starter| Sub {
+                started_by: starter.to_owned(),
+                ..Sub::default()
+            }),
+            ..Agent::default()
+        }
+    }
+
+    fn make_turn(agent: Agent, line: Option<Line>) -> Turn {
+        Turn {
+            person: agent.keeper.clone(),
+            agent,
+            ask: Ask::Message {
+                part: String::new(),
+                message: String::new(),
+                attempt: 0,
+            },
+            conversation: String::new(),
+            cause: String::new(),
+            request: String::new(),
+            asked: String::new(),
+            fold: None,
+            typed: false,
+            line,
+            worked: Vec::new(),
+        }
+    }
+
+    fn mail_rule(workspace: &str, action: &str, answer: Answer) -> Bound {
+        let rule = Rule::new(
+            TreePath::workspace(workspace)
+                .app(person_accounts::PROVIDER)
+                .kind(person_accounts::RESOURCE)
+                .resource(person_accounts::RESOURCE)
+                .action(action),
+            KindSet::of(ActionKind::Outside),
+            answer,
+        );
+        Bound::of(&rule)
+    }
+
+    #[test]
+    fn sub_agent_without_explicit_bounds_is_not_narrowed_by_chat_one_way() {
+        let root = make_agent("scout", "ada", None);
+        let worker = make_agent("sub-emails", "ada", Some("scout"));
+        let turn = make_turn(
+            worker.clone(),
+            Some(Line {
+                root: root.clone(),
+                starter: Some(root),
+                from_starter: true,
+            }),
+        );
+
+        assert!(narrowing(&worker, "ws-1").is_none());
+        assert!(turn_narrowing(&turn).is_none());
+        assert_eq!(root_agent_of(&turn).as_deref(), Some("scout"));
+    }
+
+    #[test]
+    fn sub_agent_inherits_ancestor_bounds_and_intersects_with_own_bounds() {
+        let mut root = make_agent("scout", "ada", None);
+        root.bound = vec![
+            mail_rule("ws-1", person_accounts::LIST, Answer::Allow),
+            mail_rule("ws-1", person_accounts::FETCH, Answer::Allow),
+        ];
+        let mut worker = make_agent("sub-emails", "ada", Some("scout"));
+
+        // Unbounded sub-agent under narrowed root inherits root's explicit bounds.
+        let inherited = chain_narrowing(&[&worker, &root]).expect("inherits root bounds");
+        assert_eq!(inherited.len(), 2);
+
+        // When both carry explicit bounds, only actions allowed by both survive.
+        worker.bound = vec![
+            mail_rule("ws-1", person_accounts::LIST, Answer::Allow),
+            mail_rule("ws-1", person_accounts::SEND, Answer::Allow),
+        ];
+        let intersected = chain_narrowing(&[&worker, &root]).expect("intersected bounds");
+        let list_node = TreePath::workspace("ws-1")
+            .app(person_accounts::PROVIDER)
+            .kind(person_accounts::RESOURCE)
+            .resource(person_accounts::RESOURCE)
+            .action(person_accounts::LIST);
+        let fetch_node = TreePath::workspace("ws-1")
+            .app(person_accounts::PROVIDER)
+            .kind(person_accounts::RESOURCE)
+            .resource(person_accounts::RESOURCE)
+            .action(person_accounts::FETCH);
+        let send_node = TreePath::workspace("ws-1")
+            .app(person_accounts::PROVIDER)
+            .kind(person_accounts::RESOURCE)
+            .resource(person_accounts::RESOURCE)
+            .action(person_accounts::SEND);
+
+        assert_eq!(
+            tilo_automation::grant_answer(&intersected, &list_node, ActionKind::Outside).answer,
+            Answer::Allow
+        );
+        assert_eq!(
+            tilo_automation::grant_answer(&intersected, &fetch_node, ActionKind::Outside).answer,
+            Answer::Deny
+        );
+        assert_eq!(
+            tilo_automation::grant_answer(&intersected, &send_node, ActionKind::Outside).answer,
+            Answer::Deny
+        );
+    }
+
+    #[test]
+    fn retired_or_other_keeper_root_is_not_inherited() {
+        let mut retired_root = make_agent("scout", "ada", None);
+        retired_root.state = AgentState::Retired;
+        let worker = make_agent("sub-emails", "ada", Some("scout"));
+        let turn_retired = make_turn(
+            worker.clone(),
+            Some(Line {
+                root: retired_root,
+                starter: None,
+                from_starter: true,
+            }),
+        );
+        assert_eq!(root_agent_of(&turn_retired), None);
+
+        let other_root = make_agent("other", "bo", None);
+        let turn_other = make_turn(
+            worker,
+            Some(Line {
+                root: other_root,
+                starter: None,
+                from_starter: true,
+            }),
+        );
+        assert_eq!(root_agent_of(&turn_other), None);
     }
 }

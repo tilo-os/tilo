@@ -1217,3 +1217,9 @@ reason = "Foundation's `URLComponents.host`, Chat's wire `channel` field name, a
 words = ["host", "channel", "run"]
 identifiers = ["host", "channel", "run", "runsOn"]
 paths = ["dist/apple/*"]
+
+[[allow]]
+reason = "Chat's Message struct names its conversation field `channel`, read by `worked.rs` when filtering recent messages."
+words = ["channel"]
+identifiers = ["channel"]
+paths = ["crates/server/tilo-server/src/workspace_agents/worked.rs"]

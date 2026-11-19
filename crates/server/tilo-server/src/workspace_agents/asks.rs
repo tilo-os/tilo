@@ -65,6 +65,17 @@ const INTERRUPTED: &str =
 const STOPPED: &str = "You stopped the work this question belonged to.";
 /// What an answer nothing here carries out is told.
 const NO_CARRIER: &str = "Nothing on this server carries that answer out";
+/// What the same agent is told when it asks what its person is already asked, and their answer
+/// waits: it neither needs the second question nor waits on the answer.
+const WAITING_ALREADY: &str = "Your person is already asked this in your conversation with them \
+     and has not answered yet: nothing was done, and nothing is asked a second time. Tell them \
+     in one line that it waits for their answer there, and keep out of it until they answer. The \
+     rest of what was asked is done without it; do not ask it again in this turn.";
+/// What the same agent is told when its person cannot be asked at all, for a question that waits
+/// for no answer: nothing was done, and asking it again does nothing either.
+const COULD_NOT_ASK: &str = "Your person could not be asked this ({why}), so nothing was done, and \
+     asking it again does nothing. Say what was not done and why, in one line, and do the rest of \
+     what was asked without it.";
 /// What a question is told when it no longer stands as this server asked it.
 pub(super) const NOT_AS_ASKED: &str =
     "The question no longer says what this server asked, so nothing was done or allowed.";
@@ -282,6 +293,13 @@ fn detail_of(ask: &KeptAsk) -> Value {
     Value::Object(detail)
 }
 
+/// What code of this server tells its agent when the question it would put to its person could
+/// not be put at all (`why`): the same words wherever it asks, so a step spent on the same call
+/// again is never what an agent is left to try.
+pub(super) fn could_not_ask(why: &str) -> String {
+    COULD_NOT_ASK.replace("{why}", why)
+}
+
 /// What the question about an invocation says, in the server's words for it.
 fn words_of(words: &Words) -> String {
     let (action, on) = (words.action.trim(), words.on.trim());
@@ -376,9 +394,9 @@ async fn put(
         asked_in: serde_json::to_value(&asked_in).map_err(|error| error.to_string())?,
     };
     // Asked the same again while its person has not answered: the one
-    // question stands.
+    // question stands. The tools say so rather than counting it as asked.
     let Some(kept) = workspaces.keep_ask(&person, new)? else {
-        return Ok(());
+        return Err(WAITING_ALREADY.to_owned());
     };
     let posted = post(
         holder,
@@ -689,7 +707,7 @@ impl HostAgents {
                 .map_err(|error| error.to_string())?,
         };
         let Some(kept) = self.workspaces.keep_ask(&person, new)? else {
-            return Ok(());
+            return Err(WAITING_ALREADY.to_owned());
         };
         let holder = WorkspaceActionProvider::new(self.actions.clone(), workspace_id);
         let posted = post(&holder, &asker, &conversation_id, words.trim(), &kept).await;

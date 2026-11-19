@@ -48,7 +48,7 @@ use tilo_actions::remote::{ActionCallError, CatalogueRow, InvokeRequest, RemoteA
 use super::{
     NamedAgent, Staged, accounts_of_assistant, argument, begun_for, send_staged, sends_root,
 };
-use crate::workspaces::hosted_use::{HostedTurn, KeepersTurn};
+use crate::workspaces::hosted_use::{DelegatedTurn, KeepersTurn};
 use crate::workspaces::person_asking::kept_asks::KeptAsk;
 use crate::workspaces::{WorkspaceId, Workspaces};
 
@@ -99,6 +99,11 @@ pub struct AskedSend {
     /// What the person is shown, row by row: each by its label and what it
     /// says.
     pub rows: Vec<(String, String)>,
+    /// The root assistant whose account binding this send inherited when a
+    /// sub-agent with no direct binding asked. `None` when the asking agent
+    /// was named directly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub named_agent: Option<String>,
 }
 
 impl AskedSend {
@@ -179,46 +184,64 @@ fn set_apart(root: &Path, dir: &Path, asked: &AskedSend) -> Result<(), String> {
 
 impl Workspaces {
     /// Whose turn `turn` is, the id of its workspace as a grant is kept by
-    /// it, and the mail accounts its person named its agent for there.
+    /// it, the agent id holding the mail account binding (the turn's own
+    /// agent, or its verified root assistant when a sub-agent has no direct
+    /// binding), and the mail accounts named for that agent there.
     ///
     /// # Errors
     /// [`ActionCallError::UnknownAction`] for a turn that is not its keeper's
-    /// own, and for an agent its person named for no mail account in this
-    /// workspace.
+    /// own, and for an agent (and any verified root assistant) its person
+    /// named for no mail account in this workspace.
     async fn mail_of_turn(
         &self,
-        turn: &HostedTurn<'_>,
-    ) -> Result<(KeepersTurn, String, BTreeSet<String>), ActionCallError> {
-        let using = self.keepers_turn(turn).await?;
+        turn: DelegatedTurn<'_>,
+    ) -> Result<(KeepersTurn, String, String, BTreeSet<String>), ActionCallError> {
+        let using = self.keepers_turn(&turn.turn).await?;
         // The person's word is kept by the workspace's id, as their device
         // gave it from that workspace.
-        let workspace = turn.workspace.to_string();
+        let workspace = turn.turn.workspace.to_string();
         let root = self.person_settings_root(&using.person);
-        let named = NamedAgent {
-            workspace: &workspace,
-            agent: &using.agent,
-        };
         let kept = accounts::AccountStore::load_in(&root);
         // Named for a mail account: one named for a calendar alone reaches
         // nothing of mail.
-        let named_for: BTreeSet<String> = accounts_of_assistant(&root, named)
-            .into_iter()
-            .filter(|account| {
-                kept.get(&accounts::AccountId::from(account.clone()))
-                    .is_some_and(|kept| kept.type_id.as_str() == accounts::email::TYPE_ID)
-            })
-            .collect();
+        let mail_accounts_for = |agent: &str| -> BTreeSet<String> {
+            let named = NamedAgent {
+                workspace: &workspace,
+                agent,
+            };
+            accounts_of_assistant(&root, named)
+                .into_iter()
+                .filter(|account| {
+                    kept.get(&accounts::AccountId::from(account.clone()))
+                        .is_some_and(|kept| kept.type_id.as_str() == accounts::email::TYPE_ID)
+                })
+                .collect()
+        };
+        let mut account_agent = using.agent.clone();
+        let mut named_for = mail_accounts_for(&account_agent);
+        if named_for.is_empty()
+            && let Some(root_agent) = turn
+                .root_agent
+                .filter(|id| !id.is_empty() && *id != using.agent)
+        {
+            let inherited = mail_accounts_for(root_agent);
+            if !inherited.is_empty() {
+                account_agent = root_agent.to_owned();
+                named_for = inherited;
+            }
+        }
         if named_for.is_empty() {
             return Err(ActionCallError::UnknownAction);
         }
-        Ok((using, workspace, named_for))
+        Ok((using, workspace, account_agent, named_for))
     }
 
     /// The mail actions `turn` is offered, as a catalogue lists them: each
     /// one it would not be refused. None for a turn that is not its keeper's
     /// own and for an agent its person named for no mail account in this
     /// workspace; a narrowed agent is offered the ones a rule of its names.
-    pub async fn mail_offered(&self, turn: &HostedTurn<'_>) -> Vec<CatalogueRow> {
+    pub async fn mail_offered<'a>(&self, turn: impl Into<DelegatedTurn<'a>>) -> Vec<CatalogueRow> {
+        let turn = turn.into();
         let Ok((using, ..)) = self.mail_of_turn(turn).await else {
             return Vec::new();
         };
@@ -230,7 +253,7 @@ impl Workspaces {
                         provider: row.provider.clone(),
                         address: action.address.clone(),
                     };
-                    turn.may_take(&using.workspace, &target)
+                    turn.turn.may_take(&using.workspace, &target)
                 })
             })
             .collect()
@@ -251,28 +274,29 @@ impl Workspaces {
     /// rule for the action ([`ActionCallError::NotPermitted`]), the arguments do
     /// not read, the mail server refused, or a message to send cannot be
     /// shown whole to its person.
-    pub async fn mail_for_turn(
+    pub async fn mail_for_turn<'a>(
         &self,
-        turn: &HostedTurn<'_>,
+        turn: impl Into<DelegatedTurn<'a>>,
         request: &InvokeRequest,
     ) -> Result<TurnMail, ActionCallError> {
+        let turn = turn.into();
         let target = &request.target;
         if target.provider != person_accounts::PROVIDER
             || target.address.resource != person_accounts::RESOURCE
         {
             return Err(ActionCallError::UnknownAction);
         }
-        let (using, workspace, named_for) = self.mail_of_turn(turn).await?;
-        if !turn.may_take(&using.workspace, target) {
+        let (using, workspace, account_agent, named_for) = self.mail_of_turn(turn).await?;
+        if !turn.turn.may_take(&using.workspace, target) {
             return Err(ActionCallError::NotPermitted);
         }
         let named = NamedAgent {
             workspace: &workspace,
-            agent: &using.agent,
+            agent: &account_agent,
         };
         if target.address.action != person_accounts::SEND {
             return self
-                .assistant_invoke(using.person, named, turn.caller, request)
+                .assistant_invoke(using.person, named, turn.turn.caller, request)
                 .await
                 .map(TurnMail::Done);
         }
@@ -295,6 +319,7 @@ impl Workspaces {
             person: hex::encode(using.person),
             workspace,
             rows,
+            named_agent: (account_agent != using.agent).then_some(account_agent),
         };
         self.forget_unasked_sends(&root, &using.workspace, &asked.workspace);
         set_apart(&root, &dir, &asked).map_err(refused)?;
@@ -393,7 +418,7 @@ impl Workspaces {
         // Its person may have taken their word back since they were asked.
         let named = NamedAgent {
             workspace: &asked.workspace,
-            agent,
+            agent: asked.named_agent.as_deref().unwrap_or(agent),
         };
         if beginning.message.account != asked.account
             || !accounts_of_assistant(root, named).contains(&asked.account)
@@ -442,5 +467,346 @@ impl Workspaces {
                 tracing::warn!(%error, "mail: a message nobody is asked about was not removed");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "in unit tests panicking is the assertion"
+    )]
+
+    use std::sync::Arc;
+
+    use serde_json::{Value, json};
+    use tilo_action_policy::{ActionKind, Answer, KindSet, Rule, TreePath};
+    use tilo_actions::InvocationId;
+    use tilo_actions::remote::person_accounts::{
+        self, AssistantAccess, BeginSend, FetchedMail, FetchedMessage, MailAccounts, SendMail,
+        StartedSend,
+    };
+    use tilo_actions::remote::person_asking::Words;
+    use tilo_actions::remote::{
+        ActionCallError, Caller, InvokeArgument, InvokeRequest, RemoteActionTarget,
+    };
+    use tilo_user_identity::DeviceCert;
+
+    use super::{AskedSend, SEND_CARRIER, TurnMail};
+    use crate::workspaces::hosted_use::HostedTurn;
+    use crate::workspaces::mail_watch::testing::{Watched, keep};
+    use crate::workspaces::person_asking::kept_asks::NewAsk;
+    use crate::workspaces::person_settings::say_assistant;
+    use crate::workspaces::tests::{governor, test_host as test_server};
+
+    const ACCOUNT: &str = "ada@example.test";
+    const PASSWORD: &str = "adas-password";
+    const ROOT_AGENT: &str = "scout";
+    const SUB_AGENT: &str = "sub-summarizer";
+
+    fn on_turn(person: &DeviceCert, workspace: &str, agent: &str) -> Caller {
+        Caller::authenticated(person.user_public_key, person.device_public_key)
+            .in_workspace(workspace)
+            .delegated_to(agent)
+            .named(agent)
+            .in_agent_session("agent-session:test")
+            .on_turn(
+                tilo_action_policy::turn::Turn::new("direct", "cause"),
+                Vec::new(),
+            )
+    }
+
+    fn asking(action: &str, argument: Value) -> InvokeRequest {
+        let Value::Object(argument) = argument else {
+            panic!("arguments must be a JSON object");
+        };
+        InvokeRequest {
+            invocation: InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: person_accounts::PROVIDER.to_owned(),
+                address: tilo_actions::ActionAddress::new(person_accounts::RESOURCE, action),
+            },
+            argument: InvokeArgument::Json(argument),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+        }
+    }
+
+    fn lunch() -> Value {
+        serde_json::to_value(BeginSend {
+            message: SendMail {
+                account: ACCOUNT.to_owned(),
+                from_address: ACCOUNT.to_owned(),
+                to: "bo@example.test".to_owned(),
+                body: "Friday at one?".to_owned(),
+                ..SendMail::default()
+            },
+            ..BeginSend::default()
+        })
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn sub_agent_inherits_root_mail_accounts_respects_bounds_and_revocation() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let server = test_server(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
+        let watched = Arc::new(Watched::answering());
+        workspaces.carry_mail_through(watched.clone());
+        let created = workspaces.create("Team").await.unwrap();
+        let workspace = created.workspace;
+        let workspace_id = created.workspace_id;
+        let ada = &owner;
+        let root_dir = workspaces.person_settings_root(&ada.user_public_key);
+        keep(&root_dir, ACCOUNT, PASSWORD);
+
+        // Name ONLY the root assistant for the mail account.
+        say_assistant(
+            &root_dir,
+            &workspace_id.to_string(),
+            &AssistantAccess {
+                account: ACCOUNT.to_owned(),
+                agent: ROOT_AGENT.to_owned(),
+                may: true,
+            },
+        )
+        .unwrap();
+
+        let sub_caller = on_turn(ada, &workspace, SUB_AGENT);
+        let keeper = hex::encode(ada.user_public_key);
+        let base_turn = HostedTurn {
+            workspace: workspace_id,
+            caller: &sub_caller,
+            keeper: &keeper,
+            bound: None,
+        };
+
+        // Without a verified root agent, the sub-agent reaches nothing.
+        assert!(workspaces.mail_offered(&base_turn).await.is_empty());
+        assert_eq!(
+            workspaces
+                .mail_for_turn(&base_turn, &asking(person_accounts::LIST, json!({})))
+                .await,
+            Err(ActionCallError::UnknownAction)
+        );
+
+        // With the verified root assistant, the sub-agent inherits the mail account.
+        let sub_turn = base_turn.under_root(Some(ROOT_AGENT));
+        let offered: Vec<String> = workspaces
+            .mail_offered(&sub_turn)
+            .await
+            .into_iter()
+            .filter_map(|row| row.action.map(|action| action.address.action))
+            .collect();
+        assert!(offered.iter().any(|action| action == person_accounts::LIST));
+        assert!(
+            offered
+                .iter()
+                .any(|action| action == person_accounts::FETCH)
+        );
+        assert!(offered.iter().any(|action| action == person_accounts::READ));
+
+        let Ok(TurnMail::Done(listed)) = workspaces
+            .mail_for_turn(&sub_turn, &asking(person_accounts::LIST, json!({})))
+            .await
+        else {
+            panic!("sub-agent lists inherited mail account");
+        };
+        let listed: MailAccounts = serde_json::from_value(listed).unwrap();
+        assert_eq!(listed.accounts.len(), 1);
+        assert_eq!(listed.accounts[0].id, ACCOUNT);
+
+        let Ok(TurnMail::Done(fetched)) = workspaces
+            .mail_for_turn(
+                &sub_turn,
+                &asking(
+                    person_accounts::FETCH,
+                    json!({"account": ACCOUNT, "folder": "inbox"}),
+                ),
+            )
+            .await
+        else {
+            panic!("sub-agent fetches inherited inbox");
+        };
+        let fetched: FetchedMail = serde_json::from_value(fetched).unwrap();
+        assert_eq!(fetched.messages.len(), 1);
+
+        let Ok(TurnMail::Done(read_msg)) = workspaces
+            .mail_for_turn(
+                &sub_turn,
+                &asking(
+                    person_accounts::READ,
+                    json!({"account": ACCOUNT, "folder": "inbox", "uid": 4, "uidValidity": 7}),
+                ),
+            )
+            .await
+        else {
+            panic!("sub-agent reads inherited message");
+        };
+        let read_msg: FetchedMessage = serde_json::from_value(read_msg).unwrap();
+        assert_eq!(read_msg.body, "Friday at one?");
+
+        // Explicit narrowing still applies to the sub-agent.
+        let narrow_rules = vec![Rule::new(
+            TreePath::workspace(&workspace)
+                .app(person_accounts::PROVIDER)
+                .kind(person_accounts::RESOURCE)
+                .resource(person_accounts::RESOURCE)
+                .action(person_accounts::LIST),
+            KindSet::of(ActionKind::Outside),
+            Answer::Allow,
+        )];
+        let narrowed_sub = HostedTurn {
+            bound: Some(&narrow_rules),
+            ..base_turn
+        }
+        .under_root(Some(ROOT_AGENT));
+        let narrowed_offered: Vec<String> = workspaces
+            .mail_offered(&narrowed_sub)
+            .await
+            .into_iter()
+            .filter_map(|row| row.action.map(|action| action.address.action))
+            .collect();
+        assert_eq!(narrowed_offered, vec![person_accounts::LIST]);
+        assert_eq!(
+            workspaces
+                .mail_for_turn(
+                    &narrowed_sub,
+                    &asking(
+                        person_accounts::FETCH,
+                        json!({"account": ACCOUNT, "folder": "inbox"}),
+                    ),
+                )
+                .await,
+            Err(ActionCallError::NotPermitted)
+        );
+
+        // External sends still ask the person and never leave unasked.
+        let Ok(TurnMail::Done(begun)) = workspaces
+            .mail_for_turn(&sub_turn, &asking(person_accounts::BEGIN_SEND, lunch()))
+            .await
+        else {
+            panic!("sub-agent begins send");
+        };
+        let started: StartedSend = serde_json::from_value(begun).unwrap();
+        let Ok(TurnMail::Asks(asked_send)) = workspaces
+            .mail_for_turn(
+                &sub_turn,
+                &asking(person_accounts::SEND, json!({"send": started.send})),
+            )
+            .await
+        else {
+            panic!("sub-agent send must ask person first");
+        };
+        assert_eq!(asked_send.named_agent.as_deref(), Some(ROOT_AGENT));
+        assert!(
+            !watched.asked().iter().any(|call| call.starts_with("send")),
+            "nothing leaves before the person allows it"
+        );
+
+        // Revoking the root assistant immediately cuts off both new calls and pending sends.
+        say_assistant(
+            &root_dir,
+            &workspace_id.to_string(),
+            &AssistantAccess {
+                account: ACCOUNT.to_owned(),
+                agent: ROOT_AGENT.to_owned(),
+                may: false,
+            },
+        )
+        .unwrap();
+        assert!(workspaces.mail_offered(&sub_turn).await.is_empty());
+        assert_eq!(
+            workspaces
+                .mail_for_turn(&sub_turn, &asking(person_accounts::LIST, json!({})))
+                .await,
+            Err(ActionCallError::UnknownAction)
+        );
+
+        let kept = workspaces
+            .keep_ask(
+                &ada.user_public_key,
+                NewAsk {
+                    workspace: workspace.clone(),
+                    agent: SUB_AGENT.to_owned(),
+                    name: SUB_AGENT.to_owned(),
+                    carrier: SEND_CARRIER.to_owned(),
+                    kept: serde_json::to_value(&*asked_send).unwrap(),
+                    always: None,
+                    words: Words::default(),
+                    asked_in: Value::Null,
+                },
+            )
+            .unwrap()
+            .unwrap();
+        let claimed = workspaces.claim_ask(&kept.ask).unwrap();
+        let refused = workspaces.send_asked(&claimed, true).await;
+        assert!(
+            refused.is_err(),
+            "revoking root must block pending sub-agent send: {refused:?}"
+        );
+
+        // Re-granting root lets a fresh approved send leave.
+        say_assistant(
+            &root_dir,
+            &workspace_id.to_string(),
+            &AssistantAccess {
+                account: ACCOUNT.to_owned(),
+                agent: ROOT_AGENT.to_owned(),
+                may: true,
+            },
+        )
+        .unwrap();
+        let Ok(TurnMail::Done(begun2)) = workspaces
+            .mail_for_turn(&sub_turn, &asking(person_accounts::BEGIN_SEND, lunch()))
+            .await
+        else {
+            panic!("sub-agent begins second send");
+        };
+        let started2: StartedSend = serde_json::from_value(begun2).unwrap();
+        let Ok(TurnMail::Asks(asked_send2)) = workspaces
+            .mail_for_turn(
+                &sub_turn,
+                &asking(person_accounts::SEND, json!({"send": started2.send})),
+            )
+            .await
+        else {
+            panic!("second send asks person first");
+        };
+        let asked_copy: AskedSend = (*asked_send2).clone();
+        let kept2 = workspaces
+            .keep_ask(
+                &ada.user_public_key,
+                NewAsk {
+                    workspace: workspace.clone(),
+                    agent: SUB_AGENT.to_owned(),
+                    name: SUB_AGENT.to_owned(),
+                    carrier: SEND_CARRIER.to_owned(),
+                    kept: serde_json::to_value(&asked_copy).unwrap(),
+                    always: None,
+                    words: Words::default(),
+                    asked_in: Value::Null,
+                },
+            )
+            .unwrap()
+            .unwrap();
+        let claimed2 = workspaces.claim_ask(&kept2.ask).unwrap();
+        workspaces
+            .send_asked(&claimed2, true)
+            .await
+            .expect("approved send leaves while root remains named");
+        assert!(
+            watched.asked().iter().any(|call| call.starts_with("send")),
+            "approved send left through mail server"
+        );
+
+        server.shutdown().await;
     }
 }

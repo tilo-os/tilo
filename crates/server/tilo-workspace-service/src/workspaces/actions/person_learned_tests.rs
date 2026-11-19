@@ -21,7 +21,10 @@ use tilo_actions::remote::{
 use tilo_user_identity::DeviceCert;
 
 use super::tests::{admit, caller, governed, request, settled};
-use crate::workspaces::person_learned::{self, CORRECT, FORGET, Facts, LEARN, LIST};
+use crate::workspaces::person_learned::{
+    self, CONFIRM, CORRECT, FORGET, FactAuthority, FactBoundaryWake, FactCorrection, FactUpdate,
+    FactView, Facts, IsoDate, LEARN, LIST, WindowBoundary,
+};
 use crate::workspaces::tests::{governor, test_host};
 
 /// The agent that works for a person on the server, by its id.
@@ -431,5 +434,408 @@ async fn what_was_learned_is_kept_for_one_person_in_one_workspace() {
             assert_eq!(mode & 0o777, 0o600, "{path:?}");
         }
     }
+    served.shutdown().await;
+}
+
+/// Dated facts keep concrete start/end dates alongside the person's words, render fresh relative
+/// phrasing for any given day without stale prose, schedule boundary wakes at one month before
+/// start, at start, and at end, and stay backwards compatible on the wire.
+#[tokio::test]
+async fn dated_facts_keep_windows_render_fresh_phrasing_and_schedule_boundary_wakes() {
+    stage!(dir, served, workspaces, workspace, provider, ada, _bo);
+    let date = |s: &str| IsoDate::parse(s).unwrap();
+
+    // Backwards-compatible wire decoding: a legacy FactView JSON without date or confirmation
+    // fields still deserializes cleanly, and absent/false fields stay omitted when serialized.
+    let legacy_json = json!({
+        "id": "f1",
+        "text": "Takes her coffee black.",
+        "source": KEPT_IN,
+        "atMs": 1_700_000_000_000_i64,
+        "by": SCOUT
+    });
+    let legacy: FactView = serde_json::from_value(legacy_json).unwrap();
+    assert_eq!(legacy.starts_on, None);
+    assert_eq!(legacy.ends_on, None);
+    assert!(!legacy.confirmed);
+    assert_eq!(legacy.effective_authority(), FactAuthority::LargeModel);
+    let reserialized = serde_json::to_value(&legacy).unwrap();
+    assert!(reserialized.get("startsOn").is_none());
+    assert!(reserialized.get("endsOn").is_none());
+    assert!(reserialized.get("confirmed").is_none());
+
+    // Person stores a time-relative fact with concrete dates.
+    let raise = json!({
+        "text": "We plan to raise a round.",
+        "source": "I wrote it down on 17 Nov 2026",
+        "startsOn": "2027-02-17",
+        "endsOn": "2027-05-17"
+    });
+    let kept = provider.ask(&ada, (LEARN, raise)).await.unwrap();
+    let [fact] = kept.facts.as_slice() else {
+        panic!("one dated fact, not {kept:?}");
+    };
+    assert_eq!(fact.starts_on.as_deref(), Some("2027-02-17"));
+    assert_eq!(fact.ends_on.as_deref(), Some("2027-05-17"));
+    assert!(fact.confirmed);
+    assert_eq!(fact.authority, Some(FactAuthority::Person));
+
+    // Fresh relative phrasing updates deterministically as the calendar advances.
+    assert_eq!(
+        fact.render_relative(date("2026-11-17")).as_deref(),
+        Some("in 3 to 6 months")
+    );
+    assert_eq!(
+        fact.render_relative(date("2026-12-17")).as_deref(),
+        Some("in 2 to 5 months")
+    );
+    assert_eq!(
+        fact.render_for_date(date("2026-12-17")),
+        "We plan to raise a round. [in 2 to 5 months; 2027-02-17..2027-05-17]"
+    );
+    assert_eq!(
+        fact.render_relative(date("2027-02-17")).as_deref(),
+        Some("active (ends in 3 months)")
+    );
+    assert_eq!(
+        fact.render_relative(date("2027-06-17")).as_deref(),
+        Some("passed (1 month ago)")
+    );
+
+    // Deterministic scheduler wakes at 1 month before starts_on, at starts_on, and at ends_on.
+    let wakes =
+        workspaces.upcoming_fact_wakes(&ada.user_public_key, &workspace, date("2026-12-17"));
+    assert_eq!(
+        wakes,
+        vec![
+            FactBoundaryWake {
+                fact_id: fact.id.clone(),
+                text: "We plan to raise a round.".to_owned(),
+                on: date("2027-01-17"),
+                boundary: WindowBoundary::OneMonthBeforeStart,
+                confirmed: true,
+            },
+            FactBoundaryWake {
+                fact_id: fact.id.clone(),
+                text: "We plan to raise a round.".to_owned(),
+                on: date("2027-02-17"),
+                boundary: WindowBoundary::WindowStart,
+                confirmed: true,
+            },
+            FactBoundaryWake {
+                fact_id: fact.id.clone(),
+                text: "We plan to raise a round.".to_owned(),
+                on: date("2027-05-17"),
+                boundary: WindowBoundary::WindowEnd,
+                confirmed: true,
+            },
+        ]
+    );
+    let after_start =
+        workspaces.upcoming_fact_wakes(&ada.user_public_key, &workspace, date("2027-02-18"));
+    assert_eq!(after_start.len(), 1);
+    assert_eq!(after_start[0].boundary, WindowBoundary::WindowEnd);
+    assert!(
+        workspaces
+            .upcoming_fact_wakes(&ada.user_public_key, &workspace, date("2027-05-18"))
+            .is_empty()
+    );
+
+    // Correcting text without naming dates preserves the existing date window.
+    let updated = provider
+        .ask(
+            &ada,
+            (
+                CORRECT,
+                json!({
+                    "fact": fact.id,
+                    "text": "We plan to raise our seed round."
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.facts[0].starts_on.as_deref(), Some("2027-02-17"));
+    assert_eq!(updated.facts[0].ends_on.as_deref(), Some("2027-05-17"));
+
+    // Updating with snake_case date keys works, and empty string clears a date.
+    let cleared_end = provider
+        .ask(
+            &ada,
+            (
+                CORRECT,
+                json!({
+                    "fact": fact.id,
+                    "text": "We plan to raise our seed round.",
+                    "starts_on": "2027-03-01",
+                    "ends_on": ""
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        cleared_end.facts[0].starts_on.as_deref(),
+        Some("2027-03-01")
+    );
+    assert_eq!(cleared_end.facts[0].ends_on, None);
+
+    // Invalid dates and inverted ranges are refused without altering kept facts.
+    for bad in [
+        (
+            LEARN,
+            json!({
+                "text": "Bad leap day.",
+                "source": "I wrote it down",
+                "startsOn": "2027-02-29"
+            }),
+        ),
+        (
+            LEARN,
+            json!({
+                "text": "Inverted window.",
+                "source": "I wrote it down",
+                "startsOn": "2027-06-01",
+                "endsOn": "2027-05-01"
+            }),
+        ),
+        (
+            CORRECT,
+            json!({
+                "fact": fact.id,
+                "text": "Still bad.",
+                "endsOn": "2027-02-01"
+            }),
+        ),
+    ] {
+        let refused = provider.ask(&ada, bad).await;
+        assert!(matches!(refused, Err(Refused { .. })), "{refused:?}");
+    }
+    assert_eq!(provider.list(&ada).await, cleared_end);
+
+    // Sidecar metadata file is kept owner-only (0600) beside the automerge document.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let details_path = kept_files(dir.path())
+            .into_iter()
+            .find(|path| {
+                path.to_string_lossy()
+                    .contains(&hex::encode(ada.user_public_key))
+            })
+            .expect("automerge document for ada")
+            .with_file_name(format!("{workspace}-details.json"));
+        let mode = std::fs::metadata(&details_path)
+            .expect("sidecar details file")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    // Forgetting the fact removes its wakes and cleans up the sidecar metadata.
+    let empty = provider
+        .ask(&ada, (FORGET, json!({"fact": fact.id})))
+        .await
+        .unwrap();
+    assert!(empty.facts.is_empty());
+    assert!(
+        workspaces
+            .upcoming_fact_wakes(&ada.user_public_key, &workspace, date("2026-01-01"))
+            .is_empty()
+    );
+    served.shutdown().await;
+}
+
+/// Authority order (`Person > LargeModel > DecisionModel`) is enforced on every update:
+/// a fact set or confirmed by the person cannot be silently overwritten or forgotten by a model
+/// inference without explicit user confirmation.
+#[tokio::test]
+async fn confirmed_facts_cannot_be_silently_overwritten_by_model_inference() {
+    stage!(_dir, served, workspaces, workspace, provider, ada, _bo);
+
+    // 1. Decision model writes an unconfirmed fact.
+    let fact_id = workspaces
+        .keep_dated_fact(
+            &ada.user_public_key,
+            &workspace,
+            Some(SCOUT),
+            FactUpdate {
+                text: "Raising sometime in spring.".to_owned(),
+                source: "Decision inference".to_owned(),
+                starts_on: Some("2027-03-01".to_owned()),
+                ends_on: Some("2027-05-31".to_owned()),
+                authority: FactAuthority::DecisionModel,
+            },
+        )
+        .unwrap();
+    let listed = provider.list(&ada).await;
+    assert_eq!(listed.facts.len(), 1);
+    assert!(!listed.facts[0].confirmed);
+    assert_eq!(
+        listed.facts[0].authority,
+        Some(FactAuthority::DecisionModel)
+    );
+
+    // 2. Large model outranks DecisionModel and may refine the unconfirmed fact.
+    workspaces
+        .correct_dated_fact(
+            &ada.user_public_key,
+            &workspace,
+            Some(SCOUT),
+            &fact_id,
+            FactCorrection {
+                text: "Raising between February and May 2027.".to_owned(),
+                source: Some("Large model synthesis".to_owned()),
+                starts_on: Some(Some("2027-02-17".to_owned())),
+                ends_on: Some(Some("2027-05-17".to_owned())),
+                authority: FactAuthority::LargeModel,
+            },
+        )
+        .unwrap();
+    let after_large = provider.list(&ada).await;
+    assert!(!after_large.facts[0].confirmed);
+    assert_eq!(
+        after_large.facts[0].authority,
+        Some(FactAuthority::LargeModel)
+    );
+
+    // 3. DecisionModel cannot overwrite a LargeModel fact.
+    let decision_overwrite = workspaces.correct_dated_fact(
+        &ada.user_public_key,
+        &workspace,
+        Some(SCOUT),
+        &fact_id,
+        FactCorrection {
+            text: "Not raising.".to_owned(),
+            source: Some("Noisy classifier".to_owned()),
+            starts_on: None,
+            ends_on: None,
+            authority: FactAuthority::DecisionModel,
+        },
+    );
+    assert!(
+        decision_overwrite.is_err(),
+        "DecisionModel must not overwrite LargeModel"
+    );
+
+    // 4. The person confirms the agent's fact through the provider (`CONFIRM`).
+    let confirmed = provider
+        .ask(
+            &ada,
+            (
+                CONFIRM,
+                json!({
+                    "fact": fact_id,
+                    "startsOn": "2027-02-17",
+                    "endsOn": "2027-05-17"
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+    assert!(confirmed.facts[0].confirmed);
+    assert_eq!(confirmed.facts[0].authority, Some(FactAuthority::Person));
+    assert_ne!(confirmed.revision, after_large.revision);
+
+    // 5. Neither LargeModel nor DecisionModel may overwrite, re-learn over, or forget a confirmed
+    // fact without explicit user confirmation.
+    assert!(
+        workspaces
+            .correct_dated_fact(
+                &ada.user_public_key,
+                &workspace,
+                Some(SCOUT),
+                &fact_id,
+                FactCorrection {
+                    text: "Already raising now.".to_owned(),
+                    source: Some("Inferred from inbound mail".to_owned()),
+                    starts_on: None,
+                    ends_on: None,
+                    authority: FactAuthority::LargeModel,
+                },
+            )
+            .is_err()
+    );
+    assert!(
+        workspaces
+            .keep_learned_fact(
+                &ada.user_public_key,
+                &workspace,
+                SCOUT,
+                (
+                    "raising between february and may 2027.",
+                    "Silent overwrite attempt"
+                ),
+            )
+            .is_err()
+    );
+    let forget_attempt =
+        workspaces.change_learned(&ada.user_public_key, &workspace, Some(SCOUT), |resource| {
+            resource
+                .apply(tilo_workspace_agent::learned::Learned::FORGET.with(
+                    tilo_workspace_agent::learned::learned::Forget {
+                        fact: tilo_resource::Id::from_raw(fact_id.clone()),
+                    },
+                ))
+                .map(drop)
+                .map_err(|error| error.to_string())
+        });
+    assert!(
+        forget_attempt.is_err(),
+        "an agent must not silently forget a confirmed fact"
+    );
+
+    // Confirm nothing changed on disk after all refused model writes.
+    assert_eq!(provider.list(&ada).await, confirmed);
+
+    // 6. An agent may still add a brand-new unrelated fact without touching the confirmed fact.
+    workspaces
+        .keep_learned_fact(
+            &ada.user_public_key,
+            &workspace,
+            SCOUT,
+            ("Prefers concise weekly briefs.", KEPT_IN),
+        )
+        .unwrap();
+    let with_second = provider.list(&ada).await;
+    assert_eq!(with_second.facts.len(), 2);
+    let still_confirmed = with_second
+        .facts
+        .iter()
+        .find(|item| item.id == fact_id)
+        .unwrap();
+    assert!(still_confirmed.confirmed);
+    assert_eq!(
+        still_confirmed.text,
+        "Raising between February and May 2027."
+    );
+
+    // 7. An update carrying explicit user confirmation (`FactAuthority::Person`) IS allowed.
+    workspaces
+        .correct_dated_fact(
+            &ada.user_public_key,
+            &workspace,
+            Some(SCOUT),
+            &fact_id,
+            FactCorrection {
+                text: "Raising between March and June 2027.".to_owned(),
+                source: Some("Confirmed by person at 1-month boundary".to_owned()),
+                starts_on: Some(Some("2027-03-17".to_owned())),
+                ends_on: Some(Some("2027-06-17".to_owned())),
+                authority: FactAuthority::Person,
+            },
+        )
+        .unwrap();
+    let updated = provider.list(&ada).await;
+    let moved = updated
+        .facts
+        .iter()
+        .find(|item| item.id == fact_id)
+        .unwrap();
+    assert_eq!(moved.text, "Raising between March and June 2027.");
+    assert_eq!(moved.starts_on.as_deref(), Some("2027-03-17"));
+    assert_eq!(moved.ends_on.as_deref(), Some("2027-06-17"));
+    assert!(moved.confirmed);
+
     served.shutdown().await;
 }

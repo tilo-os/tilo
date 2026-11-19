@@ -932,6 +932,7 @@ fn answered_by(root: &Path, kind: Interaction) -> Result<String, ModelRefusal> {
         root,
         &kept::Key::default(),
         (kind, None),
+        None,
         false,
         &NoProvider,
     )
@@ -966,10 +967,15 @@ fn one_kind_of_the_main_thread_answers_for_its_other_kind_and_for_no_other_work(
             "chosen for {chosen}, {other} is answered by it"
         );
         for kind in OTHER_WORK {
+            let expected = if chosen == Interaction::Task && kind == Interaction::Subtask {
+                Ok(main.clone())
+            } else {
+                Err(ModelRefusal::NoModelLinked { kind })
+            };
             assert_eq!(
                 answered_by(dir.path(), kind),
-                Err(ModelRefusal::NoModelLinked { kind }),
-                "chosen for {chosen}"
+                expected,
+                "chosen for {chosen}, {kind}"
             );
         }
     }
@@ -993,4 +999,518 @@ fn one_kind_of_the_main_thread_answers_for_its_other_kind_and_for_no_other_work(
         answered_by(dir.path(), Interaction::Task),
         Ok("made-up-default".to_owned())
     );
+}
+
+/// A workspace's data-destination policy is enforced across every call kind
+/// (main, subtask, classifier, one-shot/reflection, dictation, and explicitly
+/// named models for shadow/fallback/coding/review), names the blocked
+/// destination and allowed alternatives, never leaks content to a disallowed
+/// provider, survives restarts, and leaves unrestricted workspaces alone.
+#[tokio::test]
+async fn workspace_destination_policy_blocks_disallowed_providers_across_all_kinds() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let scripted = ScriptedProvider::answering([
+        Reply::text("personal ok"),
+        Reply::text("anthropic ok"),
+        Reply::text("after restart ok"),
+    ]);
+    workspaces.answer_models_with(scripted.clone());
+
+    workspaces.link_model_for(&ADA, &GOOGLE, true).unwrap();
+    workspaces.link_model_for(&ADA, &ANTHROPIC, false).unwrap();
+
+    let law_firm = tilo_server_protocol::WorkspaceId::new();
+    let personal = tilo_server_protocol::WorkspaceId::new();
+    workspaces
+        .set_workspace_destinations(
+            law_firm,
+            DestinationPolicy::Only(vec![AllowedDestination::Endpoint(
+                "api.anthropic.com".into(),
+            )]),
+        )
+        .unwrap();
+
+    // Every interaction kind and named model pointing to Google is refused
+    // before touching the provider.
+    for (kind, named) in [
+        (Interaction::Request, None),
+        (Interaction::Task, None),
+        (Interaction::Subtask, None),
+        (Interaction::Classifier, None),
+        (Interaction::OneShot, None),
+        (Interaction::Dictation, None),
+        (Interaction::Task, Some("Google/gemini-main")),
+        (Interaction::OneShot, Some("Google/gemini-small")),
+    ] {
+        let model = workspaces
+            .person_model(ADA, kind)
+            .working_in(law_firm)
+            .naming(named);
+        let refused_linked = model.linked().unwrap_err();
+        let refused_answer = model
+            .answer(&asking("Confidential brief"), soon(), &mut |_| {})
+            .await
+            .unwrap_err();
+        assert_eq!(refused_linked, refused_answer, "{kind:?} {named:?}");
+        assert_eq!(
+            refused_answer,
+            ModelRefusal::WorkspaceRefuses {
+                provider: "Google".into(),
+                destination: "https://generativelanguage.googleapis.com".into(),
+                allowed_alternatives: vec!["Anthropic".into()],
+            },
+            "{kind:?} {named:?}"
+        );
+        assert_eq!(refused_answer.code(), "workspace-refuses");
+        let words = refused_answer.words(None);
+        assert!(words.contains("Google"), "{words}");
+        assert!(
+            words.contains("https://generativelanguage.googleapis.com"),
+            "{words}"
+        );
+        assert!(words.contains("Anthropic"), "{words}");
+    }
+    assert!(
+        scripted.asked().is_empty(),
+        "no disallowed call ever reaches the provider"
+    );
+
+    // An unrestricted personal workspace can still use Google.
+    let own = workspaces
+        .person_model(ADA, Interaction::Request)
+        .working_in(personal)
+        .answer(&asking("Personal note"), soon(), &mut |_| {})
+        .await
+        .unwrap();
+    assert_eq!(own.text(), "personal ok");
+
+    // Switching to an allowed provider succeeds in the restricted workspace.
+    let allowed = workspaces
+        .person_model(ADA, Interaction::Subtask)
+        .working_in(law_firm)
+        .naming(Some("Anthropic/claude-parts"))
+        .answer(&asking("Review brief"), soon(), &mut |_| {})
+        .await
+        .unwrap();
+    assert_eq!(allowed.text(), "anthropic ok");
+    assert_eq!(allowed.linked.provider, "Anthropic");
+
+    // Policy persists across server restarts.
+    let server = {
+        server.shutdown().await;
+        test_host(dir.path(), &key, &owner).await
+    };
+    let workspaces = server.workspaces();
+    let scripted = ScriptedProvider::answering([Reply::text("after restart ok")]);
+    workspaces.answer_models_with(scripted.clone());
+    assert!(matches!(
+        workspaces
+            .person_model(ADA, Interaction::Request)
+            .working_in(law_firm)
+            .answer(&asking("Still blocked"), soon(), &mut |_| {})
+            .await,
+        Err(ModelRefusal::WorkspaceRefuses { .. })
+    ));
+    assert!(scripted.asked().is_empty());
+
+    let allowed_after = workspaces
+        .person_model(ADA, Interaction::Request)
+        .working_in(law_firm)
+        .naming(Some("Anthropic/claude-parts"))
+        .answer(&asking("Allowed after restart"), soon(), &mut |_| {})
+        .await
+        .unwrap();
+    assert_eq!(allowed_after.text(), "after restart ok");
+}
+
+/// Endpoint rules cannot be bypassed by spoofing a provider's label or domain
+/// suffix, `NoneOutsideServer` keeps content on loopback, and a corrupt
+/// workspace policy file fails closed.
+#[tokio::test]
+async fn workspace_destination_policy_prevents_spoofing_and_fails_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    workspaces.call_private_model_addresses(true);
+    let scripted = ScriptedProvider::answering([Reply::text("local ok")]);
+    workspaces.answer_models_with(scripted.clone());
+
+    let spoofed = Linking {
+        name: "Anthropic",
+        protocol: ProviderProtocol::Anthropic,
+        endpoint: "https://api.anthropic.com.evil.example/v1",
+        key: Some(ADA_KEY),
+        models: &["claude-spoof"],
+    };
+    let local = Linking {
+        name: "Local Ollama",
+        protocol: ProviderProtocol::OpenAiCompatible,
+        endpoint: "http://127.0.0.1:11434/v1",
+        key: None,
+        models: &["local-model"],
+    };
+    workspaces.link_model_for(&ADA, &spoofed, true).unwrap();
+    workspaces.link_model_for(&ADA, &local, false).unwrap();
+
+    let strict_endpoint = tilo_server_protocol::WorkspaceId::new();
+    workspaces
+        .set_workspace_destinations(
+            strict_endpoint,
+            DestinationPolicy::Only(vec![AllowedDestination::Endpoint(
+                "api.anthropic.com".into(),
+            )]),
+        )
+        .unwrap();
+    let refused = workspaces
+        .person_model(ADA, Interaction::Task)
+        .working_in(strict_endpoint)
+        .answer(&asking("Secret"), soon(), &mut |_| {})
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused,
+        ModelRefusal::WorkspaceRefuses {
+            provider: "Anthropic".into(),
+            destination: "https://api.anthropic.com.evil.example".into(),
+            allowed_alternatives: vec!["api.anthropic.com".into()],
+        }
+    );
+
+    // NoneOutsideServer blocks external endpoints and permits loopback.
+    let local_only = tilo_server_protocol::WorkspaceId::new();
+    workspaces
+        .set_workspace_destinations(local_only, DestinationPolicy::NoneOutsideServer)
+        .unwrap();
+    let refused_local = workspaces
+        .person_model(ADA, Interaction::Task)
+        .working_in(local_only)
+        .answer(&asking("Stay on server"), soon(), &mut |_| {})
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused_local,
+        ModelRefusal::WorkspaceRefuses {
+            provider: "Anthropic".into(),
+            destination: "https://api.anthropic.com.evil.example".into(),
+            allowed_alternatives: vec!["Local Ollama".into()],
+        }
+    );
+    let local_answer = workspaces
+        .person_model(ADA, Interaction::Task)
+        .working_in(local_only)
+        .naming(Some("Local Ollama/local-model"))
+        .answer(&asking("Local ok"), soon(), &mut |_| {})
+        .await
+        .unwrap();
+    assert_eq!(local_answer.text(), "local ok");
+
+    // A corrupt workspace policy file fails closed and never leaks content.
+    let corrupt_ws = tilo_server_protocol::WorkspaceId::new();
+    let policy_dir = workspaces.inner.dir.join("workspace-destinations");
+    std::fs::create_dir_all(&policy_dir).unwrap();
+    std::fs::write(policy_dir.join(format!("{corrupt_ws}.json")), b"{broken").unwrap();
+    let refused_corrupt = workspaces
+        .person_model(ADA, Interaction::Task)
+        .working_in(corrupt_ws)
+        .naming(Some("Local Ollama/local-model"))
+        .answer(&asking("Must not send"), soon(), &mut |_| {})
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        refused_corrupt,
+        ModelRefusal::WorkspaceRefuses {
+            allowed_alternatives,
+            ..
+        } if allowed_alternatives.is_empty()
+    ));
+    assert_eq!(scripted.asked().len(), 1);
+}
+
+/// Concurrent calls under a hard daily cap cannot all pass pre-call admission
+/// simultaneously: in-flight reservations bound concurrent admission, reconcile
+/// with actual cost on completion, and release automatically on error, timeout,
+/// or cancellation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_calls_respect_hard_cap_via_atomic_reservations() {
+    use std::sync::atomic::AtomicUsize;
+    use tokio::sync::Notify;
+
+    /// Provider that holds every admitted call in flight until `release` fires.
+    struct HoldingProvider {
+        entered: AtomicUsize,
+        release: Notify,
+        cost_micros: u64,
+        fail: AtomicBool,
+    }
+
+    impl ModelProvider for HoldingProvider {
+        fn answer<'a>(&'a self, _: ProviderCall<'a>, _: Events<'a>) -> ProviderFuture<'a> {
+            self.entered.fetch_add(1, Ordering::SeqCst);
+            let cost_micros = self.cost_micros;
+            Box::pin(async move {
+                self.release.notified().await;
+                if self.fail.load(Ordering::Acquire) {
+                    return Err(ModelError::new(ErrorKind::RateLimited));
+                }
+                Ok(ModelResponse {
+                    message: Message::text(Role::Assistant, "done"),
+                    stop_reason: agent_provider_config::protocol::StopReason::EndTurn,
+                    usage: agent_provider_config::protocol::Usage {
+                        input_tokens: 10,
+                        output_tokens: 5,
+                        total_tokens: 15,
+                        ..Default::default()
+                    },
+                    cost_micros,
+                })
+            })
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let holding = Arc::new(HoldingProvider {
+        entered: AtomicUsize::new(0),
+        release: Notify::new(),
+        cost_micros: 150_000,
+        fail: AtomicBool::new(false),
+    });
+    workspaces.answer_models_with(holding.clone());
+    workspaces.link_model_for(&ADA, &GOOGLE, true).unwrap();
+
+    // Hard cap $1.00, each call reserving $0.40 -> at most 2 concurrent calls
+    // may be admitted at once ($0.80 <= $1.00); a 3rd..6th are refused
+    // immediately before reaching the provider.
+    let spender = scout("2026-11-17", Some(1_000_000));
+    let model = workspaces
+        .person_model(ADA, Interaction::Subtask)
+        .spending_as(spender.clone())
+        .reserving(400_000);
+
+    let mut tasks = Vec::new();
+    for _ in 0..6 {
+        let model = model.clone();
+        tasks.push(tokio::spawn(async move {
+            model.answer(&asking("work"), soon(), &mut |_| {}).await
+        }));
+    }
+
+    // Wait until the 2 admitted calls have entered the provider and the other 4
+    // have settled with DayLimitReached.
+    let mut refused_count = 0;
+    let mut pending = Vec::new();
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    for handle in tasks {
+        if handle.is_finished() {
+            let result = handle.await.unwrap();
+            assert!(
+                matches!(result, Err(ModelRefusal::DayLimitReached { .. })),
+                "excess concurrent call must be refused: {result:?}"
+            );
+            refused_count += 1;
+        } else {
+            pending.push(handle);
+        }
+    }
+    assert_eq!(refused_count, 4);
+    assert_eq!(pending.len(), 2);
+    assert_eq!(holding.entered.load(Ordering::SeqCst), 2);
+    assert_eq!(model.reserved_by(&spender), 800_000);
+
+    // Release the 2 in-flight calls; reservations reconcile to actual cost
+    // (2 * 150_000 = 300_000) and reserved balance returns to 0.
+    holding.release.notify_waiters();
+    for handle in pending {
+        let answer = handle.await.unwrap().unwrap();
+        assert_eq!(answer.cost, AnswerCost::Known(150_000));
+    }
+    assert_eq!(model.reserved_by(&spender), 0);
+    assert_eq!(model.try_spent_by(&spender), Ok(300_000));
+
+    // On provider error, reservation is released so budget is not leaked.
+    holding.fail.store(true, Ordering::Release);
+    let err_model = model.clone();
+    let err_task = tokio::spawn(async move {
+        err_model
+            .answer(&asking("fails"), soon(), &mut |_| {})
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert_eq!(model.reserved_by(&spender), 400_000);
+    holding.release.notify_waiters();
+    assert!(matches!(
+        err_task.await.unwrap(),
+        Err(ModelRefusal::Provider(_))
+    ));
+    assert_eq!(model.reserved_by(&spender), 0);
+    assert_eq!(model.try_spent_by(&spender), Ok(300_000));
+
+    // On cancellation (dropping the future), RAII Drop releases the reservation.
+    holding.fail.store(false, Ordering::Release);
+    let cancel_model = model.clone();
+    let cancel_task = tokio::spawn(async move {
+        let _ = cancel_model
+            .answer(&asking("cancelled"), soon(), &mut |_| {})
+            .await;
+    });
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert_eq!(model.reserved_by(&spender), 400_000);
+    cancel_task.abort();
+    let _ = cancel_task.await;
+    assert_eq!(model.reserved_by(&spender), 0);
+    assert_eq!(model.try_spent_by(&spender), Ok(300_000));
+
+    // Multi-spender atomicity: if a second spender rejects admission, the first
+    // spender keeps no leaked reservation.
+    let tiny_piece = Spender {
+        agent: "event:tiny".into(),
+        name: "Tiny piece".into(),
+        limit_micros: Some(200_000),
+        ..spender.clone()
+    };
+    let refused = model
+        .clone()
+        .spending_as(tiny_piece.clone())
+        .answer(&asking("too big for piece"), soon(), &mut |_| {})
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        refused,
+        ModelRefusal::DayLimitReached { ref agent, .. } if agent == "Tiny piece"
+    ));
+    assert_eq!(model.reserved_by(&spender), 0);
+    assert_eq!(model.reserved_by(&tiny_piece), 0);
+
+    // Without an explicit `.reserving(...)` override on an unpriced model
+    // under a hard cap, concurrent calls still cannot all pass pre-call
+    // admission simultaneously: one call commits the remaining cap while in
+    // flight and concurrent siblings are refused immediately.
+    workspaces
+        .link_model_for(
+            &ADA,
+            &Linking {
+                name: "Custom",
+                protocol: ProviderProtocol::OpenAiCompatible,
+                endpoint: "https://models.example.com/v1",
+                key: Some(ADA_KEY),
+                models: &["my-unpriced-model"],
+            },
+            false,
+        )
+        .unwrap();
+    let unpriced_spender = scout("2026-11-18", Some(500_000));
+    let unpriced_model = workspaces
+        .person_model(ADA, Interaction::Subtask)
+        .naming(Some("Custom/my-unpriced-model"))
+        .spending_as(unpriced_spender.clone());
+    holding.entered.store(0, Ordering::SeqCst);
+    holding.fail.store(false, Ordering::Release);
+
+    let mut unpriced_tasks = Vec::new();
+    for _ in 0..5 {
+        let m = unpriced_model.clone();
+        unpriced_tasks.push(tokio::spawn(async move {
+            m.answer(&asking("unpriced concurrent"), soon(), &mut |_| {})
+                .await
+        }));
+    }
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    let mut unpriced_refused = 0;
+    let mut unpriced_pending = Vec::new();
+    for handle in unpriced_tasks {
+        if handle.is_finished() {
+            assert!(matches!(
+                handle.await.unwrap(),
+                Err(ModelRefusal::DayLimitReached { .. })
+            ));
+            unpriced_refused += 1;
+        } else {
+            unpriced_pending.push(handle);
+        }
+    }
+    assert_eq!(unpriced_refused, 4);
+    assert_eq!(unpriced_pending.len(), 1);
+    assert_eq!(holding.entered.load(Ordering::SeqCst), 1);
+    assert_eq!(unpriced_model.reserved_by(&unpriced_spender), 500_000);
+
+    holding.release.notify_waiters();
+    for handle in unpriced_pending {
+        handle.await.unwrap().unwrap();
+    }
+    assert_eq!(unpriced_model.reserved_by(&unpriced_spender), 0);
+    assert_eq!(unpriced_model.try_spent_by(&unpriced_spender), Ok(150_000));
+}
+
+/// An unreadable or corrupt spending file fails closed under a hard cap
+/// without resetting spend to zero or overwriting the file, and recovers once
+/// repaired on disk. Unpriced models report `AnswerCost::Unknown` explicitly.
+#[tokio::test]
+async fn unreadable_spending_file_fails_closed_and_unknown_pricing_is_marked() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let scripted = ScriptedProvider::answering([Reply::text("unpriced reply")]);
+    workspaces.answer_models_with(scripted.clone());
+    workspaces
+        .link_model_for(
+            &ADA,
+            &Linking {
+                name: "Custom",
+                protocol: ProviderProtocol::OpenAiCompatible,
+                endpoint: "https://models.example.com/v1",
+                key: Some(ADA_KEY),
+                models: &["my-unpriced-model"],
+            },
+            true,
+        )
+        .unwrap();
+
+    let spender = scout("2026-11-17", Some(2_000_000));
+    let spend_path = workspaces
+        .person_settings_root(&ADA)
+        .join("model-spend.json");
+    std::fs::write(&spend_path, b"{not valid json").unwrap();
+
+    let model = workspaces
+        .person_model(ADA, Interaction::Task)
+        .spending_as(spender.clone());
+
+    let refused = model
+        .answer(&asking("Must fail closed"), soon(), &mut |_| {})
+        .await
+        .unwrap_err();
+    assert_eq!(refused, ModelRefusal::SpendUnreadable);
+    assert_eq!(refused.code(), "spend-unreadable");
+    assert_eq!(model.try_spent_by(&spender), Err(SpendError::Unreadable));
+    assert!(
+        model.spent_by(&spender) >= 2_000_000,
+        "fail-closed spent_by never resets to zero under a hard cap"
+    );
+    assert!(
+        scripted.asked().is_empty(),
+        "provider is never asked when spending file is unreadable under a hard cap"
+    );
+    assert_eq!(
+        std::fs::read(&spend_path).unwrap(),
+        b"{not valid json",
+        "corrupt spending file is preserved, never overwritten"
+    );
+
+    // Repairing/removing the corrupt file restores normal operation cleanly.
+    std::fs::remove_file(&spend_path).unwrap();
+    let answer = model
+        .answer(&asking("Recovered"), soon(), &mut |_| {})
+        .await
+        .unwrap();
+    assert_eq!(answer.text(), "unpriced reply");
+    assert_eq!(answer.cost, AnswerCost::Unknown);
+    assert_eq!(model.try_spent_by(&spender), Ok(0));
+    assert_eq!(model.unknown_calls_by(&spender), Ok(1));
 }

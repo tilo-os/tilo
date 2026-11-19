@@ -35,7 +35,8 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_workspace_agent::{Agent, WorkspaceAgents};
 
-use super::asks::{Answered, Asker, Carried, Carries, ServerAsk};
+use super::asks::{Answered, Asker, Carried, Carries, ServerAsk, could_not_ask};
+use super::mail::{chain_narrowing, turn_narrowing};
 use super::turn_provider::{Ending, Rows};
 use super::{CHAT, Reply, Turn, TurnProvider, WorkspaceId};
 use crate::workspaces::Workspaces;
@@ -69,6 +70,8 @@ pub(super) struct TurnConnections {
     workspace: String,
     workspace_id: WorkspaceId,
     agent: Agent,
+    /// Explicit narrowing rules from the agent and its starter line (never Chat's one-way rules).
+    narrowed: Option<Vec<tilo_action_policy::Rule>>,
     /// Whether the turn is its keeper's own: no other turn is told that a person's
     /// connections exist.
     theirs: bool,
@@ -84,7 +87,7 @@ pub(super) async fn of(
     reply: &Reply,
     workspace_id: WorkspaceId,
 ) -> Arc<TurnConnections> {
-    let narrowed = narrowing(&turn.agent, &reply.workspace);
+    let narrowed = turn_narrowing(turn);
     let hosted = HostedTurn {
         workspace: workspace_id,
         caller: &reply.caller,
@@ -97,6 +100,7 @@ pub(super) async fn of(
         workspace: reply.workspace.clone(),
         workspace_id,
         agent: turn.agent.clone(),
+        narrowed,
         theirs,
         runtime: tokio::runtime::Handle::current(),
     })
@@ -107,12 +111,11 @@ impl TurnConnections {
     async fn take(&self, caller: &Caller, request: &InvokeRequest) -> Ended {
         let invocation = request.invocation;
         let workspace = self.workspace_id;
-        let narrowed = narrowing(&self.agent, &self.workspace);
         let hosted = HostedTurn {
             workspace,
             caller,
             keeper: &self.agent.keeper,
-            bound: narrowed.as_deref(),
+            bound: self.narrowed.as_deref(),
         };
         let workspaces = &self.asker.workspaces;
         let asks = match workspaces.connections_for_turn(&hosted, request).await? {
@@ -124,10 +127,7 @@ impl TurnConnections {
             // Asking was all that was asked for: a proposal.
             (Ok(()), Some(value)) => succeeded(invocation, value),
             (Ok(()), None) => asked(invocation, ASKED.to_owned()),
-            (Err(why), _) => asked(
-                invocation,
-                format!("Your person could not be asked ({why}), so nothing was done."),
-            ),
+            (Err(why), _) => asked(invocation, could_not_ask(&why)),
         })
     }
 
@@ -175,9 +175,8 @@ impl TurnProvider for TurnConnections {
         let workspace = self.workspace_id;
         let (completer, rows) = tilo_actions::remote::pending();
         let workspaces = self.asker.workspaces.clone();
-        let (caller, agent, named) = (caller.clone(), self.agent.clone(), self.workspace.clone());
+        let (caller, agent, narrowed) = (caller.clone(), self.agent.clone(), self.narrowed.clone());
         self.runtime.spawn(async move {
-            let narrowed = narrowing(&agent, &named);
             let hosted = HostedTurn {
                 workspace,
                 caller: &caller,
@@ -216,13 +215,6 @@ impl TurnProvider for TurnConnections {
     }
 }
 
-/// The rules a turn of `agent` is decided by in `workspace`, where anything narrows it: what
-/// its entry bounds it to and, for a sub-agent, what keeps it from whoever started it. `None`
-/// for an agent nothing narrows.
-fn narrowing(agent: &Agent, workspace: &str) -> Option<Vec<tilo_action_policy::Rule>> {
-    (agent.bound_rules().is_some() || agent.is_sub()).then(|| agent.turn_rules(workspace))
-}
-
 fn succeeded(invocation: InvocationId, value: Value) -> InvocationUpdate {
     InvocationUpdate::Succeeded {
         invocation,
@@ -254,18 +246,36 @@ struct Answers {
 }
 
 impl Answers {
-    /// The agent that asked `ask`, as the workspace's list of its agents holds it now.
-    async fn asker(&self, ask: &KeptAsk) -> Option<Agent> {
+    /// The agent that asked `ask` and the explicit narrowing rules across its starter line,
+    /// as the workspace's list of its agents holds them now.
+    async fn asker(&self, ask: &KeptAsk) -> Option<(Agent, Option<Vec<tilo_action_policy::Rule>>)> {
         let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
         let kept = self
             .workspaces
             .read_resource::<WorkspaceAgents>(&ask.workspace, (CHAT, &list))
             .await
             .ok()??;
-        kept.agents
+        let agent = kept
+            .agents
             .iter()
-            .find(|agent| agent.id.0 == ask.agent && agent.is_active())
-            .cloned()
+            .find(|agent| agent.id.0 == ask.agent && agent.is_active())?;
+        let mut chain = vec![agent];
+        let mut current = agent;
+        for _ in 0..=tilo_workspace_agent::sub::MAX_DEPTH {
+            let Some(parent_id) = current.sub.as_ref().map(|sub| sub.started_by.as_str()) else {
+                break;
+            };
+            let Some(parent) = kept.agents.iter().find(|one| one.id.0 == parent_id) else {
+                break;
+            };
+            if parent.keeper != agent.keeper || chain.iter().any(|seen| seen.id.0 == parent.id.0) {
+                break;
+            }
+            chain.push(parent);
+            current = parent;
+        }
+        let narrowed = chain_narrowing(&chain);
+        Some((agent.clone(), narrowed))
     }
 
     /// Whether the question about `ask` still says `words`, exactly as this server asked: an
@@ -347,7 +357,7 @@ impl Carries for Answers {
                 .person_device(workspace, person)
                 .await
                 .ok_or_else(gone)?;
-            let agent = self.asker(ask).await.ok_or_else(gone)?;
+            let (agent, narrowed) = self.asker(ask).await.ok_or_else(gone)?;
             if leave.is_some() {
                 let words = ask.kept.get("words").and_then(Value::as_str);
                 if !self.says(ask, words.unwrap_or_default()).await {
@@ -364,7 +374,6 @@ impl Carries for Answers {
                     tilo_action_policy::turn::Turn::new(String::new(), ask.ask.clone()),
                     agent.turn_rules(&ask.workspace),
                 );
-            let narrowed = narrowing(&agent, &ask.workspace);
             let hosted = HostedTurn {
                 workspace,
                 caller: &caller,

@@ -56,6 +56,7 @@ use tilo_actions::{ActionOutput, ExecutionLocus, OperationKind};
 use tilo_agent_session::bot::host_steps::{
     HostStepError as StepError, HostSteps as Steps, Instruction, Judgement,
 };
+use tilo_agent_session::model::{CallCause, with_call_cause};
 use tilo_agent_session::workspace_actions::WorkspaceActions;
 use tilo_automation::{Schedule, TriggerSpec};
 use tilo_lock::MutexRecover as _;
@@ -357,6 +358,34 @@ impl Initiative {
         Ok(answer)
     }
 
+    /// The look-round event id, look id, and daily limit when `cause` names a
+    /// turn started by a look of `person`'s in `workspace`.
+    fn look_match(
+        &self,
+        workspace: &str,
+        person: &str,
+        cause: &str,
+    ) -> Option<(String, String, u64)> {
+        use tilo_actions::policy::MemberId;
+        // A turn names its person as a resource does. Only a person's own
+        // root is looked up: nothing else names a place this keeps.
+        person_of(person).ok()?;
+        let owner = (workspace.to_owned(), person.to_owned());
+        let kept = self.kept(&owner);
+        let event = kept.event.as_deref()?;
+        let asker = MemberId::person(person.to_owned());
+        let asked_by = |look: &str| chat::cause::message_id(&asker, look).to_string() == cause;
+        let handing = self.inner.handing.lock_recover().get(&owner).cloned();
+        let look_id = handing.filter(|id| asked_by(id)).or_else(|| {
+            kept.looks
+                .iter()
+                .rev()
+                .find(|past| asked_by(&past.look.id))
+                .map(|past| past.look.id.clone())
+        })?;
+        Some((event.to_owned(), look_id, kept.day_limit()))
+    }
+
     /// The look-round's day, where the turn the message `cause` asks for is
     /// one a look of `person`'s started in `workspace`: a look hands its
     /// instruction over under its own id as the cause's key, which names
@@ -372,19 +401,40 @@ impl Initiative {
         cause: &str,
         day: &str,
     ) -> Option<Spender> {
-        use tilo_actions::policy::MemberId;
-        // A turn names its person as a resource does. Only a person's own
-        // root is looked up: nothing else names a place this keeps.
-        person_of(person).ok()?;
+        let (event, _, limit) = self.look_match(workspace, person, cause)?;
+        Some(look_round_spender(workspace, &event, NAME, day, limit))
+    }
+
+    /// Usage attribution when `cause` names a turn started by a look of
+    /// `person`'s in `workspace`; `None` for every other turn.
+    #[must_use]
+    pub fn look_cause(&self, workspace: &str, person: &str, cause: &str) -> Option<CallCause> {
+        let (_, look_id, _) = self.look_match(workspace, person, cause)?;
+        Some(CallCause::look().with_id(look_id).with_name(NAME))
+    }
+
+    /// Mark the look behind `cause` as quiet once its turn finishes without
+    /// words for the person, keeping what the turn spent.
+    pub fn note_quiet(&self, workspace: &str, person: &str, cause: &str, cost_micros: u64) {
+        let Some((_, look_id, _)) = self.look_match(workspace, person, cause) else {
+            return;
+        };
         let owner = (workspace.to_owned(), person.to_owned());
-        let kept = self.kept(&owner);
-        let event = kept.event.as_deref()?;
-        let asker = MemberId::person(person.to_owned());
-        let asked_by = |look: &str| chat::cause::message_id(&asker, look).to_string() == cause;
-        let handing = self.inner.handing.lock_recover().get(&owner).cloned();
-        let theirs = handing.as_deref().is_some_and(&asked_by)
-            || kept.looks.iter().any(|past| asked_by(&past.look.id));
-        theirs.then(|| look_round_spender(workspace, event, NAME, day, kept.day_limit()))
+        if let Err(error) = self.change(&owner, |kept| {
+            if let Some(entry) = kept
+                .looks
+                .iter_mut()
+                .rev()
+                .find(|entry| entry.look.id == look_id)
+            {
+                entry.look.ended = LookEnded::Quiet;
+                if cost_micros > 0 {
+                    entry.look.cost_micros = cost_micros;
+                }
+            }
+        }) {
+            tracing::warn!(%workspace, %error, "a quiet look outcome was not kept");
+        }
     }
 
     /// What `spender` spent on its day, as `person`'s store counts it.
@@ -1157,6 +1207,18 @@ impl Steps for Looking {
     }
 
     fn judge(&self, judgement: Judgement) -> Result<Value, StepError> {
+        if let Some(inner) = self.initiative.upgrade() {
+            let initiative = Initiative { inner };
+            let owner = (judgement.workspace.clone(), judgement.person.clone());
+            if initiative.kept(&owner).event.as_deref()
+                == Some(judgement.cause.installation.as_str())
+            {
+                let cause = CallCause::look()
+                    .with_id(judgement.cause.invocation.0.to_string())
+                    .with_name(NAME);
+                return with_call_cause(cause, || self.steps.judge(judgement));
+            }
+        }
         self.steps.judge(judgement)
     }
 }

@@ -40,13 +40,15 @@ use tilo_server_protocol::WorkspaceId;
 use super::Workspaces;
 use super::person_settings::provider_config;
 
+mod destinations;
+pub use destinations::{AllowedDestination, DestinationPolicy};
 mod kept;
 #[cfg(feature = "agents")]
 mod live;
 #[cfg(any(test, feature = "test-support"))]
 pub mod scripted;
 mod spend;
-pub use spend::Spender;
+pub use spend::{SpendError, Spender};
 #[cfg(test)]
 mod tests;
 #[cfg(all(test, feature = "agents"))]
@@ -113,6 +115,12 @@ pub enum ModelRefusal {
     WorkspaceRefuses {
         /// The provider, as the person named it.
         provider: String,
+        /// The blocked destination origin (`scheme://domain[:port]`).
+        destination: String,
+        /// Allowed alternatives that could continue (the person's linked
+        /// providers allowed by the workspace, or the destinations the
+        /// workspace policy permits).
+        allowed_alternatives: Vec<String>,
     },
     /// The agent the call is for, or the piece of its work the call belongs
     /// to, has used what its person lets it spend in a day.
@@ -121,9 +129,12 @@ pub enum ModelRefusal {
         agent: String,
         /// The most it may spend in a day, in millionths of the currency.
         limit_micros: u64,
-        /// What it has spent today.
+        /// What it has spent today (settled plus active in-flight commitments).
         spent_micros: u64,
     },
+    /// The person's spending file could not be read, so capped calls fail
+    /// closed rather than resetting today's spend to zero.
+    SpendUnreadable,
     /// The person's settings or their vault could not be read.
     SettingsUnreadable,
     /// The provider was asked and gave no answer: its own failure, the
@@ -153,6 +164,7 @@ impl ModelRefusal {
             Self::CannotTake { .. } => "cannot-take",
             Self::WorkspaceRefuses { .. } => "workspace-refuses",
             Self::DayLimitReached { .. } => "day-limit",
+            Self::SpendUnreadable => "spend-unreadable",
             Self::SettingsUnreadable => "settings-unreadable",
             Self::Provider(_) | Self::KeyRefused { .. } => "provider",
         }
@@ -206,9 +218,24 @@ impl ModelRefusal {
                 args.set("model", model.as_str());
                 "model-cannot-take-picture"
             }
-            Self::WorkspaceRefuses { provider } => {
+            Self::WorkspaceRefuses {
+                provider,
+                destination,
+                allowed_alternatives,
+            } => {
                 args.set("provider", provider.as_str());
-                "model-workspace-refuses"
+                let base = crate::i18n::message(language, "model-workspace-refuses", &args);
+                let mut parts = vec![base];
+                if !destination.is_empty() {
+                    parts.push(format!("Blocked destination: {destination}."));
+                }
+                if !allowed_alternatives.is_empty() {
+                    parts.push(format!(
+                        "Allowed alternatives: {}.",
+                        allowed_alternatives.join(", ")
+                    ));
+                }
+                return parts.join(" ");
             }
             Self::DayLimitReached {
                 agent,
@@ -218,6 +245,11 @@ impl ModelRefusal {
                 args.set("agent", agent.as_str());
                 args.set("limit", money(*limit_micros));
                 "model-day-limit"
+            }
+            Self::SpendUnreadable => {
+                return "Your spending history could not be read, so capped model calls are paused \
+                        rather than resetting today's limit."
+                    .to_owned();
             }
             Self::SettingsUnreadable => "model-settings-unreadable",
             Self::KeyRefused { provider, error } => {
@@ -246,7 +278,7 @@ impl ModelRefusal {
             | Self::WorkspaceRefuses { .. }
             | Self::DayLimitReached { .. } => ErrorKind::PermissionDenied,
             Self::CannotTake { .. } => ErrorKind::InvalidRequest,
-            Self::SettingsUnreadable => ErrorKind::Unavailable,
+            Self::SpendUnreadable | Self::SettingsUnreadable => ErrorKind::Unavailable,
             // The provider's own kind, with the words that name it.
             Self::KeyRefused { error, .. } => error.kind,
             Self::Provider(error) => return error.clone(),
@@ -302,6 +334,51 @@ pub struct Linked {
     pub model: ModelDescriptor,
 }
 
+impl From<spend::ReserveRefusal> for ModelRefusal {
+    fn from(refusal: spend::ReserveRefusal) -> Self {
+        match refusal {
+            spend::ReserveRefusal::DayLimitReached {
+                agent,
+                limit_micros,
+                spent_micros,
+            } => Self::DayLimitReached {
+                agent,
+                limit_micros,
+                spent_micros,
+            },
+            spend::ReserveRefusal::Unreadable => Self::SpendUnreadable,
+        }
+    }
+}
+
+/// Whether an answer's monetary cost is known from a price table/provider or
+/// unknown because no price exists for the model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnswerCost {
+    /// Priced in millionths of the currency.
+    Known(u64),
+    /// The model has no known price and reported no cost; its actual cost is
+    /// unknown rather than zero.
+    Unknown,
+}
+
+impl AnswerCost {
+    /// The known cost in millionths of the currency, or `None` when unpriced.
+    #[must_use]
+    pub const fn micros(self) -> Option<u64> {
+        match self {
+            Self::Known(micros) => Some(micros),
+            Self::Unknown => None,
+        }
+    }
+
+    /// Whether this answer's cost is unknown.
+    #[must_use]
+    pub const fn is_unknown(self) -> bool {
+        matches!(self, Self::Unknown)
+    }
+}
+
 /// A person's answer, and what answered it.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
@@ -316,6 +393,9 @@ pub struct Answer {
     /// spends no agent's day ([`PersonModel::spending_as`]). Of a call that
     /// spends more than one day, the first.
     pub spent_today_micros: Option<u64>,
+    /// Whether the answer's cost was known or unpriced, distinguishing
+    /// unknown model pricing from zero cost.
+    pub cost: AnswerCost,
 }
 
 impl Answer {
@@ -419,8 +499,11 @@ impl ModelProvider for NoProvider {
 pub(super) struct Models {
     provider: std::sync::RwLock<Arc<dyn ModelProvider>>,
     private_addresses: AtomicBool,
-    /// What each person's agents spent today.
-    spend: spend::Log,
+    /// What each person's agents spent today, and active in-flight budget
+    /// reservations.
+    spend: Arc<spend::Log>,
+    /// Per-workspace policies controlling where workspace content may be sent.
+    destinations: destinations::Store,
     /// The runtime a caller that cannot wait asynchronously is answered on
     /// ([`PersonModel::answer_blocking`]).
     runtime: Option<tokio::runtime::Handle>,
@@ -453,7 +536,8 @@ impl Models {
         Self {
             provider: std::sync::RwLock::new(host_provider()),
             private_addresses: AtomicBool::new(false),
-            spend: spend::Log::default(),
+            spend: Arc::default(),
+            destinations: destinations::Store::default(),
             runtime: tokio::runtime::Handle::try_current().ok(),
         }
     }
@@ -484,13 +568,46 @@ impl Workspaces {
         PersonModel {
             models: Arc::clone(&self.inner.models),
             root: self.person_settings_root(&person),
+            workspace_dir: self.inner.dir.clone(),
             kept: Arc::default(),
             kind,
             named: None,
             workspace: None,
             spenders: Vec::new(),
+            reserve_micros: None,
             quiet: None,
         }
+    }
+
+    /// Set where `workspace` allows its content to be sent when a model is
+    /// asked on behalf of a member working in it.
+    ///
+    /// Persisted atomically under the service directory and enforced on every
+    /// model call working in `workspace`. Setting [`DestinationPolicy::Any`]
+    /// removes the restriction.
+    pub fn set_workspace_destinations(
+        &self,
+        workspace: WorkspaceId,
+        policy: DestinationPolicy,
+    ) -> std::io::Result<()> {
+        self.inner
+            .models
+            .destinations
+            .set(&self.inner.dir, workspace, policy)
+    }
+
+    /// Read the active data-destination policy for `workspace`.
+    ///
+    /// Returns [`DestinationPolicy::Any`] when no policy has been set; returns
+    /// an error if an existing policy file cannot be read or parsed.
+    pub fn workspace_destinations(
+        &self,
+        workspace: &WorkspaceId,
+    ) -> std::io::Result<DestinationPolicy> {
+        self.inner
+            .models
+            .destinations
+            .get(&self.inner.dir, workspace)
     }
 
     /// Whether `person`'s settings on this server hold what `named` names as
@@ -564,6 +681,8 @@ pub struct PersonModel {
     models: Arc<Models>,
     /// The person's own store on this host.
     root: PathBuf,
+    /// The service data directory holding per-workspace destination policies.
+    workspace_dir: PathBuf,
     /// The key this work last took from the person's vault (`person_model/kept.rs`).
     kept: Arc<kept::Key>,
     kind: Interaction,
@@ -575,6 +694,9 @@ pub struct PersonModel {
     /// Whose days the calls spend: an agent's, and that of any piece of its
     /// work that keeps a day of its own.
     spenders: Vec<Spender>,
+    /// Optional explicit budget reservation per call, in millionths of the
+    /// currency, overriding automatic estimation.
+    reserve_micros: Option<u64>,
     /// How long a provider may show nothing on this model's calls, and
     /// whether one of them timed out already ([`Self::letting_go`]).
     quiet: Option<(Quiet, Arc<AtomicBool>)>,
@@ -639,6 +761,14 @@ impl PersonModel {
         self
     }
 
+    /// Reserve `micros` millionths of the currency against each capped spender
+    /// while a call is in flight, overriding automatic cost estimation.
+    #[must_use]
+    pub const fn reserving(mut self, micros: u64) -> Self {
+        self.reserve_micros = Some(micros);
+        self
+    }
+
     /// The same model, its calls letting go of a provider that shows
     /// nothing for as long as `quiet` says. Such a call ends as timed out,
     /// for its caller to ask anew, and from then on this model's calls wait
@@ -651,10 +781,28 @@ impl PersonModel {
 
     /// What `spender` has spent on its day so far, in millionths of the
     /// currency, as this person's store counts it: nothing on a day not
-    /// counted yet.
+    /// counted yet. If the spending file is unreadable, fails closed by
+    /// returning at least the spender's limit (or `u64::MAX`).
     #[must_use]
     pub fn spent_by(&self, spender: &Spender) -> u64 {
         self.models.spend.spent(&self.root, spender)
+    }
+
+    /// What `spender` has spent on its day so far, or [`SpendError::Unreadable`]
+    /// if the persisted spending file cannot be read or parsed.
+    pub fn try_spent_by(&self, spender: &Spender) -> Result<u64, SpendError> {
+        self.models.spend.try_spent(&self.root, spender)
+    }
+
+    /// Budget currently reserved by in-flight calls for `spender` on its day.
+    #[must_use]
+    pub fn reserved_by(&self, spender: &Spender) -> u64 {
+        self.models.spend.reserved(&self.root, spender)
+    }
+
+    /// How many calls answered by unpriced models `spender` made on its day.
+    pub fn unknown_calls_by(&self, spender: &Spender) -> Result<u64, SpendError> {
+        self.models.spend.unknown_calls(&self.root, spender)
     }
 
     /// What would answer now, or why nothing can. It reads the person's
@@ -684,7 +832,20 @@ impl PersonModel {
                 ModelRefusal::SettingsUnreadable
             })??;
         resolved.takes(request)?;
-        may_send(self.workspace.as_ref(), &resolved.profile)?;
+        // Acquire an atomic in-flight budget reservation across every spender
+        // before calling the provider, so concurrent calls cannot all pass the
+        // pre-call check simultaneously and blow past a hard daily cap. If the
+        // provider call fails, times out, or this future is dropped/cancelled,
+        // the guard releases the reservation automatically.
+        let reservation = self
+            .models
+            .spend
+            .reserve(
+                self.root.clone(),
+                self.spenders.clone(),
+                self.reserve_estimate(&resolved.model.id, request),
+            )
+            .map_err(ModelRefusal::from)?;
         let provider = self.provider();
         let call = ProviderCall {
             profile: &resolved.profile,
@@ -695,27 +856,55 @@ impl PersonModel {
             quiet: self.quiet_now(),
             key: resolved.key.as_deref().map(String::as_str),
         };
-        let response = tokio::time::timeout_at(
+        let response = match tokio::time::timeout_at(
             tokio::time::Instant::from_std(deadline),
             self.noting_time_outs(provider.answer(call, events)),
         )
         .await
-        .map_err(|_| ModelRefusal::Provider(ModelError::new(ErrorKind::TimedOut)))?
-        .map_err(|error| ModelRefusal::of_provider(resolved.profile.display_label(), error))?;
-        // Counted on every day the call spends; the answer says the first.
-        let mut spent_today_micros = None;
-        for spender in &self.spenders {
-            let total = self
-                .models
-                .spend
-                .charge(&self.root, spender, response.cost_micros);
-            spent_today_micros.get_or_insert(total);
+        {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => {
+                reservation.release();
+                return Err(ModelRefusal::of_provider(
+                    resolved.profile.display_label(),
+                    error,
+                ));
+            }
+            Err(_) => {
+                reservation.release();
+                tracing::warn!(
+                    model = %resolved.model.id,
+                    "a model call timed out with uncertain provider cost; reservation released"
+                );
+                return Err(ModelRefusal::Provider(ModelError::new(ErrorKind::TimedOut)));
+            }
+        };
+        let cost = answer_cost(&resolved.model.id, &response);
+        if cost.is_unknown() {
+            tracing::warn!(
+                model = %resolved.model.id,
+                input_tokens = response.usage.input_tokens,
+                output_tokens = response.usage.output_tokens,
+                "model pricing is unknown; call cost is not zero"
+            );
         }
+        // Reconcile the reservation against actual cost across every day the
+        // call spends; the answer reports the first.
+        let spent_today_micros = reservation.reconcile(response.cost_micros, cost.is_unknown());
         Ok(Answer {
             response,
             linked: resolved.linked(),
             spent_today_micros,
+            cost,
         })
+    }
+
+    /// Estimate the pre-call reservation for `model_id` and `request`.
+    fn reserve_estimate(&self, model_id: &str, request: &ModelRequest) -> spend::ReserveEstimate {
+        if let Some(explicit) = self.reserve_micros {
+            return spend::ReserveEstimate::Explicit(explicit);
+        }
+        spend::ReserveEstimate::Estimated(estimate_call_cost_micros(model_id, request))
     }
 
     /// How long the provider may show nothing on a call made now.
@@ -745,23 +934,13 @@ impl PersonModel {
     }
 
     /// Refuses a call for an agent, or a piece of its work, that has used
-    /// its day: the first of the days the call spends whose limit is
-    /// reached.
+    /// its day (including active in-flight reservations), or whose spending
+    /// file is unreadable under a hard cap.
     fn within_day(&self) -> Result<(), ModelRefusal> {
-        for spender in &self.spenders {
-            let Some(limit_micros) = spender.limit_micros else {
-                continue;
-            };
-            let spent_micros = self.models.spend.spent(&self.root, spender);
-            if spent_micros >= limit_micros {
-                return Err(ModelRefusal::DayLimitReached {
-                    agent: spender.name.clone(),
-                    limit_micros,
-                    spent_micros,
-                });
-            }
-        }
-        Ok(())
+        self.models
+            .spend
+            .check_available(&self.root, &self.spenders)
+            .map_err(ModelRefusal::from)
     }
 
     /// [`Self::answer`] for a caller on a thread of its own, which waits
@@ -818,10 +997,16 @@ impl PersonModel {
     }
 
     fn resolve(&self) -> Result<Resolved, ModelRefusal> {
+        let workspace = self.workspace.as_ref().map(|id| WorkspaceCheck {
+            id,
+            dir: &self.workspace_dir,
+            store: &self.models.destinations,
+        });
         resolve(
             &self.root,
             &self.kept,
             (self.kind, self.named.as_deref()),
+            workspace,
             self.models.private_addresses.load(Ordering::Acquire),
             &*self.provider(),
         )
@@ -835,20 +1020,132 @@ async fn until(stopped: &(dyn Fn() -> bool + Sync)) {
     }
 }
 
-/// Whether `workspace` lets what a call carries go to `provider`: the one
-/// place a workspace's rule on where its content may be sent refuses a call
-/// ([`ModelRefusal::WorkspaceRefuses`]). No workspace keeps such a rule yet,
-/// so everything may go.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "the one place a workspace's rule will refuse; no workspace keeps one yet"
-)]
+/// Workspace context needed to verify a workspace's data-destination policy.
+struct WorkspaceCheck<'a> {
+    id: &'a WorkspaceId,
+    dir: &'a Path,
+    store: &'a destinations::Store,
+}
+
+/// Enforce `workspace`'s data-destination policy against `profile`.
+///
+/// If the workspace forbids sending content to `profile`, returns a structured
+/// [`ModelRefusal::WorkspaceRefuses`] naming the provider, sanitized blocked
+/// destination, and any allowed alternatives. If the workspace policy file on
+/// disk is unreadable or corrupt, fails closed and refuses dispatch.
 fn may_send(
-    workspace: Option<&WorkspaceId>,
-    provider: &ProviderProfile,
+    workspace: Option<WorkspaceCheck<'_>>,
+    config: &agent_provider_config::ProviderConfig,
+    profile: &ProviderProfile,
+    reachable: impl Fn(&ProviderProfile) -> bool,
 ) -> Result<(), ModelRefusal> {
-    let _ = (workspace, provider);
-    Ok(())
+    let Some(workspace) = workspace else {
+        return Ok(());
+    };
+    let policy = match workspace.store.get(workspace.dir, workspace.id) {
+        Ok(policy) => policy,
+        Err(error) => {
+            tracing::warn!(
+                workspace = %workspace.id,
+                %error,
+                "workspace data-destination policy could not be read; refusing model call"
+            );
+            return Err(ModelRefusal::WorkspaceRefuses {
+                provider: profile.display_label().to_owned(),
+                destination: destinations::sanitize_destination(&profile.endpoint),
+                allowed_alternatives: Vec::new(),
+            });
+        }
+    };
+    if policy.permits(profile) {
+        return Ok(());
+    }
+    let allowed_alternatives = policy.allowed_alternatives(config, reachable);
+    Err(ModelRefusal::WorkspaceRefuses {
+        provider: profile.display_label().to_owned(),
+        destination: destinations::sanitize_destination(&profile.endpoint),
+        allowed_alternatives,
+    })
+}
+
+/// Determine whether an answer's cost is known or unpriced.
+fn answer_cost(model_id: &str, response: &ModelResponse) -> AnswerCost {
+    if response.cost_micros > 0 {
+        return AnswerCost::Known(response.cost_micros);
+    }
+    #[cfg(feature = "agents")]
+    {
+        if tilo_model_gateway::pricing::price_of(model_id).is_some() {
+            AnswerCost::Known(0)
+        } else {
+            AnswerCost::Unknown
+        }
+    }
+    #[cfg(not(feature = "agents"))]
+    {
+        let _ = model_id;
+        let used_tokens = response.usage.total_tokens > 0
+            || response.usage.input_tokens > 0
+            || response.usage.output_tokens > 0;
+        if used_tokens {
+            AnswerCost::Unknown
+        } else {
+            AnswerCost::Known(0)
+        }
+    }
+}
+
+/// Conservative upper-bound pre-call cost estimate for budget reservation.
+#[cfg(feature = "agents")]
+fn estimate_call_cost_micros(model_id: &str, request: &ModelRequest) -> Option<u64> {
+    let input_tokens = estimate_request_input_tokens(request);
+    tilo_model_gateway::pricing::estimated_max_cost_micros(
+        model_id,
+        input_tokens,
+        u64::from(request.max_output_tokens),
+    )
+}
+
+#[cfg(not(feature = "agents"))]
+fn estimate_call_cost_micros(_model_id: &str, _request: &ModelRequest) -> Option<u64> {
+    None
+}
+
+#[cfg(feature = "agents")]
+fn estimate_request_input_tokens(request: &ModelRequest) -> u64 {
+    let mut bytes: u64 = 0;
+    let mut image_tokens: u64 = 0;
+    for message in &request.messages {
+        for part in &message.content {
+            match part {
+                Content::Text { text } | Content::Reasoning { text, .. } => {
+                    bytes = bytes.saturating_add(u64::try_from(text.len()).unwrap_or(u64::MAX));
+                }
+                Content::ToolCall(call) => {
+                    bytes = bytes
+                        .saturating_add(u64::try_from(call.name.len()).unwrap_or(u64::MAX))
+                        .saturating_add(
+                            u64::try_from(call.input.to_string().len()).unwrap_or(u64::MAX),
+                        );
+                }
+                Content::ToolResult(result) => {
+                    bytes = bytes
+                        .saturating_add(u64::try_from(result.content.len()).unwrap_or(u64::MAX));
+                }
+                Content::Image { .. } => {
+                    image_tokens = image_tokens.saturating_add(1_000);
+                }
+            }
+        }
+    }
+    for tool in &request.tools {
+        bytes = bytes
+            .saturating_add(u64::try_from(tool.name.len()).unwrap_or(u64::MAX))
+            .saturating_add(u64::try_from(tool.description.len()).unwrap_or(u64::MAX))
+            .saturating_add(u64::try_from(tool.input_schema.to_string().len()).unwrap_or(u64::MAX));
+    }
+    let text_tokens = bytes.div_ceil(4);
+    text_tokens.saturating_add(image_tokens)
 }
 
 /// A person's choice for one kind of work, read from their store: the
@@ -964,6 +1261,7 @@ fn resolve(
     root: &Path,
     kept: &kept::Key,
     (kind, named): (Interaction, Option<&str>),
+    workspace: Option<WorkspaceCheck<'_>>,
     private_addresses: bool,
     provider: &dyn ModelProvider,
 ) -> Result<Resolved, ModelRefusal> {
@@ -1003,6 +1301,11 @@ fn resolve(
             .ok_or(ModelRefusal::NoModelLinked { kind })?,
     };
     let named = || profile.display_label().to_owned();
+    // Enforce the workspace's data-destination policy before unsealing any
+    // vault key or allowing dispatch across any call kind.
+    may_send(workspace, &config, profile, |candidate| {
+        private_addresses || provider.reaches(&candidate.endpoint)
+    })?;
     let public = provider.reaches(&profile.endpoint);
     if !public && !private_addresses {
         return Err(ModelRefusal::AddressRefused { provider: named() });

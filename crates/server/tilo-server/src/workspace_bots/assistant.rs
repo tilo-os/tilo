@@ -38,6 +38,7 @@ use tilo_agent_session::bot::host_steps::{
 };
 use tilo_agent_session::bot::judging;
 use tilo_agent_session::bot::kept::Note;
+use tilo_agent_session::model::{CallCause, CauseKind, current_call_cause, with_call_cause};
 use tilo_agent_session::workspace_actions::WorkspaceActions;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId;
@@ -64,6 +65,12 @@ pub const BRIEF: &str = "brief";
 /// What a turn is said to be started by: something that happened, or a
 /// time that comes round.
 pub const EVENT: &str = "event";
+
+/// Whether `kind` names an event-triggered starter (`event`, `reminder`, or `brief`).
+#[must_use]
+pub fn is_event_kind(kind: &str) -> bool {
+    matches!(kind, EVENT | REMINDER | BRIEF)
+}
 /// The longest a starter's name is said, as Chat keeps one.
 const MAX_LABEL_BYTES: usize = 120;
 /// The most an instruction says of its program's note.
@@ -173,7 +180,22 @@ impl Steps for Hosted {
     }
 
     fn judge(&self, judgement: Judgement) -> Result<Value, StepError> {
-        on_a_thread_of_its_own("judgement", |runtime| self.judged(runtime, &judgement))
+        let inherited = current_call_cause();
+        let cause = if inherited.kind == CauseKind::Turn {
+            let mut event_cause = CallCause::event(judgement.cause.installation.clone());
+            if let Some((_, starter)) = &self.turns {
+                let name = starter.name.trim();
+                if !name.is_empty() {
+                    event_cause = event_cause.with_name(name);
+                }
+            }
+            event_cause
+        } else {
+            inherited
+        };
+        on_a_thread_of_its_own("judgement", move |runtime| {
+            with_call_cause(cause, || self.judged(runtime, &judgement))
+        })
     }
 }
 

@@ -73,11 +73,24 @@ const JOB_CHARS: usize = 160;
 /// it is told.
 const TOLD: &str = "You can hand parts of your work to sub-agents. Each works on the one job \
      you give it, in a conversation of its own, and cannot read yours: its job says everything \
-     it needs. `sub-agents/team#start-sub-agent` starts one (a name, the job and, if you like, \
-     a role and the kind of work that picks its model), and you are told in your conversation \
-     when its work ends. Read `sub-agents/team` for how each one stands and what it made; \
+     it needs. `sub-agents/team#start-sub-agent` starts one: pass it as `args` of `tilo_do`, \
+     with `name` and `job`, and if you like `role`, `instruction`, `kind`, `model` (as \
+     `provider/model`, to work with that model instead of your person's choice) and `skill` (a \
+     skill of yours by its name). Whenever your person asks to start or delegate work to a \
+     sub-agent, or hands off multi-step work, call `tilo_do` on \
+     `sub-agents/team#start-sub-agent` right away in round 1 or 2 — never spend more than 3 \
+     rounds exploring first; put any discovery or reading straight into the sub-agent's `job`, \
+     then tell your person in one line that it started. You are told in your conversation when \
+     its work ends. Read `sub-agents/team` for how each one stands and what it made; \
      `sub-agents/team#note-sub-agent` tells one something more while it works, and \
      `sub-agents/team#stop-sub-agent` stops one. Do small things yourself.";
+
+/// What a turn is told before its first step where it is offered a team of its own, even where
+/// it may start none: a full team is a partner's own, and reading and steering it costs no
+/// listing to find ([`READ`]).
+const TEAM_OFFERED: &str = "You have a team of sub-agents: `sub-agents/team` reads how each one \
+     you started stands and what it made, `sub-agents/team#note-sub-agent` tells one something \
+     more while it works, and `sub-agents/team#stop-sub-agent` stops one.";
 
 /// What `turn`'s agent is told about a team of its own: said where the turn is its keeper's
 /// and its person lets it start one, so to a person's own agent, and to a sub-agent that
@@ -93,6 +106,21 @@ pub(super) fn told(turn: &Turn) -> String {
         format!("\n\n{TOLD}")
     } else {
         String::new()
+    }
+}
+
+/// What `turn`'s agent is told of a team it is offered: how it starts and steers one where its
+/// person lets it start one ([`told`]), and what reads and steers the one it has where it may
+/// start none ([`TEAM_OFFERED`]): its person let it start none, or it stands as deep as
+/// sub-agents go, and the team is still its to read and steer ([`TurnTeam::offers`]). Nothing
+/// where it has no team, so a turn is told of one only where it may reach it. What it is told
+/// where it may start one says all of the other already.
+pub(super) fn offered(turn: &Turn) -> String {
+    let told = told(turn);
+    if told.is_empty() {
+        format!("\n\n{TEAM_OFFERED}")
+    } else {
+        told
     }
 }
 
@@ -158,6 +186,12 @@ impl TurnTeam {
                 .collect();
         }
         Arc::new(team)
+    }
+
+    /// Whether the turn is offered anything of its team: what is said of it before the model's
+    /// first step ([`TOLD`]), and what `told` says of a sub-agent's own team besides.
+    pub(super) fn offers(&self) -> bool {
+        !self.offered.is_empty()
     }
 
     /// Whether `caller` is on a turn of this agent that is its keeper's own: the first check
@@ -570,6 +604,11 @@ impl TurnProvider for TurnTeam {
         target.provider == PROVIDER
     }
 
+    /// Whether the turn's agent has a team at all ([`TurnTeam::offers`]).
+    fn offers_team(&self) -> bool {
+        self.offers()
+    }
+
     /// A turn's caller changes when its person writes again while it works, so a call is
     /// taken as the caller of the tool call that asked for it.
     fn invoke(self: Arc<Self>, caller: Caller, request: InvokeRequest) -> Ending {
@@ -631,8 +670,8 @@ fn rows() -> Vec<CatalogueRow> {
                 ),
                 words(
                     "model",
-                    "The model it works with, as provider/model. Leave it out for your \
-                     person's choice for the kind.",
+                    "The model it works with, as provider/model, passed as it comes, as \
+                     `openai/gpt-5`: leave it out for your person's choice for the kind.",
                 ),
                 words(
                     "skill",

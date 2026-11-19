@@ -138,10 +138,60 @@ pub struct HostedTurn<'a> {
     /// The agent's keeper, as the workspace's list of its agents names
     /// them.
     pub keeper: &'a str,
-    /// The rules the turn is decided by, where anything narrows its agent:
-    /// what its entry bounds it to and, for a sub-agent, what keeps it from
-    /// whoever started it. `None` for an agent nothing narrows.
+    /// The explicit narrowing rules that bound this turn's agent (or its
+    /// ancestors in the starter line), excluding Chat-only one-way rules.
+    /// `None` when nothing explicitly narrows the agent.
     pub bound: Option<&'a [Rule]>,
+}
+
+/// A turn carried out on this server together with the active root assistant
+/// of its starter line when the turn belongs to a sub-agent.
+#[derive(Clone, Copy, Debug)]
+pub struct DelegatedTurn<'a> {
+    /// The turn itself: workspace, caller, keeper and any explicit narrowing
+    /// rules.
+    pub turn: HostedTurn<'a>,
+    /// The active root assistant id verified by this server from the
+    /// sub-agent's starter line in the same workspace and for the same keeper.
+    /// `None` for an agent a person created directly.
+    pub root_agent: Option<&'a str>,
+}
+
+impl<'a> HostedTurn<'a> {
+    /// Pair this turn with an optional verified root assistant id so a
+    /// sub-agent with no direct account binding can inherit its root
+    /// assistant's linked accounts.
+    #[must_use]
+    pub const fn under_root(self, root_agent: Option<&'a str>) -> DelegatedTurn<'a> {
+        DelegatedTurn {
+            turn: self,
+            root_agent,
+        }
+    }
+}
+
+impl<'a> From<HostedTurn<'a>> for DelegatedTurn<'a> {
+    fn from(turn: HostedTurn<'a>) -> Self {
+        Self {
+            turn,
+            root_agent: None,
+        }
+    }
+}
+
+impl<'a> From<&HostedTurn<'a>> for DelegatedTurn<'a> {
+    fn from(turn: &HostedTurn<'a>) -> Self {
+        Self {
+            turn: *turn,
+            root_agent: None,
+        }
+    }
+}
+
+impl<'a> From<&DelegatedTurn<'a>> for DelegatedTurn<'a> {
+    fn from(turn: &DelegatedTurn<'a>) -> Self {
+        *turn
+    }
 }
 
 impl HostedTurn<'_> {
@@ -1574,5 +1624,112 @@ impl Workspaces {
         };
         once.remove(index);
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tilo_action_policy::{ActionKind, Answer, KindSet, Level, Rule, TreePath};
+    use tilo_actions::ActionAddress;
+    use tilo_actions::remote::{Caller, RemoteActionTarget, person_accounts, person_vault};
+
+    use super::{DelegatedTurn, HostedTurn};
+    use crate::workspaces::WorkspaceId;
+
+    fn target(provider: &str, resource: &str, action: &str) -> RemoteActionTarget {
+        RemoteActionTarget {
+            provider: provider.to_owned(),
+            address: ActionAddress::new(resource, action),
+        }
+    }
+
+    #[test]
+    fn may_take_allows_when_unbounded_and_enforces_explicit_narrowing() {
+        let workspace = WorkspaceId::new();
+        let workspace_str = workspace.to_string();
+        let caller = Caller::authenticated([1_u8; 32], [2_u8; 32]);
+        let keeper = hex::encode([1_u8; 32]);
+        let mail_fetch = target(
+            person_accounts::PROVIDER,
+            person_accounts::RESOURCE,
+            person_accounts::FETCH,
+        );
+        let mail_send = target(
+            person_accounts::PROVIDER,
+            person_accounts::RESOURCE,
+            person_accounts::SEND,
+        );
+        let vault_use = target(
+            person_accounts::PROVIDER,
+            person_accounts::RESOURCE,
+            person_accounts::ADD_MAIL_WITH_ITEM,
+        );
+
+        let unbounded = HostedTurn {
+            workspace,
+            caller: &caller,
+            keeper: &keeper,
+            bound: None,
+        };
+        assert!(unbounded.may_take(&workspace_str, &mail_fetch));
+        assert!(unbounded.may_take(&workspace_str, &mail_send));
+        assert!(unbounded.may_take(&workspace_str, &vault_use));
+
+        // Explicit narrowing allows only the named actions.
+        let outside = KindSet::of(ActionKind::Outside);
+        let rules = vec![Rule::new(
+            TreePath::workspace(&workspace_str)
+                .app(person_accounts::PROVIDER)
+                .kind(person_accounts::RESOURCE)
+                .resource(person_accounts::RESOURCE)
+                .action(person_accounts::FETCH),
+            outside,
+            Answer::Allow,
+        )];
+        let narrowed = HostedTurn {
+            bound: Some(&rules),
+            ..unbounded
+        };
+        assert!(narrowed.may_take(&workspace_str, &mail_fetch));
+        assert!(!narrowed.may_take(&workspace_str, &mail_send));
+        assert!(!narrowed.may_take(&workspace_str, &vault_use));
+
+        // Chat-only rules passed as `bound` deny non-Chat actions because no rule names them.
+        let chat_only = vec![Rule::new(
+            TreePath::workspace(&workspace_str)
+                .app("chat")
+                .rest()
+                .any(Level::Action),
+            KindSet::ALL,
+            Answer::Deny,
+        )];
+        let wrongly_bound = HostedTurn {
+            bound: Some(&chat_only),
+            ..unbounded
+        };
+        assert!(!wrongly_bound.may_take(&workspace_str, &mail_fetch));
+        assert!(!wrongly_bound.may_take(&workspace_str, &person_vault::call_target()));
+    }
+
+    #[test]
+    fn delegated_turn_preserves_root_agent_and_defaults_none_from_hosted_turn() {
+        let workspace = WorkspaceId::new();
+        let caller = Caller::authenticated([3_u8; 32], [4_u8; 32]);
+        let keeper = hex::encode([3_u8; 32]);
+        let turn = HostedTurn {
+            workspace,
+            caller: &caller,
+            keeper: &keeper,
+            bound: None,
+        };
+
+        let plain: DelegatedTurn<'_> = (&turn).into();
+        assert_eq!(plain.root_agent, None);
+        assert_eq!(plain.turn.workspace, workspace);
+
+        let delegated = turn.under_root(Some("root-assistant"));
+        let forwarded: DelegatedTurn<'_> = (&delegated).into();
+        assert_eq!(forwarded.root_agent, Some("root-assistant"));
+        assert_eq!(forwarded.turn.keeper, keeper.as_str());
     }
 }

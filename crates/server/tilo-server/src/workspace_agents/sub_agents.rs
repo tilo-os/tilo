@@ -365,14 +365,21 @@ pub(super) fn kind_of(agent: &Agent) -> Interaction {
 }
 
 /// What `turn`'s agent is told about sub-agents, after what every agent is told: a sub-agent
-/// what it is, any other agent how it starts and steers them.
-pub(super) fn told(turn: &Turn) -> String {
+/// what it is, any other agent how it starts and steers them. `team` is whether the turn is
+/// offered a team at all ([`super::team::TurnTeam::offers`]), where an agent allowed to start
+/// none of it is still told what reads and steers it ([`super::team::offered`]).
+pub(super) fn told(turn: &Turn, team: bool) -> String {
     // A person's own agent is told how it starts and steers a team where its turn is offered
     // one ([`super::team`]): the news it is asked with when work of a sub-agent of its ends
     // says what to do then. Its person also asks for one with `ask-agent` under the cause kind
     // `sub-agent`, which this server answers.
+    let team = if team {
+        super::team::offered(turn)
+    } else {
+        String::new()
+    };
     let Some(sub) = &turn.agent.sub else {
-        return super::team::told(turn);
+        return team;
     };
     let starter = turn
         .line
@@ -394,7 +401,6 @@ pub(super) fn told(turn: &Turn) -> String {
          the job is done, say what came of it in a few plain sentences; {starter} is told it. \
          When only your person can decide something, ask them in your answer.{team}",
         job = sub.job,
-        team = super::team::told(turn),
     )
 }
 
@@ -506,6 +512,7 @@ impl Team {
                     fold: told.fold,
                     typed: true,
                     line: None,
+                    worked: Vec::new(),
                     ask: Ask::Message {
                         part: document.to_owned(),
                         message: id.to_string(),
@@ -1060,17 +1067,38 @@ impl HostAgents {
         } else {
             said
         };
-        let then = if starter.is_sub() {
-            "Take it into your own job."
-        } else {
-            "Tell your person in one line what came of it."
+        // What the starter is to do next turns on how the work stands, so it is said before
+        // anything else the news says and never the same for two of them: a job done, a job the
+        // person decides, and a job that failed are three different next steps, and a starter
+        // told only that its sub-agent ended reads a failure as an answer.
+        let then = match (stands, starter.is_sub()) {
+            (Stands::Done, true) => "What it did is yours to use: take it into your own job.",
+            (Stands::Done, false) => {
+                "What came of it is done: tell your person in one line what it is."
+            }
+            (Stands::NeedsPerson, true) => {
+                "Someone has to decide before it can go on: say what it asks in what you \
+                 answer."
+            }
+            (Stands::NeedsPerson, false) => {
+                "Someone has to decide before it can go on: ask your person, in one line, what \
+                 it asks."
+            }
+            (Stands::Failed, true) => {
+                "It could not do what you gave it: go on without it, or say in your answer what \
+                 it was stopped by."
+            }
+            (Stands::Failed, false) => {
+                "It could not do what it was given: tell your person in one line what stopped \
+                 it, and go on yourself where you can."
+            }
+            (Stands::Working | Stands::Stopped, _) => return Ok(()),
         };
         let text = format!(
-            "Your sub-agent {name:?} (`{id}`) ended the work you gave it and now stands: {how}.\n\
-             Its job: {job}\nWhat it said:\n{said}\n\n{then} The whole of it is in its \
-             conversation, `{conversation}`.",
+            "{then}\n\nYour sub-agent {name:?} ended the work you gave it and now stands: {how}. \
+             Its job was: {job}\nWhat it said:\n{said}\n\nThe whole of it is in its \
+             conversation, `{conversation}`, which you can read.",
             name = turn.agent.name,
-            id = turn.agent.id.0,
             job = sub.job.lines().next().unwrap_or_default(),
             conversation = turn.conversation,
         );

@@ -19,7 +19,9 @@
 //! below what came.
 //!
 //! [`left_off`] is what a turn says when its model stays unanswered: why, what it had done until
-//! then, and that it gave no answer.
+//! then, and that it gave no answer. What a turn answered with, a view or a document, keeps
+//! nothing of the workspace's when the turn ends, so it is said apart from the actions the turn
+//! carried out, which is what "what that changed stays as it is" is said of.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -49,6 +51,10 @@ const STOP_LOOK: Duration = Duration::from_millis(50);
 
 /// The most actions a turn that could not go on names.
 const MOST_NAMED: usize = 6;
+
+/// The tool a turn calls an application's action with: the one whose call changes what the
+/// workspace holds.
+const ACTION: &str = "tilo_do";
 
 /// The agent tools that read and change nothing.
 const LOOKS: [&str; 7] = [
@@ -174,9 +180,29 @@ fn passing(error: &ModelError) -> bool {
     )
 }
 
+/// One call as `left_off` names it: the action a `tilo_do` names, each of several in order, and
+/// how it ended where it failed.
+struct Did {
+    /// What the call did, as its person reads it.
+    what: String,
+    /// Whether the turn used one of the applications' own verbs, which answer no change of the
+    /// workspace's: counted apart from the actions a turn carried out.
+    awaited: bool,
+}
+
+/// The verb an agent answers with, whose call put a view on its reply. What it showed is kept
+/// on the reply the turn wrote, so a turn that answered with it alone changed nothing that
+/// stays.
+pub(super) const ANSWER_WITH_VIEW: &str = "answer_with_view";
+
+/// The verb a turn shows the thing it worked on with, beside [`ANSWER_WITH_VIEW`].
+const ANSWER_WITH_DOCUMENT: &str = "answer_with_document";
+
 /// What a turn says that could not go on for `why`: why, then what it had done until then, read
 /// from its own `messages` (the tools its model called and how each ended), and that it gave no
-/// answer. `why` alone for a turn that had called no tool.
+/// answer. `why` alone for a turn that had called no tool. A turn that said what it did with a
+/// view or a document had changed nothing that stays, so that is said instead of "what that
+/// changed stays as it is".
 pub(super) fn left_off(why: &str, messages: &[Message]) -> String {
     let said = || messages.iter().flat_map(|message| &message.content);
     let failed: BTreeSet<&str> = said()
@@ -186,6 +212,7 @@ pub(super) fn left_off(why: &str, messages: &[Message]) -> String {
         })
         .collect();
     let mut looked = 0_usize;
+    let mut answered_with = 0_usize;
     let mut acted = Vec::new();
     for content in said() {
         let Content::ToolCall(call) = content else {
@@ -195,11 +222,18 @@ pub(super) fn left_off(why: &str, messages: &[Message]) -> String {
             looked = looked.saturating_add(1);
             continue;
         }
+        if matches!(call.name.as_str(), ANSWER_WITH_VIEW | ANSWER_WITH_DOCUMENT) {
+            answered_with = answered_with.saturating_add(1);
+            continue;
+        }
         let mut what = named(&call.name, &call.input);
         if failed.contains(call.id.as_str()) {
             what.push_str(" (failed)");
         }
-        acted.push(what);
+        acted.push(Did {
+            what,
+            awaited: call.name != ACTION,
+        });
     }
     let mut did = Vec::new();
     match looked {
@@ -208,7 +242,13 @@ pub(super) fn left_off(why: &str, messages: &[Message]) -> String {
         times => did.push(format!("looked things up {times} times")),
     }
     let earlier = acted.len().saturating_sub(MOST_NAMED);
-    let last = acted.split_off(earlier).join("; ");
+    let last = acted.split_off(earlier);
+    let changed = last.iter().any(|did| !did.awaited);
+    let last = last
+        .iter()
+        .map(|did| did.what.as_str())
+        .collect::<Vec<_>>()
+        .join("; ");
     match (earlier, last.is_empty()) {
         (_, true) => {}
         (0, false) => did.push(format!("carried out: {last}")),
@@ -220,11 +260,17 @@ pub(super) fn left_off(why: &str, messages: &[Message]) -> String {
     if did.is_empty() {
         return why.to_owned();
     }
-    let kept = if last.is_empty() {
-        ""
-    } else {
-        " What that changed stays as it is."
+    let mut kept = match (changed, answered_with) {
+        (true, _) => " What that changed stays as it is.".to_owned(),
+        (false, 0) => String::new(),
+        (false, 1) => " The view or document I answered with was not kept.".to_owned(),
+        (false, many) => {
+            format!(" The views or documents I answered with were not kept ({many}).")
+        }
     };
+    if !acted.is_empty() && !changed {
+        kept.push_str(" What the applications' own actions did stays as it is.");
+    }
     format!(
         "{why}. Until then I had {}.{kept} I had not finished and gave no answer: ask me to go on.",
         did.join(", and ")
@@ -550,14 +596,27 @@ mod tests {
             messages.push(called(&id, "answer_with_view", serde_json::json!({})));
             messages.push(answered(&id, false));
         }
+        // A view answers with nothing of the workspace's to keep, so it is said beside the
+        // actions a turn carried out and not among them.
         assert_eq!(
             left_off(why, &messages),
             format!(
                 "{why}. Until then I had looked things up 2 times, and carried out one action \
-                 and after it: notes#create, then notes/New#pin (failed); answer_with_view; \
-                 answer_with_view; answer_with_view; answer_with_view; answer_with_view. What \
-                 that changed stays as it is. I had not finished and gave no answer: ask me to \
-                 go on."
+                 and after it: notes#create, then notes/New#pin (failed). What that changed \
+                 stays as it is. The view or document I answered with was not kept. I had not \
+                 finished and gave no answer: ask me to go on."
+            )
+        );
+
+        // A turn that only wrote its view changed nothing that stays, and is not told otherwise.
+        messages.truncate(6);
+        messages.push(called("5", "answer_with_view", serde_json::json!({})));
+        messages.push(answered("5", false));
+        assert_eq!(
+            left_off(why, &messages),
+            format!(
+                "{why}. Until then I had looked things up 2 times. I had not finished and gave \
+                 no answer: ask me to go on.",
             )
         );
     }

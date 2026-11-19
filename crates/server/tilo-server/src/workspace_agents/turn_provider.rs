@@ -57,6 +57,14 @@ pub(super) trait TurnProvider: Send + Sync {
         false
     }
 
+    /// Whether this provider answers for a turn's team of sub-agents
+    /// ([`super::team`]): what the model is told of them before its first step, so one that may
+    /// start none still knows how to read and steer the team it has. Never where the agent has
+    /// no team.
+    fn offers_team(&self) -> bool {
+        false
+    }
+
     /// Carry `request` out as `caller`, however long that takes.
     fn invoke(self: Arc<Self>, caller: Caller, request: InvokeRequest) -> Ending;
 }

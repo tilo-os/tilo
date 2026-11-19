@@ -53,6 +53,7 @@ use tilo_resource::Resource as _;
 use tilo_workspace_agent::Agent;
 use zeroize::Zeroizing;
 
+use super::mail::{chain_narrowing, turn_narrowing};
 use super::turn_provider::{Ending, Rows};
 use super::{
     Ask, CHAT, HostAgents, Reply, Turn, TurnProvider, WorkspaceActionProvider, WorkspaceId,
@@ -125,6 +126,8 @@ pub(super) struct TurnUses {
     workspace: String,
     workspace_id: WorkspaceId,
     agent: Agent,
+    /// Explicit narrowing rules from the agent and its starter line (never Chat's one-way rules).
+    narrowed: Option<Vec<tilo_action_policy::Rule>>,
     /// The person the turn acts for, by their person id.
     person: String,
     /// The ask the turn began with: its conversation is where a question goes.
@@ -140,7 +143,7 @@ impl TurnUses {
     /// tools begin as and act through.
     pub(super) async fn for_turn(agents: &HostAgents, turn: &Turn, reply: &Reply) -> Arc<Self> {
         let workspace_id = reply.provider.workspace;
-        let narrowed = narrowing(&turn.agent, &reply.workspace);
+        let narrowed = turn_narrowing(turn);
         let hosted = HostedTurn {
             workspace: workspace_id,
             caller: &reply.caller,
@@ -159,6 +162,7 @@ impl TurnUses {
             workspace: reply.workspace.clone(),
             workspace_id,
             agent: turn.agent.clone(),
+            narrowed,
             person: turn.person.clone(),
             ask: turn.ask.clone(),
             offered,
@@ -174,12 +178,11 @@ impl TurnUses {
         request: &InvokeRequest,
     ) -> Result<InvocationUpdate, ActionCallError> {
         let invocation = request.invocation;
-        let narrowed = narrowing(&self.agent, &self.workspace);
         let hosted = HostedTurn {
             workspace: self.workspace_id,
             caller,
             keeper: &self.agent.keeper,
-            bound: narrowed.as_deref(),
+            bound: self.narrowed.as_deref(),
         };
         let workspaces = &self.agents.workspaces;
         let taken = workspaces
@@ -241,12 +244,11 @@ impl TurnUses {
             });
         };
         // Refused before any window is asked, as before the vault is opened.
-        let narrowed = narrowing(&self.agent, &self.workspace);
         let hosted = HostedTurn {
             workspace: self.workspace_id,
             caller,
             keeper: &self.agent.keeper,
-            bound: narrowed.as_deref(),
+            bound: self.narrowed.as_deref(),
         };
         self.agents.workspaces.may_fill_pages(&hosted).await?;
         let invocation = request.invocation;
@@ -278,12 +280,11 @@ impl TurnUses {
         wanted: FillField,
         origin: String,
     ) -> Release {
-        let narrowed = narrowing(&self.agent, &self.workspace);
         let hosted = HostedTurn {
             workspace: self.workspace_id,
             caller,
             keeper: &self.agent.keeper,
-            bound: narrowed.as_deref(),
+            bound: self.narrowed.as_deref(),
         };
         let fill = FillPage {
             site: origin,
@@ -430,11 +431,28 @@ impl TurnProvider for TurnUses {
     }
 }
 
-/// The rules a turn of `agent` is decided by in `workspace`, where anything
-/// narrows it: what its entry bounds it to and, for a sub-agent, what keeps
-/// it from whoever started it. `None` for an agent nothing narrows.
-fn narrowing(agent: &Agent, workspace: &str) -> Option<Vec<tilo_action_policy::Rule>> {
-    (agent.bound_rules().is_some() || agent.is_sub()).then(|| agent.turn_rules(workspace))
+/// Explicit narrowing rules for `agent` and any ancestors in `agents` (excluding Chat-only
+/// one-way rules).
+fn roster_narrowing(
+    agent: &Agent,
+    agents: &BTreeMap<String, Agent>,
+) -> Option<Vec<tilo_action_policy::Rule>> {
+    let mut chain = vec![agent];
+    let mut current = agent;
+    for _ in 0..=tilo_workspace_agent::sub::MAX_DEPTH {
+        let Some(parent_id) = current.sub.as_ref().map(|sub| sub.started_by.as_str()) else {
+            break;
+        };
+        let Some(parent) = agents.get(parent_id) else {
+            break;
+        };
+        if parent.keeper != agent.keeper || chain.iter().any(|seen| seen.id.0 == parent.id.0) {
+            break;
+        }
+        chain.push(parent);
+        current = parent;
+    }
+    chain_narrowing(&chain)
 }
 
 /// Where and for which turn `caller` asks, as an ask keeps it.
@@ -632,10 +650,11 @@ impl HostAgents {
                 changed,
                 ..answered(answer)
             };
+            let narrowed = roster_narrowing(agent, &agents);
             let (this, agent) = (self.clone(), agent.clone());
             let workspace = workspace.to_owned();
             tokio::spawn(async move {
-                this.carry_out_use((&workspace, workspace_id), &agent, carrying)
+                this.carry_out_use((&workspace, workspace_id), &agent, narrowed, carrying)
                     .await;
             });
         }
@@ -702,6 +721,7 @@ impl HostAgents {
         &self,
         (workspace, workspace_id): (&str, WorkspaceId),
         agent: &Agent,
+        narrowed: Option<Vec<tilo_action_policy::Rule>>,
         answered: AnsweredAsk,
     ) {
         let AnsweredAsk {
@@ -735,7 +755,6 @@ impl HostAgents {
             self.workspaces.use_not_asked(&claimed);
             return;
         }
-        let narrowed = narrowing(agent, workspace);
         let hosted = HostedTurn {
             workspace: workspace_id,
             caller: &turn,

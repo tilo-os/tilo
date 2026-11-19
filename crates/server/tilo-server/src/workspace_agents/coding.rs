@@ -222,6 +222,29 @@ impl Coders {
     fn lives(&self, workspace: &str, agent: &str) -> bool {
         self.kept.runs(workspace, agent)
     }
+
+    /// Take how the process of `agent`'s harness ended, where nothing else did: what a turn
+    /// that found it gone speaks for, and no later look has to ([`HostAgents::settle`] takes
+    /// what no turn is in).
+    fn over(&self, workspace: &str, agent: &str) -> Option<Ended> {
+        let heard = self
+            .heard
+            .lock_recover()
+            .get(&(workspace.to_owned(), agent.to_owned()))
+            .cloned()?;
+        // Taken with the queue held, so a look that finds the turn over ([`Heard::in_turn`])
+        // reads what is left and not the same end the turn took.
+        let mut said = heard.said.lock_recover();
+        let mut ended = None;
+        said.retain(|said| match said {
+            Said::Over(over) => {
+                ended = Some(over.clone());
+                false
+            }
+            _ => true,
+        });
+        ended
+    }
 }
 
 /// What one turn of a coding agent works with.
@@ -245,6 +268,9 @@ struct Work {
     lived: bool,
     /// Whether this turn handed it its job.
     told_job: bool,
+    /// Whether this turn is not the first of this conversation: its harness was handed the
+    /// conversation's earlier words, so the conversation's reply is one already said that.
+    resumed: bool,
 }
 
 impl Work {
@@ -319,6 +345,14 @@ fn no_turn(request: &Value) -> Option<Value> {
         "id": id,
         "error": {"code": -32000, "message": NO_TURN},
     }))
+}
+
+/// Whether the turn `turn` says its reply is shown as taken again: one that is not the first
+/// of its conversation, and one whose reply it still writes. Its harness was handed the
+/// conversation's earlier words, and its next words end the reply already in the conversation.
+fn shows_taken(turn: &Turn) -> bool {
+    matches!(&turn.ask, Ask::Message { part, message, .. }
+        if part.as_str() != message.as_str())
 }
 
 /// Write `words` into `conversation` as a message of the agent `reply` answers as, through the
@@ -434,9 +468,12 @@ impl super::HostAgents {
         reply.taken().await;
         self.sub_began(&scope.workspace, &turn).await;
         let from_starter = turn.line.as_ref().is_some_and(|line| line.from_starter);
+        // Whether the turn going has a reply of its own: words written to the agent while it
+        // works end the reply that stands there under them ([`shows_taken`]).
+        let resumed = shows_taken(turn);
         let began = turn.ask.clone();
         let (outcome, told_job) =
-            Box::pin(self.work_coding(scope, &mut turn, &mut reply, going)).await;
+            Box::pin(self.work_coding(scope, &mut turn, &mut reply, going, resumed)).await;
         let ended = reply.finished(&outcome).await;
         if matches!(outcome, Outcome::Cancelled) {
             // Its person stopped it: what it asked them and still waits is taken back.
@@ -455,16 +492,40 @@ impl super::HostAgents {
         turn: &mut Turn,
         reply: &mut Reply,
         going: &going::Going,
+        resumed: bool,
     ) -> (Outcome, bool) {
         let mut work = match self.begin(scope, turn, reply).await {
             Ok(work) => work,
             Err(why) => return (Outcome::Failed(why), false),
         };
+        work.resumed = resumed;
         let outcome = self.follow(&mut work, (scope, turn, reply, going)).await;
-        // Tilo answers its harness only while a turn of it goes.
+        // Whether it ended with everything handed to it finished: a harness that lives, or one
+        // just handed work, may still answer.
+        let spent = matches!(outcome, Outcome::Answered(_) | Outcome::Stopped(_));
+        // A harness that ended while nothing was heard of it says so on its item now: the
+        // end is this turn's to keep, and no later look has to.
+        if spent
+            && !work.coders.lives(&scope.workspace, &turn.agent.id.0)
+            && let Some(said) = work.coders.over(&scope.workspace, &turn.agent.id.0)
+        {
+            self.coder_ended(
+                &scope.workspace,
+                (&turn.agent, &work.payer),
+                &work.heard,
+                &said,
+            )
+            .await;
+        }
+        // Tilo answers its harness only while a turn of it goes. The turn ends here, and only
+        // once all it kept of the harness is said: the queue is held, so a look never finds the
+        // harness free of a turn and still owes what this one is writing.
+        {
+            let _owed = work.heard.said.lock_recover();
+            work.heard.in_turn.store(false, Ordering::SeqCst);
+        }
         *work.heard.tools.lock_recover() = None;
         self.count(&scope.workspace, &turn.agent, &work).await;
-        work.heard.in_turn.store(false, Ordering::SeqCst);
         (outcome, work.told_job)
     }
 
@@ -517,6 +578,7 @@ impl super::HostAgents {
         *heard.tools.lock_recover() = Some(tools);
         Ok(Work {
             lived: coders.lives(workspace, &agent.id.0),
+            resumed: true,
             coders,
             heard,
             described,
@@ -682,6 +744,10 @@ impl super::HostAgents {
             return outcome;
         }
         let mut stop_asked: Option<Instant> = None;
+        // Said before anything else this turn writes, so it stands above what it answers.
+        if work.resumed && shows_taken(turn) {
+            reply.taken().await;
+        }
         let mut gone = false;
         loop {
             if going.stopped() && stop_asked.is_none() {
@@ -717,6 +783,7 @@ impl super::HostAgents {
                 {
                     return outcome;
                 }
+                stop_asked = None;
             }
             let Some(said) = work.heard.next(TICK).await else {
                 if !work.coders.lives(&workspace, &turn.agent.id.0) && work.heard.quiet() {
@@ -793,11 +860,8 @@ impl super::HostAgents {
         said: Said,
     ) -> Option<Outcome> {
         match said {
-            Said::Session(id) => {
-                self.coder_says(workspace, &turn.agent, |report| report.session = Some(id))
-                    .await;
-                None
-            }
+            // The notification only: the reply it marks is a message in the conversation.
+            Said::Session(_) => None,
             Said::Doing(what) => {
                 work.show(reply).await;
                 reply.doing(&what).await;

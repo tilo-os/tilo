@@ -34,6 +34,7 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionFailure, InvocationUpdate};
 use tilo_workspace_agent::Agent;
 
+use super::asks::could_not_ask;
 use super::calendar_connect::{
     ASKED_FIRST, Carrier, DECLINED, Found, PutAsk, Stands, TYPED, asked_in, put, question_about,
 };
@@ -153,10 +154,10 @@ impl TurnMailConnects {
                     }
                     Err(why) => {
                         workspaces.mail_connect_not_asked(&open);
-                        format!(
-                            "Your person could not be asked for the password ({why}), so nothing \
-                             was signed in."
-                        )
+                        could_not_ask(&format!(
+                            "{why}. A mail account's password is theirs to type, here or in \
+                             Mail, and nothing was signed in"
+                        ))
                     }
                 }
             }

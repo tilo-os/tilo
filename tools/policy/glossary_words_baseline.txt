@@ -4,11 +4,11 @@ room 3247
 space 4616
 channel 19090
 subject 2940
-host 67191
+host 67184
 relay 3256
-run 56285
+run 56277
 seat 1007
-record 55058
+record 55050
 slot 11284
 plane 15
 seam 7

@@ -43,6 +43,7 @@ use tilo_actions::{ActionFailure, InvocationUpdate};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_workspace_agent::Agent;
 
+use super::asks::could_not_ask;
 use super::mail::narrowing;
 use super::turn_provider::{Ending, Rows};
 use super::vault_uses::settle;
@@ -251,10 +252,10 @@ impl TurnConnects {
                     Ok(()) => ASKED.to_owned(),
                     Err(why) => {
                         workspaces.connect_not_asked(&open);
-                        format!(
-                            "Your person could not be asked for the password ({why}), so nothing was \
-                         connected."
-                        )
+                        could_not_ask(&format!(
+                            "{why}. Their calendar's password is theirs to type, here or in \
+                             Calendar, and nothing was connected"
+                        ))
                     }
                 }
             }

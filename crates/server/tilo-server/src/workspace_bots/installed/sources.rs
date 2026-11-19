@@ -24,8 +24,10 @@
 //! with the firing as data. An address is never written to the log: it may
 //! carry a key of its person's.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, json};
 use tilo_automation::TriggerSpec;
 use tilo_automation::dispatch::{Armed, Event, Firer, Firing, SourceEvent};
@@ -76,11 +78,234 @@ impl Mail {
     }
 }
 
+/// Honest operational status of a source monitor at a given moment.
+///
+/// Explicitly separates verified "no change since T" from "last successful
+/// sync at T; currently stale/unreachable" or backlogged coverage so callers
+/// never mistake a broken or stalled monitor for an unchanged source.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum MonitorStatus {
+    /// No successful read has completed yet and no failure has occurred.
+    NeverRead,
+    /// Reads are succeeding on cadence with zero backlog and no gap in coverage.
+    NoChangeSince {
+        since_ms: i64,
+        last_successful_read_ms: i64,
+        covered_through_ms: i64,
+    },
+    /// The most recent read succeeded, but unconsumed overflow items remain.
+    Backlogged {
+        last_successful_read_ms: i64,
+        covered_through_ms: Option<i64>,
+        backlog_count: usize,
+    },
+    /// No explicit read error occurred, but the monitor has fallen behind its
+    /// expected polling cadence.
+    Stale {
+        last_successful_read_ms: i64,
+        covered_through_ms: Option<i64>,
+        overdue_by_ms: i64,
+    },
+    /// One or more consecutive reads failed; coverage stopped advancing at the
+    /// last successful sync.
+    Unreachable {
+        last_successful_read_ms: Option<i64>,
+        covered_through_ms: Option<i64>,
+        consecutive_failures: u32,
+        last_error: String,
+    },
+}
+
+impl MonitorStatus {
+    /// Whether this status truthfully asserts that the source has not changed
+    /// since the reported timestamp.
+    #[must_use]
+    pub const fn claims_no_change(&self) -> bool {
+        matches!(self, Self::NoChangeSince { .. })
+    }
+
+    /// Whether coverage is degraded (unreachable, stale, or backlogged).
+    #[must_use]
+    pub const fn is_degraded(&self) -> bool {
+        matches!(
+            self,
+            Self::Unreachable { .. } | Self::Stale { .. } | Self::Backlogged { .. }
+        )
+    }
+
+    /// Concise human-readable status distinguishing verified no-change from
+    /// stale, backlogged, or unreachable sync state.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        match self {
+            Self::NeverRead => "never read yet".to_owned(),
+            Self::NoChangeSince {
+                since_ms,
+                covered_through_ms,
+                ..
+            } => format!("no change since {since_ms}; verified through {covered_through_ms}"),
+            Self::Backlogged {
+                last_successful_read_ms,
+                backlog_count,
+                ..
+            } => format!(
+                "last successful sync at {last_successful_read_ms}; {backlog_count} item(s) in backlog"
+            ),
+            Self::Stale {
+                last_successful_read_ms,
+                overdue_by_ms,
+                ..
+            } => format!(
+                "last successful sync at {last_successful_read_ms}; currently stale (overdue by {overdue_by_ms}ms)"
+            ),
+            Self::Unreachable {
+                last_successful_read_ms: Some(last_ok),
+                consecutive_failures,
+                last_error,
+                ..
+            } => format!(
+                "last successful sync at {last_ok}; currently unreachable ({consecutive_failures} consecutive failures: {last_error})"
+            ),
+            Self::Unreachable {
+                last_successful_read_ms: None,
+                consecutive_failures,
+                last_error,
+                ..
+            } => format!(
+                "never reached; currently unreachable ({consecutive_failures} consecutive failures: {last_error})"
+            ),
+        }
+    }
+}
+
+/// Per-trigger monitor coverage and health tracking.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MonitorHealth {
+    /// Timestamp (ms since epoch) of the most recent successful read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_successful_read_ms: Option<i64>,
+    /// Timestamp (ms since epoch) through which coverage is verified without
+    /// gaps. Does not advance when reads fail or leave unconsumed backlog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub covered_through_ms: Option<i64>,
+    /// Number of consecutive failed read attempts since the last success.
+    #[serde(default)]
+    pub consecutive_failures: u32,
+    /// Most recent error description while failing; cleared on recovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// Number of unconsumed or overflow items remaining in backlog.
+    #[serde(default)]
+    pub backlog_count: usize,
+    /// Expected polling cadence in milliseconds for staleness detection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_interval_ms: Option<i64>,
+    /// Timestamp (ms since epoch) of the most recent observed change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_change_ms: Option<i64>,
+}
+
+impl MonitorHealth {
+    /// Current backlog item count.
+    #[must_use]
+    pub const fn backlog(&self) -> usize {
+        self.backlog_count
+    }
+
+    /// Update health after a successful read at `now_ms`.
+    pub fn note_success(
+        &mut self,
+        now_ms: i64,
+        changed: bool,
+        backlog_count: usize,
+        expected_interval_ms: Option<i64>,
+    ) {
+        self.last_successful_read_ms = Some(now_ms);
+        self.consecutive_failures = 0;
+        self.last_error = None;
+        self.backlog_count = backlog_count;
+        if expected_interval_ms.is_some() {
+            self.expected_interval_ms = expected_interval_ms;
+        }
+        if changed {
+            self.last_change_ms = Some(now_ms);
+        }
+        if backlog_count == 0 {
+            self.covered_through_ms = Some(now_ms);
+        }
+    }
+
+    /// Update health after a failed read, preserving the last successful sync
+    /// and verified coverage timestamps.
+    pub fn note_failure(&mut self, error: impl Into<String>, expected_interval_ms: Option<i64>) {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        self.last_error = Some(error.into());
+        if expected_interval_ms.is_some() {
+            self.expected_interval_ms = expected_interval_ms;
+        }
+    }
+
+    /// Whether the monitor is past twice its expected polling interval at
+    /// `now_ms` without a fresh read.
+    #[must_use]
+    pub fn is_stale_at(&self, now_ms: i64) -> bool {
+        let (Some(last_ok), Some(interval)) =
+            (self.last_successful_read_ms, self.expected_interval_ms)
+        else {
+            return false;
+        };
+        interval > 0 && now_ms.saturating_sub(last_ok) > interval.saturating_mul(2)
+    }
+
+    /// Compute the honest monitor status at `now_ms`.
+    #[must_use]
+    pub fn honest_status(&self, now_ms: i64) -> MonitorStatus {
+        if self.consecutive_failures > 0 {
+            return MonitorStatus::Unreachable {
+                last_successful_read_ms: self.last_successful_read_ms,
+                covered_through_ms: self.covered_through_ms,
+                consecutive_failures: self.consecutive_failures,
+                last_error: self.last_error.clone().unwrap_or_default(),
+            };
+        }
+        let Some(last_ok) = self.last_successful_read_ms else {
+            return MonitorStatus::NeverRead;
+        };
+        if self.is_stale_at(now_ms) {
+            let interval = self.expected_interval_ms.unwrap_or(0);
+            let overdue_by_ms = now_ms.saturating_sub(last_ok).saturating_sub(interval);
+            return MonitorStatus::Stale {
+                last_successful_read_ms: last_ok,
+                covered_through_ms: self.covered_through_ms,
+                overdue_by_ms,
+            };
+        }
+        if self.backlog_count > 0 {
+            return MonitorStatus::Backlogged {
+                last_successful_read_ms: last_ok,
+                covered_through_ms: self.covered_through_ms,
+                backlog_count: self.backlog_count,
+            };
+        }
+        let covered_through_ms = self.covered_through_ms.unwrap_or(last_ok);
+        let since_ms = self.last_change_ms.unwrap_or(last_ok);
+        MonitorStatus::NoChangeSince {
+            since_ms,
+            last_successful_read_ms: last_ok,
+            covered_through_ms,
+        }
+    }
+}
+
 /// What looks at the sources outside for one program: the client every
-/// fetch goes out through, made at the first look.
+/// fetch goes out through, made at the first look, together with per-trigger
+/// monitor coverage health.
 #[derive(Default)]
 pub(super) struct Outside {
     client: Option<tilo_net::Client>,
+    /// Per-trigger monitor coverage health, keyed by trigger index.
+    health: BTreeMap<usize, MonitorHealth>,
     /// Whether a look reaches a server on this machine: a test's own.
     #[cfg(test)]
     fixtures: bool,
@@ -305,18 +530,39 @@ impl BotRunner {
                 let Some(seen) = self.progress.sources.get_mut(&index) else {
                     continue;
                 };
+                let expected_interval_ms = i64::try_from(every.saturating_mul(1000)).ok();
                 match read {
                     Ok(Read::Entries(entries)) => {
-                        let new = seen.took(entries, every, now_ms).new;
-                        found.extend(new.into_iter().filter(|one| {
+                        let news = seen.took(entries, every, now_ms);
+                        let changed = !news.new.is_empty() || news.passed_over > 0;
+                        self.outside.health.entry(index).or_default().note_success(
+                            now_ms,
+                            changed,
+                            news.passed_over,
+                            expected_interval_ms,
+                        );
+                        found.extend(news.new.into_iter().filter(|one| {
                             tilo_automation::resource_time::matches(filter, &one.facts)
                         }));
                     }
                     Ok(Read::Text { title, text }) => {
-                        found.extend(seen.took_text(at, title.as_deref(), &text, every, now_ms));
+                        let added = seen.took_text(at, title.as_deref(), &text, every, now_ms);
+                        let changed = added.is_some();
+                        self.outside.health.entry(index).or_default().note_success(
+                            now_ms,
+                            changed,
+                            0,
+                            expected_interval_ms,
+                        );
+                        found.extend(added);
                     }
                     Err((why, failure)) => {
                         tracing::info!(%installation, %kind, ?failure, "a look at a source outside did not read it");
+                        self.outside
+                            .health
+                            .entry(index)
+                            .or_default()
+                            .note_failure(why.clone(), expected_interval_ms);
                         found.extend(seen.failed(at, &why, failure, every, now_ms));
                     }
                 }
@@ -355,7 +601,22 @@ impl BotRunner {
         self.progress
             .sources
             .retain(|index, _| shortcut.triggers.get(*index).is_some_and(waits_on_a_source));
+        self.outside
+            .health
+            .retain(|index, _| shortcut.triggers.get(*index).is_some_and(waits_on_a_source));
         firings
+    }
+
+    /// Coverage health tracked for the source trigger at `trigger_index`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) fn monitor_health(&self, trigger_index: usize) -> Option<&MonitorHealth> {
+        self.outside.health.get(&trigger_index)
+    }
+
+    /// Coverage health tracked across every active source trigger.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) fn all_monitor_health(&self) -> &BTreeMap<usize, MonitorHealth> {
+        &self.outside.health
     }
 
     /// The person the program is carried out for, by their root.
@@ -441,6 +702,15 @@ impl BotRunner {
             Ok(assistant) => assistant,
             Err(error) => {
                 tracing::warn!(installation = %self.bot.installation, %error, "the assistant a program hands its person's mail to could not be read; it looks again");
+                for (index, trigger) in shortcut.triggers.iter().enumerate() {
+                    if waits_on_mail(trigger) {
+                        self.outside
+                            .health
+                            .entry(index)
+                            .or_default()
+                            .note_failure(error.to_string(), None);
+                    }
+                }
                 if let Some(mail) = self.mail.as_mut() {
                     mail.again = true;
                 }
@@ -482,6 +752,12 @@ impl BotRunner {
                 arrived = self.workspaces.mail_arrivals_for(&person, named, 0);
             }
             seen.place = Some(arrived.newest);
+            let changed = !arrived.arrivals.is_empty();
+            self.outside
+                .health
+                .entry(index)
+                .or_default()
+                .note_success(now_ms, changed, 0, None);
             for arrival in arrived.arrivals {
                 if !(at.is_empty() || arrival.account.eq_ignore_ascii_case(at)) {
                     continue;
@@ -560,6 +836,7 @@ mod tests {
 
         let mut outside = Outside {
             client: None,
+            health: BTreeMap::new(),
             fixtures: true,
         };
         let read = outside
@@ -587,5 +864,97 @@ mod tests {
             !source.drain_requests().is_empty(),
             "the source itself was asked"
         );
+    }
+
+    #[test]
+    fn monitor_health_distinguishes_verified_no_change_from_stale_or_unreachable() {
+        let interval_ms = 30 * 60 * 1000; // 30 minutes
+        let t_0900 = 9 * 60 * 60 * 1000;
+        let t_0930 = t_0900 + interval_ms;
+        let t_1000 = t_0930 + interval_ms;
+        let t_1005 = t_1000 + 5 * 60 * 1000;
+        let t_1130 = t_1000 + 3 * interval_ms;
+
+        let mut health = MonitorHealth::default();
+        assert_eq!(health.honest_status(t_0900), MonitorStatus::NeverRead);
+        assert!(!health.honest_status(t_0900).claims_no_change());
+
+        // Initial clean sync at 09:00 with a change observed.
+        health.note_success(t_0900, true, 0, Some(interval_ms));
+        assert_eq!(health.last_successful_read_ms, Some(t_0900));
+        assert_eq!(health.covered_through_ms, Some(t_0900));
+        assert_eq!(health.consecutive_failures, 0);
+        assert_eq!(health.backlog(), 0);
+
+        // Clean sync at 10:00 with no new changes: truthfully reports no change since 09:00.
+        health.note_success(t_1000, false, 0, Some(interval_ms));
+        let status_ok = health.honest_status(t_1005);
+        assert!(status_ok.claims_no_change());
+        assert!(!status_ok.is_degraded());
+        assert_eq!(
+            status_ok,
+            MonitorStatus::NoChangeSince {
+                since_ms: t_0900,
+                last_successful_read_ms: t_1000,
+                covered_through_ms: t_1000,
+            }
+        );
+        assert!(status_ok.summary().contains("no change since"));
+
+        // If reads stop happening past 2x cadence without errors, status is Stale — NOT no change!
+        let status_stale = health.honest_status(t_1130);
+        assert!(!status_stale.claims_no_change());
+        assert!(status_stale.is_degraded());
+        assert!(matches!(
+            status_stale,
+            MonitorStatus::Stale {
+                last_successful_read_ms,
+                covered_through_ms: Some(cov),
+                ..
+            } if last_successful_read_ms == t_1000 && cov == t_1000
+        ));
+        assert!(status_stale.summary().contains("last successful sync at"));
+        assert!(status_stale.summary().contains("currently stale"));
+
+        // If reads fail, status is Unreachable and preserves last successful sync time.
+        health.note_failure("connection refused", Some(interval_ms));
+        health.note_failure("timeout", Some(interval_ms));
+        assert_eq!(health.consecutive_failures, 2);
+        assert_eq!(health.last_successful_read_ms, Some(t_1000));
+        assert_eq!(health.covered_through_ms, Some(t_1000));
+        let status_down = health.honest_status(t_1005);
+        assert!(!status_down.claims_no_change());
+        assert!(status_down.is_degraded());
+        assert_eq!(
+            status_down,
+            MonitorStatus::Unreachable {
+                last_successful_read_ms: Some(t_1000),
+                covered_through_ms: Some(t_1000),
+                consecutive_failures: 2,
+                last_error: "timeout".to_owned(),
+            }
+        );
+        assert!(status_down.summary().contains("last successful sync at"));
+        assert!(status_down.summary().contains("currently unreachable"));
+
+        // Recovery with backlog advances last_successful_read_ms, clears failures,
+        // but does NOT advance covered_through_ms past the backlog gap.
+        health.note_success(t_1130, true, 4, Some(interval_ms));
+        assert_eq!(health.consecutive_failures, 0);
+        assert_eq!(health.last_error, None);
+        assert_eq!(health.last_successful_read_ms, Some(t_1130));
+        assert_eq!(health.covered_through_ms, Some(t_1000));
+        assert_eq!(health.backlog(), 4);
+        let status_backlog = health.honest_status(t_1130 + 1_000);
+        assert!(!status_backlog.claims_no_change());
+        assert!(status_backlog.is_degraded());
+        assert!(matches!(
+            status_backlog,
+            MonitorStatus::Backlogged {
+                last_successful_read_ms,
+                covered_through_ms: Some(cov),
+                backlog_count: 4,
+            } if last_successful_read_ms == t_1130 && cov == t_1000
+        ));
     }
 }

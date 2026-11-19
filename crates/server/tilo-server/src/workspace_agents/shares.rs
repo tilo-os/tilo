@@ -44,7 +44,9 @@ you made or changed, or to work on it with you. `path` is the path you worked on
 without an action: `word-processor`. `title` is what its card is called. Where it is shown is \
 never an argument: it is the conversation you are answering in, and only your keeper's own \
 conversation with you. For a count, a list or a status over what apps keep, write a view with \
-`answer_with_view` instead. Afterwards say in a sentence what it is.";
+`answer_with_view` instead. When the conversation already holds what they ask to see again, call \
+this with its `path` as \"What this conversation already holds\" lists it, rather than looking \
+for it again. Afterwards say in a sentence what it is.";
 
 /// What the model is told in a conversation that is not its keeper's own with it.
 const NOT_THEIR_OWN: &str = "The document was not shown: you show a document only in your \
@@ -59,20 +61,13 @@ const IN: &str = "channel";
 /// The longest a card's name the model gives is kept, in characters.
 const MOST_TITLE_CHARS: usize = 120;
 
+/// The fewest characters a read answers with: all a read showing a document needs of it, since
+/// what is shown is the document the read resolved, not its text.
+const SHOWN_TO_RESOLVE: usize = 200;
+
 /// The kind a shared window's resource is posted under where its own kind is not known: the
 /// one Chat posts a window under whose app names none.
 const WINDOW_KIND: &str = "tilo.window";
-
-/// What a turn's instructions say of the tool: when the thing itself is the answer. Nothing for
-/// a turn whose answer is no reply in a conversation.
-pub(super) fn told(turn: &Turn) -> &'static str {
-    if matches!(turn.ask, Ask::Message { .. }) {
-        " When the person asks to see the thing you made or changed, or to work in it with \
-         you, show it live through `answer_with_document`, then say in a sentence what it is."
-    } else {
-        ""
-    }
-}
 
 /// The tool as the model is told it. None for an issue's turn, whose answer is a comment.
 pub(super) fn tool(turn: &Turn) -> Option<ToolDefinition> {
@@ -238,12 +233,17 @@ impl Reply {
         )
         .await
         {
-            Ok(_) => (
-                "It is shown live in the conversation, in its own app: the person sees it \
-                 change and can work in it there. Now say in a sentence what it is."
-                    .to_owned(),
-                false,
-            ),
+            Ok(_) => {
+                // Taken at once, so a later step of this turn, and the turn after it, shows the
+                // document again from here rather than looking for it again ([`worked`]).
+                self.shown(&path, &title);
+                (
+                    "It is shown live in the conversation, in its own app: the person sees it \
+                     change and can work in it there. Now say in a sentence what it is."
+                        .to_owned(),
+                    false,
+                )
+            }
             Err(why) => (format!("The document was not shown: {why}"), true),
         }
     }
@@ -258,7 +258,10 @@ async fn read_as_the_turn(
     tools: &McpServer<WorkspaceActionProvider>,
     path: &str,
 ) -> Result<(String, String), String> {
-    let reading = json!({"path": path, "max_chars": 200});
+    // The read is asked for the fewest characters it answers: what it is here for is which
+    // document the session resolved, and a long one answered in full would pay for a read of
+    // paragraphs and spill them into the turn.
+    let reading = json!({"path": path, "max_chars": SHOWN_TO_RESOLVE});
     let read = tilo_agent_turn::Tools::call(tools, "tilo_read", reading).await;
     if read.is_error {
         return Err(read.text);
