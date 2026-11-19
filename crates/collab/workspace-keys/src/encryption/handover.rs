@@ -48,7 +48,7 @@ impl SharedKeys {
     /// unavailable after a poisoned lock.
     #[must_use]
     pub fn current_governance(&self, workspace: WorkspaceId) -> Vec<NeighbourMsg> {
-        self.run(|service| service.current_governance(workspace))
+        self.with_service(|service| service.current_governance(workspace))
             .unwrap_or_default()
     }
 }

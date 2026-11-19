@@ -648,6 +648,41 @@ impl OwnerDirectory {
 }
 
 impl KeyDirectory for OwnerDirectory {
+    fn requires_document_keys(
+        &self,
+        workspace: ModelWorkspaceId,
+        app: &str,
+        document: &str,
+    ) -> Option<bool> {
+        self.owner
+            .with_current(workspace, |view| {
+                view.peer()
+                    .requires_document_keys(app, document, tilo_clock::wall())
+            })
+            .ok()
+    }
+
+    fn document_devices(
+        &self,
+        workspace: ModelWorkspaceId,
+        app: &str,
+        document: &str,
+        now: u64,
+    ) -> Option<BTreeSet<Ed25519PublicKey>> {
+        let at = UNIX_EPOCH.checked_add(tilo_workspace_keys::policy_instant(now))?;
+        self.owner
+            .with_current(workspace, |view| {
+                view.peer().document_key_holders(app, document, at)
+            })
+            .ok()
+            .map(|readers| {
+                readers
+                    .into_iter()
+                    .map(Ed25519PublicKey::from_bytes)
+                    .collect()
+            })
+    }
+
     /// The devices that hold the workspace's keys at `now` (Unix seconds): every device of its
     /// members.
     fn allowed_devices(

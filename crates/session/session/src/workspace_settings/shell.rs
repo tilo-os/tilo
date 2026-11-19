@@ -285,6 +285,72 @@ fn ask(
                 domain::set_member_role(ws, actor, &member, role)
             });
         }
+        sheet::WorkspaceSettingsEffect::SaveCustomRole { role, name } => {
+            let role = if role.is_empty() {
+                uuid::Uuid::new_v4().simple().to_string()
+            } else {
+                role
+            };
+            govern(state, fed, move |ws, actor| {
+                ws.govern_all_at(
+                    actor,
+                    vec![tilo_action_policy::Change::DefineRole {
+                        id: role.clone(),
+                        name: name.clone(),
+                    }],
+                    tilo_clock::unix_now(),
+                )
+            });
+        }
+        sheet::WorkspaceSettingsEffect::SetCustomRole {
+            member,
+            role,
+            assigned,
+        } => {
+            govern(state, fed, move |ws, actor| {
+                ws.govern_all_at(
+                    actor,
+                    vec![tilo_action_policy::Change::SetMemberCustomRole {
+                        person: member.clone(),
+                        role: role.clone(),
+                        assigned,
+                    }],
+                    tilo_clock::unix_now(),
+                )
+            });
+        }
+        sheet::WorkspaceSettingsEffect::RemoveCustomRole { role } => {
+            govern(state, fed, move |ws, actor| {
+                ws.govern_all_at(
+                    actor,
+                    vec![tilo_action_policy::Change::RemoveRole { id: role.clone() }],
+                    tilo_clock::unix_now(),
+                )
+            });
+        }
+        sheet::WorkspaceSettingsEffect::SetDocumentAccess {
+            who,
+            app,
+            document,
+            access,
+        } => {
+            let own = fed.handle.read(|tree| {
+                tree.active_workspace()
+                    .zip(fed.engine)
+                    .is_some_and(|(ws, engine)| {
+                        engine
+                            .own_resource(&ws.id().to_string(), &app, &document)
+                            .is_some()
+                    })
+            });
+            if own {
+                refuse(state, fed, "this document belongs to a person");
+                return;
+            }
+            govern(state, fed, move |ws, actor| {
+                domain::set_document_access(ws, actor, (&who, &app, &document), &access)
+            });
+        }
         sheet::WorkspaceSettingsEffect::RemoveMember { member } => {
             govern(state, fed, move |ws, actor| {
                 domain::remove_member(ws, actor, &member)
@@ -757,7 +823,12 @@ fn settings(
             )
         }),
         permissions: workspace.map_or_else(sheet::Permissions::default, |ws| {
-            permissions(ws, person, apps)
+            permissions(
+                ws,
+                person,
+                apps,
+                engine.filter(|_| tab == sheet::Tab::Permissions),
+            )
         }),
         // The workspace's agents are Chat's record, opened when the tab is first shown.
         agents: if tab == sheet::Tab::Agents {
@@ -1063,6 +1134,7 @@ fn permissions(
     ws: &Workspace,
     person: &UserId,
     apps: &dyn domain::AppDirectory,
+    engine: Option<&Engine>,
 ) -> sheet::Permissions {
     let listed = domain::listed_permissions(ws, apps, person);
     let manage = ws.may_administer(person);
@@ -1112,10 +1184,10 @@ fn permissions(
             header: t("workspace-settings-grant-header"),
             who: t("workspace-settings-who"),
             who_agent: t("workspace-settings-who-agent"),
-            subjects: domain::grant_subjects(ws)
+            subjects: domain::grant_recipients(ws)
                 .iter()
                 .filter_map(|subject| {
-                    domain::grant_subject_key(subject).map(|key| sheet::Choice {
+                    domain::grant_recipient_key(subject).map(|key| sheet::Choice {
                         key,
                         label: subject.display(ws, person, apps),
                     })
@@ -1140,6 +1212,15 @@ fn permissions(
                 .collect(),
             grant: t("workspace-settings-grant"),
         },
+        documents: engine.filter(|_| manage).and_then(|engine| {
+            let workspace = ws.id().to_string();
+            let mut documents = engine.records(&workspace).ok()?;
+            documents.retain(|(app, document_id)| {
+                collab_types::workspace_document(app, document_id).is_none()
+                    && engine.own_resource(&workspace, app, document_id).is_none()
+            });
+            (!documents.is_empty()).then(|| document_access(ws, person, apps, documents))
+        }),
         sections,
         revoke: t("workspace-settings-revoke"),
         empty: (
@@ -1155,6 +1236,36 @@ fn permissions(
             confirm: t("workspace-settings-revoke-permission"),
         },
     }
+}
+
+fn document_access(
+    ws: &Workspace,
+    person: &UserId,
+    apps: &dyn domain::AppDirectory,
+    documents: Vec<(String, String)>,
+) -> sheet::DocumentAccess {
+    let mut recipients: Vec<_> = ws
+        .policy
+        .custom_roles
+        .iter()
+        .map(|(id, name)| sheet::Choice {
+            key: format!("role:{id}"),
+            label: name.clone(),
+        })
+        .collect();
+    recipients.extend(
+        domain::grant_recipients(ws)
+            .into_iter()
+            .filter_map(|recipient| {
+                let key = domain::grant_recipient_key(&recipient)?;
+                key.starts_with("member:").then(|| sheet::Choice {
+                    key,
+                    label: recipient.display(ws, person, apps),
+                })
+            }),
+    );
+    let rules = collab_types::document_access_rules(&ws.policy, &documents);
+    super::document_access_pane(documents, rules, recipients)
 }
 
 /// The Apps & Files tab: which app opens each kind of file and link here,

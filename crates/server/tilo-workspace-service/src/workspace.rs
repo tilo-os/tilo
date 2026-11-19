@@ -639,6 +639,17 @@ impl WorkspaceRuntime {
         }
     }
 
+    pub(crate) fn unhold_document(
+        &mut self,
+        device: &[u8; 32],
+        tx: &mpsc::Sender<Envelope>,
+        digest: &[u8; 32],
+    ) {
+        if let Some(session) = self.session_mut(device, tx) {
+            session.held_documents.remove(digest);
+        }
+    }
+
     /// Hand the presence fanned out to `device`'s connection `tx` to that
     /// connection's `mailbox` rather than its frame queue. Call right after
     /// [`Self::add_subscriber`] registered that connection; removing the

@@ -598,7 +598,7 @@ pub struct ChromeSources {
     /// The page's notifications, whose unread ones the bell counts.
     pub notifications: tilo_desktop_surface::DesktopNotifications,
     /// Where the workspace's settings read its agents; none on a page that shows no workspace.
-    pub records: Option<crate::workspace_settings::PageRecords>,
+    pub records: Option<crate::workspace_settings::PageData>,
     pub wake: Arc<dyn Fn() + Send + Sync>,
 }
 
@@ -1844,7 +1844,7 @@ fn workspace_settings_sheet(
     shared: crate::desktop::Shared,
     chrome: &PageChrome,
     peer: Option<u32>,
-    records: Option<crate::workspace_settings::PageRecords>,
+    records: Option<crate::workspace_settings::PageData>,
 ) -> crate::over_page::OverPage<crate::over_page::LazySheet> {
     crate::over_page::OverPage::new(crate::over_page::LazySheet::workspace_settings(
         shared,

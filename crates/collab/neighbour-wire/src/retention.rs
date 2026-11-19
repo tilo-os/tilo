@@ -119,8 +119,11 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
         // the winner. Keeping every commit and Welcome
         // made each newcomer replay the group's whole history, every
         // Welcome carrying the group's ratchet tree.
-        NeighbourMsg::MlsGovernance { frame, .. } => {
+        NeighbourMsg::MlsGovernance {
+            workspace, frame, ..
+        } => {
             let mut route = b"mls-governance\0".to_vec();
+            scope_retention(workspace, frame.workspace, &mut route)?;
             if matches!(frame.action, collab_types::MlsGovernanceAction::Genesis) {
                 route.extend_from_slice(&frame.digest().ok()?);
             } else if audience(msg).is_some() {
@@ -132,8 +135,11 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
             }
             return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
         }
-        NeighbourMsg::MlsAccessRequest { request, .. } => {
+        NeighbourMsg::MlsAccessRequest {
+            workspace, request, ..
+        } => {
             let mut route = b"mls-access\0".to_vec();
+            scope_retention(workspace, request.workspace, &mut route)?;
             route.extend_from_slice(request.device.as_bytes());
             return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
         }
@@ -149,6 +155,24 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
         _ => return None,
     };
     Some((*blake3::hash(route).as_bytes(), kind))
+}
+
+/// Do not let another document's commit or request replace this group's head.
+/// The original workspace group retains its existing delivery digests.
+fn scope_retention(
+    wire: &str,
+    signed: collab_types::WorkspaceId,
+    route: &mut Vec<u8>,
+) -> Option<()> {
+    if !wire.contains('/') {
+        return Some(());
+    }
+    let scope = crate::KeyScope::parse(wire)?;
+    if scope.group() != signed {
+        return None;
+    }
+    route.extend_from_slice(signed.as_uuid().as_bytes());
+    Some(())
 }
 
 /// The retained channel of an app record. Isolation between workspaces is

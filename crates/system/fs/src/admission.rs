@@ -72,6 +72,24 @@ impl FileAdmission {
         Some(policy)
     }
 
+    /// Whether the filesystem may show this workspace's files to the device.
+    #[must_use]
+    pub fn reads(&self) -> bool {
+        self.policy().is_some_and(|policy| {
+            let access = MemberAccess::new(policy, self.signer.clone());
+            let document = access.node(
+                &tilo_action_policy::TreePath::root()
+                    .app(fs_protocol::tree::FILES_APP)
+                    .resource(fs_protocol::tree::document_id()),
+            );
+            access.answer(
+                &document,
+                ActionKind::Read,
+                &Context::at_time(tilo_clock::wall()),
+            ) == Answer::Allow
+        })
+    }
+
     /// Whether `invoker` (the person at this device when `None`) may take the file action
     /// `verb` on the tree's node `node`, or on the tree as a whole with no node named. Refused
     /// while this device holds no policy of the workspace: no receiver could decide it either.

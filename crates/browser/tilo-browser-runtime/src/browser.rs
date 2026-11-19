@@ -1490,7 +1490,7 @@ fn files_of_the_workspace(
     shared: &crate::desktop::Shared,
     content: &tilo_content::ContentStore,
 ) -> Option<Rc<crate::page_files::WorkspaceFiles>> {
-    config.peer?;
+    let peer = config.peer?;
     let records = crate::workspace_resources::in_page(
         owners,
         &shared.stores,
@@ -1523,6 +1523,8 @@ fn files_of_the_workspace(
         config.workspace_name.as_deref().unwrap_or_default(),
         records,
         content,
+        peer,
+        config.workspace.clone(),
     )))
 }
 
@@ -1692,7 +1694,7 @@ fn desktop_shell(
             caller: tilo_actions::remote::Caller::local_person(config.author())
                 .in_workspace(config.workspace.clone()),
             records: config.peer.map(|_| {
-                crate::workspace_settings::PageRecords::in_page(
+                crate::workspace_settings::PageData::in_page(
                     (owners, shared, permissions),
                     handle,
                     &config.workspace,

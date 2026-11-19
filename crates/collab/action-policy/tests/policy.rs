@@ -39,6 +39,82 @@ fn answer(grants: &[Grant], node: &TreePath, kind: ActionKind) -> Answer {
     decide(grants, &[alice()], node, kind, &cx()).answer
 }
 
+#[test]
+fn vault_documents_require_explicit_access_even_for_editors() {
+    let node = TreePath::workspace("r")
+        .app(tilo_app_id::apps::PASSWORDS)
+        .resource("vault");
+    let mut grants = roles::workspace_role_grants("r", &alice());
+    for role in [Role::Viewer, Role::Commenter, Role::Editor, Role::Moderator] {
+        assert_eq!(
+            decide(
+                &grants,
+                &[Grantee::role(role)],
+                &node,
+                ActionKind::Read,
+                &cx()
+            )
+            .answer,
+            Answer::Deny,
+        );
+    }
+    grants.push(Grant::new(
+        "vault-reviewers",
+        Grantee::CustomRole("reviewers".into()),
+        node.clone(),
+        KindSet::READ,
+        Answer::Allow,
+        alice(),
+    ));
+    let reviewer = [
+        Grantee::role(Role::Editor),
+        Grantee::CustomRole("reviewers".into()),
+    ];
+    assert_eq!(
+        decide(&grants, &reviewer, &node, ActionKind::Read, &cx()).answer,
+        Answer::Allow
+    );
+    assert_eq!(
+        decide(&grants, &reviewer, &node, ActionKind::Undoable, &cx()).answer,
+        Answer::Deny
+    );
+}
+
+#[test]
+fn the_workspace_mailbox_starts_private_and_an_explicit_grant_opens_it() {
+    let mailbox = TreePath::workspace("r")
+        .app(tilo_app_id::apps::MAIL)
+        .resource("");
+    let mut grants = roles::workspace_role_grants("r", &alice());
+    let editor = [Grantee::role(Role::Editor)];
+    assert_eq!(
+        decide(&grants, &editor, &mailbox, ActionKind::Read, &cx()).answer,
+        Answer::Deny
+    );
+
+    grants.push(Grant::new(
+        "shared-inbox",
+        Grantee::role(Role::Viewer),
+        mailbox.clone(),
+        KindSet::READ,
+        Answer::Allow,
+        alice(),
+    ));
+    assert_eq!(
+        decide(&grants, &editor, &mailbox, ActionKind::Read, &cx()).answer,
+        Answer::Allow
+    );
+    assert_eq!(
+        decide(&grants, &editor, &mailbox, ActionKind::Undoable, &cx()).answer,
+        Answer::Deny
+    );
+    assert!(roles::requires_document_keys(tilo_app_id::apps::MAIL, ""));
+    assert!(!roles::requires_document_keys(
+        tilo_app_id::apps::MAIL,
+        "other"
+    ));
+}
+
 const ANSWERS: [Answer; 3] = [Answer::Deny, Answer::Ask, Answer::Allow];
 
 tilo_test_env::scenario! {
@@ -159,6 +235,45 @@ tilo_test_env::scenario! {
             answer(&grants, &other_action, ActionKind::Undoable),
             Answer::Deny
         );
+    }
+
+    phase a_personal_override_wins_at_the_same_scope;
+    {
+        let viewers = Grantee::Role(Role::Viewer);
+        for (role_answer, personal_answer) in
+            [(Answer::Allow, Answer::Deny), (Answer::Deny, Answer::Allow)]
+        {
+            let role = Grant::new(
+                "viewers",
+                viewers.clone(),
+                mail(),
+                KindSet::ALL,
+                role_answer,
+                Grantee::person(CAROL),
+            );
+            let personal = grant("alice", mail(), KindSet::ALL, personal_answer);
+            for rules in [[&role, &personal], [&personal, &role]] {
+                let decision = decide(
+                    rules,
+                    &[alice(), viewers.clone()],
+                    &send(),
+                    ActionKind::Read,
+                    &cx(),
+                );
+                assert_eq!(decision.answer, personal_answer);
+                assert_eq!(decision.grant(), Some(&personal));
+
+                let other = decide(
+                    rules,
+                    &[Grantee::person(BOB), viewers.clone()],
+                    &send(),
+                    ActionKind::Read,
+                    &cx(),
+                );
+                assert_eq!(other.answer, role_answer);
+                assert_eq!(other.grant(), Some(&role));
+            }
+        }
     }
 }
 
@@ -496,6 +611,107 @@ fn workspace_with_members(members: &[(&str, Role)]) -> WorkspacePolicy {
         workspace.members.insert((*person).to_owned(), *role);
     }
     workspace
+}
+
+#[test]
+fn custom_roles_follow_governance_and_compose_with_personal_overrides() {
+    let mut workspace = workspace_with_members(&[(BOB, Role::Viewer), (CAROL, Role::Viewer)]);
+    let document = mail().resource("review");
+    let apply = |workspace: &mut WorkspacePolicy, change| {
+        let held = workspace.clone();
+        workspace
+            .apply(
+                ALICE,
+                &held.person_on_device(ALICE, false),
+                change,
+                &cx(),
+                false,
+            )
+            .expect("the owner can manage roles");
+    };
+    let read = |workspace: &WorkspacePolicy, person| {
+        workspace
+            .party(person)
+            .decide(&document, ActionKind::Read, &cx())
+            .answer
+    };
+    for (id, name, answer) in [
+        ("guests", "Guests", Answer::Deny),
+        ("reviewers", "Reviewers", Answer::Allow),
+    ] {
+        apply(
+            &mut workspace,
+            Change::DefineRole {
+                id: id.into(),
+                name: name.into(),
+            },
+        );
+        apply(
+            &mut workspace,
+            Change::Grant(Grant::new(
+                id,
+                Grantee::CustomRole(id.into()),
+                document.clone(),
+                KindSet::READ,
+                answer,
+                alice(),
+            )),
+        );
+    }
+    for (person, role) in [(BOB, "guests"), (BOB, "reviewers"), (CAROL, "guests")] {
+        apply(
+            &mut workspace,
+            Change::SetMemberCustomRole {
+                person: person.into(),
+                role: role.into(),
+                assigned: true,
+            },
+        );
+    }
+    assert_eq!(read(&workspace, BOB), Answer::Allow);
+    assert_eq!(read(&workspace, CAROL), Answer::Deny);
+
+    apply(
+        &mut workspace,
+        Change::Grant(Grant::new(
+            "bob-exception",
+            Grantee::person(BOB),
+            document.clone(),
+            KindSet::READ,
+            Answer::Deny,
+            alice(),
+        )),
+    );
+    assert_eq!(read(&workspace, BOB), Answer::Deny);
+    apply(
+        &mut workspace,
+        Change::Revoke(GrantId::new("bob-exception")),
+    );
+    assert_eq!(read(&workspace, BOB), Answer::Allow);
+
+    let loaded: WorkspacePolicy =
+        serde_json::from_value(serde_json::to_value(&workspace).unwrap()).unwrap();
+    assert_eq!(read(&loaded, BOB), Answer::Allow);
+    assert_eq!(read(&loaded, CAROL), Answer::Deny);
+
+    apply(
+        &mut workspace,
+        Change::RemoveRole {
+            id: "reviewers".into(),
+        },
+    );
+    assert_eq!(read(&workspace, BOB), Answer::Deny);
+    assert!(
+        !workspace
+            .grantees_of(BOB)
+            .contains(&Grantee::CustomRole("reviewers".into()))
+    );
+    assert!(
+        !workspace
+            .grants
+            .iter()
+            .any(|grant| grant.id.as_str() == "reviewers")
+    );
 }
 
 tilo_test_env::scenario! {

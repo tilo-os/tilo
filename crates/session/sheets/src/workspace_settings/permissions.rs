@@ -6,6 +6,8 @@
 //! The composer's choices are the sheet's own until the person grants; the
 //! grant names all three, so whoever asks for it says exactly what it gives.
 
+use std::collections::BTreeMap;
+
 use ui::format::{Date, Time};
 use ui::icons::Icon;
 use ui::prelude::*;
@@ -68,6 +70,20 @@ pub struct Holders {
     pub permissions: Vec<Permission>,
 }
 
+/// The documents and recipients for setting document access rules.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DocumentAccess {
+    pub title: String,
+    pub documents: Vec<((String, String), String)>,
+    pub rules: BTreeMap<(String, String), BTreeMap<String, String>>,
+    pub recipients: Vec<Choice>,
+    pub levels: Vec<Choice>,
+    pub document_label: String,
+    pub access_label: String,
+    pub apply: String,
+    pub empty: String,
+}
+
 /// Everything the tab shows, in the person's words.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Permissions {
@@ -75,6 +91,7 @@ pub struct Permissions {
     /// Whether the person may give and revoke permissions.
     pub manage: bool,
     pub composer: Composer,
+    pub documents: Option<DocumentAccess>,
     pub sections: Vec<Holders>,
     pub revoke: String,
     /// What the tab says while nothing is given: title and detail.
@@ -91,6 +108,9 @@ pub(super) struct Draft {
     pub subject: Option<String>,
     pub permission: Option<String>,
     pub expiry: Option<String>,
+    pub document: Option<(String, String)>,
+    pub document_recipient: Option<String>,
+    pub document_access: Option<String>,
     /// The day and time an `until` permission ends, as the person picked them.
     pub until: (Option<Date>, Option<Time>),
 }
@@ -128,11 +148,17 @@ impl Draft {
 /// The tab of `settings`.
 pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
     let permissions = &settings.permissions;
-    let mut groups: Vec<Element> = vec![
-        intro(&permissions.intro, Icon::Shield),
-        composer(permissions, parts),
-    ];
-    if permissions.sections.is_empty() {
+    let mut groups: Vec<Element> = Vec::new();
+    if !permissions.intro.title.is_empty() {
+        groups.extend([
+            intro(&permissions.intro, Icon::Shield),
+            composer(permissions, parts),
+        ]);
+    }
+    if let Some(documents) = &permissions.documents {
+        groups.push(document_access(documents, &permissions.composer.who, parts));
+    }
+    if permissions.sections.is_empty() && !permissions.empty.0.is_empty() {
         let (title, detail) = &permissions.empty;
         groups.push(Box::new(
             EmptyState::new(title.clone())
@@ -155,6 +181,109 @@ pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
         groups.push(caption(note));
     }
     column(groups)
+}
+
+fn document_access(documents: &DocumentAccess, who: &str, parts: &Parts) -> Element {
+    let draft = parts.local.get().draft;
+    let Some((route, label)) = documents
+        .documents
+        .iter()
+        .find(|(route, _)| Some(route) == draft.document.as_ref())
+        .or_else(|| documents.documents.first())
+    else {
+        return Box::new(Section::titled(
+            documents.title.clone(),
+            vec![caption(&documents.empty)],
+        ));
+    };
+    let Some(recipient) = choose(&documents.recipients, draft.document_recipient.as_deref()) else {
+        return Box::new(Column::new().with_no_padding());
+    };
+    let saved = documents
+        .rules
+        .get(route)
+        .and_then(|rules| rules.get(&recipient.key));
+    let Some(access) = choose(
+        &documents.levels,
+        draft
+            .document_access
+            .as_deref()
+            .or(saved.map(String::as_str)),
+    ) else {
+        return Box::new(Column::new().with_no_padding());
+    };
+    let choices = documents
+        .documents
+        .iter()
+        .map(|(key, label)| {
+            let (select, key) = (parts.clone(), key.clone());
+            let checked = &key == route;
+            MenuItem::action(label.clone(), move || {
+                select.local.update(|local| {
+                    local.draft.document = Some(key.clone());
+                    local.draft.document_access = None;
+                });
+            })
+            .with_checked(checked)
+        })
+        .collect();
+    let (app, document) = route.clone();
+    let effect = WorkspaceSettingsEffect::SetDocumentAccess {
+        app,
+        document,
+        who: recipient.key.clone(),
+        access: access.key.clone(),
+    };
+    let apply = parts.clone();
+    Box::new(Section::titled(
+        documents.title.clone(),
+        vec![
+            caption(&documents.document_label),
+            Box::new(
+                Button::new("ws-document-access-document", label)
+                    .with_accessible_name(&format!("{}: {label}", documents.document_label))
+                    .with_menu(choices),
+            ),
+            Box::new(
+                Row::new()
+                    .with_rhythm(Rhythm::Related)
+                    .align_start()
+                    .push(picker(
+                        "ws-document-access-who",
+                        who,
+                        recipient,
+                        &documents.recipients,
+                        true,
+                        parts,
+                        |draft, key| {
+                            draft.document_recipient = Some(key);
+                            draft.document_access = None;
+                        },
+                    ))
+                    .push(picker(
+                        "ws-document-access-level",
+                        &documents.access_label,
+                        access,
+                        &documents.levels,
+                        true,
+                        parts,
+                        |draft, key| draft.document_access = Some(key),
+                    )),
+            ),
+            buttons(vec![
+                Button::new("ws-document-access-apply", &documents.apply)
+                    .role(ButtonRole::Primary)
+                    .on_effect(move || apply.ask(effect.clone())),
+            ]),
+        ],
+    ))
+}
+
+fn choose<'a>(choices: &'a [Choice], key: Option<&str>) -> Option<&'a Choice> {
+    choices
+        .iter()
+        .find(|choice| Some(choice.key.as_str()) == key)
+        .or_else(|| choices.first())
 }
 
 /// Who, what and for how long, then Grant.
@@ -400,6 +529,7 @@ pub(super) fn sample() -> Permissions {
             expiries: vec![choice("always", "Always"), choice("until", "Until")],
             grant: "Grant".to_owned(),
         },
+        documents: None,
         sections: vec![
             Holders {
                 title: "Apps".to_owned(),

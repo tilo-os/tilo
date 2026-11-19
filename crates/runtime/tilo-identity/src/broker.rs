@@ -639,7 +639,7 @@ fn group_keys(
                 route.app_id,
                 route.document_id,
             );
-            workspace.answer_at(&actor_key, &node, ActionKind::Read, unix_now()) != Answer::Deny
+            workspace.answer_at(&actor_key, &node, ActionKind::Read, unix_now()) == Answer::Allow
         })
         .unwrap_or(false);
     if !reads {
@@ -651,7 +651,12 @@ fn group_keys(
     else {
         return Response::Denied("group keys requested for an invalid workspace".into());
     };
-    match groups.access(workspace, known_generation) {
+    let keys = if own_cluster {
+        groups.access(workspace, known_generation)
+    } else {
+        groups.document_access(workspace, route.app_id, route.document_id, known_generation)
+    };
+    match keys {
         None => Response::GroupKeys {
             access: runtime_identity::wire::KeyAccess::Unavailable,
             generation: 0,

@@ -17,10 +17,11 @@ use tilo_desktop_model::UserId;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::i18n::t;
 use tilo_server_protocol::workspaces::{
-    Member, Role, ServerEntry, Workspace, WorkspacesReply, WorkspacesRequest,
+    DocumentAccess, Member, Role, ServerEntry, Workspace, WorkspaceRoles, WorkspacesReply,
+    WorkspacesRequest,
 };
 use tilo_session::workspace_people;
-use tilo_session::workspace_settings::{AgentsHost, PageAgents};
+use tilo_session::workspace_settings::{AgentsSource, PageAgents, document_access_pane};
 use tilo_sheets::SheetState as _;
 use tilo_sheets::workspace_settings::{self as sheet, WorkspaceSettingsEffect};
 
@@ -37,7 +38,7 @@ const NO_HOST: &str = "this page is in no workspace";
 /// windows open them, what the workspace lets its person do, and whether it lets them administer
 /// it, as the workspace's host last answered.
 #[derive(Clone)]
-pub(crate) struct PageRecords {
+pub(crate) struct PageData {
     pub records: WorkspaceResources,
     pub permissions: SharedPermissions,
     pub administers: Arc<AtomicBool>,
@@ -46,7 +47,7 @@ pub(crate) struct PageRecords {
     pub person: UserId,
 }
 
-impl PageRecords {
+impl PageData {
     /// The records of `workspace` that `owners` keep beside the page's windows' (`shared`), opened
     /// as its person `author`, as `permissions` let them, over the shell `handle` shows.
     pub(crate) fn in_page(
@@ -75,7 +76,7 @@ impl PageRecords {
     }
 }
 
-impl AgentsHost for PageRecords {
+impl AgentsSource for PageData {
     /// The page shows one workspace: its records are the ones it keeps.
     fn open(
         &self,
@@ -98,7 +99,7 @@ pub(crate) fn make(
     shared: crate::desktop::Shared,
     here: Here,
     peer: Option<u32>,
-    records: Option<PageRecords>,
+    records: Option<PageData>,
 ) -> Box<dyn PageSheet> {
     Box::new(PageWorkspaceSettings::new(shared, here, peer, records))
 }
@@ -112,9 +113,12 @@ struct PageWorkspaceSettings {
     asks: HostAsks,
     /// The workspace as its host last answered, with its members.
     workspace: Rc<RefCell<Option<Workspace>>>,
+    roles: Rc<RefCell<Option<WorkspaceRoles>>>,
     /// The servers keeping the workspace, once its server answered its owner:
     /// `None` for a person who may not choose them, who sees nothing of them.
     servers: Rc<RefCell<Option<Vec<ServerEntry>>>>,
+    documents: Rc<RefCell<DocumentAccess>>,
+    refresh_documents: Rc<Cell<bool>>,
     /// The sheet waits for the workspace's first answer before it goes up, rather than show
     /// nobody in it.
     opening: Rc<Cell<bool>>,
@@ -137,14 +141,14 @@ impl PageWorkspaceSettings {
         shared: crate::desktop::Shared,
         here: Here,
         peer: Option<u32>,
-        records: Option<PageRecords>,
+        records: Option<PageData>,
     ) -> Self {
         let agents = records.map(|records| {
             let woken = Arc::clone(&shared.woken);
             PageAgents::new(
                 records.handle.clone(),
                 records.person.clone(),
-                Rc::new(records) as Rc<dyn AgentsHost>,
+                Rc::new(records) as Rc<dyn AgentsSource>,
                 Arc::new(move || {
                     woken.store(true, Ordering::Release);
                     crate::browser::wake_desktops();
@@ -160,7 +164,10 @@ impl PageWorkspaceSettings {
             shared,
             here,
             workspace: Rc::default(),
+            roles: Rc::default(),
             servers: Rc::default(),
+            documents: Rc::default(),
+            refresh_documents: Rc::default(),
             opening: Rc::new(Cell::new(false)),
             asked: false,
             asked_servers: false,
@@ -181,6 +188,7 @@ impl PageWorkspaceSettings {
         let Some(uuid) = self.uuid() else {
             return self.answered(Err(NO_HOST.to_owned()));
         };
+        self.list_roles(uuid.clone());
         let then = self.taking();
         self.asks.ask(
             |_| WorkspacesRequest::List,
@@ -197,6 +205,18 @@ impl PageWorkspaceSettings {
         );
     }
 
+    fn list_roles(&self, workspace: String) {
+        let roles = Rc::clone(&self.roles);
+        self.asks.ask(
+            move |_| WorkspacesRequest::Roles { workspace },
+            move |reply| {
+                if let Ok(WorkspacesReply::Roles(answered)) = reply {
+                    *roles.borrow_mut() = Some(answered);
+                }
+            },
+        );
+    }
+
     /// Ask the host `request` about one member: its answer is the workspace after the change.
     fn change(&self, request: impl FnOnce(String, [u8; 32]) -> WorkspacesRequest + 'static) {
         let Some(uuid) = self.uuid() else {
@@ -206,8 +226,43 @@ impl PageWorkspaceSettings {
         if let Err(error) = getrandom::fill(&mut request_id) {
             return self.answered(Err(error.to_string()));
         }
-        self.asks
-            .ask(move |_| request(uuid, request_id), self.taking());
+        let request = request(uuid, request_id);
+        let changes_access = matches!(
+            request,
+            WorkspacesRequest::SetDocumentAccess { .. } | WorkspacesRequest::EditRoles { .. }
+        );
+        let refresh = Rc::clone(&self.refresh_documents);
+        let take = self.taking();
+        self.asks.ask(
+            move |_| request,
+            move |reply| {
+                if changes_access
+                    && matches!(
+                        reply,
+                        Ok(WorkspacesReply::Roles(_) | WorkspacesReply::Workspace(_))
+                    )
+                {
+                    refresh.set(true);
+                }
+                take(reply);
+            },
+        );
+    }
+
+    fn list_documents(&self) {
+        let Some(workspace) = self.uuid() else { return };
+        let documents = Rc::clone(&self.documents);
+        let state = self.state.clone();
+        self.asks.ask(
+            move |_| WorkspacesRequest::DocumentAccess { workspace },
+            move |reply| match reply {
+                Ok(WorkspacesReply::DocumentAccess(found)) => *documents.borrow_mut() = found,
+                other => {
+                    *documents.borrow_mut() = DocumentAccess::default();
+                    state.refuse(workspace_people::refusal(&refused(other)));
+                }
+            },
+        );
     }
 
     /// Ask the server which servers keep the workspace. A person who may not choose them is refused,
@@ -248,12 +303,16 @@ impl PageWorkspaceSettings {
 
     /// Who takes a host's answer: the workspace it answers with, or why it refused.
     fn taking(&self) -> impl FnOnce(Reply) + 'static {
-        let (workspace, state, opening) = (
+        let (workspace, roles, state, opening) = (
             Rc::clone(&self.workspace),
+            Rc::clone(&self.roles),
             self.state.clone(),
             Rc::clone(&self.opening),
         );
-        move |reply| take(&workspace, &state, &opening, reply)
+        move |reply| match reply {
+            Ok(WorkspacesReply::Roles(answered)) => *roles.borrow_mut() = Some(answered),
+            other => take(&workspace, &state, &opening, other),
+        }
     }
 
     fn answered(&self, reply: Reply) {
@@ -276,7 +335,27 @@ impl PageWorkspaceSettings {
                 WorkspaceSettingsEffect::ShowTab { tab } => {
                     if let Some(tab) = sheet::Tab::from_key(&tab) {
                         self.tab.set(tab);
+                        if tab == sheet::Tab::Permissions {
+                            self.list_documents();
+                        }
                     }
+                }
+                WorkspaceSettingsEffect::SetDocumentAccess {
+                    who,
+                    app,
+                    document,
+                    access,
+                } => {
+                    self.change(move |workspace, request_id| {
+                        WorkspacesRequest::SetDocumentAccess {
+                            workspace,
+                            request_id,
+                            app,
+                            document,
+                            recipient: who,
+                            access,
+                        }
+                    });
                 }
                 WorkspaceSettingsEffect::SetRole { member, role } => {
                     let (Some(user_public_key), Some(role)) = (
@@ -290,6 +369,47 @@ impl PageWorkspaceSettings {
                         request_id,
                         user_public_key,
                         role,
+                    });
+                }
+                WorkspaceSettingsEffect::SaveCustomRole { role, name } => {
+                    let role = if role.is_empty() {
+                        uuid::Uuid::new_v4().simple().to_string()
+                    } else {
+                        role
+                    };
+                    self.change(move |workspace, request_id| WorkspacesRequest::EditRoles {
+                        workspace,
+                        request_id,
+                        change: tilo_action_policy::Change::DefineRole {
+                            id: if role.is_empty() {
+                                hex::encode(request_id)
+                            } else {
+                                role
+                            },
+                            name,
+                        },
+                    });
+                }
+                WorkspaceSettingsEffect::SetCustomRole {
+                    member,
+                    role,
+                    assigned,
+                } => {
+                    self.change(move |workspace, request_id| WorkspacesRequest::EditRoles {
+                        workspace,
+                        request_id,
+                        change: tilo_action_policy::Change::SetMemberCustomRole {
+                            person: member,
+                            role,
+                            assigned,
+                        },
+                    });
+                }
+                WorkspaceSettingsEffect::RemoveCustomRole { role } => {
+                    self.change(move |workspace, request_id| WorkspacesRequest::EditRoles {
+                        workspace,
+                        request_id,
+                        change: tilo_action_policy::Change::RemoveRole { id: role },
                     });
                 }
                 WorkspaceSettingsEffect::RemoveMember { member } => {
@@ -375,13 +495,23 @@ impl PageWorkspaceSettings {
                 .as_ref()
                 .map_or(&[], |workspace| &workspace.delegations),
         );
-        let mut people = workspace_people::tab(content_of(
-            &rows,
-            &viewer,
-            role == Some(Role::Owner),
-            &kept,
-            &delegated,
-        ));
+        let mut content = content_of(&rows, &viewer, role == Some(Role::Owner), &kept, &delegated);
+        let roles = self.roles.borrow();
+        content.manage_roles &= roles.is_some();
+        if let Some(governed) = roles.as_ref() {
+            content.custom_roles.extend(
+                governed
+                    .custom_roles
+                    .iter()
+                    .map(|(id, name)| (id.clone(), name.clone())),
+            );
+            for person in &mut content.people {
+                if let Some(roles) = governed.assigned_roles.get(&person.user) {
+                    person.additional_roles.extend(roles.iter().cloned());
+                }
+            }
+        }
+        let mut people = workspace_people::tab(content);
         // What the workspace did is the session's to show; a page offers only the decision.
         people.remove_decision.review.clear();
         let general = self.general();
@@ -393,9 +523,41 @@ impl PageWorkspaceSettings {
         if self.agents.is_some() {
             tabs.push(sheet::Tab::Agents);
         }
+        if people.role_editor.manage {
+            tabs.push(sheet::Tab::Permissions);
+        }
         let tab = Some(self.tab.get())
             .filter(|tab| tabs.contains(tab))
             .unwrap_or(sheet::Tab::People);
+        let permissions = if tab == sheet::Tab::Permissions {
+            let recipients = people
+                .custom_roles
+                .iter()
+                .map(|role| sheet::Choice {
+                    key: format!("role:{}", role.key),
+                    label: role.label.clone(),
+                })
+                .chain(people.people.iter().map(|person| sheet::Choice {
+                    key: format!("member:{}", person.key),
+                    label: person.name.clone(),
+                }))
+                .collect();
+            let documents = self.documents.borrow();
+            sheet::Permissions {
+                composer: sheet::Composer {
+                    who: t("workspace-settings-who"),
+                    ..sheet::Composer::default()
+                },
+                documents: Some(document_access_pane(
+                    documents.documents.clone(),
+                    documents.rules.clone(),
+                    recipients,
+                )),
+                ..sheet::Permissions::default()
+            }
+        } else {
+            sheet::Permissions::default()
+        };
         sheet::Settings {
             title: t("workspace-settings-title"),
             name: tilo_desktop_surface::names::workspace(
@@ -407,6 +569,7 @@ impl PageWorkspaceSettings {
             tab,
             general,
             people,
+            permissions,
             agents: self
                 .agents
                 .as_ref()
@@ -492,6 +655,9 @@ impl PageSheet for PageWorkspaceSettings {
             return;
         }
         self.opening.set(true);
+        if self.tab.get() == sheet::Tab::Permissions {
+            self.list_documents();
+        }
         // `list` needs `&mut self` for what it last asked about; the next pass asks.
         self.shared.wake();
     }
@@ -509,6 +675,10 @@ impl OverSheet for PageWorkspaceSettings {
     ) -> bool {
         let mut changed = self.asks.take_replies();
         let up = self.is_open() || self.opening.get();
+        if up && self.tab.get() == sheet::Tab::Permissions && self.refresh_documents.replace(false)
+        {
+            self.list_documents();
+        }
         // Opening, or the workspace's people moved while the sheet is up: ask who is in it now.
         if up && (!self.asked || self.asked_for != *self.shared.members.borrow()) {
             self.list();

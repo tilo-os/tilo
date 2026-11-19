@@ -856,9 +856,10 @@ impl Task {
             return None;
         };
         let ciphertext = collab_types::sealed_ciphertext(&envelope).ok()?;
+        let metadata = envelope.encryption?;
         let plaintext = self
-            .keys_of(route)?
-            .open_content(envelope.artifact, &envelope.encryption?, &ciphertext)
+            .keys_for_ciphertext(route, metadata)?
+            .open_content(envelope.artifact, &metadata, &ciphertext)
             .ok()?;
         let snapshot = collab_types::DocumentMutation::decode(&plaintext).ok()?;
         tilo_server_protocol::compaction::snapshot_heads(snapshot.data())
@@ -2080,14 +2081,16 @@ impl Task {
                 record: route.document.clone(),
             };
             (record.digest() == sealed.record && route.workspace_id().ok() == Some(workspace_id))
-                .then(|| Some((record, self.keys_of(route)?)))
-                .flatten()
+                .then_some((record, route))
         });
-        let Some((record, keys)) = bound else {
+        let Some((record, route)) = bound else {
             return Opening::NoKeys(sealed.record);
         };
         sealed
             .open_in_record(&record, |artifact, metadata, payload| {
+                let keys = self
+                    .keys_for_ciphertext(route, *metadata)
+                    .ok_or("the document's keys have not arrived".to_owned())?;
                 keys.open_content(artifact, metadata, payload)
                     .map(|plaintext| plaintext.to_vec())
                     .map_err(|error| error.to_string())
@@ -2178,13 +2181,10 @@ impl Task {
     /// Take up `route`'s keys when the engine holds newer ones than the
     /// session; answers whether the route has keys.
     fn read_keys(&mut self, route: &DocumentRoute) -> bool {
-        let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id) else {
+        let Some(keys) = self.keys_of(route) else {
             return false;
         };
-        if self.keys_of(route).is_none() {
-            return false;
-        }
-        let change = self.workspace_keys.workspace_change(workspace);
+        let change = self.workspace_keys.workspace_change(keys.workspace());
         let installed = match self.route_keys.get(route) {
             Some(RouteKeys::Engine(held)) => *held == change,
             Some(RouteKeys::Handed) => true,
@@ -2362,9 +2362,28 @@ impl Task {
 
     /// The keys this device seals and opens `route`'s content with, as its engine holds them.
     fn keys_of(&self, route: &DocumentRoute) -> Option<key_group::ContentKeys> {
-        let workspace = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id)?;
-        match self.engine.seal_keys(workspace) {
+        match self.engine.document_seal_keys(route) {
             Ok(crate::engine::SealKeys::Here(keys)) => Some(keys),
+            _ => None,
+        }
+    }
+
+    fn keys_for_ciphertext(
+        &self,
+        route: &DocumentRoute,
+        metadata: collab_types::EncryptionMetadata,
+    ) -> Option<key_group::ContentKeys> {
+        let workspace = route.workspace_id().ok()?;
+        let group = metadata.key_group(workspace);
+        let keys = if group == workspace {
+            self.engine.seal_keys(workspace).ok()?
+        } else if route.key_scope().ok()?.group() == group {
+            self.engine.exact_document_keys(route).ok()?
+        } else {
+            return None;
+        };
+        match keys {
+            crate::engine::SealKeys::Here(keys) => Some(keys),
             _ => None,
         }
     }

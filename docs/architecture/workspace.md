@@ -18,6 +18,23 @@ A person has as many workspaces as they like, and every one of them is on
 every one of their devices. None of them is special. A new workspace starts
 empty.
 
+## Document access
+
+Workspace members hold a base role and can hold additional workspace-defined roles.
+The most specific applicable rule decides. At the same document, a person's override
+takes precedence over their custom roles, and those roles can extend access beyond
+the default. Administrators can assign roles in **People** and edit document rules in
+**Privacy & Security**.
+
+A restricted document uses its own MLS content key group. The group follows the
+devices that can read that document. Delivery checks the same read permission before
+replaying or forwarding document writes. When a device loses access, the group must
+remove it before the updated membership can be used for new writes.
+
+An authorized reader can still open older versions that were sealed with workspace
+keys. A role change cannot take back copies a device already received or keys it
+already held.
+
 ## Members and devices
 
 **A member is a person's identity**: a certified human root

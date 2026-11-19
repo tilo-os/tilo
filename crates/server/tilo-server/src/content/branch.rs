@@ -10,9 +10,15 @@
 //! file the host is still gathering would never reach the branch. What only an
 //! earlier version named is copied when it is here, and may be long collected.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use tilo_content::WorkspaceStores;
+use automerge::transaction::Transactable as _;
+use automerge::{AutoCommit, ROOT, ReadDoc as _};
+use collab_types::{ContentRetention, EncryptionMetadata, WorkspaceId, file_content_artifact};
+use fs::content::Manifest;
+use key_group::ContentKeys;
+use tilo_content::{ContentStore, WorkspaceStores};
 
 /// The workspaces' stores, as a branch's content is copied between them.
 pub struct StoresBranches(pub Arc<WorkspaceStores>);
@@ -75,9 +81,152 @@ impl crate::workspaces::BranchContent for StoresBranches {
         Ok(())
     }
 
+    fn has_sealed_files(
+        &self,
+        source: &str,
+        documents: &[((String, String), Vec<u8>)],
+    ) -> Result<bool, String> {
+        let Some(tree) = tree_of(documents) else {
+            return Ok(false);
+        };
+        let source = self.0.get(source)?;
+        Ok(crate::files_content::files_named(&tree).iter().any(|hash| {
+            source
+                .read(hash)
+                .and_then(|bytes| Manifest::decode(&bytes).ok())
+                .is_some_and(|manifest| manifest.sealed().is_some())
+        }))
+    }
+
+    fn copy_rekeyed(
+        &self,
+        source: &str,
+        branch: &str,
+        documents: &mut [((String, String), Vec<u8>)],
+        keys: (&ContentKeys, &ContentKeys),
+    ) -> Result<(), String> {
+        self.copy(source, branch, documents)?;
+        let Some(tree) = tree_of(documents) else {
+            return Ok(());
+        };
+        let from = WorkspaceId::parse(source).ok_or("invalid source workspace")?;
+        let to = WorkspaceId::parse(branch).ok_or("invalid branch workspace")?;
+        let store = self.0.get(branch)?;
+        let mut translated = BTreeMap::new();
+        for hash in crate::files_content::files_named(&tree) {
+            let Some(bytes) = store.read(&hash) else {
+                continue;
+            };
+            let Ok(manifest) = Manifest::decode(&bytes) else {
+                continue;
+            };
+            if manifest.sealed().is_some() {
+                let replacement = rekey(&store, &manifest, (from, to), keys)?;
+                translated.insert(hash, replacement);
+            }
+        }
+        for ((app, document), bytes) in documents {
+            if app == fs_protocol::tree::FILES_APP
+                && fs_protocol::tree::chunk_of_record(document).is_some()
+            {
+                replace_file_hashes(bytes, &translated)?;
+            }
+        }
+        Ok(())
+    }
+
     fn discard(&self, branch: &str) -> Result<(), String> {
         self.0.remove(branch)
     }
+}
+
+fn rekey(
+    store: &ContentStore,
+    source: &Manifest,
+    (from, to): (WorkspaceId, WorkspaceId),
+    (source_keys, branch_keys): (&ContentKeys, &ContentKeys),
+) -> Result<String, String> {
+    let old = source.sealed().ok_or("the source file is not sealed")?;
+    let group = WorkspaceId::from_u128(u128::from_be_bytes(old.group));
+    let metadata =
+        EncryptionMetadata::content_group(from, group, old.epoch, ContentRetention::Delta);
+    let from = file_content_artifact(from);
+    let to = file_content_artifact(to);
+    let mut chunks = Vec::with_capacity(source.chunks().len());
+    let mut overhead = None;
+    for part in source.chunks() {
+        let bytes = store
+            .read(&hex::encode(part.hash))
+            .ok_or("a source file chunk is missing")?;
+        let clear = source_keys
+            .open_content(from, &metadata, &bytes)
+            .map_err(|error| error.to_string())?;
+        if clear.len() != part.len as usize {
+            return Err("a source file chunk has another length".into());
+        }
+        let (_, sealed) = branch_keys
+            .seal_content(to, ContentRetention::Delta, &clear)
+            .map_err(|error| error.to_string())?;
+        let extra = u32::try_from(sealed.len().saturating_sub(clear.len()))
+            .map_err(|error| error.to_string())?;
+        if *overhead.get_or_insert(extra) != extra {
+            return Err("inconsistent sealed file chunk length".into());
+        }
+        let mut chunk = *part;
+        let stored = store
+            .put_public(&sealed)
+            .map_err(|error| error.to_string())?;
+        hex::decode_to_slice(stored, &mut chunk.hash).map_err(|error| error.to_string())?;
+        chunks.push(chunk);
+    }
+    let manifest = Manifest::new_sealed(
+        source.tier(),
+        chunks,
+        fs::content::SealedChunks {
+            group: *branch_keys.workspace().as_uuid().as_bytes(),
+            epoch: branch_keys.epoch(),
+            overhead: overhead.ok_or("empty sealed manifest")?,
+        },
+    );
+    store
+        .put_public(&manifest.encode())
+        .map_err(|error| error.to_string())
+}
+
+fn replace_file_hashes(
+    bytes: &mut Vec<u8>,
+    translated: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    use fs_protocol::tree::{HASH_KEY, NODES_KEY};
+    let mut document = AutoCommit::load(bytes).map_err(|error| error.to_string())?;
+    let Some((automerge::Value::Object(automerge::ObjType::Map), nodes)) = document
+        .get(&ROOT, NODES_KEY)
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(());
+    };
+    let ids: Vec<_> = document.keys(&nodes).collect();
+    for id in ids {
+        let Some((automerge::Value::Object(automerge::ObjType::Map), node)) = document
+            .get(&nodes, &id)
+            .map_err(|error| error.to_string())?
+        else {
+            continue;
+        };
+        let Some((automerge::Value::Scalar(hash), _)) = document
+            .get(&node, HASH_KEY)
+            .map_err(|error| error.to_string())?
+        else {
+            continue;
+        };
+        if let Some(new) = hash.as_str().and_then(|old| translated.get(old)) {
+            document
+                .put(&node, HASH_KEY, new.as_str())
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    *bytes = document.save();
+    Ok(())
 }
 
 /// The Files tree among `records`, read: its own record and each chunk of it the branch took.

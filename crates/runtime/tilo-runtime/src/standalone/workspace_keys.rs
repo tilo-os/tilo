@@ -89,6 +89,26 @@ struct Directory {
 }
 
 impl KeyDirectory for Directory {
+    fn requires_document_keys(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        document: &str,
+    ) -> Option<bool> {
+        self.joined.requires_document_keys(workspace, app, document)
+    }
+
+    fn document_devices(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        document: &str,
+        now: u64,
+    ) -> Option<BTreeSet<Ed25519PublicKey>> {
+        self.joined
+            .document_key_holders(workspace, app, document, now)
+    }
+
     fn allowed_devices(
         &self,
         workspace: WorkspaceId,

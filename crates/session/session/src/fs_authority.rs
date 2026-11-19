@@ -20,11 +20,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use collab_types::caps::{Access, CapOverride, FsAuthority, Scope};
+use collab_types::caps::{Access, CapOverride, Effect, FsAuthority, Scope};
 use collab_types::crypto::Ed25519PublicKey;
-use tilo_action_policy::{
-    Acting, ActionKind, Answer, Context, Grantee, MemberAccess, MemberId, WorkspacePolicy,
-};
+use tilo_action_policy::{Acting, ActionKind, Answer, Context, Grantee, Lifetime, MemberId};
 use tilo_desktop_model::Layout;
 use tilo_lock::MutexRecover as _;
 
@@ -38,35 +36,82 @@ const LAST_RETRY: Duration = Duration::from_secs(5);
 
 /// The shell's file capabilities and each workspace's readers, as the Files daemon enforces them for
 /// this device.
-/// Every workspace exports together (one mount serves them all), so two workspaces granting the
-/// same path to different people union. A grant to this person is exported twice: once by the
+/// Role access is scoped to the workspace's own directory within the shared mount.
+/// A grant to this person is exported twice: once by the
 /// person's key and once by this device's, which is the identity the mount itself authenticates as,
 /// so translation can never widen a grant and a revoked one takes both away.
 #[must_use]
 pub(crate) fn list(tree: &Layout, person: &str, device: Option<[u8; 32]>) -> FsAuthority {
     let acting = person_key(person).map(|key| Acting::person(hex::encode(key.0)));
     let mut capabilities = Vec::new();
+    let context = Context::at_time(tilo_clock::wall());
     for workspace in &tree.workspaces {
         for capability in workspace.sandbox.iter().filter(|capability| {
-            capability.is_durable() && matches!(capability.scope, Scope::FsPath(_))
+            capability.is_durable()
+                && matches!(capability.scope, Scope::FsPath(_))
+                && matches!(capability.effect, Effect::Grant | Effect::Restrict)
         }) {
             push_with_device(&mut capabilities, capability, acting.as_ref(), device);
         }
-        // What the workspace's grants let each member do to its files, decided as every holder
-        // decides a change of them: a role change or a grant rewrites this list and the daemon
-        // enforces the new answer at the next open; a member removed from the workspace holds
-        // nothing here, and their device stops at once without being told.
-        let policy = std::sync::Arc::new(workspace.policy.clone());
+        let id = workspace.id().to_string();
+        let Some(path) = tilo_paths::workspace_tree(std::path::Path::new(WORKSPACE_FILES), &id)
+        else {
+            continue;
+        };
+        let node = collab_types::document_node(
+            &id,
+            fs_protocol::tree::FILES_APP,
+            &fs_protocol::tree::document_id(),
+        );
+        let refresh_at = workspace
+            .policy
+            .grants
+            .iter()
+            .filter_map(|grant| match grant.lifetime {
+                Lifetime::Until(at)
+                    if at > context.now_unix_ms && context.covers(&grant.node, &node) =>
+                {
+                    Some(at)
+                }
+                _ => None,
+            })
+            .min();
+        if let Some(at) = refresh_at {
+            tilo_identity::policy_change::wake_at(at.saturating_mul(1_000_000));
+        }
+        let scope = Scope::FsPath(path.to_string_lossy().into_owned());
+        capabilities.push(
+            CapOverride::new(
+                Grantee::role(tilo_action_policy::Role::Viewer),
+                scope.clone(),
+                Effect::WorkspaceFileBoundary,
+                Access::Read,
+            )
+            .with_id(format!("workspace-files:{id}"))
+            .lasting(Lifetime::UntilRevoked),
+        );
         for (member, _) in workspace.roster() {
-            let Some(access) = files_access(&policy, &member) else {
+            let authority = workspace.policy.party(&member);
+            if authority.decide(&node, ActionKind::Read, &context).answer != Answer::Allow {
                 continue;
+            }
+            let access = if authority
+                .decide(&node, ActionKind::Undoable, &context)
+                .answer
+                == Answer::Allow
+            {
+                Access::Write
+            } else {
+                Access::Read
             };
-            let capability = CapOverride::grant(
+            let capability = CapOverride::new(
                 Grantee::person(member.clone()),
-                Scope::FsPath(WORKSPACE_FILES.into()),
+                scope.clone(),
+                Effect::WorkspaceFileAccess,
                 access,
             )
-            .with_id(member_capability_id(&workspace.id().to_string(), &member));
+            .with_id(role_capability_id(&id, &member))
+            .lasting(refresh_at.map_or(Lifetime::UntilRevoked, Lifetime::Until));
             push_with_device(&mut capabilities, &capability, acting.as_ref(), device);
         }
     }
@@ -82,31 +127,10 @@ fn person_key(person: &str) -> Option<Ed25519PublicKey> {
 /// role's access ranges over.
 const WORKSPACE_FILES: &str = "/var/workspace";
 
-/// What `member` may do to the workspace's files under `policy`: change them where its grants
-/// allow writing a file, read them where they allow reading, nothing otherwise.
-fn files_access(policy: &std::sync::Arc<WorkspacePolicy>, member: &str) -> Option<Access> {
-    let access = MemberAccess::new(
-        std::sync::Arc::clone(policy),
-        Acting::member(MemberId::parsed_person(member)?),
-    );
-    let cx = Context::at_time(tilo_clock::wall());
-    let allows = |verb: &str, kind| {
-        let node = access.node(&fs_protocol::file_action::verb_node(None, verb));
-        access.answer(&node, kind, &cx) == Answer::Allow
-    };
-    if allows(fs_protocol::file_action::verbs::WRITE, ActionKind::Undoable) {
-        Some(Access::Write)
-    } else if allows(fs_protocol::tree::LIST, ActionKind::Read) {
-        Some(Access::Read)
-    } else {
-        None
-    }
-}
-
-/// The id of the capability the workspace's grants give a member over its files, so the same
-/// member's entry is recognisable across revisions and in the daemon's log.
-fn member_capability_id(workspace: &str, member: &str) -> String {
-    format!("files:{workspace}:{member}")
+/// The id of the capability a workspace's role gives a member, so the same member's grant is
+/// recognisable across revisions and in the daemon's log.
+fn role_capability_id(workspace: &str, member: &str) -> String {
+    format!("role:{workspace}:{member}")
 }
 
 /// Publish `capability` as it stands, and again bound to this device's key when it is the key of
@@ -380,7 +404,7 @@ fn write_and_publish(inner: &Inner, bytes: &[u8]) -> Result<(), String> {
 )]
 mod tests {
     use super::*;
-    use collab_types::caps::{Access, CapOverride, Effect};
+    use collab_types::caps::{Access, CapOverride};
     use std::os::unix::fs::PermissionsExt as _;
     use std::path::Path;
     use tilo_action_policy::Role;
@@ -437,35 +461,63 @@ mod tests {
         phase a_members_role_decides_whether_they_write_the_workspace_files;
         {
             const MEMBER: &str = "2222222222222222222222222222222222222222222222222222222222222222";
-            const NOTE: &str = "/var/workspace/brief/plan.md";
             let member = Acting::person(MEMBER);
             let mut tree = tree_with(app_folder_grant());
+            let note = format!("{WORKSPACE_FILES}/{}/{}/brief/plan.md", tilo_paths::WORKSPACE_TREES_DIR, tree.workspaces[0].id());
             tree.workspaces[0].admit(MEMBER, Role::Viewer);
+            let other = Workspace::new(tilo_desktop_model::WorkspaceId::new(), "Other");
+            let other_note = format!("{WORKSPACE_FILES}/{}/{}/brief/plan.md", tilo_paths::WORKSPACE_TREES_DIR, other.id());
+            tree.workspaces.push(other);
             let read_only = list(&tree, PERSON, None);
             assert!(
-                may_read(&read_only, &member, NOTE),
+                may_read(&read_only, &member, &note),
                 "a member reads the workspace's files"
             );
             assert!(
-                !may_write(&read_only, &member, NOTE),
+                !may_write(&read_only, &member, &note),
                 "a member with a read-only role cannot write them"
             );
 
             tree.workspaces[0].admit(MEMBER, Role::Editor);
             let editing = list(&tree, PERSON, None);
-            assert!(may_write(&editing, &member, NOTE), "an editor writes them");
+            assert!(may_write(&editing, &member, &note), "an editor writes them");
             assert_ne!(
                 editing.capabilities, read_only.capabilities,
                 "a role change is a new list, so the daemon is handed it"
             );
 
+            assert!(!may_read(&editing, &member, &other_note));
+            assert!(!may_read(&editing, &member, "/var/workspace/personal.txt"));
+
+            let node = collab_types::document_node(&tree.workspaces[0].id().to_string(), fs_protocol::tree::FILES_APP, &fs_protocol::tree::document_id());
+            tree.workspaces[0].policy.grants.push(tilo_action_policy::Grant {
+                id: tilo_action_policy::GrantId("files-override".into()),
+                grantee: Grantee::person(MEMBER),
+                node,
+                kinds: tilo_action_policy::KindSet::READ,
+                answer: Answer::Deny,
+                lifetime: Lifetime::UntilRevoked,
+                granted_by: Grantee::person(PERSON),
+            });
+            let explicit_allow = CapOverride::grant(
+                Grantee::person(MEMBER),
+                Scope::FsPath(WORKSPACE_FILES.into()),
+                Access::Write,
+            );
+            tree.workspaces[0].sandbox.push(explicit_allow);
+            let overridden = list(&tree, PERSON, None);
+            assert!(!may_read(&overridden, &member, &note));
+            assert!(!may_read(&overridden, &member, &other_note));
+            assert!(may_read(&overridden, &member, "/var/workspace/personal.txt"));
+            tree.workspaces[0].sandbox.pop();
+
             tree.workspaces[0].policy.members.remove(MEMBER);
             let removed = list(&tree, PERSON, None);
             assert!(
-                !may_read(&removed, &member, NOTE),
+                !may_read(&removed, &member, &note),
                 "a removed member reads nothing"
             );
-            assert!(!may_write(&removed, &member, NOTE));
+            assert!(!may_write(&removed, &member, &note));
         }
 
         phase a_grant_on_the_files_decides_over_the_role;
@@ -552,9 +604,13 @@ mod tests {
             tree.workspaces[0].sandbox.push(transient);
             tree.workspaces[0].sandbox.push(device_only);
             let published = list(&tree, PERSON, None);
-            assert_eq!(published.capabilities.len(), 1);
-            assert!(matches!(published.capabilities[0].scope, Scope::FsPath(_)));
-            assert_eq!(published.capabilities[0].effect, Effect::Grant);
+            let ordinary: Vec<_> = published.capabilities.iter()
+                .filter(|cap| cap.effect != Effect::WorkspaceFileBoundary)
+                .collect();
+            assert_eq!(ordinary.len(), 1);
+            assert!(matches!(ordinary[0].scope, Scope::FsPath(_)));
+            assert_eq!(ordinary[0].effect, Effect::Grant);
+            assert_eq!(published.capabilities.len(), 2);
         }
     }
 

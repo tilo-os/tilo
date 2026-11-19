@@ -167,7 +167,7 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     /// any member.
     /// `Some(Err)` when the host refused the hand-off or holds no such
     /// document. Called only on behalf of a caller the service serves.
-    fn host_keys(
+    fn serving_keys(
         &self,
         _route: &DocumentRoute,
         _create: bool,

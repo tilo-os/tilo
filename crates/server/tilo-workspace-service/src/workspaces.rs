@@ -1181,21 +1181,6 @@ impl Workspaces {
             .map(|channels| Arc::clone(&channels.keys))
     }
 
-    /// The content keys of `route`'s workspace, for this host's own endpoints
-    /// (the workspace actions it runs for its members' pages and bots), as the
-    /// device it runs on answers: `create` opens the channel for the record the
-    /// writes are about to start, and otherwise only an existing channel is
-    /// read. `None` when this host runs on a device that takes part in no
-    /// channel of the workspace.
-    pub async fn own_route_keys(
-        &self,
-        route: &tilo_peer_state::document_frame::DocumentRoute,
-        create: bool,
-    ) -> GroupKeysAnswer {
-        let device = self.device_keys()?;
-        device.group_keys(&route.cluster_id, create).await
-    }
-
     /// Set what this host offers its workspaces, as the entry its person keeps
     /// of it in their admin workspace says: whether it runs their actions and jobs,
     /// how much storage it offers and how many machines it runs. What devices
