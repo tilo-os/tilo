@@ -256,9 +256,33 @@ pub struct HereState {
     /// Where this person's own agents were last shown working ([`HereState::take_own_agent_work`]).
     agent_work: agent_work::AgentWork,
     /// When the workspace admitted each of its people, by their root key (hex), Unix milliseconds,
-    /// as its governance records it ([`HereState::set_joined`]): the order people who share a name
-    /// are numbered in, here as in the roster.
+    /// as its governance records it ([`HereState::set_workspace_people`]): the order people who
+    /// share a name are numbered in, here as in the roster.
     joined: BTreeMap<String, u64>,
+    /// What the workspace calls each of its people, by their root key (hex), here or not
+    /// ([`HereState::set_workspace_people`]): namesakes are numbered among all of them, as the
+    /// roster numbers them, never only among those here now.
+    names: HashMap<String, String>,
+}
+
+/// The workspace's people as its roster lists them: when it admitted each (the order namesakes
+/// are numbered in) and what each is called, by their root key.
+#[must_use]
+pub fn workspace_people(workspace: &Workspace) -> (BTreeMap<String, u64>, HashMap<String, String>) {
+    let joined = workspace
+        .policy
+        .admitted()
+        .map(|(person, at)| (person.to_owned(), at))
+        .collect();
+    let names = workspace
+        .members
+        .iter()
+        .filter_map(|member| {
+            let person = member.id.person_id()?;
+            (!member.name.trim().is_empty()).then(|| (person.to_owned(), member.name.clone()))
+        })
+        .collect();
+    (joined, names)
 }
 
 pub type Here = std::rc::Rc<std::cell::RefCell<HereState>>;
@@ -348,14 +372,20 @@ impl HereState {
         true
     }
 
-    /// When the workspace admitted each of its people, by their root key (hex), Unix
-    /// milliseconds, as its governance records it: who shares a name is numbered in this order,
-    /// so this page numbers namesakes as the workspace's roster does. Whether it changed.
-    pub fn set_joined(&mut self, joined: &BTreeMap<String, u64>) -> bool {
-        if self.joined == *joined {
+    /// The workspace's people as its roster lists them, by their root key (hex): when its
+    /// governance admitted each, and what it calls each. Who shares a name is numbered in that
+    /// order, among all of them, so this page numbers namesakes as the roster does. Whether it
+    /// changed.
+    pub fn set_workspace_people(
+        &mut self,
+        joined: &BTreeMap<String, u64>,
+        names: &HashMap<String, String>,
+    ) -> bool {
+        if self.joined == *joined && self.names == *names {
             return false;
         }
         self.joined.clone_from(joined);
+        self.names.clone_from(names);
         self.revision = self.revision.wrapping_add(1);
         true
     }
@@ -865,34 +895,33 @@ impl HereState {
         Some(self.labels().label(&id, own))
     }
 
-    /// The numbers the people here are told apart by, this page's own person included. Keyed by
+    /// The numbers the people here are told apart by, as the workspace's roster numbers its
+    /// people: every member it lists, here or not, this page's own person included. Keyed by
     /// person, so two devices of one person are one name to number, and numbered in the order the
-    /// workspace admitted them, as its roster numbers them.
-    fn labels<'a>(&'a self) -> ui::presence::MemberLabels {
-        let mut named: Vec<(&'a str, String)> = Vec::new();
-        // One name per person, whoever of theirs spoke first: a device that has not said whose it
-        // is yet does not keep their name out.
-        let guest = unnamed_person_label();
-        let add = |named: &mut Vec<(&'a str, String)>, id: &'a str, name: String| match named
-            .iter_mut()
-            .find(|(known, _)| *known == id)
-        {
-            Some((_, held)) if *held == guest => held.clone_from(&name),
-            Some(_) => {}
-            None => named.push((id, name)),
-        };
+    /// workspace admitted them.
+    fn labels(&self) -> ui::presence::MemberLabels {
+        let mut named: Vec<(&str, &str, Option<u64>)> = self
+            .names
+            .iter()
+            .map(|(id, name)| (id.as_str(), name.as_str(), self.joined.get(id).copied()))
+            .collect();
+        // Someone here who is not (yet) a row of the workspace's list, and its agents: numbered
+        // among the others of their kind, since no roster entry names them.
         for member in self.members.iter().flatten().chain(self.own.as_ref()) {
-            if member.kind == "agent" {
+            let key = if member.kind == "agent" {
+                member.publisher.as_str()
+            } else {
+                self.person_of(&member.publisher)
+            };
+            let Some(name) = member_name(member) else {
+                continue;
+            };
+            if named.iter().any(|(known, ..)| *known == key) {
                 continue;
             }
-            let label = member_name(member).map_or_else(unnamed_person_label, str::to_owned);
-            add(&mut named, self.person_of(&member.publisher), label);
+            named.push((key, name, self.joined.get(key).copied()));
         }
-        ui::presence::MemberLabels::by_joining(named.iter().map(|(id, name)| {
-            // A person is spelled by their root key, the one every record stores.
-            let admitted = self.joined.get(*id).copied();
-            (*id, name.as_str(), admitted)
-        }))
+        ui::presence::MemberLabels::by_joining(named)
     }
 
     /// Show `people` on the windows they are in: each one's colour, name and kind, registered on

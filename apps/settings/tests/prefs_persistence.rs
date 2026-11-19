@@ -1,6 +1,6 @@
 //! End-to-end persistence proofs — the real "control → shared JSON store" path,
 //! driven through each pane's production `sync` and read back from disk. The
-//! panes resolve the shared settings from `XDG_CONFIG_HOME`, so the environment
+//! panes resolve the shared settings from the device data home (`XDG_DATA_HOME`), so the environment
 //! is the interface here: each test points it at a fresh tree through
 //! `tilo_test_env::TestHome`, which serialises the tests on one lock and
 //! restores the prior environment afterwards, also when an assertion fails.

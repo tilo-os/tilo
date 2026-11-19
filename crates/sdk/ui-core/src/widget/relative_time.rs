@@ -18,7 +18,7 @@ const DAY: i64 = 24 * HOUR;
 fn local(secs: i64) -> Option<DateTime> {
     jiff::Timestamp::from_second(secs)
         .ok()
-        .map(|at| at.to_zoned(jiff::tz::TimeZone::system()).datetime())
+        .map(|at| crate::clock::at(at).datetime())
 }
 
 fn next_midnight(secs: i64) -> Option<i64> {

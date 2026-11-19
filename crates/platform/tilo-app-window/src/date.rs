@@ -229,7 +229,7 @@ pub fn shown_tone(node: &UiNode, name: &str, under: Option<&str>) -> Option<Tone
 /// `<name>:time`.
 fn paired_time(node: &UiNode, name: &str) -> Option<Time> {
     let text = display(node.props.get(&format!("{name}:time"))?);
-    moment_of(&text).map(|at| at.to_zoned(jiff::tz::TimeZone::system()).time())
+    moment_of(&text).map(|at| ui::clock::at(at).time())
 }
 
 fn formatted(

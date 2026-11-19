@@ -46,9 +46,10 @@
 
 use serde::Deserialize;
 use tilo_actions::{
-    Acting, Action, ActionContext, ActionEnvelope, ActionId, ActionInvoker, MemberId,
+    Acting, Action, ActionContext, ActionEnvelope, ActionError, ActionId, ActionInvoker,
+    ChangeKind, EncodedAction, ExecutionLocus, MemberId,
 };
-use tilo_resource::Resource;
+use tilo_resource::{Doc, ModelError, Resource};
 
 /// The export the device calls, with no arguments, returning `0` once it wrote
 /// its answer and anything else when it could not.
@@ -143,8 +144,13 @@ enum Op {
 pub struct Served {
     /// The resource kind this serves, as the app declares it.
     pub kind: &'static str,
-    /// The handler that answers a request for it.
-    pub handler: fn(&Request) -> Result<Answer, String>,
+    /// The app that publishes it ([`Resource::APP_ID`]).
+    pub app: &'static str,
+    /// The resource's own code, and nothing else: what a request does about
+    /// it — parsing it, naming its invocation, writing the answer — is the
+    /// same for every resource, so it is one function every app's module
+    /// shares in the runtime.
+    model: Model,
 }
 
 impl Served {
@@ -153,9 +159,60 @@ impl Served {
     pub fn of<R: Resource>() -> Self {
         Self {
             kind: R::KIND,
-            handler: serve_resource::<R>,
+            app: R::APP_ID,
+            model: Model {
+                initialize: R::initialize,
+                label: R::label,
+                invoke: invoke::<R>,
+                replay: replay_into::<R>,
+            },
         }
     }
+}
+
+/// An invocation's arguments, as the action API binds them.
+type Arguments = serde_json::Map<String, serde_json::Value>;
+
+/// The resource's own code, as the calls a request makes of it.
+#[derive(Clone, Copy)]
+struct Model {
+    /// Its initial content.
+    initialize: fn(&mut Doc) -> Result<(), ModelError>,
+    /// The name it is published under, in the person's language.
+    label: fn() -> String,
+    /// Its action, built from JSON arguments as the action API binds them.
+    invoke: fn(&str, &Arguments, i64) -> Result<Invoked, String>,
+    /// The invocation replayed through its own verbs.
+    replay: fn(Doc, &ActionEnvelope) -> Result<(), ActionError>,
+}
+
+/// One request's action, as the invocation names it: its encoded form, its
+/// locus, and what kind of change it is.
+struct Invoked {
+    /// The action in the form a peer replays.
+    encoded: EncodedAction,
+    /// Where the action is done.
+    locus: ExecutionLocus,
+    /// What kind of change it makes.
+    change: ChangeKind,
+}
+
+/// `R`'s action for the arguments `arguments`, with what the invocation needs
+/// of it: the resource's own serialization, and nothing a request decides.
+fn invoke<R: Resource>(id: &str, arguments: &Arguments, now: i64) -> Result<Invoked, String> {
+    let action = tilo_resource::build_action::<R>(id, arguments, now)?;
+    let encoded = tilo_resource::encode::<R>(&action).map_err(|error| format!("{id}: {error}"))?;
+    Ok(Invoked {
+        encoded,
+        locus: action.locus(),
+        change: action.change_kind(),
+    })
+}
+
+/// Replay `envelope` against `doc` through `R`'s own verbs.
+fn replay_into<R: Resource>(doc: Doc, envelope: &ActionEnvelope) -> Result<(), ActionError> {
+    let mut replica = tilo_resource::Replica::<R>::from_doc(doc);
+    replica.replay(envelope)
 }
 
 /// One request from the device.
@@ -235,26 +292,28 @@ fn asked(resources: &[Served]) -> Result<Answer, String> {
         .iter()
         .find(|served| served.kind == request.kind)
         .ok_or_else(|| format!("the module serves no `{}` resource", request.kind))?;
-    (served.handler)(&request)
+    serve_served(served, &request)
 }
 
-/// One request for the resource `R`, answered by its own verbs.
-fn serve_resource<R: Resource>(request: &Request) -> Result<Answer, String> {
+/// One request for a served resource: every app's module calls this one
+/// function, from the model runtime when the apps are built together.
+fn serve_served(served: &Served, request: &Request) -> Result<Answer, String> {
     match request.op {
-        Op::Initialize => genesis::<R>(request),
-        Op::Apply => apply::<R>(request),
-        Op::Replay => replay::<R>(request),
+        Op::Initialize => genesis(served, request),
+        Op::Apply => apply(served, request),
+        Op::Replay => replay(served, request),
     }
 }
 
 /// The resource's genesis: the initializer's content in one change at time
 /// zero, under the actor every device derives from its identity
 /// ([`tilo_resource::genesis::actor`]).
-fn genesis<R: Resource>(request: &Request) -> Result<Answer, String> {
-    let actor = tilo_resource::genesis::actor(&request.id, R::KIND, &request.home);
+fn genesis(served: &Served, request: &Request) -> Result<Answer, String> {
+    let actor = tilo_resource::genesis::actor(&request.id, served.kind, &request.home);
     let mut doc = device_document()?;
     doc.set_actor(actor);
-    R::initialize(&mut doc).map_err(|error| format!("initializing the resource: {error}"))?;
+    (served.model.initialize)(&mut doc)
+        .map_err(|error| format!("initializing the resource: {error}"))?;
     Ok(genesis_answer(&mut doc))
 }
 
@@ -309,49 +368,60 @@ fn applied(envelope: &ActionEnvelope) -> Result<Answer, String> {
 /// One action, applied as an invocation of its actor against the document
 /// the device gave: what the envelope names makes the change the same for
 /// every holder.
-fn apply<R: Resource>(request: &Request) -> Result<Answer, String> {
+fn apply(served: &Served, request: &Request) -> Result<Answer, String> {
     let Invocation { member, acting } = invocation(request)?;
-    let action =
-        tilo_resource::build_action::<R>(&request.action, &request.arguments, request.now)?;
-    let encoded = tilo_resource::encode::<R>(&action)
-        .map_err(|error| format!("{}: {error}", request.action))?;
-    let mut replica = tilo_resource::replica::Replica::<R>::from_doc(device_document()?);
-    let heads = replica.doc_mut().get_heads();
-    let context = ActionContext::for_resource(R::KIND, R::KIND, R::label())
-        .with_app(R::APP_ID, R::label())
-        .with_invoker(ActionInvoker::admitted(&acting))
-        .with_change(action.change_kind());
+    let Invoked {
+        encoded,
+        locus,
+        change,
+    } = (served.model.invoke)(&request.action, &request.arguments, request.now)?;
+    let mut doc = device_document()?;
+    let heads = doc.get_heads();
     let envelope = ActionEnvelope {
         id: invocation_id(&request.id, &member, &encoded, &heads, request.now),
         action: encoded,
         base_heads: heads.iter().map(|head| head.0).collect(),
         timestamp: request.now / 1_000,
-        locus: action.locus(),
+        locus,
         actor: Some(member.actor_bytes()),
-        context: Some(context),
+        context: Some(context(served, &acting, change)),
     };
-    replica
-        .replay(&envelope)
+    (served.model.replay)(doc, &envelope)
         .map_err(|error| format!("{}: {error}", request.action))?;
     applied(&envelope)
+}
+
+/// For whom an action was done, and what kind of change it is: the same for
+/// every resource, named by the served one.
+#[inline(never)]
+fn context(served: &Served, acting: &Acting, change: ChangeKind) -> ActionContext {
+    let label = (served.model.label)();
+    ActionContext::for_resource(served.kind, served.kind, label.clone())
+        .with_app(served.app, label)
+        .with_invoker(ActionInvoker::admitted(acting))
+        .with_change(change)
 }
 
 /// An invocation another holder recorded, replayed against the device's
 /// document through the resource's own verbs: at the envelope's base heads it
 /// makes the same change, which is how the holder that receives it checks it.
-fn replay<R: Resource>(request: &Request) -> Result<Answer, String> {
-    let envelope: ActionEnvelope = request
+fn replay(served: &Served, request: &Request) -> Result<Answer, String> {
+    let envelope = envelope_of(request)?;
+    (served.model.replay)(device_document()?, &envelope)
+        .map_err(|error| format!("replaying the invocation: {error}"))?;
+    Ok(Answer::default())
+}
+
+/// The invocation a replay request names, as the action API wrote it.
+#[inline(never)]
+fn envelope_of(request: &Request) -> Result<ActionEnvelope, String> {
+    request
         .envelope
         .clone()
         .ok_or_else(|| "a replay names no invocation".to_owned())
         .and_then(|envelope| {
             serde_json::from_value(envelope).map_err(|error| format!("the invocation: {error}"))
-        })?;
-    let mut replica = tilo_resource::replica::Replica::<R>::from_doc(device_document()?);
-    replica
-        .replay(&envelope)
-        .map_err(|error| format!("replaying the invocation: {error}"))?;
-    Ok(Answer::default())
+        })
 }
 
 /// The document the device's request is about.

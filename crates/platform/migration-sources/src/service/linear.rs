@@ -37,9 +37,9 @@ query TiloMigration($after: String) {
       state { name type }
       assignee { name email }
       labels { nodes { name } }
-      parent { id }
-      relations { nodes { type relatedIssue { id } } }
-      inverseRelations { nodes { type issue { id } } }
+      parent { id identifier url }
+      relations { nodes { type relatedIssue { id identifier url } } }
+      inverseRelations { nodes { type issue { id identifier url } } }
       comments(first: 100) {
         pageInfo { hasNextPage endCursor }
         nodes { body createdAt updatedAt url user { name email } }
@@ -368,7 +368,7 @@ fn incoming(issue: &Value, pages: &BTreeMap<&str, &str>) -> IncomingIssue {
         key: text(issue, "id").to_owned(),
         identifier: text(issue, "identifier").to_owned(),
         title: text(issue, "title").to_owned(),
-        body: text(issue, "description").to_owned(),
+        body: with_outside(text(issue, "description"), &outside(issue, pages)),
         status: status(issue.pointer("/state/type").and_then(Value::as_str)).to_owned(),
         labels: nodes("/labels/nodes")
             .iter()
@@ -429,6 +429,68 @@ fn incoming(issue: &Value, pages: &BTreeMap<&str, &str>) -> IncomingIssue {
             .filter(|due| !due.is_empty())
             .map(str::to_owned),
         relations,
+    }
+}
+
+/// The issues `issue` sits under or relates to that this import does not bring (another team's,
+/// archived, or left out in the review), each as how it relates and a link to its page on
+/// Linear: what of them the issue keeps, as it cannot point at them in Tasks.
+fn outside(issue: &Value, pages: &BTreeMap<&str, &str>) -> Vec<String> {
+    let named = |other: &Value, how: &str| -> Option<String> {
+        let page = text(other, "url");
+        (!page.is_empty() && !pages.contains_key(text(other, "id"))).then(|| {
+            let name = match text(other, "identifier") {
+                "" => page,
+                identifier => identifier,
+            };
+            format!("{how} [{name}]({page})")
+        })
+    };
+    let nodes = |pointer: &str| -> Vec<Value> {
+        issue
+            .pointer(pointer)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let mut outside: Vec<String> = Vec::new();
+    if let Some(parent) = issue.get("parent").filter(|parent| !parent.is_null()) {
+        outside.extend(named(parent, "Sub-issue of"));
+    }
+    for relation in nodes("/relations/nodes") {
+        let how = match text(&relation, "type") {
+            "blocks" => "Blocks",
+            "duplicate" => "Duplicate of",
+            _ => "Related to",
+        };
+        if let Some(other) = relation.get("relatedIssue") {
+            outside.extend(named(other, how));
+        }
+    }
+    for relation in nodes("/inverseRelations/nodes") {
+        let how = match text(&relation, "type") {
+            "blocks" => "Blocked by",
+            "duplicate" => "Duplicated by",
+            _ => "Related to",
+        };
+        if let Some(other) = relation.get("issue") {
+            outside.extend(named(other, how));
+        }
+    }
+    outside.dedup();
+    outside
+}
+
+/// `description` with the issues it relates to outside the import (`outside`) said after it.
+fn with_outside(description: &str, outside: &[String]) -> String {
+    if outside.is_empty() {
+        return description.to_owned();
+    }
+    let said = format!("On Linear: {}", outside.join(", "));
+    if description.trim().is_empty() {
+        said
+    } else {
+        format!("{}\n\n{said}", description.trim_end())
     }
 }
 
@@ -584,6 +646,53 @@ mod tests {
                 .count(),
             1,
             "one further page is one request for one issue"
+        );
+    }
+
+    /// An issue under one and related to others: what the import brings is named by its page, so
+    /// Tasks nests and links it there; what it leaves out (another team's issue, an archived one)
+    /// is said in its description, linked to its page on Linear, and the issue comes over all
+    /// the same.
+    #[test]
+    fn references_outside_the_import_are_kept_in_the_description() {
+        let other = |id: &str, identifier: &str| {
+            json!({ "id": id, "identifier": identifier,
+                    "url": format!("https://tracker.example/acme/issue/{identifier}") })
+        };
+        let issue = json!({
+            "id": "issue-2",
+            "identifier": "ENG-2",
+            "title": "A sub-issue",
+            "description": "What it is about.",
+            "url": "https://tracker.example/acme/issue/ENG-2",
+            "parent": other("issue-9", "OPS-9"),
+            "relations": { "nodes": [
+                { "type": "blocks", "relatedIssue": other("issue-1", "ENG-1") },
+                { "type": "related", "relatedIssue": other("issue-8", "OPS-8") },
+            ] },
+            "inverseRelations": { "nodes": [
+                { "type": "blocks", "issue": other("issue-7", "OPS-7") },
+            ] },
+        });
+        let pages: BTreeMap<&str, &str> = [
+            ("issue-1", "https://tracker.example/acme/issue/ENG-1"),
+            ("issue-2", "https://tracker.example/acme/issue/ENG-2"),
+        ]
+        .into();
+        let incoming = incoming(&issue, &pages);
+        assert_eq!(incoming.parent, None, "its parent is not brought");
+        let related: Vec<&str> = incoming
+            .relations
+            .iter()
+            .map(|relation| relation.page.as_str())
+            .collect();
+        assert_eq!(related, ["https://tracker.example/acme/issue/ENG-1"]);
+        assert_eq!(
+            incoming.body,
+            "What it is about.\n\nOn Linear: \
+             Sub-issue of [OPS-9](https://tracker.example/acme/issue/OPS-9), \
+             Related to [OPS-8](https://tracker.example/acme/issue/OPS-8), \
+             Blocked by [OPS-7](https://tracker.example/acme/issue/OPS-7)"
         );
     }
 

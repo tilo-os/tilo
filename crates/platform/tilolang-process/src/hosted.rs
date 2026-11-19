@@ -65,9 +65,7 @@ thread_local! {
 /// The person's date and time now: the device's clock, which is the one their window reads, so a
 /// day an instance writes and a day their window heads a row by are the same day.
 fn local_now() -> jiff::Zoned {
-    jiff::Timestamp::try_from(tilo_clock::to_std(tilo_clock::wall()))
-        .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
-        .to_zoned(jiff::tz::TimeZone::system())
+    tilo_clock::local::now()
 }
 
 /// What one instance is: the app, the workspace, the window and who is at it, as the session named

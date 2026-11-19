@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 use settings_store::sign_in_comforts::SignInComforts;
-use settings_store::watch::SettingsWatch;
 
 use crate::SessionConfig;
 
@@ -21,7 +20,7 @@ pub struct Mirror {
     updates: mpsc::Receiver<(SignInComforts, bool)>,
     /// Keeps the loader's notifications coming; dropping it stops them, as it does for every other
     /// reader of the loader.
-    _following: Option<SettingsWatch>,
+    _following: Option<crate::config::Following>,
     /// What the login screens were last told, or what they already hold when the session started.
     seen: Option<SignInComforts>,
     /// Sends each change to `tilo-authd` in order, off the frame.

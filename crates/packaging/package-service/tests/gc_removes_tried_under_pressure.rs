@@ -2,8 +2,8 @@ use crate::common;
 use package_service::install::install_tapp;
 use package_service::{PackageStore, Pinning};
 
-fn stored_blob_files(root: &std::path::Path) -> usize {
-    std::fs::read_dir(root.join("content/data")).map_or(0, |entries| entries.flatten().count())
+fn stored_blobs(store: &PackageStore) -> usize {
+    store.stored_blobs().unwrap().len()
 }
 
 #[test]
@@ -28,7 +28,7 @@ fn gc_sweeps_tried_packages_but_never_pinned_or_shared_content() {
             tried.push(app_id);
         }
         let before = store.disk_usage().unwrap().total_bytes;
-        let before_blobs = stored_blob_files(dir.path());
+        let before_blobs = stored_blobs(&store);
         assert!(before > 0);
 
         // Cap at ~60 KiB: well under four packages, so at least two tried go.
@@ -43,7 +43,7 @@ fn gc_sweeps_tried_packages_but_never_pinned_or_shared_content() {
         assert!(registry.find("so.tilo.pinned").is_some(), "pinned survives");
         assert!(store.disk_usage().unwrap().total_bytes <= 60 * 1024);
         assert!(
-            stored_blob_files(dir.path()) < before_blobs,
+            stored_blobs(&store) < before_blobs,
             "blobs of evicted packages are reclaimed"
         );
     }
@@ -56,13 +56,13 @@ fn gc_sweeps_tried_packages_but_never_pinned_or_shared_content() {
         install_tapp(&store, &pinned_bytes, Pinning::Pinned, None).unwrap();
         install_tapp(&store, &tried_bytes, Pinning::Tried, None).unwrap();
 
-        let before_blobs = stored_blob_files(dir.path());
+        let before_blobs = stored_blobs(&store);
         let removed = store.remove("so.tilo.tried", false).unwrap();
         assert!(removed.evicted_blobs > 0);
         let registry = store.registry().unwrap();
         let pinned = registry.find("so.tilo.pinned").unwrap();
         assert!(registry.find("so.tilo.tried").is_none());
-        assert!(stored_blob_files(dir.path()) < before_blobs);
+        assert!(stored_blobs(&store) < before_blobs);
         assert!(
             package_store::integrity::verify(pinned, &pinned.payload_root)
                 .unwrap()

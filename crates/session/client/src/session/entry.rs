@@ -48,6 +48,12 @@ pub(super) fn refusal(error: &LinkError) -> Refusal {
             "device-revoked",
             "This device was removed from your devices.".to_owned(),
         ),
+        // A certificate the server would not take: the device certifies again,
+        // and gets in no other way.
+        LinkError::CertificateRejected => Refusal::Final(
+            "certificate-rejected",
+            "This workspace’s server refused this browser’s certificate.".to_owned(),
+        ),
         // A server that refuses a device and does not say why closes its
         // handshake with nothing said.
         LinkError::Refused(_) => Refusal::Unexplained,

@@ -24,6 +24,8 @@ const REPOSITORY: &str = "/api/v1/repos/acme/app";
 struct Forge {
     server: Responder,
     base: String,
+    /// How many requests were being answered at the same time, at most.
+    peak: Arc<AtomicUsize>,
 }
 
 impl Forge {
@@ -31,29 +33,43 @@ impl Forge {
     /// first `balk` requests told to wait.
     fn start(issues: usize, comments: usize, delay: Duration, balk: usize) -> Self {
         let waited = Arc::new(AtomicUsize::new(0));
-        let server = Responder::serve(move |peer| {
-            let mut target = peer.request().target.clone();
-            loop {
-                let reply = if waited.fetch_add(1, Ordering::SeqCst) < balk {
-                    Some(Reply::status(429).header("Retry-After", "0"))
-                } else {
-                    std::thread::sleep(delay);
-                    answer(&target, issues, comments)
-                };
-                let Some(reply) = reply else {
-                    return;
-                };
-                peer.reply(&reply.keep_alive());
-                let Some(next) = peer.next_request() else {
-                    return;
-                };
-                target = next.target;
+        let inflight = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let server = Responder::serve({
+            let (inflight, peak) = (Arc::clone(&inflight), Arc::clone(&peak));
+            move |peer| {
+                let mut target = peer.request().target.clone();
+                loop {
+                    let now = inflight.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(now, Ordering::SeqCst);
+                    let reply = if waited.fetch_add(1, Ordering::SeqCst) < balk {
+                        Some(Reply::status(429).header("Retry-After", "0"))
+                    } else {
+                        std::thread::sleep(delay);
+                        answer(&target, issues, comments)
+                    };
+                    inflight.fetch_sub(1, Ordering::SeqCst);
+                    let Some(reply) = reply else {
+                        return;
+                    };
+                    peer.reply(&reply.keep_alive());
+                    let Some(next) = peer.next_request() else {
+                        return;
+                    };
+                    target = next.target;
+                }
             }
         });
         Self {
             base: server.url(),
             server,
+            peak,
         }
+    }
+
+    /// The most requests the forge was answering at the same time.
+    fn peak(&self) -> usize {
+        self.peak.load(Ordering::SeqCst)
     }
 
     /// What of the repository is reviewed, as a person would type its address.
@@ -85,14 +101,15 @@ fn answer(target: &str, issues: usize, comments: usize) -> Option<Reply> {
         })));
     }
     if path == format!("{REPOSITORY}/issues") {
-        let all: Vec<Value> = (1..=issues).map(|number| issue(number, comments)).collect();
-        return Some(plain(&json!(paged(&all, page))));
+        return Some(plain(&json!(page_of(issues, page, |at| {
+            issue(at + 1, comments)
+        }))));
     }
     if path == format!("{REPOSITORY}/issues/comments") {
-        let all: Vec<Value> = (1..=issues)
-            .flat_map(|number| (0..comments).map(move |at| comment(number, at)))
-            .collect();
-        return Some(plain(&json!(paged(&all, page))));
+        let per = comments.max(1);
+        return Some(plain(&json!(page_of(issues * comments, page, |at| {
+            comment(at / per + 1, at % per)
+        }))));
     }
     // One issue's comments, the shape a fetch asks them in when it asks per issue.
     if let Some(number) = path
@@ -100,8 +117,9 @@ fn answer(target: &str, issues: usize, comments: usize) -> Option<Reply> {
         .and_then(|rest| rest.strip_suffix("/comments"))
         .and_then(|number| number.parse::<usize>().ok())
     {
-        let all: Vec<Value> = (0..comments).map(|at| comment(number, at)).collect();
-        return Some(plain(&json!(paged(&all, page))));
+        return Some(plain(&json!(page_of(comments, page, |at| {
+            comment(number, at)
+        }))));
     }
     if path.ends_with("/blocks") || path.ends_with("/dependencies") {
         return Some(plain(&json!([])));
@@ -109,12 +127,12 @@ fn answer(target: &str, issues: usize, comments: usize) -> Option<Reply> {
     None
 }
 
-fn paged(entries: &[Value], page: usize) -> Vec<Value> {
-    entries
-        .iter()
-        .skip((page.saturating_sub(1)) * PAGE)
-        .take(PAGE)
-        .cloned()
+/// One page of `count` entries, `entry` making the `at`th (from zero): what the forge does
+/// for a request, rather than making every entry and dropping all but the page.
+fn page_of(count: usize, page: usize, entry: impl Fn(usize) -> Value) -> Vec<Value> {
+    let first = page.saturating_sub(1).saturating_mul(PAGE);
+    (first..first.saturating_add(PAGE).min(count))
+        .map(entry)
         .collect()
 }
 
@@ -177,9 +195,25 @@ fn chosen(issues: usize) -> BTreeSet<String> {
         .collect()
 }
 
-/// A fetch of `issues` issues: its request count, and the requests that are neither blocks nor
-/// dependencies, which cost a page of the repository's issues or comments each.
-fn fetched(issues: usize, comments: usize, delay: Duration) -> (Duration, usize, usize) {
+/// How long one request against a forge answering after `delay` takes here, measured as the
+/// fetch's own requests are: the unit a fetch's time is held against, so that a busy machine's
+/// slowness counts on both sides rather than only the fetch's.
+fn one_request(delay: Duration) -> Duration {
+    let forge = Forge::start(0, 0, delay, 0);
+    let scope = forge.scope();
+    // The first request builds the one client every later request shares and opens its
+    // connection; what a fetch's requests cost is this next one.
+    forgejo::check(&scope, "key").expect("the forge answers");
+    let started = Instant::now();
+    forgejo::check(&scope, "key").expect("the forge answers");
+    // A check asks who the token belongs to and for the repository: two requests.
+    started.elapsed() / 2
+}
+
+/// A fetch of `issues` issues: its request count, the requests that are neither blocks nor
+/// dependencies, which cost a page of the repository's issues or comments each, and one request's
+/// own round trip here.
+fn fetched(issues: usize, comments: usize, delay: Duration) -> (Duration, usize, usize, Duration) {
     let forge = Forge::start(issues, comments, delay, 0);
     let started = Instant::now();
     let landed = forgejo::issues(
@@ -208,18 +242,23 @@ fn fetched(issues: usize, comments: usize, delay: Duration) -> (Duration, usize,
         0,
         "a comment is asked for issue by issue again"
     );
+    assert!(
+        forge.peak() > 1,
+        "the forge answered the {} requests one at a time",
+        asked.len()
+    );
     let relations = asked
         .iter()
         .filter(|request| relation(&request.target))
         .count();
-    (elapsed, asked.len(), relations)
+    (elapsed, asked.len(), relations, one_request(delay))
 }
 
 #[test]
 fn a_page_of_issues_costs_its_pages_and_its_relations() {
     let issues = 100;
     let delay = Duration::from_millis(50);
-    let (elapsed, asked, relations) = fetched(issues, 1, delay);
+    let (elapsed, asked, relations, single) = fetched(issues, 1, delay);
     // Blocks and dependencies are asked for every issue, and nothing else per issue is.
     assert_eq!(relations, 2 * issues);
     let pages = asked - relations;
@@ -227,8 +266,8 @@ fn a_page_of_issues_costs_its_pages_and_its_relations() {
         pages <= 12,
         "{pages} requests besides blocks and dependencies for {issues} issues"
     );
-    // One at a time these would take the count times the delay; together they take its share.
-    let mut sequential = delay * u32::try_from(asked).expect("a request count");
+    // One at a time these would take the count times one request; together they take its share.
+    let mut sequential = single * u32::try_from(asked).expect("a request count");
     sequential /= 2;
     assert!(
         elapsed < sequential,
@@ -240,14 +279,14 @@ fn a_page_of_issues_costs_its_pages_and_its_relations() {
 fn a_large_fetch_stays_a_page_of_requests() {
     let issues = 2000;
     let delay = Duration::from_millis(2);
-    let (elapsed, asked, relations) = fetched(issues, 1, delay);
+    let (elapsed, asked, relations, single) = fetched(issues, 1, delay);
     assert_eq!(relations, 2 * issues);
     let pages = asked - relations;
     assert!(
         pages <= 100,
         "{pages} requests besides blocks and dependencies for {issues} issues"
     );
-    let mut sequential = delay * u32::try_from(asked).expect("a request count");
+    let mut sequential = single * u32::try_from(asked).expect("a request count");
     sequential /= 2;
     assert!(
         elapsed < sequential,

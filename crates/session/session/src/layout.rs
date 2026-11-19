@@ -179,7 +179,7 @@ struct Candidate {
 
 /// What an arranging action did to a layout: the change it makes names who asked and what they did,
 /// and the windows it placed show the records they name.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Acted {
     message: String,
     shows: Vec<(tilo_desktop_model::TabId, String)>,
@@ -190,7 +190,7 @@ struct Acted {
 
 /// A workspace's layout as this device arranged it while the layout could not be written, and the
 /// step it is of the person's, named where they made it so it orders among their steps elsewhere.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct LayoutStep {
     workspace: Workspace,
     step: String,
@@ -198,7 +198,7 @@ struct LayoutStep {
 
 /// A change this device made while what it changes could not be written, and the arranging action
 /// that named it where one made it.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct PendingStep<T> {
     changed: T,
     acted: Option<Acted>,
@@ -627,22 +627,104 @@ pub(crate) struct Layouts {
     /// Why each workspace's layout was last left unwritten on a look, said once each time it
     /// changes: what a change that never reached the workspace reads back.
     unwritten: RefCell<HashMap<WorkspaceId, &'static str>>,
+    /// Where what this device could not write yet of its workspaces' layouts is kept, so a session
+    /// that ends first leaves it for the one after.
+    pending_at: Option<std::path::PathBuf>,
+    /// What was last kept there: a look that keeps the same of it writes nothing.
+    kept_pending: RefCell<Option<Vec<u8>>>,
+}
+
+/// The layouts a session on `options` keeps, writing what its windows note of themselves (`notes`).
+pub(crate) fn of_session(
+    options: &crate::options::Options,
+    notes: Arc<crate::continuations::Continuations>,
+) -> Layouts {
+    Layouts::new(
+        notes,
+        options.wake.clone(),
+        options.person.clone(),
+        options.state.as_deref(),
+    )
+    .hosting(crate::apps::runs_on_its_device)
+}
+
+/// Where this device keeps what it could not write yet of its workspaces' layouts.
+fn pending_path(state: &std::path::Path) -> std::path::PathBuf {
+    state.join("tilo").join("pending-layouts.json")
 }
 
 impl Layouts {
     /// This session's records, writing what its windows note of themselves (`notes`), on the loop
-    /// `wake` wakes, and each workspace's view kept for `person`.
+    /// `wake` wakes, and each workspace's view kept for `person`. `state` is this device's state
+    /// directory, where what a session could not write yet is kept for the one after.
     pub(crate) fn new(
         notes: Arc<crate::continuations::Continuations>,
         wake: tilo_service::LoopWake,
         person: String,
+        state: Option<&std::path::Path>,
     ) -> Self {
-        Self {
+        let layouts = Self {
             notes,
             wake,
             person: RefCell::new(Some(person)),
+            pending_at: state.map(pending_path),
             ..Self::default()
+        };
+        layouts.load_pending();
+        layouts
+    }
+
+    /// What this device could not write of its workspaces' layouts before the session before this
+    /// one ended: each is written as its own step once its workspace can hold it.
+    fn load_pending(&self) {
+        let Some(at) = &self.pending_at else {
+            return;
+        };
+        let Ok(bytes) = std::fs::read(at) else {
+            return;
+        };
+        let kept: BTreeMap<String, Vec<PendingStep<LayoutStep>>> = match serde_json::from_slice(
+            &bytes,
+        ) {
+            Ok(kept) => kept,
+            Err(error) => {
+                tracing::warn!(path = %at.display(), %error, "what this device could not write was not read");
+                return;
+            }
+        };
+        for (workspace, steps) in kept {
+            let Some(workspace) = WorkspaceId::parse(&workspace) else {
+                continue;
+            };
+            if steps.is_empty() {
+                continue;
+            }
+            self.held(&(workspace, Route::layout()), |held| {
+                held.pending_steps = PendingSteps(steps);
+            });
         }
+    }
+
+    /// Keep what this device has not written yet of its workspaces' layouts, for the session after
+    /// this one: a desktop that ends before its workspace can hold them leaves them here.
+    fn keep_pending(&self) {
+        let Some(at) = &self.pending_at else {
+            return;
+        };
+        let mut kept: BTreeMap<String, Vec<PendingStep<LayoutStep>>> = BTreeMap::new();
+        for ((workspace, route), held) in self.held.borrow().iter() {
+            if *route == Route::layout() && !held.pending_steps.is_empty() {
+                kept.insert(workspace.to_string(), held.pending_steps.0.clone());
+            }
+        }
+        let Ok(bytes) = serde_json::to_vec(&kept) else {
+            return;
+        };
+        if self.kept_pending.borrow().as_deref() == Some(bytes.as_slice()) {
+            return;
+        }
+        *self.kept_pending.borrow_mut() = Some(bytes.clone());
+        tilo_durable_writer::keep(at.clone(), bytes);
     }
 
     /// These records, of a session that hosts the windows that run only on this device:
@@ -1156,6 +1238,14 @@ impl Layouts {
                 (was.0 != workspace.strips || was.1 != workspace.layout).then(|| workspace.id())
             }));
             owed.insert(tree.active);
+            for workspace in &tree.workspaces {
+                let pending = self.held(&(workspace.id(), Route::layout()), |held| {
+                    !held.pending_steps.is_empty()
+                });
+                if pending {
+                    owed.insert(workspace.id());
+                }
+            }
             owed.retain(|id| tree.workspaces.iter().any(|held| held.id() == *id));
             owed.clone()
         };
@@ -1199,24 +1289,28 @@ impl Layouts {
             .is_some_and(|(strips, layout)| {
                 *strips != workspace.strips || *layout != workspace.layout
             });
+        // What this device has to share: the strips it shows, and what stands in them. The
+        // layout's shape is the workspace's layout, so a workspace with strips is one however few
+        // windows it holds; a workspace with no strip at all is one this device shows nothing of.
+        let shares = !workspace.strips.is_empty();
+        // The shell this look shows is the person's to keep where it changed, and where the
+        // workspace holds nothing of it here yet: a change that cannot be written now is kept for
+        // the look that can write it, never dropped with the session.
+        let kept_back = changed || (shares && !self.held(&key, |held| held.folded.is_some()));
         // The layout the person changes while a write of it is under way is written on the look after
         // the workspace answered that one. An arranging action's change keeps its name until then:
         // it is the write that says what was done.
         if !self.settle_one(&key) {
             self.unwritten(workspace_id, Some("its last write is under way"));
-            if changed {
+            if kept_back {
                 self.remember(&key, workspace, acted, person);
             }
             return false;
         }
-        // What this device has to share: the strips it shows, and what stands in them. The
-        // layout's shape is the workspace's layout, so a workspace with strips is one however few
-        // windows it holds; a workspace with no strip at all is one this device shows nothing of.
-        let shares = !workspace.strips.is_empty();
         let Some(sealed) = self.sealed(engine, &key) else {
             self.unwritten(workspace_id, Some("it cannot be sealed here yet"));
             // A change waits for the layout's keys, and is written once they are here.
-            if changed && keys_awaited(engine, &key) {
+            if kept_back {
                 self.remember(&key, workspace, acted, person);
             }
             return false;
@@ -1230,7 +1324,7 @@ impl Layouts {
                 workspace_id,
                 Some("the workspace's layout is not read here yet"),
             );
-            if changed {
+            if kept_back {
                 self.remember(&key, workspace, acted, person);
             }
             return false;
@@ -1273,6 +1367,7 @@ impl Layouts {
             self.remember(&key, workspace, acted, person);
         }
         let pending = self.held(&key, |held| held.pending_steps.take());
+        self.keep_pending();
         self.unwritten(workspace_id, None);
         self.lay(
             engine,
@@ -1317,6 +1412,7 @@ impl Layouts {
                 );
             }
         });
+        self.keep_pending();
     }
 
     /// Hand `save` to the task that writes it, and take what it came to at once if it is there
@@ -1441,6 +1537,7 @@ impl Layouts {
                     held.kept = record.map(|record| *record);
                     held.pending_steps.restore(steps);
                 });
+                self.keep_pending();
                 self.say(&error, "the workspace's layout was not kept", workspace_id);
             }
         }

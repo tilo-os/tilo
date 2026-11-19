@@ -571,11 +571,11 @@ hypher = { version = "0.1.7", features = ["full"] }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
-# Browser entropy, clocks and time zones for the portable wasm32 build. These
-# select third-party platform backends only; toolkit behaviour stays behind
-# the `native` feature.
+# Browser entropy for the portable wasm32 build. These select third-party
+# platform backends only; toolkit behaviour stays behind the `native` feature.
+# The page's clock and time zone come from `tilo-clock`, which asks the browser
+# rather than carrying a time-zone database into the bundle.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-jiff = { workspace = true, features = ["js", "tzdb-bundle-platform"] }
 getrandom = { workspace = true, features = ["wasm_js"] }
 # The RustCrypto stack under key-group and the identity ceremony draws entropy
 # through getrandom 0.2, which needs its JS backend named in the browser.

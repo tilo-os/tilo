@@ -228,6 +228,9 @@ pub struct LaunchInput {
     pub app_id: String,
     pub workspace_id: String,
     pub program_id: String,
+    /// The capsule an installed program was registered in; `None` for a program its own app
+    /// starts, whose capsule follows from the app.
+    pub capsule_id: Option<String>,
     pub query: ApplicationQuery,
     pub vm_fallback: VmFallback,
     /// Canonical Tilo capability records, not a compatibility-local policy.
@@ -595,11 +598,12 @@ where
         query: &ApplicationQuery,
         vm_fallback: VmFallback,
         app_id: &str,
+        capsule_id: Option<&str>,
         capabilities: &[CapOverride],
         now_unix: Option<u64>,
     ) -> Result<ExplainStatus, ServiceError> {
         validate_launch_id("app id", app_id)?;
-        let route = self.resolve_route(query, vm_fallback, app_id)?;
+        let route = self.resolve_route(query, vm_fallback, app_id, capsule_id)?;
         let resolved = CapabilityPlan::for_app(app_id, capabilities, now_unix);
         Ok(explanation(&route, vm_fallback, &resolved, false))
     }
@@ -671,7 +675,12 @@ where
         validate_launch_id("app id", &input.app_id)?;
         validate_launch_id("workspace id", &input.workspace_id)?;
         validate_launch_id("program id", &input.program_id)?;
-        let route = self.resolve_route(&input.query, input.vm_fallback, &input.app_id)?;
+        let route = self.resolve_route(
+            &input.query,
+            input.vm_fallback,
+            &input.app_id,
+            input.capsule_id.as_deref(),
+        )?;
         let capabilities =
             CapabilityPlan::for_app(&input.app_id, &input.capabilities, input.now_unix);
         if route.runtime.layer == Layer::Vm {
@@ -854,8 +863,12 @@ where
         validate_launch_id("workspace id", workspace_id)?;
         let inspection = inspect_installer(source, source_name)?;
         let app_id = imported_app_id(&inspection.sha256);
-        let route =
-            self.resolve_route(&installer_query(&inspection), VmFallback::Explicit, &app_id)?;
+        let route = self.resolve_route(
+            &installer_query(&inspection),
+            VmFallback::Explicit,
+            &app_id,
+            None,
+        )?;
         let input = vm_installer_input(&inspection);
         let recommended_route = RouteKind::from(route.runtime.layer);
         let detail = if recommended_route == RouteKind::Vm {
@@ -1205,7 +1218,7 @@ where
     ) -> Result<InstallReceipt, ServiceError> {
         let query = installer_query(inspection);
         let app_id = imported_app_id(&inspection.sha256);
-        let route = self.resolve_route(&query, VmFallback::Disabled, &app_id)?;
+        let route = self.resolve_route(&query, VmFallback::Disabled, &app_id, None)?;
         if route.runtime.layer == Layer::Vm {
             return Err(ServiceError::VmInstallNeedsExplicitFallback);
         }
@@ -1347,14 +1360,21 @@ where
         })
     }
 
+    /// An installed program starts in the capsule its setup put it in (`capsule_id`): one setup
+    /// installs several programs into one capsule, while each program has its own app id.
     fn resolve_route(
         &self,
         query: &ApplicationQuery,
         vm_fallback: VmFallback,
         app_id: &str,
+        capsule_id: Option<&str>,
     ) -> Result<LaunchPlan, ServiceError> {
         let mut route = self.catalogue.resolver()?.resolve(query, vm_fallback);
-        if route.record_id.is_none() && route.runtime.layer == Layer::Wine {
+        if let Some(capsule_id) = capsule_id
+            && matches!(route.runtime.layer, Layer::Wine | Layer::Proton)
+        {
+            route.runtime.id = capsule_id.to_string();
+        } else if route.record_id.is_none() && route.runtime.layer == Layer::Wine {
             let digest = Sha256::digest(app_id.as_bytes());
             // The first 16 digest bytes, i.e. 32 hex digits.
             let mut suffix = hex::encode(digest);
@@ -1768,7 +1788,7 @@ mod tests {
             let service = service(&directory);
             let query = ApplicationQuery::executable("special.exe");
             let status = service
-                .explain(&query, VmFallback::Disabled, "app", &[], Some(1))
+                .explain(&query, VmFallback::Disabled, "app", None, &[], Some(1))
                 .unwrap();
             assert_eq!(status.route, RouteKind::Wine);
 
@@ -1776,6 +1796,7 @@ mod tests {
                 app_id: "app".to_string(),
                 workspace_id: "workspace".to_string(),
                 program_id: "special".to_string(),
+                capsule_id: None,
                 query,
                 vm_fallback: VmFallback::Disabled,
                 capabilities: Vec::new(),
@@ -1824,6 +1845,7 @@ mod tests {
                     &ApplicationQuery::executable("special.exe"),
                     VmFallback::Explicit,
                     "app",
+                    None,
                     &[],
                     Some(1),
                 )
@@ -1970,6 +1992,7 @@ mod tests {
             app_id: "app".to_string(),
             workspace_id: "workspace".to_string(),
             program_id: "probe".to_string(),
+            capsule_id: None,
             query,
             vm_fallback: VmFallback::Disabled,
             capabilities: Vec::new(),
@@ -1998,6 +2021,75 @@ mod tests {
                     "/run/user/1000/wayland-0"
                 ]),
             "the bound display is the program's: {argv:?}"
+        );
+    }
+
+    /// One setup installs several programs into one capsule, and each program gets its own app
+    /// id: a program launches in the capsule its setup filled, not in one its app id would name.
+    #[test]
+    fn an_installed_program_launches_in_the_capsule_its_setup_filled() {
+        let directory = TempDir::new().unwrap();
+        let service = service(&directory);
+        let mut setup = service
+            .resolve_route(
+                &ApplicationQuery::executable("setup.exe"),
+                VmFallback::Disabled,
+                &imported_app_id("setup"),
+                None,
+            )
+            .unwrap();
+        assert_eq!(setup.runtime.layer, Layer::Wine);
+        setup.runtime.id = "wine-setup".to_string();
+        let capsule = service.store.ensure_for_plan(&setup).unwrap();
+        for (id, name) in [("tool", "Tool"), ("helper", "Helper")] {
+            service
+                .store
+                .register_program(
+                    &capsule.id,
+                    CapsuleProgram {
+                        id: id.to_string(),
+                        display_name: name.to_string(),
+                        prefix_relative_executable: PathBuf::from(format!("drive_c/{id}.exe")),
+                        query: ApplicationQuery::executable(format!("{id}.exe")),
+                        kind: crate::ProgramKind::Application,
+                        arguments: Vec::new(),
+                    },
+                )
+                .unwrap();
+        }
+
+        for entry in service.store.registered_programs().unwrap() {
+            assert_ne!(entry.app_id, capsule.id);
+            let status = service
+                .explain(
+                    &entry.query,
+                    VmFallback::Disabled,
+                    &entry.app_id,
+                    Some(&entry.capsule_id),
+                    &[],
+                    Some(1),
+                )
+                .unwrap();
+            assert_eq!(status.route, RouteKind::Wine);
+            let launched = service
+                .launch(&LaunchInput {
+                    app_id: entry.app_id.clone(),
+                    workspace_id: "workspace".to_string(),
+                    program_id: entry.program.id.clone(),
+                    capsule_id: Some(entry.capsule_id.clone()),
+                    query: entry.query.clone(),
+                    vm_fallback: VmFallback::Disabled,
+                    capabilities: Vec::new(),
+                    now_unix: Some(1),
+                })
+                .unwrap_or_else(|error| panic!("{} launches: {error}", entry.program.id));
+            assert!(launched.program.wait().unwrap().success);
+            (launched.release)();
+        }
+        assert_eq!(
+            service.store.registered_programs().unwrap().len(),
+            2,
+            "no launch made a capsule of its own"
         );
     }
 }

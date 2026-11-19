@@ -49,10 +49,16 @@ impl AutoBrightness {
         self.enabled.load(Ordering::Relaxed)
     }
 
-    /// Read the light in the room at `lux` , if it is time to, and say what the panel's backlight
-    /// becomes. `None` when the policy is off, the sample is too early, the dim holds the
-    /// backlight, or the change is inside the controller's deadband.
-    pub(crate) fn follow(&mut self, now: Instant, dimmed: bool, lux: Option<f32>) -> Option<f32> {
+    /// Read the light in the room, if it is time to, and say what the panel's backlight becomes.
+    /// `lux` is called only when the sensor is read: finding one opens paths in `/sys`.
+    /// `None` when the policy is off, the sample is too early, the dim holds the backlight, or the
+    /// change is inside the controller's deadband.
+    pub(crate) fn follow(
+        &mut self,
+        now: Instant,
+        dimmed: bool,
+        lux: impl FnOnce() -> Option<f32>,
+    ) -> Option<f32> {
         if !self.enabled() {
             self.controller.reset();
             self.last = None;
@@ -68,7 +74,7 @@ impl AutoBrightness {
         if dimmed {
             return None;
         }
-        self.controller.update(lux?)
+        self.controller.update(lux()?)
     }
 
     /// How long until the light in the room is read again.
@@ -96,7 +102,7 @@ impl Session {
         if let Some(percent) = self.auto_brightness.follow(
             Instant::now(),
             self.compositor.dim_holds_backlight(),
-            os_actions::ambient_lux(),
+            os_actions::ambient_lux,
         ) {
             apply(percent);
         }
@@ -130,40 +136,55 @@ pub(crate) fn apply(percent: f32) {
 mod tests {
     use super::*;
 
+    /// A light reading that counts how often the sensor was asked for.
+    fn lux(reads: &std::cell::Cell<usize>, value: f32) -> impl FnOnce() -> Option<f32> + '_ {
+        move || {
+            reads.set(reads.get().saturating_add(1));
+            Some(value)
+        }
+    }
+
     #[test]
     fn the_panel_follows_the_light_at_its_own_pace_and_never_through_the_dim() {
+        use std::cell::Cell;
         let enabled = Arc::new(AtomicBool::new(false));
         let mut auto = AutoBrightness::new(Arc::clone(&enabled));
         let start = Instant::now();
+        let reads = Cell::new(0_usize);
         assert_eq!(auto.wait(), None, "nothing is read while the policy is off");
-        assert_eq!(auto.follow(start, false, Some(10.0)), None);
+        assert_eq!(auto.follow(start, false, lux(&reads, 10.0)), None);
+        assert_eq!(reads.get(), 0, "the policy being off reads no sensor");
 
         enabled.store(true, Ordering::Relaxed);
         assert_eq!(auto.wait(), Some(SAMPLE));
         let inside = auto
-            .follow(start, false, Some(40.0))
+            .follow(start, false, lux(&reads, 40.0))
             .expect("the first reading moves the panel");
         assert!((40.0..=50.0).contains(&inside), "{inside}");
+        assert_eq!(reads.get(), 1, "a sample at the pace reads the sensor");
         assert_eq!(
-            auto.follow(start + Duration::from_secs(1), false, Some(30_000.0)),
+            auto.follow(start + Duration::from_secs(1), false, lux(&reads, 30_000.0)),
             None,
             "a sample inside the pace is not read"
         );
+        assert_eq!(reads.get(), 1, "a sample inside the pace reads no sensor");
         assert_eq!(
-            auto.follow(start + SAMPLE, true, Some(30_000.0)),
+            auto.follow(start + SAMPLE, true, lux(&reads, 30_000.0)),
             None,
             "the idle dim owns the backlight until it lets go"
         );
+        assert_eq!(reads.get(), 1, "the dim holding reads no sensor");
         let daylight = auto
-            .follow(start + 2 * SAMPLE, false, Some(30_000.0))
+            .follow(start + 2 * SAMPLE, false, lux(&reads, 30_000.0))
             .expect("a sustained change reaches the panel");
         assert!(daylight > inside, "{daylight} brighter than {inside}");
 
         enabled.store(false, Ordering::Relaxed);
         assert_eq!(
-            auto.follow(start + 3 * SAMPLE, false, Some(1.0)),
+            auto.follow(start + 3 * SAMPLE, false, lux(&reads, 1.0)),
             None,
             "nothing follows once the person turns it off"
         );
+        assert_eq!(reads.get(), 2, "turning it off reads no sensor");
     }
 }

@@ -76,7 +76,7 @@ fn read_verb_preserves_parameter_metadata_and_secret_validation() {
     assert!(!plain.secret);
     assert!(plain.example.is_none());
     let declaration = param_decl(plain, &krate()).to_string();
-    assert!(declaration.contains("description : \"Note text\""));
+    assert!(declaration.contains("const TEXT : & :: core :: primitive :: str = \"Note text\""));
     assert!(declaration.contains("optional : false"));
     assert!(declaration.contains("content : false"));
     let Some(secret) = params.next() else {

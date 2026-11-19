@@ -19,7 +19,7 @@ use tilo_app_package::{
 };
 use tilo_user_identity::DeviceCapabilities;
 
-use crate::support::{bytes, full_tapp, package, scratch, thin_tapp};
+use crate::support::{bytes, full_tapp, package, scratch, stored_blob_file, thin_tapp};
 
 /// A registry: thin packages by id, and their payload blobs.
 #[derive(Default)]
@@ -909,7 +909,7 @@ fn created_staging_files(mut watch: std::fs::File) -> Vec<String> {
 
 fn runtime_with_large_blob(root: &Path) {
     runtime_tree(root);
-    std::fs::write(root.join("usr/lib64/cached.bin"), bytes(9, 300_000)).unwrap();
+    std::fs::write(root.join("usr/lib64/cached.bin"), bytes(9, 1_500_000)).unwrap();
 }
 
 fn forget_materialized_image(store: &PackageStore, id: PackageId) {
@@ -1034,7 +1034,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             std::fs::read(local.join("usr/lib64/cached.bin")).unwrap(),
-            bytes(9, 300_000)
+            bytes(9, 1_500_000)
         );
         assert_eq!(
             created_staging_files(watch).len(),
@@ -1087,7 +1087,7 @@ fn local_overlay_still_checks_modified_and_missing_source_with_cached_content() 
             std::fs::remove_file(&source).unwrap();
         } else {
             std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o644)).unwrap();
-            std::fs::write(&source, bytes(11, 300_000)).unwrap();
+            std::fs::write(&source, bytes(11, 1_500_000)).unwrap();
         }
         let store = Store::new(packages).with_system(package_store::Layout::new(system.path()));
         assert!(package_store::local_materialized_tree(&store, &image.meta.id).is_err());
@@ -1096,8 +1096,13 @@ fn local_overlay_still_checks_modified_and_missing_source_with_cached_content() 
 }
 
 #[test]
-fn local_overlay_refuses_corrupt_or_truncated_cached_bytes() {
-    for size in [300_000, 29] {
+fn local_overlay_refuses_corrupt_cached_bytes_and_reimports_truncated_ones() {
+    // A cached blob longer than the inline limit has a file of its own.
+    // Corrupting it without changing its length leaves the store's entry
+    // intact, so the tree is materialised from those bytes and its signed
+    // check refuses it. A truncated file fails the store's own size check
+    // when it opens, and the intact system copy is imported instead.
+    for (size, refused) in [(1_500_000_usize, true), (29, false)] {
         let identity = SigningIdentity::generate();
         let (_source, image) = seal(
             Kind::EnvRuntime,
@@ -1125,15 +1130,24 @@ fn local_overlay_refuses_corrupt_or_truncated_cached_bytes() {
             .unwrap();
         forget_materialized_image(&packages, image.meta.id);
         let expected = image.meta.collection.entries["usr/lib64/cached.bin"];
-        let cached = packages
-            .layout()
-            .content()
-            .join("data")
-            .join(format!("{}.data", expected.to_hex()));
-        assert!(cached.is_file(), "large retained blob must be observable");
+        let cached = stored_blob_file(user.path(), &expected);
+        assert!(
+            cached.is_file(),
+            "a blob over the inline limit is kept as a file"
+        );
         std::fs::write(&cached, bytes(12, size)).unwrap();
         let store = Store::new(packages).with_system(package_store::Layout::new(system.path()));
-        assert!(package_store::local_materialized_tree(&store, &image.meta.id).is_err());
+        let local = package_store::local_materialized_tree(&store, &image.meta.id);
+        if refused {
+            assert!(local.is_err(), "corrupt cached bytes must not reach a tree");
+        } else {
+            let local = local.unwrap();
+            assert_eq!(
+                std::fs::read(local.join("usr/lib64/cached.bin")).unwrap(),
+                bytes(9, 1_500_000),
+                "truncated cached bytes are imported again whole"
+            );
+        }
         assert_eq!(
             std::fs::read(
                 system
@@ -1143,7 +1157,8 @@ fn local_overlay_refuses_corrupt_or_truncated_cached_bytes() {
                     .join("usr/lib64/cached.bin")
             )
             .unwrap(),
-            bytes(9, 300_000)
+            bytes(9, 1_500_000),
+            "the system's own copy stays whole"
         );
     }
 }

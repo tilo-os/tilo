@@ -25,7 +25,7 @@ use tilo_desktop_model::{
     WorkspaceId,
 };
 use tilo_desktop_policy::Window;
-use tilo_desktop_surface::surface::window_menu::MOVE_TO_WORKSPACE;
+use tilo_desktop_surface::surface::window_menu::move_to_workspace_id;
 use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
 use tilo_test_env::SpawnUnderEnvLock as _;
@@ -57,18 +57,7 @@ impl Device {
     }
 
     /// The device of `home` with `tree` left as the layout its session ended with
-    /// ([`save_layout`]), and the ids that layout gave `tree`'s workspaces. The salt is read from
-    /// the session that leaves the layout: a device's salt is its key's, so every session of the
-    /// device numbers in the same one, and none is started only to ask it.
-    ///
-    /// That session is the device's first: it founds the device's own workspace while the layout
-    /// is laid into it. [`save_layout`] waits for the layout's record, which holds the strips,
-    /// groups and windows a restart brings back, so a test that reads those may start here. The
-    /// person's view of the workspace (a group's width, the maximized group, what is in front) is
-    /// a record of its own that the session writes once it holds the workspace's keys, and no
-    /// wait here covers it: a test that reads the view starts the device first
-    /// ([`Self::in_home`]) and saves the layout in the session after, where the keys are held
-    /// from the start.
+    /// ([`save_layout`]), and the ids that layout gave `tree`'s workspaces.
     pub(crate) fn with_layout(
         home: &mut tilo_test_env::TestHome,
         tree: &Layout,
@@ -119,8 +108,10 @@ fn salted(salt: u16, tree: &Layout) -> Layout {
 /// Leave `tree` as the layout a session of the device keeping its state at `state` ends with, its
 /// ids numbered as that device numbers them ([`salted`]): the first of `tree`'s workspaces is the
 /// one the session opened, the others are put beside it, each is laid out as `tree` does, and a
-/// workspace's layout is written while it is in front. The device's salt, as that session reads
-/// it, and the ids the layout gave `tree`'s workspaces, in order.
+/// workspace's layout is written while it is in front. The session then ends as a desktop ends: what
+/// it could not write yet of the shell stays on the device, and the next session writes it as the
+/// person's steps. The device's salt, as that session reads it, and the ids the layout gave `tree`'s
+/// workspaces, in order.
 fn save_layout(state: &Path, tree: &Layout) -> (u16, Vec<WorkspaceId>) {
     let mut session = session_keeping(state, None);
     let salt = session.handle().read(|tree| tree.salt);
@@ -157,11 +148,7 @@ fn save_layout(state: &Path, tree: &Layout) -> (u16, Vec<WorkspaceId>) {
         // A workspace's layout is written while it is in front.
         layout.active = workspace_ids[index];
         session.handle().replace_tree(layout);
-        until(
-            &mut session,
-            "the workspace's layout is written",
-            |session| session.layout().borrow_mut().last_step().is_some(),
-        );
+        session.step(Duration::from_millis(1)).expect("step");
         layout = session.handle().read(Clone::clone);
     }
     let front = tree
@@ -172,14 +159,33 @@ fn save_layout(state: &Path, tree: &Layout) -> (u16, Vec<WorkspaceId>) {
     layout.active = workspace_ids[front];
     session.handle().replace_tree(layout);
     session.step(Duration::from_millis(1)).expect("step");
+    // The desktop ends: what it could not write yet stays on the device for the session after.
+    drop(session);
     (salt, workspace_ids)
 }
 
-/// Run frames until the layout shows the windows its workspaces' layouts hold.
+/// Run frames until the layout shows a window.
 fn laid_out(session: &mut Session) {
     until(session, "the layout is laid out", |session| {
         !tabs(session).is_empty()
     });
+}
+
+/// Move the window `tab` to the workspace `to`, as the person does once the window's menu offers
+/// the workspace.
+fn move_to_workspace(session: &mut Session, tab: u64, to: WorkspaceId) {
+    let row = move_to_workspace_id(to);
+    until(session, "the window menu offers the workspace", |session| {
+        session
+            .handle()
+            .window_menu(tab)
+            .iter()
+            .any(|offered| offered.find(&row).is_some())
+    });
+    session
+        .handle()
+        .choose_window_menu(tab, &row, None)
+        .expect("the person moves the window");
 }
 
 fn tab(id: u64, label: &str, app: &str) -> Tab {
@@ -512,6 +518,51 @@ fn a_restart_brings_back_the_shell_the_session_kept() {
     assert_eq!(width, 480, "at the width it was left");
 }
 
+/// A shell laid out in the session that founds the device's workspace, ended before that workspace
+/// can hold it, is there in the next session and is written as the person's steps.
+#[test]
+fn a_shell_a_session_ends_before_it_can_be_written_is_kept() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let state = crate::common::device_in(&mut home);
+    // The device's first session: the workspace it shows is founded a moment after it starts.
+    let kept = {
+        let mut session = session_keeping(&state, None);
+        let salt = session.handle().read(|tree| tree.salt);
+        let tree = salted(salt, &wide_shell());
+        let mut layout = session.handle().read(Clone::clone);
+        let shown = layout.workspaces[0].id();
+        layout.workspaces[0]
+            .strips
+            .clone_from(&tree.workspaces[0].strips);
+        if let Some(strip) = tree.active_strip.get(&tree.workspaces[0].id()) {
+            layout.active_strip.insert(shown, *strip);
+        }
+        for strip in &tree.workspaces[0].strips {
+            if let Some(group) = tree.active_group.get(&strip.id) {
+                layout.active_group.insert(strip.id, *group);
+            }
+        }
+        session.handle().replace_tree(layout);
+        // The look that draws it, and the session ends.
+        session.step(Duration::from_millis(1)).expect("step");
+        tabs(&session)
+    };
+
+    let mut next = session_keeping(&state, None);
+    until(&mut next, "the shell is back", |session| {
+        let mut back = tabs(session);
+        back.sort_unstable();
+        let mut wanted = kept.clone();
+        wanted.sort_unstable();
+        back == wanted
+    });
+    assert!(
+        next.layout().borrow_mut().last_step().is_some(),
+        "the shell is written as the person's steps"
+    );
+}
+
 /// A window the person sends to a workspace they are not looking at is in that workspace after a
 /// restart: the workspace it left and the one it went to are both written, though the person never
 /// went there. A desktop with no peer network keeps it as one on the network does.
@@ -536,15 +587,10 @@ fn moved_behind_comes_back(network: bool) {
     let mail = device.id(200);
 
     let mut session = session_on(&device.state, None, network);
-    laid_out(&mut session);
-    session
-        .handle()
-        .choose_window_menu(
-            mail,
-            &format!("{MOVE_TO_WORKSPACE}:{}", workspace_ids[1]),
-            None,
-        )
-        .expect("the person moves the window");
+    until(&mut session, "the window is back", |session| {
+        workspace_of(session, mail).is_some()
+    });
+    move_to_workspace(&mut session, mail, workspace_ids[1]);
     until(
         &mut session,
         "the window is in the workspace behind",
@@ -638,11 +684,10 @@ fn signalled_restart_scene() {
         .parse()
         .expect("a tab id");
     let mut session = session_restarted(&state);
-    laid_out(&mut session);
-    session
-        .handle()
-        .choose_window_menu(mail, &format!("{MOVE_TO_WORKSPACE}:{workspace}"), None)
-        .expect("the person moves the window");
+    until(&mut session, "the window is back", |session| {
+        workspace_of(session, mail).is_some()
+    });
+    move_to_workspace(&mut session, mail, workspace);
     until(
         &mut session,
         "the window is in the workspace behind",
@@ -1144,7 +1189,7 @@ fn a_window_moved_to_another_workspace_runs_its_app_there() {
 
     session
         .handle()
-        .choose_window_menu(window_tab, &format!("{MOVE_TO_WORKSPACE}:{away}"), None)
+        .choose_window_menu(window_tab, &move_to_workspace_id(away), None)
         .expect("the person moves the window");
 
     until(&mut session, "the app runs in the other workspace", |_| {
@@ -1205,11 +1250,7 @@ fn moving_a_window_into_a_shared_workspace_asks_first() {
 
     session
         .handle()
-        .choose_window_menu(
-            window_tab,
-            &format!("{MOVE_TO_WORKSPACE}:{}", workspace_ids[1]),
-            None,
-        )
+        .choose_window_menu(window_tab, &move_to_workspace_id(workspace_ids[1]), None)
         .expect("the person moves the window");
     until(&mut session, "the person is asked", |session| {
         session.notifications().feed().banners.iter().any(|banner| {

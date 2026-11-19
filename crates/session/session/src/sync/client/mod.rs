@@ -1037,16 +1037,10 @@ impl Roster {
         notes: &crate::continuations::Continuations,
         app_name: &dyn Fn(&str) -> Option<String>,
     ) -> Vec<Person> {
-        let joined =
-            tree.active_workspace()
-                .map_or_else(std::collections::BTreeMap::new, |workspace| {
-                    workspace
-                        .policy
-                        .admitted()
-                        .map(|(person, at)| (person.to_owned(), at))
-                        .collect()
-                });
-        self.here.borrow_mut().set_joined(&joined);
+        let (joined, names) = tree
+            .active_workspace()
+            .map_or_else(Default::default, tilo_desktop::here::workspace_people);
+        self.here.borrow_mut().set_workspace_people(&joined, &names);
         self.here.borrow().people(
             tree,
             &crate::sync::layout::bindings_of(tree, &notes.windows()),

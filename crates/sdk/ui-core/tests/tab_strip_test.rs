@@ -90,10 +90,12 @@ tilo_test_env::scenario! {
         assert_eq!(strip.bar().tabs()[0].title, "Renamed");
     }
 
-    // Who is at a resource shows on its pill, in their presence colour.
-    phase a_pill_says_who_is_at_its_resource;
+    // Who is at a resource is presence the strip draws live; a face its view declares says
+    // who to show, and never marks the tab as held by someone else, which would hide its
+    // close chip and its changed dot.
+    phase a_declared_face_never_marks_a_tab_held;
     {
-        let mut tabs = vec![tab("a", "A")];
+        let mut tabs = vec![tab("a", "A"), tab("b", "B")];
         tabs[0].presence = vec![tilo_ui::widget::PresenceFaceProps {
             key: "mia".to_owned(),
             who: Some(Person {
@@ -103,13 +105,22 @@ tilo_test_env::scenario! {
             }),
             name: None,
         }];
+        tabs[1].modified = true;
         let strip = TabStrip::from_props("frame", props(tabs, 0));
         let id = strip.bar().tabs()[0].id;
-        let holder = strip
-            .bar()
-            .holder(id)
-            .expect("the pill carries who is at its resource");
-        assert_eq!(holder.name, "Mia");
+        assert!(
+            strip.bar().holder(id).is_none(),
+            "a declared face is not who holds the tab"
+        );
+        assert!(
+            strip.bar().closable_for_tests(),
+            "the pill keeps its close chip"
+        );
+        let changed = strip.bar().tabs()[1].id;
+        assert!(
+            strip.bar().is_modified(changed),
+            "and the changed tab keeps its dot"
+        );
     }
 
     // A point a pill was let go at crosses the event unchanged, at the window's scale.

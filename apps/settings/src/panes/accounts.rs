@@ -2193,7 +2193,10 @@ impl AccountsPane {
             ui::tilo_actions::remote::ApplicationLaunch::with_action(
                 "so.tilo.file-explorer",
                 format!("files.remote-account:{}", hex::encode(&view.id)),
-                "open-remote-account",
+                // Files opens a remote account with the effect its row
+                // declares; this crate reaches Files only from its tests, so
+                // the declaration's word stands here as it does there.
+                "open-account",
             )
             .spec("open-files", &label, &t("accounts-open-files-description")),
         )

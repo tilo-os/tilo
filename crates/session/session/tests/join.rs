@@ -59,7 +59,11 @@ fn person() -> Person {
     let xdg = root.path().join("config");
     let system = root.path().join("system");
     let mut env = tilo_test_env::ScopedEnv::new();
+    // This device's settings documents live in the document store under the
+    // data home: a fresh one per person keeps a joined device out of another
+    // case's settings.
     env.set("XDG_CONFIG_HOME", &xdg)
+        .set("XDG_DATA_HOME", root.path().join("data"))
         .set("TILO_IDENTITY_ROOT", &system)
         .set(FILE_SECRETS_ENV, "1");
     let personal = xdg.join("tilo/identity");

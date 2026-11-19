@@ -288,7 +288,13 @@ test('the sign-in screen at a closed workspace offers someone with no Tilo ident
   try {
     const read = directories({'https://home.example': [{workspace: 'lounge', name: 'Lounge', entry: 'directory/lounge/', invitationOnly: true,
       waitList: {contact: null, mail: true}}]});
-    globalThis.fetch = async (url, init) => { asked.push(new URL(url).origin); return read(url, init); };
+    // The page also reads what sits beside it (its locale file, which under
+    // node is a `file://` URL): only what it asks a server counts.
+    globalThis.fetch = async (url, init) => {
+      const at = new URL(url);
+      if (at.protocol === 'http:' || at.protocol === 'https:') asked.push(at.origin);
+      return read(url, init);
+    };
     const {failure, screen} = await fixture({identity: null, kept: null, entryParts: true, boot: studioLink(),
       join: async () => { throw new Error('nothing joins'); }});
     assert.equal(failure, null);

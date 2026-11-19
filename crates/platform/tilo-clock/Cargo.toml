@@ -12,7 +12,7 @@ description = "The sanctioned monotonic and wall clocks on every target, Unix-ti
 [features]
 # Scoped monotonic and wall readings for deterministic tests only.
 test-support = []
-# The wall clock read as a person reads it: local date and time in the system's zone.
+# The wall clock read as a person reads it: local date and time in their zone.
 local = ["dep:jiff"]
 
 [lib]
@@ -27,8 +27,12 @@ path = "src/lib.rs"
 # Only with `local`: the leaf pulls nothing in unless a caller reads a person's local time.
 jiff = { workspace = true, optional = true }
 
+# The page's own clock and time zone: its offset at each instant and its name for the zone, so
+# a page needs no time-zone database.
 [target.'cfg(all(target_family = "wasm", not(tilo_no_js)))'.dependencies]
 web-time = "1"
+wasm-bindgen = "0.2.108"
+js-sys = "0.3.85"
 
 # A test that holds the process's clock takes the process to itself first,
 # which only the harness can give it.

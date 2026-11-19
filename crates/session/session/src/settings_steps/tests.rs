@@ -41,7 +41,11 @@ fn fixture() -> Fixture {
     let system = root.path().join("system");
     let state = root.path().join("state");
     let mut env = tilo_test_env::ScopedEnv::new();
+    // This device's settings documents live in the document store under the
+    // data home: a fresh one per fixture keeps a click here out of another
+    // case's settings.
     env.set("XDG_CONFIG_HOME", &xdg)
+        .set("XDG_DATA_HOME", root.path().join("data"))
         .set("TILO_IDENTITY_ROOT", &system)
         .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
     tilo_identity::provisioning::ensure_collaboration_identity(

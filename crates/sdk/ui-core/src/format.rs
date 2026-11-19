@@ -395,7 +395,7 @@ pub trait Moment {
 
 impl Moment for jiff::Timestamp {
     fn local(&self) -> Option<DateTime> {
-        Some(self.to_zoned(jiff::tz::TimeZone::system()).datetime())
+        Some(crate::clock::at(*self).datetime())
     }
 }
 

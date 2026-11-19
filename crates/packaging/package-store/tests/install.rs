@@ -8,7 +8,7 @@ use package_store::{Admission, BlobFetcher, PackageStore, StoreError};
 use tilo_app_package::{BlobHash, BlobSink, BlobSource, Packed, SigningIdentity};
 
 use crate::support::{
-    bytes, content_files, full_tapp, package, reflinks_supported, scratch, share_extents,
+    bytes, full_tapp, package, reflinks_supported, scratch, share_extents, stored_blob_file,
     thin_tapp, tree,
 };
 
@@ -161,30 +161,10 @@ tilo_test_env::scenario! {
             assert_eq!(store.registry().unwrap().entries().len(), 1);
 
             // Only v2's blobs remain; v1's old binary was collected.
-            let mut stored: Vec<BlobHash> = Vec::new();
-            for file in content_files(root.path()) {
-                let name = file.file_stem().unwrap().to_str().unwrap().to_string();
-                stored.push(BlobHash::from_hex(&name).unwrap());
-            }
+            let stored = store.stored_blobs().unwrap();
             let old_binary = BlobHash::of(&bytes(1, 300_000));
             assert!(!stored.contains(&old_binary), "v1's binary was evicted");
             assert!(stored.contains(&BlobHash::of(&bytes(3, 310_000))));
-
-            // Where the filesystem can share extents, the materialised file is a
-            // clone of the store's file rather than a second copy.
-            if reflinks_supported(root.path()) {
-                let icon = BlobHash::of(&bytes(2, 120_000));
-                let stored_icon = root
-                    .path()
-                    .join("content/data")
-                    .join(format!("{}.data", icon.to_hex()));
-                let materialised = second.package.payload_root.join("share/icon.png");
-                assert_eq!(
-                    share_extents(&stored_icon, &materialised),
-                    Some(true),
-                    "the materialised icon shares extents with the stored blob"
-                );
-            }
         }
         {
             let identity = SigningIdentity::generate();
@@ -201,6 +181,33 @@ tilo_test_env::scenario! {
                 package_store::integrity::verify(&again.package, &again.package.payload_root)
                     .unwrap()
                     .is_intact()
+            );
+        }
+    }
+
+    phase a_file_over_the_inline_limit_is_cloned_from_the_store;
+    {
+        // Blobs up to 1 MiB live in the store's index and are copied into the
+        // tree; larger ones have a file of their own, and materialisation
+        // clones it where the filesystem can share extents.
+        let probe = scratch();
+        if reflinks_supported(probe.path()) {
+            let identity = SigningIdentity::generate();
+            let big = bytes(5, 1_500_000);
+            let files = BTreeMap::from([
+                ("bin/app", bytes(6, 1_000)),
+                ("share/big.dat", big.clone()),
+            ]);
+            let (_payload, packed) = package(&identity, "so.tilo.big", "1.0.0", &files);
+            let root = scratch();
+            let store = PackageStore::at(root.path());
+            let installed = install(&store, &packed);
+            let stored = stored_blob_file(root.path(), &BlobHash::of(&big));
+            let materialised = installed.package.payload_root.join("share/big.dat");
+            assert_eq!(
+                share_extents(&stored, &materialised),
+                Some(true),
+                "a file over the inline limit shares extents with its stored blob"
             );
         }
     }
@@ -293,7 +300,7 @@ tilo_test_env::scenario! {
             assert!(matches!(error, StoreError::Refused(_)), "{error}");
             assert!(store.registry().unwrap().is_empty());
             assert!(
-                content_files(root.path()).is_empty(),
+                store.stored_blobs().unwrap().is_empty(),
                 "admission runs before any payload byte is stored"
             );
         }
@@ -405,17 +412,16 @@ tilo_test_env::scenario! {
                 installed_b.blobs_already_stored, 1,
                 "the library both apps ship is stored once"
             );
-            assert_eq!(content_files(root.path()).len(), 3);
+            assert_eq!(store.stored_blobs().unwrap().len(), 3);
 
             let removed = store.remove("so.tilo.a", false).unwrap();
             assert_eq!(removed.evicted_blobs, 1, "only a's own binary goes");
-            let shared_hex = BlobHash::of(&shared).to_hex();
             assert!(
-                content_files(root.path()).iter().any(|path| path
-                    .file_stem()
+                store
+                    .stored_blobs()
                     .unwrap()
-                    .to_string_lossy()
-                    == shared_hex)
+                    .contains(&BlobHash::of(&shared)),
+                "the library both apps ship stays stored"
             );
             assert!(!store.layout().payload(a.id()).exists());
             let row_b = installed(&store, "so.tilo.b");
@@ -426,7 +432,7 @@ tilo_test_env::scenario! {
             );
 
             store.remove("so.tilo.b", false).unwrap();
-            assert!(content_files(root.path()).is_empty());
+            assert!(store.stored_blobs().unwrap().is_empty());
         }
         {
             let identity = SigningIdentity::generate();
@@ -544,7 +550,7 @@ tilo_test_env::scenario! {
             Err(package_store::integrity::IntegrityError::RootIdMismatch)
         ));
         assert_eq!(store.sweep(1).unwrap(), vec!["so.tilo.a".to_string()]);
-        assert!(content_files(root.path()).is_empty());
+        assert!(store.stored_blobs().unwrap().is_empty());
     }
 
     phase gc_refuses_when_a_collection_is_unreadable;
@@ -556,7 +562,7 @@ tilo_test_env::scenario! {
         let store = PackageStore::at(root.path());
         install(&store, &a);
         install(&store, &b);
-        let stored = content_files(root.path()).len();
+        let stored = store.stored_blobs().unwrap().len();
 
         std::fs::remove_file(
             store
@@ -572,12 +578,12 @@ tilo_test_env::scenario! {
             store.remove("so.tilo.b", false),
             Err(StoreError::CorruptPackage(ref id, _)) if id == "so.tilo.a"
         ));
-        assert_eq!(content_files(root.path()).len(), stored);
+        assert_eq!(store.stored_blobs().unwrap().len(), stored);
         assert!(matches!(
             store.collect_garbage(),
             Err(StoreError::CorruptPackage(ref id, _)) if id == "so.tilo.a"
         ));
-        assert_eq!(content_files(root.path()).len(), stored);
+        assert_eq!(store.stored_blobs().unwrap().len(), stored);
     }
 }
 
@@ -823,7 +829,7 @@ tilo_test_env::scenario! {
             "the library counts once"
         );
         assert_eq!(before.pinned_bytes, 100_000);
-        assert_eq!(content_files(root.path()).len(), 5);
+        assert_eq!(store.stored_blobs().unwrap().len(), 5);
 
         // Evicting a frees only its own binary while b still ships the library,
         // so b must go too; c, newer, stays, and so does the pinned p.
@@ -843,7 +849,7 @@ tilo_test_env::scenario! {
         assert!(!store.layout().payload(a.id()).exists());
         assert!(!store.layout().payload(b.id()).exists());
         // The sweep collected garbage before returning: nothing is left over.
-        assert_eq!(content_files(root.path()).len(), 2);
+        assert_eq!(store.stored_blobs().unwrap().len(), 2);
         assert_eq!(store.collect_garbage().unwrap(), 0);
         for row in registry.entries() {
             assert!(

@@ -51,13 +51,14 @@ fn row(id: &str) -> String {
 
 fn select(app: &mut TestApp<FileExplorerShell>, id: &str) {
     let address = row(id);
+    let action = file_explorer::effects::FilesEffect::SELECT_CLOUD.id;
     assert!(
-        app.actions().unwrap().iter().any(|action| {
-            action.address.resource.as_str() == address && action.address.action == "select"
+        app.actions().unwrap().iter().any(|published| {
+            published.address.resource.as_str() == address && published.address.action == action
         }),
         "cloud selection must be published"
     );
-    app.call_on(&address, "select", serde_json::json!({}))
+    app.call_on(&address, action, serde_json::json!({}))
         .unwrap();
 }
 
