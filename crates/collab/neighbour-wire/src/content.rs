@@ -21,7 +21,7 @@
 use std::collections::BTreeMap;
 
 /// Largest content one reference names, as the workspace's hosts keep it.
-const MAX_CONTENT_BYTES: u64 = 64 * 1024 * 1024;
+pub const MAX_CONTENT_BYTES: u64 = 64 * 1024 * 1024;
 /// Most bytes one piece carries.
 pub const PIECE_BYTES: usize = 192 * 1024;
 /// How long an unanswered request keeps collecting pieces, and how long
