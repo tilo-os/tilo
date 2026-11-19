@@ -1227,6 +1227,19 @@ identifiers = ["host_cert", "hostCert"]
 paths = ["crates/server/tilo-server-protocol/src/web.rs"]
 
 [[allow]]
+reason = "The page's names for a workspace's server that it reads as they are: the link grammar's `scope.host`, entry.json's `home.host`, an invitation shelf's `host`, the server certificate's `hostCert`, and the module `site-host.mjs`."
+words = ["host"]
+identifiers = ["host", "hostCert"]
+paths = [
+    "crates/browser/tilo-browser-runtime/web/admission.mjs",
+    "crates/browser/tilo-browser-runtime/web/admission.test.mjs",
+    "crates/browser/tilo-browser-runtime/web/entry.mjs",
+    "crates/browser/tilo-browser-runtime/web/entry.test.mjs",
+    "crates/browser/tilo-browser-runtime/web/site-host.mjs",
+    "crates/browser/tilo-browser-runtime/web/site-host.test.mjs",
+]
+
+[[allow]]
 reason = "A registry address's host, the network name a registry is reached at, which the glossary keeps as a network host name."
 words = ["host"]
 identifiers = ["host", "host_str"]
