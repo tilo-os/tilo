@@ -290,10 +290,11 @@ through the image's own `extension-release`. Remove deletes the image and its
 record; capsules and VM disks are untouched.
 
 The default path works without it. The compatibility planner refuses a launch
-with `WindowsSupportNotInstalled`, and `tilo-windows-provision` explains the
-missing media; both name the one action that fixes it:
-`systemctl start tilo-extension@install:windows-compat.service` (an
-administrator; the existing polkit rule already allows it).
+with `WindowsSupportNotInstalled`, which tells the person to turn on
+Windows apps in Settings (the action behind it is
+`systemctl start tilo-extension@install:windows-compat.service`, which the
+existing polkit rule allows an administrator), and `tilo-windows-provision`
+explains the missing media and names that action.
 
 ### Device state
 

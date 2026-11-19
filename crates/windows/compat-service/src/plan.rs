@@ -1157,10 +1157,9 @@ pub enum PlanError {
     )]
     WindowsProviderNotIncluded,
     #[error(
-        "Windows support is not installed on this device. It is a separate download of about \
-         3 GB that is only fetched when you ask for it. Install it with \
-         `systemctl start tilo-extension@install:windows-compat.service` (as an administrator), \
-         then launch again. Nothing was started."
+        "Windows support is not installed on this device yet. It is a separate download of \
+         about 2 GB, fetched only when you ask for it: turn on Windows apps in Settings, \
+         then open the program again. Nothing was started."
     )]
     WindowsSupportNotInstalled,
     #[error(transparent)]
@@ -2309,8 +2308,8 @@ mod payload_tests {
                 let message = error.to_string();
                 assert!(message.contains("not installed"), "{message}");
                 assert!(
-                    message.contains("tilo-extension@install:windows-compat.service"),
-                    "the message names the action: {message}"
+                    message.contains("Windows apps in Settings"),
+                    "the message names where to turn it on: {message}"
                 );
                 assert!(message.contains("Nothing was started"), "{message}");
             }
