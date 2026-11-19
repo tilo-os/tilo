@@ -522,8 +522,8 @@ fn a_window_an_agent_opened_names_the_agent_and_its_run_and_one_a_person_opened_
     assert_eq!(mark.role(), ui::accesskit::Role::Button);
     assert_eq!(
         mark.description(),
-        Some("Fill Jane Doe's visa application"),
-        "the run alone: the mark names the agent already"
+        Some("Jane Doe's agent opened this window\nFill Jane Doe's visa application"),
+        "who opened it, then its step on a line of its own: the mark names the agent already"
     );
 
     // It is the keyboard's stop right after the window's tab list.
