@@ -216,14 +216,11 @@ impl Declared {
         self.0
     }
 
-    /// Refine the published action (its description, its tags), keeping it
-    /// the declared read it is.
+    /// The read takes the document as its input: the framework answers it from
+    /// the committed document a member may read.
     #[must_use]
-    pub fn refined(
-        mut self,
-        refine: impl FnOnce(tilo_actions::ActionSpec) -> tilo_actions::ActionSpec,
-    ) -> Self {
-        self.0 = refine(self.0);
+    pub fn reads_document(mut self) -> Self {
+        self.0 = self.0.reads_document();
         self
     }
 }

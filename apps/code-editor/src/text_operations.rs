@@ -2,7 +2,7 @@
 //! field edits of the file's text ([`crate::project::SourceEdit`]).
 use automerge::{ReadDoc, transaction::Transactable};
 use serde::Serialize;
-use tilo_actions::{ActionSpec, Doc};
+use tilo_actions::Doc;
 
 #[allow(unused_imports, reason = "the `JsonSchema` derive names the crate")]
 use ui::tilo_resource;
@@ -229,7 +229,7 @@ pub(crate) fn snapshot_spec(file: String) -> ui::semantic_document_read::Declare
             expected_heads: params.expected_heads,
         },
     )
-    .refined(ActionSpec::reads_document)
+    .reads_document()
 }
 
 fn snapshot_schema() -> &'static serde_json::Value {
