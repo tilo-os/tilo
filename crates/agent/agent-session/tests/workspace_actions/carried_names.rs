@@ -194,12 +194,12 @@ async fn a_carrier_names_no_edit_its_caller_is_then_refused() {
     let agent = member.clone().delegated_to("Claude Code");
 
     // Chat, by calls. The typed edit is found in a moderator's listing, with the value that
-    // names a new channel written as its parameter's schema takes it.
+    // names a new channel written as its parameter's schema takes it; an editor's listing names
+    // no channel to make, as a new channel is a moderator's.
     let Some((_, chat)) = providers.iter().find(|(app, _)| app == CHAT) else {
         panic!("Chat is begun; not begun: {not_begun:?}")
     };
     let chat = chat.clone();
-    membership.set_role(Some(Role::Moderator));
     let new_channel = |listing: &[tilo_actions::ActionDescriptor], name: &str| {
         listing.iter().find_map(|carrier| {
             let args = serde_json::json!({ "name": name });
@@ -213,18 +213,24 @@ async fn a_carrier_names_no_edit_its_caller_is_then_refused() {
             })
         })
     };
+    membership.set_role(Some(Role::Moderator));
     let by_moderator = listed(&actions, workspace, &member, &chat);
-    let asked = |name: &str| {
-        new_channel(&by_moderator, name).expect("a moderator's typed edit names a new channel")
-    };
+    let asked =
+        new_channel(&by_moderator, "launch").expect("a moderator's typed edit names a new channel");
     membership.set_role(Some(Role::Editor));
     for (caller, who) in [(&member, "an editor"), (&agent, "an editor's agent")] {
-        assert_eq!(
-            invoked(&actions, workspace, caller, &asked("launch")),
-            ReceiptStatus::Rejected {
-                error: ActionCallError::NotPermitted
-            },
+        // A call naming one anyway is refused before anything is applied.
+        assert!(
+            matches!(
+                invoked(&actions, workspace, caller, &asked),
+                ReceiptStatus::Rejected { .. }
+            ),
             "{who} makes no channel through the typed edit: a new channel is a moderator's"
+        );
+        let offered = listed(&actions, workspace, caller, &chat);
+        assert!(
+            new_channel(&offered, "launch").is_none(),
+            "{who} names no channel through the typed edit: a new channel is a moderator's"
         );
     }
 
