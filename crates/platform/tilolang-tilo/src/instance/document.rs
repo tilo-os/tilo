@@ -2276,6 +2276,6 @@ mod profile_tests {
         assert!(chunks.is_empty());
         assert_eq!(doc.get_heads(), recovered.get_heads());
         let (value, _) = recovered.get(automerge::ROOT, "view").unwrap().unwrap();
-        assert_eq!(value.to_str(), Some("my earlier view"));
+        assert_eq!(value.as_str(), Some("my earlier view"));
     }
 }

@@ -1247,9 +1247,9 @@ app so.tilo.lang.views "Views" (resources: .profile)
 
 type Views { title: Text }
 root Views
-default view page for Views
+default view saved_views for Views
 
-view page(v: Views) {
+view saved_views(v: Views) {
     ui.Text(v.title)
 }
 "#;
