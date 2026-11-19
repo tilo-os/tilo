@@ -31,7 +31,7 @@ mod authored;
 mod authority;
 mod bootstrap;
 mod branch;
-pub use branch::{BranchContent, Branched};
+pub use branch::{BranchContent, BranchFileKeys, Branched};
 mod channel_governance;
 mod commit;
 mod mcp_server;

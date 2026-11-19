@@ -1199,24 +1199,19 @@ async fn allow_on_list(
     // once the workspace handed them to it.
     let engine = holder.device.session().engine();
     let held = holder.device.workspace_id();
-    let sealed =
-        if tilo_broker_core::owner_service::OwnerService::commits_documents(&**engine, held) {
-            None
-        } else {
-            loop {
-                match engine
-                    .seal_keys(held)
-                    .expect("her laptop keeps the workspace's keys")
-                {
-                    tilo_session_client::engine::SealKeys::Here(keys) => break Some(keys),
-                    _ => assert!(
-                        std::time::Instant::now() < deadline,
-                        "the workspace never hands her laptop its keys"
-                    ),
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            }
-        };
+    let sealed = loop {
+        match engine
+            .resource_write_keys(held, (chat, document))
+            .expect("her laptop keeps the workspace's keys")
+        {
+            tilo_session_client::engine::SealKeys::Here(keys) => break Some(keys),
+            _ => assert!(
+                std::time::Instant::now() < deadline,
+                "the workspace never hands her laptop its keys"
+            ),
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
     engine
         .write_resource(held, (chat, document), &changes, false, sealed.as_ref())
         .await

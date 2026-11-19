@@ -4,13 +4,15 @@
 //! branch's addresses so history can bring them back.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{BufRead as _, BufReader, Read as _};
 use std::sync::Arc;
 
+use crate::workspaces::BranchFileKeys;
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ROOT, ReadDoc as _};
 use collab_types::{ContentRetention, EncryptionMetadata, WorkspaceId, file_content_artifact};
 use fs::content::Manifest;
-use fs_protocol::tree::chunk_of_record as tree_chunk;
+use fs_protocol::tree::{FILES_APP, chunk_of_record as tree_chunk};
 use key_group::ContentKeys;
 use tilo_content::{ContentStore, WorkspaceStores};
 
@@ -25,7 +27,6 @@ impl crate::workspaces::BranchContent for StoresBranches {
         records: &[((String, String), Vec<u8>)],
     ) -> Result<(), String> {
         let from = self.0.get(source)?;
-        let to = self.0.get(branch)?;
         // The files the tree names now are the branch's: each must be here
         // whole, or the branch is not made. A file the host is still gathering
         // from the devices that wrote it would be a name in the branch whose
@@ -38,58 +39,32 @@ impl crate::workspaces::BranchContent for StoresBranches {
                  it is gathering them from the devices that wrote them"
             ));
         }
-        let named = super::collection::named_by(records, &|address| from.read(address))?;
-        let (count, mut copied, mut lacking) = (named.len(), 0_usize, 0_usize);
-        for address in named {
-            if to.has(&address) {
-                continue;
-            }
-            // Named but not kept here: the source answers it no more than the branch.
-            let Some(mut kept) = from.open(&address) else {
-                lacking = lacking.saturating_add(1);
-                continue;
-            };
-            copied = copied.saturating_add(1);
-            let stored = to
-                .put_reader(&mut kept, "application/octet-stream")
-                .map_err(|error| format!("{address}: {error}"))?;
-            if stored.hash != address {
-                return Err(format!(
-                    "{address}: the source keeps other bytes under it ({})",
-                    stored.hash
-                ));
-            }
-        }
-        // How much of the source's Files the branch took, in counts alone: what
-        // tells a branch made before the host held a file from one whose copy
-        // lost it. A file's name is the person's, never the host's log's.
-        tracing::debug!(
-            %source,
-            %branch,
-            tree_entries = ?tree_entries(records),
-            named = count,
-            copied,
-            not_kept_here = lacking,
-            "a branch took its source's files"
-        );
-        Ok(())
+        let to = self.0.get(branch)?;
+        copy_assets((source, branch), (&from, &to), records, &BTreeSet::new())
     }
 
-    fn has_sealed_files(
+    fn file_keys(
         &self,
         source: &str,
         documents: &[((String, String), Vec<u8>)],
-    ) -> Result<bool, String> {
+    ) -> Result<BranchFileKeys, String> {
         let Some(tree) = tree_of(documents) else {
-            return Ok(false);
+            return Ok(BranchFileKeys::None);
         };
         let source = self.0.get(source)?;
-        Ok(file_versions(documents)?.iter().any(|hash| {
-            source
-                .read(tree.file_hash(hash))
-                .and_then(|bytes| Manifest::decode(&bytes).ok())
-                .is_some_and(|manifest| manifest.sealed().is_some())
-        }))
+        let mut needed = BranchFileKeys::None;
+        for hash in file_versions(documents)? {
+            if let Some(version) = inspect_version(&source, tree.file_hash(&hash))? {
+                if version
+                    .manifest
+                    .is_some_and(|manifest| manifest.sealed().is_some())
+                {
+                    return Ok(BranchFileKeys::SourceAndDestination);
+                }
+                needed = BranchFileKeys::Destination;
+            }
+        }
+        Ok(needed)
     }
 
     fn copy_rekeyed(
@@ -97,46 +72,65 @@ impl crate::workspaces::BranchContent for StoresBranches {
         source: &str,
         branch: &str,
         documents: &mut [((String, String), Vec<u8>)],
-        keys: (&ContentKeys, &ContentKeys),
+        keys: (Option<&ContentKeys>, &ContentKeys),
     ) -> Result<(), String> {
-        self.copy(source, branch, documents)?;
         let Some(tree) = tree_of(documents) else {
-            return Ok(());
+            return self.copy(source, branch, documents);
         };
         let from = WorkspaceId::parse(source).ok_or("invalid source workspace")?;
         let to = WorkspaceId::parse(branch).ok_or("invalid branch workspace")?;
-        let store = self.0.get(branch)?;
+        let original_store = self.0.get(source)?;
+        let branch_store = self.0.get(branch)?;
+        let gathering = not_whole_yet(&original_store, documents);
+        if gathering > 0 {
+            return Err(format!(
+                "{gathering} pieces of the files its documents name have yet to arrive"
+            ));
+        }
         let current: BTreeSet<_> = crate::files_content::files_named(&tree)
             .into_iter()
             .collect();
         let mut translated = BTreeMap::new();
         let mut kept = BTreeMap::new();
+        let mut omitted = BTreeSet::new();
         for original in file_versions(documents)? {
             let source_hash = tree.file_hash(&original);
             if !kept.contains_key(source_hash) {
-                let Some(bytes) = store.read(source_hash) else {
+                let Some(version) = inspect_version(&original_store, source_hash)? else {
                     continue;
                 };
-                let Ok(manifest) = Manifest::decode(&bytes) else {
-                    continue;
-                };
-                if manifest.sealed().is_none()
-                    || (!current.contains(source_hash)
+                omitted.insert(source_hash.to_owned());
+                if let Some(manifest) = &version.manifest {
+                    omitted.extend(manifest.chunks().iter().map(|part| hex::encode(part.hash)));
+                    if !current.contains(source_hash)
                         && manifest
                             .chunks()
                             .iter()
-                            .any(|part| !store.has(&hex::encode(part.hash))))
-                {
-                    continue;
+                            .any(|part| !original_store.has(&hex::encode(part.hash)))
+                    {
+                        continue;
+                    }
                 }
-                let replacement = rekey(&store, &manifest, (from, to), keys)?;
+                let replacement = seal_version(
+                    (&original_store, &branch_store),
+                    (source_hash, version),
+                    (from, to),
+                    keys,
+                )?;
                 kept.insert(source_hash.to_owned(), replacement);
             }
             if let Some(replacement) = kept.get(source_hash) {
+                omitted.insert(original.clone());
                 translated.insert(original, replacement.clone());
             }
         }
         translated.extend(kept);
+        copy_assets(
+            (source, branch),
+            (&original_store, &branch_store),
+            documents,
+            &omitted,
+        )?;
         for ((app, document), bytes) in documents {
             if app != fs_protocol::tree::FILES_APP {
                 continue;
@@ -155,10 +149,60 @@ impl crate::workspaces::BranchContent for StoresBranches {
     }
 }
 
+fn copy_assets(
+    (source, branch): (&str, &str),
+    (from, to): (&ContentStore, &ContentStore),
+    documents: &[((String, String), Vec<u8>)],
+    omitted: &BTreeSet<String>,
+) -> Result<(), String> {
+    let mut named = super::collection::named_by(documents, &|address| from.read(address))?;
+    if !omitted.is_empty() {
+        let attachments =
+            super::collection::named_by_matching(documents, &|app| app != FILES_APP, &|address| {
+                from.read(address)
+            })?;
+        named.retain(|hash| !omitted.contains(hash) || attachments.contains(hash));
+    }
+    let (count, mut copied, mut lacking) = (named.len(), 0_usize, 0_usize);
+    for address in named {
+        if to.has(&address) {
+            continue;
+        }
+        // Named but not kept here: the source answers it no more than the branch.
+        let Some(mut kept) = from.open(&address) else {
+            lacking = lacking.saturating_add(1);
+            continue;
+        };
+        copied = copied.saturating_add(1);
+        let stored = to
+            .put_reader(&mut kept, "application/octet-stream")
+            .map_err(|error| format!("{address}: {error}"))?;
+        if stored.hash != address {
+            return Err(format!(
+                "{address}: the source keeps other bytes under it ({})",
+                stored.hash
+            ));
+        }
+    }
+    // How much of the source's Files the branch took, in counts alone: what
+    // tells a branch made before the host held a file from one whose copy
+    // lost it. A file's name is the person's, never the host's log's.
+    tracing::debug!(
+        %source,
+        %branch,
+        tree_entries = ?tree_entries(documents),
+        named = count,
+        copied,
+        not_kept_here = lacking,
+        "a branch took its source's files"
+    );
+    Ok(())
+}
+
 /// Every version address ever entered in a chunk of the Files tree.
 fn file_versions(documents: &[((String, String), Vec<u8>)]) -> Result<BTreeSet<String>, String> {
     use automerge::legacy::{Key, OpType};
-    use fs_protocol::tree::{FILES_APP, HASH_KEY, is_file_content_hash};
+    use fs_protocol::tree::{HASH_KEY, is_file_content_hash};
 
     let mut versions = BTreeSet::new();
     for ((app, id), bytes) in documents {
@@ -209,32 +253,92 @@ fn write_file_aliases(
     Ok(())
 }
 
-fn rekey(
-    store: &ContentStore,
-    source: &Manifest,
+/// A stored file version is a manifest or a legacy file stored directly by its content hash.
+struct StoredVersion {
+    len: u64,
+    manifest: Option<Manifest>,
+}
+
+fn inspect_version(store: &ContentStore, address: &str) -> Result<Option<StoredVersion>, String> {
+    let Some(len) = store.size(address).filter(|len| *len > 0) else {
+        return Ok(None);
+    };
+    let Some(reader) = store.open(address) else {
+        return Ok(None);
+    };
+    let mut reader = BufReader::new(reader);
+    let manifest =
+        if fs::content::is_manifest(reader.fill_buf().map_err(|error| error.to_string())?) {
+            let mut bytes = Vec::new();
+            reader
+                .read_to_end(&mut bytes)
+                .map_err(|error| error.to_string())?;
+            Manifest::decode(&bytes).ok()
+        } else {
+            None
+        };
+    Ok(Some(StoredVersion { len, manifest }))
+}
+
+fn seal_version(
+    (source_store, destination): (&ContentStore, &ContentStore),
+    (address, version): (&str, StoredVersion),
     (from, to): (WorkspaceId, WorkspaceId),
-    (source_keys, branch_keys): (&ContentKeys, &ContentKeys),
+    (source_keys, branch_keys): (Option<&ContentKeys>, &ContentKeys),
 ) -> Result<String, String> {
-    let old = source.sealed().ok_or("the source file is not sealed")?;
-    let group = WorkspaceId::from_u128(u128::from_be_bytes(old.group));
-    let metadata =
-        EncryptionMetadata::content_group(from, group, old.epoch, ContentRetention::Delta);
+    let open = || {
+        source_store
+            .open(address)
+            .ok_or("the source file is missing")
+    };
+    let (manifest, mut inline) = match version.manifest {
+        Some(manifest) => (manifest, None),
+        None => {
+            let (manifest, _) =
+                fs::content::build_reader(BufReader::new(open()?), version.len, None)
+                    .map_err(|error| error.to_string())?;
+            (manifest, Some(BufReader::new(open()?)))
+        }
+    };
+    let old = manifest.sealed().map(|old| {
+        let group = WorkspaceId::from_u128(u128::from_be_bytes(old.group));
+        EncryptionMetadata::content_group(from, group, old.epoch, ContentRetention::Delta)
+    });
     let from = file_content_artifact(from);
     let to = file_content_artifact(to);
-    let mut chunks = Vec::with_capacity(source.chunks().len());
+    let mut chunks = Vec::with_capacity(manifest.chunks().len());
     let mut overhead = None;
-    for part in source.chunks() {
-        let bytes = store
-            .read(&hex::encode(part.hash))
-            .ok_or("a source file chunk is missing")?;
-        let clear = source_keys
-            .open_content(from, &metadata, &bytes)
-            .map_err(|error| error.to_string())?;
+    for part in manifest.chunks() {
+        let payload = match inline.as_mut() {
+            Some(reader) => {
+                let mut payload = vec![0; part.len as usize];
+                reader
+                    .read_exact(&mut payload)
+                    .map_err(|error| error.to_string())?;
+                if blake3::hash(&payload).as_bytes() != &part.hash {
+                    return Err("the source file changed while it was copied".into());
+                }
+                payload
+            }
+            None => source_store
+                .read(&hex::encode(part.hash))
+                .ok_or("a source file chunk is missing")?,
+        };
+        let opened;
+        let clear = if let Some(metadata) = &old {
+            opened = source_keys
+                .ok_or("the source's Files keys are unavailable")?
+                .open_content(from, metadata, &payload)
+                .map_err(|error| error.to_string())?;
+            opened.as_slice()
+        } else {
+            &payload
+        };
         if clear.len() != part.len as usize {
             return Err("a source file chunk has another length".into());
         }
         let (_, sealed) = branch_keys
-            .seal_content(to, ContentRetention::Delta, &clear)
+            .seal_content(to, ContentRetention::Delta, clear)
             .map_err(|error| error.to_string())?;
         let extra = u32::try_from(sealed.len().saturating_sub(clear.len()))
             .map_err(|error| error.to_string())?;
@@ -242,14 +346,22 @@ fn rekey(
             return Err("inconsistent sealed file chunk length".into());
         }
         let mut chunk = *part;
-        let stored = store
+        let stored = destination
             .put_public(&sealed)
             .map_err(|error| error.to_string())?;
         hex::decode_to_slice(stored, &mut chunk.hash).map_err(|error| error.to_string())?;
         chunks.push(chunk);
     }
+    if let Some(mut reader) = inline
+        && reader
+            .read(&mut [0_u8; 1])
+            .map_err(|error| error.to_string())?
+            != 0
+    {
+        return Err("the source file changed while it was copied".into());
+    }
     let manifest = Manifest::new_sealed(
-        source.tier(),
+        manifest.tier(),
         chunks,
         fs::content::SealedChunks {
             group: *branch_keys.workspace().as_uuid().as_bytes(),
@@ -257,7 +369,7 @@ fn rekey(
             overhead: overhead.ok_or("empty sealed manifest")?,
         },
     );
-    store
+    destination
         .put_public(&manifest.encode())
         .map_err(|error| error.to_string())
 }
@@ -324,15 +436,18 @@ fn not_whole_yet(
     };
     crate::files_content::files_named(&tree)
         .iter()
-        .map(|manifest| match store.read(manifest) {
-            None => 1,
-            Some(listed) => fs::content::Manifest::decode(&listed).map_or(0, |manifest| {
-                manifest
-                    .chunks()
-                    .iter()
-                    .filter(|chunk| !store.has(&hex::encode(chunk.hash)))
-                    .count()
-            }),
+        .map(|hash| match inspect_version(store, hash) {
+            Ok(Some(StoredVersion {
+                manifest: Some(manifest),
+                ..
+            })) => manifest
+                .chunks()
+                .iter()
+                .filter(|chunk| !store.has(&hex::encode(chunk.hash)))
+                .count(),
+            Ok(Some(_)) => 0,
+            Ok(None) if store.size(hash) == Some(0) => 0,
+            Ok(None) | Err(_) => 1,
         })
         .sum()
 }
@@ -425,9 +540,12 @@ mod tests {
         let mut copied = snapshot(&mut namespace);
 
         let copier = StoresBranches(stores.clone());
-        assert!(copier.has_sealed_files(&source, &copied).unwrap());
+        assert_eq!(
+            copier.file_keys(&source, &copied).unwrap(),
+            BranchFileKeys::SourceAndDestination
+        );
         copier
-            .copy_rekeyed(&source, &branch, &mut copied, (&from, &to))
+            .copy_rekeyed(&source, &branch, &mut copied, (Some(&from), &to))
             .unwrap();
 
         // The branch's Files index is live when a reader brings back the earlier version.
@@ -460,5 +578,62 @@ mod tests {
             earlier
         );
         assert!(from.open_content(artifact, &metadata, &payload).is_err());
+    }
+
+    #[test]
+    fn branching_plaintext_files_only_publishes_sealed_payloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let stores = Arc::new(WorkspaceStores::in_dir(
+            dir.path(),
+            tilo_content::ContentLimits::default(),
+        ));
+        let source = WorkspaceId::new().to_string();
+        let branch = WorkspaceId::new();
+        let keys =
+            key_group::KeyGroup::create(branch, key_group::MemberKey::generate("member").unwrap())
+                .unwrap()
+                .content_keys()
+                .unwrap();
+        let clear = b"a version stored in the clear";
+        let original = stores.get(&source).unwrap();
+        let raw = original.put_public(clear).unwrap();
+        let mut namespace = fs::Namespace::new("source").unwrap();
+        namespace
+            .create_file(
+                ROOT_INO,
+                "report",
+                Some(&raw.parse().unwrap()),
+                clear.len() as u64,
+                1,
+            )
+            .unwrap();
+        let mut copied = snapshot(&mut namespace);
+        let copier = StoresBranches(stores.clone());
+        assert_eq!(
+            copier.file_keys(&source, &copied).unwrap(),
+            BranchFileKeys::Destination
+        );
+        copier
+            .copy_rekeyed(&source, &branch.to_string(), &mut copied, (None, &keys))
+            .unwrap();
+
+        let store = stores.get(&branch.to_string()).unwrap();
+        assert!(original.has(&raw));
+        assert!(
+            !store.has(&raw),
+            "the branch copied no plaintext file payload"
+        );
+        let tree = tree_of(&copied).unwrap();
+        let hash = tree.file_hash(&raw);
+        let manifest = Manifest::decode(&store.read(hash).unwrap()).unwrap();
+        assert!(manifest.sealed().is_some());
+        let payload = store.read(&hex::encode(manifest.chunks()[0].hash)).unwrap();
+        let metadata = EncryptionMetadata::content_key(keys.epoch(), ContentRetention::Delta);
+        assert_eq!(
+            &*keys
+                .open_content(file_content_artifact(branch), &metadata, &payload)
+                .unwrap(),
+            clear
+        );
     }
 }
