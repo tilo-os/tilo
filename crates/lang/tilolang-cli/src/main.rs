@@ -36,15 +36,17 @@ usage:
       and taken over by the app there, and --runtime BIN bakes the runtime binary into a signed
       runtime bundle installed in that session. See docs/tilolang-dev.md.
   tilolang profile [DIR] [--search DIR]... [--scenario NAME] [--seed N] [--size WxH]
-                   [--root NAME] [--then INTERACTION]...
+                   [--root NAME] [--then INTERACTION]... [--times]
       count what the app in DIR (default: .) costs to open and to use, in the language's own
       terms: each unit of its code by source line, with the calls it ran, the fuel it spent and
       what it read from the host, sorted by fuel. --seed N opens a workspace of N items (as
       `tilolang bench` seeds one); --scenario stages that scenario of the app (the app's first
       by default); --then runs an interaction after the app is open and counts that alone:
-      key:Tab, click:X,Y, type:TEXT or scroll:DX,DY, in logical pixels. --size is the window's
-      size (default 1280x800), --root the layer of a package with more than one root. The counts
-      are the same on any machine at any load.
+      key:Tab, click:X,Y, type:TEXT, scroll:DX,DY, press:NAME (a click on the widget the window
+      names so) or drag:X0,Y0,X1,Y1, in logical pixels. --size is the window's size (default
+      1280x800), --root the layer of a package with more than one root. The counts are the same
+      on any machine at any load; --times adds what each step took in the framework's named
+      scopes, which depends on the machine.
   tilolang describe [DIR] [--search DIR]...
       print what the app in DIR publishes as tilolang: its resources' types, enums and actions,
       a native app (its committed surface.toml) and a tilolang package alike
@@ -138,6 +140,7 @@ fn profile_command(args: &[String]) -> Result<(), String> {
         size: (1280, 800),
         root: None,
         then: Vec::new(),
+        times: false,
     };
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -164,6 +167,7 @@ fn profile_command(args: &[String]) -> Result<(), String> {
             }
             "--root" => options.root = Some(value(&mut iter, arg)?),
             "--then" => options.then.push(value(&mut iter, arg)?),
+            "--times" => options.times = true,
             flag if flag.starts_with("--") => return Err(format!("profile: no flag {flag}")),
             dir_arg => dir = PathBuf::from(dir_arg),
         }

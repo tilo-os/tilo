@@ -24340,6 +24340,7 @@ dependencies = [
  "tilo-paths",
  "tilo-process",
  "tilo-render-protocol",
+ "tilo-resource",
  "tilo-rich-edit",
  "tilo-test-env",
  "tilo-ui",

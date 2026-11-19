@@ -57,6 +57,8 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false
 # The app window's half of a window and the patch protocol to it: what `layout-check` lays out.
 tilo-app-window = { path = "../../platform/tilo-app-window" }
 tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
+# `tilolang profile --times`: the named scopes the framework marks, timed per interaction.
+tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
 
 [dev-dependencies]
 tilo-rich-edit = { path = "../../sdk/tilo-rich-edit" }

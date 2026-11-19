@@ -5,7 +5,9 @@
 //! A window is staged as `layout-check` stages it, over a workspace of `--seed` items as
 //! `tilolang bench` seeds one, and each `--then` interaction is run as a person runs it: a key,
 //! a click, typing, a scroll. What is counted is counted, not timed: the table is the same on
-//! any machine at any load, so an app author can hold an app to a budget here.
+//! any machine at any load, so an app author can hold an app to a budget here. `--times` adds what
+//! each step took in the scopes the framework marks (`tilo_resource::profiling`), the scopes a slow
+//! event's log line names: where the time of a step went, on this machine.
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -25,6 +27,9 @@ pub struct ProfileOptions {
     pub root: Option<String>,
     /// Interactions to run after the app is open, each in [`Interaction`]'s spelling.
     pub then: Vec<String>,
+    /// Also time each step by the scopes the framework marks: what is timed depends on the machine,
+    /// so it is printed beside the counts, never in place of them.
+    pub times: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -37,15 +42,19 @@ pub enum Interaction {
     Type(String),
     /// A scroll by a distance, in logical pixels: `scroll:0,480`.
     Scroll(f64, f64),
+    /// A click on the widget the window addresses by a name: `press:Controls`.
+    Press(String),
+    /// A pointer drag from one point to another, in logical pixels: `drag:260,400,420,400`.
+    Drag((f64, f64), (f64, f64)),
 }
 
 impl Interaction {
     /// The interaction `spec` spells, as `--then` takes it: `key:Tab`, `click:120,300`,
-    /// `type:Shopping`, `scroll:0,480`.
+    /// `type:Shopping`, `scroll:0,480`, `press:NAME`, `drag:260,400,420,400`.
     pub fn parse(spec: &str) -> Result<Self, String> {
-        let (what, rest) = spec
-            .split_once(':')
-            .ok_or_else(|| format!("--then {spec}: expected key:, click:, type: or scroll:"))?;
+        let (what, rest) = spec.split_once(':').ok_or_else(|| {
+            format!("--then {spec}: expected key:, click:, type:, scroll:, press: or drag:")
+        })?;
         let pair = || -> Result<(f64, f64), String> {
             let (a, b) = rest
                 .split_once(',')
@@ -59,6 +68,22 @@ impl Interaction {
         };
         match what {
             "key" => Ok(Self::Key(rest.to_owned())),
+            "press" => Ok(Self::Press(rest.to_owned())),
+            "drag" => {
+                let numbers = rest
+                    .split(',')
+                    .map(|text| text.trim().parse::<f64>())
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| {
+                        format!("--then {spec}: expected four numbers, as in 260,400,420,400")
+                    })?;
+                let [x0, y0, x1, y1] = numbers[..] else {
+                    return Err(format!(
+                        "--then {spec}: expected four numbers, as in 260,400,420,400"
+                    ));
+                };
+                Ok(Self::Drag((x0, y0), (x1, y1)))
+            }
             "type" => Ok(Self::Type(rest.to_owned())),
             "click" => {
                 let (x, y) = pair()?;
@@ -69,7 +94,7 @@ impl Interaction {
                 Ok(Self::Scroll(dx, dy))
             }
             _ => Err(format!(
-                "--then {spec}: {what:?} is not an interaction (key, click, type, scroll)"
+                "--then {spec}: {what:?} is not an interaction (key, click, type, scroll, press, drag)"
             )),
         }
     }
@@ -81,6 +106,8 @@ impl Interaction {
             Self::Click(x, y) => format!("click:{x},{y}"),
             Self::Type(text) => format!("type:{text}"),
             Self::Scroll(dx, dy) => format!("scroll:{dx},{dy}"),
+            Self::Press(name) => format!("press:{name}"),
+            Self::Drag((x0, y0), (x1, y1)) => format!("drag:{x0},{y0},{x1},{y1}"),
         }
     }
 }
@@ -135,20 +162,24 @@ pub fn profile(options: &ProfileOptions) -> Result<(), String> {
     let viewport = options.size;
     let theme = ui::Theme::light();
     let input = InteractionEnvironment::POINTER;
-    let mut staged = stage::Staged::over_workspace(
-        &app.app,
-        &packages,
-        viewport,
-        theme.clone(),
-        stage::Staging {
-            scenario: scenario.clone(),
-            root: options.root.clone(),
-            record,
-            costs: true,
-            states: Vec::new(),
-        },
-    )?;
-    staged.lay_out(viewport, theme.clone(), input, 1.0)?;
+    let (staged, opened) = tilo_resource::profiling::observe(|| -> Result<_, String> {
+        let mut staged = stage::Staged::over_workspace(
+            &app.app,
+            &packages,
+            viewport,
+            theme.clone(),
+            stage::Staging {
+                scenario: scenario.clone(),
+                root: options.root.clone(),
+                record,
+                costs: true,
+                states: Vec::new(),
+            },
+        )?;
+        staged.lay_out(viewport, theme.clone(), input, 1.0)?;
+        Ok(staged)
+    });
+    let mut staged = staged?;
 
     println!(
         "{} ({} items, scenario {})",
@@ -157,20 +188,61 @@ pub fn profile(options: &ProfileOptions) -> Result<(), String> {
         scenario.as_deref().unwrap_or("none"),
     );
     print_costs(&staged, "open")?;
+    if options.times {
+        print_times(&opened);
+    }
     for interaction in interactions {
         staged.reset_costs();
-        match &interaction {
-            Interaction::Key(key) => staged.key(key),
-            Interaction::Click(x, y) => {
-                staged.harness_mut().click_at(*x, *y);
-            }
-            Interaction::Type(text) => staged.harness_mut().type_text(text),
-            Interaction::Scroll(dx, dy) => staged.harness_mut().scroll(*dx, *dy),
-        }
-        staged.lay_out(viewport, theme.clone(), input, 1.0)?;
+        let (done, scopes) = tilo_resource::profiling::observe(|| -> Result<(), String> {
+            perform(&mut staged, &interaction)?;
+            staged.lay_out(viewport, theme.clone(), input, 1.0)?;
+            Ok(())
+        });
+        done?;
         print_costs(&staged, &format!("then {}", interaction.label()))?;
+        if options.times {
+            print_times(&scopes);
+        }
     }
     Ok(())
+}
+
+/// Do `interaction` in the staged window, as a person does it.
+fn perform(staged: &mut stage::Staged, interaction: &Interaction) -> Result<(), String> {
+    match interaction {
+        Interaction::Key(key) => staged.key(key),
+        Interaction::Click(x, y) => staged.harness_mut().click_at(*x, *y),
+        Interaction::Type(text) => staged.harness_mut().type_text(text),
+        Interaction::Scroll(dx, dy) => staged.harness_mut().scroll(*dx, *dy),
+        Interaction::Press(name) => {
+            staged.harness_mut().click_named(name).map_err(|error| {
+                let mut names: Vec<_> = staged.harness_mut().targets().into_keys().collect();
+                names.sort();
+                format!(
+                    "--then press:{name}: {error}; the window names {}",
+                    names.join(", ")
+                )
+            })?;
+        }
+        Interaction::Drag(from, to) => staged.harness_mut().drag_at(*from, *to),
+    }
+    Ok(())
+}
+
+/// The scopes a step ran, the costliest first: microseconds, then how often. Scopes nest, so they
+/// do not add up.
+fn print_times(scopes: &[tilo_resource::profiling::Sample]) {
+    let mut scopes: Vec<_> = scopes.iter().collect();
+    scopes.sort_by_key(|scope| std::cmp::Reverse(scope.elapsed_ns));
+    println!("        µs     calls  scope");
+    for scope in scopes.iter().take(24) {
+        println!(
+            "{:>10} {:>9}  {}",
+            scope.elapsed_ns / 1_000,
+            scope.calls,
+            scope.phase
+        );
+    }
 }
 
 fn print_costs(staged: &stage::Staged, interaction: &str) -> Result<(), String> {
