@@ -12,9 +12,10 @@
 #     --rootfs btrfs|ext4     root filesystem (default: btrfs)
 #     --encrypt               make the root a LUKS2 volume (os/usr/libexec/
 #                            tilo-disk-encrypt), with its recovery key written to
-#                            OUTDIR/recovery-key.txt; the image must boot split
-#                            kernel/initrd entries, because a sealed UKI's signed
-#                            command line cannot carry the install's rd.luks.uuid
+#                            OUTDIR/recovery-key.txt; the image must either find
+#                            its own root (a Tilo UKI's root=tilo-auto) or boot
+#                            split kernel/initrd entries, because a sealed UKI's
+#                            signed command line cannot carry rd.luks.uuid
 #     --esp 2G                ESP size
 #     --boot-gap 16M          free space before the ESP (Rockchip loader gap)
 #     --rockchip-loader DIR   idbloader.img + u-boot.itb written into that gap
@@ -341,6 +342,17 @@ elif podman run --rm --entrypoint /bin/sh "$IMAGE" \
      -c 'ls /boot/EFI/Linux/*.efi >/dev/null 2>&1'; then
   HAS_UKI=yes
 fi
+# A UKI that resolves its own root (Tilo's `root=tilo-auto`) needs no karg to
+# boot an encrypted layout: the initramfs finds the one LUKS2 root on the disk.
+# Only a UKI whose boot would need `rd.luks.uuid` from the install cannot be
+# installed encrypted, because a sealed command line cannot carry it.
+TILO_ROOT_UKI=no
+if [ "$HAS_UKI" = yes ] && [ -z "$SEALED_SOURCE_IMGREF" ] \
+   && podman run --rm --entrypoint /bin/sh "$IMAGE" -c '
+        uki=$(ls /boot/EFI/Linux/*.efi | head -n 1)
+        /usr/libexec/tilo-uki-cmdline show "$uki" | grep -qw "root=tilo-auto"'; then
+  TILO_ROOT_UKI=yes
+fi
 # The image's own install config decides the bootloader (Tilo ships
 # `bootloader = "systemd"` in /usr/lib/bootc/install/40-tilo.toml), and that
 # choice constrains the backend: `bootc install` refuses systemd-boot on the
@@ -392,7 +404,7 @@ if [ ${#KARGS[@]} -gt 0 ] && [ "$HAS_UKI" = yes ]; then
   ship it as a separately signed UKI addon."
 fi
 
-if [ "$ENCRYPT" = 1 ] && [ "$HAS_UKI" = yes ]; then
+if [ "$ENCRYPT" = 1 ] && [ "$HAS_UKI" = yes ] && [ "$TILO_ROOT_UKI" = no ]; then
   die "--encrypt needs an image that boots split kernel/initrd entries. This
   image carries a sealed UKI, whose signed command line cannot carry the
   install-time rd.luks.uuid; the desktop installer builds that layout instead."
@@ -947,7 +959,11 @@ if [ "$ENCRYPT" = 1 ]; then
   # answered at the display (a server at its serial console passes
   # `--karg console=ttyS0` itself and answers there).
   install_args+=(--boot-mount-spec "UUID=$ENC_BOOT_UUID")
-  for karg in $ENC_KARGS; do install_args+=(--karg "$karg"); done
+  # A Tilo UKI finds the LUKS2 root by itself, so its install needs no karg —
+  # and a sealed command line could not take one.
+  if [ "$TILO_ROOT_UKI" = no ]; then
+    for karg in $ENC_KARGS; do install_args+=(--karg "$karg"); done
+  fi
 fi
 [ "$DIRECT_SEALED_SOURCE" = 0 ] || install_args+=(--enforce-container-sigpolicy)
 install_args+=("/run/tilo-install-target")
