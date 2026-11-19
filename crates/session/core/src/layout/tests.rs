@@ -273,10 +273,13 @@ fn search_offers_people_no_arranging_internals() {
     let words: super::Words = std::rc::Rc::new(|_, _, fallback| fallback.to_owned());
     let mut resources = super::resources(&words);
     for key in ["1", "2", "3"] {
-        resources.push(super::place_actions(key, &words).into_iter().fold(
-            tilo_actions::ResourceSpec::new(key, super::PLACE_KIND, "Notes"),
-            tilo_actions::ResourceSpec::with_action,
-        ));
+        resources.push(
+            tilo_resource::LiveRow::typed::<super::published::Place>(
+                super::Item::Place.resource(key),
+                "Notes",
+            )
+            .into_resource(),
+        );
     }
     let published = Published(vec![PublishedActions::of("session", "", &resources)]);
     let titles = |needle: &str| -> Vec<String> {

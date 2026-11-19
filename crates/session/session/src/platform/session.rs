@@ -2375,7 +2375,7 @@ impl Session {
     /// # Errors
     /// The API's refusal: there is no step to take back.
     pub fn undo_layout(&mut self) -> Result<(), ApiError> {
-        let address = ActionAddress::new(layout::RECORD_RESOURCE, "undo");
+        let address = ActionAddress::new(layout::HISTORY_RESOURCE, "undo");
         self.shared.published.invoke(
             &address,
             &serde_json::Map::new(),

@@ -209,7 +209,7 @@ fn the_layout_names_itself_in_the_persons_language() {
         Some("Layout")
     );
     assert_eq!(
-        named_by_id(&session, "shell:layout-record").as_deref(),
+        named_by_id(&session, "shell:layout-history").as_deref(),
         Some("Layoutverlauf")
     );
     speak("en-US");
@@ -218,7 +218,7 @@ fn the_layout_names_itself_in_the_persons_language() {
         Some("Layout")
     );
     assert_eq!(
-        named_by_id(&session, "shell:layout-record").as_deref(),
+        named_by_id(&session, "shell:layout-history").as_deref(),
         Some("Layout history")
     );
 }

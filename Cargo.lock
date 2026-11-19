@@ -22862,6 +22862,7 @@ dependencies = [
  "tilo-desktop-surface",
  "tilo-failure",
  "tilo-live",
+ "tilo-resource",
  "tilo-ui",
  "tokio",
  "tracing",

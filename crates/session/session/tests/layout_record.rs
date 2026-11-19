@@ -309,7 +309,7 @@ fn a_float_is_one_step_and_snapping_back_returns_it_exactly() {
     session
         .invoke_with_actor(
             &crate::common::as_person(&person()),
-            layout::RECORD_RESOURCE,
+            layout::HISTORY_RESOURCE,
             "redo",
             &serde_json::json!({}),
         )
