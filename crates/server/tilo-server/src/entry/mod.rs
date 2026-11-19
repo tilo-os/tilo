@@ -671,8 +671,12 @@ impl InvitationMail {
         let kept = if self.mail.on_page(&asked.link) {
             self.mail.send_for(
                 mail::Kind::Invite,
-                self.mail
-                    .invite(&to, &asked.link, &hex::encode(asked.removal)),
+                self.mail.invite(
+                    &to,
+                    &asked.link,
+                    &hex::encode(asked.removal),
+                    &asked.inviter,
+                ),
                 &hex::encode(sha256(&asked.removal)),
             )
         } else {

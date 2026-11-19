@@ -1033,6 +1033,10 @@ impl Workspaces {
             .mail_invite(request_id, now)
             .map_err(CollaborationError::new)?
             .map_err(CollaborationError::new)?;
+        // The invitation says who asked the person in, by the name the workspace shows them by.
+        let inviter = self
+            .member_name_by_root(&governed, device.user_public_key)
+            .unwrap_or_default();
         drop(governed);
         let (queued, accepted) = tokio::sync::oneshot::channel();
         let sent = mail
@@ -1040,6 +1044,7 @@ impl Workspaces {
                 queued,
                 to,
                 link,
+                inviter,
                 removal,
             })
             .is_ok();

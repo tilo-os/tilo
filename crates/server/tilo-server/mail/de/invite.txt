@@ -1,6 +1,6 @@
 Subject: Du bist zu {{workspace}} eingeladen
 
-Jemand in {{workspace}} hat dich eingeladen.
+{{#inviter}}{{inviter}} hat dich zu {{workspace}} eingeladen.{{/inviter}}{{^inviter}}Du bist zu {{workspace}} eingeladen.{{/inviter}}
 
 Komm mit diesem Link dazu:
 {{link}}

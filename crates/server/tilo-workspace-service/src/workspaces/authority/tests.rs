@@ -267,6 +267,76 @@ async fn bo_confirmed_beside_cy(
     listed().await[0].request_id
 }
 
+/// An invitation's mail names the person who asked, as the workspace names them: nobody while
+/// nobody named them, and the name they gave after.
+#[tokio::test]
+async fn a_mailed_invitation_names_who_asked_as_the_workspace_names_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let workspace = workspaces.create("Lounge").await.unwrap().workspace;
+    let bo = bo_confirmed_beside_cy(workspaces, &owner, &workspace).await;
+    let mut mail = workspaces.mail_wait_list("https://entry.example/").unwrap();
+    let ask = |request| workspaces.page_workspaces(&owner, request);
+
+    let WorkspacesReply::Invitation { .. } = ask(list_entry(&workspace, bo)).await else {
+        panic!("the owner invites the address");
+    };
+    assert_eq!(
+        mailed_inviter(workspaces, &owner, &workspace, bo, &mut mail).await,
+        "",
+        "nobody named the owner yet"
+    );
+
+    // They give their name: the next invitation is mailed under it.
+    assert!(matches!(
+        ask(WorkspacesRequest::Name {
+            workspace: workspace.clone(),
+            name: "Maya Chen".to_owned(),
+        })
+        .await,
+        WorkspacesReply::Named
+    ));
+    let cy = read_wait_list(workspaces, &owner, &workspace)
+        .await
+        .into_iter()
+        .find(|entry| entry.contact == "cy@example.org")
+        .expect("cy is listed")
+        .request_id;
+    let WorkspacesReply::Invitation { .. } = ask(list_entry(&workspace, cy)).await else {
+        panic!("the owner invites cy");
+    };
+    assert_eq!(
+        mailed_inviter(workspaces, &owner, &workspace, cy, &mut mail).await,
+        "Maya Chen"
+    );
+    server.shutdown().await;
+}
+
+/// Mail the invitation for `entry` and answer how the person who asked named themself in it.
+async fn mailed_inviter(
+    workspaces: &Workspaces,
+    owner: &DeviceCert,
+    workspace: &str,
+    entry: [u8; 32],
+    mail: &mut tokio::sync::mpsc::UnboundedReceiver<WaitListMail>,
+) -> String {
+    let (answer, inviter) = tokio::join!(
+        workspaces.page_workspaces(
+            owner,
+            mailed_invitation(workspace, entry, "https://entry.example/?invite=AAEC")
+        ),
+        async {
+            let asked = mail.recv().await.unwrap();
+            asked.queued.send(true).unwrap();
+            asked.inviter
+        }
+    );
+    assert!(matches!(answer, WorkspacesReply::WaitList(_)));
+    inviter
+}
+
 #[tokio::test]
 async fn a_mailed_address_is_listed_once_confirmed_mailed_its_invitation_and_leaves_on_joining() {
     let dir = tempfile::tempdir().unwrap();
@@ -327,7 +397,8 @@ async fn an_invitation_sent_off_the_wait_list_says_so() {
 fn list_entry(workspace: &str, entry: [u8; 32]) -> WorkspacesRequest {
     WorkspacesRequest::Invite {
         workspace: workspace.to_owned(),
-        request_id: [41; 32],
+        // One request per address, so inviting the same one again is the same request.
+        request_id: *blake3::hash(&entry).as_bytes(),
         role: Role::Editor,
         expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
         inviter_name: None,
@@ -412,8 +483,10 @@ async fn the_address_is_invited_and_mailed(
                 queued,
                 to,
                 link,
+                inviter,
                 removal,
             } = mail.recv().await.unwrap();
+            assert!(inviter.is_empty(), "nobody named the owner yet");
             queued.send(true).unwrap();
             (to, link, removal)
         }

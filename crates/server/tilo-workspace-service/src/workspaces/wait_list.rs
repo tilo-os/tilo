@@ -560,6 +560,9 @@ pub struct WaitListMail {
     pub to: Mailbox,
     /// The invitation's web link.
     pub link: String,
+    /// How the person who asked named themself in the workspace, where it has a name for them;
+    /// empty while nobody named them.
+    pub inviter: String,
     /// A secret that takes the entry off the list, for the mail's removal
     /// link; the entry keeps only its SHA-256.
     pub removal: [u8; 32],

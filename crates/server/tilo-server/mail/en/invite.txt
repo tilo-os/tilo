@@ -1,6 +1,6 @@
 Subject: You're invited to {{workspace}}
 
-Someone in {{workspace}} invited you to join.
+{{#inviter}}{{inviter}} invited you to join {{workspace}}.{{/inviter}}{{^inviter}}You're invited to join {{workspace}}.{{/inviter}}
 
 Join with this link:
 {{link}}

@@ -9,13 +9,15 @@
 //! a configured file that is missing or malformed stops the service, never
 //! falling back to the built-in words. A plain-text file's first line is the
 //! subject (after an optional `Subject: `). `{{workspace}}`, `{{email}}`,
-//! `{{link}}`, `{{remove_link}}` and `{{entry}}` are filled in, HTML-escaped
-//! in the HTML; a layout fills `{{body}}`, and may name the language with
-//! `{{language}}`. Only those placeholders are allowed where they belong,
-//! each is filled once, and a filled value is never searched for
-//! placeholders again: a name or address that spells `{{link}}` stays text.
-//! The `mail-preview <dir>` command of `tilo-server` writes every mail
-//! as it is sent.
+//! `{{link}}`, `{{remove_link}}`, `{{entry}}` and `{{inviter}}` (how the person
+//! who invited named themself; empty when nobody named them) are filled in,
+//! HTML-escaped in the HTML; a layout fills `{{body}}`, and may name the language
+//! with `{{language}}`. A part is written only when a value is given,
+//! `{{#name}}…{{/name}}`, or only when none is, `{{^name}}…{{/name}}`. Only those
+//! placeholders are allowed where they belong, each is filled once, and a filled
+//! value is never searched for placeholders again: a name or address that spells
+//! `{{link}}` stays text. The `mail-preview <dir>` command of `tilo-server` writes
+//! every mail as it is sent.
 //!
 //! A [`EntryMail`] hands what it sends to the outbox it opened, which
 //! sends through a [`Mailer`] — [`Resend`] over its HTTPS API, or a fake in
@@ -93,7 +95,14 @@ const MAX_SUBJECT_BYTES: usize = 998;
 const MAX_LINK_BYTES: usize = tilo_server_protocol::workspaces::MAX_INVITATION_LINK + 4096;
 
 /// What a mail body may fill.
-const BODY_PLACEHOLDERS: [&str; 5] = ["workspace", "email", "link", "remove_link", "entry"];
+const BODY_PLACEHOLDERS: [&str; 6] = [
+    "workspace",
+    "email",
+    "link",
+    "remove_link",
+    "entry",
+    "inviter",
+];
 
 /// What a layout may fill: the body it wraps, and the language it is in.
 const LAYOUT_PLACEHOLDERS: [&str; 2] = ["body", "language"];
@@ -298,19 +307,41 @@ fn check_template(path: &Path, template: &str, allowed: &[&str], frame: bool) ->
     Ok(())
 }
 
-/// Every `{{name}}` in `template`, in order; a `{{` with no `}}` after it is
-/// an error, since a template that would mail a literal placeholder is
-/// malformed.
+/// Every name `template` names, in order: the ones it fills (`{{name}}`) and the ones its
+/// conditional parts read (`{{#name}}…{{/name}}`, `{{^name}}…{{/name}}`), which nest and close.
+/// A `{{` with no `}}` after it, a part closed that was not opened, or one never closed is an
+/// error, since a template that would mail a literal placeholder is malformed.
 fn placeholders(template: &str) -> std::result::Result<Vec<&str>, &'static str> {
     let mut names = Vec::new();
+    let mut open: Vec<&str> = Vec::new();
     let mut rest = template;
     while let Some(start) = rest.find("{{") {
         let after = rest.get(start.saturating_add(2)..).unwrap_or_default();
         let Some(end) = after.find("}}") else {
             return Err("a {{ placeholder is never closed");
         };
-        names.push(after.get(..end).unwrap_or_default());
+        let tag = after.get(..end).unwrap_or_default();
+        match tag.as_bytes().first() {
+            Some(b'#' | b'^') => {
+                let name = tag.get(1..).unwrap_or_default();
+                if name.is_empty() {
+                    return Err("a conditional part names nothing");
+                }
+                open.push(name);
+                names.push(name);
+            }
+            Some(b'/') => {
+                let name = tag.get(1..).unwrap_or_default();
+                if open.pop() != Some(name) {
+                    return Err("a conditional part closes that was not opened, or out of order");
+                }
+            }
+            _ => names.push(tag),
+        }
         rest = after.get(end.saturating_add(2)..).unwrap_or_default();
+    }
+    if !open.is_empty() {
+        return Err("a conditional part is never closed");
     }
     Ok(names)
 }
@@ -326,6 +357,10 @@ pub struct Values<'a> {
     pub remove_link: &'a str,
     /// The entry itself.
     pub entry: &'a str,
+    /// How the person who invited named themself, where the workspace has a name for them; empty
+    /// while nobody named them, and the invitation then says the person is invited without
+    /// saying who asked.
+    pub inviter: &'a str,
 }
 
 impl Values<'_> {
@@ -336,6 +371,7 @@ impl Values<'_> {
             "link" => Some(self.link),
             "remove_link" => Some(self.remove_link),
             "entry" => Some(self.entry),
+            "inviter" => Some(self.inviter),
             _ => None,
         }
     }
@@ -419,8 +455,10 @@ fn escaped(text: &str) -> String {
     out
 }
 
-/// `template` with each placeholder filled once, left to right: a value that
-/// itself spells a placeholder is text, never another placeholder.
+/// `template` with each placeholder filled once, left to right: a value that itself spells a
+/// placeholder is text, never another placeholder. A conditional part, `{{#name}}…{{/name}}`,
+/// is written only when `name` fills a value, and `{{^name}}…{{/name}}` only when it fills none;
+/// the part written is filled as the rest of the template is.
 fn filled(template: &str, fill: &Fill<'_>, escape: fn(&str) -> String) -> String {
     let mut out = String::with_capacity(template.len());
     let mut rest = template;
@@ -432,16 +470,37 @@ fn filled(template: &str, fill: &Fill<'_>, escape: fn(&str) -> String) -> String
             return out;
         };
         let name = after.get(..end).unwrap_or_default();
-        match fill.get(name) {
-            Some(value) => out.push_str(&escape(value)),
-            // Checked when the templates are loaded; a name that is not
-            // filled stays as it is rather than disappearing.
-            None => out.push_str(
-                rest.get(start..start.saturating_add(end).saturating_add(4))
-                    .unwrap_or_default(),
-            ),
+        let beyond = after.get(end.saturating_add(2)..).unwrap_or_default();
+        match name.as_bytes().first() {
+            Some(b'#' | b'^') => {
+                let part = name.get(1..).unwrap_or_default();
+                let close = format!("{{{{/{part}}}}}");
+                let (inner, tail) = beyond.split_once(&close).unwrap_or((beyond, ""));
+                let written = fill.get(part).is_some_and(|value| !value.trim().is_empty())
+                    == name.starts_with('#');
+                if written {
+                    out.push_str(&filled(inner, fill, escape));
+                }
+                rest = tail;
+                continue;
+            }
+            // Checked when the templates are loaded: a part closed without one opened, and a
+            // name nothing fills, stay as they are rather than disappearing.
+            Some(b'/') => {
+                out.push_str(
+                    rest.get(start..start.saturating_add(end).saturating_add(4))
+                        .unwrap_or_default(),
+                );
+            }
+            _ => match fill.get(name) {
+                Some(value) => out.push_str(&escape(value)),
+                None => out.push_str(
+                    rest.get(start..start.saturating_add(end).saturating_add(4))
+                        .unwrap_or_default(),
+                ),
+            },
         }
-        rest = after.get(end.saturating_add(2)..).unwrap_or_default();
+        rest = beyond;
     }
     out.push_str(rest);
     out
@@ -693,7 +752,16 @@ impl EntryMail {
         &self.entry
     }
 
-    fn mail(&self, kind: Kind, to: &WaitListMailbox, link: &str, removal: &str) -> Option<Mail> {
+    /// A mail of `kind` to `to`, `inviter` being how the person who invited named themself
+    /// where the mail is an invitation.
+    fn mail(
+        &self,
+        kind: Kind,
+        to: &WaitListMailbox,
+        link: &str,
+        removal: &str,
+        inviter: &str,
+    ) -> Option<Mail> {
         let remove = self.link("wait-list-remove", removal);
         let remove_link = if removal.is_empty() {
             ""
@@ -715,6 +783,7 @@ impl EntryMail {
             link,
             remove_link,
             entry: &self.entry,
+            inviter,
         };
         Some(
             self.templates
@@ -730,18 +799,25 @@ impl EntryMail {
             to,
             &self.link("wait-list-confirm", confirm),
             removal,
+            "",
         )
     }
 
     /// A member's invitation `link`, with the secret (hex) that takes the
     /// address off the list.
-    pub fn invite(&self, to: &WaitListMailbox, link: &str, removal: &str) -> Option<Mail> {
-        self.mail(Kind::Invite, to, link, removal)
+    pub fn invite(
+        &self,
+        to: &WaitListMailbox,
+        link: &str,
+        removal: &str,
+        inviter: &str,
+    ) -> Option<Mail> {
+        self.mail(Kind::Invite, to, link, removal, inviter)
     }
 
     /// Word that the address left the list.
     pub fn removed(&self, to: &WaitListMailbox) -> Option<Mail> {
-        self.mail(Kind::Removed, to, "", "")
+        self.mail(Kind::Removed, to, "", "", "")
     }
 
     pub(crate) fn start(&self) {
@@ -819,6 +895,7 @@ pub(crate) fn preview(dir: &Path, templates: &Templates) -> Result<Vec<PathBuf>>
                 },
                 remove_link: &remove,
                 entry,
+                inviter: "Ada",
             };
             let mail = templates.render(kind, language, values.email, &values);
             let stem = dir.join(format!("{language}-{}", kind.name()));
@@ -954,7 +1031,7 @@ mod tests {
                     contact: "ada@example.org".into(),
                     language: language.into(),
                 };
-                let mail = entry.invite(&to, &long, &"ab".repeat(32)).unwrap();
+                let mail = entry.invite(&to, &long, &"ab".repeat(32), "Ada").unwrap();
                 assert!(mail.text.contains(&long));
                 assert!(mail.html.contains(&long));
                 assert!(entry.send_for(Kind::Invite, Some(mail), &"cd".repeat(32)));
@@ -1013,15 +1090,15 @@ mod tests {
                 language: "en".into(),
             };
             assert!(
-                entry.invite(&to, "javascript:alert(1)", "aa").is_none(),
+                entry.invite(&to, "javascript:alert(1)", "aa", "").is_none(),
                 "an invitation the workspace let through is never mailed"
             );
             assert!(
-                entry.invite(&to, "http://tilo.example/?invite=AA", "aa")
+                entry.invite(&to, "http://tilo.example/?invite=AA", "aa", "")
                     .is_none()
             );
             assert!(
-                entry.invite(&to, "http://localhost:8790/?invite=AA", "aa")
+                entry.invite(&to, "http://localhost:8790/?invite=AA", "aa", "")
                     .is_some()
             );
 
@@ -1037,11 +1114,11 @@ mod tests {
             )
             .unwrap();
             assert!(
-                workspace.invite(&to, "http://localhost:8790/?invite=AA", "aa")
+                workspace.invite(&to, "http://localhost:8790/?invite=AA", "aa", "")
                     .is_none()
             );
             assert!(
-                workspace.invite(&to, "https://tilo.example/?invite=AA", "aa")
+                workspace.invite(&to, "https://tilo.example/?invite=AA", "aa", "")
                     .is_some()
             );
         }
@@ -1138,6 +1215,7 @@ mod tests {
                         link: "https://tilo.example/?x=1",
                         remove_link: "https://tilo.example/?y=2",
                         entry: "https://tilo.example/",
+                        inviter: "",
                     };
                     let mail = Templates::baked().render(kind, language, "ada@example.org", &values);
                     assert!(!mail.subject.is_empty() && !mail.subject.contains("{{"));
@@ -1151,6 +1229,35 @@ mod tests {
                     }
                 }
             }
+        }
+
+        phase an_invitation_names_who_asked_only_where_someone_named_them;
+        {
+            let invited = |language: &str, inviter: &str| {
+                let values = Values {
+                    workspace: "Lounge",
+                    inviter,
+                    ..Values::default()
+                };
+                Templates::baked().render(Kind::Invite, language, "x@example.org", &values)
+            };
+            let named = invited("en", "Ada");
+            assert!(named.text.contains("Ada invited you to join Lounge."), "{}", named.text);
+            assert!(named.html.contains("<p>Ada invited you to join Lounge.</p>"));
+            let unnamed = invited("en", "");
+            assert!(unnamed.text.contains("You're invited to join Lounge."), "{}", unnamed.text);
+            assert!(unnamed.html.contains("<p>You're invited to join Lounge.</p>"));
+            for mail in [&named, &unnamed] {
+                assert!(!mail.text.to_lowercase().contains("someone"));
+                assert!(!mail.html.to_lowercase().contains("someone"));
+            }
+            let german = invited("de", "");
+            assert!(german.text.contains("Du bist zu Lounge eingeladen."), "{}", german.text);
+            assert!(invited("de", "Ada").text.contains("Ada hat dich zu Lounge eingeladen."));
+            // The name is a person's text, escaped in the HTML, never markup.
+            let escaped = invited("en", "<Ada & Bo>");
+            assert!(escaped.html.contains("&lt;Ada &amp; Bo&gt; invited you"));
+            assert!(escaped.text.contains("<Ada & Bo> invited you"));
         }
 
         phase the_html_escapes_what_it_is_filled_with_and_the_text_does_not;
@@ -1173,6 +1280,7 @@ mod tests {
                 link: "https://tilo.example/?wait-list-confirm=aa",
                 remove_link: "https://tilo.example/?wait-list-remove=bb",
                 entry: "https://tilo.example/",
+                inviter: "",
             };
             let mail = Templates::baked().render(Kind::Confirm, "en", "ada@example.org", &values);
             // As text it stays as typed, in the HTML escaped, and neither takes
@@ -1207,6 +1315,7 @@ mod tests {
                     link: "https://tilo.example/?wait-list-confirm=aa",
                     remove_link: "https://tilo.example/?wait-list-remove=bb",
                     entry: "https://tilo.example/",
+                    inviter: "",
                 },
             );
             assert!(mail.html.starts_with("<!doctype html>"));
@@ -1258,6 +1367,19 @@ mod tests {
                     "<!doctype html><html><body>{{body}}</body></html>",
                     "Subject: x\n\n{{link\n",
                 ),
+                // A conditional part closes, opens, and names something filled.
+                (
+                    "<!doctype html><html><body>{{body}}</body></html>",
+                    "Subject: x\n\n{{#link}}Hi.{{/link\n",
+                ),
+                (
+                    "<!doctype html><html><body>{{body}}</body></html>",
+                    "Subject: x\n\nHi.{{/workspace}}\n",
+                ),
+                (
+                    "<!doctype html><html><body>{{body}}</body></html>",
+                    "Subject: x\n\n{{#workspace}}{{#link}}Hi.{{/workspace}}{{/link}}\n",
+                ),
                 // A subject is the first line.
                 (
                     "<!doctype html><html><body>{{body}}</body></html>",
@@ -1279,6 +1401,41 @@ mod tests {
             }
             // A directory that is not one is refused, not replaced by defaults.
             assert!(Templates::load(Path::new("/nonexistent/tilo-mail")).is_err());
+        }
+
+        phase a_part_is_written_only_when_its_value_is_given;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            configured(
+                dir.path(),
+                "<!doctype html><html><body>{{body}}</body></html>",
+                "<p>{{email}}</p>",
+                "Subject: {{#workspace}}{{workspace}}{{/workspace}} for {{#email}}{{email}}{{/email}}{{^email}}nobody{{/email}}\n\n{{^email}}no address{{/email}}{{#email}}{{email}}{{/email}}\n",
+            );
+            let templates = Templates::load(dir.path()).unwrap();
+            let mail = templates.render(
+                Kind::Confirm,
+                "en",
+                "x@example.org",
+                &Values {
+                    workspace: "Lounge",
+                    email: "ada@example.org",
+                    ..Values::default()
+                },
+            );
+            assert_eq!(mail.subject, "Lounge for ada@example.org");
+            assert_eq!(mail.text.trim(), "ada@example.org");
+            let mail = templates.render(
+                Kind::Confirm,
+                "en",
+                "x@example.org",
+                &Values {
+                    workspace: "Lounge",
+                    ..Values::default()
+                },
+            );
+            assert_eq!(mail.subject, "Lounge for nobody");
+            assert_eq!(mail.text.trim(), "no address");
         }
 
         phase the_preview_writes_every_mail_in_every_language;
