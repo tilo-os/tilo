@@ -158,7 +158,7 @@ fn based_on(
         device_label: label.into(),
         capabilities: DeviceCapabilities::member(),
         issued_at_ns: now,
-        expires_at_ns: Some(now + 30 * 24 * 60 * 60 * 1_000_000_000),
+        expires_at_ns: Some(now.saturating_add(30 * 24 * 60 * 60 * 1_000_000_000)),
         signature: [0; 64],
         issuer: Some(Box::new(signer_cert.clone())),
     };
