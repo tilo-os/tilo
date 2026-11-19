@@ -186,6 +186,7 @@ paths = [
     "crates/server/tilo-server-protocol/src/config.rs",
     "crates/server/tilo-server-protocol/tests/formats.rs",
     "crates/runtime/tilo-identity/src/enrollment/mod.rs",
+    "crates/runtime/tilo-runtime/src/standalone_tests.rs",
     "crates/server/tilo-server-client/src/host.rs",
     "crates/server/tilo-server/src/agents.rs",
     "crates/server/tilo-server/src/daemon.rs",
