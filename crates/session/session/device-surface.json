@@ -643,20 +643,6 @@
           ]
         },
         {
-          "id": "forget-network",
-          "label": "Forget the network",
-          "description": "Forget a saved network: this device no longer joins it by itself.",
-          "kind": "outside",
-          "destructive": true,
-          "params": [
-            {
-              "name": "profile",
-              "required": true,
-              "type": "text"
-            }
-          ]
-        },
-        {
           "id": "set-network-autoconnect",
           "label": "Join by itself in reach",
           "description": "Join a saved network by itself when it is in reach, or stop.",
@@ -671,6 +657,20 @@
               "name": "on",
               "required": true,
               "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "forget-network",
+          "label": "Forget the network",
+          "description": "Forget a saved network: this device no longer joins it by itself.",
+          "kind": "outside",
+          "destructive": true,
+          "params": [
+            {
+              "name": "profile",
+              "required": true,
+              "type": "text"
             }
           ]
         },
