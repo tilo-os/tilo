@@ -2300,10 +2300,17 @@ impl FrameHarness {
                     .as_ref()
                     .is_none_or(|history| history.validate_root(self.root.as_ref()).is_ok());
                 let before = shown(self);
-                crate::component_inputs::forcing(|| {
-                    self.host_tick();
-                    self.sync_frame();
-                    self.publish_undo_status();
+                // The proof syncs the tree alone: the work a view takes in
+                // beside it (a deferred read landing, a request another part
+                // made) belongs to the frame, and taking it in again here
+                // would change the tree this proof measures
+                // ([`crate::component_inputs::proving`]).
+                crate::component_inputs::proving(|| {
+                    crate::component_inputs::forcing(|| {
+                        self.host_tick();
+                        self.sync_frame();
+                        self.publish_undo_status();
+                    });
                 });
                 let replaced = self.composition_changed();
                 (before, shown(self), replaced, resting && inputs)

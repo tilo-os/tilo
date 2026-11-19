@@ -94,6 +94,13 @@ fn tools() -> Vec<Value> {
             json!({"readOnlyHint":true,"openWorldHint":false}),
         ),
         (
+            "tilo_ask",
+            "Ask your person what only they can answer (a decision, a choice between options, something only they know) and wait for their answer: `{question: \"Which venue?\", choices: [\"Hall A\", \"Hall B\"]}`. No choices: they type an answer; typed: true lets them type one besides the choices. Answers `answered: …`, `declined`, or past wait_ms (default: as long as the question waits) `pending <id>` for tilo_status. Not for allowing an action: tilo_do asks that itself.",
+            json!({"question":string,"choices":{"type":"array","items":{"type":"string"},"maxItems":tilo_actions::remote::MAX_ASK_CHOICES},"typed":{"type":"boolean"},"wait_ms":integer}),
+            json!(["question"]),
+            json!({"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}),
+        ),
+        (
             "tilo_status",
             "How an invocation went, or with no id this session's (cancel: stop it, undo: take its run back).",
             json!({"invocation_id":string,"cancel":{"type":"boolean"},"undo":{"type":"boolean"}}),

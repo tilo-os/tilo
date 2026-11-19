@@ -132,13 +132,6 @@ id = "reset-stopwatch"
 kind = "undoable"
 
 [[resources.verbs]]
-id = "open-alarm"
-kind = "read"
-params = [
-  { name = "alarm", type = "text", required = true },
-]
-
-[[resources.verbs]]
 id = "show"
 kind = "read"
 params = [
@@ -148,21 +141,6 @@ params = [
 [[resources.verbs]]
 id = "dismiss-notice"
 kind = "read"
-
-[[resources.verbs]]
-id = "float-timer"
-kind = "read"
-params = [
-  { name = "timer", type = "text", required = true },
-  { name = "floating", type = "bool", required = true },
-]
-
-[[resources.verbs]]
-id = "float-stopwatch"
-kind = "read"
-params = [
-  { name = "floating", type = "bool", required = true },
-]
 
 [[resources.types]]
 name = "Alarm"

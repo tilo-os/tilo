@@ -50,7 +50,7 @@ impl Person {
 impl AsksPeople for Person {
     fn ask(&self, _person: [u8; 32], question: PendingConfirmation) -> PersonAnswer {
         self.asked.lock().unwrap().push(question);
-        let answer = self.answer;
+        let answer = self.answer.clone();
         Box::pin(async move { Ok(answer) })
     }
 }

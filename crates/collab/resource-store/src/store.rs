@@ -106,7 +106,7 @@ impl From<automerge::AutomergeError> for StoreError {
 
 /// A resource as a write gives it: who may read it, where it is nested, its place, its indexed
 /// fields.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Resource {
     /// Its reader set: whatever names who may read it, which also picks the key of the
     /// document it is placed in.
@@ -756,6 +756,12 @@ impl Store {
     /// The changes `doc` refused: kept beside it, without effect.
     pub fn refused(&self, doc: &str) -> impl Iterator<Item = &ChangeHash> {
         self.refused.get(doc).into_iter().flatten()
+    }
+
+    /// The types and verbs declared so far: what a peer's change is checked against.
+    #[must_use]
+    pub const fn schema(&self) -> &Schema {
+        &self.schema
     }
 
     /// Takes the types `schema` declares into those a peer's change is checked against.

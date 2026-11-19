@@ -45,9 +45,13 @@ stop() {
 }
 trap stop EXIT
 "$vm" boot-installer --2d || die "the medium did not start in a KVM guest"
-python3 "$repo_root/os/dev/installer-console.py" --socket "$("$vm" console)" \
-  wait installer --timeout "$TILO_BOOT_WAIT_SECS" --save "$out/console-state.json" \
-  || die "the medium never reached the graphical installer"
+if ! python3 "$repo_root/os/dev/installer-console.py" --socket "$("$vm" console)" \
+  wait installer --timeout "$TILO_BOOT_WAIT_SECS" --save "$out/console-state.json"; then
+  # The guest's serial is the only evidence a boot that never reached the
+  # installer leaves, and the trap below removes it with the storage.
+  cp "$TILO_RUN/serial.log" "$out/serial.log" 2>/dev/null || true
+  die "the medium never reached the graphical installer"
+fi
 cp "$TILO_RUN/serial.log" "$out/serial.log" 2>/dev/null || true
 "$vm" stop >/dev/null 2>&1 || true
 

@@ -642,6 +642,23 @@ impl ChannelHandle {
             .await
     }
 
+    /// Ask the device's one store `command` for this app's resources: a write, or a read as the
+    /// person the app acts for may read.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the device refuses the command, the connection fails, or
+    /// the answer is not one.
+    pub async fn resource_command(
+        &self,
+        command: &tilo_resource_store::wire::Command,
+    ) -> Result<tilo_resource_store::wire::Reply, NotAvailable> {
+        use tilo_resource_store::wire::MAX_WIRE_BYTES;
+        let body = encode_bounded_command("resource", command, true, MAX_WIRE_BYTES)?;
+        let reply = self.command(Service::Resources, body, &[]).await?;
+        decode_bounded_reply("resource", &reply, MAX_WIRE_BYTES, |_| true)
+    }
+
     /// Submit one bounded Nearby Send control command. File contents stay on
     /// the shell-owned resumable transport; this carries only
     /// picker/status/consent control data.

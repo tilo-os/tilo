@@ -775,7 +775,10 @@ impl Answering {
 impl AsksPeople for Answering {
     fn ask(&self, person: [u8; 32], question: PendingConfirmation) -> PersonAnswer {
         self.questions.lock().unwrap().push((person, question));
-        let answer = self.answer.ok_or_else(|| "nobody answered".to_owned());
+        let answer = self
+            .answer
+            .clone()
+            .ok_or_else(|| "nobody answered".to_owned());
         Box::pin(async move { answer })
     }
 }

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.imager@c966cede61f39371";
+export const SURFACE = "so.tilo.imager@06b639baa1648282";
 
 /** One of "btrfs", "ext4", "xfs". */
 export type Filesystem = "btrfs" | "ext4" | "xfs";
@@ -99,7 +99,6 @@ export interface Sources extends tilo.Resource {
   clearSource(): Promise<void>;
   /** Runs `clear-source` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   clearSourceMany(items: ClearSourceArgs[]): Promise<tilo.ActionAnswer[]>;
-  status(): Promise<void>;
   exportConfig(): Promise<void>;
   rescan(): Promise<void>;
   chooseDrive(args: {
@@ -109,7 +108,7 @@ export interface Sources extends tilo.Resource {
 
 /** The actions `Sources` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const SOURCES_ACTIONS = ["selectSource", "selectSourceMany", "clearSource", "clearSourceMany", "status", "exportConfig", "rescan", "chooseDrive"] as const;
+export const SOURCES_ACTIONS = ["selectSource", "selectSourceMany", "clearSource", "clearSourceMany", "exportConfig", "rescan", "chooseDrive"] as const;
 
 /** The `imager.sources` kind at `path`. */
 export function sources(ws: tilo.Workspace, path: string): Sources {

@@ -249,6 +249,8 @@ mod pages;
 #[cfg(target_arch = "wasm32")]
 pub use page_activity::{LoadActivity, defer_activity_pane};
 #[cfg(target_arch = "wasm32")]
+pub use page_agents::{MakePageAgents, PAGE_AGENTS, builtin_page_agents};
+#[cfg(target_arch = "wasm32")]
 mod host_services;
 #[cfg(target_arch = "wasm32")]
 pub use host_services::{MODEL_CLIENTS, ModelClients, builtin_model_clients};

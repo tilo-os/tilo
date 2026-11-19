@@ -56,6 +56,9 @@ const APPROVAL_WAIT_NS: u64 = 10 * 60 * 1_000_000_000;
 
 /// How long an agent's question about one invocation waits for its person.
 const CONFIRMATION_WAIT_NS: u64 = 2 * 60 * 1_000_000_000;
+/// How long a question an agent asks in its own words waits for its person:
+/// a decision or something only they know may take them a while.
+const ASK_WAIT_NS: u64 = 30 * 60 * 1_000_000_000;
 
 /// The server as an agent supervisor sees it.
 #[derive(Clone)]
@@ -741,8 +744,19 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
             kind: question.kind,
             undoable: question.undoable,
             workspace: question.workspace,
-            expires_at_ns: tilo_clock::unix_now_ns().saturating_add(CONFIRMATION_WAIT_NS),
+            expires_at_ns: tilo_clock::unix_now_ns().saturating_add(if question.ask.is_some() {
+                ASK_WAIT_NS
+            } else {
+                CONFIRMATION_WAIT_NS
+            }),
             page: None,
+            ask: question
+                .ask
+                .map(|ask| tilo_server_protocol::certify::AgentAsk {
+                    question: ask.question,
+                    choices: ask.choices,
+                    typed: ask.typed,
+                }),
         };
         let (completer, answer) = tilo_actions::remote::pending();
         let certification = self.certification.clone();
@@ -760,6 +774,9 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
                     Ok(tilo_actions::remote::ConfirmationReply::AllowOnce)
                 }
                 Ok(ConfirmationAnswer::Deny) => Ok(tilo_actions::remote::ConfirmationReply::Deny),
+                Ok(ConfirmationAnswer::Reply(reply)) => {
+                    Ok(tilo_actions::remote::ConfirmationReply::Replied(reply))
+                }
                 Err(_) => Err(ActionCallError::confirmation_required()),
             });
         });

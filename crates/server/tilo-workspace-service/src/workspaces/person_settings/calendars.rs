@@ -1272,6 +1272,7 @@ fn question(
         workspace: String::new(),
         expires_at_ns: tilo_clock::unix_now_ns().saturating_add(ASK_WAIT_NS),
         page: None,
+        ask: None,
     }
 }
 
@@ -1625,9 +1626,11 @@ impl Workspaces {
             .ok_or_else(ActionError::confirmation_required)?;
         match asker.ask(person, question).await {
             Ok(ConfirmationAnswer::AllowOnce) => Ok(()),
-            Ok(ConfirmationAnswer::Deny) => Err(ActionError::Refused {
-                reason: "the person did not allow it".into(),
-            }),
+            Ok(ConfirmationAnswer::Deny | ConfirmationAnswer::Reply(_)) => {
+                Err(ActionError::Refused {
+                    reason: "the person did not allow it".into(),
+                })
+            }
             Err(_) => Err(ActionError::confirmation_required()),
         }
     }

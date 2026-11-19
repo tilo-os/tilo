@@ -14,9 +14,11 @@ use crate::value::{Cell, Value};
 pub const PARENT: &str = "$parent";
 
 /// What the index holds of one resource.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Indexed {
     /// The document the resource is stored in: where a read of what the index does not hold goes.
+    /// The store's own: it never leaves the device.
+    #[serde(skip)]
     pub doc: String,
     /// The resource it is nested in; `None` for a resource at the top of the workspace.
     pub parent: Option<String>,

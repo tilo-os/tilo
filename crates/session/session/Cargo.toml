@@ -57,6 +57,8 @@ dev-rust-views = ["dep:tube", "chat/samples"]
 lazy-search-feed = []
 
 [dependencies]
+# The device's one store, which apps write and read their resources in.
+tilo-resource-store = { version = "0.1.0", path = "../../collab/resource-store" }
 anyhow.workspace = true
 # A branch of a workspace takes an app's own copy of a record into the
 # workspace's, as every incoming change is taken in; a record read again takes

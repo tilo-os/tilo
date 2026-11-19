@@ -629,6 +629,12 @@ pub enum CollabRequest {
         package_root: Option<String>,
         on_behalf_of: Option<tilo_actions::InvocationId>,
     },
+    /// Write or read this app's resources in the device's one store, which answers with
+    /// [`CollabEvent::ResourceCommandResult`]. The app holds no store of its own.
+    ResourceCommand {
+        request_id: u64,
+        command: tilo_resource_store::wire::Command,
+    },
 }
 
 impl CollabRequest {

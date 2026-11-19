@@ -153,7 +153,7 @@ pub(super) struct JoinedChannel {
     /// presence, media and transfers.
     pub(super) connection_id: u64,
     pub(super) verified_identity: AdmittedJoinIdentity,
-    /// The resource kind the app named for this channel's record, if any.
+    /// The resource kind the app named for this route's record, if any.
     pub(super) resource_type: Option<String>,
     /// Whether the app may change what this channel carries, or only read
     /// it (another app's record it declared it reads).
@@ -187,6 +187,37 @@ impl JoinedChannel {
                 self.route().app_id
             ))),
         }
+    }
+
+    /// Hands the resource command `body` to the device's one store, for this route's app in its
+    /// workspace.
+    pub(super) fn resources_dispatch(
+        &self,
+        body: &[u8],
+    ) -> Result<crate::apps::services::ResourceAnswer, BrokerError> {
+        if body.len() > tilo_resource_store::wire::MAX_WIRE_BYTES {
+            return Err(BrokerError::failed(
+                "a resource command exceeds the wire bound".into(),
+            ));
+        }
+        let command: tilo_resource_store::wire::Command = serde_json::from_slice(body)
+            .map_err(|error| BrokerError::failed(format!("no resource command: {error}")))?;
+        self.state
+            .revalidate_admission(&self.route(), &self.verified_identity)?;
+        let route = self.route();
+        if route.app_id.is_empty() || route.cluster_id.is_empty() {
+            return Err(BrokerError::failed(
+                "resources are written and read on a certified app and workspace route".into(),
+            ));
+        }
+        let service = self.state.services.resources.clone().ok_or_else(|| {
+            BrokerError::failed("this device keeps no store for apps' resources".into())
+        })?;
+        let context = crate::apps::services::ResourceRequestContext::authenticated(
+            route.app_id,
+            route.cluster_id,
+        );
+        Ok(service.command(&context, command))
     }
 
     pub(super) fn realtime_context(

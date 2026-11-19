@@ -422,7 +422,7 @@ impl CertificationProtocol {
             .await
             .ok()
             .and_then(Result::ok)
-            .and_then(|answer| *answer);
+            .and_then(|answer| answer.clone());
         self.asked().remove(&id);
         answered.ok_or_else(|| "nobody answered in time".into())
     }
@@ -923,6 +923,11 @@ impl CertificationProtocol {
                 reason: "no such question is waiting".into(),
             };
         };
+        if !answer.answers(&entry.question) {
+            return ApproverReply::Refused {
+                reason: "that is no answer to this question".into(),
+            };
+        }
         entry.answer.send_replace(Some(answer));
         drop(asked);
         ApproverReply::Decided

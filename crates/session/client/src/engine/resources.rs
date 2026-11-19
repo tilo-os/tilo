@@ -7,16 +7,17 @@
 //! ([`Engine::write_resource`]). A read asks the store, which answers only what this device's
 //! person may read.
 //!
-//! The store of a workspace is filled on its first use from the store documents this device's
-//! replica holds, and a document the replica took a peer's change to since is read again before
-//! the store answers from it.
+//! The store of a workspace declares the types and verbs of every app's surface this process
+//! knows, which a peer's change is judged by. It is filled on its first use from the store
+//! documents this device's replica holds, and a document the replica took a peer's change to
+//! since is read again before the store answers from it.
 
 use std::collections::BTreeMap;
 
 use tilo_desktop_model::WorkspaceId;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::owner::{AppWrite, WriteRefusal};
-use tilo_resource_store::{Resource, Stamp, Store, Written};
+use tilo_resource_store::{Resource, Schema, Stamp, Store, Written};
 
 use super::{Engine, SealKeys};
 
@@ -28,6 +29,9 @@ pub(super) struct Resources {
     /// it was read at.
     read: BTreeMap<String, (String, Option<[u8; 32]>)>,
     filled: bool,
+    /// How many surfaces this process had named when the store last declared them
+    /// ([`collab_types::app_surface::registered`]).
+    declared: u64,
 }
 
 /// Each change a write made, with its document whole where the replica holds none of it yet.
@@ -66,6 +70,21 @@ impl Engine {
             for (app, doc) in self.documents(&id).unwrap_or_default() {
                 if is_store_document(&doc) {
                     resources.read.insert(doc, (app, None));
+                }
+            }
+        }
+        // Every app's types and verbs this process knows, which a peer's change is judged by.
+        let named = collab_types::app_surface::registered();
+        if resources.declared != named {
+            resources.declared = named;
+            for (app, bytes) in collab_types::app_surface::every() {
+                match collab_types::surface::SurfaceFile::parse(bytes) {
+                    Ok(file) => {
+                        for surface in &file.resources {
+                            resources.store.declare(Schema::from_surface(surface));
+                        }
+                    }
+                    Err(error) => tracing::warn!(%error, %app, "an app's surface is not declared"),
                 }
             }
         }
@@ -241,31 +260,29 @@ impl Engine {
     ) -> Result<Vec<AppWrite>, WriteRefusal> {
         let mut writes = Vec::with_capacity(written.len());
         for (write, founding) in written {
-            let sealed = if write.readers == "*" {
-                match self.seal_keys(workspace).map_err(WriteRefusal::Refused)? {
-                    SealKeys::Here(keys) => Some(keys),
-                    SealKeys::Waiting | SealKeys::NoSecretStore => {
-                        return Err(WriteRefusal::Refused(
-                            "this device holds no keys of the workspace yet".to_owned(),
-                        ));
-                    }
+            let sealed = match self
+                .reader_keys(workspace, &write.readers)
+                .map_err(WriteRefusal::Refused)?
+            {
+                SealKeys::Here(keys) => keys,
+                SealKeys::Waiting | SealKeys::NoSecretStore => {
+                    return Err(WriteRefusal::Refused(
+                        "this device holds no keys of the document's readers yet".to_owned(),
+                    ));
                 }
-            } else {
-                return Err(WriteRefusal::Refused(
-                    "a reader set other than the whole workspace has no keys here yet".to_owned(),
-                ));
             };
             let (bytes, founding) = match founding {
                 Some(whole) => (whole, true),
                 None => (write.change.raw_bytes().to_vec(), false),
             };
             writes.push(
-                self.write_resource(
+                self.write_resource_read_by(
                     workspace,
                     (app, &write.doc),
+                    &write.readers,
                     &bytes,
                     founding,
-                    sealed.as_ref(),
+                    Some(&sealed),
                 )
                 .await?,
             );

@@ -6,7 +6,7 @@ use crate::index::Indexed;
 use crate::value::{Cell, Value};
 
 /// A page of a kind's resources. See the crate docs.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Query {
     /// The kind ([`crate::Type::name`]).
     pub kind: String,
@@ -55,7 +55,7 @@ impl Query {
 }
 
 /// What a resource must hold to be shown.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Filter {
     /// The scalar field holds the value (an absent field holds [`Value::Null`]).
     Is(String, Value),
@@ -166,7 +166,7 @@ fn contains_folded(held: &str, text: &str) -> bool {
 }
 
 /// The order a page lists resources in.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Order {
     pub by: Sort,
     pub descending: bool,
@@ -179,7 +179,7 @@ pub struct Order {
 }
 
 /// Where resources without a value in a field sorted by go, whichever way the order goes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Absent {
     First,
     Last,
@@ -240,7 +240,7 @@ impl Order {
 }
 
 /// What resources are sorted by; resources sorting alike are in the order of their ids.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Sort {
     /// The kind's own order: each resource's place among its parent's, as people arranged them.
     #[default]
@@ -251,7 +251,7 @@ pub enum Sort {
 /// Where a page ended: the next page starts after it. It names a place in the order, not a
 /// resource, so a page still starts in the right place after the resource it ended at changed or
 /// left.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Cursor {
     pub(crate) key: Value,
     pub(crate) place: Value,
@@ -261,7 +261,7 @@ pub struct Cursor {
 }
 
 /// One page of a [`Query`].
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Page {
     /// Each resource shown, by its id.
     pub resources: Vec<(String, Indexed)>,

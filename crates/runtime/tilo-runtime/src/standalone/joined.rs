@@ -184,6 +184,16 @@ impl Joined {
         Self::open(profile, identity, endpoint, refused, broker)
     }
 
+    /// This device as the workspace service's member copies act: the
+    /// certificate its host admitted when it joined, and the signer of its
+    /// key.
+    pub(super) fn service_device(&self) -> tilo_workspace_service::workspaces::MemberDevice {
+        tilo_workspace_service::workspaces::MemberDevice {
+            cert: self.identity.device_cert.clone(),
+            signer: std::sync::Arc::clone(&self.identity.signer),
+        }
+    }
+
     /// What signs as this device, as its action service signs every request it makes.
     pub(in crate::standalone) fn signer(&self) -> Arc<dyn collab_types::signer::DeviceSigner> {
         Arc::clone(&self.identity.signer)

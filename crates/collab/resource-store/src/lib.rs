@@ -31,6 +31,7 @@ mod schema;
 mod snapshot;
 pub mod store;
 mod value;
+pub mod wire;
 
 pub use admit::{Admit, Proposal, Received, Refusal, Stamp, Touch, Touched};
 pub use index::{Change, Commit, CommitHook, Index, Indexed, PARENT};

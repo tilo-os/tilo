@@ -41,6 +41,9 @@ mod api;
 #[path = "workspace_actions/api_apps.rs"]
 mod api_apps;
 #[cfg(test)]
+#[path = "workspace_actions/api_asks.rs"]
+mod api_asks;
+#[cfg(test)]
 #[path = "workspace_actions/api_invites.rs"]
 mod api_invites;
 #[cfg(test)]

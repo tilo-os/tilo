@@ -22,7 +22,8 @@
 //! the first page to reach the shell asks for, the renderer's maker, which
 //! the page asks for as it compiles its pipelines, and the code that runs a
 //! view written in the app language, which the first view an app places asks
-//! for.
+//! for, and the workspace's agents, which the page asks for once it is in the
+//! workspace.
 //!
 //! Like an app's `definition()` (`crate::split`), each export below is the
 //! only way to the code it hands over, so the splitter moves that code into
@@ -221,6 +222,13 @@ split_code! {
 }
 
 split_code! {
+    /// The workspace's agents, which the page names to its windows: it asks for them once it is in
+    /// the workspace, and asks again each frame until the module is in.
+    mod page_agents: tilo_browser_runtime::MakePageAgents = tilo_browser_runtime::builtin_page_agents()
+        => tilo_browser_runtime::PAGE_AGENTS, module = "page_agents", hash = "b3f0c2a71d84e695";
+}
+
+split_code! {
     /// The page's layout actions: the page asks for them as it first draws, and an action asked
     /// before they are in waits for them.
     mod page_layout: tilo_browser_runtime::MakePageLayout = tilo_browser_runtime::builtin_page_layout()
@@ -375,6 +383,7 @@ pub(crate) fn register() {
     page_drops::register();
     page_layout::register();
     page_search::register();
+    page_agents::register();
     sheets::register();
     questions::register();
     desktop_search::register();

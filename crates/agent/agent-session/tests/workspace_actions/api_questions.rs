@@ -31,7 +31,7 @@ struct Person {
 impl QuestionSheet for Person {
     fn ask(&mut self, question: &PendingConfirmation) {
         self.seen.asked.lock().unwrap().push(question.clone());
-        let _ = self.answered.send((question.id, self.answer));
+        let _ = self.answered.send((question.id, self.answer.clone()));
     }
 
     fn withdraw(&mut self, id: [u8; 32]) {
@@ -113,7 +113,7 @@ async fn answered_on(
 
 /// Ada's workspace for a customer, with one book on its shelf and the agent
 /// her backend minted a key for there: the agent's MCP session.
-async fn agent_with_a_book<'a>(
+pub(super) async fn agent_with_a_book<'a>(
     on_server: &'a super::api_on_server::OnServer,
     ada: &SigningKey,
 ) -> Mcp<'a> {

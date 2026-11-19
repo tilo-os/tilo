@@ -2467,9 +2467,6 @@ impl AppHandler {
         // is the window's bar, the header draws no second one. Only the Linux
         // header asks: elsewhere the host draws the frame.
         let _shown = self.part_bar.refresh(&mut self.app, window);
-        // What the window shows names it: the shell reads the title, so its tab, the switcher
-        // and assistive technology say the page or record the window is at.
-        self.app.refresh_window_title(window);
         #[cfg(target_os = "linux")]
         self.decorations.refresh(&mut self.app, window, _shown);
         let app = &mut self.app;
@@ -2564,6 +2561,11 @@ impl AppHandler {
         }
         drop(sync_phase);
         mark_first_frame("first-frame-sync-done");
+        // What the window shows names it: the shell reads the title, so its tab, the switcher
+        // and assistive technology say the page or record the window is at. Named after the
+        // frame took in its changes: a page that came with them names the window in the frame
+        // that draws it, not in a next frame an idle window never draws.
+        app.refresh_window_title(window);
         if let Some(p) = app.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Sync, __prof_frame_start);
         }

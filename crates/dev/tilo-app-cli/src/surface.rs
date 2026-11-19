@@ -982,9 +982,23 @@ pub fn write_app(start: &Path, saved: Option<&Path>) -> Result<(PathBuf, Surface
         ensure_framework_app(&app_dir)?;
         report_of(&app_dir, None)?
     };
+    ensure_view_built(&report, &app_dir)?;
     let path = write(&app_dir, &report.resources)?;
     sync_resource_kinds(&app_dir)?;
     Ok((path, report))
+}
+
+/// Refuse a report whose view did not build: what the view publishes (its read
+/// actions) is missing from it, so writing it would drop them from the surface.
+fn ensure_view_built(report: &SurfaceReport, app_dir: &Path) -> Result<()> {
+    if let Some(view) = &report.view {
+        bail!(
+            "{}'s view could not be built headless ({view}), so the read actions it publishes are \
+             unknown; write the surface where the app's window builds",
+            app_dir.display()
+        );
+    }
+    Ok(())
 }
 
 /// Add to the manifest's `[resources] kinds`, which the package signs, the
@@ -1538,6 +1552,29 @@ mod tests {
             .unwrap();
             assert!(!is_framework_app(temp.path()));
         }
+    }
+
+    #[test]
+    fn a_surface_is_not_written_from_a_report_whose_view_did_not_build() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path();
+        std::fs::create_dir_all(app.join("src")).unwrap();
+        std::fs::write(
+            app.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(app.join("src/main.rs"), "ui::main!(demo::App);\n").unwrap();
+        let saved = app.join("demo.json");
+        std::fs::write(
+            &saved,
+            "{\"resources\": [], \"unbound\": [], \"effects\": [], \"views\": [], \
+             \"reserved\": [], \"view\": \"no display\"}",
+        )
+        .unwrap();
+        let refused = write_app(app, Some(&saved)).unwrap_err();
+        assert!(refused.to_string().contains("no display"), "{refused:#}");
+        assert!(!app.join(FILE).exists(), "no surface is written");
     }
 
     #[test]

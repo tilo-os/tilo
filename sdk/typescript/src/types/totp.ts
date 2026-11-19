@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.totp@78ecd43e7f72fa75";
+export const SURFACE = "so.tilo.totp@1beb8a5e2e56189e";
 
 /** One of "Sha1", "Sha256", "Sha512". */
 export type Algorithm = "Sha1" | "Sha256" | "Sha512";
@@ -70,20 +70,11 @@ export interface Vault extends tilo.Resource {
   /** Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteMany(items: DeleteArgs[]): Promise<tilo.ActionAnswer[]>;
   addAccount(): Promise<void>;
-  openAccount(args: {
-    account: string;
-  }): Promise<void>;
-  copyCode(args: {
-    account: string;
-  }): Promise<void>;
-  setUpLocal(args: {
-    account: string;
-  }): Promise<void>;
 }
 
 /** The actions `Vault` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const VAULT_ACTIONS = ["moveUp", "moveUpMany", "moveDown", "moveDownMany", "delete", "deleteMany", "addAccount", "openAccount", "copyCode", "setUpLocal"] as const;
+export const VAULT_ACTIONS = ["moveUp", "moveUpMany", "moveDown", "moveDownMany", "delete", "deleteMany", "addAccount"] as const;
 
 /** The `totp.vault` kind at `path`. */
 export function vault(ws: tilo.Workspace, path: string): Vault {

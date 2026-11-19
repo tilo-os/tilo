@@ -172,7 +172,7 @@ ClearArgs = TypedDict("ClearArgs", {
 
 class Workspace(Resource):
     """Maps — `maps.workspace`."""
-    __surface__ = "so.tilo.maps@41f20a9deca55fef"
+    __surface__ = "so.tilo.maps@ec7cd4801e4afb0e"
     places: list[Entry[Place]]
     @property
     def recents(self) -> Any:
@@ -277,10 +277,6 @@ class Workspace(Resource):
         """Runs `clear-transit` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("clear-transit", items)
 
-    def search(self, *, query: str) -> None:
-        """Runs the app's action."""
-        return self.action("search", query=query)
-
     def locate(self) -> None:
         """Runs the app's action."""
         return self.action("locate")
@@ -288,22 +284,6 @@ class Workspace(Resource):
     def toggle_traffic(self) -> None:
         """Runs the app's action."""
         return self.action("toggle-traffic")
-
-    def open_place(self, *, place: str) -> None:
-        """Runs the app's action."""
-        return self.action("open-place", place=place)
-
-    def directions(self, *, place: str) -> None:
-        """Runs the app's action."""
-        return self.action("directions", place=place)
-
-    def open_poi(self, *, poi: str) -> None:
-        """Runs the app's action."""
-        return self.action("open-poi", poi=poi)
-
-    def poi_directions(self, *, poi: str) -> None:
-        """Runs the app's action."""
-        return self.action("poi-directions", poi=poi)
 
     def show_point(self,
         *,
@@ -313,22 +293,18 @@ class Workspace(Resource):
         """Runs the app's action."""
         return self.action("show-point", lat=lat, lon=lon)
 
-    def delete_offline_area(self, *, area: str) -> None:
-        """Runs the app's action."""
-        return self.action("delete-offline-area", area=area)
-
     def clear_offline_areas(self) -> None:
         """Runs the app's action."""
         return self.action("clear-offline-areas")
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"accept_places", "accept_places_many", "commit_search", "commit_search_many", "clear_recents", "clear_recents_many", "accept_route", "accept_route_many", "clear_route", "clear_route_many", "accept_transit", "accept_transit_many", "clear_transit", "clear_transit_many", "search", "locate", "toggle_traffic", "open_place", "directions", "open_poi", "poi_directions", "show_point", "delete_offline_area", "clear_offline_areas"})
+    __actions__ = frozenset({"accept_places", "accept_places_many", "commit_search", "commit_search_many", "clear_recents", "clear_recents_many", "accept_route", "accept_route_many", "clear_route", "clear_route_many", "accept_transit", "accept_transit_many", "clear_transit", "clear_transit_many", "locate", "toggle_traffic", "show_point", "clear_offline_areas"})
 
 
 class OfflineAreas(Resource):
     """Offline areas — `maps.offline-areas`."""
-    __surface__ = "so.tilo.maps@41f20a9deca55fef"
+    __surface__ = "so.tilo.maps@ec7cd4801e4afb0e"
     devices: dict[str, Any]
 
     def remember(self,

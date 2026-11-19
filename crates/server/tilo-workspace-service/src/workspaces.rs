@@ -66,6 +66,8 @@ mod returning_person_tests;
 pub(crate) use desktop_writes::writes_desktop;
 mod holding;
 pub(crate) use holding::{HostWorkspaceRequest, decode_hex, owners, work_takes};
+mod member;
+pub use member::MemberDevice;
 mod host_invitations;
 mod hosts;
 mod link_follow;
@@ -162,7 +164,7 @@ mod voice;
 pub(crate) use voice::carried_call_workspace;
 mod wait_list;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::PathBuf;
 // The tests below take it from here, as they take the rest they read.
 #[cfg(test)]
@@ -365,6 +367,8 @@ struct GovernedWorkspace {
     /// The holder that handed the workspace to this host, dialled whether or
     /// not the governance names its address yet.
     handed_by: Option<tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1>,
+    /// For a member copy, the address of the device serving the workspace.
+    member: Option<member::Member>,
 }
 
 /// The people `peer`'s governance admits now.
@@ -465,6 +469,7 @@ impl GovernedWorkspace {
             receipts,
             // Read before the path moves into the workspace.
             handed_by: holding::handed_by(&path),
+            member: member::member_of(&path),
             path,
             device: device.cloned(),
             publisher: Arc::default(),
@@ -896,6 +901,8 @@ struct WorkspacesInner {
     /// The direct links of the workspaces governed here, one per workspace,
     /// answering a device's dial by the workspace it names.
     direct: tilo_peer_state::direct::Serving,
+    /// The member copies this device holds ([`member`]).
+    member: member::Members,
     /// Room for the frames a workspace's link heard and its reader did not
     /// read yet, when a test bounds it ([`Workspaces::bound_link_readers`]);
     /// `0` keeps the link's own.
@@ -1166,6 +1173,7 @@ impl Workspaces {
                 draining: std::sync::atomic::AtomicBool::new(false),
                 store: Arc::new(store),
                 direct: tilo_peer_state::direct::Serving::new(),
+                member: member::Members::default(),
                 dir: dir.clone(),
                 action_service,
                 jobs,
@@ -1214,34 +1222,10 @@ impl Workspaces {
                 own_address: std::sync::OnceLock::new(),
             }),
         };
-        let (device, mut workspaces) = (this.device_keys(), BTreeMap::new());
-        let entries = std::fs::read_dir(&dir).map_err(|error| error.to_string())?;
-        for entry in entries {
-            let path = entry.map_err(|error| error.to_string())?.path();
-            // A workspace this host released stays on disk, unserved.
-            if delete::passed_over(&dir, &this.inner.direct, &path)
-                || path.with_extension(RELEASED).exists()
-            {
-                continue;
-            }
-            let workspace = GovernedWorkspace::open(path.clone(), device.as_ref())
-                .map_err(|error| document_format::unopened(&path, &dir, &error))?;
-            this.serve_direct(&workspace)?;
-            workspaces.insert(
-                workspace.workspace().to_owned(),
-                Arc::new(AsyncMutex::new(workspace)),
-            );
-        }
+        let workspaces = Box::pin(this.open_kept(&dir)).await?;
         *this.inner.workspaces.lock().await = workspaces;
-        let workspaces = this
-            .inner
-            .workspaces
-            .lock()
-            .await
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        this.serve_kept(workspaces).await?;
+        this.serve_kept(this.served_kept().await).await?;
+        this.serve_kept_members().await;
         this.adopt_listings_file().await?;
         this.start_following();
         Ok(this)

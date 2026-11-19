@@ -2115,7 +2115,9 @@ impl Asked {
                         reason: format!("the host could not answer for the person: {error}"),
                     })
             }
-            Ok(ConfirmationAnswer::Deny) => Err(ActionCallError::NotPermitted),
+            Ok(ConfirmationAnswer::Deny | ConfirmationAnswer::Reply(_)) => {
+                Err(ActionCallError::NotPermitted)
+            }
             Err(error) => {
                 tracing::warn!(
                     person = %hex::encode(self.person),

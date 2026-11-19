@@ -480,6 +480,23 @@ pub struct PendingConfirmation {
     /// field left out is one its reader still expects.
     #[serde(default)]
     pub page: Option<PageDeparture>,
+    /// What the agent asks in its own words, where it asks the person
+    /// something rather than to allow an action: the action fields are
+    /// empty then, and the person answers with [`ConfirmationAnswer::Reply`].
+    /// Written even when there is none, as [`Self::page`] is.
+    #[serde(default)]
+    pub ask: Option<AgentAsk>,
+}
+
+/// A question an agent puts to its person in its own words.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentAsk {
+    /// The question, as the agent words it.
+    pub question: String,
+    /// The answers the person picks from, in order; none where they type one.
+    pub choices: Vec<String>,
+    /// Whether the person may type an answer of their own.
+    pub typed: bool,
 }
 
 impl PendingConfirmation {
@@ -508,13 +525,38 @@ impl PendingConfirmation {
 }
 
 /// The person's answer to a [`PendingConfirmation`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConfirmationAnswer {
     /// Run this one invocation.
     AllowOnce,
-    /// Do not run it.
+    /// Do not carry it out; to an [`AgentAsk`], the person chose not to answer.
     Deny,
+    /// The person's answer to an [`AgentAsk`]: one of its choices, or what
+    /// they typed.
+    Reply(String),
 }
+
+impl ConfirmationAnswer {
+    /// Whether it answers `question`: allowing or not for an action, a reply
+    /// one of its choices is, or that it takes typed, for an [`AgentAsk`];
+    /// declining answers either.
+    #[must_use]
+    pub fn answers(&self, question: &PendingConfirmation) -> bool {
+        match (self, &question.ask) {
+            (Self::Deny, _) => true,
+            (Self::AllowOnce, ask) => ask.is_none(),
+            (Self::Reply(_), None) => false,
+            (Self::Reply(reply), Some(ask)) => {
+                let reply = reply.trim();
+                ask.choices.iter().any(|choice| choice == reply)
+                    || (ask.typed && !reply.is_empty() && reply.chars().count() <= MAX_REPLY_CHARS)
+            }
+        }
+    }
+}
+
+/// The longest typed answer to an [`AgentAsk`], in characters.
+pub const MAX_REPLY_CHARS: usize = 4_000;
 
 /// Host answer to an [`ApproverRequest`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -584,6 +626,38 @@ mod tests {
             signature: device.sign_digest(&message).unwrap(),
             device: Some(cert),
         }
+    }
+
+    /// An agent's own question is answered with one of its choices, or with
+    /// what was typed where it takes typing, or declined; never allowed as an
+    /// action is. An action's question takes no reply.
+    #[test]
+    fn a_reply_answers_only_the_question_it_fits() {
+        let ask = |typed| PendingConfirmation {
+            ask: Some(AgentAsk {
+                question: "Which consulate?".into(),
+                choices: vec!["Berlin".into(), "Munich".into()],
+                typed,
+            }),
+            ..PendingConfirmation::default()
+        };
+        let reply = |text: &str| ConfirmationAnswer::Reply(text.into());
+        assert!(reply("Munich").answers(&ask(false)));
+        assert!(!reply("Hamburg").answers(&ask(false)), "no such choice");
+        assert!(
+            reply("Hamburg").answers(&ask(true)),
+            "typed where it takes typing"
+        );
+        assert!(
+            !reply("  ").answers(&ask(true)),
+            "nothing typed answers nothing"
+        );
+        assert!(!reply(&"x".repeat(MAX_REPLY_CHARS + 1)).answers(&ask(true)));
+        assert!(ConfirmationAnswer::Deny.answers(&ask(false)));
+        assert!(!ConfirmationAnswer::AllowOnce.answers(&ask(false)));
+        let action = PendingConfirmation::default();
+        assert!(ConfirmationAnswer::AllowOnce.answers(&action));
+        assert!(!reply("Munich").answers(&action));
     }
 
     #[test]

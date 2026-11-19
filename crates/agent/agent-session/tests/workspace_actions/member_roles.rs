@@ -205,7 +205,7 @@ impl WorkspaceDocumentsLink for Membership {
             "the member is asked"
         );
         self.asked.fetch_add(1, Ordering::SeqCst);
-        let answer = (*self.answer.lock().unwrap())?;
+        let answer = self.answer.lock().unwrap().clone()?;
         Some(Pending::ready(Ok(answer)))
     }
 }
