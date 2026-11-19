@@ -30,6 +30,7 @@ struct AssistantPhoneApp: App {
         WindowGroup {
             AssistantRoot(model: model, engine: Source.engine) { PhoneRoot() }
                 .environment(\.liveThingView, { thing in Source.live(thing) })
+                .environment(\.liveStageView, { thing in Source.liveStage(thing) })
                 .task(id: model.person?.id) {
                     delegate.source = model.source
                     teller.looksAt = { chat in
