@@ -70,16 +70,17 @@ fn shown(replica: &Replica) -> Vec<String> {
 #[test]
 fn a_migration_that_calls_an_action_fills_a_fresh_root_and_a_second_open_changes_nothing() {
     let (mut replica, packages) = Replica::new("ada", AutoCommit::new(), &[(GALLERY, "")]);
-    // The root the package's window opens, as the first start makes it.
-    assert!(shown(&replica).is_empty(), "a fresh root shows nothing yet");
-    replica.commit();
-
-    assert_eq!(migrate(&replica), 1, "the first start fills the root");
-    replica.commit();
+    // The window's first open makes the root, and the package fills it as it is made: no first
+    // start finds a fresh root empty.
+    replica.host.root_of(APP).expect("the gallery's root");
+    assert!(
+        replica.commit() > 0,
+        "the root's making went to the workspace"
+    );
     assert_eq!(
         shown(&replica),
         vec!["Everyday parts".to_owned(), "Collections".to_owned()],
-        "the root the action filled"
+        "the root the action the migration calls filled"
     );
 
     assert_eq!(migrate(&replica), 0, "it happened once");
