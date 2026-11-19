@@ -1,0 +1,8 @@
+# Formulas follow the rows and columns they name, read-cells answers any range,
+# and a sheet leaves as CSV. The code that rewrites and follows references is
+# the feature, and it landed after the formula engine's budget.
+reason = "Sheets' formulas follow the rows and columns they name, read-cells answers any range of cells and a sheet leaves as CSV; the code that rewrites and follows those references is the feature"
+run = "rb7cf36d876"
+
+[apps."so.tilo.sheets"]
+x86_64 = 65536

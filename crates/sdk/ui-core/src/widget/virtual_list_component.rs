@@ -2463,6 +2463,28 @@ mod tests {
         );
     }
 
+    /// A tree's row reads as an outline's even when its swipe wraps it: the tree's word reaches
+    /// the row inside the wrapper, so every row of the tree reads alike however the app built it.
+    #[test]
+    fn a_tree_row_reads_as_an_outline_through_its_swipe() {
+        let row = ListRow::new("row", "row 0");
+        let mut wrapped = crate::widget::SwipeRow::new(
+            Box::new(row),
+            None,
+            Some(SwipeActionProps {
+                label: "Remove".to_owned(),
+                ..SwipeActionProps::default()
+            }),
+        );
+        super::super::reconcile::outline_row(&mut wrapped, 0.0);
+        let row = crate::widget::find_mut::<ListRow>(&mut wrapped)
+            .expect("the swipe wraps the row itself");
+        assert!(
+            row.is_outline(),
+            "the row its swipe wraps takes the tree's word"
+        );
+    }
+
     /// A menu command that reports its choose to `queue` when run.
     fn command(label: &str, key: &str, queue: &crate::Intents<Fired>) -> MenuPart {
         let mut item = MenuItemProps {

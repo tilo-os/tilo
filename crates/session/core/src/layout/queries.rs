@@ -38,6 +38,13 @@ pub(super) fn query_resource(query: &LayoutQueryReading, _words: &Words) -> Reso
     tilo_resource::LiveRow::typed::<Query>(Item::Query.resource(&query.key), query.text.clone())
         .view(ResourceViewSpec::new("page", query.text.clone(), "open"))
         .into_resource()
+        // A query is what a place stands as while its app answers: the Shell's search, as
+        // search and a script have always read it.
+        .with_type(tilo_actions::ResourceType {
+            noun: tilo_actions::Noun::new("search", "searches"),
+            app: tilo_actions::Noun::new("Shell", "Shell"),
+            root: false,
+        })
 }
 
 /// What a place showing a query reads it as, in the catalogue: the app the shell draws it with,

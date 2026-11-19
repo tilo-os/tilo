@@ -1,0 +1,8 @@
+# The app's package carries its model module: 19,789 bytes holding the filter's
+# verb, so a device holding the workspace's keys applies it without building the
+# app. The budget was measured before the module existed.
+reason = "Activity's package carries its model module (19,789 bytes) so any device holding the workspace's keys applies the filter, and the budget was measured before the module existed"
+run = "rb7cf36d876"
+
+[apps."so.tilo.activity"]
+x86_64 = 65536

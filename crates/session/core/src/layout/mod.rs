@@ -793,7 +793,6 @@ impl Layout {
         names: Names,
         words: Words,
     ) -> Self {
-        tilo_resource::words::name_app("Shell", "layout");
         Self {
             person: person.to_owned(),
             handle,

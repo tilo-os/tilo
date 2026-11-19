@@ -365,13 +365,11 @@ impl VirtualRows {
                         ),
                         state => self.arriving_row(index, state),
                     };
-                    if self.tree.is_some()
-                        && let Some(list_row) = widget
-                            .as_any_mut()
-                            .and_then(|any| any.downcast_mut::<crate::widget::ListRow>())
-                    {
-                        // Every tree's rows read as an outline's, however the app built them.
-                        list_row.set_outline(self.chevron_column);
+                    if self.tree.is_some() {
+                        // Every tree's rows read as an outline's, however the app built them:
+                        // a row's swipe or hover toolbar wraps the row itself, so the tree's
+                        // word reaches through it rather than stopping at the wrapper.
+                        outline_row(widget.as_mut(), self.chevron_column);
                     }
                     self.row_builds = self.row_builds.wrapping_add(1);
                     MountedRow {
@@ -413,5 +411,14 @@ impl VirtualRows {
         self.mounted = mounted;
         self.apply_row_tooltips();
         self.mounted_range = window;
+    }
+}
+
+/// A tree's word to the row a mounted row is: the row stands as an outline's, at the tree's own
+/// height and name size, whatever decorators the app's view wrapped it in — a swipe or a hover
+/// toolbar keeps the row inside it.
+pub(super) fn outline_row(widget: &mut dyn crate::widget::Widget, chevron_column: f64) {
+    if let Some(row) = crate::widget::find_mut::<crate::widget::ListRow>(widget) {
+        row.set_outline(chevron_column);
     }
 }
