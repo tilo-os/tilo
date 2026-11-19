@@ -300,13 +300,13 @@ impl StatePeer {
                 .insert(envelope.artifact, person);
         }
         candidate.channel.workspace.clone_from(&self.core.workspace);
-        let mut validated_channel = candidate.channel.clone();
-        validated_channel.grants.clone_from(&member.policy.grants);
-        validated_channel.surfaces.clone_from(&self.surfaces);
+        let mut inbound = candidate.channel.clone();
+        inbound.grants.clone_from(&member.policy.grants);
+        inbound.surfaces.clone_from(&self.surfaces);
         match collab_types::validate_admitted_inbound_op(
             &envelope,
             &member,
-            &mut validated_channel,
+            &mut inbound,
             authorization_time,
             if historical_validation {
                 Duration::ZERO
@@ -330,6 +330,39 @@ impl StatePeer {
                 return Ok(Self::superseded_checkpoint_report());
             }
             Err(collab_types::ValidationError::ReplaySeq { .. }) => {
+                // A sealed history is a log, kept in whatever order its writes
+                // were admitted: a replica catching up from retained frames, or
+                // a governor following its store, can hand a write over after
+                // one of a later number. A sealed write this document does not
+                // hold is no replay of what it does, whatever its number, and
+                // leaving it out would put the history a write short of what its
+                // author's compaction covers, so every compaction of the
+                // document would be refused. Only a write the history holds
+                // already, or a fold over it already carries, is a replay.
+                let replayed = candidate
+                    .sealed
+                    .iter()
+                    .any(|held| held.author == envelope.author && held.seq == envelope.seq)
+                    || candidate
+                        .sealed
+                        .first()
+                        .filter(|first| !collab_types::is_compaction_segment(first))
+                        .and_then(|first| {
+                            tilo_failure::ignored!(
+                                "a first write that does not parse as a fold carries no writes",
+                                collab_types::SealedCompaction::parse(first).ok()
+                            )
+                        })
+                        .is_some_and(|fold| fold.covers(&envelope));
+                if candidate.encryption_required
+                    && matches!(
+                        &payload,
+                        collab_types::WholeDocumentPayload::Encrypted { .. }
+                    )
+                    && !replayed
+                {
+                    return self.admit_sealed(route, candidate, inbound, *envelope);
+                }
                 return Ok(AdmissionReport::new(
                     InputDisposition::RetryLater(MissingPrerequisite::ExactHistoricalEvidence),
                     ReceiveOutcome {
@@ -428,7 +461,7 @@ impl StatePeer {
                         },
                     );
                 }
-                return self.admit_sealed(route, candidate, validated_channel, *envelope);
+                return self.admit_sealed(route, candidate, inbound, *envelope);
             }
             collab_types::WholeDocumentPayload::Cleartext(_) => {
                 // A plaintext write to a record after it sealed is a
@@ -440,7 +473,7 @@ impl StatePeer {
                 );
             }
         };
-        candidate.channel = validated_channel;
+        candidate.channel = inbound;
         if let DocumentMutation::Incremental(bytes) = &mutation {
             let changes = collab_types::parse_changes(bytes).map_err(err)?;
             let shows = self.appearance_author(&source, authorization_time, history);
