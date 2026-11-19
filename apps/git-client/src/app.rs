@@ -1520,9 +1520,8 @@ impl GitClientState {
             rows.push(crate::actions::worktree_rows(&self.model));
         }
         if let Some(job) = &self.remote_job {
-            rows.push(LiveRow::new(
+            rows.push(LiveRow::typed::<crate::actions::Transfer>(
                 "git_client.remote-job",
-                "git_client.job",
                 job.label.clone(),
             ));
         }
