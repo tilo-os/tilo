@@ -758,7 +758,7 @@ tilo_test_env::scenario! {
             theme.text_primary,
             "a neutral notice has no hue"
         );
-        assert_eq!(BannerKind::Success.default_icon(), Icon::Check);
+        assert_eq!(BannerKind::Success.default_icon(), Icon::CircleCheck);
         assert_eq!(
             Banner::info("Heads up").with_icon(Icon::Bell).icon(),
             Icon::Bell
