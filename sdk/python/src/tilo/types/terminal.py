@@ -162,7 +162,7 @@ UsedArgs = TypedDict("UsedArgs", {
 
 class Session(Resource):
     """Terminal — `terminal.session`."""
-    __surface__ = "so.tilo.terminal@2222358fc45cc0b3"
+    __surface__ = "so.tilo.terminal@6ed34a137bebf2bb"
     @property
     def target(self) -> str | None:
         """Read only."""
@@ -327,14 +327,18 @@ class Session(Resource):
         """Runs the app's action."""
         return self.action("history-live")
 
+    def open_link(self, *, url: str) -> None:
+        """Runs the app's action."""
+        return self.action("open-link", url=url)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"run", "rerun", "rerun_test", "stop", "stop_many", "record_command", "record_command_many", "record_target", "record_target_many", "record_relay_session", "record_relay_session_many", "claim_pane", "claim_pane_many", "inspect_session", "read_screen", "inspect_editor", "copy_visible", "copy_selection", "select_all", "history_top", "history_live"})
+    __actions__ = frozenset({"run", "rerun", "rerun_test", "stop", "stop_many", "record_command", "record_command_many", "record_target", "record_target_many", "record_relay_session", "record_relay_session_many", "claim_pane", "claim_pane_many", "inspect_session", "read_screen", "inspect_editor", "copy_visible", "copy_selection", "select_all", "history_top", "history_live", "open_link"})
 
 
 class History(Resource):
     """Command history — `terminal.history`."""
-    __surface__ = "so.tilo.terminal@2222358fc45cc0b3"
+    __surface__ = "so.tilo.terminal@6ed34a137bebf2bb"
     @property
     def remembered(self) -> list[Entry[Remembered]]:
         """Read only."""
@@ -376,7 +380,7 @@ class History(Resource):
 
 class RecentEnvironments(Resource):
     """Recent environments — `terminal.recent-environments`."""
-    __surface__ = "so.tilo.terminal@2222358fc45cc0b3"
+    __surface__ = "so.tilo.terminal@6ed34a137bebf2bb"
     devices: dict[str, str]
 
     def used(self,

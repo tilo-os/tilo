@@ -15,6 +15,13 @@ fields = [
   { path = "policy.monthly", type = "int" },
 ]
 
+[[resources.verbs]]
+id = "verify"
+kind = "read"
+params = [
+  { name = "snapshot_id", type = "text", required = true },
+]
+
 [[resources.types]]
 name = "RetentionPolicy"
 fields = [

@@ -205,7 +205,7 @@ RecordCommandArgs = TypedDict("RecordCommandArgs", {
 
 class Project(Resource):
     """Code Editor — `code_editor.project`."""
-    __surface__ = "so.tilo.code-editor@2406f1a4b7ab548c"
+    __surface__ = "so.tilo.code-editor@7a02f1a0144d5191"
     files: list[Entry[Entry]]
     buffers: dict[str, Any]
     @property
@@ -454,6 +454,14 @@ class Project(Resource):
         """Runs `record-command` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("record-command", items)
 
+    def show_symbol(self, *, symbol: str) -> None:
+        """Runs the app's action."""
+        return self.action("show-symbol", symbol=symbol)
+
+    def show_result(self, *, result: str) -> None:
+        """Runs the app's action."""
+        return self.action("show-result", result=result)
+
     def reveal(self,
         *,
         line: int,
@@ -525,6 +533,6 @@ class Project(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_file", "new_file_many", "new_folder", "new_folder_many", "rename", "rename_many", "move_entry", "move_entry_many", "replace_text", "replace_text_many", "replace_range", "replace_range_many", "delete", "delete_many", "record_entry", "record_entry_many", "record_text", "record_text_many", "record_target", "record_target_many", "record_relay_session", "record_relay_session_many", "claim_pane", "claim_pane_many", "run", "rerun", "rerun_test", "stop", "stop_many", "record_command", "record_command_many", "reveal", "find", "search_project", "go_to_line", "toggle_bottom_panel", "next_theme", "go_to_problems", "go_to_search", "go_to_terminal", "toggle_sidebar", "toggle_language_servers", "toggle_format_on_save"})
+    __actions__ = frozenset({"new_file", "new_file_many", "new_folder", "new_folder_many", "rename", "rename_many", "move_entry", "move_entry_many", "replace_text", "replace_text_many", "replace_range", "replace_range_many", "delete", "delete_many", "record_entry", "record_entry_many", "record_text", "record_text_many", "record_target", "record_target_many", "record_relay_session", "record_relay_session_many", "claim_pane", "claim_pane_many", "run", "rerun", "rerun_test", "stop", "stop_many", "record_command", "record_command_many", "show_symbol", "show_result", "reveal", "find", "search_project", "go_to_line", "toggle_bottom_panel", "next_theme", "go_to_problems", "go_to_search", "go_to_terminal", "toggle_sidebar", "toggle_language_servers", "toggle_format_on_save"})
 
 

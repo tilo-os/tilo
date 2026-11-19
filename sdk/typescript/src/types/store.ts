@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.store@9c1517d70d1f8d2a";
+export const SURFACE = "so.tilo.store@d903fd33913efeca";
 
 export interface Report {
   status: string;
@@ -67,10 +67,16 @@ export interface Catalog extends tilo.Resource {
     view: string;
   }): Promise<void>;
   showMore(): Promise<void>;
+  browseRemote(args: {
+    remote: string;
+  }): Promise<void>;
   setCategory(args: {
     category: string;
   }): Promise<void>;
   clearFilters(): Promise<void>;
+  showDetails(args: {
+    app: string;
+  }): Promise<void>;
   showRuntimeDetails(args: {
     runtime: string;
     registry?: string;
@@ -83,6 +89,8 @@ export interface Catalog extends tilo.Resource {
     contents?: string;
   }): Promise<void>;
   showCatalogue(): Promise<void>;
+  showRemotes(): Promise<void>;
+  showTrust(): Promise<void>;
   prepareModeration(args: {
     app: string;
     appeal: boolean;
@@ -91,7 +99,7 @@ export interface Catalog extends tilo.Resource {
 
 /** The actions `Catalog` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const CATALOG_ACTIONS = ["draftReport", "draftReportMany", "recordModerationCase", "recordModerationCaseMany", "inspectCatalogue", "setSearch", "showView", "showMore", "setCategory", "clearFilters", "showRuntimeDetails", "setTechnicalDetails", "openReference", "showCatalogue", "prepareModeration"] as const;
+export const CATALOG_ACTIONS = ["draftReport", "draftReportMany", "recordModerationCase", "recordModerationCaseMany", "inspectCatalogue", "setSearch", "showView", "showMore", "browseRemote", "setCategory", "clearFilters", "showDetails", "showRuntimeDetails", "setTechnicalDetails", "openReference", "showCatalogue", "showRemotes", "showTrust", "prepareModeration"] as const;
 
 /** The `store.catalog` kind at `path`. */
 export function catalog(ws: tilo.Workspace, path: string): Catalog {

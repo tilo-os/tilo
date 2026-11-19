@@ -9,6 +9,13 @@ version = 1
 shows = ["hide", "show-access"]
 
 [[resources.verbs]]
+id = "deny-access"
+kind = "read"
+params = [
+  { name = "proposal", type = "text", required = true },
+]
+
+[[resources.verbs]]
 id = "add"
 kind = "read"
 
@@ -21,6 +28,13 @@ id = "cancel"
 kind = "read"
 
 [[resources.verbs]]
+id = "copy"
+kind = "read"
+params = [
+  { name = "item", type = "text", required = true },
+]
+
+[[resources.verbs]]
 id = "copy-identity"
 kind = "read"
 params = [
@@ -29,6 +43,13 @@ params = [
 
 [[resources.verbs]]
 id = "copy-origins"
+kind = "read"
+params = [
+  { name = "item", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "reveal"
 kind = "read"
 params = [
   { name = "item", type = "text", required = true },

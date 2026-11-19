@@ -45,7 +45,7 @@ RecordModerationCaseArgs = TypedDict("RecordModerationCaseArgs", {
 
 class Catalog(Resource):
     """App Store — `store.catalog`."""
-    __surface__ = "so.tilo.store@9c1517d70d1f8d2a"
+    __surface__ = "so.tilo.store@d903fd33913efeca"
     reports: dict[str, Report]
 
     def draft_report(self, *, app_id: str) -> None:
@@ -91,6 +91,10 @@ class Catalog(Resource):
         """Runs the app's action."""
         return self.action("show-more")
 
+    def browse_remote(self, *, remote: str) -> None:
+        """Runs the app's action."""
+        return self.action("browse-remote", remote=remote)
+
     def set_category(self, *, category: str) -> None:
         """Runs the app's action."""
         return self.action("set-category", category=category)
@@ -98,6 +102,10 @@ class Catalog(Resource):
     def clear_filters(self) -> None:
         """Runs the app's action."""
         return self.action("clear-filters")
+
+    def show_details(self, *, app: str) -> None:
+        """Runs the app's action."""
+        return self.action("show-details", app=app)
 
     def show_runtime_details(self,
         *,
@@ -132,6 +140,14 @@ class Catalog(Resource):
         """Runs the app's action."""
         return self.action("show-catalogue")
 
+    def show_remotes(self) -> None:
+        """Runs the app's action."""
+        return self.action("show-remotes")
+
+    def show_trust(self) -> None:
+        """Runs the app's action."""
+        return self.action("show-trust")
+
     def prepare_moderation(self,
         *,
         app: str,
@@ -142,6 +158,6 @@ class Catalog(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"draft_report", "draft_report_many", "record_moderation_case", "record_moderation_case_many", "inspect_catalogue", "set_search", "show_view", "show_more", "set_category", "clear_filters", "show_runtime_details", "set_technical_details", "open_reference", "show_catalogue", "prepare_moderation"})
+    __actions__ = frozenset({"draft_report", "draft_report_many", "record_moderation_case", "record_moderation_case_many", "inspect_catalogue", "set_search", "show_view", "show_more", "browse_remote", "set_category", "clear_filters", "show_details", "show_runtime_details", "set_technical_details", "open_reference", "show_catalogue", "show_remotes", "show_trust", "prepare_moderation"})
 
 

@@ -88,6 +88,11 @@ params = [
   { name = "path", type = { option = "text" }, required = false },
 ]
 
+[[resources.verbs]]
+id = "clear-recent"
+destructive = true
+kind = "read"
+
 [[resources.types]]
 name = "Playlist"
 fields = [

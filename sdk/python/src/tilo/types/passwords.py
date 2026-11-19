@@ -25,7 +25,11 @@ __all__ = [
 
 class Vault(Resource):
     """Password vault — `passwords.vault`."""
-    __surface__ = "so.tilo.passwords@9334542ffb847e06"
+    __surface__ = "so.tilo.passwords@a04accfc27a535ec"
+    def deny_access(self, *, proposal: str) -> None:
+        """Runs the app's action."""
+        return self.action("deny-access", proposal=proposal)
+
     def add(self) -> None:
         """Runs the app's action."""
         return self.action("add")
@@ -38,6 +42,10 @@ class Vault(Resource):
         """Runs the app's action."""
         return self.action("cancel")
 
+    def copy(self, *, item: str) -> None:
+        """Runs the app's action."""
+        return self.action("copy", item=item)
+
     def copy_identity(self, *, item: str) -> None:
         """Runs the app's action."""
         return self.action("copy-identity", item=item)
@@ -46,12 +54,16 @@ class Vault(Resource):
         """Runs the app's action."""
         return self.action("copy-origins", item=item)
 
+    def reveal(self, *, item: str) -> None:
+        """Runs the app's action."""
+        return self.action("reveal", item=item)
+
     def filter(self, *, filter: str) -> None:
         """Runs the app's action."""
         return self.action("filter", filter=filter)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"add", "list_logins", "cancel", "copy_identity", "copy_origins", "filter"})
+    __actions__ = frozenset({"deny_access", "add", "list_logins", "cancel", "copy", "copy_identity", "copy_origins", "reveal", "filter"})
 
 

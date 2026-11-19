@@ -142,6 +142,14 @@ params = [
 id = "dismiss-notice"
 kind = "read"
 
+[[resources.verbs]]
+id = "float-stopwatch"
+kind = "read"
+
+[[resources.verbs]]
+id = "unfloat-stopwatch"
+kind = "read"
+
 [[resources.types]]
 name = "Alarm"
 fields = [

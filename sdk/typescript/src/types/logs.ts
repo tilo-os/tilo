@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.logs@5fbf12a8376ab29b";
+export const SURFACE = "so.tilo.logs@2428af2372c28388";
 
 /** One of "emerg", "alert", "crit", "err", "warning", "notice", "info", "debug". */
 export type Priority = "emerg" | "alert" | "crit" | "err" | "warning" | "notice" | "info" | "debug";
@@ -44,11 +44,14 @@ export interface Journal extends tilo.Resource {
   setLiveTail(args?: {
     enabled?: boolean;
   }): Promise<void>;
+  selectEntry(args: {
+    entry_id: string;
+  }): Promise<void>;
 }
 
 /** The actions `Journal` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const JOURNAL_ACTIONS = ["clearFilters", "clearFiltersMany", "setLiveTail"] as const;
+export const JOURNAL_ACTIONS = ["clearFilters", "clearFiltersMany", "setLiveTail", "selectEntry"] as const;
 
 /** The `logs.journal` kind at `path`. */
 export function journal(ws: tilo.Workspace, path: string): Journal {

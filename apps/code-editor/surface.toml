@@ -185,6 +185,20 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "show-symbol"
+kind = "read"
+params = [
+  { name = "symbol", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "show-result"
+kind = "read"
+params = [
+  { name = "result", type = "text", required = true },
+]
+
+[[resources.verbs]]
 id = "reveal"
 kind = "read"
 params = [

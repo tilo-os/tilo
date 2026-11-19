@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.monitor@11f5396c1013910c";
+export const SURFACE = "so.tilo.monitor@ede2747c2e3967d9";
 
 /** One of "pid", "name", "user", "cpu", "mem", "threads". */
 export type SortKey = "pid" | "name" | "user" | "cpu" | "mem" | "threads";
@@ -39,11 +39,17 @@ export interface Processes extends tilo.Resource {
   filter(args?: {
     query?: string;
   }): Promise<void>;
+  inspect(args: {
+    process: string;
+  }): Promise<void>;
+  copyPid(args: {
+    process: string;
+  }): Promise<void>;
 }
 
 /** The actions `Processes` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PROCESSES_ACTIONS = ["showTab", "filter"] as const;
+export const PROCESSES_ACTIONS = ["showTab", "filter", "inspect", "copyPid"] as const;
 
 /** The `monitor.processes` kind at `path`. */
 export function processes(ws: tilo.Workspace, path: string): Processes {
