@@ -3542,7 +3542,10 @@ impl FrameHarness {
             let mut rebuilt_this_pass = false;
             let remount_only = rebuild && std::mem::take(&mut remount_next);
             let in_place = self.remount && !structure && (!rebuild || remount_only);
-            let remounted = in_place && self.remount_in_place();
+            let remounted = in_place && {
+                let _phase = tilo_resource::profiling::Phase::start("ui.remount");
+                self.remount_in_place()
+            };
             stats.remounted |= remounted;
             if remounted
                 && let Some(focus) = &focus
@@ -3554,6 +3557,7 @@ impl FrameHarness {
                 self.focused = unsafe { focus.restore(&self.node_map, &self.bindings, None) };
             }
             if structure || (rebuild && !remount_only) || (in_place && !remounted) {
+                let _phase = tilo_resource::profiling::Phase::start("ui.rebuild_structure");
                 structure = false;
                 self.remount = false;
                 rebuilt_this_pass = true;
@@ -3697,6 +3701,7 @@ impl FrameHarness {
                 }
                 stats.measured = true;
                 let (w, h) = self.viewport;
+                let _phase = tilo_resource::profiling::Phase::start("ui.solve");
                 // SAFETY: runner exclusively owns the exact stable admitted tree.
                 unsafe {
                     crate::widget::compute_widget_layout(
@@ -3727,6 +3732,7 @@ impl FrameHarness {
                 profiler.record_since(crate::profiling::Pass::BuildLayout, t_build);
             }
             let t_apply = self.profiler.as_ref().map(|_| crate::time::now());
+            let _apply = tilo_resource::profiling::Phase::start("ui.apply_layout");
             let again = !(must_compute || rebuilt_this_pass || remounted)
                 && self.placed_all
                 && self.placed_focus == self.focused

@@ -205,10 +205,11 @@ pub fn profile(options: &ProfileOptions) -> Result<(), String> {
     }
     for interaction in interactions {
         staged.reset_costs();
+        let _ = ui::profiling::layout_counts::take();
+        let _ = ui::profiling::layout_counts::take_restyled();
         let (done, scopes) = tilo_resource::profiling::observe(|| -> Result<(), String> {
             perform(&mut staged, &interaction)?;
-            staged.lay_out(viewport, theme.clone(), input, 1.0)?;
-            Ok(())
+            staged.answer()
         });
         done?;
         print_costs(&staged, &format!("then {}", interaction.label()))?;
@@ -245,6 +246,19 @@ fn perform(staged: &mut stage::Staged, interaction: &Interaction) -> Result<(), 
 /// The scopes a step ran, the costliest first: microseconds, then how often. Scopes nest, so they
 /// do not add up.
 fn print_times(scopes: &[tilo_resource::profiling::Sample]) {
+    let solved = ui::profiling::layout_counts::take();
+    println!(
+        "    layout  {} solves, {} passes, {} measures",
+        solved.solves, solved.passes, solved.measures
+    );
+    let restyled = ui::profiling::layout_counts::take_restyled();
+    if !restyled.is_empty() {
+        let named: Vec<String> = restyled
+            .iter()
+            .map(|(name, count)| format!("{name} {count}"))
+            .collect();
+        println!("  restyled  {}", named.join(", "));
+    }
     let mut scopes: Vec<_> = scopes.iter().collect();
     scopes.sort_by_key(|scope| std::cmp::Reverse(scope.elapsed_ns));
     println!("        µs     calls  scope");

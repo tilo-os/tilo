@@ -893,6 +893,12 @@ impl ColorPicker {
 }
 
 impl Widget for ColorPicker {
+    /// Its size follows from what it was made with and the theme, which builds its node anew:
+    /// a laid-out one asks for no solve of its own.
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
     /// A colour as a page's own: the `<input type=color>` holding it, and the
     /// swatches it offers beside it.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {

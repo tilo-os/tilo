@@ -387,6 +387,16 @@ impl Staged {
         Ok(())
     }
 
+    /// The window and its instance answer what the person just did, and the frames that follow
+    /// settle, as a live window draws them: nothing is laid out anew that the input did not change.
+    ///
+    /// # Errors
+    /// When the window still moves after the frames a capture waits for.
+    pub fn answer(&mut self) -> Result<(), String> {
+        self.exchange();
+        self.settle()
+    }
+
     /// Press `key` (`Tab`, `Down`, `Space`: a key as [`FrameHarness::key`] names it) on the window,
     /// as a person at the keyboard does.
     pub fn key(&mut self, key: &str) {

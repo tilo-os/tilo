@@ -268,8 +268,15 @@ pub struct Arranged<L: Layout> {
     id: Option<String>,
     /// How the parts changed since the host last read it: replaced wholesale
     /// ([`Self::set_parts`]) is a rebuild; a child replaced, inserted, removed, moved or
-    /// resized by the part operations is described.
+    /// resized by the part operations is laid out again under this container's own node
+    /// ([`StructureChange::Children`]) once it has one, and described before.
     structure: StructureChange,
+    /// The parts changed since they were laid out: the next remount lays every part out again
+    /// under this container's node ([`Widget::relaid_layout_node`]), and the rest of the window
+    /// keeps its layout.
+    relaid: bool,
+    /// Where this container stood when its parts changed: what they drew there is repainted.
+    relaid_from: Option<Rect>,
 }
 
 impl<L: Layout> Arranged<L> {
@@ -285,6 +292,8 @@ impl<L: Layout> Arranged<L> {
             rect: Rect::ZERO,
             id: None,
             structure: StructureChange::None,
+            relaid: false,
+            relaid_from: None,
         }
     }
 
@@ -379,16 +388,16 @@ impl<L: Layout> Arranged<L> {
     /// its sizing. A change the frame's damage describes: the new child draws itself whole,
     /// and the host repaints where the boxes it moved were and are.
     pub fn replace(&mut self, index: usize, element: Element) -> Option<Element> {
-        let part = self.parts.get_mut(index)?;
-        self.structure = self.structure.join(StructureChange::Described);
-        Some(std::mem::replace(&mut part.element, element))
+        let held = std::mem::replace(&mut self.parts.get_mut(index)?.element, element);
+        self.parts_changed();
+        Some(held)
     }
 
     /// Insert `part` at `index` (at the end past it). Described, as [`Self::replace`] is.
     pub fn insert(&mut self, index: usize, part: Part) {
         let index = index.min(self.parts.len());
         self.parts.insert(index, part);
-        self.structure = self.structure.join(StructureChange::Described);
+        self.parts_changed();
     }
 
     /// Take the part at `index` out. Described, as [`Self::replace`] is.
@@ -396,7 +405,7 @@ impl<L: Layout> Arranged<L> {
         if index >= self.parts.len() {
             return None;
         }
-        self.structure = self.structure.join(StructureChange::Described);
+        self.parts_changed();
         Some(self.parts.remove(index))
     }
 
@@ -407,7 +416,7 @@ impl<L: Layout> Arranged<L> {
         }
         let part = self.parts.remove(from);
         self.parts.insert(to.min(self.parts.len()), part);
-        self.structure = self.structure.join(StructureChange::Described);
+        self.parts_changed();
     }
 
     /// Size part `index` as `fit`, `span` and `at` say; a change of any is described, as
@@ -427,7 +436,59 @@ impl<L: Layout> Arranged<L> {
         part.fit = fit;
         part.span = span;
         part.at = at;
-        self.structure = self.structure.join(StructureChange::Described);
+        self.parts_changed();
+    }
+
+    /// The part operations changed what this container holds: once it is laid out, its parts are
+    /// laid out again under its own node; before, the change is described.
+    fn parts_changed(&mut self) {
+        if self.node.is_some() {
+            self.relaid = true;
+            self.relaid_from.get_or_insert(self.rect);
+            self.structure = self.structure.join(StructureChange::Children);
+        } else {
+            self.structure = self.structure.join(StructureChange::Described);
+        }
+    }
+
+    /// Put `inner`, the node part `index`'s child just built, in the part's wrapper in `tree`, styled
+    /// as the layout places the part: the wrapper's node.
+    fn wrap_part(&mut self, index: usize, tree: &mut TaffyTree<()>, inner: NodeId) -> NodeId {
+        let mut style = match self.parts.get(index) {
+            Some(part) => self.part_style(index, part),
+            None => wrapper_style(),
+        };
+        // The child grows into a wrapper that is larger than its content (a filled part).
+        if let Ok(current) = tree.style(inner) {
+            let mut grown = current.clone();
+            if grown.flex_grow == 0.0 {
+                grown.flex_grow = 1.0;
+            }
+            // A part whose height the layout gives (a page that fills, a filled layer)
+            // holds its child to it; the mark is read before the wrapper below takes a
+            // height of its own.
+            let given = style.size.height;
+            style = wrapped(style, current);
+            // A wrapper whose height is given (a filled layer, a filled share of a stack)
+            // holds the child to it: the child shrinks to that height, and what it holds
+            // scrolls or overflows inside it rather than pushing past the wrapper. A layer
+            // straddling an edge stands in a wrapper of no height and keeps its own.
+            let zero = taffy::style_helpers::length(0.0_f32);
+            let filled_layer = given == taffy::style_helpers::percent(1.0_f32);
+            let filled_share = style.flex_grow > 0.0
+                && style.flex_basis == zero
+                && style.min_size.height == zero
+                && style.size.height != zero;
+            if (filled_layer || filled_share) && grown.min_size.height == taffy::Dimension::auto() {
+                grown.min_size.height = taffy::style_helpers::length(0.0_f32);
+            }
+            let _ = tree.set_style(inner, grown);
+        }
+        let wrapper = tree.parent_node(style, &[inner]);
+        if let Some(part) = self.parts.get_mut(index) {
+            part.wrapper = Some(wrapper);
+        }
+        wrapper
     }
 
     /// Reserve `lead` leads before what this container holds (`lead: 1`), or none.
@@ -640,48 +701,14 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
     ) -> NodeId {
         self.resolved = Resolved::of(theme).with_target(self.interaction.minimum_target());
         self.layout.items(self.parts.len());
+        self.relaid = false;
         let mut wrappers = Vec::with_capacity(self.parts.len());
         for index in 0..self.parts.len() {
-            let style = match self.parts.get(index) {
-                Some(part) => self.part_style(index, part),
-                None => wrapper_style(),
-            };
             let Some(part) = self.parts.get_mut(index) else {
                 continue;
             };
             let inner = part.element.build_layout(tree, theme, map);
-            let mut style = style;
-            // The child grows into a wrapper that is larger than its content (a filled part).
-            if let Ok(current) = tree.style(inner) {
-                let mut grown = current.clone();
-                if grown.flex_grow == 0.0 {
-                    grown.flex_grow = 1.0;
-                }
-                // A part whose height the layout gives (a page that fills, a filled layer)
-                // holds its child to it; the mark is read before the wrapper below takes a
-                // height of its own.
-                let given = style.size.height;
-                style = wrapped(style, current);
-                // A wrapper whose height is given (a filled layer, a filled share of a stack)
-                // holds the child to it: the child shrinks to that height, and what it holds
-                // scrolls or overflows inside it rather than pushing past the wrapper. A layer
-                // straddling an edge stands in a wrapper of no height and keeps its own.
-                let zero = taffy::style_helpers::length(0.0_f32);
-                let filled_layer = given == taffy::style_helpers::percent(1.0_f32);
-                let filled_share = style.flex_grow > 0.0
-                    && style.flex_basis == zero
-                    && style.min_size.height == zero
-                    && style.size.height != zero;
-                if (filled_layer || filled_share)
-                    && grown.min_size.height == taffy::Dimension::auto()
-                {
-                    grown.min_size.height = taffy::style_helpers::length(0.0_f32);
-                }
-                let _ = tree.set_style(inner, grown);
-            }
-            let wrapper = tree.parent_node(style, &[inner]);
-            part.wrapper = Some(wrapper);
-            wrappers.push(wrapper);
+            wrappers.push(self.wrap_part(index, tree, inner));
         }
         let node = tree.parent_node(self.container_style(), &wrappers);
         self.node = Some(node);
@@ -827,6 +854,11 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
     /// whenever any child changed, which for a window's root layout is
     /// the whole window for each keystroke.
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        // Parts laid out again: what the old ones drew and what the new ones draw.
+        if let Some(from) = self.relaid_from {
+            regions.push(from);
+            regions.push(self.rect);
+        }
         for (index, part) in self.parts.iter().enumerate() {
             if !self.layout.hidden(index) {
                 part.element.collect_damage(regions);
@@ -891,13 +923,64 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
             .any(|part| part.element.needs_animation_frame())
     }
 
-    /// What the part operations did, joined with what the children report.
+    /// What the part operations did, joined with what the children report. A child that replaced
+    /// widgets of its own ([`StructureChange::Described`]) is laid out again with every part, under
+    /// this container's node, once it has one: the rest of the window keeps its layout.
     fn take_structure_change(&mut self) -> StructureChange {
         let mut change = std::mem::take(&mut self.structure);
+        let mut described = false;
         for part in &mut self.parts {
-            change = change.join(part.element.take_structure_change());
+            match part.element.take_structure_change() {
+                StructureChange::Described => described = true,
+                child => change = change.join(child),
+            }
+        }
+        if described {
+            self.parts_changed();
+            change = change.join(std::mem::take(&mut self.structure));
         }
         change
+    }
+
+    /// While its parts wait to be laid out again ([`Self::remount_children`]), none is named: the
+    /// window lets go of every node under this container's.
+    fn for_each_layout_child(&self, _visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        self.relaid
+    }
+
+    fn relaid_layout_node(&self) -> Option<NodeId> {
+        self.node.filter(|_| self.relaid)
+    }
+
+    /// Lay every part out again under this container's node, after the part operations changed
+    /// them; otherwise carry out what the parts report.
+    fn remount_children(&mut self, remount: &mut crate::widget::Remount<'_>) -> bool {
+        if !self.relaid {
+            return self
+                .parts
+                .iter_mut()
+                .all(|part| part.element.remount_children(remount));
+        }
+        let Some(node) = self.node else {
+            return false;
+        };
+        self.relaid = false;
+        for child in remount.taffy().children(node).unwrap_or_default() {
+            remount.unmount(child);
+        }
+        self.resolved =
+            Resolved::of(remount.theme()).with_target(self.interaction.minimum_target());
+        self.layout.items(self.parts.len());
+        let mut wrappers = Vec::with_capacity(self.parts.len());
+        for index in 0..self.parts.len() {
+            let Some(part) = self.parts.get_mut(index) else {
+                continue;
+            };
+            let inner = remount.mount(node, part.element.as_mut());
+            wrappers.push(self.wrap_part(index, remount.taffy(), inner));
+        }
+        let _ = self.restyle(remount.taffy());
+        remount.set_children(node, &wrappers).is_ok()
     }
 
     /// A layout paints nothing of its own (see [`Self::collect_damage`]), so it is
@@ -906,10 +989,16 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
     /// every part is conditional and none stands — dirty forever, drawing a frame each time
     /// it was asked.
     fn needs_redraw(&self) -> bool {
-        self.parts.iter().enumerate().any(|(index, part)| {
-            !self.layout.hidden(index)
-                && (part.element.needs_redraw() || part.element.needs_animation_frame())
-        })
+        self.relaid_from.is_some()
+            || self.parts.iter().enumerate().any(|(index, part)| {
+                !self.layout.hidden(index)
+                    && (part.element.needs_redraw() || part.element.needs_animation_frame())
+            })
+    }
+
+    fn mark_drawn(&mut self) {
+        self.relaid_from = None;
+        crate::widget::defaults::mark_drawn(self.children_mut());
     }
 
     fn name(&self) -> &str {

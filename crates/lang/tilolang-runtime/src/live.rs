@@ -1388,7 +1388,11 @@ impl Live {
         }
         self.reused.clear();
         self.row_changes.clear();
-        let new_content = match self.render(core, id) {
+        let rendered = {
+            let _phase = tilo_resource::profiling::Phase::start("tl.view.render");
+            self.render(core, id)
+        };
+        let new_content = match rendered {
             Ok(tree) => tree,
             Err(e) => {
                 self.dirty.remove(&id);
@@ -1419,6 +1423,7 @@ impl Live {
             )
         };
         let mut old = old;
+        let _diffing = tilo_resource::profiling::Phase::start("tl.view.diff");
         let mut kept: HashMap<String, Vec<UiNode>> = HashMap::new();
         if !reused.is_empty() {
             take_reused(&mut old, &reused, &mut kept);

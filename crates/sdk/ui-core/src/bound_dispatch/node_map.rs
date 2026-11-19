@@ -188,8 +188,17 @@ impl BoundNodeMap {
         let mut boundaries = Boundaries::default();
         // SAFETY: the caller guarantees every admitted pointer is live.
         boundaries.collect(unsafe { &*pointer });
-        self.parents
-            .insert(child, taffy.parent(child).unwrap_or(parent));
+        // The nodes between `child` and `parent` that are no widget's (a part's wrapper) are its
+        // ancestry too.
+        let mut at = child;
+        loop {
+            let up = taffy.parent(at).unwrap_or(parent);
+            self.parents.insert(at, up);
+            if up == parent || self.nodes.contains_key(&up) {
+                break;
+            }
+            at = up;
+        }
         let (binding, inactive) = inherited;
         // SAFETY: forwarded from the caller.
         unsafe {

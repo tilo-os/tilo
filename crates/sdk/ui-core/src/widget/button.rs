@@ -2328,6 +2328,25 @@ impl Widget for Button {
         }
     }
 
+    /// The face's height and, for an intrinsic button, the label's width: both follow from what
+    /// the button shows, so the first solve has them.
+    fn size_before_solve(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) {
+        self.measure_count(text);
+        self.pin_face_height(taffy, node);
+        if self.fill_width {
+            return;
+        }
+        if self.measured_width.is_none() {
+            self.measured_width = Some(self.intrinsic_width(text));
+        }
+        self.pin_measured_width(taffy, node);
+    }
+
     /// An intrinsic button's width is its measured content. Taffy only asks
     /// `measure` for an axis it cannot resolve, so the label is measured
     /// here as well and the width pinned when the solver has not done so.

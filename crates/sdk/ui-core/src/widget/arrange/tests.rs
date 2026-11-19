@@ -507,34 +507,66 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase a_child_replaced_inserted_removed_or_moved_in_place_is_a_described_change;
+    phase a_child_replaced_inserted_removed_or_moved_is_laid_out_again_under_its_container;
     {
         use crate::widget::StructureChange;
         let theme = Theme::default();
         let mut stack = Stack::stack().push(boxed(10.0)).push(boxed(20.0));
-        solve(&mut stack, &theme, 300.0);
+        // Before it is laid out, a change is described: there is no node to lay it out under.
+        stack.replace(0, boxed(10.0));
+        assert_eq!(stack.take_structure_change(), StructureChange::Described);
+        let mut tree = TaffyTree::new();
+        let mut nodes: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
+        let node = stack.build_layout(&mut tree, &theme, &mut nodes);
         assert_eq!(stack.take_structure_change(), StructureChange::None);
+        assert_eq!(stack.relaid_layout_node(), None);
 
         let kept = std::ptr::from_ref(stack.children()[1]).cast::<()>();
         stack.replace(0, boxed(30.0));
-        assert_eq!(stack.take_structure_change(), StructureChange::Described);
         stack.insert(2, Part::new(boxed(40.0)));
         stack.move_part(2, 0);
         stack.set_placement(1, Fit::hug(), 2, None);
-        assert_eq!(stack.take_structure_change(), StructureChange::Described);
         assert!(stack.remove(0).is_some());
-        assert_eq!(stack.take_structure_change(), StructureChange::Described);
+        assert_eq!(stack.take_structure_change(), StructureChange::Children);
         assert_eq!(
             stack.take_structure_change(),
             StructureChange::None,
             "read once"
         );
         assert_eq!(
+            stack.relaid_layout_node(),
+            Some(node),
+            "its parts are laid out again under its own node, and the rest of the window keeps its layout"
+        );
+        assert_eq!(
             std::ptr::from_ref(stack.children()[1]).cast::<()>(),
             kept,
             "the other child is the same widget"
         );
-        solve(&mut stack, &theme, 300.0);
+        crate::retained_widgets::let_go_under(&[node], &mut tree, &mut nodes);
+        let mut remount = crate::widget::Remount::new(&mut tree, &theme, &mut nodes);
+        assert!(stack.remount_children(&mut remount));
+        let (mounted, _) = remount.finish();
+        assert_eq!(mounted.len(), 2, "both parts are mounted under the stack");
+        assert_eq!(stack.relaid_layout_node(), None);
+        assert_eq!(tree.children(node).map(|children| children.len()).ok(), Some(2));
+        let mut text = crate::font_catalog::fixture_renderer();
+        // SAFETY: the stack and its maps are exclusively owned here.
+        unsafe {
+            crate::widget::solve_built_layout(
+                &stack,
+                &mut tree,
+                node,
+                &nodes,
+                &mut text,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(300.0),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+            )
+            .expect("solved");
+        }
+        stack.apply_layout(&tree, node, vello::kurbo::Point::ZERO);
         assert_eq!(
             rects(&stack).iter().map(|r| r.height()).collect::<Vec<_>>(),
             vec![30.0, 20.0]

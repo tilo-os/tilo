@@ -2383,7 +2383,10 @@ impl Instance {
     /// The second half of a frame: what the person did and what the API answered, run in the
     /// runtime, and what changed sent. Whether anything changed.
     pub fn update(&mut self) -> bool {
-        let received = self.receive();
+        let received = {
+            let _phase = tilo_resource::profiling::Phase::start("instance.receive");
+            self.receive()
+        };
         let asked = self.take_suspended();
         let opened = self.take_open_requests();
         let pulled = self.poll_origins();
@@ -2417,8 +2420,14 @@ impl Instance {
             || timed;
         // A view runs where something reached it: what a change told its store, a state it
         // read, the time it waits for ([`crate::runtime::ViewInstance::woken`]).
-        let changed = self.poll_views() || changed;
-        let changed = self.poll_facts() || changed;
+        let changed = {
+            let _phase = tilo_resource::profiling::Phase::start("instance.views");
+            self.poll_views()
+        } || changed;
+        let changed = {
+            let _phase = tilo_resource::profiling::Phase::start("instance.facts");
+            self.poll_facts()
+        } || changed;
         if person {
             // A name, a word and how a day or a time of day reads go into a node's value when it
             // is sent: every tree is sent again.
@@ -2429,6 +2438,7 @@ impl Instance {
         // The presses ran and what they opened is sent: what the person typed after them can
         // go to the field focused now.
         self.tell_took();
+        let _phase = tilo_resource::profiling::Phase::start("instance.flush");
         self.flush();
         changed
     }

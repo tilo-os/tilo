@@ -625,6 +625,12 @@ impl crate::widget::controls::ActionControls for ColorSwatchPicker {
 }
 
 impl Widget for ColorSwatchPicker {
+    /// Its size follows from what it was made with and the theme, which builds its node anew:
+    /// a laid-out one asks for no solve of its own.
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
     /// Colour swatches as a page's own radio group: each a real swatch with its
     /// name, the chosen one checked.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
