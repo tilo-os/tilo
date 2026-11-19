@@ -2,7 +2,7 @@
 //! interpreter, and Winch to compare engines with. Never built for wasm32.
 //!
 //! It is also the engine that can stop a call by the clock: an engine ticks a counter of its
-//! own ([`TICKER`]), and every store is given a call's number of ticks to reach. A guest past
+//! own ([`TICK`]), and every store is given a call's number of ticks to reach. A guest past
 //! its ticks stops at its next epoch check, which compiled code keeps at every function entry
 //! and every loop's back edge, so a loop that never calls the host is stopped as surely as one
 //! that does.

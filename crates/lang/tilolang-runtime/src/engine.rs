@@ -143,14 +143,17 @@ pub enum CallError {
 /// Per-call and per-instance limits, as the shared wasm engine layer names them.
 pub use tilo_wasm_host::Limits as EngineLimits;
 
-/// The limits every runtime starts with: a call may burn 2 billion instructions and take
-/// five seconds, and an instance may reach 64 MiB of linear memory. The counts are the engines' own defaults, written down so
-/// that no module that loaded before is refused now: a linked set makes one instance per module.
+/// The limits every runtime starts with: a call may burn 2 billion instructions and take half
+/// a minute, and an instance may reach 64 MiB of linear memory. The counts are the engines' own
+/// defaults, written down so that no module that loaded before is refused now: a linked set
+/// makes one instance per module.
 pub const DEFAULT_LIMITS: EngineLimits = EngineLimits {
     fuel_per_call: 2_000_000_000,
-    // A call that waits in a host function or executes on a compiled engine burns no fuel it
-    // can be stopped by, so the clock bounds it too; see `Limits::deadline`.
-    deadline: Some(std::time::Duration::from_secs(5)),
+    // Fuel is what stops a guest that computes, within about a second of compiled code (the
+    // interpreter's deadline is not enforced). The clock is the backstop for a call whose time
+    // goes elsewhere: a host function that takes long, or waits, still counts against it, so
+    // it is generous enough for a slow host call and still bounded.
+    deadline: Some(std::time::Duration::from_secs(30)),
     max_memory_bytes: 64 * 1024 * 1024,
     max_memories: 10_000,
     max_tables: 10_000,

@@ -3,7 +3,7 @@
 //! * **An action** runs in one store transaction. Its writes go into the transaction; if it
 //!   returns, the store commits one change per touched document, each carrying a
 //!   [`ChangeNote`] (the action, its arguments, the invoker, the authorship chain and the
-//!   module). If it traps or runs out of fuel, nothing is committed.
+//!   module). If it traps or runs out of fuel or time, nothing is committed.
 //! * **An action that calls another action** is a run: a journal ([`crate::run`]). A call goes
 //!   through the action API: the authority decides it, and it runs as a change of its own. The
 //!   caller's transaction ends at the call, and it runs again from its journal, which answers
@@ -103,7 +103,7 @@ pub enum ActionOutcome {
     Done(Value),
     /// It invoked an action a person must answer first: the run waits for them.
     Suspended(Suggestion),
-    /// The action trapped or ran out of fuel; its change was rolled back.
+    /// The action trapped or ran out of fuel or time; its change was rolled back.
     Failed(String),
 }
 
@@ -126,7 +126,8 @@ enum Attempted {
     /// The code stopped at a step, or waited for a person's answer: what it did is rolled back,
     /// and the run goes on from its journal.
     Suspended { journal: Journal },
-    /// The code trapped, ran out of fuel, or could not go on: what it did is rolled back.
+    /// The code trapped, ran out of fuel or time, or could not go on: what it did is rolled
+    /// back.
     Failed {
         journal: Journal,
         error: RuntimeError,
