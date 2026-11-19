@@ -736,6 +736,7 @@ fn cmd_enroll(
             floor,
             predictions: &predictions,
             pin: pin_bytes,
+            anchors: verified.as_ref().map(|v| v.anchors.0.as_str()),
         },
         &recovery,
     )?;
@@ -903,7 +904,10 @@ fn tokens_openable_now(
     if pin_less.is_empty() {
         return (openable, None);
     }
-    let recorded = verified::load_enrollment(state_path);
+    // What enrollment wrote about the boot it approved lives on the encrypted root,
+    // which this boot has not opened yet; a PIN-less token carries the same authority
+    // digest for exactly this moment, and the root's copy is preferred when it is there.
+    let recorded = verified::recorded_anchor_for_boot(state_path, tokens);
     match verified::AutomaticUnlock::decide(&verified::BootFacts::read(), recorded.as_ref()) {
         verified::AutomaticUnlock::Yes => {
             let mut all = pin_less;

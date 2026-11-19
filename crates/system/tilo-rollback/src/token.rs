@@ -53,6 +53,13 @@ pub struct RollbackToken {
     /// Device-local PCRs applied after `PolicyAuthorize`.
     pub platform_pcrs: Vec<u32>,
     pub pin: bool,
+    /// The Secure Boot authority digest enrollment approved, when this token seals a
+    /// keyslot that opens without a secret. The initramfs compares it before trying
+    /// such a token: the state beside the rollback counter is on the encrypted root,
+    /// unreadable until this unlock has happened, and a keyslot the boot cannot vouch
+    /// for is the typed one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchors: Option<String>,
     /// base64 `TPM2B_PUBLIC` of the sealed object.
     pub sealed_public: String,
     /// base64 `TPM2B_PRIVATE` of the sealed object.
@@ -94,6 +101,7 @@ impl RollbackToken {
         nv_base: i64,
         sealed: &SealedObject<'_>,
         predictions: &[Prediction],
+        anchors: Option<&str>,
     ) -> Self {
         Self {
             token_type: TOKEN_TYPE.into(),
@@ -107,6 +115,7 @@ impl RollbackToken {
             pcrs: policy.pcrs.to_vec(),
             platform_pcrs: policy.platform_pcrs.to_vec(),
             pin: policy.pin,
+            anchors: anchors.map(str::to_owned),
             sealed_public: B64.encode(sealed.public),
             sealed_private: B64.encode(sealed.private),
             key_name: B64.encode(policy.key_name),
@@ -277,7 +286,24 @@ mod tests {
                 signature: b"sig".to_vec(),
                 label: "as built".into(),
             }],
+            None,
         )
+    }
+
+    #[test]
+    fn a_token_carries_the_authority_digest_of_a_secret_free_keyslot_only() {
+        let plain = sample();
+        let json = plain.to_json().unwrap();
+        assert!(
+            !json.contains("\"anchors\""),
+            "no anchor is not an empty one"
+        );
+        let mut automatic = sample();
+        automatic.pin = false;
+        automatic.anchors = Some("ab".repeat(32));
+        let json = automatic.to_json().unwrap();
+        assert!(json.contains("\"anchors\""));
+        assert_eq!(RollbackToken::from_json(&json).unwrap(), automatic);
     }
 
     #[test]

@@ -225,6 +225,7 @@ mod tests {
                     signature: b"s".to_vec(),
                     label: String::new(),
                 }],
+                None,
             ),
         )
     }
@@ -398,6 +399,9 @@ fn ensure_generation_enrolled(
             floor,
             predictions: &predictions,
             pin: req.pin,
+            anchors: crate::verified::load_enrollment(req.state_path)
+                .map(|a| a.0)
+                .as_deref(),
         },
         authorising,
     )?);
