@@ -413,12 +413,76 @@ pub fn bluetooth_surface() -> tilo_resource::surface::Surface {
     tilo_resource::surface::reading_surface::<Bluetooth, BluetoothAction>("bluetooth", "Bluetooth")
 }
 
+/// The `network` resource's declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "so.tilo.connectivity.network", label = "Network")]
+pub struct NetworkReading;
+
+/// The `bluetooth` resource's declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "so.tilo.connectivity.bluetooth", label = "Bluetooth")]
+pub struct BluetoothReading;
+
+/// The `vpn` resource's declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "so.tilo.connectivity.vpn", label = "VPN")]
+pub struct VpnReading;
+
+/// The `tethering` resource's declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "so.tilo.connectivity.tethering", label = "Tethering")]
+pub struct TetheringReading;
+
+/// A Wi-Fi network in reach, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "so.tilo.connectivity.wifi-network",
+    label = "Wi-Fi network",
+    effects = NetworkAction
+)]
+pub struct WifiNetworkRow;
+
+/// A network this device keeps, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "so.tilo.connectivity.saved-network",
+    label = "Saved network",
+    effects = NetworkAction
+)]
+pub struct SavedNetworkRow;
+
+/// A paired Bluetooth accessory, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "so.tilo.connectivity.bluetooth-accessory",
+    label = "Bluetooth accessory",
+    effects = BluetoothAction
+)]
+pub struct BluetoothAccessoryRow;
+
+/// A Bluetooth device in reach, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "so.tilo.connectivity.bluetooth-nearby",
+    label = "Bluetooth device",
+    effects = BluetoothAction
+)]
+pub struct BluetoothNearbyRow;
+
+/// A VPN profile, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "so.tilo.connectivity.vpn-profile",
+    label = "VPN profile",
+    effects = VpnAction
+)]
+pub struct VpnProfileRow;
+
 /// The `network` resource reading `network`.
 #[must_use]
 pub fn network_resource(network: &Network) -> ResourceSpec {
-    let mut resource = offer::<NetworkAction>(ResourceSpec::new(
+    let mut resource = offer::<NetworkAction>(tilo_resource::typed_resource::<NetworkReading>(
         NETWORK,
-        "so.tilo.connectivity.network",
         crate::i18n::name("so.tilo.connectivity.network", "Network"),
     ));
     mark_what_the_device_lacks(&mut resource, network);
@@ -494,49 +558,48 @@ fn network_children(network: &Network) -> impl Iterator<Item = ResourceSpec> + '
     let reachable = network.wifi.networks.iter().filter_map(|wifi| {
         let id = child_id("wifi-network", &wifi.name)?;
         let action = if wifi.connected {
-            NetworkAction::DisconnectWifi {
-                network: wifi.name.clone(),
-            }
+            NetworkAction::DISCONNECT_WIFI
         } else {
-            NetworkAction::JoinWifi {
-                network: wifi.name.clone(),
-            }
+            NetworkAction::JOIN_WIFI
         };
+        let bindings =
+            tilo_resource::RowBindings::new().bind(action, [("network", wifi.name.clone().into())]);
         Some(
-            ResourceSpec::new(id, "so.tilo.connectivity.wifi-network", wifi.name.clone())
-                .with_action(action.bound()),
+            tilo_resource::LiveRow::typed_with::<WifiNetworkRow>(id, wifi.name.clone(), &bindings)
+                .into_resource(),
         )
     });
     let saved = network.saved.iter().filter_map(|profile| {
         let id = child_id("saved-network", &profile.id)?;
-        let mut child = ResourceSpec::new(
-            id,
-            "so.tilo.connectivity.saved-network",
-            profile.name.clone(),
-        )
-        .with_action(
-            NetworkAction::SetNetworkAutoconnect {
-                profile: profile.id.clone(),
-                on: !profile.autoconnect,
-            }
-            .bound(),
-        )
-        .with_action(
-            NetworkAction::ForgetNetwork {
-                profile: profile.id.clone(),
-            }
-            .bound(),
-        );
+        let mut bindings = tilo_resource::RowBindings::new()
+            .bind(
+                NetworkAction::SET_NETWORK_AUTOCONNECT,
+                [
+                    ("profile", profile.id.clone().into()),
+                    ("on", (!profile.autoconnect).into()),
+                ],
+            )
+            .bind(
+                NetworkAction::FORGET_NETWORK,
+                [("profile", profile.id.clone().into())],
+            );
         if profile.proxy.is_some() {
-            child = child.with_action(
-                NetworkAction::SetNetworkProxy {
-                    profile: profile.id.clone(),
-                    server: None,
-                }
-                .bound(),
+            bindings = bindings.bind(
+                NetworkAction::SET_NETWORK_PROXY,
+                [
+                    ("profile", profile.id.clone().into()),
+                    ("server", Value::Null),
+                ],
             );
         }
-        Some(child)
+        Some(
+            tilo_resource::LiveRow::typed_with::<SavedNetworkRow>(
+                id,
+                profile.name.clone(),
+                &bindings,
+            )
+            .into_resource(),
+        )
     });
     reachable.chain(saved)
 }
@@ -544,9 +607,8 @@ fn network_children(network: &Network) -> impl Iterator<Item = ResourceSpec> + '
 /// The `bluetooth` resource reading `bluetooth`.
 #[must_use]
 pub fn bluetooth_resource(bluetooth: &Bluetooth) -> ResourceSpec {
-    let mut resource = offer::<BluetoothAction>(ResourceSpec::new(
+    let mut resource = offer::<BluetoothAction>(tilo_resource::typed_resource::<BluetoothReading>(
         BLUETOOTH,
-        "so.tilo.connectivity.bluetooth",
         crate::i18n::name("so.tilo.connectivity.bluetooth", "Bluetooth"),
     ));
     if !bluetooth.available {
@@ -572,43 +634,36 @@ pub fn bluetooth_resource(bluetooth: &Bluetooth) -> ResourceSpec {
     let paired = bluetooth.accessories.iter().filter_map(|accessory| {
         let id = child_id("bluetooth-accessory", &accessory.address)?;
         let action = if accessory.connected {
-            BluetoothAction::Disconnect {
-                address: accessory.address.clone(),
-            }
+            BluetoothAction::DISCONNECT
         } else {
-            BluetoothAction::Connect {
-                address: accessory.address.clone(),
-            }
+            BluetoothAction::CONNECT
         };
+        let address = accessory.address.clone();
+        let bindings = tilo_resource::RowBindings::new()
+            .bind(action, [("address", address.clone().into())])
+            .bind(BluetoothAction::FORGET, [("address", address.into())]);
         Some(
-            ResourceSpec::new(
+            tilo_resource::LiveRow::typed_with::<BluetoothAccessoryRow>(
                 id,
-                "so.tilo.connectivity.bluetooth-accessory",
                 accessory.name.clone(),
+                &bindings,
             )
-            .with_action(action.bound())
-            .with_action(
-                BluetoothAction::Forget {
-                    address: accessory.address.clone(),
-                }
-                .bound(),
-            ),
+            .into_resource(),
         )
     });
     let nearby = bluetooth.nearby.iter().filter_map(|nearby| {
         let id = child_id("bluetooth-nearby", &nearby.address)?;
+        let bindings = tilo_resource::RowBindings::new().bind(
+            BluetoothAction::PAIR,
+            [("address", nearby.address.clone().into())],
+        );
         Some(
-            ResourceSpec::new(
+            tilo_resource::LiveRow::typed_with::<BluetoothNearbyRow>(
                 id,
-                "so.tilo.connectivity.bluetooth-nearby",
                 nearby.name.clone(),
+                &bindings,
             )
-            .with_action(
-                BluetoothAction::Pair {
-                    address: nearby.address.clone(),
-                }
-                .bound(),
-            ),
+            .into_resource(),
         )
     });
     resource.with_children(paired.chain(nearby))
@@ -617,9 +672,8 @@ pub fn bluetooth_resource(bluetooth: &Bluetooth) -> ResourceSpec {
 /// The `vpn` resource reading `vpn`.
 #[must_use]
 pub fn vpn_resource(vpn: &Vpn) -> ResourceSpec {
-    let mut resource = offer::<VpnAction>(ResourceSpec::new(
+    let mut resource = offer::<VpnAction>(tilo_resource::typed_resource::<VpnReading>(
         VPN,
-        "so.tilo.connectivity.vpn",
         crate::i18n::name("so.tilo.connectivity.vpn", "VPN"),
     ));
     if vpn.profiles.is_empty() {
@@ -632,19 +686,25 @@ pub fn vpn_resource(vpn: &Vpn) -> ResourceSpec {
     }
     let children = vpn.profiles.iter().filter_map(|profile| {
         let id = child_id("vpn-profile", &profile.id)?;
-        let action = VpnAction::SetVpn {
-            profile: profile.id.clone(),
-            on: !profile.connected,
-        };
+        let bindings = tilo_resource::RowBindings::new()
+            .bind(
+                VpnAction::SET_VPN,
+                [
+                    ("profile", profile.id.clone().into()),
+                    ("on", (!profile.connected).into()),
+                ],
+            )
+            .bind(
+                VpnAction::FORGET_VPN,
+                [("profile", profile.id.clone().into())],
+            );
         Some(
-            ResourceSpec::new(id, "so.tilo.connectivity.vpn-profile", profile.name.clone())
-                .with_action(action.bound())
-                .with_action(
-                    VpnAction::ForgetVpn {
-                        profile: profile.id.clone(),
-                    }
-                    .bound(),
-                ),
+            tilo_resource::LiveRow::typed_with::<VpnProfileRow>(
+                id,
+                profile.name.clone(),
+                &bindings,
+            )
+            .into_resource(),
         )
     });
     resource.with_children(children)
@@ -653,9 +713,8 @@ pub fn vpn_resource(vpn: &Vpn) -> ResourceSpec {
 /// The `tethering` resource reading `tethering`.
 #[must_use]
 pub fn tethering_resource(tethering: &Tethering) -> ResourceSpec {
-    let mut resource = offer::<TetheringAction>(ResourceSpec::new(
+    let mut resource = offer::<TetheringAction>(tilo_resource::typed_resource::<TetheringReading>(
         TETHERING,
-        "so.tilo.connectivity.tethering",
         crate::i18n::name("so.tilo.connectivity.tethering", "Tethering"),
     ));
     if !tethering.available {

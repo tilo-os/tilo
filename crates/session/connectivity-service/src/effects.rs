@@ -3,6 +3,10 @@
 
 use tilo_resource::Effect;
 
+use crate::{
+    BluetoothAccessoryRow, BluetoothNearbyRow, SavedNetworkRow, VpnProfileRow, WifiNetworkRow,
+};
+
 /// The `network` resource's actions.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.connectivity.network")]
@@ -34,7 +38,7 @@ pub enum NetworkAction {
     ScanWifi,
     /// Join a Wi-Fi network: one this device knows, or an open one.
     #[effect(kind = "outside")]
-    #[effect(own_device, row, icon = "wifi")]
+    #[effect(own_device, row, icon = "wifi", on = WifiNetworkRow)]
     JoinWifi {
         #[param("The network's name")]
         network: String,
@@ -89,30 +93,30 @@ pub enum NetworkAction {
     },
     /// Leave the Wi-Fi network this device is connected to.
     #[effect(kind = "outside")]
-    #[effect(own_device, row, icon = "wifi-off")]
+    #[effect(own_device, row, icon = "wifi-off", on = WifiNetworkRow)]
     DisconnectWifi {
         #[param("The network's name")]
         network: String,
     },
-    /// Forget a saved network: this device no longer joins it by itself.
-    #[effect(kind = "outside")]
-    #[effect(own_device, destructive, icon = "trash-2")]
-    ForgetNetwork {
-        #[param("The saved network, by its id")]
-        profile: String,
-    },
     /// Join a saved network by itself when it is in reach, or stop.
     #[effect(kind = "outside")]
-    #[effect(own_device, idempotent, icon = "wifi")]
+    #[effect(own_device, idempotent, icon = "wifi", on = SavedNetworkRow)]
     SetNetworkAutoconnect {
         #[param("The saved network, by its id")]
         profile: String,
         #[param("Whether it joins by itself")]
         on: bool,
     },
+    /// Forget a saved network: this device no longer joins it by itself.
+    #[effect(kind = "outside")]
+    #[effect(own_device, destructive, icon = "trash-2", on = SavedNetworkRow)]
+    ForgetNetwork {
+        #[param("The saved network, by its id")]
+        profile: String,
+    },
     /// Send a saved network's traffic through a proxy, or straight out.
     #[effect(kind = "outside")]
-    #[effect(own_device, idempotent, icon = "globe")]
+    #[effect(own_device, idempotent, icon = "globe", on = SavedNetworkRow)]
     SetNetworkProxy {
         #[param("The saved network, by its id")]
         profile: String,
@@ -203,14 +207,14 @@ pub enum BluetoothAction {
     ToggleBluetooth,
     /// Connect a paired accessory.
     #[effect(kind = "outside")]
-    #[effect(own_device, row, icon = "bluetooth")]
+    #[effect(own_device, row, icon = "bluetooth", on = BluetoothAccessoryRow)]
     Connect {
         #[param("The accessory's address")]
         address: String,
     },
     /// Disconnect an accessory.
     #[effect(kind = "outside")]
-    #[effect(own_device, row, icon = "bluetooth-off")]
+    #[effect(own_device, row, icon = "bluetooth-off", on = BluetoothAccessoryRow)]
     Disconnect {
         #[param("The accessory's address")]
         address: String,
@@ -231,7 +235,12 @@ pub enum BluetoothAction {
     /// connecting it. What the device asks to compare is a question the
     /// person answers.
     #[effect(kind = "outside")]
-    #[effect(own_device, icon = "bluetooth", keywords = "pair, connect new")]
+    #[effect(
+        own_device,
+        icon = "bluetooth",
+        keywords = "pair, connect new",
+        on = BluetoothNearbyRow
+    )]
     Pair {
         #[param("The device's address")]
         address: String,
@@ -239,7 +248,12 @@ pub enum BluetoothAction {
     /// Forget a device: its bond, its keys and its trust go, so it must be
     /// paired again from scratch.
     #[effect(kind = "outside")]
-    #[effect(own_device, destructive, icon = "trash-2")]
+    #[effect(
+        own_device,
+        destructive,
+        icon = "trash-2",
+        on = BluetoothAccessoryRow
+    )]
     Forget {
         #[param("The device's address")]
         address: String,
@@ -256,7 +270,8 @@ pub enum VpnAction {
         own_device,
         idempotent,
         icon = "shield",
-        keywords = "vpn, tunnel, wireguard"
+        keywords = "vpn, tunnel, wireguard",
+        on = VpnProfileRow
     )]
     SetVpn {
         #[param("The profile, by its id")]
@@ -282,7 +297,12 @@ pub enum VpnAction {
     },
     /// Remove a VPN profile from this device.
     #[effect(kind = "outside")]
-    #[effect(own_device, destructive, icon = "trash-2")]
+    #[effect(
+        own_device,
+        destructive,
+        icon = "trash-2",
+        on = VpnProfileRow
+    )]
     ForgetVpn {
         #[param("The profile, by its id")]
         profile: String,
