@@ -415,10 +415,8 @@ impl ChatApp {
                 *handled = true;
             }
             Some(hit) => {
-                let text_input_hit = matches!(
-                    hit,
-                    Hit::FocusMain | Hit::FocusThread | Hit::FocusEdit | Hit::SecretField(_)
-                );
+                let text_input_hit =
+                    matches!(hit, Hit::FocusMain | Hit::FocusThread | Hit::FocusEdit);
                 self.on_hit(hit, doc);
                 // A click in a composer focuses it (via `on_hit`) and
                 // then places the caret at the click point — forward the
@@ -512,12 +510,6 @@ impl ChatApp {
             doc,
             handled,
         } = dispatch;
-        // The protected field has the keyboard while the person is in it.
-        if self.secret_entry.focused {
-            self.route_secret_input(event, scale, modifiers, doc);
-            *handled = true;
-            return;
-        }
         if self.editing.is_some() {
             if matches!(logical_key, Key::Named(NamedKey::Escape)) {
                 self.cancel_edit();
@@ -616,10 +608,6 @@ impl ChatApp {
         modifiers: Modifiers,
         doc: &mut ui::widget::Edits<'_>,
     ) -> bool {
-        if self.secret_entry.focused {
-            self.route_secret_input(event, scale, modifiers, doc);
-            return true;
-        }
         if self.editing.is_some() {
             self.route_edit_input(event, scale, modifiers, doc);
             true
@@ -724,7 +712,6 @@ impl ChatApp {
         self.composer_main.handle(event, scale, modifiers, doc);
         self.composer_thread.handle(event, scale, modifiers, doc);
         self.edit_input.handle(event, scale, modifiers, doc);
-        self.route_secret_input(event, scale, modifiers, doc);
     }
 
     /// Forward a press to the focused composer so it places the caret at the
@@ -736,9 +723,6 @@ impl ChatApp {
         modifiers: Modifiers,
         doc: &mut ui::widget::Edits<'_>,
     ) -> bool {
-        if self.secret_entry.focused {
-            return self.route_secret_input(event, scale, modifiers, doc);
-        }
         if self.editing.is_some() {
             self.edit_input.handle(event, scale, modifiers, doc)
         } else {
@@ -815,17 +799,8 @@ impl ChatApp {
         self.revealed_person = None;
         // Ordinary content activation dismisses the modal context menu.
         self.menu = None;
-        // A press anywhere but the protected field takes the keyboard from it.
-        if self.secret_entry.focused && !matches!(hit, Hit::SecretField(_)) {
-            self.secret_entry.focused = false;
-            self.set_composer_focus();
-        }
         match hit {
             Hit::Channel(id) => self.on_hit_channel(id, doc),
-            Hit::SecretField(_) => {
-                self.secret_entry.focused = true;
-                self.set_composer_focus();
-            }
             Hit::EditSave => self.commit_edit(doc),
             Hit::EditCancel => self.cancel_edit(),
             Hit::AddChannel { category } if self.keeps_layout() => {

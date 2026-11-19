@@ -102,6 +102,9 @@ fn chat(client: &UnixStream) -> (ChatApp, crate::testing::Workspace) {
         tilo_content::ContentStore::memory(),
     )
     .with_models(models);
+    app.perms = crate::permissions::ChatPermissions::from_context(
+        ui::permissions::PermissionContext::member(&identity.id, ui::permissions::Role::Owner),
+    );
     app.attach_framework(ui::framework::Dispatcher::detached(
         "so.tilo.chat",
         &identity.id,

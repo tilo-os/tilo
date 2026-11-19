@@ -12,6 +12,9 @@ fn projection(doc: &AutoCommit, identity: LocalIdentity) -> ChatApp {
         crate::app::ChatRuntime::Unavailable,
         tilo_content::ContentStore::memory(),
     );
+    app.perms = crate::permissions::ChatPermissions::from_context(
+        ui::permissions::PermissionContext::member(&me, ui::permissions::Role::Owner),
+    );
     app.attach_framework(ui::framework::Dispatcher::detached("so.tilo.chat", &me));
     app.attach_detached_chain(&me);
     app.sync(doc, &ROOT);
@@ -25,6 +28,9 @@ fn projection_of(workspace: &crate::testing::Workspace, identity: LocalIdentity)
         identity,
         crate::app::ChatRuntime::Unavailable,
         tilo_content::ContentStore::memory(),
+    );
+    app.perms = crate::permissions::ChatPermissions::from_context(
+        ui::permissions::PermissionContext::member(&me, ui::permissions::Role::Owner),
     );
     app.attach_framework(ui::framework::Dispatcher::detached("so.tilo.chat", &me));
     app.attach_workspace(workspace);

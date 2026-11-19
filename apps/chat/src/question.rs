@@ -290,18 +290,6 @@ impl Question {
         serde_json::from_value(self.kept()?.get("draft")?.clone()).ok()
     }
 
-    /// The item of its person's vault the action an [`ACTION`] question asks
-    /// about would use, as the server that keeps the vault says it: its kind
-    /// and the places it would be used at. The item's address is never in a
-    /// question.
-    #[must_use]
-    pub fn uses_item(&self) -> Option<crate::secret_ask::Asked> {
-        (self.kind.0 == ACTION)
-            .then(|| self.kept()?.pointer("/use/item").cloned())
-            .flatten()
-            .and_then(|item| serde_json::from_value(item).ok())
-    }
-
     /// What the button of the answer `id` says, when the asker worded it.
     #[must_use]
     pub fn label(&self, id: &str) -> Option<&str> {

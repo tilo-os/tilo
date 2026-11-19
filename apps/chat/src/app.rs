@@ -273,9 +273,6 @@ pub struct ChatApp {
     /// submits the resource's `edit-message`.
     pub(crate) editing: Option<Id>,
     pub(crate) edit_input: crate::composer::MessageEditor,
-    /// The protected field of the question that asks this person for a
-    /// secret, and the vault's answer to what they typed on its way.
-    pub(crate) secret_entry: crate::secret_ask::SecretEntry,
     /// The one message whose view the window shows alone, when it was told to
     /// ([`crate::view_alone`]).
     pub(crate) alone: Option<crate::view_alone::Alone>,
@@ -625,6 +622,10 @@ impl ChatApp {
     #[cfg(test)]
     pub(crate) fn new_ephemeral() -> Self {
         let mut app = Self::bare(ContentStore::memory());
+        app.perms = ChatPermissions::from_context(ui::permissions::PermissionContext::member(
+            &ui::permissions::MemberId::person(crate::model::ME),
+            ui::permissions::Role::Owner,
+        ));
         app.attach_framework(ui::framework::Dispatcher::detached(
             "so.tilo.chat",
             &ui::tilo_resource::MemberId::person(crate::model::ME),
@@ -724,7 +725,6 @@ impl ChatApp {
             history_anchor: Point::ZERO,
             editing: None,
             edit_input: crate::composer::MessageEditor::local(),
-            secret_entry: crate::secret_ask::SecretEntry::default(),
             alone: None,
             attach_open: false,
             attach_entries: Vec::new(),
@@ -785,7 +785,7 @@ impl ChatApp {
             // Default to the deterministic local bus; the live binary
             // (`ChatApp::new`) upgrades to the real transport. This keeps
             // `--shots`/tests from binding a real iroh endpoint per instance.
-            perms: ChatPermissions::permissive(),
+            perms: ChatPermissions::default(),
             model_stream: crate::model_stream::ModelStream::default(),
             expanded_agent: std::collections::HashSet::new(),
             dispatch: None,
@@ -1562,10 +1562,6 @@ impl Collaborative for ChatApp {
                     alone.answered(event);
                     self.request_relayout();
                 }
-                // The vault answered what was typed: the next pass takes it.
-                if self.secret_entry.is_saving() {
-                    self.request_relayout();
-                }
             }
             ui::collaboration::CollabEvent::FollowChanged { peer_id } => {
                 self.context_follow_requested = peer_id.is_some();
@@ -1683,7 +1679,6 @@ impl Widget for ChatApp {
         self.apply_window_toolbar(edits);
         self.take_sidebar_events(edits);
         self.follow_window_shares(edits);
-        self.follow_secret_asks(edits);
     }
 
     ui::provides!(

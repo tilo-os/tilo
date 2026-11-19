@@ -17,12 +17,11 @@
 //! * [`ChatPermissions::allows`] — the call-action boundary (join / speak / camera
 //!   / screen-share), backed by the same context.
 //!
-//! The default is [`ChatPermissions::permissive`] (the local single-user
-//! admin), so the demo, `--shots`, and a normal solo install are unrestricted;
-//! a restricted `PermissionContext` (a member role without the relevant grant)
-//! checks exactly the actions it should.
+//! The default is fail-closed (no workspace grants), so an uncontextualized
+//! instance cannot read attachments, participate, or moderate until the
+//! compositor supplies a `PermissionContext` for the active workspace.
 
-use ui::permissions::{ActionKind, PermissionContext, PermissionScope};
+use ui::permissions::{ActionKind, MemberId, PermissionContext, PermissionScope};
 
 use crate::call::CallAction;
 
@@ -34,20 +33,11 @@ pub struct ChatPermissions {
 
 impl Default for ChatPermissions {
     fn default() -> Self {
-        Self::permissive()
+        Self::from_context(PermissionContext::stranger(&MemberId::person("")))
     }
 }
 
 impl ChatPermissions {
-    /// The local single-user admin — grants everything. Used for the demo,
-    /// `--shots`, and any session the compositor hasn't handed a restricted
-    /// context.
-    pub fn permissive() -> Self {
-        Self {
-            ctx: PermissionContext::permissive(),
-        }
-    }
-
     /// Adopt the context the window acts under this frame.
     pub fn from_context(ctx: PermissionContext) -> Self {
         Self { ctx }
@@ -143,11 +133,22 @@ mod tests {
 
         phase permissions_check_writes_by_role_but_never_reading_or_leaving;
         {
-            let p = ChatPermissions::permissive();
-            assert!(p.can_embed(&"a".repeat(64)), "admin: embed");
-            assert!(p.can_participate(), "admin: participate");
-            assert!(p.allows(CallAction::Join), "admin: join");
-            assert!(p.allows(CallAction::ShareScreen), "admin: share screen");
+            let closed = ChatPermissions::default();
+            assert!(!closed.can_embed(&"a".repeat(64)), "default fails closed: embed");
+            assert!(!closed.can_participate(), "default fails closed: participate");
+            assert!(!closed.can_moderate(), "default fails closed: moderate");
+            assert!(!closed.allows(CallAction::Join), "default fails closed: join");
+            assert!(!closed.allows(CallAction::Speak), "default fails closed: speak");
+            assert!(closed.allows(CallAction::Leave), "leaving a call is never blocked");
+
+            let p = ChatPermissions::from_context(PermissionContext::member(
+                &MemberId::person(crate::model::ME),
+                Role::Owner,
+            ));
+            assert!(p.can_embed(&"a".repeat(64)), "owner: embed");
+            assert!(p.can_participate(), "owner: participate");
+            assert!(p.allows(CallAction::Join), "owner: join");
+            assert!(p.allows(CallAction::ShareScreen), "owner: share screen");
 
             // Restricted member reads verified embeds but cannot write.
             let p = restricted_member();

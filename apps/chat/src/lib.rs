@@ -93,7 +93,6 @@ pub mod render_call;
 pub mod render_chat;
 pub mod resource;
 mod scrollback;
-mod secret_ask;
 mod share_grants;
 mod shared_resources;
 mod sidebar;
