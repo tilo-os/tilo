@@ -2107,7 +2107,6 @@ tilo_test_env::scenario! {
         reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
     )]
     fn tilo_read_answers_a_resource_as_markdown_typed_and_in_pages;
-
     phase a_page_reads_as_markdown_with_the_ids_edits_take;
     {
         let host = Notes::new(true);
@@ -2981,6 +2980,8 @@ mod outside;
 mod runs;
 #[path = "mcp_status_tests.rs"]
 mod status;
+#[path = "mcp_task_program_tests.rs"]
+mod task_program;
 #[path = "mcp_agent_typed_calls_tests.rs"]
 mod typed_calls;
 #[path = "mcp_agent_unlisted_tests.rs"]

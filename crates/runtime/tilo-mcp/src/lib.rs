@@ -155,6 +155,14 @@ pub struct McpServer<H> {
     task_hosts: Option<std::sync::Arc<dyn TaskHosts>>,
     /// The program connection to the task's host, once its first program started it.
     task: tokio::sync::Mutex<Option<agent::TaskLink>>,
+    /// How long the task's program is given to start and answer a listing's
+    /// catalogue ([`QUERY_ANSWER_WAIT`], the wait a listing gives its own
+    /// answers).
+    task_answer_wait: std::time::Duration,
+    /// Whether this session's task program was given up on for a listing: one
+    /// that did not start or answer in time is not started again by every
+    /// listing after it. A program's call starts another, and clears this.
+    task_given_up: std::sync::atomic::AtomicBool,
     /// The person's other devices as the host reaches them, which
     /// [`crate::devices::DEVICES_TOOL`] lists; `None` for a host that
     /// reaches none.
@@ -636,6 +644,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             task_hosts: None,
             devices: None,
             task: tokio::sync::Mutex::new(None),
+            task_answer_wait: QUERY_ANSWER_WAIT,
+            task_given_up: std::sync::atomic::AtomicBool::new(false),
             acted: std::sync::Mutex::default(),
             changing: std::sync::Mutex::default(),
             resolved_paths: std::sync::Mutex::default(),
@@ -658,6 +668,15 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     #[must_use]
     pub fn with_task_hosts(mut self, hosts: Option<std::sync::Arc<dyn TaskHosts>>) -> Self {
         self.task_hosts = hosts;
+        self
+    }
+
+    /// Give the task's program `wait` to start and answer: what a test shortens, so a
+    /// program that never answers is observable without a minute's wait.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_task_answer_wait(mut self, wait: std::time::Duration) -> Self {
+        self.task_answer_wait = wait;
         self
     }
     /// Tell `watch` of each look this session makes at an invocation, and what

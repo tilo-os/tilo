@@ -1248,3 +1248,9 @@ paths = [
     "crates/sdk/theme-painter-wasm/Cargo.toml",
     "crates/sdk/theme-painter-wasm/src/lib.rs",
 ]
+
+[[allow]]
+reason = "The bridge's own names for the program a task's programs run in (`TaskHosts`, `with_task_hosts`), and the fixture a listing is asked of (`host`): a session's program, not a machine."
+words = ["host"]
+identifiers = ["TaskHosts", "with_task_hosts", "host"]
+paths = ["crates/runtime/tilo-mcp/src/mcp_task_program_tests.rs"]
