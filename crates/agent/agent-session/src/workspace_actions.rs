@@ -1342,6 +1342,9 @@ impl Worker {
     }
 
     fn run(mut self, jobs: &mpsc::Receiver<(Instant, Job)>) {
+        // What came and waits for this thread, taken most urgent first ([`job::Job::urgency`]):
+        // a listing never waits behind writes, or the names they left to read, that came before.
+        let mut queued = job::Queued::default();
         loop {
             // What the index's own thread read since the last pass is taken here, and the
             // next documents asked for; the folder's chunks are read here, between requests.
@@ -1351,6 +1354,21 @@ impl Worker {
                 let entries = self.warm_entries();
                 let files = self.warm_files(index::WARM_SLICE);
                 self.warming = !(entries && files);
+            }
+            while let Ok((at, job)) = jobs.try_recv() {
+                queued.push(at, job);
+            }
+            if let Some((at, job)) = queued.take() {
+                self.expire_watchers();
+                self.admit(at, job);
+                // Requests that keep coming never hold back a run's word:
+                // the page forgets a member it has not heard from.
+                if session_voice::next_due(&self.workspaces)
+                    .is_some_and(|due| due <= Instant::now())
+                {
+                    self.tick_voices();
+                }
+                continue;
             }
             let due = [
                 self.joining_until(),
@@ -1372,16 +1390,7 @@ impl Worker {
             };
             self.expire_watchers();
             match next {
-                Ok((queued, job)) => {
-                    self.admit(queued, job);
-                    // Requests that keep coming never hold back a run's word:
-                    // the page forgets a member it has not heard from.
-                    if session_voice::next_due(&self.workspaces)
-                        .is_some_and(|due| due <= Instant::now())
-                    {
-                        self.tick_voices();
-                    }
-                }
+                Ok((at, job)) => queued.push(at, job),
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     self.give_up_joining();
                     self.tick_voices();
