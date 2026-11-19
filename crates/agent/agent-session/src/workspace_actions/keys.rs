@@ -61,11 +61,18 @@ pub(super) fn catalogue_keys(query: &CatalogueQuery) -> Keys {
     if query.view_resource.is_some() {
         return Keys::Joined;
     }
-    match query
-        .provider
-        .as_deref()
-        .and_then(|provider| resource_of(provider, ""))
-    {
+    // What the workspace's folder holds is read from its tree, which a workspace that sends
+    // its documents when they are opened sends only once asked: the listing waits for it as a
+    // read of the tree does, and reads a tree nobody wrote yet as an empty folder.
+    let named = if super::files_listing::wants_files(query) {
+        Some(super::Worker::tree_route(""))
+    } else {
+        query
+            .provider
+            .as_deref()
+            .and_then(|provider| resource_of(provider, ""))
+    };
+    match named {
         Some(route) => Keys::Record {
             app_id: route.app_id,
             record: route.document,
